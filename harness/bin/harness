@@ -319,7 +319,13 @@ def scaffold_pvmalove_extras(repo: Path, args: argparse.Namespace) -> list[str]:
     """Non-skill project files pvmalove-suite ships alongside the managed skill
     snapshot: docs, hooks, a Claude Code subagent, a rule, and .harness/project.json.
     Written once if absent, like AGENTS.md/CLAUDE.md above - not tracked in
-    harness.lock, never touched by update. See CONTEXT.md and docs/adr/0003."""
+    harness.lock, never touched by update. See CONTEXT.md and docs/adr/0003.
+
+    Called from init, adopt and update alike (whichever command first turns
+    pvmalove-suite on for a repo) - the prompt/CLI-flag fields it reads
+    (language, pr_base_branch, branch_pattern, qa_gate_command, base_branch)
+    may not exist on every subcommand's argparse.Namespace, so every read goes
+    through getattr with a fallback rather than assuming they're present."""
     written: list[str] = []
 
     for doc in sorted((PROJECT_TEMPLATE_DIR / "docs-agents").glob("*.md")):
@@ -351,12 +357,14 @@ def scaffold_pvmalove_extras(repo: Path, args: argparse.Namespace) -> list[str]:
 
     project_json = repo / ".harness/project.json"
     if not project_json.exists():
-        language = args.language or _prompt("language (ru/en)", "ru")
-        base_branch = args.pr_base_branch or _prompt("PR base branch", args.base_branch)
-        branch_pattern = args.branch_pattern or _prompt(
+        language = getattr(args, "language", None) or _prompt("language (ru/en)", "ru")
+        base_branch = getattr(args, "pr_base_branch", None) or _prompt(
+            "PR base branch", getattr(args, "base_branch", None) or "main"
+        )
+        branch_pattern = getattr(args, "branch_pattern", None) or _prompt(
             "branch_pattern (regex)", "^feature/issue-[0-9]+-.+"
         )
-        commands = list(args.qa_gate_command or [])
+        commands = list(getattr(args, "qa_gate_command", None) or [])
         if not commands and sys.stdin.isatty():
             print("qa_gate_commands (по одной команде на строку, пустая строка — конец):")
             while True:
@@ -460,6 +468,8 @@ def cmd_adopt(args: argparse.Namespace) -> int:
 
     written = write_snapshot(repo, selected, force=False)
     ensure_links(repo, replace=args.replace_conflicts)
+    if PVMALOVE_CAPABILITY in selected:
+        written.extend(scaffold_pvmalove_extras(repo, args))
     print(f"adopted agent-harness {version()} in {repo}")
     print(f"preserved project-owned skill names outside: {', '.join(selected_names)}")
     print(f"managed files: {len(written)}")
@@ -488,6 +498,8 @@ def cmd_update(args: argparse.Namespace) -> int:
 
     written = write_snapshot(repo, selected, force=args.force)
     ensure_links(repo, replace=args.force)
+    if PVMALOVE_CAPABILITY in selected:
+        written.extend(scaffold_pvmalove_extras(repo, args))
     print(f"updated agent-harness to {version()} in {repo}")
     print(f"managed files: {len(written)}")
     return 0
@@ -517,6 +529,21 @@ def cmd_health(args: argparse.Namespace) -> int:
     return 0
 
 
+def _add_pvmalove_args(sub: argparse.ArgumentParser) -> None:
+    """Flags scaffold_pvmalove_extras() reads - shared by init/adopt/update since
+    any of the three can be the command that first turns pvmalove-suite on."""
+    sub.add_argument(
+        "--language", choices=["ru", "en"], default=None, help="pvmalove-suite: .harness/project.json language"
+    )
+    sub.add_argument(
+        "--pr-base-branch", default=None, help="pvmalove-suite: base branch for PR diffs (default: --base-branch)"
+    )
+    sub.add_argument("--branch-pattern", default=None, help="pvmalove-suite: branch name regex")
+    sub.add_argument(
+        "--qa-gate-command", action="append", default=None, help="pvmalove-suite: repeatable, in run order"
+    )
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="harness")
     commands = root.add_subparsers(dest="command", required=True)
@@ -527,16 +554,7 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--stack", action="append", help="informational project stack")
     init.add_argument("--capability", action="append")
     init.add_argument("--base-branch", default="main")
-    init.add_argument(
-        "--language", choices=["ru", "en"], default=None, help="pvmalove-suite: .harness/project.json language"
-    )
-    init.add_argument(
-        "--pr-base-branch", default=None, help="pvmalove-suite: base branch for PR diffs (default: --base-branch)"
-    )
-    init.add_argument("--branch-pattern", default=None, help="pvmalove-suite: branch name regex")
-    init.add_argument(
-        "--qa-gate-command", action="append", default=None, help="pvmalove-suite: repeatable, in run order"
-    )
+    _add_pvmalove_args(init)
     init.set_defaults(func=cmd_init)
 
     diff = commands.add_parser("diff")
@@ -549,12 +567,14 @@ def parser() -> argparse.ArgumentParser:
     adopt.add_argument("repo")
     adopt.add_argument("--capability", action="append")
     adopt.add_argument("--replace-conflicts", action="store_true")
+    _add_pvmalove_args(adopt)
     adopt.set_defaults(func=cmd_adopt)
 
     update = commands.add_parser("update")
     update.add_argument("repo")
     update.add_argument("--capability", action="append")
     update.add_argument("--force", action="store_true")
+    _add_pvmalove_args(update)
     update.set_defaults(func=cmd_update)
 
     health = commands.add_parser("health")
