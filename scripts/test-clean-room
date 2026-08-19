@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-harness-test.XXXXXX")"
+trap 'rm -rf "$TEST_ROOT"' EXIT
+
+PROJECT="$TEST_ROOT/project"
+FOUNDATION="$TEST_ROOT/foundation"
+TARGET_HOME="$TEST_ROOT/home"
+mkdir -p "$PROJECT" "$FOUNDATION" "$TARGET_HOME"
+git -C "$PROJECT" init -q
+git -C "$FOUNDATION" init -q
+
+python3 "$ROOT/harness/bin/harness" init "$FOUNDATION" \
+  --project-type content \
+  --base-branch main
+python3 "$ROOT/harness/bin/harness" diff "$FOUNDATION"
+python3 "$ROOT/harness/bin/harness" health "$FOUNDATION"
+[ "$(find "$FOUNDATION/.harness/skills" -name SKILL.md -type f | wc -l | tr -d ' ')" = "5" ]
+grep -q -- '- Type: content' "$FOUNDATION/AGENTS.md"
+
+python3 "$ROOT/harness/bin/harness" init "$PROJECT" \
+  --stack node \
+  --capability mattpocock-suite \
+  --base-branch main
+
+python3 "$ROOT/harness/bin/harness" diff "$PROJECT"
+python3 "$ROOT/harness/bin/harness" health "$PROJECT"
+
+[ "$(find "$PROJECT/.harness/skills" -name SKILL.md -type f | wc -l | tr -d ' ')" = "25" ]
+[ "$(readlink "$PROJECT/.agents/skills")" = "../.harness/skills" ]
+[ "$(readlink "$PROJECT/.claude/skills")" = "../.harness/skills" ]
+
+printf '\nlocal edit\n' >> "$PROJECT/.harness/skills/ask-matt/SKILL.md"
+if python3 "$ROOT/harness/bin/harness" diff "$PROJECT" >/dev/null 2>&1; then
+  echo "drift check unexpectedly passed" >&2
+  exit 1
+fi
+if python3 "$ROOT/harness/bin/harness" update "$PROJECT" >/dev/null 2>&1; then
+  echo "non-forced update unexpectedly overwrote a local edit" >&2
+  exit 1
+fi
+python3 "$ROOT/harness/bin/harness" update "$PROJECT" --force >/dev/null
+python3 "$ROOT/harness/bin/harness" health "$PROJECT"
+
+runtime_args=()
+for runtime_name in codex claude kimi opencode hermes; do
+  runtime_args+=(--runtime "$runtime_name")
+done
+mkdir -p "$TARGET_HOME/.agents/skills" "$TARGET_HOME/.claude/skills" "$TARGET_HOME/.hermes/skills"
+for root in "$TARGET_HOME/.agents/skills" "$TARGET_HOME/.claude/skills" "$TARGET_HOME/.hermes/skills"; do
+  ln -s "$ROOT/global-skills/project-harness-bootstrap" "$root/project-harness-bootstrap"
+  ln -s "$ROOT/global-skills/skill-library" "$root/skill-library"
+done
+"$ROOT/bin/install-global" --target-home "$TARGET_HOME" "${runtime_args[@]}"
+"$ROOT/bin/install-global" --target-home "$TARGET_HOME" "${runtime_args[@]}" --check
+[ -L "$TARGET_HOME/.agents/skills/start-project" ]
+[ -L "$TARGET_HOME/.claude/skills/start-project" ]
+[ -L "$TARGET_HOME/.hermes/skills/start-project" ]
+[ ! -e "$TARGET_HOME/.agents/skills/project-harness-bootstrap" ]
+[ ! -L "$TARGET_HOME/.agents/skills/project-harness-bootstrap" ]
+[ ! -e "$TARGET_HOME/.hermes/skills/skill-library" ]
+[ ! -L "$TARGET_HOME/.hermes/skills/skill-library" ]
+
+FOREIGN_HOME="$TEST_ROOT/foreign-home"
+mkdir -p "$FOREIGN_HOME/.agents/skills" "$FOREIGN_HOME/foreign"
+ln -s "$FOREIGN_HOME/foreign" "$FOREIGN_HOME/.agents/skills/skill-library"
+if "$ROOT/bin/install-global" --target-home "$FOREIGN_HOME" --runtime codex --skills-only; then
+  echo "foreign retired entry was unexpectedly accepted" >&2
+  exit 1
+fi
+[ "$(readlink "$FOREIGN_HOME/.agents/skills/skill-library")" = "$FOREIGN_HOME/foreign" ]
+
+OVERLAY_HOME="$TEST_ROOT/overlay-home"
+mkdir -p "$OVERLAY_HOME"
+"$ROOT/bin/install-global" --target-home "$OVERLAY_HOME" "${runtime_args[@]}" --skills-only
+[ ! -e "$OVERLAY_HOME/.codex/AGENTS.md" ]
+[ -L "$OVERLAY_HOME/.agents/skills/start-project" ]
+[ -L "$OVERLAY_HOME/.hermes/skills/start-project" ]
+
+LEGACY="$TEST_ROOT/legacy"
+mkdir -p "$LEGACY/.harness/skills/project-only" "$LEGACY/.harness/skills/ask-matt"
+git -C "$LEGACY" init -q
+printf '%s\n' '# Legacy project' > "$LEGACY/AGENTS.md"
+printf '%s\n' 'project data' > "$LEGACY/.harness/skills/project-only/asset.txt"
+printf '%s\n' 'old fork' > "$LEGACY/.harness/skills/ask-matt/SKILL.md"
+printf '%s\n' '{"schema": 0, "files": {}}' > "$LEGACY/.harness/harness.lock"
+python3 "$ROOT/harness/bin/harness" adopt "$LEGACY" \
+  --capability mattpocock-suite \
+  --replace-conflicts
+[ -f "$LEGACY/.harness/skills/project-only/asset.txt" ]
+cmp "$ROOT/skills/vendor/mattpocock/engineering/ask-matt/SKILL.md" \
+  "$LEGACY/.harness/skills/ask-matt/SKILL.md"
+python3 "$ROOT/harness/bin/harness" health "$LEGACY"
+
+echo "clean-room verification passed"

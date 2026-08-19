@@ -1,0 +1,4 @@
+interface:
+  display_name: "Start Project"
+  short_description: "Design and initialize any new project"
+  default_prompt: "Use $start-project to shape this idea and initialize the right project harness when it is ready."

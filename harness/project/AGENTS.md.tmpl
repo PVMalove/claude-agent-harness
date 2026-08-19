@@ -1,0 +1,61 @@
+# {{PROJECT_NAME}}
+
+Canonical instructions for agents in this repository. More specific project instructions
+override this file. Harness provenance and file hashes are recorded in `.harness/harness.lock`.
+
+## Project
+
+{{PROJECT_SUMMARY}}
+
+- Type: {{PROJECT_TYPE}}
+- Tools/stack: {{STACK_SUMMARY}}
+- Capabilities: {{CAPABILITY_SUMMARY}}
+- Stage: {{STAGE}}
+- Tracker: {{TRACKER}}
+- Base branch: `{{BASE_BRANCH}}`
+
+Document the tracker and its workflow in this repository when the project uses one.
+
+## Commands
+
+Use `N/A` for command slots that do not apply to this project.
+
+```bash
+{{CMD_SETUP}}      # setup
+{{CMD_RUN}}        # run
+{{CMD_TEST}}       # test
+{{CMD_LINT}}       # lint
+{{CMD_BUILD}}      # build
+```
+
+## Repository map
+
+{{STRUCTURE}}
+
+## Boundaries
+
+- Allowed: {{ALLOWED}}
+- Ask first: {{ASK_FIRST}}
+- Do not touch: {{FORBIDDEN}}
+
+## Definition of Done
+
+{{DOD}}
+
+## Delivery
+
+{{MERGE_POLICY}}
+
+Preserve unrelated dirty changes and live worktrees. The active project skill or an explicit user
+instruction chooses the checkout strategy.
+
+## Runtime
+
+- Skills live in `.harness/skills` and are discovered through `.agents/skills` and
+  `.claude/skills`.
+- Harness-managed skill files and their version lock live in `.harness/`.
+- Capability updates are explicit and require a reviewed harness diff.
+
+## Known pitfalls
+
+{{GOTCHAS}}

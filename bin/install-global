@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: install-global --target-home <dir> --runtime codex|claude|kimi|opencode|hermes [--runtime ...]
+                      [--check] [--replace-conflicts] [--skills-only]
+
+Installs a minimal instruction profile plus start-project. It never installs MCP, models, plugins,
+credentials, or permissions.
+EOF
+}
+
+TARGET_HOME=""
+CHECK=0
+REPLACE=0
+SKILLS_ONLY=0
+RUNTIMES=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --target-home) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; TARGET_HOME="$2"; shift 2 ;;
+    --runtime) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; RUNTIMES+=("$2"); shift 2 ;;
+    --check) CHECK=1; shift ;;
+    --replace-conflicts) REPLACE=1; shift ;;
+    --skills-only) SKILLS_ONLY=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$TARGET_HOME" ] && [ "${#RUNTIMES[@]}" -gt 0 ] || { usage >&2; exit 2; }
+TARGET_HOME="$(cd "$TARGET_HOME" 2>/dev/null && pwd -P)" || {
+  echo "Target home must already exist: $TARGET_HOME" >&2
+  exit 1
+}
+
+KIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+PROFILE="$KIT_ROOT/global/AGENTS.md"
+ENTRY_SKILLS=(start-project)
+RETIRED_ENTRY_SKILLS=(project-harness-bootstrap skill-library)
+BACKUP_ROOT=""
+
+backup_target() {
+  local target="$1" relative
+  [ -n "$BACKUP_ROOT" ] || BACKUP_ROOT="$TARGET_HOME/.agent-harness-backups/$(date +%Y%m%d-%H%M%S)"
+  relative="${target#"$TARGET_HOME"/}"
+  mkdir -p "$BACKUP_ROOT/$(dirname "$relative")"
+  mv "$target" "$BACKUP_ROOT/$relative"
+  echo "backup $target -> $BACKUP_ROOT/$relative"
+}
+
+install_file() {
+  local source="$1" target="$2"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    cmp -s "$source" "$target" && { echo "ok    $target"; return 0; }
+    [ "$CHECK" = "0" ] && [ "$REPLACE" = "1" ] || {
+      echo "conflict: $target" >&2
+      return 1
+    }
+    backup_target "$target"
+  elif [ "$CHECK" = "1" ]; then
+    echo "missing $target" >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "$target")"
+  cp "$source" "$target"
+  echo "write $target"
+}
+
+install_link() {
+  local source="$1" target="$2" resolved=""
+  if [ -L "$target" ]; then
+    resolved="$(realpath "$target" 2>/dev/null || true)"
+    [ "$resolved" = "$source" ] && { echo "ok    $target"; return 0; }
+  fi
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    [ "$CHECK" = "0" ] && [ "$REPLACE" = "1" ] || {
+      echo "conflict: $target" >&2
+      return 1
+    }
+    backup_target "$target"
+  elif [ "$CHECK" = "1" ]; then
+    echo "missing $target" >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "$target")"
+  ln -s "$source" "$target"
+  echo "link  $target"
+}
+
+install_entries() {
+  local destination="$1" name source
+  for name in "${ENTRY_SKILLS[@]}"; do
+    source="$KIT_ROOT/global-skills/$name"
+    [ -f "$source/SKILL.md" ] || { echo "Missing entry skill: $source" >&2; return 1; }
+    install_link "$source" "$destination/$name" || return 1
+  done
+}
+
+retire_entries() {
+  local destination="$1" name target expected current
+  for name in "${RETIRED_ENTRY_SKILLS[@]}"; do
+    target="$destination/$name"
+    [ -e "$target" ] || [ -L "$target" ] || continue
+    expected="$KIT_ROOT/global-skills/$name"
+    if [ ! -L "$target" ]; then
+      echo "conflict: retired managed entry is not a symlink: $target" >&2
+      return 1
+    fi
+    current="$(readlink "$target")"
+    if [ "$current" != "$expected" ]; then
+      echo "conflict: retired entry has a foreign target: $target -> $current" >&2
+      return 1
+    fi
+    if [ "$CHECK" = "1" ]; then
+      echo "retired entry still installed: $target" >&2
+      return 1
+    fi
+    unlink "$target"
+    echo "retire $target"
+  done
+}
+
+status=0
+for runtime in "${RUNTIMES[@]}"; do
+  case "$runtime" in
+    codex)
+      [ "$SKILLS_ONLY" = "1" ] || install_file "$PROFILE" "$TARGET_HOME/.codex/AGENTS.md" || status=1
+      retire_entries "$TARGET_HOME/.agents/skills" || status=1
+      install_entries "$TARGET_HOME/.agents/skills" || status=1
+      ;;
+    claude)
+      [ "$SKILLS_ONLY" = "1" ] || install_file "$PROFILE" "$TARGET_HOME/.claude/CLAUDE.md" || status=1
+      retire_entries "$TARGET_HOME/.claude/skills" || status=1
+      install_entries "$TARGET_HOME/.claude/skills" || status=1
+      ;;
+    kimi)
+      [ "$SKILLS_ONLY" = "1" ] || install_file "$PROFILE" "$TARGET_HOME/.kimi-code/AGENTS.md" || status=1
+      retire_entries "$TARGET_HOME/.agents/skills" || status=1
+      install_entries "$TARGET_HOME/.agents/skills" || status=1
+      ;;
+    opencode)
+      [ "$SKILLS_ONLY" = "1" ] || install_file "$PROFILE" "$TARGET_HOME/.config/opencode/AGENTS.md" || status=1
+      retire_entries "$TARGET_HOME/.agents/skills" || status=1
+      install_entries "$TARGET_HOME/.agents/skills" || status=1
+      ;;
+    hermes)
+      # SOUL.md is identity, not a cross-project rules file. Hermes reads project AGENTS.md.
+      retire_entries "$TARGET_HOME/.hermes/skills" || status=1
+      install_entries "$TARGET_HOME/.hermes/skills" || status=1
+      ;;
+    *) echo "Unknown runtime: $runtime" >&2; status=1 ;;
+  esac
+done
+
+[ -z "$BACKUP_ROOT" ] || echo "Backups: $BACKUP_ROOT"
+exit "$status"

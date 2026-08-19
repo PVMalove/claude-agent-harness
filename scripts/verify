@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+python3 -m json.tool "$ROOT/harness/CAPABILITIES.json" >/dev/null
+python3 -m py_compile "$ROOT/harness/bin/harness" "$ROOT/scripts/build-registry"
+bash -n "$ROOT/bin/install-global" "$ROOT/scripts/verify" "$ROOT/scripts/test-clean-room"
+
+grep -q '^name: start-project$' "$ROOT/global-skills/start-project/SKILL.md"
+if grep -R -n 'TODO' "$ROOT/global-skills/start-project"; then
+  echo "start-project still contains TODO markers" >&2
+  exit 1
+fi
+
+python3 "$ROOT/scripts/build-registry"
+git -C "$ROOT" diff --exit-code -- skills/REGISTRY.md
+
+python3 - "$ROOT" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+plugin = json.loads((root / "third_party/mattpocock-skills/plugin.json").read_text())
+capabilities = json.loads((root / "harness/CAPABILITIES.json").read_text())
+expected = [entry.removeprefix("./skills/") for entry in plugin["skills"]]
+actual = capabilities["mattpocock-suite"]["skills"]
+actual = [entry.removeprefix("vendor/mattpocock/") for entry in actual]
+if expected != actual:
+    raise SystemExit("mattpocock-suite does not match the pinned plugin manifest")
+
+vendor = root / "skills/vendor/mattpocock"
+skills = sorted(vendor.rglob("SKILL.md"))
+if len(skills) != len(expected):
+    raise SystemExit(f"vendor count mismatch: manifest={len(expected)} snapshot={len(skills)}")
+
+checksum_lines = (root / "third_party/mattpocock-skills/SHA256SUMS").read_text().splitlines()
+vendor_files = sorted(path for path in vendor.rglob("*") if path.is_file())
+if len(checksum_lines) != len(vendor_files):
+    raise SystemExit(
+        f"vendor file count mismatch: checksums={len(checksum_lines)} snapshot={len(vendor_files)}"
+    )
+for line in checksum_lines:
+    expected_hash, relative = line.split("  ", 1)
+    payload = (root / relative).read_bytes()
+    actual_hash = hashlib.sha256(payload).hexdigest()
+    if actual_hash != expected_hash:
+        raise SystemExit(f"vendor checksum mismatch: {relative}")
+PY
+
+"$ROOT/scripts/test-clean-room"
+
+echo "agent-harness verification passed"

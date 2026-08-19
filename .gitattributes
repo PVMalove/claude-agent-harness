@@ -1,0 +1,4 @@
+# Vendor snapshot is pinned to upstream byte-for-byte (see third_party/mattpocock-skills/SHA256SUMS)
+# — must never be line-ending-converted, regardless of a clone's core.autocrlf.
+skills/vendor/** -text
+third_party/mattpocock-skills/** -text

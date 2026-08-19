@@ -1,0 +1,57 @@
+{
+  "project-foundation": {
+    "description": "A small domain-neutral foundation for project design, research, handoff, shared language, and agent-facing instructions.",
+    "skills": [
+      "vendor/mattpocock/productivity/grilling",
+      "vendor/mattpocock/productivity/handoff",
+      "vendor/mattpocock/productivity/writing-for-agents",
+      "vendor/mattpocock/engineering/research",
+      "vendor/mattpocock/engineering/domain-modeling"
+    ]
+  },
+  "mattpocock-suite": {
+    "description": "The complete promoted Matt Pocock engineering and productivity suite, vendored byte-for-byte from the pinned upstream plugin manifest.",
+    "skills": [
+      "vendor/mattpocock/engineering/ask-matt",
+      "vendor/mattpocock/engineering/diagnosing-bugs",
+      "vendor/mattpocock/engineering/grill-with-docs",
+      "vendor/mattpocock/engineering/triage",
+      "vendor/mattpocock/engineering/improve-codebase-architecture",
+      "vendor/mattpocock/engineering/setup-matt-pocock-skills",
+      "vendor/mattpocock/engineering/tdd",
+      "vendor/mattpocock/engineering/to-spec",
+      "vendor/mattpocock/engineering/to-tickets",
+      "vendor/mattpocock/engineering/wayfinder",
+      "vendor/mattpocock/engineering/implement",
+      "vendor/mattpocock/engineering/prototype",
+      "vendor/mattpocock/engineering/research",
+      "vendor/mattpocock/engineering/domain-modeling",
+      "vendor/mattpocock/engineering/codebase-design",
+      "vendor/mattpocock/engineering/code-review",
+      "vendor/mattpocock/engineering/resolving-merge-conflicts",
+      "vendor/mattpocock/engineering/wizard",
+      "vendor/mattpocock/productivity/grill-me",
+      "vendor/mattpocock/productivity/grilling",
+      "vendor/mattpocock/productivity/handoff",
+      "vendor/mattpocock/productivity/teach",
+      "vendor/mattpocock/productivity/to-questionnaire",
+      "vendor/mattpocock/productivity/wait-what",
+      "vendor/mattpocock/productivity/writing-for-agents"
+    ]
+  },
+  "pvmalove-suite": {
+    "description": "Личная сборка Павла Малового поверх mattpocock-suite: 6 first-party переопределений (namespaced triage-лейблы вместо канонических bug/enhancement, обязательная PR-пауза без авто-мёрджа, настраиваемый язык вывода code-review) и один новый скилл (qa-gate, конфиг-драйвен через .harness/project.json). Выбирается вместо mattpocock-suite, не вместе с ней — расширяет её через extends/overrides/additions вместо дублирования списка.",
+    "extends": "mattpocock-suite",
+    "overrides": {
+      "triage": "first-party/pvmalove/triage",
+      "to-spec": "first-party/pvmalove/to-spec",
+      "to-tickets": "first-party/pvmalove/to-tickets",
+      "implement": "first-party/pvmalove/implement",
+      "ask-matt": "first-party/pvmalove/ask-matt",
+      "code-review": "first-party/pvmalove/code-review"
+    },
+    "additions": [
+      "first-party/pvmalove/qa-gate"
+    ]
+  }
+}
