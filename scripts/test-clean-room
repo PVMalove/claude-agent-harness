@@ -2,6 +2,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON=python3
+elif command -v python >/dev/null 2>&1; then
+  PYTHON=python
+else
+  echo "error: no python3 or python interpreter found on PATH" >&2
+  exit 1
+fi
+
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-harness-test.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
@@ -12,37 +22,37 @@ mkdir -p "$PROJECT" "$FOUNDATION" "$TARGET_HOME"
 git -C "$PROJECT" init -q
 git -C "$FOUNDATION" init -q
 
-python3 "$ROOT/harness/bin/harness" init "$FOUNDATION" \
+"$PYTHON" "$ROOT/harness/bin/harness" init "$FOUNDATION" \
   --project-type content \
   --base-branch main
-python3 "$ROOT/harness/bin/harness" diff "$FOUNDATION"
-python3 "$ROOT/harness/bin/harness" health "$FOUNDATION"
+"$PYTHON" "$ROOT/harness/bin/harness" diff "$FOUNDATION"
+"$PYTHON" "$ROOT/harness/bin/harness" health "$FOUNDATION"
 [ "$(find "$FOUNDATION/.harness/skills" -name SKILL.md -type f | wc -l | tr -d ' ')" = "5" ]
 grep -q -- '- Type: content' "$FOUNDATION/AGENTS.md"
 
-python3 "$ROOT/harness/bin/harness" init "$PROJECT" \
+"$PYTHON" "$ROOT/harness/bin/harness" init "$PROJECT" \
   --stack node \
   --capability mattpocock-suite \
   --base-branch main
 
-python3 "$ROOT/harness/bin/harness" diff "$PROJECT"
-python3 "$ROOT/harness/bin/harness" health "$PROJECT"
+"$PYTHON" "$ROOT/harness/bin/harness" diff "$PROJECT"
+"$PYTHON" "$ROOT/harness/bin/harness" health "$PROJECT"
 
 [ "$(find "$PROJECT/.harness/skills" -name SKILL.md -type f | wc -l | tr -d ' ')" = "25" ]
 [ "$(readlink "$PROJECT/.agents/skills")" = "../.harness/skills" ]
 [ "$(readlink "$PROJECT/.claude/skills")" = "../.harness/skills" ]
 
 printf '\nlocal edit\n' >> "$PROJECT/.harness/skills/ask-matt/SKILL.md"
-if python3 "$ROOT/harness/bin/harness" diff "$PROJECT" >/dev/null 2>&1; then
+if "$PYTHON" "$ROOT/harness/bin/harness" diff "$PROJECT" >/dev/null 2>&1; then
   echo "drift check unexpectedly passed" >&2
   exit 1
 fi
-if python3 "$ROOT/harness/bin/harness" update "$PROJECT" >/dev/null 2>&1; then
+if "$PYTHON" "$ROOT/harness/bin/harness" update "$PROJECT" >/dev/null 2>&1; then
   echo "non-forced update unexpectedly overwrote a local edit" >&2
   exit 1
 fi
-python3 "$ROOT/harness/bin/harness" update "$PROJECT" --force >/dev/null
-python3 "$ROOT/harness/bin/harness" health "$PROJECT"
+"$PYTHON" "$ROOT/harness/bin/harness" update "$PROJECT" --force >/dev/null
+"$PYTHON" "$ROOT/harness/bin/harness" health "$PROJECT"
 
 runtime_args=()
 for runtime_name in codex claude kimi opencode hermes; do
@@ -86,12 +96,12 @@ printf '%s\n' '# Legacy project' > "$LEGACY/AGENTS.md"
 printf '%s\n' 'project data' > "$LEGACY/.harness/skills/project-only/asset.txt"
 printf '%s\n' 'old fork' > "$LEGACY/.harness/skills/ask-matt/SKILL.md"
 printf '%s\n' '{"schema": 0, "files": {}}' > "$LEGACY/.harness/harness.lock"
-python3 "$ROOT/harness/bin/harness" adopt "$LEGACY" \
+"$PYTHON" "$ROOT/harness/bin/harness" adopt "$LEGACY" \
   --capability mattpocock-suite \
   --replace-conflicts
 [ -f "$LEGACY/.harness/skills/project-only/asset.txt" ]
 cmp "$ROOT/skills/vendor/mattpocock/engineering/ask-matt/SKILL.md" \
   "$LEGACY/.harness/skills/ask-matt/SKILL.md"
-python3 "$ROOT/harness/bin/harness" health "$LEGACY"
+"$PYTHON" "$ROOT/harness/bin/harness" health "$LEGACY"
 
 echo "clean-room verification passed"
