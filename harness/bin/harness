@@ -25,6 +25,14 @@ DISCOVERY_LINKS = {
 }
 
 
+def native_link_target(target: str) -> str:
+    """DISCOVERY_LINKS targets use '/' for portability. Windows symlink reparse
+    points resolve relative targets with '\\'; a '/'-separated target creates a
+    reparse point that looks fine (dir listing shows SYMLINKD) but never
+    resolves, silently hiding every skill under it."""
+    return target.replace("/", os.sep)
+
+
 def fail(message: str) -> "NoReturn":
     print(f"harness: {message}", file=sys.stderr)
     raise SystemExit(1)
@@ -172,9 +180,10 @@ def ensure_git_repo(repo: Path) -> None:
 def ensure_links(repo: Path, *, replace: bool = False) -> list[str]:
     changed: list[str] = []
     for relative, target in DISCOVERY_LINKS.items():
+        native_target = native_link_target(target)
         path = repo / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.is_symlink() and os.readlink(path) == target:
+        if path.is_symlink() and os.readlink(path) == native_target and path.is_dir():
             continue
         if path.exists() or path.is_symlink():
             if not replace:
@@ -182,7 +191,7 @@ def ensure_links(repo: Path, *, replace: bool = False) -> list[str]:
             if path.is_dir() and not path.is_symlink():
                 fail(f"refusing to replace directory: {path}")
             path.unlink()
-        path.symlink_to(target)
+        path.symlink_to(native_target)
         changed.append(relative)
     return changed
 
@@ -515,8 +524,11 @@ def cmd_health(args: argparse.Namespace) -> int:
         problems.append("missing AGENTS.md")
     for relative, target in DISCOVERY_LINKS.items():
         path = repo / relative
-        if not path.is_symlink() or os.readlink(path) != target:
+        native_target = native_link_target(target)
+        if not path.is_symlink() or os.readlink(path) != native_target:
             problems.append(f"broken discovery link: {relative} -> {target}")
+        elif not path.is_dir():
+            problems.append(f"discovery link does not resolve: {relative} -> {target}")
     if lock:
         result = snapshot_diff(repo)
         if result["state"] != "clean":

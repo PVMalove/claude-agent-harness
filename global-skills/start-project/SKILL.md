@@ -63,6 +63,9 @@ explicitly requests one.
      --base-branch <branch>
    ```
 
+   On Windows/PowerShell there is no `python3` (use `python`), and line
+   continuation is `` ` ``, not `\`.
+
    Fill every unresolved `{{...}}` in `AGENTS.md`. Add project-only packages under
    `.harness/skills`; keep their provenance and hashes in a versioned overlay lock. Use relative
    discovery links, never links back to a machine-local catalog.

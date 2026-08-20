@@ -1,74 +1,30 @@
 # Triage Labels
 
-This repo does **not** use the upstream `mattpocock/skills` canonical five-role vocabulary (`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`) as literal labels. Instead it uses a namespaced, multi-axis taxonomy. `triage/SKILL.md` has been customized to speak natively in these terms — this file is the reference, not a translation table.
+The skills speak in terms of five canonical triage roles. This file maps those roles to the actual label strings used in this repo's issue tracker.
 
-If a skill you're reading still talks in the old canonical vocabulary (some upstream skill prose does), translate with this cheat-sheet:
+| Label in mattpocock/skills | Label in our tracker | Meaning                                  |
+| --------------------------- | ---------------------- | ------------------------------------------ |
+| `needs-triage`               | `needs-triage`          | Maintainer needs to evaluate this issue  |
+| `needs-info`                  | `needs-info`            | Waiting on reporter for more information |
+| `ready-for-agent`             | `ready-for-agent`       | Fully specified, ready for an AFK agent  |
+| `ready-for-human`              | `ready-for-human`       | Requires human implementation            |
+| `wontfix`                      | `wontfix`               | Will not be actioned                     |
 
-| Canonical concept              | This repo                          |
-| ------------------------------- | ----------------------------------- |
-| `needs-triage`                  | unlabeled (no dedicated label)      |
-| `needs-info`                    | `workflow::blocked` + triage notes comment |
-| `ready-for-agent`               | `workflow::ready` + `afk`           |
-| `ready-for-human`                | `workflow::ready` + `hitl`          |
-| `wontfix`                        | `out-of-scope`                      |
-| category (`bug` / `enhancement`) | no label — `type::*` covers the work-kind axis instead; bug-vs-feature is a prose judgment call for the `.out-of-scope/` write, not a GitHub label |
+When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table. Edit the right-hand column to match whatever vocabulary you actually use.
 
-## The taxonomy
+## Context labels — not managed by `triage`
 
-Every triaged issue or PR carries exactly one label from each of the first three axes.
+These two labels sit outside the five canonical roles above. `triage/SKILL.md` (vendor, unmodified) doesn't know about either of them — nothing about the canonical roles prevents them coexisting. They're applied by `to-spec`/`to-tickets` and, for the second one, cleared by `implement`.
 
-### 1. Execution mode — who does the work
+| Label               | Color                     | Applied by                  | Meaning                                                                                                                                                                                    |
+| --------------------- | --------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `epic::<slug>`        | per-epic, created ad hoc     | `/to-spec`, `/to-tickets`      | This issue is a feature epic (`/to-spec`), or a subtask decomposed from one (`/to-tickets`) — the same slug on every subtask so the whole group stays queryable.                          |
+| `blocked-by-ticket`   | red `#b60205`               | `/to-tickets`, cleared by `/implement` | Applied instead of `ready-for-agent` when `/to-tickets` creates a ticket whose blockers (from the same decomposition) aren't closed yet. `/implement` checks the blockers before starting a ticket that carries this label — clears it and applies `ready-for-agent` once they're all closed, otherwise stops and names the open ones. |
 
-| Label  | Color                 | Meaning                                                |
-| ------ | ---------------------- | ------------------------------------------------------- |
-| `hitl` | yellow `#fbca04`       | Human-in-the-loop — needs review, testing, or approval from you |
-| `afk`  | light blue `#54c1e8`   | Away-from-keyboard — an agent can complete it alone      |
-
-### 2. Type (`type::*`) — what kind of session this is
-
-| Label                  | Meaning                                             |
-| ----------------------- | ---------------------------------------------------- |
-| `type::spec`            | Specification drafting                              |
-| `type::research`        | Codebase or infrastructure investigation             |
-| `type::prototype`       | Throwaway code to test a hypothesis                  |
-| `type::grilling`        | Requirements-gathering / requirements-boundary session |
-| `type::implementation`  | Writing production code                              |
-| `type::map`             | A Wayfinder epic-mapping ticket                      |
-
-### 3. Workflow state (`workflow::*`) — where it sits in the pipeline
-
-| Label                    | Color            | Meaning                                                        |
-| ------------------------- | ----------------- | ----------------------------------------------------------------- |
-| `workflow::ready`         | green `#0e8a16`   | Fully specified, ready to be picked up                          |
-| `workflow::in-progress`   | blue `#1d76db`    | Currently being worked on in an active session                 |
-| `workflow::blocked`       | red `#b60205`     | Blocked by a dependency, or waiting on more info from you       |
-
-### Context labels — applied when relevant
-
-| Label                     | Color             | Meaning                                                                 |
-| -------------------------- | ------------------ | -------------------------------------------------------------------------- |
-| `epic::<name>`              | (per-epic, created ad hoc) | This ticket belongs to a larger effort, e.g. `epic::search-revamp`. **Not** the same namespace as Wayfinder's `wayfinder:<type>` — don't conflate them. |
-| `task-report::required`     | gray `#5319e7`     | Agent must post a completion report on close. Applied by default to every triaged ticket unless you say to skip it. |
-| `out-of-scope`              | gray `#c2c2c2`     | This project's `wontfix` — the request was explicitly rejected. Applied at close time; see `.out-of-scope/` handling in `triage/OUT-OF-SCOPE.md`. |
-
-`wayfinder:map` and `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`) belong to the `wayfinder` skill's own namespace — see [issue-tracker.md](./issue-tracker.md#wayfinding-operations). They coexist with the taxonomy above (a Wayfinder ticket also carries its `hitl`/`afk` + `workflow::*` labels) but are managed by `/wayfinder`, not `/triage`.
-
-## State machine
-
-An unlabeled issue is implicitly "needs triage" — there's no dedicated label for that state.
-
-1. Triage analyzes the issue: determine `type::*` and `hitl`/`afk`.
-2. Place it in `workflow::ready` (nothing blocking it) or `workflow::blocked` (a dependency, or missing info from you — either way, post triage notes).
-3. `workflow::blocked` → `workflow::ready` once the blocker clears or you reply.
-4. `workflow::ready` → `workflow::in-progress` when a session (agent or you) picks it up.
-5. Rejected at any point → apply `out-of-scope`, drop the `workflow::*` label, close.
-
-Apply `task-report::required` alongside any `workflow::ready` outcome by default. Apply `epic::<name>` if the ticket belongs to a larger effort.
-
-## Creating new `epic::*` labels
+### Creating new `epic::*` labels
 
 `epic::*` labels are created ad hoc, one per epic, the first time a ticket needs one — not pre-created. Use a short kebab-case name after the `::` (e.g. `epic::search-revamp`): `gh label create "epic::search-revamp" --color <pick one, any unused hue> --description "Search revamp epic"`.
 
-## Adapting this taxonomy per project
+### Local markdown tracker
 
-This is the taxonomy `pvmalove-suite` ships by default — it's a design choice (namespaced multi-axis labels), not a hardcoded requirement. Edit this file directly to rename axes or add project-specific context labels; `triage/SKILL.md` reads its label vocabulary from here, not from its own body.
+A local-markdown-tracked ticket (`.scratch/<feature>/issues/NN-*.md`) has no GitHub/GitLab labels — the same values (`ready-for-agent`, `blocked-by-ticket`, plus a terminal `done`) go in that file's `**Status:**` line instead. `/implement` sets `**Status:** done` when it finishes a ticket, mirroring the `Closes #<ID>` auto-close a GitHub/GitLab ticket gets on merge (see `docs/agents/git-workflow.md`).

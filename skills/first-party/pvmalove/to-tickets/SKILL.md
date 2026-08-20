@@ -59,8 +59,8 @@ Iterate until the user approves the breakdown.
 
 Publish the approved tickets. **How** depends on the tracker `/setup-matt-pocock-skills` configured — the tickets are the same either way, only the shape of the blocking edges changes:
 
-- **Local files** → write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order (blockers first). Each file's "Blocked by" lists the numbers/titles it depends on. Use the per-ticket file template below — one ticket per file, never a single combined file.
-- **A real issue tracker (GitHub, Linear, …)** → publish one issue per ticket in dependency order (blockers first) so each ticket's blocking edges can reference real identifiers. Use the platform's native blocking / sub-issue relationship where it has one; otherwise set each ticket's "Blocked by" to the blocking issues. Apply this repo's "ready, agent-grabbable" triage labels unless instructed otherwise — the tickets are agent-grabbable by construction. Check `docs/agents/triage-labels.md` for the exact label(s); a ticket blocked by another still open ticket gets the "blocked" label instead. If the source is an epic issue (published by `/to-spec`, or otherwise carrying an `epic::<slug>` label), apply that same `epic::<slug>` label to every ticket this step creates — every task decomposed from an epic must carry it, so the whole breakdown stays queryable as one group.
+- **Local files** → write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order (blockers first). Each file's "Blocked by" lists the numbers/titles it depends on. Use the per-ticket file template below — one ticket per file, never a single combined file. Set `**Status:**` to `blocked-by-ticket` if the "Blocked by" list is non-empty, `ready-for-agent` otherwise (see `docs/agents/triage-labels.md`) — `/implement` checks and flips it later.
+- **A real issue tracker (GitHub, Linear, …)** → publish one issue per ticket in dependency order (blockers first) so each ticket's blocking edges can reference real identifiers. Use the platform's native blocking / sub-issue relationship where it has one; otherwise set each ticket's "Blocked by" to the blocking issues. Apply this repo's "ready, agent-grabbable" triage labels unless instructed otherwise — the tickets are agent-grabbable by construction. Check `docs/agents/triage-labels.md` for the exact label(s); a ticket blocked by another still-open ticket from this same decomposition gets `blocked-by-ticket` instead — `/implement` checks and clears it later, `/triage` doesn't know about it. If the source is an epic issue (published by `/to-spec`, or otherwise carrying an `epic::<slug>` label), apply that same `epic::<slug>` label to every ticket this step creates — every task decomposed from an epic must carry it, so the whole breakdown stays queryable as one group.
 
 Work the **frontier**: any ticket whose blockers are all done. For a purely linear chain that means top to bottom.
 
@@ -74,7 +74,7 @@ Do NOT close the parent/epic issue or rewrite its existing content — the one e
 
 **Blocked by:** the numbers/titles of the tickets that gate this one, or "None — can start immediately".
 
-**Status:** ready-for-agent
+**Status:** ready-for-agent (or `blocked-by-ticket` — see above)
 
 - [ ] Acceptance criterion 1
 - [ ] Acceptance criterion 2

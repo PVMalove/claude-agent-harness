@@ -13,7 +13,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
 
-This repo's triage label vocabulary is **not** the upstream canonical set — see [triage-labels.md](./triage-labels.md) for the full taxonomy (`hitl`/`afk`, `type::*`, `workflow::*`, and context labels) before applying or querying labels.
+This repo's triage label vocabulary is the upstream canonical set (`needs-triage`/`needs-info`/`ready-for-agent`/`ready-for-human`/`wontfix`), plus two context labels `to-spec`/`to-tickets`/`implement` apply on top (`epic::<slug>`, `blocked-by-ticket`) that `triage` itself doesn't manage — see [triage-labels.md](./triage-labels.md) before applying or querying labels.
 
 ## Pull requests as a triage surface
 
