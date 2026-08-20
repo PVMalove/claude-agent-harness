@@ -1,7 +1,7 @@
 repository: https://github.com/mattpocock/skills.git
-revision: 9c9f36ccd3995266cd675468af71639c8dde1ec5
-source_ref: refs/heads/main
-snapshot_date: 2026-08-18
+revision: 6acc160e4e0cd062dbbbd7a1b26ae92855edf07e
+source_ref: refs/tags/v1.2.3
+snapshot_date: 2026-08-20
 license: MIT
 selection_manifest: third_party/mattpocock-skills/plugin.json
 content_mode: byte-for-byte
