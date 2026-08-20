@@ -6,7 +6,9 @@ disable-model-invocation: true
 
 Implement the work described by the user in the spec or tickets.
 
-If the invocation or immediate context names a specific tracker ticket (an issue number, URL, or a `.scratch/<feature>/issues/NN-*.md` path), check it before starting. If it carries `blocked-by-ticket` (see `docs/agents/triage-labels.md`), check its blockers using this repo's tracker (native GitHub/GitLab dependency links, or the `Blocked by:`/`**Blocked by:**` field — see `docs/agents/issue-tracker.md`). If every blocker is closed/resolved, remove `blocked-by-ticket` and apply `ready-for-agent` (or the equivalent `**Status:**` line for a local ticket file), then proceed. If any blocker is still open, stop and tell the user which ones — don't start the work. Skip this check entirely when no ticket reference is given.
+If the invocation or immediate context names a specific tracker ticket (an issue number, URL, or a `.scratch/<feature>/issues/NN-*.md` path), check it before starting. If it carries `blocked-by-ticket` (see `docs/agents/triage-labels.md`), check its blockers using this repo's tracker (native GitHub/GitLab dependency links, or the `Blocked by:`/`**Blocked by:**` field — see `docs/agents/issue-tracker.md`). If every blocker is closed/resolved, remove `blocked-by-ticket` and apply `ready-for-agent` (or the equivalent `**Status:**` line for a local ticket file), then proceed. If any blocker is still open, stop and tell the user which ones — don't start the work.
+
+If no ticket reference is given: when this repo defines a git workflow doc (e.g. `docs/agents/git-workflow.md`) with an "Issue First" rule, stop and ask the user to name an existing ticket or run `/to-spec`/`/to-tickets` first — don't start the work. Otherwise, skip this check entirely.
 
 Use /tdd where possible, at pre-agreed seams.
 
