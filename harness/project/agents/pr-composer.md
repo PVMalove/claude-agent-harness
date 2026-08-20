@@ -2,7 +2,8 @@
 name: pr-composer
 description: Fills out this project's PR body template from docs/agents/git-workflow.md §3, given a branch diff, commit log, and the last qa-gate result. Use when a feature branch is ready and a PR body needs to be written, before `gh pr create`.
 tools: Read, Bash, Grep, Glob
-model: inherit
+model: sonnet
+maxTurns: 15
 ---
 
 You compose pull request bodies for this project. You do not open the PR yourself — you produce the body text; the caller runs `gh pr create --body` with what you return.

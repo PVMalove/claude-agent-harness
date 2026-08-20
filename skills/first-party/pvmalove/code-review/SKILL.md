@@ -57,19 +57,19 @@ Each smell reads _what it is_ → _how to fix_; match it against the diff:
 
 ### 4. Spawn both sub-agents in parallel
 
-**Standards sub-agent prompt** — include:
+Invoke both via the `Agent` tool with `subagent_type: "code-review-standards"` and `subagent_type: "code-review-spec"` (defined in `.claude/agents/`) — their own frontmatter fixes the reporting brief, tools, and a turn cap; you only supply the per-run task in `prompt`.
+
+**`code-review-standards` prompt** — include:
 
 - The full diff command and commit list.
 - The list of standards-source files you found in step 3, **plus the smell baseline from step 3** pasted in full — the sub-agent has no other access to it.
-- The brief: "Report — per file/hunk where relevant — (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline smell you spot: name it and quote the hunk. Distinguish hard violations from judgement calls — documented-standard breaches can be hard, but baseline smells are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling enforces. Under 400 words."
 
-**Spec sub-agent prompt** — include:
+**`code-review-spec` prompt** — include:
 
 - The diff command and commit list.
 - The path or fetched contents of the spec.
-- The brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
 
-If the spec is missing, skip the Spec sub-agent and note this in the final report.
+If the spec is missing, skip the `code-review-spec` sub-agent and note this in the final report.
 
 After launching both, stop — do not poll, schedule a wakeup, or launch another agent whose purpose is only to wait. The harness delivers each sub-agent's result automatically as a notification in a later turn.
 

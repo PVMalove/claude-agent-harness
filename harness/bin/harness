@@ -326,7 +326,7 @@ def _copy_if_absent(source: Path, target: Path, *, executable: bool = False) -> 
 
 def scaffold_pvmalove_extras(repo: Path, args: argparse.Namespace) -> list[str]:
     """Non-skill project files pvmalove-suite ships alongside the managed skill
-    snapshot: docs, hooks, a Claude Code subagent, a rule, and .harness/project.json.
+    snapshot: docs, hooks, Claude Code subagents, a rule, and .harness/project.json.
     Written once if absent, like AGENTS.md/CLAUDE.md above - not tracked in
     harness.lock, never touched by update. See CONTEXT.md and docs/adr/0003.
 
@@ -352,10 +352,10 @@ def scaffold_pvmalove_extras(repo: Path, args: argparse.Namespace) -> list[str]:
     if result:
         written.append(result)
 
-    agent = PROJECT_TEMPLATE_DIR / "agents/pr-composer.md"
-    result = _copy_if_absent(agent, repo / ".claude/agents" / agent.name)
-    if result:
-        written.append(result)
+    for agent in sorted((PROJECT_TEMPLATE_DIR / "agents").glob("*.md")):
+        result = _copy_if_absent(agent, repo / ".claude/agents" / agent.name)
+        if result:
+            written.append(result)
 
     settings = repo / ".claude/settings.local.json"
     if not settings.exists():
