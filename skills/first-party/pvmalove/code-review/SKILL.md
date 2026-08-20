@@ -71,6 +71,8 @@ Each smell reads _what it is_ → _how to fix_; match it against the diff:
 
 If the spec is missing, skip the Spec sub-agent and note this in the final report.
 
+After launching both, stop — do not poll, schedule a wakeup, or launch another agent whose purpose is only to wait. The harness delivers each sub-agent's result automatically as a notification in a later turn.
+
 ### 5. Aggregate
 
 Present the two reports under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Do **not** merge or rerank findings — the two axes are deliberately separate (see _Why two axes_).
