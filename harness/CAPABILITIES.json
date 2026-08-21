@@ -40,14 +40,15 @@
     ]
   },
   "pvmalove-suite": {
-    "description": "Личная сборка поверх mattpocock-suite: 5 first-party переопределений (эпик- и blocked-by-ticket-лейблы в to-spec/to-tickets/implement поверх канонической triage-таксономии, обязательная PR-пауза без авто-мёрджа, настраиваемый язык вывода code-review) и один новый скилл (qa-gate, конфиг-драйвен через .harness/project.json). Выбирается вместо mattpocock-suite, не вместе с ней — расширяет её через extends/overrides/additions вместо дублирования списка.",
+    "description": "Личная сборка поверх mattpocock-suite: 6 first-party переопределений (эпик- и blocked-by-ticket-лейблы в to-spec/to-tickets/implement поверх канонической triage-таксономии, обязательная PR-пауза без авто-мёрджа, настраиваемый язык вывода code-review, вопросы grilling через AskUserQuestion вместо простого текста) и один новый скилл (qa-gate, конфиг-драйвен через .harness/project.json). Выбирается вместо mattpocock-suite, не вместе с ней — расширяет её через extends/overrides/additions вместо дублирования списка.",
     "extends": "mattpocock-suite",
     "overrides": {
       "to-spec": "first-party/pvmalove/to-spec",
       "to-tickets": "first-party/pvmalove/to-tickets",
       "implement": "first-party/pvmalove/implement",
       "ask-matt": "first-party/pvmalove/ask-matt",
-      "code-review": "first-party/pvmalove/code-review"
+      "code-review": "first-party/pvmalove/code-review",
+      "grilling": "first-party/pvmalove/grilling"
     },
     "additions": [
       "first-party/pvmalove/qa-gate"
