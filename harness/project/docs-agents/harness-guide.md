@@ -8,9 +8,22 @@
 
 ## 0. Установка и подключение
 
-Устанавливается из [PVMalove/claude-agent-harness](https://github.com/PVMalove/claude-agent-harness) в любой git-репозиторий одной командой — копируется в целевой проект и дальше живёт там независимо; апдейты подтягиваются отдельной командой (ниже), не автоматически.
+### Шаг 1 — склонировать сам харнесс
 
-**Харнесс проекта** — личная сборка `pvmalove-suite` (эта, с локальными кастомизациями раздела 7):
+Харнесс — не зависимость целевого проекта: его CLI работает НАД целевым репозиторием по пути, копируя туда всё нужное. Сначала клонируете сам инструмент откуда угодно на диске:
+
+```bash
+git clone https://github.com/PVMalove/claude-agent-harness.git
+cd claude-agent-harness
+```
+
+После установки в целевой проект этот клон можно удалить — в проекте уже свой независимый снимок (`.harness/`), апдейты подтягиваются отдельной командой (`update`, ниже), не автоматически.
+
+### Шаг 2 — команды CLI
+
+Все команды — `harness/bin/harness <command> <repo> [флаги]`, где `<repo>` — путь к целевому проекту (может быть где угодно на диске, не обязательно текущая директория). Ниже — все шесть подкоманд, которые умеет CLI.
+
+**`init` — первая установка в проект, где харнесса ещё нет.** Требует, чтобы `<repo>` уже был git-репозиторием; падает с «already exists; use update», если `.harness/harness.lock` уже есть.
 
 ```bash
 python3 harness/bin/harness init /path/to/repository \
@@ -23,7 +36,7 @@ python3 harness/bin/harness init /path/to/repository \
   --qa-gate-command "make test"
 ```
 
-Windows (PowerShell):
+Windows (PowerShell) — та же схема для всех команд ниже: `python` вместо `python3`, обратная кавычка `` ` `` вместо `\` для переноса строк, `C:\path\to\repository` вместо `/path/to/repository`:
 
 ```powershell
 python harness\bin\harness init C:\path\to\repository `
@@ -36,11 +49,50 @@ python harness\bin\harness init C:\path\to\repository `
   --qa-gate-command "make test"
 ```
 
-Флаги `--language`/`--base-branch`/`--qa-gate-command` можно опустить — `harness init` спросит их интерактивно. `--stack`/`--project-type` описывают целевой проект, не сам харнесс. Чистый апстрим без личных доработок — та же команда с `--capability mattpocock-suite`.
+- `--project-type`/`--stack` — чисто информационные, идут в `AGENTS.md`, на поведение CLI не влияют (`--stack` повторяем).
+- `--capability` — повторяем; без флага вообще — `project-foundation` (5 лёгких скиллов на любой тип проекта, не только software: `grilling`, `handoff`, `writing-for-agents`, `research`, `domain-modeling`). Для инженерного пайплайна — `mattpocock-suite` (чистый апстрим, 25 скиллов) или `pvmalove-suite` (эта сборка, расширяет `mattpocock-suite`, раздел 7); указывать обе сразу CLI не даст.
+- `--base-branch` — базовая ветка репозитория (по умолчанию `main`).
+- `--language`/`--pr-base-branch`/`--branch-pattern`/`--qa-gate-command` — читает только `pvmalove-suite`, пишутся в `.harness/project.json`; можно опустить — `init` спросит их интерактивно. `--qa-gate-command` повторяем, порядок сохраняется (раздел 6).
 
-При выборе `pvmalove-suite` `harness init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{git-workflow,worktrees,artifacts,issue-tracker,triage-labels}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json`, `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md`, и `.harness/project.json` (язык вывода, паттерн имени ветки, база для PR, команды `qa-gate`).
+При выборе `pvmalove-suite` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{git-workflow,worktrees,artifacts,issue-tracker,triage-labels}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json`, `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md`, и само `.harness/project.json`.
 
-**Глобальный слой** — `start-project` и общий кросс-проектный контракт безопасности, не персонализирован, ставится отдельно и один раз на машину:
+**`adopt` — установка в проект, где уже есть свои (не харнесс-управляемые) скиллы под теми же именами.** Не требует пустого `.harness/` (в отличие от `init`) — сохраняет все проектные скиллы, которых нет в выбранной capability; если что-то из выбранной capability совпадает по имени с уже существующим — падает со списком конфликтов, если не передан `--replace-conflicts` (тогда конфликтующие заменяются, остальное не тронуто). Те же `--capability`/pvmalove-флаги, что у `init`:
+
+```bash
+python3 harness/bin/harness adopt /path/to/repository --capability pvmalove-suite --replace-conflicts
+```
+
+**`diff` — сверить репозиторий с залоченным снимком:**
+
+```bash
+python3 harness/bin/harness diff /path/to/repository [--json]
+```
+
+Код выхода `0`, если чисто, `1` — если есть дрейф (локальные правки в managed-файлах, конфликты). `--json` — машиночитаемый вывод вместо человекочитаемого отчёта.
+
+**`update` — подтянуть новую версию харнесса поверх существующей установки** (апстрим сдвинулся, или изменились первопартийные скиллы):
+
+```bash
+python3 harness/bin/harness update /path/to/repository --capability pvmalove-suite [--force]
+```
+
+Без `--force` отказывается перезаписывать локально изменённые файлы — сначала покажет их (как `diff`) и остановится. С `--force` перезаписывает, включая удаление файлов, которых больше нет в текущей версии выбранной capability.
+
+**`health` — диагностика текущей установки:**
+
+```bash
+python3 harness/bin/harness health /path/to/repository
+```
+
+Проверяет: есть ли `.harness/harness.lock`, есть ли `AGENTS.md`, что discovery-symlink'и не битые и резолвятся, и (если lock есть) что снимок скиллов не разошёлся с диском. Печатает `ERROR ...` построчно и код `1` при проблеме, иначе `healthy: <repo>` и `0`.
+
+**`list` — какие скиллы сейчас установлены** (построчно, по алфавиту):
+
+```bash
+python3 harness/bin/harness list /path/to/repository
+```
+
+**Глобальный слой** — отдельно от `harness` CLI, `start-project` и общий кросс-проектный контракт безопасности, не персонализирован, ставится отдельно и один раз на машину:
 
 ```bash
 bin/install-global --target-home "$HOME" --runtime claude
@@ -48,22 +100,14 @@ bin/install-global --target-home "$HOME" --runtime claude
 
 `bin/install-global` — bash-скрипт, в PowerShell/cmd напрямую не запускается; на Windows — через Git Bash (входит в Git for Windows) или WSL.
 
-**Обновление и диагностика** — по мере того как апстрим или личные скиллы меняются:
-
-```bash
-python3 harness/bin/harness diff /path/to/repository
-python3 harness/bin/harness update /path/to/repository --capability pvmalove-suite
-python3 harness/bin/harness health /path/to/repository
-```
-
-**Как это подключено.** Скиллы физически лежат в `.harness/skills/*/SKILL.md` (управляются `.harness/harness.lock` — хэши файлов, версия, `source_revision`). Claude Code, Codex и другие рантаймы находят их через symlink'и в корне репозитория:
+**Как это подключено.** Скиллы физически лежат в `.harness/skills/*/SKILL.md` (управляются `.harness/harness.lock` — хэши файлов, версия, `source_revision`). Claude Code и Codex находят их через symlink'и в корне репозитория:
 
 ```text
 .agents/skills  -> .harness/skills
 .claude/skills  -> .harness/skills
 ```
 
-Если после клонирования репозитория скиллы не видны (`/implement`, `/triage` и т.д. отсутствуют в списке) — значит либо нет `AGENTS.md`, либо сломаны эти symlink'и. Диагностика и починка — `harness health <repo>` / `harness update` из инструмента, которым был развёрнут этот harness (не пересоздавайте symlink'и вручную — относительный таргет должен резолвиться средствами конкретной ОС, `harness health` это проверяет, а не только «файл похож на симлинк»).
+Если после клонирования репозитория скиллы не видны (`/implement`, `/triage` и т.д. отсутствуют в списке) — значит либо нет `AGENTS.md`, либо сломаны эти symlink'и. Диагностика и починка — `harness health <repo>` / `harness update` из инструмента, которым был развёрнут этот harness (не пересоздавайте symlink'и вручную — относительный таргет должен резолвиться средствами конкретной ОС, `harness health` это проверяет, а не только «файл похож на симлинк»). Полная картина по остальным рантаймам (Kimi Code, OpenCode, Hermes Agent — таблица discovery-путей, разница user/project/catalog scope, известная гонка OpenCode на двух discovery-корнях сразу) — в `docs/runtime-discovery.md` [репозитория харнесса](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/runtime-discovery.md) — этот файл не шаблонизируется в проекты, живёт только там, поэтому ссылка сюда абсолютная, а не относительная.
 
 ---
 
