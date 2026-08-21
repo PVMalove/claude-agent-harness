@@ -13,5 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Make script executable
+        run: chmod +x scripts/verify
       - name: Verify harness and clean-room install
         run: scripts/verify
