@@ -19,7 +19,7 @@ You must execute this skill in two distinct phases. Do NOT publish anything to t
 2. **Explore the Codebase (Optional):** Use the project's domain glossary. Look for prefactoring opportunities ("Make the change easy, then make the easy change").
 3. **Draft Vertical Slices:** Break the work into **tracer bullet** tickets.
     - *Vertical Slices:* Cut a narrow but COMPLETE path through every layer (schema, API, UI, tests). Must be demoable/verifiable on its own and fit in a single context window.
-    - *Wide Refactors (Exception):* If a change has a massive blast radius (e.g., renaming a shared column), use **expand-contract** instead of vertical slicing. Sequence as: Expand $\rightarrow$ Migrate (in batches) $\rightarrow$ Contract.
+    - *Wide Refactors (Exception):* If a change has a massive blast radius (e.g., renaming a shared column), use **expand-contract** instead of vertical slicing. Sequence as: Expand → Migrate (in batches) → Contract.
     - *Blocking Edges:* Give each ticket its blocking edges (which other tickets must complete first).
     - *Human Time Estimate:* Estimate the rough time required for a human developer to complete this slice (e.g., "2 hours", "1 day").
 4. **STOP AND ASK (Quiz the User):** Present the proposed breakdown as a numbered list. For each ticket, show:
@@ -32,10 +32,10 @@ You must execute this skill in two distinct phases. Do NOT publish anything to t
 
 ### Phase 2: Publishing & Summarizing (After Approval)
 1. **Publish to the Tracker:** The method depends on the configured tracker:
-    - **Local files:** Write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md` (01, 02...). Use `<local-ticket-template>`. Set `**Workflow:**` to `workflow::blocked` if it has blockers, otherwise `workflow::ready`. Set `**Execution:**` to `hitl` or `afk`. Add `**Task report:** required`. `/implement` finds the next ticket by reading each file's `**Workflow:**` field — a purely linear chain resolves top to bottom.
+    - **Local files:** Write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md` (01, 02...). Use `<local-ticket-template>`. Set `**Workflow:**` to `workflow::blocked` if it has blockers, otherwise `workflow::ready`. Set `**Execution:**` to `hitl` or `afk` per your best judgment of the ticket (see `docs/agents/triage-labels.md`). Add `**Task report:** required` unless told to skip it (omit the line entirely if not required). `/implement` finds the next ticket by reading each file's `**Workflow:**` field — a purely linear chain resolves top to bottom.
     - **GitHub / Real Tracker:**
         - Publish one issue per ticket in dependency order using `gh issue create --body-file <path>`. **CRITICAL:** Do NOT use inline `--body` heredoc, as it breaks bash quoting.
-        - Apply labels: `bug`/`enhancement`, `workflow::ready` (or `workflow::blocked` if gated by another ticket in this batch), `hitl`/`afk`, and `task-report::required`.
+        - Apply labels (see `docs/agents/triage-labels.md` for the full taxonomy): `bug`/`enhancement`, `workflow::ready` (or `workflow::blocked` if gated by another ticket in this batch), `hitl`/`afk`, and `task-report::required` unless told to skip it.
         - *Grouping:* Link every ticket to the parent epic as a **native sub-issue**. Do NOT use `epic::<slug>` labels.
         - *Local Mirror:* If the source was an epic spec in `docs/tasks/`, move it to `docs/tasks/issue-<epic-id>-<epic-slug>/`. Save each published ticket's issue body to this folder as `issue-<ID>-<slug>.md`.
         - *Frontier:* Don't trace `Blocked by` by hand to find what's takeable — query it, the same fields and mechanism as `/wayfinder`'s frontier query (`docs/agents/issue-tracker.md#wayfinding-operations`), scoped to the epic's sub-issues instead of the map's children. `/implement` runs this same query itself when handed the epic instead of a specific ticket.
@@ -59,7 +59,7 @@ You must execute this skill in two distinct phases. Do NOT publish anything to t
 **Category:** bug / enhancement
 **Workflow:** workflow::ready (or workflow::blocked)
 **Execution:** hitl / afk
-**Task report:** required
+**Task report:** required (omit the line entirely if not required)
 
 - [ ] Acceptance criterion 1
 - [ ] Acceptance criterion 2
