@@ -30,13 +30,15 @@
 
 ## Установка
 
-Глобальный слой (не персонализирован, как в апстриме):
+Глобальный слой — `bin/install-global`, не персонализирован, ставится отдельно и один раз на машину (на пользователя `~`, не на конкретный проект). Поддерживает пять рантаймов, `--runtime` повторяем:
 
 ```bash
-bin/install-global --target-home "$HOME" --runtime claude
+bin/install-global --target-home "$HOME" --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
 ```
 
 `bin/install-global` — bash-скрипт (`#!/usr/bin/env bash`, использует bash-массивы), нативно в PowerShell/cmd не запускается. На Windows выполняйте эту команду как есть, но в Git Bash (входит в Git for Windows) или WSL — не в PowerShell.
+
+Флаги `--check` (ничего не пишет, только сверяет), `--replace-conflicts` (бэкапит перед заменой) и `--skills-only` (без instruction-файла, только `start-project`) — полный разбор, что именно ставится каждому из пяти рантаймов и куда, в [docs/agents/harness-guide.md](./docs/agents/harness-guide.md), раздел 0.
 
 Харнесс проекта — личная сборка:
 ```bash
@@ -66,7 +68,13 @@ python harness\bin\harness init C:\path\to\repository `
 
 Если PowerShell отвечает `python: The term 'python' is not recognized...` — сначала проверьте `[Environment]::GetEnvironmentVariable('Path','User')`: если Python там уже есть, но `Get-Command python,py` всё равно ничего не находит — откройте новое окно терминала (переменные окружения читаются один раз при старте процесса, старое окно их не подхватит само). Если Python в PATH действительно нет — установите его, либо вызывайте по полному пути, например `& "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" harness\bin\harness init ...`.
 
-Чистый апстрим без личных доработок — то же самое с `--capability mattpocock-suite`.
+Чистый апстрим без личных доработок — то же самое с `--capability mattpocock-suite`. Без `--capability` вообще — по умолчанию `project-foundation`, 5 лёгких скиллов на любой тип проекта, не только software.
+
+Проект, где под именами выбранной capability уже лежат свои (не харнесс-управляемые) скиллы — `adopt` вместо `init`: сохраняет всё остальное, конфликтующие имена без `--replace-conflicts` просто перечисляет и падает.
+
+```bash
+python3 harness/bin/harness adopt /path/to/repository --capability pvmalove-suite --replace-conflicts
+```
 
 Обновление и диагностика:
 
@@ -74,6 +82,7 @@ python harness\bin\harness init C:\path\to\repository `
 python3 harness/bin/harness diff /path/to/repository
 python3 harness/bin/harness update /path/to/repository --capability pvmalove-suite
 python3 harness/bin/harness health /path/to/repository
+python3 harness/bin/harness list /path/to/repository
 ```
 
 Windows (PowerShell):
@@ -81,6 +90,7 @@ Windows (PowerShell):
 python harness\bin\harness diff C:\path\to\repository
 python harness\bin\harness update C:\path\to\repository --capability pvmalove-suite
 python harness\bin\harness health C:\path\to\repository
+python harness\bin\harness list C:\path\to\repository
 ```
 
 ## Политика репозитория
