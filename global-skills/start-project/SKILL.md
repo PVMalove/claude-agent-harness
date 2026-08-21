@@ -1,6 +1,6 @@
 ---
 name: start-project
-description: Start a new project from an idea or create, audit, or update its self-contained agent harness. Use when the user wants to shape or initialize a software, content, research, operations, personal, or other project, decide when it needs a repository, or install or revise a project harness. Ordinary work inside an already-harnessed project does not invoke this skill.
+description: Start a new project from an idea or create, audit, or update its self-contained agent harness. Use when the user wants to shape or initialize a software, content, research, operations, personal, or other project, decide when it needs a repository, or install or revise a project harness. Ordinary work inside an already-harnessed project does not invoke this skill; a repository with substantial existing code and conventions but no harness yet is better served by `integrate-project`'s deeper audit.
 ---
 
 # Start Project
@@ -18,7 +18,9 @@ incomplete instead of guessing another installation.
 ## Shape
 
 1. Establish whether the user has an idea, a seed directory, or an existing repository. Inspect
-   existing files before asking questions.
+   existing files before asking questions. A repository with substantial existing code and
+   conventions but no harness yet is `integrate-project`'s dedicated audit, not this generic path —
+   hand off to it rather than deriving facts thinly here.
 2. Classify the project's primary work as software, content, research/knowledge, operations,
    personal, or another explicit domain. Classification selects workflows; it does not constrain
    what the project may become.

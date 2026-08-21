@@ -51,7 +51,7 @@ TARGET_HOME="$(cd "$TARGET_HOME" 2>/dev/null && pwd -P)" || {
 
 KIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 PROFILE="$KIT_ROOT/global/AGENTS.md"
-ENTRY_SKILLS=(start-project)
+ENTRY_SKILLS=(start-project integrate-project)
 RETIRED_ENTRY_SKILLS=(project-harness-bootstrap skill-library)
 BACKUP_ROOT=""
 

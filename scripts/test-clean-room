@@ -127,6 +127,9 @@ done
 [ -L "$TARGET_HOME/.agents/skills/start-project" ]
 [ -L "$TARGET_HOME/.claude/skills/start-project" ]
 [ -L "$TARGET_HOME/.hermes/skills/start-project" ]
+[ -L "$TARGET_HOME/.agents/skills/integrate-project" ]
+[ -L "$TARGET_HOME/.claude/skills/integrate-project" ]
+[ -L "$TARGET_HOME/.hermes/skills/integrate-project" ]
 [ ! -e "$TARGET_HOME/.agents/skills/project-harness-bootstrap" ]
 [ ! -L "$TARGET_HOME/.agents/skills/project-harness-bootstrap" ]
 [ ! -e "$TARGET_HOME/.hermes/skills/skill-library" ]
@@ -147,6 +150,8 @@ mkdir -p "$OVERLAY_HOME"
 [ ! -e "$OVERLAY_HOME/.codex/AGENTS.md" ]
 [ -L "$OVERLAY_HOME/.agents/skills/start-project" ]
 [ -L "$OVERLAY_HOME/.hermes/skills/start-project" ]
+[ -L "$OVERLAY_HOME/.agents/skills/integrate-project" ]
+[ -L "$OVERLAY_HOME/.hermes/skills/integrate-project" ]
 
 LEGACY="$TEST_ROOT/legacy"
 mkdir -p "$LEGACY/.harness/skills/project-only" "$LEGACY/.harness/skills/ask-matt"
