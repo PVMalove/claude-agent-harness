@@ -50,8 +50,7 @@ explicitly requests one.
    - no additional package merely because it is available.
 3. When the user asks `start-project` to select suitable recurring workflows, treat that request as
    authorization to consult any installed personal or organization overlay for catalog metadata
-   only; do not require a second skill invocation. For Kirill's private overlay invoke
-   `sachkov-toolbox` with project facts and recurring activities. Do not open personal knowledge,
+   only; do not require a second skill invocation. Do not open personal knowledge,
    tasks, notes, or secrets as part of catalog selection. Ask only when including a private package
    in a public target creates a real provenance or licensing decision.
 4. For a new harness run:
