@@ -10,7 +10,7 @@ catalog into every session.
 | `grilling` | `skills/first-party/pvmalove/grilling` | Grill the user relentlessly about a plan, decision, or idea to stress-test their thinking. Triggered when the user wants to validate a concept or uses 'grill' trigger phrases. |
 | `implement` | `skills/first-party/pvmalove/implement` | Implement a piece of work based on a spec or set of tickets. |
 | `qa-gate` | `skills/first-party/pvmalove/qa-gate` | Run this project's full local quality gate (lint/typecheck/test commands from .harness/project.json) and report pass/fail. Use before opening a PR, or whenever asked to run the full check/test suite. |
-| `to-spec` | `skills/first-party/pvmalove/to-spec` | Turn the current conversation into a spec and publish it to the project issue tracker — no interview, just synthesis of what you've already discussed. |
+| `to-spec` | `skills/first-party/pvmalove/to-spec` | Turn the current conversation into a spec and publish it to the project issue tracker. No interview, just synthesis of what you've already discussed. |
 | `to-tickets` | `skills/first-party/pvmalove/to-tickets` | Break a plan, spec, or the current conversation into a set of tracer-bullet tickets, each declaring its blocking edges, published to the configured tracker — edges as text in one file per ticket locally, or native blocking links on a real tracker. |
 | `triage` | `skills/first-party/pvmalove/triage` | Move issues and external PRs through a state machine of triage roles — categorise, verify, grill if needed, and write agent-ready briefs. |
 | `ask-matt` | `skills/vendor/mattpocock/engineering/ask-matt` | Ask which skill or flow fits your situation. A router over the skills in this repo. |
