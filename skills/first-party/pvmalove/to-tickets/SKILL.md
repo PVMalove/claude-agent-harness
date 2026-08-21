@@ -66,6 +66,16 @@ Work the **frontier**: for a GitHub/GitLab decomposition, query it instead of tr
 
 Do NOT close the parent/epic issue or rewrite its existing content — the one exception is appending a short list of the subtask numbers this step created, so the epic ↔ subtask link is visible from the parent's side too, not just from each subtask's "Blocked by"/"Parent" section.
 
+### 6. Summarize the batch
+
+Once every ticket is published, show a final table so the user doesn't need to open each one to see what's next:
+
+| Ticket | What to build |
+|---|---|
+| <number/link, or local file path> | <one-line description> |
+
+Don't write the "What to build" column yourself. Dispatch a single `Agent` call with `model: haiku` — deliberately the cheapest available model, since this is pure summarization of ticket bodies you already drafted, not work that needs strong reasoning — passing it every ticket's title and body at once, asking for one concise sentence per ticket. Only this description text goes through the cheap model; everything else in this skill (exploration, drafting, blocking edges, publishing) stays on your own model.
+
 <local-ticket-template>
 
 # <NN> — <Ticket title>
