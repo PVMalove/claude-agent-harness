@@ -23,14 +23,14 @@ You must execute this skill in two distinct phases to ensure the user agrees wit
 
 ### Phase 2: Drafting & Publishing (After User Approval)
 1. **Draft the File:** Write the spec using the `<spec-template>` below. Save it first to `docs/tasks/`.
-    - *Naming convention:* If the issue ID is known, use it. If not, use a descriptive slug (e.g., `docs/tasks/add-user-auth.md`) and rename the file later once the ID is generated.
+    - *Naming convention:* If the issue ID is known, use it. If not, use a descriptive slug (e.g., `docs/tasks/add-user-auth.md`) and rename the file later once the ID is generated — see `docs/agents/artifacts.md` for the full convention, including the epic-folder grouping.
 2. **Publish to Tracker:** Publish the issue using the CLI: `gh issue create --body-file <path>`.
     - **CRITICAL:** Do NOT use an inline `--body` heredoc. Spec bodies contain characters (nested quotes, backticks, etc.) that break heredoc quoting. Always use `--body-file`.
-3. **Apply Labels:** This published issue acts as the feature's **epic**. Apply the following labels:
+3. **Apply Labels:** This published issue acts as the feature's **epic**. Apply the following labels (see `docs/agents/triage-labels.md` for the full taxonomy):
     - `bug` OR `enhancement`
     - `workflow::specs` (Do NOT use `workflow::ready` as it requires decomposition first).
     - `task-report::required` (unless told to skip).
-    - *Note:* Do NOT create ad-hoc `epic::<slug>` labels. `/to-tickets` will handle linking sub-tasks natively later.
+    - *Note:* Do NOT create ad-hoc `epic::<slug>` labels. `/to-tickets` will handle linking sub-tasks natively later, as GitHub sub-issues — see `docs/agents/issue-tracker.md#wayfinding-operations` for the mechanism.
 
 ---
 
