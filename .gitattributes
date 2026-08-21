@@ -2,3 +2,11 @@
 # — must never be line-ending-converted, regardless of a clone's core.autocrlf.
 skills/vendor/** -text
 third_party/mattpocock-skills/** -text
+
+# Entrypoint/hook scripts execute directly via shebang on Linux/macOS bash; CRLF
+# breaks `set -o pipefail` and other builtins immediately on checkout there. Force
+# LF regardless of a clone's core.autocrlf.
+bin/* text eol=lf
+scripts/* text eol=lf
+harness/bin/harness text eol=lf
+harness/project/hooks/*.sh text eol=lf

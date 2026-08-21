@@ -36,7 +36,7 @@
 bin/install-global --target-home "$HOME" --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
 ```
 
-`bin/install-global` — bash-скрипт (`#!/usr/bin/env bash`, использует bash-массивы), нативно в PowerShell/cmd не запускается. На Windows выполняйте эту команду как есть, но в Git Bash (входит в Git for Windows) или WSL — не в PowerShell.
+`bin/install-global` — bash-скрипт (`#!/usr/bin/env bash`, использует bash-массивы), нативно в PowerShell/cmd не запускается. На Windows выполняйте эту команду как есть, но в Git Bash (входит в Git for Windows) или WSL — не в PowerShell. В Git Bash сам форсирует `MSYS=winsymlinks:nativestrict` (настоящие символьные ссылки вместо тихой подмены копией/junction'ом) — нужен включённый Developer Mode или права администратора, иначе команда явно упадёт на создании линка.
 
 Флаги `--check` (ничего не пишет, только сверяет), `--replace-conflicts` (бэкапит перед заменой) и `--skills-only` (без instruction-файла, только `start-project`) — полный разбор, что именно ставится каждому из пяти рантаймов и куда, в [docs/agents/harness-guide.md](./docs/agents/harness-guide.md), раздел 0.
 
@@ -81,6 +81,8 @@ python3 harness/bin/harness adopt /path/to/repository --capability pvmalove-suit
 ```bash
 python3 harness/bin/harness diff /path/to/repository
 python3 harness/bin/harness update /path/to/repository --capability pvmalove-suite
+python3 harness/bin/harness registry /path/to/repository
+python3 harness/bin/harness lock-project-skills /path/to/repository
 python3 harness/bin/harness health /path/to/repository
 python3 harness/bin/harness list /path/to/repository
 ```
@@ -89,9 +91,21 @@ Windows (PowerShell):
 ```powershell
 python harness\bin\harness diff C:\path\to\repository
 python harness\bin\harness update C:\path\to\repository --capability pvmalove-suite
+python harness\bin\harness registry C:\path\to\repository
+python harness\bin\harness lock-project-skills C:\path\to\repository
 python harness\bin\harness health C:\path\to\repository
 python harness\bin\harness list C:\path\to\repository
 ```
+
+`harness init`/`adopt`/`update` всегда пишут в проект компактный `.harness/skills/REGISTRY.md` —
+это фоллбек-обнаружение для рантаймов без нативного project-скилл-рута (сейчас — Hermes Agent).
+`harness registry` перегенерирует его вручную. Скиллы, которые лежат в `.harness/skills` у самого
+проекта и не пришли ни из одной выбранной capability, `harness health` требует подтвердить через
+`harness lock-project-skills` — команда фиксирует их sha256 в `.harness/overlays/project-local.lock`
+(хэширует только git-видимые файлы, gitignore'нутые рантайм-артефакты вроде `node_modules` в лок не
+попадают). Нативные MCP/plugin/hook/runtime-конфиги (`.mcp.json`, `.claude/settings.json` и т.п.)
+таким же образом инвентаризируются в `.harness/integrations.json` — путь, sha256, целевые рантаймы,
+текстовое verify-действие и имена секретных env-переменных, но никогда сами секреты.
 
 ## Политика репозитория
 

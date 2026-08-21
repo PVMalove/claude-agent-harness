@@ -21,7 +21,7 @@ cd claude-agent-harness
 
 ### Шаг 2 — команды CLI
 
-Все команды — `harness/bin/harness <command> <repo> [флаги]`, где `<repo>` — путь к целевому проекту (может быть где угодно на диске, не обязательно текущая директория). Ниже — все шесть подкоманд, которые умеет CLI.
+Все команды — `harness/bin/harness <command> <repo> [флаги]`, где `<repo>` — путь к целевому проекту (может быть где угодно на диске, не обязательно текущая директория). Ниже — все восемь подкоманд, которые умеет CLI.
 
 **`init` — первая установка в проект, где харнесса ещё нет.** Требует, чтобы `<repo>` уже был git-репозиторием; падает с «already exists; use update», если `.harness/harness.lock` уже есть.
 
@@ -54,7 +54,7 @@ python harness\bin\harness init C:\path\to\repository `
 - `--base-branch` — базовая ветка репозитория (по умолчанию `main`).
 - `--language`/`--pr-base-branch`/`--branch-pattern`/`--qa-gate-command` — читает только `pvmalove-suite`, пишутся в `.harness/project.json`; можно опустить — `init` спросит их интерактивно. `--qa-gate-command` повторяем, порядок сохраняется (раздел 6).
 
-При выборе `pvmalove-suite` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{git-workflow,worktrees,artifacts,issue-tracker,triage-labels}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json`, `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md`, и само `.harness/project.json`.
+При выборе `pvmalove-suite` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{git-workflow,worktrees,artifacts,issue-tracker,triage-labels}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`, см. `lock-project-skills` ниже), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md`, и само `.harness/project.json`.
 
 **`adopt` — установка в проект, где уже есть свои (не харнесс-управляемые) скиллы под теми же именами.** Не требует пустого `.harness/` (в отличие от `init`) — сохраняет все проектные скиллы, которых нет в выбранной capability; если что-то из выбранной capability совпадает по имени с уже существующим — падает со списком конфликтов, если не передан `--replace-conflicts` (тогда конфликтующие заменяются, остальное не тронуто). Те же `--capability`/pvmalove-флаги, что у `init`:
 
@@ -76,7 +76,23 @@ python3 harness/bin/harness diff /path/to/repository [--json]
 python3 harness/bin/harness update /path/to/repository --capability pvmalove-suite [--force]
 ```
 
-Без `--force` отказывается перезаписывать локально изменённые файлы — сначала покажет их (как `diff`) и остановится. С `--force` перезаписывает, включая удаление файлов, которых больше нет в текущей версии выбранной capability.
+Без `--force` отказывается перезаписывать локально изменённые файлы — сначала покажет их (как `diff`) и остановится. С `--force` перезаписывает, включая удаление файлов, которых больше нет в текущей версии выбранной capability. `.harness/overlays/project-local.lock` и `.harness/integrations.json` (ниже) `update` не проверяет и не трогает — это отдельная от capability-снимка подсистема, `update` физически не пишет в эти файлы.
+
+**`registry` — перегенерировать `.harness/skills/REGISTRY.md` вручную** (без пересборки самого снимка скиллов):
+
+```bash
+python3 harness/bin/harness registry /path/to/repository
+```
+
+`init`/`adopt`/`update` и так пишут этот файл сами при каждом запуске — отдельная команда нужна, когда надо обновить реестр без полного `update`, например сразу после `lock-project-skills` (ниже). Таблица строится сканированием `.harness/skills/*/SKILL.md` прямо с диска — попадают и capability-скиллы, и project-owned; это фоллбек-обнаружение для рантаймов без нативного project-скилл-рута (сейчас — только Hermes Agent, `docs/runtime-discovery.md`).
+
+**`lock-project-skills` — зафиксировать хэши скиллов, которыми владеет сам проект:**
+
+```bash
+python3 harness/bin/harness lock-project-skills /path/to/repository
+```
+
+Для каждой директории под `.harness/skills`, не входящей ни в одну выбранную capability (скилл, который владелец проекта положил туда вручную, а не получил через `init`/`adopt`), пересчитывает sha256 всех git-видимых файлов (`git ls-files --cached --others --exclude-standard` — gitignore'нутые артефакты вроде `node_modules` в лок не попадают и не создают ложный дрейф) и переписывает `.harness/overlays/project-local.lock` целиком по текущему состоянию диска — не merge, полная регенерация. Заодно перегенерирует `REGISTRY.md`. Каждый скилл под `.harness/skills`, не подтверждённый ни выбранной capability, ни этим локом, валит `harness health` с `project skills missing provenance lock`.
 
 **`health` — диагностика текущей установки:**
 
@@ -84,7 +100,7 @@ python3 harness/bin/harness update /path/to/repository --capability pvmalove-sui
 python3 harness/bin/harness health /path/to/repository
 ```
 
-Проверяет: есть ли `.harness/harness.lock`, есть ли `AGENTS.md`, что discovery-symlink'и не битые и резолвятся, и (если lock есть) что снимок скиллов не разошёлся с диском. Печатает `ERROR ...` построчно и код `1` при проблеме, иначе `healthy: <repo>` и `0`.
+Проверяет: есть ли `.harness/harness.lock`; есть ли `AGENTS.md` и нет ли в нём нерешённых `{{...}}`-маркеров; что discovery-symlink'и не битые и резолвятся; и, если lock есть — что снимок capability-скиллов не разошёлся с диском, что `.harness/skills/REGISTRY.md` совпадает с тем, что построил бы `harness registry` прямо сейчас, что каждый project-owned скилл под `.harness/skills` подтверждён в `.harness/overlays/project-local.lock`, и что каждый реально существующий на диске нативный интеграционный файл (`.mcp.json`, `.claude/settings.local.json` и т.п.) заинвентаризирован в `.harness/integrations.json`. Печатает `ERROR ...` построчно и код `1` при любой проблеме; иначе `files: healthy (N skills, M integrations): <repo>` плюс строку-напоминание `activation: ...` (хэш в `integrations.json` доказывает целостность файла, не то, что интеграция реально подключена и работает — это проверяется только в свежей рантайм-сессии) и код `0`.
 
 **`list` — какие скиллы сейчас установлены** (построчно, по алфавиту):
 
@@ -115,7 +131,7 @@ bin/install-global --target-home "$HOME" --runtime codex --runtime claude --runt
 
 Заодно чистит entry-скиллы прошлых версий инструмента, которых больше нет в `global-skills/` (`project-harness-bootstrap`, `skill-library`) — если по этому имени лежит symlink именно на них, снимает; если лежит что-то постороннее (не symlink, или symlink на чужую цель) — падает как конфликт и не трогает, чтобы не задеть чужой файл с тем же именем.
 
-`bin/install-global` — bash-скрипт, в PowerShell/cmd напрямую не запускается; на Windows — через Git Bash (входит в Git for Windows) или WSL.
+`bin/install-global` — bash-скрипт, в PowerShell/cmd напрямую не запускается; на Windows — через Git Bash (входит в Git for Windows) или WSL. В Git Bash сам форсирует `MSYS=winsymlinks:nativestrict`, чтобы `ln -s` создавал настоящие Windows-символьные ссылки, а не тихую подмену копией/junction'ом, которую не отличить от настоящей ссылки; для этого нужен включённый Developer Mode (или запуск с правами администратора) — без него команда падает с ошибкой создания линка вместо того, чтобы притвориться, что всё установилось.
 
 **Как это подключено.** Скиллы физически лежат в `.harness/skills/*/SKILL.md` (управляются `.harness/harness.lock` — хэши файлов, версия, `source_revision`). Claude Code и Codex находят их через symlink'и в корне репозитория:
 
@@ -125,6 +141,8 @@ bin/install-global --target-home "$HOME" --runtime codex --runtime claude --runt
 ```
 
 Если после клонирования репозитория скиллы не видны (`/implement`, `/triage` и т.д. отсутствуют в списке) — значит либо нет `AGENTS.md`, либо сломаны эти symlink'и. Диагностика и починка — `harness health <repo>` / `harness update` из инструмента, которым был развёрнут этот harness (не пересоздавайте symlink'и вручную — относительный таргет должен резолвиться средствами конкретной ОС, `harness health` это проверяет, а не только «файл похож на симлинк»). Полная картина по остальным рантаймам (Kimi Code, OpenCode, Hermes Agent — таблица discovery-путей, разница user/project/catalog scope, известная гонка OpenCode на двух discovery-корнях сразу) — в `docs/runtime-discovery.md` [репозитория харнесса](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/runtime-discovery.md) — этот файл не шаблонизируется в проекты, живёт только там, поэтому ссылка сюда абсолютная, а не относительная.
+
+Рантаймы без нативного project-скилл-рута (сейчас — только Hermes Agent) используют другой путь: `.harness/skills/REGISTRY.md`, компактную таблицу имя/путь/описание, которую `init`/`adopt`/`update`/`lock-project-skills` пишут автоматически, а `harness registry` перегенерирует вручную (раздел 0, выше) — `AGENTS.md` отправляет такой рантайм искать по этой таблице вместо прямого скана `.harness/skills`. Полную схему этого файла, `.harness/overlays/project-local.lock` (provenance для скиллов, которыми владеет сам проект) и `.harness/integrations.json` (инвентарь нативных MCP/plugin/hook/runtime-конфигов) смотрите в `CONTEXT.md` этого репозитория харнесса.
 
 ---
 

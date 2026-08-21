@@ -53,7 +53,11 @@ instruction chooses the checkout strategy.
 
 - Skills live in `.harness/skills` and are discovered through `.agents/skills` and
   `.claude/skills`.
+- If a runtime has no native project skill root, search `.harness/skills/REGISTRY.md` by intent and
+  open only the exact matching `SKILL.md`.
 - Harness-managed skill files and their version lock live in `.harness/`.
+- Project MCP, plugin, hook, or runtime config is native; record its path, hash, runtime, and
+  secret variable names in `.harness/integrations.json` without storing secret values.
 - Capability updates are explicit and require a reviewed harness diff.
 
 ## Known pitfalls

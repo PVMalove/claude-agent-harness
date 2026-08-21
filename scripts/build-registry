@@ -57,5 +57,5 @@ lines = [
     "|---|---|---|",
 ]
 lines.extend(f"| `{name}` | `{path}` | {description} |" for name, path, description in rows)
-OUTPUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
+OUTPUT.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 print(f"wrote {OUTPUT} with {len(rows)} skills")

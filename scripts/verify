@@ -21,6 +21,8 @@ if grep -R -n 'TODO' "$ROOT/global-skills/start-project"; then
   echo "start-project still contains TODO markers" >&2
   exit 1
 fi
+grep -q 'until the owner confirms' "$ROOT/global-skills/start-project/SKILL.md"
+grep -q 'Prove each layer separately' "$ROOT/global-skills/start-project/SKILL.md"
 
 "$PYTHON" "$ROOT/scripts/build-registry"
 git -C "$ROOT" diff --exit-code -- skills/REGISTRY.md

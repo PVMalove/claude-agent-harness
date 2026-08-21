@@ -19,14 +19,22 @@ fork, so this package does not do it.
 | Claude Code | `.claude/skills` | `~/.claude/skills` |
 | Kimi Code | `.agents/skills` | `~/.agents/skills` |
 | OpenCode | `.agents/skills` and `.claude/skills` | `~/.agents/skills` and `~/.claude/skills` |
-| Hermes Agent | project `AGENTS.md` only | `~/.hermes/skills` |
+| Hermes Agent | project `AGENTS.md` plus `.harness/skills/REGISTRY.md` fallback | `~/.hermes/skills` |
 
 Codex, Claude Code, Kimi Code, and OpenCode therefore share the same checked-in project suite.
-Hermes currently has no equivalent repository skill root. It can add absolute directories through
-`skills.external_dirs` in its profile configuration, but that makes those skills part of that
-profile's persistent index and is machine-specific. Do not silently write that setting from a
-portable repository. Use it deliberately for a dedicated coding profile, or keep Hermes focused on
-coordination and personal workflows while the coding runtimes execute the project pipeline.
+Hermes currently has no equivalent repository skill root. Every project snapshot therefore carries
+`.harness/skills/REGISTRY.md`: `AGENTS.md` tells Hermes to search the compact metadata table and open
+only the exact matching `SKILL.md`. This is portable progressive disclosure, but it is not native
+skill advertisement. `skills.external_dirs` remains an optional machine-specific profile setting;
+the portable harness never writes it silently.
+
+## Project integrations
+
+MCP servers, plugins, hooks, and runtime settings stay in the runtime's native project files. When
+a project owns one, `.harness/integrations.json` records its relative path, SHA-256, target runtimes,
+verification action, and secret environment-variable names. Secret values remain in native secure
+storage or the device environment. `harness health` proves file integrity; a fresh runtime session
+proves activation and behavior.
 
 ### OpenCode on a multi-runtime machine
 

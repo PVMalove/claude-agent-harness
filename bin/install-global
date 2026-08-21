@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# On Windows/MSYS (Git Bash), `ln -s` without SeCreateSymbolicLinkPrivilege silently
+# falls back to copying files / creating plain directories instead of real reparse-point
+# symlinks - a broken "link" that install_link()/retire_entries() below, and any runtime
+# that walks these directories, cannot tell apart from a real file/directory. nativestrict
+# forces real symlinks (works under Windows Developer Mode) and errors loudly instead of
+# silently faking it. A no-op outside MSYS - GNU coreutils elsewhere ignores this variable.
+export MSYS="${MSYS:-winsymlinks:nativestrict}"
+
 C_BLUE='\033[1;34m'
 C_GREEN='\033[1;32m'
 C_YELLOW='\033[1;33m'

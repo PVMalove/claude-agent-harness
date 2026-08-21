@@ -12,8 +12,26 @@ else
   exit 1
 fi
 
+# On Windows/MSYS (Git Bash), `ln -s` without SeCreateSymbolicLinkPrivilege silently
+# falls back to copying files / creating plain directories instead of real reparse-point
+# symlinks - invisible to both `[ -L ]` and Python's os.path.islink(). `nativestrict`
+# forces real symlinks (works under Windows Developer Mode) and errors loudly instead
+# of faking it. A no-op outside MSYS - GNU coreutils elsewhere ignores this variable.
+export MSYS="${MSYS:-winsymlinks:nativestrict}"
+
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-harness-test.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT
+
+fill_agents() {
+  "$PYTHON" - "$1/AGENTS.md" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+path.write_text(re.sub(r"{{[^{}\n]+}}", "N/A", path.read_text()))
+PY
+}
 
 PROJECT="$TEST_ROOT/project"
 FOUNDATION="$TEST_ROOT/foundation"
@@ -26,14 +44,21 @@ git -C "$FOUNDATION" init -q
   --project-type content \
   --base-branch main
 "$PYTHON" "$ROOT/harness/bin/harness" diff "$FOUNDATION"
+if "$PYTHON" "$ROOT/harness/bin/harness" health "$FOUNDATION" >/dev/null 2>&1; then
+  echo "unresolved AGENTS.md unexpectedly passed health" >&2
+  exit 1
+fi
+fill_agents "$FOUNDATION"
 "$PYTHON" "$ROOT/harness/bin/harness" health "$FOUNDATION"
 [ "$(find "$FOUNDATION/.harness/skills" -name SKILL.md -type f | wc -l | tr -d ' ')" = "5" ]
 grep -q -- '- Type: content' "$FOUNDATION/AGENTS.md"
+grep -q '| `grilling` | `.harness/skills/grilling` |' "$FOUNDATION/.harness/skills/REGISTRY.md"
 
 "$PYTHON" "$ROOT/harness/bin/harness" init "$PROJECT" \
   --stack node \
   --capability mattpocock-suite \
   --base-branch main
+fill_agents "$PROJECT"
 
 "$PYTHON" "$ROOT/harness/bin/harness" diff "$PROJECT"
 "$PYTHON" "$ROOT/harness/bin/harness" health "$PROJECT"
@@ -56,6 +81,36 @@ if "$PYTHON" "$ROOT/harness/bin/harness" update "$PROJECT" >/dev/null 2>&1; then
   exit 1
 fi
 "$PYTHON" "$ROOT/harness/bin/harness" update "$PROJECT" --force >/dev/null
+"$PYTHON" "$ROOT/harness/bin/harness" health "$PROJECT"
+
+printf '%s\n' '{"mcpServers": {}}' > "$PROJECT/.mcp.json"
+if "$PYTHON" "$ROOT/harness/bin/harness" health "$PROJECT" >/dev/null 2>&1; then
+  echo "uninventoried project integration unexpectedly passed health" >&2
+  exit 1
+fi
+"$PYTHON" - "$PROJECT" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+config = repo / ".mcp.json"
+payload = {
+    "schema": 1,
+    "integrations": [{
+        "id": "test-mcp",
+        "kind": "mcp",
+        "runtimes": ["codex"],
+        "config": ".mcp.json",
+        "sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
+        "secret_refs": ["TEST_MCP_TOKEN"],
+        "verify": "Open a fresh session and list MCP tools.",
+    }],
+}
+path = repo / ".harness/integrations.json"
+path.write_text(json.dumps(payload, indent=2) + "\n")
+PY
 "$PYTHON" "$ROOT/harness/bin/harness" health "$PROJECT"
 
 runtime_args=()
@@ -97,15 +152,29 @@ LEGACY="$TEST_ROOT/legacy"
 mkdir -p "$LEGACY/.harness/skills/project-only" "$LEGACY/.harness/skills/ask-matt"
 git -C "$LEGACY" init -q
 printf '%s\n' '# Legacy project' > "$LEGACY/AGENTS.md"
-printf '%s\n' 'project data' > "$LEGACY/.harness/skills/project-only/asset.txt"
+printf '%s\n' '---' 'name: project-only' 'description: Use for the legacy project-only workflow.' '---' '' '# Project only' > "$LEGACY/.harness/skills/project-only/SKILL.md"
+mkdir -p "$LEGACY/.harness/skills/project-only/tool/node_modules/.vite"
+printf '%s\n' 'node_modules/' > "$LEGACY/.harness/skills/project-only/tool/.gitignore"
+printf '%s\n' 'initial runtime result' > "$LEGACY/.harness/skills/project-only/tool/node_modules/.vite/results.json"
 printf '%s\n' 'old fork' > "$LEGACY/.harness/skills/ask-matt/SKILL.md"
 printf '%s\n' '{"schema": 0, "files": {}}' > "$LEGACY/.harness/harness.lock"
 "$PYTHON" "$ROOT/harness/bin/harness" adopt "$LEGACY" \
   --capability mattpocock-suite \
   --replace-conflicts
-[ -f "$LEGACY/.harness/skills/project-only/asset.txt" ]
+[ -f "$LEGACY/.harness/skills/project-only/SKILL.md" ]
 cmp "$ROOT/skills/vendor/mattpocock/engineering/ask-matt/SKILL.md" \
   "$LEGACY/.harness/skills/ask-matt/SKILL.md"
+if "$PYTHON" "$ROOT/harness/bin/harness" health "$LEGACY" >/dev/null 2>&1; then
+  echo "unlocked project-owned skill unexpectedly passed health" >&2
+  exit 1
+fi
+"$PYTHON" "$ROOT/harness/bin/harness" lock-project-skills "$LEGACY"
+if grep -q 'node_modules' "$LEGACY/.harness/overlays/project-local.lock"; then
+  echo "project-local lock unexpectedly contains ignored runtime files" >&2
+  exit 1
+fi
+"$PYTHON" "$ROOT/harness/bin/harness" health "$LEGACY"
+printf '%s\n' 'changed runtime result' > "$LEGACY/.harness/skills/project-only/tool/node_modules/.vite/results.json"
 "$PYTHON" "$ROOT/harness/bin/harness" health "$LEGACY"
 
 echo "clean-room verification passed"
