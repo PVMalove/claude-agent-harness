@@ -40,7 +40,7 @@
     ]
   },
   "pvmalove-suite": {
-    "description": "Личная сборка поверх mattpocock-suite: 7 first-party переопределений (workflow::*/hitl/afk triage-таксономия вместо канонических ролей апстрима, epic::<slug> заменён на native sub-issues в to-spec/to-tickets, обязательная PR-пауза без авто-мёрджа, настраиваемый язык вывода code-review, вопросы grilling через AskUserQuestion вместо простого текста) и один новый скилл (qa-gate, конфиг-драйвен через .harness/project.json). Выбирается вместо mattpocock-suite, не вместе с ней — расширяет её через extends/overrides/additions вместо дублирования списка.",
+    "description": "Личная сборка поверх mattpocock-suite: 7 first-party переопределений (workflow::*/hitl/afk triage-таксономия вместо канонических ролей апстрима, epic::<slug> заменён на native sub-issues в to-spec/to-tickets, обязательная PR-пауза без авто-мёрджа, настраиваемый язык вывода code-review, вопросы grilling через AskUserQuestion вместо простого текста) и два новых скилла (qa-gate, конфиг-драйвен через .harness/project.json; to-guide — hitl-аналог implement, готовит гайд с промптами для ручного кодинга вместо реализации агентом). Выбирается вместо mattpocock-suite, не вместе с ней — расширяет её через extends/overrides/additions вместо дублирования списка.",
     "extends": "mattpocock-suite",
     "overrides": {
       "to-spec": "first-party/pvmalove/to-spec",
@@ -52,7 +52,8 @@
       "triage": "first-party/pvmalove/triage"
     },
     "additions": [
-      "first-party/pvmalove/qa-gate"
+      "first-party/pvmalove/qa-gate",
+      "first-party/pvmalove/to-guide"
     ]
   }
 }
