@@ -41,7 +41,8 @@ You must execute this skill in two distinct phases. Do NOT publish anything to t
         - *Frontier:* Don't trace `Blocked by` by hand to find what's takeable — query it, the same fields and mechanism as `/wayfinder`'s frontier query (`docs/agents/issue-tracker.md#wayfinding-operations`), scoped to the epic's sub-issues instead of the map's children. `/implement` runs this same query itself when handed the epic instead of a specific ticket.
         - Do NOT close or rewrite the parent epic issue, except to append a short list of the subtask numbers you created.
 2. **Summarize the Batch:**
-    - If this runtime supports dispatching a sub-agent pinned to a specific model, send a single call with `model: haiku` (cheapest available, one call for the whole batch) — pass it every ticket's title and body, asking for one concise sentence per ticket. Otherwise, write the descriptions yourself, on your own model.
+    - Read `language` from `.harness/project.json` (default `ru` if the file or field is absent) — this decides only the "What to build" column below, not the ticket titles/bodies you publish, which stay in whatever language you drafted them in.
+    - If this runtime supports dispatching a sub-agent pinned to a specific model, send a single call with `model: haiku` (cheapest available, one call for the whole batch) — pass it every ticket's title and body plus the target language, asking for one concise sentence per ticket written in that language. Otherwise, write the descriptions yourself, on your own model, in the same language.
     - Output a final table compiling all data. The labels column must list all applied taxonomy tags (e.g., `enhancement`, `workflow::ready`, `afk`, `task-report::required`).
 
    | Ticket | What to build | Est. Time (Human) | Labels |
