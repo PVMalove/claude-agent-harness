@@ -10,7 +10,7 @@ Transform a specification or a tracer-bullet ticket into a developer guide loade
 
 ## Process
 
-1. **Read the source.** Fetch the ticket the user names — an issue number, URL, or a `.scratch/<feature>/issues/NN-*.md` path (see `docs/agents/issue-tracker.md`). If it carries `workflow::specs` instead of `workflow::ready`, or is missing `hitl`, tell the user and ask whether to proceed anyway — this skill expects a fully specified, human-routed ticket (see `docs/agents/triage-labels.md`).
+1. **Read the source.** Fetch the ticket the user names — an issue number, URL, or a `.scratch/<feature>/issues/NN-*.md` path (see `docs/agents/issue-tracker.md`). If it carries `workflow::blocked`, check its blockers the same way `/implement` does — if any are still open, stop and tell the user which ones instead of drafting a guide for a ticket that isn't actually startable yet. If it carries `workflow::specs` instead of `workflow::ready`, or is missing `hitl`, tell the user and ask whether to proceed anyway — this skill expects a fully specified, human-routed ticket (see `docs/agents/triage-labels.md`).
 2. **Explore the codebase.** Identify the exact files that need creating or changing to fulfill the ticket — don't guess from the ticket text alone. Use the project's domain glossary and respect any ADRs in the area you're touching.
 3. **Claim it.** Assign the ticket to the maintainer (`gh issue edit <n> --add-assignee @me`, or the local tracker's equivalent) before any other write — the same convention `/wayfinder` and `/implement` use, so a concurrent session doesn't pick the same `hitl` ticket.
 4. **Mark it in progress.** Move the ticket from `workflow::ready` to `workflow::in-progress` (for a local-tracker ticket, set `**Workflow:** workflow::in-progress`).
@@ -21,6 +21,7 @@ Transform a specification or a tracer-bullet ticket into a developer guide loade
 - Each prompt must be explicit, self-contained, and tell the human's AI IDE *exactly* what to do — the human is going to copy-paste it verbatim, not edit it first.
 - Point the IDE at existing code to imitate: "follow the pattern in `<file>`" beats a description of the pattern.
 - Keep each step small enough to compile and review on its own — the whole point is narrow, verifiable chunks, same discipline as `/to-tickets`'s vertical slices.
+- Ask for the test first in every prompt — this repo requires TDD (`docs/agents/git-workflow.md`) regardless of who writes the code; `/implement` gets this for free via `/tdd`, so say it explicitly here instead of assuming the human's AI IDE defaults to it.
 
 <guide-template>
 
@@ -51,11 +52,12 @@ How to check this slice works — the exact test command, or a `curl`/manual ste
 
 ## 5. When you're done
 
-This skill doesn't review the code, run `qa-gate`, or open the PR for you — there's no single command for it on the `hitl` path (that packaging only exists inside `/implement`, for `afk` tickets). Once the code is written, do these yourself, in order:
+This skill doesn't review the code, commit it, run `qa-gate`, or open the PR for you — there's no single command for any of that on the `hitl` path (that packaging only exists inside `/implement`, for `afk` tickets). Once the code is written, do these yourself, in order:
 
 1. Run `/code-review` (or ask this session to run it) — same two-axis Standards + Spec review `/implement` would run for you on an `afk` ticket. Nothing else triggers it on this path; skipping it means the diff never gets reviewed before the PR.
-2. Run `/qa-gate` (or ask this session to run it).
-3. Open the PR per `docs/agents/git-workflow.md`: `gh pr create`, with the mandatory `Closes #<ID>` and body template. Ask this session to delegate the body to the `pr-composer` agent if you want it filled in for you instead of writing it by hand.
-4. If this ticket carries `task-report::required`, post the completion report yourself.
+2. Commit your work with a Semantic Commit Message (`feat:`, `fix:`, ...) and push, per `docs/agents/git-workflow.md` — don't let finished work sit uncommitted or unpushed.
+3. Run `/qa-gate` (or ask this session to run it).
+4. **GitHub/GitLab-tracked ticket:** open the PR per `docs/agents/git-workflow.md` (`gh pr create`, mandatory `Closes #<ID>` and body template — ask this session to delegate the body to the `pr-composer` agent if you want it filled in for you). If this ticket carries `task-report::required`, post the completion report when you open the PR.
+   **Local-markdown-tracked ticket:** there's no PR/merge step — once the above all pass, set the ticket file's `**Workflow:**` line to `done` yourself; if it carries `**Task report:** required`, fold the completion summary into that same update.
 
 </guide-template>
