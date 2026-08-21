@@ -42,6 +42,10 @@ grep -q -- '- Type: content' "$FOUNDATION/AGENTS.md"
 [ "$(readlink "$PROJECT/.agents/skills")" = "../.harness/skills" ]
 [ "$(readlink "$PROJECT/.claude/skills")" = "../.harness/skills" ]
 
+list_output="$("$PYTHON" "$ROOT/harness/bin/harness" list "$PROJECT")"
+[ "$list_output" = "$(LC_ALL=C sort <<<"$list_output")" ]
+grep -q '^ask-matt$' <<<"$list_output"
+
 printf '\nlocal edit\n' >> "$PROJECT/.harness/skills/ask-matt/SKILL.md"
 if "$PYTHON" "$ROOT/harness/bin/harness" diff "$PROJECT" >/dev/null 2>&1; then
   echo "drift check unexpectedly passed" >&2
