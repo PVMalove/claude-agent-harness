@@ -51,6 +51,10 @@ How to check this slice works — the exact test command, or a `curl`/manual ste
 
 ## 5. When you're done
 
-This skill doesn't run `qa-gate` or open the PR for you. Before you're done: run this project's `qa-gate` commands, follow `docs/agents/git-workflow.md` for the PR (the mandatory `Closes #<ID>` and body template), and if this ticket carries `task-report::required`, post the completion report yourself.
+This skill doesn't run `qa-gate` or open the PR for you — there's no single command for it on the `hitl` path (that packaging only exists inside `/implement`, for `afk` tickets). Once the code is written, do these yourself:
+
+1. Run `/qa-gate` (or ask this session to run it).
+2. Open the PR per `docs/agents/git-workflow.md`: `gh pr create`, with the mandatory `Closes #<ID>` and body template. Ask this session to delegate the body to the `pr-composer` agent if you want it filled in for you instead of writing it by hand.
+3. If this ticket carries `task-report::required`, post the completion report yourself.
 
 </guide-template>
