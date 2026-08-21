@@ -541,6 +541,13 @@ def cmd_health(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_list(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).expanduser().resolve()
+    for name in sorted(path.parent.name for path in (repo / ".harness/skills").rglob("SKILL.md")):
+        print(name)
+    return 0
+
+
 def _add_pvmalove_args(sub: argparse.ArgumentParser) -> None:
     """Flags scaffold_pvmalove_extras() reads - shared by init/adopt/update since
     any of the three can be the command that first turns pvmalove-suite on."""
@@ -592,6 +599,10 @@ def parser() -> argparse.ArgumentParser:
     health = commands.add_parser("health")
     health.add_argument("repo")
     health.set_defaults(func=cmd_health)
+
+    list_cmd = commands.add_parser("list")
+    list_cmd.add_argument("repo")
+    list_cmd.set_defaults(func=cmd_list)
     return root
 
 
