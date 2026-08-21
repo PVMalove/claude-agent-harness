@@ -184,7 +184,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 
 | Скилл | Что изменено |
 |---|---|
-| `triage` | Заменяет пять канонических состояний апстрима на namespaced-таксономию `workflow::*` (`specs`/`ready`/`in-progress`/`blocked`) + отдельная ось исполнения `hitl`/`afk`; категорийная пара `bug`/`enhancement` не тронута. `wontfix` → `out-of-scope`. См. ADR 0005 в `docs/adr/`. |
+| `triage` | Заменяет пять канонических состояний апстрима на namespaced-таксономию `workflow::*` (`specs`/`ready`/`in-progress`/`blocked`) + отдельная ось исполнения `hitl`/`afk`; категорийная пара `bug`/`enhancement` не тронута. `wontfix` → `out-of-scope`. См. ADR 0004 в `docs/adr/`. |
 | `to-spec` | Проставляет `workflow::specs` на публикуемый эпик-issue вместо `ready-for-agent` + `epic::<slug>` (последнего больше нет — см. раздел 8); пишет спеку сначала файлом в `docs/tasks/`, публикует через `gh issue create --body-file`, а не инлайн-heredoc (тело спеки регулярно ломает heredoc-квотинг). |
 | `to-tickets` | Линкует дочерние тикеты к эпику как native GitHub sub-issues вместо общей метки `epic::<slug>`; тикету, заблокированному другим ещё не закрытым тикетом той же декомпозиции, ставит `workflow::blocked` вместо `workflow::ready`; не переписывает содержимое родительского issue (кроме списка дочерних номеров). |
 | `implement` | Перед стартом по ссылке на тикет с `workflow::blocked` — проверяет блокеры, снимает состояние либо отказывается стартовать; ставит `workflow::in-progress`, начиная работу. Добавлен шаг открытия PR по `docs/agents/git-workflow.md` с паузой на ревью разработчика, без авто-мерджа; плюс вызов `qa-gate`/`pr-composer` перед PR (раздел 6); публикует отчёт о завершении, если тикет несёт `task-report::required`; для локального трекера ставит `**Workflow:** done` по завершении. |
@@ -211,7 +211,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 | `task-report::required` | `/to-spec`, `/to-tickets` (по умолчанию) | `/implement` обязан опубликовать отчёт о завершении при закрытии — `triage` эту метку не читает и не выставляет. |
 | `out-of-scope` | `/triage` | Замена апстримного `wontfix` — запрос явно отклонён. |
 
-Группировка тикетов эпика больше не лейбл: дочерний тикет линкуется к эпик-issue как native GitHub sub-issue (`docs/agents/issue-tracker.md#wayfinding-operations`) — тот же механизм, которым `wayfinder` уже пользуется для своей карты. Подробности (цвета, локальный markdown-трекер, история решения — ADR 0004/0005 в `docs/adr/`) — в `docs/agents/triage-labels.md`.
+Группировка тикетов эпика больше не лейбл: дочерний тикет линкуется к эпик-issue как native GitHub sub-issue (`docs/agents/issue-tracker.md#wayfinding-operations`) — тот же механизм, которым `wayfinder` уже пользуется для своей карты. Подробности (цвета, локальный markdown-трекер, история решения — ADR 0004 в `docs/adr/`) — в `docs/agents/triage-labels.md`.
 
 ---
 
