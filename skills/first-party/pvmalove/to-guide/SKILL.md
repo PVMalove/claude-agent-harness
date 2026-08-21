@@ -14,7 +14,7 @@ Transform a specification or a tracer-bullet ticket into a developer guide loade
 2. **Explore the codebase.** Identify the exact files that need creating or changing to fulfill the ticket — don't guess from the ticket text alone. Use the project's domain glossary and respect any ADRs in the area you're touching.
 3. **Claim it.** Assign the ticket to the maintainer (`gh issue edit <n> --add-assignee @me`, or the local tracker's equivalent) before any other write — the same convention `/wayfinder` and `/implement` use, so a concurrent session doesn't pick the same `hitl` ticket.
 4. **Mark it in progress.** Move the ticket from `workflow::ready` to `workflow::in-progress` (for a local-tracker ticket, set `**Workflow:** workflow::in-progress`).
-5. **Draft the guide** using `<guide-template>` below. Save it to `docs/tasks/` per `docs/agents/artifacts.md`'s naming convention (issue ID + descriptive slug) — if the ticket belongs to an epic, into that epic's `docs/tasks/issue-<epic-id>-<epic-slug>/` folder, alongside its own ticket file.
+5. **Draft the guide** using `<guide-template>` below, in the language `.harness/project.json`'s `language` field configures (default `ru` if the file or field is absent). Unlike `/to-tickets`'s summary table, this scoping is not narrow — write the whole document, prompts included, in that language: it's a local artifact for the human maintainer to read, not a ticket published to an external tracker. Save it to `docs/tasks/` per `docs/agents/artifacts.md`'s naming convention (issue ID + descriptive slug) — if the ticket belongs to an epic, into that epic's `docs/tasks/issue-<epic-id>-<epic-slug>/` folder, alongside its own ticket file.
 
 ## Rules for the prompts
 
