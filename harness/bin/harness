@@ -600,9 +600,9 @@ def parser() -> argparse.ArgumentParser:
     health.add_argument("repo")
     health.set_defaults(func=cmd_health)
 
-    list = commands.add_parser("list")
-    list.add_argument("repo")
-    list.set_defaults(func=cmd_list)
+    list_cmd = commands.add_parser("list")
+    list_cmd.add_argument("repo")
+    list_cmd.set_defaults(func=cmd_list)
     return root
 
 
