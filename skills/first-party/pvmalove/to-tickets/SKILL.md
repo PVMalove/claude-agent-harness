@@ -21,7 +21,7 @@ You must execute this skill in two distinct phases. Do NOT publish anything to t
     - *Vertical Slices:* Cut a narrow but COMPLETE path through every layer (schema, API, UI, tests). Must be demoable/verifiable on its own and fit in a single context window.
     - *Wide Refactors (Exception):* If a change has a massive blast radius (e.g., renaming a shared column), use **expand-contract** instead of vertical slicing. Sequence as: Expand → Migrate (in batches) → Contract.
     - *Blocking Edges:* Give each ticket its blocking edges (which other tickets must complete first).
-    - *Human Time Estimate:* Estimate the rough time required for a human developer to complete this slice (e.g., "2 hours", "1 day").
+    - *Human Time Estimate:* Estimate the rough time required for a human developer to complete this slice (e.g., "2 hours", "1 day") — for every ticket, `afk` included, not just `hitl` ones. This is a decomposition-quality signal, not a commitment: an estimate in weeks means the slice isn't tracer-bullet-sized — split it further before presenting the breakdown.
 4. **STOP AND ASK (Quiz the User):** Present the proposed breakdown as a numbered list. For each ticket, show:
     - **Title:** Short descriptive name
     - **Blocked by:** Which tickets gate it
