@@ -7,9 +7,9 @@ Interview the user relentlessly until you reach a shared understanding. Map this
 
 Work the tree in **rounds**. The **frontier** is every decision whose prerequisites are already settled — the questions you can ask _now_ without guessing at answers you haven't heard yet. Ask the whole frontier in one round, then wait for the user's answers before the next round.
 
-Ask each round through the `AskUserQuestion` tool instead of plain text: one question per entry, so each gets its own tab with a short `header`, 2-4 mutually exclusive `options` (a `label` plus a `description` of what picking it means), and the user can still type a free-form answer through the always-available "Other". Put your recommended option first and suffix its label with "(Recommended)". A single call caps at 4 questions — if the frontier has more, split it across multiple `AskUserQuestion` calls that all belong to this same round; issue them together, and don't let a later round's questions leak into an earlier batch.
+If the `AskUserQuestion` tool is available in this runtime, ask each round through it instead of plain text: one question per entry, so each gets its own tab with a short `header`, 2-4 mutually exclusive `options` (a `label` plus a `description` of what picking it means), and the user can still type a free-form answer through the always-available "Other". Put your recommended option first and suffix its label with "(Recommended)". A single call caps at 4 questions — if the frontier has more, split it across multiple `AskUserQuestion` calls that all belong to this same round; issue them together, and don't let a later round's questions leak into an earlier batch.
 
-Not every frontier question reduces to a handful of discrete options. For a genuinely open-ended question (e.g. "what should we call this concept?") where narrowing to 2-4 candidates would misrepresent the question, ask it as plain text instead:
+Not every frontier question reduces to a handful of discrete options, and not every runtime has the `AskUserQuestion` tool. For a genuinely open-ended question (e.g. "what should we call this concept?") where narrowing to 2-4 candidates would misrepresent the question, or whenever the tool isn't available at all, ask it — or the whole round — as plain text instead:
 
 ```
 ❓ **<question title>**: <question body, might be multiple paragraphs>
