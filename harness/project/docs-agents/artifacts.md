@@ -4,7 +4,7 @@
 * **Project Directory:** All intermediate task-related documents MUST be saved locally inside the project repository in the `docs/tasks/` directory (create it if it doesn't exist).
 * **Naming Convention:** Every specification or scratchpad file MUST include the tracker issue ID (if it exists) and a descriptive name in its filename.
   * *Example:* `docs/tasks/issue-45-spec-search-pagination.md`
-* **Epic grouping:** If the ticket belongs to a parent epic (has a `## Parent`/`Blocked by` reference to another issue, or the epic's own issue carries an `epic::*` label), put its file inside a folder named after the epic — `docs/tasks/issue-<epic-id>-<epic-slug>/` — instead of directly under `docs/tasks/`. The epic's own spec file lives in that same folder, so the epic and all of its subtask specs stay together. Individual filenames inside the folder keep the same naming convention as before (issue ID + descriptive name) — only the location changes, not the name.
+* **Epic grouping:** If the ticket belongs to a parent epic (has a `## Parent`/`Blocked by` reference to another issue, or is linked to it as a native GitHub sub-issue — see `docs/agents/triage-labels.md`), put its file inside a folder named after the epic — `docs/tasks/issue-<epic-id>-<epic-slug>/` — instead of directly under `docs/tasks/`. The epic's own spec file lives in that same folder, so the epic and all of its subtask specs stay together. Individual filenames inside the folder keep the same naming convention as before (issue ID + descriptive name) — only the location changes, not the name.
   * *Example:* epic #26 ("search-revamp") with subtasks #27 and #28 →
     ```
     docs/tasks/issue-26-search-revamp/
