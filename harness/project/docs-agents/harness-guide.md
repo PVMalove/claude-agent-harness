@@ -92,11 +92,28 @@ python3 harness/bin/harness health /path/to/repository
 python3 harness/bin/harness list /path/to/repository
 ```
 
-**Глобальный слой** — отдельно от `harness` CLI, `start-project` и общий кросс-проектный контракт безопасности, не персонализирован, ставится отдельно и один раз на машину:
+**Глобальный слой** — отдельная команда, `bin/install-global`, не `harness/bin/harness`: ставится один раз на машину, на пользователя (`~`), а не на конкретный репозиторий. По собственному описанию скрипта: «устанавливает минимальный instruction-профиль плюс `start-project`. Никогда не устанавливает MCP, модели, плагины, credentials или permissions».
 
 ```bash
-bin/install-global --target-home "$HOME" --runtime claude
+bin/install-global --target-home "$HOME" --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
 ```
+
+`--runtime` повторяем, пять значений — `codex`, `claude`, `kimi`, `opencode`, `hermes`; для каждого ставит instruction-файл (копию `global/AGENTS.md`) и symlink на `global-skills/start-project` в discovery-корень рантайма:
+
+| Рантайм | Instruction-файл | Discovery-корень для `start-project` |
+|---|---|---|
+| `codex` | `~/.codex/AGENTS.md` | `~/.agents/skills/` |
+| `claude` | `~/.claude/CLAUDE.md` | `~/.claude/skills/` |
+| `kimi` | `~/.kimi-code/AGENTS.md` | `~/.agents/skills/` |
+| `opencode` | `~/.config/opencode/AGENTS.md` | `~/.agents/skills/` |
+| `hermes` | — (Hermes читает project `AGENTS.md`, отдельного identity-файла не ставится) | `~/.hermes/skills/` |
+
+Флаги:
+- `--check` — ничего не пишет, только сверяет: `ok`/`missing`/`conflict` на каждую цель, ненулевой код выхода при расхождении.
+- `--replace-conflicts` — если на месте уже что-то другое, сначала бэкапит в `~/.agent-harness-backups/<timestamp>/...`, потом заменяет; без флага при конфликте падает и ничего не трогает.
+- `--skills-only` — пропускает instruction-файл, ставит только symlink на `start-project`.
+
+Заодно чистит entry-скиллы прошлых версий инструмента, которых больше нет в `global-skills/` (`project-harness-bootstrap`, `skill-library`) — если по этому имени лежит symlink именно на них, снимает; если лежит что-то постороннее (не symlink, или symlink на чужую цель) — падает как конфликт и не трогает, чтобы не задеть чужой файл с тем же именем.
 
 `bin/install-global` — bash-скрипт, в PowerShell/cmd напрямую не запускается; на Windows — через Git Bash (входит в Git for Windows) или WSL.
 
