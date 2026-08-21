@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # To Guide (Manual Implementation Prep)
 
-Transform a specification or a tracer-bullet ticket into a developer guide loaded with ready-to-use prompts for AI-assisted IDEs. This is the `hitl` counterpart to `/implement` — `/implement` takes `afk` tickets and writes the code itself; `/to-guide` takes `hitl` tickets and hands the human a navigator's checklist instead. After this skill runs, coding, `qa-gate`, and the PR are entirely the human's own — this skill does not do them and is not invoked again afterward for this ticket.
+Transform a specification or a tracer-bullet ticket into a developer guide loaded with ready-to-use prompts for AI-assisted IDEs. This is the `hitl` counterpart to `/implement` — `/implement` takes `afk` tickets and writes the code itself; `/to-guide` takes `hitl` tickets and hands the human a navigator's checklist instead. After this skill runs, coding, code review, `qa-gate`, and the PR are entirely the human's own — this skill does not do them and is not invoked again afterward for this ticket (the guide it produces names the exact commands in its closing section).
 
 ## Process
 
@@ -51,10 +51,11 @@ How to check this slice works — the exact test command, or a `curl`/manual ste
 
 ## 5. When you're done
 
-This skill doesn't run `qa-gate` or open the PR for you — there's no single command for it on the `hitl` path (that packaging only exists inside `/implement`, for `afk` tickets). Once the code is written, do these yourself:
+This skill doesn't review the code, run `qa-gate`, or open the PR for you — there's no single command for it on the `hitl` path (that packaging only exists inside `/implement`, for `afk` tickets). Once the code is written, do these yourself, in order:
 
-1. Run `/qa-gate` (or ask this session to run it).
-2. Open the PR per `docs/agents/git-workflow.md`: `gh pr create`, with the mandatory `Closes #<ID>` and body template. Ask this session to delegate the body to the `pr-composer` agent if you want it filled in for you instead of writing it by hand.
-3. If this ticket carries `task-report::required`, post the completion report yourself.
+1. Run `/code-review` (or ask this session to run it) — same two-axis Standards + Spec review `/implement` would run for you on an `afk` ticket. Nothing else triggers it on this path; skipping it means the diff never gets reviewed before the PR.
+2. Run `/qa-gate` (or ask this session to run it).
+3. Open the PR per `docs/agents/git-workflow.md`: `gh pr create`, with the mandatory `Closes #<ID>` and body template. Ask this session to delegate the body to the `pr-composer` agent if you want it filled in for you instead of writing it by hand.
+4. If this ticket carries `task-report::required`, post the completion report yourself.
 
 </guide-template>
