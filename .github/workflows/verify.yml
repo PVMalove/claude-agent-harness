@@ -17,3 +17,13 @@ jobs:
         run: chmod +x scripts/verify
       - name: Verify harness and clean-room install
         run: scripts/verify
+
+  verify-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Verify harness and clean-room install
+        run: python scripts/verify
