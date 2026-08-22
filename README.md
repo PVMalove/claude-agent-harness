@@ -49,10 +49,15 @@
 Глобальный слой — `bin/install-global`, не персонализирован, ставится отдельно и один раз на машину (на пользователя `~`, не на конкретный проект). Поддерживает пять рантаймов, `--runtime` повторяем:
 
 ```bash
-bin/install-global --target-home "$HOME" --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
+python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
 ```
 
-`bin/install-global` — bash-скрипт (`#!/usr/bin/env bash`, использует bash-массивы), нативно в PowerShell/cmd не запускается. На Windows выполняйте эту команду как есть, но в Git Bash (входит в Git for Windows) или WSL — не в PowerShell. В Git Bash сам форсирует `MSYS=winsymlinks:nativestrict` (настоящие символьные ссылки вместо тихой подмены копией/junction'ом) — нужен включённый Developer Mode или права администратора, иначе команда явно упадёт на создании линка.
+Windows (PowerShell):
+```powershell
+python bin\install-global --target-home $HOME --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
+```
+
+`bin/install-global` — Python-скрипт (`#!/usr/bin/env python3`, требует 3.9+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness` ниже, никакого отдельного `.sh`/`.ps1` не нужно. На Windows для создания настоящих (не «сломанных» файлового типа) символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с ошибкой на создании линка и подсказывает, что делать.
 
 Флаги `--check` (ничего не пишет, только сверяет), `--replace-conflicts` (бэкапит перед заменой) и `--skills-only` (без instruction-файла, только `start-project`) — полный разбор, что именно ставится каждому из пяти рантаймов и куда, в [docs/agents/harness-guide.md](./docs/agents/harness-guide.md), раздел 0.
 

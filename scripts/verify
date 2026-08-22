@@ -13,8 +13,8 @@ else
 fi
 
 "$PYTHON" -m json.tool "$ROOT/harness/CAPABILITIES.json" >/dev/null
-"$PYTHON" -m py_compile "$ROOT/harness/bin/harness" "$ROOT/scripts/build-registry"
-bash -n "$ROOT/bin/install-global" "$ROOT/scripts/verify" "$ROOT/scripts/test-clean-room"
+"$PYTHON" -m py_compile "$ROOT/harness/bin/harness" "$ROOT/scripts/build-registry" "$ROOT/bin/install-global"
+bash -n "$ROOT/scripts/verify" "$ROOT/scripts/test-clean-room"
 
 grep -q '^name: start-project$' "$ROOT/global-skills/start-project/SKILL.md"
 grep -q '^name: integrate-project$' "$ROOT/global-skills/integrate-project/SKILL.md"

@@ -122,8 +122,8 @@ for root in "$TARGET_HOME/.agents/skills" "$TARGET_HOME/.claude/skills" "$TARGET
   ln -s "$ROOT/global-skills/project-harness-bootstrap" "$root/project-harness-bootstrap"
   ln -s "$ROOT/global-skills/skill-library" "$root/skill-library"
 done
-"$ROOT/bin/install-global" --target-home "$TARGET_HOME" "${runtime_args[@]}"
-"$ROOT/bin/install-global" --target-home "$TARGET_HOME" "${runtime_args[@]}" --check
+"$PYTHON" "$ROOT/bin/install-global" --target-home "$TARGET_HOME" "${runtime_args[@]}"
+"$PYTHON" "$ROOT/bin/install-global" --target-home "$TARGET_HOME" "${runtime_args[@]}" --check
 [ -L "$TARGET_HOME/.agents/skills/start-project" ]
 [ -L "$TARGET_HOME/.claude/skills/start-project" ]
 [ -L "$TARGET_HOME/.hermes/skills/start-project" ]
@@ -138,7 +138,7 @@ done
 FOREIGN_HOME="$TEST_ROOT/foreign-home"
 mkdir -p "$FOREIGN_HOME/.agents/skills" "$FOREIGN_HOME/foreign"
 ln -s "$FOREIGN_HOME/foreign" "$FOREIGN_HOME/.agents/skills/skill-library"
-if "$ROOT/bin/install-global" --target-home "$FOREIGN_HOME" --runtime codex --skills-only; then
+if "$PYTHON" "$ROOT/bin/install-global" --target-home "$FOREIGN_HOME" --runtime codex --skills-only; then
   echo "foreign retired entry was unexpectedly accepted" >&2
   exit 1
 fi
@@ -146,7 +146,7 @@ fi
 
 OVERLAY_HOME="$TEST_ROOT/overlay-home"
 mkdir -p "$OVERLAY_HOME"
-"$ROOT/bin/install-global" --target-home "$OVERLAY_HOME" "${runtime_args[@]}" --skills-only
+"$PYTHON" "$ROOT/bin/install-global" --target-home "$OVERLAY_HOME" "${runtime_args[@]}" --skills-only
 [ ! -e "$OVERLAY_HOME/.codex/AGENTS.md" ]
 [ -L "$OVERLAY_HOME/.agents/skills/start-project" ]
 [ -L "$OVERLAY_HOME/.hermes/skills/start-project" ]

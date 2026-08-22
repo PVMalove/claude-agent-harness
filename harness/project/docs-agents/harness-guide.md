@@ -113,7 +113,7 @@ python3 harness/bin/harness list /path/to/repository
 **Глобальный слой** — отдельная команда, `bin/install-global`, не `harness/bin/harness`: ставится один раз на машину, на пользователя (`~`), а не на конкретный репозиторий. По собственному описанию скрипта: «устанавливает минимальный instruction-профиль плюс `start-project`. Никогда не устанавливает MCP, модели, плагины, credentials или permissions».
 
 ```bash
-bin/install-global --target-home "$HOME" --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
+python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
 ```
 
 `--runtime` повторяем, пять значений — `codex`, `claude`, `kimi`, `opencode`, `hermes`; для каждого ставит instruction-файл (копию `global/AGENTS.md`) и symlink на `global-skills/start-project` в discovery-корень рантайма:
@@ -133,7 +133,7 @@ bin/install-global --target-home "$HOME" --runtime codex --runtime claude --runt
 
 Заодно чистит entry-скиллы прошлых версий инструмента, которых больше нет в `global-skills/` (`project-harness-bootstrap`, `skill-library`) — если по этому имени лежит symlink именно на них, снимает; если лежит что-то постороннее (не symlink, или symlink на чужую цель) — падает как конфликт и не трогает, чтобы не задеть чужой файл с тем же именем.
 
-`bin/install-global` — bash-скрипт, в PowerShell/cmd напрямую не запускается; на Windows — через Git Bash (входит в Git for Windows) или WSL. В Git Bash сам форсирует `MSYS=winsymlinks:nativestrict`, чтобы `ln -s` создавал настоящие Windows-символьные ссылки, а не тихую подмену копией/junction'ом, которую не отличить от настоящей ссылки; для этого нужен включённый Developer Mode (или запуск с правами администратора) — без него команда падает с ошибкой создания линка вместо того, чтобы притвориться, что всё установилось.
+`bin/install-global` — Python-скрипт (`#!/usr/bin/env python3`, требует 3.9+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness`: `python3 bin/install-global ...` (bash) или `python bin\install-global ...` / `py bin\install-global ...` (PowerShell/cmd), никакого отдельного `.sh`/`.ps1` не нужно. На Windows для создания настоящих (не «сломанных» файлового типа) символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с ошибкой на создании линка и подсказывает, что делать, вместо того чтобы притвориться, что всё установилось.
 
 **Как это подключено.** Скиллы физически лежат в `.harness/skills/*/SKILL.md` (управляются `.harness/harness.lock` — хэши файлов, версия, `source_revision`). Claude Code и Codex находят их через symlink'и в корне репозитория:
 
