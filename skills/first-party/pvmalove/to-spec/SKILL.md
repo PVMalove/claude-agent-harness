@@ -22,8 +22,8 @@ You must execute this skill in two distinct phases to ensure the user agrees wit
 3. **STOP AND ASK:** Present your proposed seams to the user and explicitly ask for their approval. **Do not proceed to Phase 2 until the user confirms.**
 
 ### Phase 2: Drafting & Publishing (After User Approval)
-1. **Draft the File:** Write the spec using the `<spec-template>` below. Save it first to `docs/tasks/`.
-    - *Naming convention:* If the issue ID is known, use it. If not, use a descriptive slug (e.g., `docs/tasks/add-user-auth.md`) and rename the file later once the ID is generated — see `docs/agents/artifacts.md` for the full convention, including the epic-folder grouping.
+1. **Draft the File:** Write the spec using the `<spec-template>` below, in its own folder under `docs/tasks/`.
+    - *Naming convention:* If the issue ID is known, use it. If not, use a descriptive slug (e.g., `docs/tasks/add-user-auth/add-user-auth.md`) and rename both the folder and file later once the ID is generated — see `docs/agents/artifacts.md` for the full convention, including the epic-folder grouping.
 2. **Publish to Tracker:** Publish the issue using the CLI: `gh issue create --body-file <path>`.
     - **CRITICAL:** Do NOT use an inline `--body` heredoc. Spec bodies contain characters (nested quotes, backticks, etc.) that break heredoc quoting. Always use `--body-file`.
 3. **Apply Labels:** This published issue acts as the feature's **epic**. Apply the following labels (see `docs/agents/triage-labels.md` for the full taxonomy):
