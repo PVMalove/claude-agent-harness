@@ -34,6 +34,11 @@ installation.
 5. **What files can't answer.** Definition of Done, delivery/merge policy, and forbidden actions
    rarely live in the repository. Note these as open questions instead of guessing them from stack
    conventions.
+6. **Decision-history signal.** Check whether the repository already has an ADR or decision-record
+   convention (`docs/adr/`, or another location an existing doc points to) and get a rough sense of
+   its merge/session history (`gh pr list --state merged` / `glab mr list --merged`, `git log --all
+   --oneline | wc -l`). This is signal for the optional Reconstruct decision history phase below, not
+   the investigation itself — keep it to a glance.
 
 Audit is read-only. Do not write, install, or select a capability during this phase.
 
@@ -44,6 +49,11 @@ existing AI-tool configuration and where it conflicts with this harness, and the
 capability. Ask only what Audit left genuinely open — do not re-ask what a file already answered.
 Do not proceed until the owner confirms this manifest.
 
+When step 6 found meaningful history and no existing decision-record convention, separately offer
+the optional Reconstruct decision history phase below — name it as a slow investigation independent
+of installing the harness, so the owner can decline lightly. A yes there does not change this
+manifest; a no does not block Install.
+
 ## Install
 
 Continue with `global-skills/start-project/SKILL.md`'s Assemble section from step 2 onward, using
@@ -52,3 +62,11 @@ its Finish section unchanged. A repository reaching this skill has no existing h
 so Assemble step 5 (`harness init`) applies, not step 6 (`harness update`/`adopt`) — unless Audit
 found a `.harness/harness.lock` already present, in which case stop and defer to `start-project`
 entirely: that is routine harness maintenance, not a first integration.
+
+## Reconstruct decision history (optional)
+
+Only when the owner opted in above. A separate, read-only investigation, independent of Install in
+both directions — it neither blocks Install nor requires the harness having been installed first.
+Read [RECONSTRUCT-HISTORY.md](./RECONSTRUCT-HISTORY.md) for sourcing, evidentiary discipline, the ADR
+template, and the closing report shape. It writes no file — ADRs included — until the owner has seen
+that report and separately authorized which ones to write.
