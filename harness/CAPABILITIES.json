@@ -40,7 +40,7 @@
     ]
   },
   "pvmalove-suite": {
-    "description": "Личная сборка поверх mattpocock-suite: 7 first-party переопределений (workflow::*/hitl/afk triage-таксономия вместо канонических ролей апстрима, epic::<slug> заменён на native sub-issues в to-spec/to-tickets, обязательная PR-пауза без авто-мёрджа, настраиваемый язык вывода code-review, вопросы grilling через AskUserQuestion вместо простого текста) и два новых скилла (qa-gate, конфиг-драйвен через .harness/project.json; to-guide — hitl-аналог implement, готовит гайд с промптами для ручного кодинга вместо реализации агентом). Выбирается вместо mattpocock-suite, не вместе с ней — расширяет её через extends/overrides/additions вместо дублирования списка.",
+    "description": "Личная сборка поверх mattpocock-suite: 8 first-party переопределений (workflow::*/hitl/afk triage-таксономия вместо канонических ролей апстрима, epic::<slug> заменён на native sub-issues в to-spec/to-tickets, обязательная PR-пауза без авто-мёрджа, настраиваемый язык вывода code-review, вопросы grilling через AskUserQuestion вместо простого текста, тикеты wayfinder получают настоящие hitl/afk/workflow::ready→in-progress лейблы вместо одного лишь своего wayfinder:* пространства) и три новых скилла (qa-gate, конфиг-драйвен через .harness/project.json; to-guide — hitl-аналог implement, готовит гайд с промптами для ручного кодинга вместо реализации агентом; setup-labels — создаёт/обновляет лейблы на GitHub из таблиц docs/agents/triage-labels.md). Выбирается вместо mattpocock-suite, не вместе с ней — расширяет её через extends/overrides/additions вместо дублирования списка.",
     "extends": "mattpocock-suite",
     "overrides": {
       "to-spec": "first-party/pvmalove/to-spec",
@@ -49,11 +49,13 @@
       "ask-matt": "first-party/pvmalove/ask-matt",
       "code-review": "first-party/pvmalove/code-review",
       "grilling": "first-party/pvmalove/grilling",
-      "triage": "first-party/pvmalove/triage"
+      "triage": "first-party/pvmalove/triage",
+      "wayfinder": "first-party/pvmalove/wayfinder"
     },
     "additions": [
       "first-party/pvmalove/qa-gate",
-      "first-party/pvmalove/to-guide"
+      "first-party/pvmalove/to-guide",
+      "first-party/pvmalove/setup-labels"
     ]
   }
 }
