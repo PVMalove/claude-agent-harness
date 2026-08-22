@@ -1,185 +1,249 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""End-to-end clean-room test: exercises harness/bin/harness and bin/install-global against
+throwaway repos, asserting on their resulting filesystem state."""
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-
-if command -v python3 >/dev/null 2>&1; then
-  PYTHON=python3
-elif command -v python >/dev/null 2>&1; then
-  PYTHON=python
-else
-  echo "error: no python3 or python interpreter found on PATH" >&2
-  exit 1
-fi
-
-# On Windows/MSYS (Git Bash), `ln -s` without SeCreateSymbolicLinkPrivilege silently
-# falls back to copying files / creating plain directories instead of real reparse-point
-# symlinks - invisible to both `[ -L ]` and Python's os.path.islink(). `nativestrict`
-# forces real symlinks (works under Windows Developer Mode) and errors loudly instead
-# of faking it. A no-op outside MSYS - GNU coreutils elsewhere ignores this variable.
-export MSYS="${MSYS:-winsymlinks:nativestrict}"
-
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-harness-test.XXXXXX")"
-trap 'rm -rf "$TEST_ROOT"' EXIT
-
-fill_agents() {
-  "$PYTHON" - "$1/AGENTS.md" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-path.write_text(re.sub(r"{{[^{}\n]+}}", "N/A", path.read_text()))
-PY
-}
-
-PROJECT="$TEST_ROOT/project"
-FOUNDATION="$TEST_ROOT/foundation"
-TARGET_HOME="$TEST_ROOT/home"
-mkdir -p "$PROJECT" "$FOUNDATION" "$TARGET_HOME"
-git -C "$PROJECT" init -q
-git -C "$FOUNDATION" init -q
-
-"$PYTHON" "$ROOT/harness/bin/harness" init "$FOUNDATION" \
-  --project-type content \
-  --base-branch main
-"$PYTHON" "$ROOT/harness/bin/harness" diff "$FOUNDATION"
-if "$PYTHON" "$ROOT/harness/bin/harness" health "$FOUNDATION" >/dev/null 2>&1; then
-  echo "unresolved AGENTS.md unexpectedly passed health" >&2
-  exit 1
-fi
-fill_agents "$FOUNDATION"
-"$PYTHON" "$ROOT/harness/bin/harness" health "$FOUNDATION"
-[ "$(find "$FOUNDATION/.harness/skills" -name SKILL.md -type f | wc -l | tr -d ' ')" = "5" ]
-grep -q -- '- Type: content' "$FOUNDATION/AGENTS.md"
-grep -q '| `grilling` | `.harness/skills/grilling` |' "$FOUNDATION/.harness/skills/REGISTRY.md"
-
-"$PYTHON" "$ROOT/harness/bin/harness" init "$PROJECT" \
-  --stack node \
-  --capability mattpocock-suite \
-  --base-branch main
-fill_agents "$PROJECT"
-
-"$PYTHON" "$ROOT/harness/bin/harness" diff "$PROJECT"
-"$PYTHON" "$ROOT/harness/bin/harness" health "$PROJECT"
-
-[ "$(find "$PROJECT/.harness/skills" -name SKILL.md -type f | wc -l | tr -d ' ')" = "25" ]
-[ "$(readlink "$PROJECT/.agents/skills")" = "../.harness/skills" ]
-[ "$(readlink "$PROJECT/.claude/skills")" = "../.harness/skills" ]
-
-list_output="$("$PYTHON" "$ROOT/harness/bin/harness" list "$PROJECT")"
-[ "$list_output" = "$(LC_ALL=C sort <<<"$list_output")" ]
-grep -q '^ask-matt$' <<<"$list_output"
-
-printf '\nlocal edit\n' >> "$PROJECT/.harness/skills/ask-matt/SKILL.md"
-if "$PYTHON" "$ROOT/harness/bin/harness" diff "$PROJECT" >/dev/null 2>&1; then
-  echo "drift check unexpectedly passed" >&2
-  exit 1
-fi
-if "$PYTHON" "$ROOT/harness/bin/harness" update "$PROJECT" >/dev/null 2>&1; then
-  echo "non-forced update unexpectedly overwrote a local edit" >&2
-  exit 1
-fi
-"$PYTHON" "$ROOT/harness/bin/harness" update "$PROJECT" --force >/dev/null
-"$PYTHON" "$ROOT/harness/bin/harness" health "$PROJECT"
-
-printf '%s\n' '{"mcpServers": {}}' > "$PROJECT/.mcp.json"
-if "$PYTHON" "$ROOT/harness/bin/harness" health "$PROJECT" >/dev/null 2>&1; then
-  echo "uninventoried project integration unexpectedly passed health" >&2
-  exit 1
-fi
-"$PYTHON" - "$PROJECT" <<'PY'
+import filecmp
 import hashlib
 import json
+import os
+import re
+import shutil
+import stat
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-repo = Path(sys.argv[1])
-config = repo / ".mcp.json"
-payload = {
-    "schema": 1,
-    "integrations": [{
-        "id": "test-mcp",
-        "kind": "mcp",
-        "runtimes": ["codex"],
-        "config": ".mcp.json",
-        "sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
-        "secret_refs": ["TEST_MCP_TOKEN"],
-        "verify": "Open a fresh session and list MCP tools.",
-    }],
-}
-path = repo / ".harness/integrations.json"
-path.write_text(json.dumps(payload, indent=2) + "\n")
-PY
-"$PYTHON" "$ROOT/harness/bin/harness" health "$PROJECT"
+MIN_PYTHON = (3, 9)
+if sys.version_info < MIN_PYTHON:
+    sys.stderr.write(
+        "[ERROR] test-clean-room requires Python %s+ (found %s).\n"
+        % (".".join(map(str, MIN_PYTHON)), sys.version.split()[0])
+    )
+    sys.exit(1)
 
-runtime_args=()
-for runtime_name in codex claude kimi opencode hermes; do
-  runtime_args+=(--runtime "$runtime_name")
-done
-mkdir -p "$TARGET_HOME/.agents/skills" "$TARGET_HOME/.claude/skills" "$TARGET_HOME/.hermes/skills"
-for root in "$TARGET_HOME/.agents/skills" "$TARGET_HOME/.claude/skills" "$TARGET_HOME/.hermes/skills"; do
-  ln -s "$ROOT/global-skills/project-harness-bootstrap" "$root/project-harness-bootstrap"
-  ln -s "$ROOT/global-skills/skill-library" "$root/skill-library"
-done
-"$PYTHON" "$ROOT/bin/install-global" --target-home "$TARGET_HOME" "${runtime_args[@]}"
-"$PYTHON" "$ROOT/bin/install-global" --target-home "$TARGET_HOME" "${runtime_args[@]}" --check
-[ -L "$TARGET_HOME/.agents/skills/start-project" ]
-[ -L "$TARGET_HOME/.claude/skills/start-project" ]
-[ -L "$TARGET_HOME/.hermes/skills/start-project" ]
-[ -L "$TARGET_HOME/.agents/skills/integrate-project" ]
-[ -L "$TARGET_HOME/.claude/skills/integrate-project" ]
-[ -L "$TARGET_HOME/.hermes/skills/integrate-project" ]
-[ ! -e "$TARGET_HOME/.agents/skills/project-harness-bootstrap" ]
-[ ! -L "$TARGET_HOME/.agents/skills/project-harness-bootstrap" ]
-[ ! -e "$TARGET_HOME/.hermes/skills/skill-library" ]
-[ ! -L "$TARGET_HOME/.hermes/skills/skill-library" ]
+ROOT = Path(__file__).resolve().parent.parent
+HARNESS = [sys.executable, str(ROOT / "harness" / "bin" / "harness")]
+INSTALL_GLOBAL = [sys.executable, str(ROOT / "bin" / "install-global")]
 
-FOREIGN_HOME="$TEST_ROOT/foreign-home"
-mkdir -p "$FOREIGN_HOME/.agents/skills" "$FOREIGN_HOME/foreign"
-ln -s "$FOREIGN_HOME/foreign" "$FOREIGN_HOME/.agents/skills/skill-library"
-if "$PYTHON" "$ROOT/bin/install-global" --target-home "$FOREIGN_HOME" --runtime codex --skills-only; then
-  echo "foreign retired entry was unexpectedly accepted" >&2
-  exit 1
-fi
-[ "$(readlink "$FOREIGN_HOME/.agents/skills/skill-library")" = "$FOREIGN_HOME/foreign" ]
 
-OVERLAY_HOME="$TEST_ROOT/overlay-home"
-mkdir -p "$OVERLAY_HOME"
-"$PYTHON" "$ROOT/bin/install-global" --target-home "$OVERLAY_HOME" "${runtime_args[@]}" --skills-only
-[ ! -e "$OVERLAY_HOME/.codex/AGENTS.md" ]
-[ -L "$OVERLAY_HOME/.agents/skills/start-project" ]
-[ -L "$OVERLAY_HOME/.hermes/skills/start-project" ]
-[ -L "$OVERLAY_HOME/.agents/skills/integrate-project" ]
-[ -L "$OVERLAY_HOME/.hermes/skills/integrate-project" ]
+def run_ok(cmd, quiet=False, quiet_all=False):
+    """Run a command that must succeed; propagate its exit code (and its own stderr) on failure,
+    matching `set -e`."""
+    stdout = subprocess.DEVNULL if (quiet or quiet_all) else None
+    stderr = subprocess.DEVNULL if quiet_all else None
+    result = subprocess.run(cmd, stdout=stdout, stderr=stderr)
+    if result.returncode != 0:
+        sys.exit(result.returncode)
 
-LEGACY="$TEST_ROOT/legacy"
-mkdir -p "$LEGACY/.harness/skills/project-only" "$LEGACY/.harness/skills/ask-matt"
-git -C "$LEGACY" init -q
-printf '%s\n' '# Legacy project' > "$LEGACY/AGENTS.md"
-printf '%s\n' '---' 'name: project-only' 'description: Use for the legacy project-only workflow.' '---' '' '# Project only' > "$LEGACY/.harness/skills/project-only/SKILL.md"
-mkdir -p "$LEGACY/.harness/skills/project-only/tool/node_modules/.vite"
-printf '%s\n' 'node_modules/' > "$LEGACY/.harness/skills/project-only/tool/.gitignore"
-printf '%s\n' 'initial runtime result' > "$LEGACY/.harness/skills/project-only/tool/node_modules/.vite/results.json"
-printf '%s\n' 'old fork' > "$LEGACY/.harness/skills/ask-matt/SKILL.md"
-printf '%s\n' '{"schema": 0, "files": {}}' > "$LEGACY/.harness/harness.lock"
-"$PYTHON" "$ROOT/harness/bin/harness" adopt "$LEGACY" \
-  --capability mattpocock-suite \
-  --replace-conflicts
-[ -f "$LEGACY/.harness/skills/project-only/SKILL.md" ]
-cmp "$ROOT/skills/vendor/mattpocock/engineering/ask-matt/SKILL.md" \
-  "$LEGACY/.harness/skills/ask-matt/SKILL.md"
-if "$PYTHON" "$ROOT/harness/bin/harness" health "$LEGACY" >/dev/null 2>&1; then
-  echo "unlocked project-owned skill unexpectedly passed health" >&2
-  exit 1
-fi
-"$PYTHON" "$ROOT/harness/bin/harness" lock-project-skills "$LEGACY"
-if grep -q 'node_modules' "$LEGACY/.harness/overlays/project-local.lock"; then
-  echo "project-local lock unexpectedly contains ignored runtime files" >&2
-  exit 1
-fi
-"$PYTHON" "$ROOT/harness/bin/harness" health "$LEGACY"
-printf '%s\n' 'changed runtime result' > "$LEGACY/.harness/skills/project-only/tool/node_modules/.vite/results.json"
-"$PYTHON" "$ROOT/harness/bin/harness" health "$LEGACY"
 
-echo "clean-room verification passed"
+def run_fails(cmd, quiet=False, quiet_all=False) -> bool:
+    """Run a command expected to fail; return True if it did."""
+    stdout = subprocess.DEVNULL if (quiet or quiet_all) else None
+    stderr = subprocess.DEVNULL if quiet_all else None
+    result = subprocess.run(cmd, stdout=stdout, stderr=stderr)
+    return result.returncode != 0
+
+
+def capture(cmd) -> str:
+    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+
+
+def fill_agents(repo: Path):
+    agents = repo / "AGENTS.md"
+    agents.write_text(re.sub(r"{{[^{}\n]+}}", "N/A", agents.read_text(encoding="utf-8")), encoding="utf-8")
+
+
+def count_skill_files(skills_dir: Path) -> int:
+    return sum(1 for p in skills_dir.rglob("SKILL.md") if p.is_file())
+
+
+def _force_remove_readonly(func, path, exc_info):
+    # git leaves some files read-only on Windows; clear the bit and retry the removal.
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def main():
+    test_root = Path(tempfile.mkdtemp(prefix="agent-harness-test."))
+    try:
+        _run(test_root)
+    finally:
+        shutil.rmtree(test_root, onerror=_force_remove_readonly)
+
+
+def _run(test_root: Path):
+    project = test_root / "project"
+    foundation = test_root / "foundation"
+    target_home = test_root / "home"
+    for d in (project, foundation, target_home):
+        d.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=foundation, check=True)
+
+    run_ok(HARNESS + ["init", str(foundation), "--project-type", "content", "--base-branch", "main"])
+    run_ok(HARNESS + ["diff", str(foundation)])
+    if not run_fails(HARNESS + ["health", str(foundation)], quiet_all=True):
+        sys.exit("unresolved AGENTS.md unexpectedly passed health")
+    fill_agents(foundation)
+    run_ok(HARNESS + ["health", str(foundation)])
+    if count_skill_files(foundation / ".harness" / "skills") != 5:
+        sys.exit("expected 5 skills in foundation")
+    if "- Type: content" not in (foundation / "AGENTS.md").read_text(encoding="utf-8"):
+        sys.exit("AGENTS.md missing '- Type: content'")
+    if "| `grilling` | `.harness/skills/grilling` |" not in (
+        foundation / ".harness" / "skills" / "REGISTRY.md"
+    ).read_text(encoding="utf-8"):
+        sys.exit("REGISTRY.md missing grilling entry")
+
+    run_ok(HARNESS + ["init", str(project), "--stack", "node", "--capability", "mattpocock-suite", "--base-branch", "main"])
+    fill_agents(project)
+
+    run_ok(HARNESS + ["diff", str(project)])
+    run_ok(HARNESS + ["health", str(project)])
+
+    if count_skill_files(project / ".harness" / "skills") != 25:
+        sys.exit("expected 25 skills in project")
+    if (project / ".agents" / "skills").readlink().as_posix() != "../.harness/skills":
+        sys.exit(".agents/skills does not link to ../.harness/skills")
+    if (project / ".claude" / "skills").readlink().as_posix() != "../.harness/skills":
+        sys.exit(".claude/skills does not link to ../.harness/skills")
+
+    list_output = capture(HARNESS + ["list", str(project)])
+    lines = list_output.splitlines()
+    if lines != sorted(lines):
+        sys.exit("harness list output is not sorted")
+    if "ask-matt" not in lines:
+        sys.exit("ask-matt missing from harness list output")
+
+    with (project / ".harness" / "skills" / "ask-matt" / "SKILL.md").open("a", encoding="utf-8") as f:
+        f.write("\nlocal edit\n")
+    if not run_fails(HARNESS + ["diff", str(project)], quiet_all=True):
+        sys.exit("drift check unexpectedly passed")
+    if not run_fails(HARNESS + ["update", str(project)], quiet_all=True):
+        sys.exit("non-forced update unexpectedly overwrote a local edit")
+    run_ok(HARNESS + ["update", str(project), "--force"], quiet=True)
+    run_ok(HARNESS + ["health", str(project)])
+
+    (project / ".mcp.json").write_text('{"mcpServers": {}}\n', encoding="utf-8")
+    if not run_fails(HARNESS + ["health", str(project)], quiet_all=True):
+        sys.exit("uninventoried project integration unexpectedly passed health")
+
+    mcp_config = project / ".mcp.json"
+    integrations_payload = {
+        "schema": 1,
+        "integrations": [
+            {
+                "id": "test-mcp",
+                "kind": "mcp",
+                "runtimes": ["codex"],
+                "config": ".mcp.json",
+                "sha256": hashlib.sha256(mcp_config.read_bytes()).hexdigest(),
+                "secret_refs": ["TEST_MCP_TOKEN"],
+                "verify": "Open a fresh session and list MCP tools.",
+            }
+        ],
+    }
+    (project / ".harness" / "integrations.json").write_text(
+        json.dumps(integrations_payload, indent=2) + "\n", encoding="utf-8"
+    )
+    run_ok(HARNESS + ["health", str(project)])
+
+    runtime_args = []
+    for runtime_name in ("codex", "claude", "kimi", "opencode", "hermes"):
+        runtime_args += ["--runtime", runtime_name]
+    legacy_roots = [target_home / ".agents" / "skills", target_home / ".claude" / "skills", target_home / ".hermes" / "skills"]
+    for legacy_root in legacy_roots:
+        legacy_root.mkdir(parents=True, exist_ok=True)
+        (legacy_root / "project-harness-bootstrap").symlink_to(
+            ROOT / "global-skills" / "project-harness-bootstrap", target_is_directory=True
+        )
+        (legacy_root / "skill-library").symlink_to(ROOT / "global-skills" / "skill-library", target_is_directory=True)
+
+    run_ok(INSTALL_GLOBAL + ["--target-home", str(target_home)] + runtime_args)
+    run_ok(INSTALL_GLOBAL + ["--target-home", str(target_home)] + runtime_args + ["--check"])
+    for rel in (
+        ".agents/skills/start-project",
+        ".claude/skills/start-project",
+        ".hermes/skills/start-project",
+        ".agents/skills/integrate-project",
+        ".claude/skills/integrate-project",
+        ".hermes/skills/integrate-project",
+    ):
+        if not (target_home / rel).is_symlink():
+            sys.exit(f"expected symlink missing: {rel}")
+    for rel in (".agents/skills/project-harness-bootstrap", ".hermes/skills/skill-library"):
+        p = target_home / rel
+        if p.exists() or p.is_symlink():
+            sys.exit(f"retired entry still present: {rel}")
+
+    foreign_home = test_root / "foreign-home"
+    (foreign_home / ".agents" / "skills").mkdir(parents=True)
+    (foreign_home / "foreign").mkdir(parents=True)
+    (foreign_home / ".agents" / "skills" / "skill-library").symlink_to(
+        foreign_home / "foreign", target_is_directory=True
+    )
+    if not run_fails(INSTALL_GLOBAL + ["--target-home", str(foreign_home), "--runtime", "codex", "--skills-only"]):
+        sys.exit("foreign retired entry was unexpectedly accepted")
+    foreign_link = foreign_home / ".agents" / "skills" / "skill-library"
+    if not foreign_link.is_symlink():
+        sys.exit("foreign symlink was unexpectedly replaced with something else")
+    if not os.path.samefile(foreign_link, foreign_home / "foreign"):
+        sys.exit("foreign symlink was unexpectedly modified")
+
+    overlay_home = test_root / "overlay-home"
+    overlay_home.mkdir(parents=True)
+    run_ok(INSTALL_GLOBAL + ["--target-home", str(overlay_home)] + runtime_args + ["--skills-only"])
+    if (overlay_home / ".codex" / "AGENTS.md").exists():
+        sys.exit("--skills-only unexpectedly wrote a profile file")
+    for rel in (
+        ".agents/skills/start-project",
+        ".hermes/skills/start-project",
+        ".agents/skills/integrate-project",
+        ".hermes/skills/integrate-project",
+    ):
+        if not (overlay_home / rel).is_symlink():
+            sys.exit(f"expected symlink missing: {rel}")
+
+    legacy = test_root / "legacy"
+    (legacy / ".harness" / "skills" / "project-only").mkdir(parents=True)
+    (legacy / ".harness" / "skills" / "ask-matt").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=legacy, check=True)
+    (legacy / "AGENTS.md").write_text("# Legacy project\n", encoding="utf-8")
+    (legacy / ".harness" / "skills" / "project-only" / "SKILL.md").write_text(
+        "---\nname: project-only\ndescription: Use for the legacy project-only workflow.\n---\n\n# Project only\n",
+        encoding="utf-8",
+    )
+    tool_cache = legacy / ".harness" / "skills" / "project-only" / "tool" / "node_modules" / ".vite"
+    tool_cache.mkdir(parents=True)
+    (legacy / ".harness" / "skills" / "project-only" / "tool" / ".gitignore").write_text(
+        "node_modules/\n", encoding="utf-8"
+    )
+    (tool_cache / "results.json").write_text("initial runtime result\n", encoding="utf-8")
+    (legacy / ".harness" / "skills" / "ask-matt" / "SKILL.md").write_text("old fork\n", encoding="utf-8")
+    (legacy / ".harness" / "harness.lock").write_text('{"schema": 0, "files": {}}\n', encoding="utf-8")
+
+    run_ok(HARNESS + ["adopt", str(legacy), "--capability", "mattpocock-suite", "--replace-conflicts"])
+    if not (legacy / ".harness" / "skills" / "project-only" / "SKILL.md").is_file():
+        sys.exit("adopt dropped a project-only skill")
+    if not filecmp.cmp(
+        ROOT / "skills" / "vendor" / "mattpocock" / "engineering" / "ask-matt" / "SKILL.md",
+        legacy / ".harness" / "skills" / "ask-matt" / "SKILL.md",
+        shallow=False,
+    ):
+        sys.exit("adopt --replace-conflicts did not restore the canonical ask-matt")
+    if not run_fails(HARNESS + ["health", str(legacy)], quiet_all=True):
+        sys.exit("unlocked project-owned skill unexpectedly passed health")
+
+    run_ok(HARNESS + ["lock-project-skills", str(legacy)])
+    if "node_modules" in (legacy / ".harness" / "overlays" / "project-local.lock").read_text(encoding="utf-8"):
+        sys.exit("project-local lock unexpectedly contains ignored runtime files")
+    run_ok(HARNESS + ["health", str(legacy)])
+    (tool_cache / "results.json").write_text("changed runtime result\n", encoding="utf-8")
+    run_ok(HARNESS + ["health", str(legacy)])
+
+    print("clean-room verification passed")
+
+
+if __name__ == "__main__":
+    main()

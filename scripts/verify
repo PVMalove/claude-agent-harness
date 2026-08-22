@@ -1,68 +1,119 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""Project-wide verification: config/skill sanity checks, vendor pin integrity, then the full
+clean-room test-clean-room run."""
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-
-if command -v python3 >/dev/null 2>&1; then
-  PYTHON=python3
-elif command -v python >/dev/null 2>&1; then
-  PYTHON=python
-else
-  echo "error: no python3 or python interpreter found on PATH" >&2
-  exit 1
-fi
-
-"$PYTHON" -m json.tool "$ROOT/harness/CAPABILITIES.json" >/dev/null
-"$PYTHON" -m py_compile "$ROOT/harness/bin/harness" "$ROOT/scripts/build-registry" "$ROOT/bin/install-global"
-bash -n "$ROOT/scripts/verify" "$ROOT/scripts/test-clean-room"
-
-grep -q '^name: start-project$' "$ROOT/global-skills/start-project/SKILL.md"
-grep -q '^name: integrate-project$' "$ROOT/global-skills/integrate-project/SKILL.md"
-if grep -R -n 'TODO' "$ROOT/global-skills"; then
-  echo "global-skills still contains TODO markers" >&2
-  exit 1
-fi
-grep -q 'until the owner confirms' "$ROOT/global-skills/start-project/SKILL.md"
-grep -q 'Prove each layer separately' "$ROOT/global-skills/start-project/SKILL.md"
-grep -q 'Audit is read-only' "$ROOT/global-skills/integrate-project/SKILL.md"
-
-"$PYTHON" "$ROOT/scripts/build-registry"
-git -C "$ROOT" diff --exit-code -- skills/REGISTRY.md
-
-"$PYTHON" - "$ROOT" <<'PY'
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
-root = Path(sys.argv[1])
-plugin = json.loads((root / "third_party/mattpocock-skills/plugin.json").read_text())
-capabilities = json.loads((root / "harness/CAPABILITIES.json").read_text())
-expected = [entry.removeprefix("./skills/") for entry in plugin["skills"]]
-actual = capabilities["mattpocock-suite"]["skills"]
-actual = [entry.removeprefix("vendor/mattpocock/") for entry in actual]
-if expected != actual:
-    raise SystemExit("mattpocock-suite does not match the pinned plugin manifest")
-
-vendor = root / "skills/vendor/mattpocock"
-skills = sorted(vendor.rglob("SKILL.md"))
-if len(skills) != len(expected):
-    raise SystemExit(f"vendor count mismatch: manifest={len(expected)} snapshot={len(skills)}")
-
-checksum_lines = (root / "third_party/mattpocock-skills/SHA256SUMS").read_text().splitlines()
-vendor_files = sorted(path for path in vendor.rglob("*") if path.is_file())
-if len(checksum_lines) != len(vendor_files):
-    raise SystemExit(
-        f"vendor file count mismatch: checksums={len(checksum_lines)} snapshot={len(vendor_files)}"
+MIN_PYTHON = (3, 9)
+if sys.version_info < MIN_PYTHON:
+    sys.stderr.write(
+        "[ERROR] verify requires Python %s+ (found %s).\n"
+        % (".".join(map(str, MIN_PYTHON)), sys.version.split()[0])
     )
-for line in checksum_lines:
-    expected_hash, relative = line.split("  ", 1)
-    payload = (root / relative).read_bytes()
-    actual_hash = hashlib.sha256(payload).hexdigest()
-    if actual_hash != expected_hash:
-        raise SystemExit(f"vendor checksum mismatch: {relative}")
-PY
+    sys.exit(1)
 
-"$ROOT/scripts/test-clean-room"
+ROOT = Path(__file__).resolve().parent.parent
 
-echo "agent-harness verification passed"
+
+def run_ok(cmd, **kwargs):
+    """Run a command that must succeed; propagate its real exit code (and its own stderr) on
+    failure, matching `set -e` instead of dumping a CalledProcessError traceback."""
+    result = subprocess.run(cmd, **kwargs)
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+
+def grep_line(path: Path, exact_line: str):
+    if exact_line not in path.read_text(encoding="utf-8").splitlines():
+        sys.exit(f"{path}: expected line {exact_line!r} not found")
+
+
+def grep_contains(path: Path, substring: str):
+    if substring not in path.read_text(encoding="utf-8"):
+        sys.exit(f"{path}: expected text {substring!r} not found")
+
+
+def check_no_todo(base: Path):
+    found = []
+    for path in sorted(base.rglob("*")):
+        if not path.is_file():
+            continue
+        for lineno, line in enumerate(path.read_bytes().split(b"\n"), 1):
+            if b"TODO" in line:
+                found.append(f"{path}:{lineno}:{line.decode('utf-8', errors='backslashreplace')}")
+    if found:
+        print("\n".join(found))
+        sys.exit("global-skills still contains TODO markers")
+
+
+def check_vendor_pin():
+    plugin = json.loads((ROOT / "third_party" / "mattpocock-skills" / "plugin.json").read_text(encoding="utf-8"))
+    capabilities = json.loads((ROOT / "harness" / "CAPABILITIES.json").read_text(encoding="utf-8"))
+    expected = [entry.removeprefix("./skills/") for entry in plugin["skills"]]
+    actual = capabilities["mattpocock-suite"]["skills"]
+    actual = [entry.removeprefix("vendor/mattpocock/") for entry in actual]
+    if expected != actual:
+        sys.exit("mattpocock-suite does not match the pinned plugin manifest")
+
+    vendor = ROOT / "skills" / "vendor" / "mattpocock"
+    skills = sorted(vendor.rglob("SKILL.md"))
+    if len(skills) != len(expected):
+        sys.exit(f"vendor count mismatch: manifest={len(expected)} snapshot={len(skills)}")
+
+    checksum_lines = (ROOT / "third_party" / "mattpocock-skills" / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+    vendor_files = sorted(path for path in vendor.rglob("*") if path.is_file())
+    if len(checksum_lines) != len(vendor_files):
+        sys.exit(
+            f"vendor file count mismatch: checksums={len(checksum_lines)} snapshot={len(vendor_files)}"
+        )
+    for line in checksum_lines:
+        expected_hash, relative = line.split("  ", 1)
+        payload = (ROOT / relative).read_bytes()
+        actual_hash = hashlib.sha256(payload).hexdigest()
+        if actual_hash != expected_hash:
+            sys.exit(f"vendor checksum mismatch: {relative}")
+
+
+def main():
+    run_ok(
+        [sys.executable, "-m", "json.tool", str(ROOT / "harness" / "CAPABILITIES.json")],
+        stdout=subprocess.DEVNULL,
+    )
+    run_ok(
+        [
+            sys.executable,
+            "-m",
+            "py_compile",
+            str(ROOT / "harness" / "bin" / "harness"),
+            str(ROOT / "scripts" / "build-registry"),
+            str(ROOT / "bin" / "install-global"),
+            str(ROOT / "scripts" / "verify"),
+            str(ROOT / "scripts" / "test-clean-room"),
+        ]
+    )
+
+    start_project = ROOT / "global-skills" / "start-project" / "SKILL.md"
+    integrate_project = ROOT / "global-skills" / "integrate-project" / "SKILL.md"
+    grep_line(start_project, "name: start-project")
+    grep_line(integrate_project, "name: integrate-project")
+    check_no_todo(ROOT / "global-skills")
+    grep_contains(start_project, "until the owner confirms")
+    grep_contains(start_project, "Prove each layer separately")
+    grep_contains(integrate_project, "Audit is read-only")
+
+    run_ok([sys.executable, str(ROOT / "scripts" / "build-registry")])
+    run_ok(["git", "-C", str(ROOT), "diff", "--exit-code", "--", "skills/REGISTRY.md"])
+
+    check_vendor_pin()
+
+    run_ok([sys.executable, str(ROOT / "scripts" / "test-clean-room")])
+
+    print("agent-harness verification passed")
+
+
+if __name__ == "__main__":
+    main()
