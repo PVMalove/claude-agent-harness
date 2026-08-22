@@ -36,7 +36,15 @@ Every triaged issue or PR carries exactly one label from each of the first three
 | `task-report::required` | gray `#6a737d` | `/to-spec`, `/to-tickets` — acted on by `/implement` | Agent must post a completion report before closing. Applied by default to every ticket unless you say to skip it. Not part of `triage`'s own state machine — see [implement's SKILL.md](../../skills/first-party/pvmalove/implement/SKILL.md). |
 | `out-of-scope` | gray `#c2c2c2` | `/triage` | This project's `wontfix` — the request was explicitly rejected. Applied at close time; see `.out-of-scope/` handling in `triage/OUT-OF-SCOPE.md`. |
 
-Epic grouping no longer uses a label. A ticket decomposed from an epic is linked to it as a native GitHub **sub-issue**, the same mechanism `/wayfinder` uses for its map/ticket relationship — see [issue-tracker.md](./issue-tracker.md#wayfinding-operations). `wayfinder:map` and `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`) remain `/wayfinder`'s own separate namespace — a Wayfinder ticket also carries its own `hitl`/`afk` + `workflow::*` labels, but `workflow::specs` and `wayfinder:map` are not the same thing: the former is a triage state on an epic issue, the latter is Wayfinder's own map artifact.
+Epic grouping no longer uses a label. A ticket decomposed from an epic is linked to it as a native GitHub **sub-issue**, the same mechanism `/wayfinder` uses for its map/ticket relationship — see [issue-tracker.md](./issue-tracker.md#wayfinding-operations). `wayfinder:map` and `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`) remain `/wayfinder`'s own separate namespace, colors below — but a Wayfinder ticket (not the map itself) also carries the matching `hitl`/`afk` label plus `workflow::ready`, moved to `workflow::in-progress` on claim: the same two axes as everywhere else in this taxonomy, applied by `/wayfinder` itself rather than by `/triage`. `workflow::specs` and `wayfinder:map` are not the same thing: the former is a triage state on an epic issue, the latter is Wayfinder's own map artifact — the map never carries a `workflow::*` label.
+
+| Label | Color | Meaning |
+| --- | --- | --- |
+| `wayfinder:map` | dark blue `#0052cc` | The map issue itself — Destination, Notes, Decisions-so-far, the fog. |
+| `wayfinder:research` | green `#00875a` | AFK ticket type — reading docs/APIs/local resources to surface a fact. |
+| `wayfinder:prototype` | orange `#ff8b00` | HITL ticket type — a cheap concrete artifact to react to. |
+| `wayfinder:grilling` | violet `#6554c0` | HITL ticket type — a conversation, the default case. |
+| `wayfinder:task` | slate `#8993a4` | HITL-or-AFK ticket type — manual work that unblocks a decision. |
 
 ## State machine
 
