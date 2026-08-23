@@ -2,17 +2,17 @@
 
 ### 1. Fundamental Constraints & Tooling
 * **Zero Direct Commits:** Any direct commits to the main branch (`master`/`main`) or the current working branch are strictly prohibited unless it is an isolated feature branch.
-* **CLI Only:** Rely exclusively on `git` and GitHub CLI (`gh`) tools for repository and task operations.
-* **Issue First:** No development begins without a registered ticket. All implementation tasks MUST be created beforehand using `gh issue create`.
-* **Zero Auto-Merge:** The agent must never merge a pull request itself (`gh pr merge` or equivalent). Merging into `master`/`main` is exclusively a manual action performed by the developer, after they confirm in the Human QA & Merge step below.
-* **PR Confirmation Required:** The agent must not run `gh pr create` without first getting the developer's explicit go-ahead that the branch is ready to become a PR. This is a separate, earlier checkpoint than Human QA & Merge below (which covers review *after* the PR already exists) — finishing implementation, tests, and code-review does NOT by itself imply consent to open the PR.
+* **CLI Only:** Rely exclusively on `git` and your tracker's CLI — GitHub CLI (`gh`) or GitLab CLI (`glab`) — for repository and task operations.
+* **Issue First:** No development begins without a registered ticket. All implementation tasks MUST be created beforehand using `gh issue create` (`glab issue create` on GitLab). For the local markdown tracker, creating the ticket file under `.scratch/<feature-slug>/issues/` satisfies this instead — see [issue-tracker.md](./issue-tracker.md); that tracker also skips steps 6–7 below entirely (see `implement/SKILL.md` Phase 3 — no PR/merge step).
+* **Zero Auto-Merge:** The agent must never merge a pull request itself (`gh pr merge`/`glab mr merge` or equivalent). Merging into `master`/`main` is exclusively a manual action performed by the developer, after they confirm in the Human QA & Merge step below. This is unconditional regardless of the ticket's `hitl`/`afk` execution mode (see `docs/agents/triage-labels.md`) — `afk` means an agent can implement the work unattended, never that it may ship unattended.
+* **PR Confirmation Required:** The agent must not run `gh pr create`/`glab mr create` without first getting the developer's explicit go-ahead that the branch is ready to become a PR. This is a separate, earlier checkpoint than Human QA & Merge below (which covers review *after* the PR already exists) — finishing implementation, tests, and code-review does NOT by itself imply consent to open the PR. Like Zero Auto-Merge above, this gate does not relax for `afk`-labeled tickets.
 
 ### 2. Workflow Sequence
 
 1. **Initialization (Branching):**
-   An isolated branch is created for each task.
+   An isolated branch is created for each task, from an up-to-date `base_branch` — never from whatever branch happens to already be checked out.
    * **Format:** must match `branch_pattern` in `.harness/project.json` (default: `feature/issue-<ID>-<short-slug>`, where `<ID>` is the tracker issue number and `<short-slug>` is a short task description — transliterated per whatever convention this project's `.harness/project.json` documents, words separated by hyphens or underscores).
-   * **Command:** `git checkout -b feature/issue-<ID>-<slug>`
+   * **Command:** `git checkout <base_branch> && git pull && git checkout -b feature/issue-<ID>-<slug>`, where `<base_branch>` is `base_branch` in `.harness/project.json` (default `main`).
 2. **Post-branch Push:**
    * Immediately after creating the branch, push it to GitHub so it exists remotely: `git push -u origin feature/issue-<ID>-<slug>`.
 3. **Implementation & Quality Assurance (TDD):**
@@ -23,11 +23,11 @@
    * Commit messages **MUST** follow the **Semantic Commit Messages** standard (e.g., `feat: ...`, `fix: ...`, `refactor: ...`).
 5. **Continuous Push:**
    * Push commits to GitHub both while implementing the task and after addressing code-review feedback: `git push origin feature/issue-<ID>-<slug>`. Never leave finished commits sitting only in the local repo.
-6. **Integration (Pull Request):**
+6. **Integration (Pull Request):** *(local markdown tracker: skip this step and step 7 — see "Issue First" above.)*
    * **Confirm before opening:** before creating the PR, explicitly ask the developer whether the branch is ready to be opened as a pull request. Do not run `gh pr create` just because implementation, tests, and code-review are done — wait for an explicit go-ahead. Silence, or the mere fact that the task is otherwise complete, does not count as consent.
    * Once the developer confirms, run the `qa-gate` skill (see [issue-tracker.md](./issue-tracker.md)'s "When a skill says…" conventions for how tickets are referenced) and only proceed once it passes.
    * If the PR body template in [§3](#3-pr-body-template) has more structure than a short summary, delegate the body to the `pr-composer` subagent instead of improvising it inline.
-   * PR creation is performed via CLI: `gh pr create`.
+   * PR creation is performed via CLI: `gh pr create` (`glab mr create` on GitLab).
    * **Mandatory Requirement:** The pull request body MUST contain the phrase `Closes #<ID>` to automatically link and close the original ticket upon successful merge.
    * **Mandatory Requirement:** The pull request body MUST follow the template in [§3 PR Body Template](#3-pr-body-template) below.
 7. **Human QA & Merge:**
