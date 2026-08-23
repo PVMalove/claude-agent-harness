@@ -36,7 +36,7 @@
     "visual_review": {
       "type": "boolean",
       "default": false,
-      "description": "Whether to-tickets renders its ticket-breakdown checkpoint (Phase 1 step 4) as an interactive lavish-axi HTML artifact instead of a plain-text list. Optional - absent or false keeps today's plain-text list, unchanged."
+      "description": "Whether to-spec renders an optional lavish-axi HTML visual summary of the published spec (Phase 2 step 4) after publishing. A wrap-up recap, not a gate - publishing already happened either way. Optional - absent or false skips this step entirely."
     }
   }
 }
