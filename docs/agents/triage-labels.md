@@ -70,8 +70,10 @@ A local-markdown-tracked ticket (`.scratch/<feature>/issues/NN-*.md`) has no Git
 **Task report:** required (omit the line entirely if not required)
 ```
 
-`workflow::*`'s values are the same strings as the GitHub labels, plus a terminal `done` — `/implement` sets `**Workflow:** done` when it finishes a ticket, mirroring the `Closes #<ID>` auto-close a GitHub/GitLab ticket gets on merge (see `docs/agents/git-workflow.md`). There's no sub-issue mechanism for the local tracker; a decomposed ticket instead lives under the epic's `docs/tasks/issue-<epic-id>-<epic-slug>/` folder per `docs/agents/artifacts.md`'s grouping convention — the folder itself is the grouping, no label or field needed for it.
+This four-field block is the vocabulary that `issue-tracker-local.md`'s "a `Status:` line" refers to — a naming difference between the two docs, not a second schema. Wayfinder's own `Status: claimed/resolved` line (same source doc) is an orthogonal claim/lock marker for the file and coexists with these fields rather than replacing them.
+
+`workflow::*`'s values are the same strings as the GitHub labels, plus a terminal `done` — `/implement` sets `**Workflow:** done` when it finishes a ticket, mirroring the `Closes #<ID>` auto-close a GitHub/GitLab ticket gets on merge (see `docs/agents/git-workflow.md`). There's no sub-issue mechanism for the local tracker; a decomposed ticket instead lives under the feature's `.scratch/<feature-slug>/issues/` directory (see `.harness/skills/setup-matt-pocock-skills/issue-tracker-local.md`) — that directory itself is the grouping, no separate epic-folder or field needed for it.
 
 ## Adapting this taxonomy per project
 
-This is the taxonomy `pvmalove-suite` ships by default — it's a design choice (namespaced multi-axis labels), not a hardcoded requirement. Edit this file directly to rename axes or add project-specific context labels; `triage/SKILL.md` speaks the vocabulary documented here.
+This is the taxonomy `pvmalove-suite` ships by default — it's a design choice (namespaced multi-axis labels), not a hardcoded requirement. Renaming an axis or adding project-specific context labels means editing this file **and** `triage/SKILL.md` — the skill speaks the vocabulary documented here as hardcoded prose, not as data read from this file at runtime. Run `harness lock-project-skills` afterward so the customization is recorded as intentional provenance, rather than left as drift a future `harness update --force` could silently overwrite.

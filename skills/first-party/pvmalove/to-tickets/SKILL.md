@@ -37,7 +37,7 @@ You must execute this skill in two distinct phases. Do NOT publish anything to t
         - Publish one issue per ticket in dependency order using `gh issue create --body-file <path>`. **CRITICAL:** Do NOT use inline `--body` heredoc, as it breaks bash quoting.
         - Apply labels (see `docs/agents/triage-labels.md` for the full taxonomy): `bug`/`enhancement`, `workflow::ready` (or `workflow::blocked` if gated by another ticket in this batch), `hitl`/`afk`, and `task-report::required` unless told to skip it.
         - *Grouping:* Link every ticket to the parent epic as a **native sub-issue**. Do NOT use `epic::<slug>` labels.
-        - *Local Mirror:* If the source was an epic spec in `docs/tasks/`, move it to `docs/tasks/issue-<epic-id>-<epic-slug>/`. Save each published ticket's issue body to this folder as `issue-<ID>-<slug>.md`.
+        - *Local Mirror:* The epic spec already lives in its own folder under `docs/tasks/` (per `docs/agents/artifacts.md`) — rename that folder to `issue-<epic-id>-<epic-slug>/` first if it was still slug-only. Save each published ticket's issue body into that same folder, as `issue-<ID>-<slug>.md`.
         - *Frontier:* Don't trace `Blocked by` by hand to find what's takeable — query it, the same fields and mechanism as `/wayfinder`'s frontier query (`docs/agents/issue-tracker.md#wayfinding-operations`), scoped to the epic's sub-issues instead of the map's children. `/implement` runs this same query itself when handed the epic instead of a specific ticket.
         - Do NOT close or rewrite the parent epic issue, except to append a short list of the subtask numbers you created.
 2. **Summarize the Batch:**
