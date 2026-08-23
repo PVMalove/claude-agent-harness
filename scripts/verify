@@ -114,17 +114,16 @@ def check_pvmalove_override_docs_sync():
 
 
 def check_pvmalove_additions_docs_sync():
-    """CAPABILITIES.json's pvmalove-suite.additions is the source of truth for first-party-only
-    skills; docs/agents/harness-guide.md section 12's project-specific table restates the same
-    set by hand. Catch the two falling out of sync - this exact drift shipped once already:
-    setup-labels was added to additions without a matching table row."""
+    """CAPABILITIES.json's pvmalove-suite.additions is the source of truth for skills with no
+    equivalent in mattpocock-suite, first-party or vendored; docs/agents/harness-guide.md
+    section 12's project-specific table restates the same set by hand. Catch the two falling
+    out of sync - this exact drift shipped once already: setup-labels was added to additions
+    without a matching table row."""
     capabilities = json.loads((ROOT / "harness" / "CAPABILITIES.json").read_text(encoding="utf-8"))
-    expected = {
-        entry.removeprefix("first-party/pvmalove/") for entry in capabilities["pvmalove-suite"]["additions"]
-    }
+    expected = {entry.rsplit("/", 1)[-1] for entry in capabilities["pvmalove-suite"]["additions"]}
 
     guide = _normalized_text(ROOT / "docs" / "agents" / "harness-guide.md")
-    section = re.search(r"\n### Проектные \(first-party, вне апстрима\)\n(.*?)\n---\n", guide, re.DOTALL)
+    section = re.search(r"\n### Проектные \(вне апстрима\)\n(.*?)\n---\n", guide, re.DOTALL)
     if not section:
         sys.exit("harness-guide.md: could not find the project-specific skill catalog table")
     documented = set(re.findall(r"^\| `([a-z0-9-]+)` \(skill\) \|", section.group(1), re.MULTILINE))
@@ -142,9 +141,7 @@ def check_pvmalove_suite_summary_sync():
     overrides, 1 addition' counts survived three days and a section-7-only fix untouched."""
     capabilities = json.loads((ROOT / "harness" / "CAPABILITIES.json").read_text(encoding="utf-8"))
     expected_overrides = set(capabilities["pvmalove-suite"]["overrides"].keys())
-    expected_additions = {
-        entry.removeprefix("first-party/pvmalove/") for entry in capabilities["pvmalove-suite"]["additions"]
-    }
+    expected_additions = {entry.rsplit("/", 1)[-1] for entry in capabilities["pvmalove-suite"]["additions"]}
 
     for doc in (ROOT / "README.md", ROOT / "CONTEXT.md"):
         text = _normalized_text(doc)
@@ -170,32 +167,50 @@ def check_pvmalove_suite_summary_sync():
             )
 
 
+VENDOR_SNAPSHOTS = [
+    {"third_party": "mattpocock-skills", "vendor_dir": "mattpocock", "capability": "mattpocock-suite"},
+    {"third_party": "lavish-axi", "vendor_dir": "lavish", "capability": None},
+]
+
+
 def check_vendor_pin():
-    plugin = json.loads((ROOT / "third_party" / "mattpocock-skills" / "plugin.json").read_text(encoding="utf-8"))
+    """Each entry in VENDOR_SNAPSHOTS pairs a third_party/<x> provenance dir with its
+    skills/vendor/<y> snapshot. When the source plugin manifest declares its own skill list
+    (mattpocock's does, in a "skills" key; lavish-axi's agent-plugins.org manifest doesn't),
+    also cross-check it against the matching CAPABILITIES.json capability. Every snapshot,
+    regardless of manifest shape, gets its SHA256SUMS verified byte-for-byte."""
     capabilities = json.loads((ROOT / "harness" / "CAPABILITIES.json").read_text(encoding="utf-8"))
-    expected = [entry.removeprefix("./skills/") for entry in plugin["skills"]]
-    actual = capabilities["mattpocock-suite"]["skills"]
-    actual = [entry.removeprefix("vendor/mattpocock/") for entry in actual]
-    if expected != actual:
-        sys.exit("mattpocock-suite does not match the pinned plugin manifest")
+    for spec in VENDOR_SNAPSHOTS:
+        third_party = ROOT / "third_party" / spec["third_party"]
+        vendor = ROOT / "skills" / "vendor" / spec["vendor_dir"]
 
-    vendor = ROOT / "skills" / "vendor" / "mattpocock"
-    skills = sorted(vendor.rglob("SKILL.md"))
-    if len(skills) != len(expected):
-        sys.exit(f"vendor count mismatch: manifest={len(expected)} snapshot={len(skills)}")
+        if spec["capability"]:
+            plugin = json.loads((third_party / "plugin.json").read_text(encoding="utf-8"))
+            expected = [entry.removeprefix("./skills/") for entry in plugin["skills"]]
+            actual = capabilities[spec["capability"]]["skills"]
+            actual = [entry.removeprefix(f"vendor/{spec['vendor_dir']}/") for entry in actual]
+            if expected != actual:
+                sys.exit(f"{spec['capability']} does not match the pinned plugin manifest")
 
-    checksum_lines = (ROOT / "third_party" / "mattpocock-skills" / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
-    vendor_files = sorted(path for path in vendor.rglob("*") if path.is_file())
-    if len(checksum_lines) != len(vendor_files):
-        sys.exit(
-            f"vendor file count mismatch: checksums={len(checksum_lines)} snapshot={len(vendor_files)}"
-        )
-    for line in checksum_lines:
-        expected_hash, relative = line.split("  ", 1)
-        payload = (ROOT / relative).read_bytes()
-        actual_hash = hashlib.sha256(payload).hexdigest()
-        if actual_hash != expected_hash:
-            sys.exit(f"vendor checksum mismatch: {relative}")
+            skills = sorted(vendor.rglob("SKILL.md"))
+            if len(skills) != len(expected):
+                sys.exit(
+                    f"vendor count mismatch ({spec['vendor_dir']}): manifest={len(expected)} snapshot={len(skills)}"
+                )
+
+        checksum_lines = (third_party / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+        vendor_files = sorted(path for path in vendor.rglob("*") if path.is_file())
+        if len(checksum_lines) != len(vendor_files):
+            sys.exit(
+                f"vendor file count mismatch ({spec['vendor_dir']}): "
+                f"checksums={len(checksum_lines)} snapshot={len(vendor_files)}"
+            )
+        for line in checksum_lines:
+            expected_hash, relative = line.split("  ", 1)
+            payload = (ROOT / relative).read_bytes()
+            actual_hash = hashlib.sha256(payload).hexdigest()
+            if actual_hash != expected_hash:
+                sys.exit(f"vendor checksum mismatch: {relative}")
 
 
 def main():

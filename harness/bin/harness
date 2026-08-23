@@ -575,7 +575,7 @@ def validate_integrations(repo: Path, problems: list[str]) -> int:
 
 
 PROJECT_JSON_REQUIRED_FIELDS = ("language", "base_branch", "branch_pattern", "qa_gate_commands")
-PROJECT_JSON_ALLOWED_FIELDS = frozenset(PROJECT_JSON_REQUIRED_FIELDS) | {"$schema"}
+PROJECT_JSON_ALLOWED_FIELDS = frozenset(PROJECT_JSON_REQUIRED_FIELDS) | {"$schema", "visual_review"}
 
 
 def validate_project_json(repo: Path, problems: list[str]) -> None:
@@ -611,6 +611,8 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
         commands = data["qa_gate_commands"]
         if not isinstance(commands, list) or not all(isinstance(item, str) for item in commands):
             problems.append(".harness/project.json qa_gate_commands must be a list of strings")
+    if "visual_review" in data and not isinstance(data["visual_review"], bool):
+        problems.append(".harness/project.json visual_review must be a boolean")
 
 
 def record_integration(

@@ -32,6 +32,11 @@
         "minLength": 1
       },
       "description": "Lint/typecheck/test commands qa-gate runs in order before a PR opens. An empty list is valid here but qa-gate refuses to silently skip on one - it stops and asks you to fill this in rather than treating an empty list as 'no checks configured, proceed'."
+    },
+    "visual_review": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to-tickets renders its ticket-breakdown checkpoint (Phase 1 step 4) as an interactive lavish-axi HTML artifact instead of a plain-text list. Optional - absent or false keeps today's plain-text list, unchanged."
     }
   }
 }

@@ -22,13 +22,16 @@ You must execute this skill in two distinct phases. Do NOT publish anything to t
     - *Wide Refactors (Exception):* If a change has a massive blast radius (e.g., renaming a shared column), use **expand-contract** instead of vertical slicing. Sequence as: Expand → Migrate (in batches) → Contract.
     - *Blocking Edges:* Give each ticket its blocking edges (which other tickets must complete first).
     - *Human Time Estimate:* Estimate the rough time required for a human developer to complete this slice (e.g., "2 hours", "1 day") — for every ticket, `afk` included, not just `hitl` ones. This is a decomposition-quality signal, not a commitment: an estimate in weeks means the slice isn't tracer-bullet-sized — split it further before presenting the breakdown.
-4. **STOP AND ASK (Quiz the User):** Present the proposed breakdown as a numbered list. For each ticket, show:
-    - **Title:** Short descriptive name
-    - **Blocked by:** Which tickets gate it
-    - **Est. Time (Human):** The estimated time for a human to complete it
-    - **What it delivers:** The end-to-end behavior
-    - *Ask the user:* Does the granularity feel right? Are blocking edges correct? Should anything be merged/split? Is the time estimate realistic?
-    - **DO NOT PROCEED TO PHASE 2 UNTIL APPROVED.**
+4. **STOP AND ASK (Quiz the User):**
+    - Read `visual_review` from `.harness/project.json` (default `false` if the file or field is absent — this keeps the plain-text path below unchanged).
+    - **Plain text (`visual_review` is `false` or absent):** Present the proposed breakdown as a numbered list. For each ticket, show:
+        - **Title:** Short descriptive name
+        - **Blocked by:** Which tickets gate it
+        - **Est. Time (Human):** The estimated time for a human to complete it
+        - **What it delivers:** The end-to-end behavior
+        - *Ask the user:* Does the granularity feel right? Are blocking edges correct? Should anything be merged/split? Is the time estimate realistic?
+    - **Visual review (`visual_review` is `true`):** Render the same per-ticket fields as an HTML artifact using the `table` and `input` playbooks documented in `skills/vendor/lavish/SKILL.md`, and open it with `LAVISH_AXI_TELEMETRY=0 npx -y lavish-axi <file>` — telemetry off, since this is not a network call the user asked for by name. Never run `lavish-axi share`; the breakdown stays local, not published to a third-party host. Poll for feedback with `lavish-axi poll <file>` in the foreground (that skill's own rules bar backgrounding it with `nohup`/`&`/`disown`), apply the merge/split/estimate changes the user queues, and poll again until they approve; then run `lavish-axi end <file>`. If the lavish skill isn't vendored in this project or `npx -y lavish-axi` fails to start (for example in a sandboxed or offline environment), say why and use the plain-text path above for this run instead of retrying.
+    - **DO NOT PROCEED TO PHASE 2 UNTIL APPROVED**, in either path.
 
 ### Phase 2: Publishing & Summarizing (After Approval)
 1. **Publish to the Tracker:** The method depends on the configured tracker:

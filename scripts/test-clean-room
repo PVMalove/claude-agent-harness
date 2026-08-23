@@ -198,8 +198,9 @@ def _run(test_root: Path):
         sys.exit("selecting mattpocock-suite and pvmalove-suite together unexpectedly succeeded")
 
     # pvmalove-suite exercises extends (inherits mattpocock-suite's 25 skills), overrides (8 of
-    # those 25 swapped for a first-party source under the same name) and additions (3 new names
-    # with no mattpocock-suite equivalent) - docs/adr/0001. 25 + 3 = 28 distinct skill names.
+    # those 25 swapped for a first-party source under the same name) and additions (4 new names
+    # with no mattpocock-suite equivalent - 3 first-party, plus the vendored lavish) - docs/adr/0001.
+    # 25 + 4 = 29 distinct skill names.
     pv_project = test_root / "pv_project"
     pv_project.mkdir(parents=True)
     subprocess.run(["git", "init", "-q"], cwd=pv_project, check=True)
@@ -226,8 +227,8 @@ def _run(test_root: Path):
     run_ok(HARNESS + ["health", str(pv_project)])
 
     pv_skill_count = count_skill_files(pv_project / ".harness" / "skills")
-    if pv_skill_count != 28:
-        sys.exit(f"expected 28 skills in a pvmalove-suite project (25 inherited + 3 additions), found {pv_skill_count}")
+    if pv_skill_count != 29:
+        sys.exit(f"expected 29 skills in a pvmalove-suite project (25 inherited + 4 additions), found {pv_skill_count}")
     if not filecmp.cmp(
         ROOT / "skills" / "first-party" / "pvmalove" / "to-spec" / "SKILL.md",
         pv_project / ".harness" / "skills" / "to-spec" / "SKILL.md",
@@ -242,6 +243,12 @@ def _run(test_root: Path):
         sys.exit("pvmalove-suite unexpectedly changed a skill it neither overrides nor adds")
     if not (pv_project / ".harness" / "skills" / "qa-gate" / "SKILL.md").is_file():
         sys.exit("pvmalove-suite addition qa-gate missing")
+    if not filecmp.cmp(
+        ROOT / "skills" / "vendor" / "lavish" / "SKILL.md",
+        pv_project / ".harness" / "skills" / "lavish" / "SKILL.md",
+        shallow=False,
+    ):
+        sys.exit("pvmalove-suite addition lavish missing or does not match the vendored snapshot")
 
     project_json = pv_project / ".harness" / "project.json"
     if not project_json.is_file():

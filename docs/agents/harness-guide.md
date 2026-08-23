@@ -552,7 +552,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 
 ## 12. Полный каталог скиллов проекта
 
-Все 25 скиллов апстрима (`.harness/skills/`, capability `mattpocock-suite`) + 3 проектных (`qa-gate`, `to-guide`, `setup-labels`, раздел 6). «Только вручную» = `disable-model-invocation: true` (не вызывается моделью автоматически, только `/имя`).
+Все 25 скиллов апстрима (`.harness/skills/`, capability `mattpocock-suite`) + 4 проектных (`qa-gate`, `to-guide`, `setup-labels`, раздел 6; `lavish`, раздел 3). «Только вручную» = `disable-model-invocation: true` (не вызывается моделью автоматически, только `/имя`).
 
 ### Инженерные
 
@@ -589,7 +589,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 | `wait-what` | да | «Стоп, это сообщение не зашло» — попросить агента перефразировать последний ответ. |
 | `writing-for-agents` | нет | Написание документов для агентов — при создании/правке скиллов, `AGENTS.md`, `CLAUDE.md`. |
 
-### Проектные (first-party, вне апстрима)
+### Проектные (вне апстрима)
 
 | Скилл/агент | Описание |
 |---|---|
@@ -597,6 +597,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 | `pr-composer` (subagent) | Заполняет структурированный PR-шаблон (раздел 6). |
 | `to-guide` (skill) | `hitl`-аналог `/implement` — гайд с промптами для ручного кодинга вместо реализации агентом (раздел 6). |
 | `setup-labels` (skill) | Разово создаёт/обновляет GitHub-лейблы (`workflow::*`, `hitl`/`afk`, `task-report::required`, `out-of-scope`, `wayfinder:*`) по таблицам `docs/agents/triage-labels.md` — перед первым использованием `triage`/`to-spec`/`to-tickets`/`implement`/`to-guide`/`wayfinder` (раздел 6). |
+| `lavish` (skill) | Завендоренный byte-for-byte (`skills/vendor/lavish/`, не first-party) визуальный review-инструмент `lavish-axi`. `to-tickets` открывает разбивку тикетов как интерактивный HTML-артефакт вместо текстового списка, когда `visual_review: true` в `.harness/project.json` (раздел 3). |
 
 ---
 

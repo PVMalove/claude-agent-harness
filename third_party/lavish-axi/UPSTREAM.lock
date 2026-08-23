@@ -1,0 +1,7 @@
+repository: https://github.com/kunchenguid/lavish-axi.git
+revision: 918749cb015a8de052511247e1008d49a51f5e75
+source_ref: refs/tags/lavish-axi-v0.1.56
+snapshot_date: 2026-08-23
+license: MIT
+selection_manifest: third_party/lavish-axi/plugin.json
+content_mode: byte-for-byte
