@@ -443,6 +443,14 @@ AI-агенты неизбежно «глупеют» и начинают гал
 
 Вызывается только вручную — `/to-guide`.
 
+### `/setup-labels` (skill)
+
+- **Назначение:** разово создаёт/обновляет GitHub-лейблы этого репозитория (`workflow::*`, `hitl`/`afk`, `task-report::required`, `out-of-scope`, `wayfinder:*`) по таблицам `docs/agents/triage-labels.md` — `gh label create`/`gh issue --add-label` иначе падают на ещё не существующем лейбле.
+- Перед применением показывает план (что создастся/обновится) и ждёт подтверждения — мутирует общее состояние репозитория на GitHub, как и любой другой шаг, трогающий трекер (`docs/agents/issue-tracker.md`).
+- Идемпотентен (`gh label create --force`) — повторный запуск ничего не ломает, только обновляет цвет уже существующих лейблов.
+
+Запускать один раз перед первым использованием `triage`/`to-spec`/`to-tickets`/`implement`/`to-guide`/`wayfinder` в новом репозитории. Вызывается только вручную — `/setup-labels`.
+
 ---
 
 ## 7. Локальные кастомизации (8 изменённых скиллов)
@@ -544,7 +552,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 
 ## 12. Полный каталог скиллов проекта
 
-Все 25 скиллов апстрима (`.harness/skills/`, capability `mattpocock-suite`) + 2 проектных (`qa-gate`, `to-guide`, раздел 6). «Только вручную» = `disable-model-invocation: true` (не вызывается моделью автоматически, только `/имя`).
+Все 25 скиллов апстрима (`.harness/skills/`, capability `mattpocock-suite`) + 3 проектных (`qa-gate`, `to-guide`, `setup-labels`, раздел 6). «Только вручную» = `disable-model-invocation: true` (не вызывается моделью автоматически, только `/имя`).
 
 ### Инженерные
 
@@ -588,6 +596,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 | `qa-gate` (skill) | `qa_gate_commands` из `.harness/project.json` в изолированном форке, перед PR (раздел 6). |
 | `pr-composer` (subagent) | Заполняет структурированный PR-шаблон (раздел 6). |
 | `to-guide` (skill) | `hitl`-аналог `/implement` — гайд с промптами для ручного кодинга вместо реализации агентом (раздел 6). |
+| `setup-labels` (skill) | Разово создаёт/обновляет GitHub-лейблы (`workflow::*`, `hitl`/`afk`, `task-report::required`, `out-of-scope`, `wayfinder:*`) по таблицам `docs/agents/triage-labels.md` — перед первым использованием `triage`/`to-spec`/`to-tickets`/`implement`/`to-guide`/`wayfinder` (раздел 6). |
 
 ---
 

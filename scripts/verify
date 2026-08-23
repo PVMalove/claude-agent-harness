@@ -113,6 +113,63 @@ def check_pvmalove_override_docs_sync():
         )
 
 
+def check_pvmalove_additions_docs_sync():
+    """CAPABILITIES.json's pvmalove-suite.additions is the source of truth for first-party-only
+    skills; docs/agents/harness-guide.md section 12's project-specific table restates the same
+    set by hand. Catch the two falling out of sync - this exact drift shipped once already:
+    setup-labels was added to additions without a matching table row."""
+    capabilities = json.loads((ROOT / "harness" / "CAPABILITIES.json").read_text(encoding="utf-8"))
+    expected = {
+        entry.removeprefix("first-party/pvmalove/") for entry in capabilities["pvmalove-suite"]["additions"]
+    }
+
+    guide = _normalized_text(ROOT / "docs" / "agents" / "harness-guide.md")
+    section = re.search(r"\n### Проектные \(first-party, вне апстрима\)\n(.*?)\n---\n", guide, re.DOTALL)
+    if not section:
+        sys.exit("harness-guide.md: could not find the project-specific skill catalog table")
+    documented = set(re.findall(r"^\| `([a-z0-9-]+)` \(skill\) \|", section.group(1), re.MULTILINE))
+    if documented != expected:
+        sys.exit(
+            "harness-guide.md project-specific skill table is out of sync with pvmalove-suite "
+            f"additions in CAPABILITIES.json: missing={sorted(expected - documented)} extra={sorted(documented - expected)}"
+        )
+
+
+def check_pvmalove_suite_summary_sync():
+    """README.md and CONTEXT.md each restate pvmalove-suite's overrides/additions by name in
+    prose, next to the same counts harness-guide.md's tables already get checked against above.
+    Catch the same drift class there too - this exact drift shipped once already: stale '5
+    overrides, 1 addition' counts survived three days and a section-7-only fix untouched."""
+    capabilities = json.loads((ROOT / "harness" / "CAPABILITIES.json").read_text(encoding="utf-8"))
+    expected_overrides = set(capabilities["pvmalove-suite"]["overrides"].keys())
+    expected_additions = {
+        entry.removeprefix("first-party/pvmalove/") for entry in capabilities["pvmalove-suite"]["additions"]
+    }
+
+    for doc in (ROOT / "README.md", ROOT / "CONTEXT.md"):
+        text = _normalized_text(doc)
+
+        overrides_match = re.search(r"переопределены в `skills/first-party/pvmalove/`:\s*(.+?);", text)
+        if not overrides_match:
+            sys.exit(f"{doc}: no pvmalove-suite overrides list found")
+        documented_overrides = set(re.findall(r"`([a-z0-9-]+)`", overrides_match.group(1)))
+        if documented_overrides != expected_overrides:
+            sys.exit(
+                f"{doc}: overrides list {sorted(documented_overrides)} does not match "
+                f"CAPABILITIES.json overrides {sorted(expected_overrides)}"
+            )
+
+        additions_match = re.search(r"доп\. скиллы:\s*(.+?)\.", text)
+        if not additions_match:
+            sys.exit(f"{doc}: no pvmalove-suite additions list found")
+        documented_additions = set(re.findall(r"`([a-z0-9-]+)`", additions_match.group(1)))
+        if documented_additions != expected_additions:
+            sys.exit(
+                f"{doc}: additions list {sorted(documented_additions)} does not match "
+                f"CAPABILITIES.json additions {sorted(expected_additions)}"
+            )
+
+
 def check_vendor_pin():
     plugin = json.loads((ROOT / "third_party" / "mattpocock-skills" / "plugin.json").read_text(encoding="utf-8"))
     capabilities = json.loads((ROOT / "harness" / "CAPABILITIES.json").read_text(encoding="utf-8"))
@@ -174,6 +231,8 @@ def main():
     check_docs_agents_mirror()
     check_docs_agents_enumeration()
     check_pvmalove_override_docs_sync()
+    check_pvmalove_additions_docs_sync()
+    check_pvmalove_suite_summary_sync()
     check_vendor_pin()
 
     run_ok([sys.executable, str(ROOT / "scripts" / "test-clean-room")])
