@@ -70,9 +70,9 @@ A local-markdown-tracked ticket (`.scratch/<feature>/issues/NN-*.md`) has no Git
 **Task report:** required (omit the line entirely if not required)
 ```
 
-This four-field block is the vocabulary that `issue-tracker-local.md`'s "a `Status:` line" refers to — a naming difference between the two docs, not a second schema. Wayfinder's own `Status: claimed/resolved` line (same source doc) is an orthogonal claim/lock marker for the file and coexists with these fields rather than replacing them.
+This four-field block is the vocabulary that [issue-tracker.md](./issue-tracker.md)'s "a `Status:` line" refers to — a naming difference between the two docs, not a second schema. Wayfinder's own `Status: claimed/resolved` line (same source doc) is an orthogonal claim/lock marker for the file and coexists with these fields rather than replacing them.
 
-`workflow::*`'s values are the same strings as the GitHub labels, plus a terminal `done` — `/implement` sets `**Workflow:** done` when it finishes a ticket, mirroring the `Closes #<ID>` auto-close a GitHub/GitLab ticket gets on merge (see `docs/agents/git-workflow.md`). There's no sub-issue mechanism for the local tracker; a decomposed ticket instead lives under the feature's `.scratch/<feature-slug>/issues/` directory (see `.harness/skills/setup-matt-pocock-skills/issue-tracker-local.md`) — that directory itself is the grouping, no separate epic-folder or field needed for it.
+`workflow::*`'s values are the same strings as the GitHub labels, plus a terminal `done` — `/implement` sets `**Workflow:** done` when it finishes a ticket, mirroring the `Closes #<ID>` auto-close a GitHub/GitLab ticket gets on merge (see `docs/agents/git-workflow.md`). There's no sub-issue mechanism for the local tracker; a decomposed ticket instead lives under the feature's `.scratch/<feature-slug>/issues/` directory (see [issue-tracker.md](./issue-tracker.md)) — that directory itself is the grouping, no separate epic-folder or field needed for it.
 
 ## Adapting this taxonomy per project
 
