@@ -21,7 +21,7 @@ _Avoid_: ванильный скилл, оригинальный скилл
 _Avoid_: кастомный скилл (используй термин только для first-party-скиллов, которые переопределяют одноимённый vendor-скилл — см. «Переопределение капабилити»)
 
 **Переопределение капабилити** (capability override):
-Механизм, которым капабилити расширяет другую капабилити (`extends`) и подменяет часть её скиллов на first-party-версии (`overrides`), добавляя сверху новые (`additions`) — без дублирования списка неизменённых скиллов. `pvmalove-suite` расширяет `mattpocock-suite`: 20 имён разрешаются в vendor как обычно, 5 имён — в first-party-замены, плюс 1 добавленный first-party-скилл. Итоговый разрешённый список — то, что реально попадает в snapshot и хешируется в lock; никакого пост-обработочного патчинга файлов после записи snapshot нет.
+Механизм, которым капабилити расширяет другую капабилити (`extends`) и подменяет часть её скиллов на first-party-версии (`overrides`), добавляя сверху новые (`additions`) — без дублирования списка неизменённых скиллов. `pvmalove-suite` расширяет `mattpocock-suite`: 17 имён разрешаются в vendor как обычно, 8 имён переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`. Итоговый разрешённый список — то, что реально попадает в snapshot и хешируется в lock; никакого пост-обработочного патчинга файлов после записи snapshot нет.
 _Avoid_: патч, патчинг (речь не про diff/patch-файлы — те были рассмотрены и отклонены, см. ADR 0002 — а про подмену исходного пути скилла на этапе разрешения капабилити)
 
 **Дрейф** (drift):
@@ -29,7 +29,7 @@ _Avoid_: патч, патчинг (речь не про diff/patch-файлы �
 _Avoid_: рассинхронизация, устаревание
 
 **Проектный конфиг** (`.harness/project.json`):
-Единственное место, откуда first-party-скиллы `qa-gate` и `pr-composer` (и хуки `check-branch-name`/`check-worktree-branch-name`) берут специфичные для проекта значения: команды lint/test/typecheck, PR-шаблон, `branch_pattern` (regex формата веток) и `language` (`ru`/`en` — язык вывода code-review и PR-шаблона). Заполняется интерактивно при `harness init`, если выбрана `pvmalove-suite`. Не путать с харнесс-lock (`.harness/harness.lock`) — тот описывает *состояние установки скиллов*, а не *настройки проекта*.
+Единственное место, откуда first-party-скиллы `qa-gate` и `pr-composer` (и хуки `check-branch-name`/`check-worktree-branch-name`) берут специфичные для проекта значения: команды lint/test/typecheck, PR-шаблон, `branch_pattern` (regex формата веток) и `language` (`ru`/`en` — язык вывода code-review и PR-шаблона). Заполняется интерактивно при `harness init`, если выбрана `pvmalove-suite`. Форма зафиксирована в `harness/project/project.schema.json` (деплоится рядом как `.harness/project.schema.json` — `$schema`-ссылка в самом файле даёт автодополнение в редакторе) и проверяется вручную в `harness health` (без стороннего `jsonschema`-пакета — в репозитории нет сторонних Python-зависимостей вообще). Не путать с харнесс-lock (`.harness/harness.lock`) — тот описывает *состояние установки скиллов*, а не *настройки проекта*.
 _Avoid_: конфигурация проекта (слишком общее), settings
 
 **Реестр скиллов проекта** (`.harness/skills/REGISTRY.md`):

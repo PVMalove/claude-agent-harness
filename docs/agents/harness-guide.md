@@ -25,6 +25,34 @@ cd claude-agent-harness
 
 Все команды — `harness/bin/harness <command> <repo> [флаги]`, где `<repo>` — путь к целевому проекту (может быть где угодно на диске, не обязательно текущая директория). Ниже — все восемь подкоманд, которые умеет CLI.
 
+Если не уверены, что из пары нужно — четыре короткие таблицы, детали каждой команды/capability ниже:
+
+| | `init` | `adopt` |
+|---|---|---|
+| Когда | Репозиторий без харнесса вообще | Репозиторий, где под именами выбранной capability уже лежат свои скиллы |
+| Требование | Падает, если `.harness/harness.lock` уже есть | Не требует пустоты — сохраняет все project-owned скиллы вне выбранной capability |
+| Конфликт с существующим `.agents/skills`/`.claude/skills` | Падает без обходного флага — фикс только вручную или через `adopt` | `--replace-conflicts` бэкапит и заменяет только конфликтующие имена |
+
+| | `diff` | `update` |
+|---|---|---|
+| Пишет на диск | Нет — только отчёт | Да |
+| Код выхода | `0` чисто, `1` — есть дрейф | `0` при успехе, иначе падает |
+| Локальные правки managed-файлов | Показывает как `local_changed`/`conflict`, не трогает | Без `--force` отказывается и показывает то же самое; с `--force` — перезаписывает |
+| Когда | Быстрая проверка перед чем угодно | Когда решили реально подтянуть новую версию capability |
+
+| | `project-foundation` | `pvmalove-suite` |
+|---|---|---|
+| Скиллов | 5 | 28 |
+| Домен | Любой (software/content/research/operations/personal) | Software engineering pipeline конкретно |
+| Даёт | `grilling`, `handoff`, `writing-for-agents`, `research`, `domain-modeling` | Полный pipeline спека→тикеты→implement→PR (разделы 1-5) + личные доработки (раздел 7) |
+| Проектные файлы | Нет | `.harness/project.json`, hooks, `docs/agents/*.md` (см. ниже) |
+
+| | `mattpocock-suite` как есть | Своя capability (по образцу `pvmalove-suite`) |
+|---|---|---|
+| Когда | Апстримный pipeline устраивает без изменений | Нужны свои правки — лейблы, языки, доп. скиллы |
+| Механизм | `--capability mattpocock-suite` напрямую | `extends`/`overrides`/`additions` в `harness/CAPABILITIES.json` (ADR 0001 в `docs/adr/`), первопартийные копии файлов, не диффы (ADR 0002) |
+| Апдейт апстрима | `harness update` подтягивает всё как есть | Унаследованное подтягивается тем же `update`; за переопределёнными скиллами следите вручную — `scripts/check-upstream-drift` (см. «Политика репозитория» в README харнесса) показывает, что из них реально поменялось выше по течению |
+
 **`init` — первая установка в проект, где харнесса ещё нет.** Требует, чтобы `<repo>` уже был git-репозиторием; падает с «already exists; use update», если `.harness/harness.lock` уже есть.
 
 ```bash
@@ -56,7 +84,7 @@ python harness\bin\harness init C:\path\to\repository `
 - `--base-branch` — базовая ветка репозитория (по умолчанию `main`).
 - `--language`/`--pr-base-branch`/`--branch-pattern`/`--qa-gate-command` — читает только `pvmalove-suite`, пишутся в `.harness/project.json`; можно опустить — `init` спросит их интерактивно. `--qa-gate-command` повторяем, порядок сохраняется (раздел 6).
 
-При выборе `pvmalove-suite` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{git-workflow,worktrees,artifacts,issue-tracker,triage-labels}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`, см. `lock-project-skills` ниже), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md`, и само `.harness/project.json`.
+При выборе `pvmalove-suite` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{git-workflow,worktrees,artifacts,issue-tracker,triage-labels,harness-guide}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`, см. `lock-project-skills` ниже), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md`, и само `.harness/project.json`.
 
 **`adopt` — установка в проект, где уже есть свои (не харнесс-управляемые) скиллы под теми же именами.** Не требует пустого `.harness/` (в отличие от `init`) — сохраняет все проектные скиллы, которых нет в выбранной capability; если что-то из выбранной capability совпадает по имени с уже существующим — падает со списком конфликтов, если не передан `--replace-conflicts` (тогда конфликтующие заменяются, остальное не тронуто). Те же `--capability`/pvmalove-флаги, что у `init`:
 
@@ -145,6 +173,23 @@ python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claud
 Если после клонирования репозитория скиллы не видны (`/implement`, `/triage` и т.д. отсутствуют в списке) — значит либо нет `AGENTS.md`, либо сломаны эти symlink'и. Диагностика и починка — `harness health <repo>` / `harness update` из инструмента, которым был развёрнут этот harness (не пересоздавайте symlink'и вручную — относительный таргет должен резолвиться средствами конкретной ОС, `harness health` это проверяет, а не только «файл похож на симлинк»). Полная картина по остальным рантаймам (Kimi Code, OpenCode, Hermes Agent — таблица discovery-путей, разница user/project/catalog scope, известная гонка OpenCode на двух discovery-корнях сразу) — в `docs/runtime-discovery.md` [репозитория харнесса](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/runtime-discovery.md) — этот файл не шаблонизируется в проекты, живёт только там, поэтому ссылка сюда абсолютная, а не относительная.
 
 Рантаймы без нативного project-скилл-рута (сейчас — только Hermes Agent) используют другой путь: `.harness/skills/REGISTRY.md`, компактную таблицу имя/путь/описание, которую `init`/`adopt`/`update`/`lock-project-skills` пишут автоматически, а `harness registry` перегенерирует вручную (раздел 0, выше) — `AGENTS.md` отправляет такой рантайм искать по этой таблице вместо прямого скана `.harness/skills`. Полную схему этого файла, `.harness/overlays/project-local.lock` (provenance для скиллов, которыми владеет сам проект) и `.harness/integrations.json` (инвентарь нативных MCP/plugin/hook/runtime-конфигов) смотрите в [`CONTEXT.md`](https://github.com/PVMalove/claude-agent-harness/blob/master/CONTEXT.md) репозитория харнесса — этот файл, как и `docs/runtime-discovery.md` выше, не шаблонизируется в проекты.
+
+### Troubleshooting
+
+Каждая строка — то, что печатает сам CLI, не пересказ; таблица поясняет причину и что делать.
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `[ERROR] harness requires Python 3.9+ (found ...)` (то же для `install-global`) | Установленный `python`/`python3` старше 3.9 | Обновить Python — CLI сам откажется на старой версии, не притворяясь, что всё в порядке. |
+| PowerShell: `python: The term 'python' is not recognized...` | В PATH нет `python`/`py` | Проверить `[Environment]::GetEnvironmentVariable('Path','User')`; если Python там есть — открыть новое окно терминала (PATH читается один раз при старте процесса, старое окно не подхватит); если нет — установить Python или вызвать по полному пути (`& "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" ...`). |
+| `not a Git repository: <path> (run 'git init' there first)` | `init`/`adopt`/`update` нацелены на путь без git-репозитория | `git init` в целевом каталоге, затем повторить команду. |
+| `project harness already exists; use 'harness update <repo>'` | `init` на репозитории, где `.harness/harness.lock` уже есть | Запустить показанную команду `harness update` вместо `init`. |
+| `project harness is missing; use 'harness init <repo>'` | `update` на репозитории без `.harness/harness.lock` | Запустить показанную команду `harness init` вместо `update`. |
+| `selected skill names already exist; inspect them or use --replace-conflicts` | `adopt` — под именами выбранной capability уже лежат свои скиллы | Проверить перечисленные конфликты; если замена ожидаема — повторить с `--replace-conflicts` (бэкапит перед заменой). |
+| `local skill changes would be overwritten; review them or use --force` | `update` — на диске есть локальные правки managed-файлов | Изучить напечатанный diff; если перезапись осознанная — повторить с `--force`. |
+| `discovery path already exists and is not managed: <path> (...)` | `.agents/skills`/`.claude/skills` — что-то постороннее на месте discovery-symlink'а | Подсказка в скобках зависит от команды: `init` — убрать вручную или использовать `adopt`; `adopt` — `--replace-conflicts`; `update` — `--force`. |
+| `install-global`: `[CONFLICT] ... (re-run with --replace-conflicts ...)` | На месте профиля/симлинка глобального слоя уже что-то другое | Повторить с `--replace-conflicts` — сначала бэкапит в `~/.agent-harness-backups/<timestamp>/...`. |
+| `install-global`: `[ERROR] Failed to create symlink: ...` + подсказка про Developer Mode (только Windows) | Windows требует включённый Developer Mode либо администраторские права для символьных ссылок на директории | Включить Developer Mode (Settings → For developers) либо перезапустить терминал от имени администратора. |
 
 ---
 
@@ -398,11 +443,19 @@ AI-агенты неизбежно «глупеют» и начинают гал
 
 Вызывается только вручную — `/to-guide`.
 
+### `/setup-labels` (skill)
+
+- **Назначение:** разово создаёт/обновляет GitHub-лейблы этого репозитория (`workflow::*`, `hitl`/`afk`, `task-report::required`, `out-of-scope`, `wayfinder:*`) по таблицам `docs/agents/triage-labels.md` — `gh label create`/`gh issue --add-label` иначе падают на ещё не существующем лейбле.
+- Перед применением показывает план (что создастся/обновится) и ждёт подтверждения — мутирует общее состояние репозитория на GitHub, как и любой другой шаг, трогающий трекер (`docs/agents/issue-tracker.md`).
+- Идемпотентен (`gh label create --force`) — повторный запуск ничего не ломает, только обновляет цвет уже существующих лейблов.
+
+Запускать один раз перед первым использованием `triage`/`to-spec`/`to-tickets`/`implement`/`to-guide`/`wayfinder` в новом репозитории. Вызывается только вручную — `/setup-labels`.
+
 ---
 
-## 7. Локальные кастомизации (7 изменённых скиллов)
+## 7. Локальные кастомизации (8 изменённых скиллов)
 
-`.harness/harness.lock` фиксирует 7 скиллов с намеренными правками поверх апстрима (видно как `local_changed` в `harness diff` — это ожидаемо и постоянно, `harness update --force`/`harness adopt --replace-conflicts` их бы стёр).
+`.harness/harness.lock` фиксирует 8 скиллов с намеренными правками поверх апстрима (видно как `local_changed` в `harness diff` — это ожидаемо и постоянно, `harness update --force`/`harness adopt --replace-conflicts` их бы стёр).
 
 | Скилл | Что изменено |
 |---|---|
@@ -413,6 +466,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 | `ask-matt` | Та же PR-пауза отражена в описании `/implement`, которое `ask-matt` предлагает как маршрут. |
 | `code-review` | Отчёт обязан выводиться на языке из `.harness/project.json` (`### Communication language`). |
 | `grilling` | Вопросы фронтира задаются через тул `AskUserQuestion` (вкладка на вопрос, выбор варианта или свой ответ через «Other») вместо простого пронумерованного текста; текстовый формат остаётся запасным для по-настоящему открытых вопросов, не сводимых к 2-4 вариантам. |
+| `wayfinder` | Каждый тикет карты дополнительно несёт `hitl`/`afk` и `workflow::ready` (апстримный `wayfinder:<type>` не заменяется, а дополняется) — та же таксономия, что и у остального пайплайна (раздел 8); claim тикета в `work through the map` ставит `workflow::in-progress`, та же конвенция, что у `/implement`/`/to-guide`. |
 
 ### `/triage` подробнее
 
@@ -498,7 +552,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 
 ## 12. Полный каталог скиллов проекта
 
-Все 25 скиллов апстрима (`.harness/skills/`, capability `mattpocock-suite`) + 2 проектных (`qa-gate`, `to-guide`, раздел 6). «Только вручную» = `disable-model-invocation: true` (не вызывается моделью автоматически, только `/имя`).
+Все 25 скиллов апстрима (`.harness/skills/`, capability `mattpocock-suite`) + 3 проектных (`qa-gate`, `to-guide`, `setup-labels`, раздел 6). «Только вручную» = `disable-model-invocation: true` (не вызывается моделью автоматически, только `/имя`).
 
 ### Инженерные
 
@@ -542,6 +596,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 | `qa-gate` (skill) | `qa_gate_commands` из `.harness/project.json` в изолированном форке, перед PR (раздел 6). |
 | `pr-composer` (subagent) | Заполняет структурированный PR-шаблон (раздел 6). |
 | `to-guide` (skill) | `hitl`-аналог `/implement` — гайд с промптами для ручного кодинга вместо реализации агентом (раздел 6). |
+| `setup-labels` (skill) | Разово создаёт/обновляет GitHub-лейблы (`workflow::*`, `hitl`/`afk`, `task-report::required`, `out-of-scope`, `wayfinder:*`) по таблицам `docs/agents/triage-labels.md` — перед первым использованием `triage`/`to-spec`/`to-tickets`/`implement`/`to-guide`/`wayfinder` (раздел 6). |
 
 ---
 

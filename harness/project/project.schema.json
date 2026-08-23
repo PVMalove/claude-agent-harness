@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "harness project config",
+  "description": "Project-specific values pvmalove-suite's qa-gate, pr-composer, code-review, to-guide, and the check-branch-name.sh/check-worktree-branch-name.sh hooks read. Written once by 'harness init'/'adopt'/'update' when pvmalove-suite is selected (harness/bin/harness, scaffold_pvmalove_extras) and safe to hand-edit afterward - see docs/adr/0003 and CONTEXT.md (\"Проектный конфиг\"). This schema is editor-facing only (autocomplete/validation); 'harness health' enforces the same rules by hand, since this repo has no jsonschema dependency to load this file at runtime.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["language", "base_branch", "branch_pattern", "qa_gate_commands"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Points editors at this file; not read by any harness code."
+    },
+    "language": {
+      "type": "string",
+      "enum": ["ru", "en"],
+      "description": "Output language for code-review reports and the PR body template."
+    },
+    "base_branch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Base branch pr-composer diffs against when filling out a PR body."
+    },
+    "branch_pattern": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Regex a new branch name must match, enforced by check-branch-name.sh/check-worktree-branch-name.sh. If this file is missing entirely, the hooks fall back to their own built-in default (^feature/issue-[0-9]+-.+) instead of blocking every branch name - that fallback does not apply if this field is merely empty."
+    },
+    "qa_gate_commands": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Lint/typecheck/test commands qa-gate runs in order before a PR opens. An empty list is valid here but qa-gate refuses to silently skip on one - it stops and asks you to fill this in rather than treating an empty list as 'no checks configured, proceed'."
+    }
+  }
+}

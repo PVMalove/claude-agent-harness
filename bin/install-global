@@ -49,7 +49,11 @@ def install_file(source: Path, target: Path, check: bool, replace: bool, target_
             print(f"  {C_GREEN}[OK]{C_RESET} Profile already matches: {target}")
             return True
         if check or not replace:
-            print(f"  {C_RED}[CONFLICT]{C_RESET} File differs: {target}", file=sys.stderr)
+            print(
+                f"  {C_RED}[CONFLICT]{C_RESET} File differs: {target} "
+                "(re-run with --replace-conflicts to back it up and replace it)",
+                file=sys.stderr,
+            )
             return False
         backup_target(target, target_home)
     elif check:
@@ -73,7 +77,11 @@ def install_link(source: Path, target: Path, check: bool, replace: bool, target_
 
     if target.exists() or target.is_symlink():
         if check or not replace:
-            print(f"  {C_RED}[CONFLICT]{C_RESET} Target exists but is not correct link: {target}", file=sys.stderr)
+            print(
+                f"  {C_RED}[CONFLICT]{C_RESET} Target exists but is not correct link: {target} "
+                "(re-run with --replace-conflicts to back it up and replace it)",
+                file=sys.stderr,
+            )
             return False
         backup_target(target, target_home)
     elif check:
@@ -86,13 +94,14 @@ def install_link(source: Path, target: Path, check: bool, replace: bool, target_
         print(f"  {C_GREEN}[LINK]{C_RESET} Created link: {target} -> {source}")
         return True
     except OSError as e:
-        print(
-            f"  {C_RED}[ERROR]{C_RESET} Failed to create symlink: {e}\n"
-            f"      On Windows this needs either Developer Mode enabled, or this terminal\n"
+        hint = (
+            f"\n      On Windows this needs either Developer Mode enabled, or this terminal\n"
             f"      launched as Administrator (right-click Terminal/PowerShell/cmd -> "
-            f"\"Run as administrator\") - then re-run this command.",
-            file=sys.stderr,
+            f"\"Run as administrator\") - then re-run this command."
+            if sys.platform == "win32"
+            else ""
         )
+        print(f"  {C_RED}[ERROR]{C_RESET} Failed to create symlink: {e}{hint}", file=sys.stderr)
         return False
 
 

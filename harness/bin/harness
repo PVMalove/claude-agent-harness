@@ -14,6 +14,14 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
+MIN_PYTHON = (3, 9)  # same floor as bin/install-global and scripts/test-clean-room
+if sys.version_info < MIN_PYTHON:
+    sys.stderr.write(
+        "[ERROR] harness requires Python %s+ (found %s).\n"
+        % (".".join(map(str, MIN_PYTHON)), sys.version.split()[0])
+    )
+    sys.exit(1)
+
 
 PACKAGE = Path(__file__).resolve().parent.parent
 ROOT = PACKAGE.parent
@@ -310,10 +318,12 @@ def ensure_git_repo(repo: Path) -> None:
         timeout=10,
     )
     if result.returncode != 0:
-        fail(f"not a Git repository: {repo}")
+        fail(f"not a Git repository: {repo} (run 'git init' there first)")
 
 
-def ensure_links(repo: Path, *, replace: bool = False) -> list[str]:
+def ensure_links(
+    repo: Path, *, replace: bool = False, fix_hint: str = "remove or rename it, then retry"
+) -> list[str]:
     changed: list[str] = []
     for relative, target in DISCOVERY_LINKS.items():
         native_target = native_link_target(target)
@@ -323,7 +333,7 @@ def ensure_links(repo: Path, *, replace: bool = False) -> list[str]:
             continue
         if path.exists() or path.is_symlink():
             if not replace:
-                fail(f"discovery path already exists and is not managed: {path}")
+                fail(f"discovery path already exists and is not managed: {path} ({fix_hint})")
             if path.is_dir() and not path.is_symlink():
                 fail(f"refusing to replace directory: {path}")
             path.unlink()
@@ -564,6 +574,45 @@ def validate_integrations(repo: Path, problems: list[str]) -> int:
     return len(entries)
 
 
+PROJECT_JSON_REQUIRED_FIELDS = ("language", "base_branch", "branch_pattern", "qa_gate_commands")
+PROJECT_JSON_ALLOWED_FIELDS = frozenset(PROJECT_JSON_REQUIRED_FIELDS) | {"$schema"}
+
+
+def validate_project_json(repo: Path, problems: list[str]) -> None:
+    """.harness/project.json is optional - only pvmalove-suite writes it - so a missing file is
+    not itself a problem; only validate its shape when it's actually there. Mirrors
+    harness/project/project.schema.json by hand: that schema is editor-facing only, this repo
+    has no jsonschema dependency to enforce it at runtime, so keep both in sync by eye."""
+    path = repo / ".harness/project.json"
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        problems.append(f".harness/project.json is not valid JSON: {exc}")
+        return
+    if not isinstance(data, dict):
+        problems.append(".harness/project.json must contain a JSON object")
+        return
+
+    missing = [field for field in PROJECT_JSON_REQUIRED_FIELDS if field not in data]
+    if missing:
+        problems.append(f".harness/project.json missing required field(s): {', '.join(missing)}")
+    extra = sorted(set(data) - PROJECT_JSON_ALLOWED_FIELDS)
+    if extra:
+        problems.append(f".harness/project.json has unknown field(s): {', '.join(extra)}")
+
+    if "language" in data and data["language"] not in ("ru", "en"):
+        problems.append(f".harness/project.json language must be 'ru' or 'en', got {data['language']!r}")
+    for field in ("base_branch", "branch_pattern"):
+        if field in data and (not isinstance(data[field], str) or not data[field]):
+            problems.append(f".harness/project.json {field} must be a non-empty string")
+    if "qa_gate_commands" in data:
+        commands = data["qa_gate_commands"]
+        if not isinstance(commands, list) or not all(isinstance(item, str) for item in commands):
+            problems.append(".harness/project.json qa_gate_commands must be a list of strings")
+
+
 def record_integration(
     repo: Path,
     *,
@@ -780,6 +829,12 @@ def scaffold_pvmalove_extras(repo: Path, args: argparse.Namespace) -> list[str]:
         project_json.write_text(rendered, encoding="utf-8", newline="\n")
         written.append(str(project_json))
 
+    schema_result = _copy_if_absent(
+        PROJECT_TEMPLATE_DIR / "project.schema.json", repo / ".harness/project.schema.json"
+    )
+    if schema_result:
+        written.append(schema_result)
+
     return written
 
 
@@ -787,7 +842,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     repo = Path(args.repo).expanduser().resolve()
     ensure_git_repo(repo)
     if load_lock(repo) is not None:
-        fail("project harness already exists; use update")
+        fail(f"project harness already exists; use 'harness update {repo}'")
 
     selected = selected_capabilities(args.capability)
     values = {
@@ -823,7 +878,13 @@ def cmd_init(args: argparse.Namespace) -> int:
         claude.write_text("# Claude Code\n\n@AGENTS.md\n", encoding="utf-8", newline="\n")
 
     written = write_snapshot(repo, selected, force=False)
-    written.extend(ensure_links(repo))
+    written.extend(
+        ensure_links(
+            repo,
+            fix_hint="remove it manually, or use 'harness adopt' instead of 'init' if this "
+            "project already has its own skills there",
+        )
+    )
     if PVMALOVE_CAPABILITY in selected:
         written.extend(scaffold_pvmalove_extras(repo, args))
     print(f"installed agent-harness {version()} in {repo}")
@@ -861,7 +922,7 @@ def cmd_adopt(args: argparse.Namespace) -> int:
             shutil.rmtree(path)
 
     written = write_snapshot(repo, selected, force=False)
-    ensure_links(repo, replace=args.replace_conflicts)
+    ensure_links(repo, replace=args.replace_conflicts, fix_hint="re-run with --replace-conflicts")
     if PVMALOVE_CAPABILITY in selected:
         written.extend(scaffold_pvmalove_extras(repo, args))
     print(f"adopted agent-harness {version()} in {repo}")
@@ -875,7 +936,7 @@ def cmd_update(args: argparse.Namespace) -> int:
     ensure_git_repo(repo)
     lock = load_lock(repo)
     if lock is None:
-        fail("project harness is missing; use init")
+        fail(f"project harness is missing; use 'harness init {repo}'")
     selected = selected_capabilities(args.capability or lock.get("capabilities"))
     result = snapshot_diff(repo, selected)
     blocked = result.get("local_changed", []) + result.get("conflict", [])
@@ -891,7 +952,7 @@ def cmd_update(args: argparse.Namespace) -> int:
             path.unlink()
 
     written = write_snapshot(repo, selected, force=args.force)
-    ensure_links(repo, replace=args.force)
+    ensure_links(repo, replace=args.force, fix_hint="re-run with --force")
     if PVMALOVE_CAPABILITY in selected:
         written.extend(scaffold_pvmalove_extras(repo, args))
     print(f"updated agent-harness to {version()} in {repo}")
@@ -977,6 +1038,7 @@ def cmd_health(args: argparse.Namespace) -> int:
             problems.append(f"broken discovery link: {relative} -> {target}")
         elif not path.is_dir():
             problems.append(f"discovery link does not resolve: {relative} -> {target}")
+    validate_project_json(repo, problems)
     if lock:
         result = snapshot_diff(repo)
         if result["state"] != "clean":
