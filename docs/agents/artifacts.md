@@ -1,4 +1,4 @@
-﻿### Artifacts & Scratchpads Management
+### Artifacts & Scratchpads Management
 
 * **Storage Location:** NEVER use system temporary directories (e.g., `AppData/Local/Temp`, `/tmp`) for saving specifications, scratchpads, or intermediate files.
 * **Project Directory:** All intermediate task-related documents MUST be saved locally inside the project repository in the `docs/tasks/` directory (create it if it doesn't exist).
