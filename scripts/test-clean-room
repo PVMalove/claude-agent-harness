@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""End-to-end clean-room test: exercises harness/bin/harness and bin/install-global against
-throwaway repos, asserting on their resulting filesystem state."""
+"""End-to-end clean-room test: exercises harness/bin/harness, bin/install-global, and the project
+hooks they scaffold, against throwaway repos - asserting on resulting filesystem state and, for
+hooks, on their actual runtime behavior."""
 
 import filecmp
 import hashlib
@@ -25,6 +26,27 @@ if sys.version_info < MIN_PYTHON:
 ROOT = Path(__file__).resolve().parent.parent
 HARNESS = [sys.executable, str(ROOT / "harness" / "bin" / "harness")]
 INSTALL_GLOBAL = [sys.executable, str(ROOT / "bin" / "install-global")]
+
+
+def _find_bash() -> str:
+    """A bare 'bash' can resolve to Windows' System32 WSL launcher stub - broken without a
+    configured WSL distro - ahead of Git's own working bash on PATH. Resolve explicitly via
+    the Git install root on Windows; everywhere else 'bash' just works."""
+    if sys.platform != "win32":
+        return "bash"
+    git_exe = shutil.which("git")
+    if git_exe:
+        # git.exe lives at varying depths under the Git install root (cmd/, bin/, or
+        # mingw64/bin/, depending on which one PATH finds first) - walk up rather than
+        # assume a fixed depth, and stop at the first real bash.exe found.
+        for ancestor in Path(git_exe).resolve().parents:
+            for candidate in (ancestor / "bin" / "bash.exe", ancestor / "usr" / "bin" / "bash.exe"):
+                if candidate.is_file():
+                    return str(candidate)
+    return "bash"
+
+
+BASH = _find_bash()
 
 
 def run_ok(cmd, quiet=False, quiet_all=False):
@@ -56,6 +78,15 @@ def fill_agents(repo: Path):
 
 def count_skill_files(skills_dir: Path) -> int:
     return sum(1 for p in skills_dir.rglob("SKILL.md") if p.is_file())
+
+
+def run_hook(hook: Path, project_dir: Path, command: str):
+    """Feed a PreToolUse(Bash) hook the same JSON shape Claude Code sends it, pointed at
+    project_dir via CLAUDE_PROJECT_DIR - so hook behavior is checked directly, not inferred
+    from the files harness scaffolded."""
+    payload = json.dumps({"tool_input": {"command": command}})
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(project_dir))
+    return subprocess.run([BASH, str(hook)], input=payload, capture_output=True, text=True, env=env, timeout=10)
 
 
 def _force_remove_readonly(func, path, exc_info):
@@ -116,6 +147,12 @@ def _run(test_root: Path):
     if "ask-matt" not in lines:
         sys.exit("ask-matt missing from harness list output")
 
+    registry_path = project / ".harness" / "skills" / "REGISTRY.md"
+    registry_path.write_text("corrupted\n", encoding="utf-8")
+    run_ok(HARNESS + ["registry", str(project)])
+    if "| `ask-matt` |" not in registry_path.read_text(encoding="utf-8"):
+        sys.exit("standalone 'harness registry' did not regenerate REGISTRY.md correctly")
+
     with (project / ".harness" / "skills" / "ask-matt" / "SKILL.md").open("a", encoding="utf-8") as f:
         f.write("\nlocal edit\n")
     if not run_fails(HARNESS + ["diff", str(project)], quiet_all=True):
@@ -148,6 +185,93 @@ def _run(test_root: Path):
         json.dumps(integrations_payload, indent=2) + "\n", encoding="utf-8"
     )
     run_ok(HARNESS + ["health", str(project)])
+
+    # Selecting a capability together with a second one that overrides the same names by a
+    # different source path must fail loudly (docs/adr/0001) instead of picking one silently.
+    dup_project = test_root / "dup_project"
+    dup_project.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=dup_project, check=True)
+    if not run_fails(
+        HARNESS + ["init", str(dup_project), "--capability", "mattpocock-suite", "--capability", "pvmalove-suite"],
+        quiet_all=True,
+    ):
+        sys.exit("selecting mattpocock-suite and pvmalove-suite together unexpectedly succeeded")
+
+    # pvmalove-suite exercises extends (inherits mattpocock-suite's 25 skills), overrides (8 of
+    # those 25 swapped for a first-party source under the same name) and additions (3 new names
+    # with no mattpocock-suite equivalent) - docs/adr/0001. 25 + 3 = 28 distinct skill names.
+    pv_project = test_root / "pv_project"
+    pv_project.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=pv_project, check=True)
+    run_ok(
+        HARNESS
+        + [
+            "init",
+            str(pv_project),
+            "--capability",
+            "pvmalove-suite",
+            "--base-branch",
+            "main",
+            "--language",
+            "ru",
+            "--pr-base-branch",
+            "main",
+            "--branch-pattern",
+            "^release/rel-[0-9]+-.+",
+            "--qa-gate-command",
+            "echo test",
+        ]
+    )
+    fill_agents(pv_project)
+    run_ok(HARNESS + ["health", str(pv_project)])
+
+    pv_skill_count = count_skill_files(pv_project / ".harness" / "skills")
+    if pv_skill_count != 28:
+        sys.exit(f"expected 28 skills in a pvmalove-suite project (25 inherited + 3 additions), found {pv_skill_count}")
+    if not filecmp.cmp(
+        ROOT / "skills" / "first-party" / "pvmalove" / "to-spec" / "SKILL.md",
+        pv_project / ".harness" / "skills" / "to-spec" / "SKILL.md",
+        shallow=False,
+    ):
+        sys.exit("pvmalove-suite override did not install the first-party to-spec")
+    if not filecmp.cmp(
+        ROOT / "skills" / "vendor" / "mattpocock" / "engineering" / "diagnosing-bugs" / "SKILL.md",
+        pv_project / ".harness" / "skills" / "diagnosing-bugs" / "SKILL.md",
+        shallow=False,
+    ):
+        sys.exit("pvmalove-suite unexpectedly changed a skill it neither overrides nor adds")
+    if not (pv_project / ".harness" / "skills" / "qa-gate" / "SKILL.md").is_file():
+        sys.exit("pvmalove-suite addition qa-gate missing")
+
+    project_json = pv_project / ".harness" / "project.json"
+    if not project_json.is_file():
+        sys.exit("pvmalove-suite init did not scaffold .harness/project.json")
+    if not (pv_project / ".harness" / "project.schema.json").is_file():
+        sys.exit("pvmalove-suite init did not scaffold .harness/project.schema.json")
+
+    hook = pv_project / ".claude" / "hooks" / "check-branch-name.sh"
+    if not hook.is_file():
+        sys.exit("pvmalove-suite init did not scaffold check-branch-name.sh")
+
+    # .harness/project.json is present, with branch_pattern set above to a distinctive regex
+    # that differs from the hook's own built-in default - prove the configured value, not the
+    # default, is what actually gets enforced.
+    if run_hook(hook, pv_project, "git checkout -b feature/issue-1-test").returncode == 0:
+        sys.exit("check-branch-name.sh ignored the configured branch_pattern")
+    result = run_hook(hook, pv_project, "git checkout -b release/rel-1-test")
+    if result.returncode != 0:
+        sys.exit(f"check-branch-name.sh rejected a branch matching the configured pattern: {result.stderr}")
+
+    # Remove .harness/project.json entirely - the hook must fall back to its own built-in
+    # default pattern instead of crashing or blocking every branch name.
+    saved_project_json = project_json.read_text(encoding="utf-8")
+    project_json.unlink()
+    if run_hook(hook, pv_project, "git checkout -b release/rel-1-test").returncode == 0:
+        sys.exit("check-branch-name.sh fallback unexpectedly accepted a non-default branch with no project.json")
+    result = run_hook(hook, pv_project, "git checkout -b feature/issue-1-test")
+    if result.returncode != 0:
+        sys.exit(f"check-branch-name.sh did not fall back to its default pattern: {result.stderr}")
+    project_json.write_text(saved_project_json, encoding="utf-8")
 
     runtime_args = []
     for runtime_name in ("codex", "claude", "kimi", "opencode", "hermes"):

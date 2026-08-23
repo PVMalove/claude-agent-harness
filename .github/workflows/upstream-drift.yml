@@ -1,0 +1,17 @@
+name: upstream-drift
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check whether skills/vendor/mattpocock has fallen behind upstream
+        run: python3 scripts/check-upstream-drift

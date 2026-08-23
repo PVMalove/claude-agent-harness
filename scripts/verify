@@ -4,6 +4,7 @@ clean-room test-clean-room run."""
 
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -48,6 +49,68 @@ def check_no_todo(base: Path):
     if found:
         print("\n".join(found))
         sys.exit("global-skills still contains TODO markers")
+
+
+DOCS_AGENTS_TEMPLATE = ROOT / "harness" / "project" / "docs-agents"
+
+
+def _normalized_text(path: Path) -> str:
+    """Decode ignoring a BOM and normalize line endings, so a file re-saved by an editor that
+    defaults to UTF-8-BOM/CRLF doesn't read as content drift against a plain-UTF-8/LF copy."""
+    return path.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+
+
+def check_docs_agents_mirror():
+    """docs/agents/*.md is this repo's own copy of the files harness/project/docs-agents/*.md
+    scaffolds into every pvmalove-suite project (scaffold_pvmalove_extras in harness/bin/
+    harness). Both are maintained by hand - catch prose drift between them here instead of
+    relying on every edit remembering to touch both."""
+    for template in sorted(DOCS_AGENTS_TEMPLATE.glob("*.md")):
+        counterpart = ROOT / "docs" / "agents" / template.name
+        if not counterpart.is_file():
+            sys.exit(f"{template} has no docs/agents counterpart: {counterpart}")
+        if _normalized_text(template) != _normalized_text(counterpart):
+            sys.exit(f"docs/agents/{template.name} has drifted from harness/project/docs-agents/{template.name}")
+
+
+def check_docs_agents_enumeration():
+    """README.md and harness-guide.md each spell out, by hand, the docs/agents/{...}.md
+    brace-list scaffold_pvmalove_extras deploys. Catch a file added to (or removed from)
+    harness/project/docs-agents/ without updating both listings - this shipped once already:
+    harness-guide.md itself was missing from its own enumeration."""
+    names = {p.stem for p in DOCS_AGENTS_TEMPLATE.glob("*.md")}
+    for doc in (ROOT / "README.md", ROOT / "docs" / "agents" / "harness-guide.md"):
+        text = _normalized_text(doc)
+        match = re.search(r"docs/agents/\{([a-z0-9,-]+)\}\.md", text)
+        if not match:
+            sys.exit(f"{doc}: no docs/agents/{{...}}.md enumeration found")
+        listed = set(match.group(1).split(","))
+        if listed != names:
+            sys.exit(
+                f"{doc}: docs/agents/{{...}}.md enumeration {sorted(listed)} does not match "
+                f"harness/project/docs-agents/*.md {sorted(names)}"
+            )
+
+
+def check_pvmalove_override_docs_sync():
+    """CAPABILITIES.json's pvmalove-suite.overrides is the source of truth for which skills are
+    locally customized; docs/agents/harness-guide.md section 7 restates the same set by hand,
+    with the *why* prose CAPABILITIES.json doesn't carry. Catch the two falling out of sync -
+    this exact drift shipped once already: wayfinder was added to overrides without a matching
+    table row."""
+    capabilities = json.loads((ROOT / "harness" / "CAPABILITIES.json").read_text(encoding="utf-8"))
+    expected = set(capabilities["pvmalove-suite"]["overrides"].keys())
+
+    guide = _normalized_text(ROOT / "docs" / "agents" / "harness-guide.md")
+    section = re.search(r"\n## 7\. .*?\n(.*?)\n## ", guide, re.DOTALL)
+    if not section:
+        sys.exit("harness-guide.md: could not find section 7 (local customizations)")
+    documented = set(re.findall(r"^\| `([a-z0-9-]+)` \|", section.group(1), re.MULTILINE))
+    if documented != expected:
+        sys.exit(
+            "harness-guide.md section 7 table is out of sync with pvmalove-suite overrides in "
+            f"CAPABILITIES.json: missing={sorted(expected - documented)} extra={sorted(documented - expected)}"
+        )
 
 
 def check_vendor_pin():
@@ -108,6 +171,9 @@ def main():
     run_ok([sys.executable, str(ROOT / "scripts" / "build-registry")])
     run_ok(["git", "-C", str(ROOT), "diff", "--exit-code", "--", "skills/REGISTRY.md"])
 
+    check_docs_agents_mirror()
+    check_docs_agents_enumeration()
+    check_pvmalove_override_docs_sync()
     check_vendor_pin()
 
     run_ok([sys.executable, str(ROOT / "scripts" / "test-clean-room")])

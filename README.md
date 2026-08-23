@@ -38,7 +38,7 @@
 
 При выборе `pvmalove-suite` `harness init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект:
 
-- `docs/agents/{git-workflow,worktrees,artifacts,issue-tracker,triage-labels}.md`
+- `docs/agents/{git-workflow,worktrees,artifacts,issue-tracker,triage-labels,harness-guide}.md`
 - `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json`
 - `.claude/rules/karpathy-guidelines.md`
 - `.claude/agents/pr-composer.md` (Claude Code subagent — вне системы skills/capability, отдельный механизм обнаружения)
@@ -57,7 +57,7 @@ Windows (PowerShell):
 python bin\install-global --target-home $HOME --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
 ```
 
-`bin/install-global` — Python-скрипт (`#!/usr/bin/env python3`, требует 3.9+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness` ниже, никакого отдельного `.sh`/`.ps1` не нужно. На Windows для создания настоящих (не «сломанных» файлового типа) символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с ошибкой на создании линка и подсказывает, что делать.
+`bin/install-global` — Python-скрипт (`#!/usr/bin/env python3`, требует 3.9+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness` ниже (тоже требует 3.9+ и явно откажется на более старой версии), никакого отдельного `.sh`/`.ps1` не нужно. На Windows для создания настоящих (не «сломанных» файлового типа) символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с ошибкой на создании линка и подсказывает, что делать.
 
 Флаги `--check` (ничего не пишет, только сверяет), `--replace-conflicts` (бэкапит перед заменой) и `--skills-only` (без instruction-файла, только `start-project`) — полный разбор, что именно ставится каждому из пяти рантаймов и куда, в [docs/agents/harness-guide.md](./docs/agents/harness-guide.md), раздел 0.
 
@@ -133,3 +133,16 @@ python harness\bin\harness list C:\path\to\repository
 - Файлы под `skills/vendor/` никогда не редактируются вручную — только полная замена закреплённого снимка.
 - Личные скиллы и надстройки живут в `skills/first-party/pvmalove/` и `harness/project/`, не смешиваются с vendor-деревом.
 - Апстримные ревизии закреплены, provenance (`third_party/mattpocock-skills/`) сохраняется.
+- Новые ADR (`docs/adr/`) — по [`docs/adr/template.md`](./docs/adr/template.md): обязательные секции
+  Context/Decision/Alternatives/Rejected/Consequences, язык — как у остального репозитория (сейчас
+  русский). Решения 0001-0005 предшествуют шаблону и его секции не повторяют — не переписывать их
+  задним числом.
+- `third_party/mattpocock-skills/UPSTREAM.lock` может отстать от реального апстрима незаметно —
+  `scripts/check-upstream-drift` (сеть, читает только) сверяет пин с последним тегом на
+  `mattpocock/skills` и раскладывает реальные изменения на «можно тянуть не глядя» (скиллы вне
+  `pvmalove-suite.overrides`) и «сверить руками перед ресинком» (ADR 0002). Гоняется вручную или
+  еженедельно через `.github/workflows/upstream-drift.yml` (`workflow_dispatch` — можно и по
+  требованию); падает (exit 1) только когда апстрим реально ушёл вперёд, не блокирует обычные PR.
+- `docs/agents/*.md` и `harness/project/docs-agents/*.md` — одно и то же по смыслу в двух местах
+  (вторая копия — то, что `pvmalove-suite` реально разворачивает в целевые проекты); `scripts/verify`
+  сверяет обе копии по содержимому (без учёта BOM/CRLF) и не даст молча разойтись.

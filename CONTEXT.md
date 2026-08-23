@@ -29,7 +29,7 @@ _Avoid_: патч, патчинг (речь не про diff/patch-файлы �
 _Avoid_: рассинхронизация, устаревание
 
 **Проектный конфиг** (`.harness/project.json`):
-Единственное место, откуда first-party-скиллы `qa-gate` и `pr-composer` (и хуки `check-branch-name`/`check-worktree-branch-name`) берут специфичные для проекта значения: команды lint/test/typecheck, PR-шаблон, `branch_pattern` (regex формата веток) и `language` (`ru`/`en` — язык вывода code-review и PR-шаблона). Заполняется интерактивно при `harness init`, если выбрана `pvmalove-suite`. Не путать с харнесс-lock (`.harness/harness.lock`) — тот описывает *состояние установки скиллов*, а не *настройки проекта*.
+Единственное место, откуда first-party-скиллы `qa-gate` и `pr-composer` (и хуки `check-branch-name`/`check-worktree-branch-name`) берут специфичные для проекта значения: команды lint/test/typecheck, PR-шаблон, `branch_pattern` (regex формата веток) и `language` (`ru`/`en` — язык вывода code-review и PR-шаблона). Заполняется интерактивно при `harness init`, если выбрана `pvmalove-suite`. Форма зафиксирована в `harness/project/project.schema.json` (деплоится рядом как `.harness/project.schema.json` — `$schema`-ссылка в самом файле даёт автодополнение в редакторе) и проверяется вручную в `harness health` (без стороннего `jsonschema`-пакета — в репозитории нет сторонних Python-зависимостей вообще). Не путать с харнесс-lock (`.harness/harness.lock`) — тот описывает *состояние установки скиллов*, а не *настройки проекта*.
 _Avoid_: конфигурация проекта (слишком общее), settings
 
 **Реестр скиллов проекта** (`.harness/skills/REGISTRY.md`):
