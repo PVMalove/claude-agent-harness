@@ -54,7 +54,7 @@ For a PR, the same labels read against the attached code: `workflow::ready` + `a
 
 These are the actual label strings for this repo (no translation table needed — this taxonomy fully replaces the upstream canonical state roles; the category pair is unchanged from upstream). See `docs/agents/triage-labels.md`.
 
-Never apply upstream canonical labels (`ready-for-agent`, `ready-for-human`, `needs-triage`, `needs-info`, `wontfix`) or the retired `epic::<slug>` — if the maintainer asks to group a ticket under an epic via a label, remind them grouping is now a native GitHub sub-issue link (`docs/agents/triage-labels.md`), not a label.
+Never apply upstream canonical labels (`ready-for-agent`, `ready-for-human`, `needs-triage`, `needs-info`, `wontfix`) or the retired `epic::<slug>` — if the maintainer asks to group a ticket under an epic via a label, remind them grouping is now a tracker-native link instead of a label — GitHub sub-issues, GitLab's `Part of #<map>` convention, or the local-markdown folder structure (see `docs/agents/issue-tracker.md#wayfinding-operations`).
 
 State transitions: analyze an unlabeled issue to determine `bug`/`enhancement` and whether it's `hitl` or `afk`, then place it in `workflow::ready` or `workflow::blocked` (dependency or missing info) — or, if it's too large to specify in one triage pass, `workflow::specs` and point the maintainer at `/to-spec`. `workflow::blocked` returns to `workflow::ready` once the blocker clears or the reporter replies — that transition is `/implement`'s job, at the moment it starts work on that specific ticket, not a sweep `triage` runs over a decomposition on its own initiative. The maintainer can override at any time — flag transitions that look unusual and ask before proceeding.
 

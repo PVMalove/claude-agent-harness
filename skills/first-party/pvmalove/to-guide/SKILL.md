@@ -57,7 +57,7 @@ This skill doesn't review the code, commit it, run `qa-gate`, or open the PR for
 1. Run `/code-review` (or ask this session to run it) — same two-axis Standards + Spec review `/implement` would run for you on an `afk` ticket. Nothing else triggers it on this path; skipping it means the diff never gets reviewed before the PR.
 2. Commit your work with a Semantic Commit Message (`feat:`, `fix:`, ...) and push, per `docs/agents/git-workflow.md` — don't let finished work sit uncommitted or unpushed.
 3. Run `/qa-gate` (or ask this session to run it).
-4. **GitHub/GitLab-tracked ticket:** open the PR per `docs/agents/git-workflow.md` (`gh pr create`, mandatory `Closes #<ID>` and body template — ask this session to delegate the body to the `pr-composer` agent if you want it filled in for you). If this ticket carries `task-report::required`, post the completion report when you open the PR.
+4. **GitHub/GitLab-tracked ticket:** open the PR/MR per `docs/agents/git-workflow.md` (`gh pr create` on GitHub, `glab mr create` on GitLab; mandatory `Closes #<ID>` and body template — ask this session to delegate the body to the `pr-composer` agent if you want it filled in for you). If this ticket carries `task-report::required`, post the completion report when you open the PR.
    **Local-markdown-tracked ticket:** there's no PR/merge step — once the above all pass, set the ticket file's `**Workflow:**` line to `done` yourself; if it carries `**Task report:** required`, fold the completion summary into that same update.
 
 </guide-template>
