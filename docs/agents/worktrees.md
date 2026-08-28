@@ -1,4 +1,4 @@
-﻿# Parallel work: git worktrees
+# Parallel work: git worktrees
 
 For running more than one feature branch at once without one session's dirty working tree stepping on another's, use Claude Code's native `EnterWorktree` / `ExitWorktree` tools — not manual `git worktree add` + a separate terminal multiplexer. Where `tmux` is installed, `EnterWorktree` attaches a `tmux` session to the worktree automatically and `ExitWorktree` manages its lifecycle (`keep` leaves it running, `remove` kills it) — nothing to configure either way. Where it isn't (e.g. no `tmux`/no full Linux distro under WSL), `EnterWorktree` still gives the same isolation without it.
 

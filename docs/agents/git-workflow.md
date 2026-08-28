@@ -1,4 +1,4 @@
-﻿# Git workflow: feature branch + PR
+# Git workflow: feature branch + PR
 
 ### 1. Fundamental Constraints & Tooling
 * **Zero Direct Commits:** Any direct commits to the main branch (`master`/`main`) or the current working branch are strictly prohibited unless it is an isolated feature branch.
