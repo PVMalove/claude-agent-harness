@@ -735,9 +735,12 @@ def _prompt(label: str, default: str) -> str:
     return answer or default
 
 
-def _copy_if_absent(source: Path, target: Path, *, executable: bool = False) -> str | None:
+def _copy_if_absent(source: Path, target: Path, *, executable: bool = False, force: bool = False, differing: list[Path] | None = None) -> str | None:
     if target.exists():
-        return None
+        if not force:
+            if differing is not None and target.read_bytes() != source.read_bytes():
+                differing.append(target)
+            return None
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(source.read_bytes())
     if executable:
@@ -757,32 +760,37 @@ def scaffold_pvmalove_extras(repo: Path, args: argparse.Namespace) -> list[str]:
     may not exist on every subcommand's argparse.Namespace, so every read goes
     through getattr with a fallback rather than assuming they're present."""
     written: list[str] = []
+    differing: list[Path] = []
+    force_seed = getattr(args, "force_seed_files", False)
 
     for doc in sorted((PROJECT_TEMPLATE_DIR / "docs-agents").glob("*.md")):
-        result = _copy_if_absent(doc, repo / "docs/agents" / doc.name)
+        result = _copy_if_absent(doc, repo / "docs/agents" / doc.name, force=force_seed, differing=differing)
         if result:
             written.append(result)
 
     for hook in sorted((PROJECT_TEMPLATE_DIR / "hooks").glob("*.sh")):
-        result = _copy_if_absent(hook, repo / ".claude/hooks" / hook.name, executable=True)
+        result = _copy_if_absent(hook, repo / ".claude/hooks" / hook.name, executable=True, force=force_seed, differing=differing)
         if result:
             written.append(result)
 
     rule = PROJECT_TEMPLATE_DIR / "rules/karpathy-guidelines.md"
-    result = _copy_if_absent(rule, repo / ".claude/rules" / rule.name)
+    result = _copy_if_absent(rule, repo / ".claude/rules" / rule.name, force=force_seed, differing=differing)
     if result:
         written.append(result)
 
     for agent in sorted((PROJECT_TEMPLATE_DIR / "agents").glob("*.md")):
-        result = _copy_if_absent(agent, repo / ".claude/agents" / agent.name)
+        result = _copy_if_absent(agent, repo / ".claude/agents" / agent.name, force=force_seed, differing=differing)
         if result:
             written.append(result)
 
     settings = repo / ".claude/settings.local.json"
-    if not settings.exists():
-        template = (PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl").read_text(encoding="utf-8")
+    template_text = (PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl").read_text(encoding="utf-8")
+    if settings.exists() and not force_seed:
+        if settings.read_text(encoding="utf-8") != template_text:
+            differing.append(settings)
+    if not settings.exists() or force_seed:
         settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_text(template, encoding="utf-8", newline="\n")
+        settings.write_text(template_text, encoding="utf-8", newline="\n")
         written.append(str(settings))
         record_integration(
             repo,
@@ -830,10 +838,16 @@ def scaffold_pvmalove_extras(repo: Path, args: argparse.Namespace) -> list[str]:
         written.append(str(project_json))
 
     schema_result = _copy_if_absent(
-        PROJECT_TEMPLATE_DIR / "project.schema.json", repo / ".harness/project.schema.json"
+        PROJECT_TEMPLATE_DIR / "project.schema.json", repo / ".harness/project.schema.json", force=force_seed, differing=differing
     )
     if schema_result:
         written.append(schema_result)
+        
+    if differing:
+        print("\n[WARNING] Следующие сидируемые файлы отличаются от шаблонов upstream:")
+        for path in differing:
+            print(f"  - {path.relative_to(repo)}")
+        print("Используйте --force-seed-files, чтобы перезаписать их (внимание: локальные изменения будут потеряны).\n")
 
     return written
 
@@ -942,7 +956,17 @@ def cmd_update(args: argparse.Namespace) -> int:
     blocked = result.get("local_changed", []) + result.get("conflict", [])
     if blocked and not args.force:
         print_diff(result)
-        fail("local skill changes would be overwritten; review them or use --force")
+        print("\n[ВНИМАНИЕ] Обнаружены изменённые стандартные скиллы (дрейф):")
+        for b in blocked:
+            print(f"  - {b}")
+        print("\nЧтобы просмотреть, что именно изменилось:")
+        print(f"  git diff {' '.join(blocked)}")
+        print("\nВыберите действие:")
+        print("  ЗАМЕНИТЬ (сбросить ваши правки до версии из апстрима):")
+        print("    harness update --force")
+        print("  ОСТАВИТЬ (сохранить ваши правки):")
+        print("    (обновление прервано, ваши файлы не тронуты)")
+        fail("update aborted due to local skill changes (drift).")
 
     previous = set((lock.get("files") or {}).keys())
     current = set(package_files(selected).keys())
@@ -1116,6 +1140,7 @@ def parser() -> argparse.ArgumentParser:
     update.add_argument("repo")
     update.add_argument("--capability", action="append")
     update.add_argument("--force", action="store_true")
+    update.add_argument("--force-seed-files", action="store_true", help="overwrite seed files even if present")
     _add_pvmalove_args(update)
     update.set_defaults(func=cmd_update)
 
