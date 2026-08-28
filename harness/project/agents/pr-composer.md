@@ -2,7 +2,7 @@
 name: pr-composer
 description: Fills out this project's PR body template from docs/agents/git-workflow.md §3, given a branch diff, commit log, and the last qa-gate result. Use when a feature branch is ready and a PR body needs to be written, before `gh pr create`.
 tools: Read, Bash, Grep, Glob
-model: sonnet
+model: haiku
 maxTurns: 15
 ---
 

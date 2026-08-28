@@ -3,8 +3,10 @@
 # (.harness/project.json) passed against the current worktree state, so require-qa-gate.sh can
 # require it before a PR. Sequential-stop-on-failure in the qa-gate skill means reaching the last
 # command implies every earlier one already passed. Keyed on HEAD + diff content rather than
-# session_id: the qa-gate skill always runs in a forked sub-session (context: fork), whose
-# session_id differs from the session that later runs `gh pr create`.
+# session_id, since the marker also needs to match from the session that later runs `gh pr create`.
+# Fallback only: the qa-gate skill (context: fork) records this marker itself via
+# record-qa-gate-pass.sh rather than depending on this hook firing inside its fork. This hook still
+# covers the case where qa_gate_commands are run directly as Bash calls in the main session.
 INPUT=$(cat)
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"

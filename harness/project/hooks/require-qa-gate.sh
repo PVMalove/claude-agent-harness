@@ -1,8 +1,9 @@
 #!/bin/bash
 # PreToolUse(Bash): blocks `gh pr create` unless the qa-gate skill's commands passed against the
-# current worktree state. Marker is written by mark-qa-gate-passed.sh (PostToolUse on the last
-# qa_gate_commands entry). Keyed on HEAD + diff content rather than session_id: the qa-gate skill
-# always runs in a forked sub-session (context: fork), whose session_id differs from the session
+# current worktree state. Marker is written by the qa-gate skill itself (record-qa-gate-pass.sh),
+# or as a fallback by mark-qa-gate-passed.sh (PostToolUse on the last qa_gate_commands entry run
+# directly in the main session). Keyed on HEAD + diff content rather than session_id: the qa-gate
+# skill runs in a forked sub-session (context: fork), whose session_id differs from the session
 # that later runs `gh pr create`, so a session-scoped marker could never match.
 INPUT=$(cat)
 

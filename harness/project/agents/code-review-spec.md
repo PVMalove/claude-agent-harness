@@ -2,7 +2,7 @@
 name: code-review-spec
 description: Reviews a diff against the originating issue/spec for completeness and scope creep. Used by the code-review skill's Spec axis — do not invoke directly.
 tools: Read, Bash, Grep, Glob
-model: inherit
+model: sonnet
 maxTurns: 20
 ---
 

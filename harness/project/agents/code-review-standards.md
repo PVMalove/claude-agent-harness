@@ -2,7 +2,7 @@
 name: code-review-standards
 description: Reviews a diff against this repo's documented coding standards and a fixed Fowler smell baseline. Used by the code-review skill's Standards axis — do not invoke directly.
 tools: Read, Bash, Grep, Glob
-model: inherit
+model: sonnet
 maxTurns: 20
 ---
 
