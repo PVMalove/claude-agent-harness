@@ -773,10 +773,10 @@ def scaffold_pvmalove_extras(repo: Path, args: argparse.Namespace) -> list[str]:
         if result:
             written.append(result)
 
-    rule = PROJECT_TEMPLATE_DIR / "rules/karpathy-guidelines.md"
-    result = _copy_if_absent(rule, repo / ".claude/rules" / rule.name, force=force_seed, differing=differing)
-    if result:
-        written.append(result)
+    for rule in sorted((PROJECT_TEMPLATE_DIR / "rules").glob("*.md")):
+        result = _copy_if_absent(rule, repo / ".claude/rules" / rule.name, force=force_seed, differing=differing)
+        if result:
+            written.append(result)
 
     for agent in sorted((PROJECT_TEMPLATE_DIR / "agents").glob("*.md")):
         result = _copy_if_absent(agent, repo / ".claude/agents" / agent.name, force=force_seed, differing=differing)
