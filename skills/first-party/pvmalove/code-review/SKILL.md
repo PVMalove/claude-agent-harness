@@ -71,7 +71,7 @@ Invoke both via the `Agent` tool with `subagent_type: "code-review-standards"` a
 
 If the spec is missing, skip the `code-review-spec` sub-agent and note this in the final report.
 
-After launching both, stop — do not poll, schedule a wakeup, or launch another agent whose purpose is only to wait. The harness delivers each sub-agent's result automatically as a notification in a later turn.
+After launching both, stop — do not poll, schedule a wakeup, or launch another agent whose purpose is only to wait. The harness delivers each sub-agent's result automatically as a notification in a later turn. This still holds once one sub-agent's notification has already arrived and the other hasn't: don't poll or schedule a wakeup for the straggler either — end your turn and wait for its notification the same way.
 
 ### 5. Aggregate
 
