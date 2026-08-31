@@ -1,0 +1,8 @@
+[project]
+name = "antigravity-harness-wrapper"
+version = "0.1.0"
+description = "MCP Server wrapping Antigravity CLI (agy) for qa-gate skill"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0.0",
+]
