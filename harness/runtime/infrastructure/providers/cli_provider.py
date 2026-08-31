@@ -22,10 +22,6 @@ class CLIProvider(Provider):
         }
         
         try:
-            # We use asyncio.create_subprocess_exec to run the CLI command asynchronously.
-            # However, since these commands might not exist on the machine during this test, 
-            # we will just echo or simulate if command is not found, or actually try to run.
-            # In a real environment, it sends JSON to stdin and reads JSON from stdout.
             process = await asyncio.create_subprocess_exec(
                 self.command, *self.args,
                 stdin=asyncio.subprocess.PIPE,
@@ -33,24 +29,76 @@ class CLIProvider(Provider):
                 stderr=asyncio.subprocess.PIPE
             )
             
-            stdout, stderr = await process.communicate(input=json.dumps(request_data).encode('utf-8'))
+            # Send initial request
+            process.stdin.write(json.dumps(request_data).encode('utf-8') + b'\n')
+            await process.stdin.drain()
+            
+            final_output = {}
+            
+            # Read stdout line by line
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                    
+                line_str = line.decode('utf-8').strip()
+                if not line_str:
+                    continue
+                    
+                try:
+                    message = json.loads(line_str)
+                except json.JSONDecodeError:
+                    print(f"[{self.command} STDOUT]: {line_str}")
+                    continue
+                    
+                # Handle RPC request from provider
+                if "method" in message and message["method"] == "AskUserQuestion":
+                    params = message.get("params", {})
+                    questions = params.get("questions", [])
+                    answers = []
+                    
+                    print("\n--- ВОПРОС ОТ АГЕНТА ---")
+                    for q in questions:
+                        print(f"В: {q.get('question')}")
+                        for i, opt in enumerate(q.get('options', [])):
+                            print(f"  {i+1}) {opt}")
+                        # In a real environment, this would call a UI rendering function.
+                        # For the CLI mock, we use a simple input.
+                        choice = input("Ваш выбор (номер): ")
+                        try:
+                            choice_idx = int(choice) - 1
+                            answers.append(q['options'][choice_idx])
+                        except:
+                            answers.append(choice)
+                    print("------------------------\n")
+                            
+                    # Send response back to provider
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": message.get("id"),
+                        "result": {"answers": answers}
+                    }
+                    process.stdin.write(json.dumps(response).encode('utf-8') + b'\n')
+                    await process.stdin.drain()
+                    
+                # Final result from provider
+                elif "status" in message:
+                    final_output = message
+                    
+            await process.wait()
             
             if process.returncode != 0:
+                stderr = await process.stderr.read()
                 return ExecutionResult(
                     execution_id=execution_id,
                     status="FAILED",
                     error=stderr.decode('utf-8') or f"Process exited with code {process.returncode}"
                 )
                 
-            try:
-                output = json.loads(stdout.decode('utf-8'))
-            except json.JSONDecodeError:
-                output = {"raw_output": stdout.decode('utf-8')}
-                
             return ExecutionResult(
                 execution_id=execution_id,
-                status="SUCCESS",
-                output=output
+                status=final_output.get("status", "SUCCESS"),
+                output=final_output.get("output", {})
             )
         except FileNotFoundError:
             return ExecutionResult(
