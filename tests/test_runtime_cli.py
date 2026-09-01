@@ -46,8 +46,8 @@ class RuntimeCliTests(unittest.TestCase):
                     "implement": {
                         "quality_status": {
                             "tdd": "passed",
-                            "code_review": "passed",
-                            "qa_gate": "passed",
+                            "code-review": "passed",
+                            "qa-gate": "passed",
                         }
                     },
                 }
@@ -85,6 +85,9 @@ class RuntimeCliTests(unittest.TestCase):
 
                 [skills.implement]
                 requires = ["filesystem"]
+
+                [skills.implement.quality]
+                required = ["tdd", "code-review", "qa-gate"]
 
                 [workflows.feature-development]
                 steps = ["grill-with-docs", "to-spec", "to-tickets", "implement"]
@@ -129,7 +132,7 @@ class RuntimeCliTests(unittest.TestCase):
             state = self.run_cli(repository, "workflow", "status", execution_id)
             self.assertEqual(state.returncode, 0, state.stdout + state.stderr)
             self.assertIn('"quality_status": {', state.stdout)
-            for phase in ("tdd", "code_review", "qa_gate"):
+            for phase in ("tdd", "code-review", "qa-gate"):
                 self.assertIn(f'"{phase}": "passed"', state.stdout)
 
             requests = [
@@ -149,6 +152,65 @@ class RuntimeCliTests(unittest.TestCase):
                 [request["params"]["skill"] for request in requests],
                 ["grill-with-docs", "to-spec", "to-tickets", "implement"],
             )
+
+    def test_feature_development_rejects_an_incomplete_quality_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            provider_program = """
+                import json
+                import sys
+
+                request = json.loads(sys.stdin.readline())
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": {
+                        "protocol": "harness.provider",
+                        "version": 1,
+                        "status": "SUCCESS",
+                        "output": {"quality_status": {"tdd": "passed"}},
+                    },
+                }), flush=True)
+            """
+            self.write_config(
+                repository,
+                f"""
+                [providers.fixture]
+                type = "cli"
+                command = {json.dumps(sys.executable)}
+                args = ["-c", {json.dumps(textwrap.dedent(provider_program))}]
+
+                [workers.coder]
+                provider = "fixture"
+                capabilities = ["filesystem"]
+
+                [skills.implement]
+                requires = ["filesystem"]
+
+                [skills.implement.quality]
+                required = ["tdd", "code-review", "qa-gate"]
+
+                [workflows.feature-development]
+                steps = ["implement"]
+                """,
+            )
+
+            result = self.run_cli(
+                repository,
+                "workflow",
+                "run",
+                "feature-development",
+                "--input",
+                '{"ticket_id":"42"}',
+            )
+
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            execution_id = re.search(r"Execution ID: ([0-9a-f-]+)", result.stdout).group(1)
+            state = self.run_cli(repository, "workflow", "status", execution_id)
+            self.assertEqual(state.returncode, 0, state.stdout + state.stderr)
+            self.assertIn('"status": "FAILED"', state.stdout)
+            self.assertIn('"code": "QUALITY_CONTRACT_FAILED"', state.stdout)
+            self.assertIn('"failed_phases": ["code-review", "qa-gate"]', state.stdout)
 
     def test_plan_rejects_worker_that_references_an_unknown_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

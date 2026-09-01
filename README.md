@@ -57,6 +57,9 @@ spec_file = "to-spec.output.spec_file"
 
 [workflows.feature-development.mappings.implement]
 ticket_id = "to-tickets.output.ticket_id"
+
+[skills.implement.quality]
+required = ["tdd", "code-review", "qa-gate"]
 ```
 
 `implement` выполняет TDD, code review и qa-gate как обязательные внутренние фазы; их не нужно и нельзя дублировать отдельными шагами workflow.

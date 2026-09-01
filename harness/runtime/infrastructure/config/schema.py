@@ -30,6 +30,7 @@ class ExecutionConfig:
 class SkillConfig:
     requirements: frozenset[str] = frozenset()
     execution: ExecutionConfig = ExecutionConfig()
+    quality_phases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -224,9 +225,16 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
         unknown_workers = sorted(set(preferred) - workers.keys())
         if unknown_workers:
             raise ValueError(f"Skill '{name}' prefers unknown worker '{unknown_workers[0]}'")
+        quality = data.get("quality", {})
+        if not isinstance(quality, Mapping):
+            raise ValueError(f"Skill '{name}'.quality must be a table")
+        quality_phases = _string_list(
+            quality.get("required", []), f"Skill '{name}'.quality.required"
+        )
         skills[name] = SkillConfig(
             requirements=frozenset(_string_list(data.get("requires", []), f"Skill '{name}'.requires")),
             execution=ExecutionConfig(preferred=preferred),
+            quality_phases=quality_phases,
         )
 
     workflows: dict[str, WorkflowConfig] = {}
