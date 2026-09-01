@@ -35,6 +35,7 @@ def setup_components(repo_path: Path):
             name=name,
             requirements=set(data.requirements),
             execution_policy=ExecutionPolicy(preferred=list(data.execution.preferred)),
+            quality_phases=data.quality_phases,
         )
         for name, data in config.skills.items()
     }

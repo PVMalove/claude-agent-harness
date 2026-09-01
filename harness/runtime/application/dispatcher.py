@@ -1,6 +1,6 @@
 import asyncio
 import json
-from typing import Any
+from typing import Any, Mapping
 from ..domain.execution import ExecutionContext, ExecutionRequest, ExecutionResult
 from ..domain.events import (
     ExecutionCompleted,
@@ -8,6 +8,7 @@ from ..domain.events import (
     ExecutionStarted,
     ProviderSelected,
 )
+from ..domain.skill import Skill
 from .registry import SkillRegistry
 from .routing.resolver import CapabilityResolver
 from .routing.policy import PolicyEngine
@@ -147,6 +148,7 @@ class Dispatcher:
         # Execute
         async with self._slots:
             result = await self.executor.execute(plan)
+        result = self._enforce_quality_contract(decision.skill, result)
         if state_store and hasattr(state_store, "save_execution_result"):
             await state_store.save_execution_result(plan.execution_id, result)
         if result.status == "SUCCESS":
@@ -161,6 +163,39 @@ class Dispatcher:
                 error=result.error or "Provider execution failed",
             ))
         return result
+
+    @staticmethod
+    def _enforce_quality_contract(skill: Skill, result: ExecutionResult) -> ExecutionResult:
+        required_phases = skill.quality_phases
+        if result.status != "SUCCESS" or not required_phases:
+            return result
+
+        quality_status = (
+            result.output.get("quality_status")
+            if isinstance(result.output, Mapping)
+            else None
+        )
+        failed_phases = [
+            phase
+            for phase in required_phases
+            if not isinstance(quality_status, Mapping)
+            or quality_status.get(phase) != "passed"
+        ]
+        if not failed_phases:
+            return result
+
+        details = {
+            "code": "QUALITY_CONTRACT_FAILED",
+            "skill": skill.name,
+            "required_phases": list(required_phases),
+            "failed_phases": failed_phases,
+        }
+        return ExecutionResult(
+            execution_id=result.execution_id,
+            status="FAILED",
+            error=json.dumps(details, ensure_ascii=False, sort_keys=True),
+            error_details=details,
+        )
 
     async def _publish(self, event: Any) -> None:
         publish = getattr(self.events, "publish", None)

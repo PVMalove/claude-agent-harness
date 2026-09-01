@@ -120,7 +120,14 @@ spec_file = "to-spec.output.spec_file"
 
 [workflows.feature-development.mappings.implement]
 ticket_id = "to-tickets.output.ticket_id"
+
+[skills.implement.quality]
+required = ["tdd", "code-review", "qa-gate"]
 ```
+
+For a skill with a quality contract, a provider is successful only when its
+`quality_status` output marks every required phase as `passed`. These phases are
+completion checks inside the skill; they are not additional workflow steps.
 
 Each workflow execution is stored in SQLite at `.harness/state.db` by default. Set
 `[runtime.state].path` to use another path. `workflow status <execution-id>` shows the

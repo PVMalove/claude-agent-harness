@@ -3,6 +3,19 @@ import math
 from typing import Any, Mapping
 from ...domain.policy import DelegationPolicy, DelegationRule, RetryPolicy
 
+FEATURE_DEVELOPMENT_STEPS = (
+    "grill-with-docs",
+    "to-spec",
+    "to-tickets",
+    "implement",
+)
+IMPLEMENT_QUALITY_PHASES = ("tdd", "code-review", "qa-gate")
+FEATURE_DEVELOPMENT_MAPPINGS = {
+    "to-spec": {"context_id": "grill-with-docs.output.context_id"},
+    "to-tickets": {"spec_file": "to-spec.output.spec_file"},
+    "implement": {"ticket_id": "to-tickets.output.ticket_id"},
+}
+
 
 @dataclass(frozen=True)
 class ProviderConfig:
@@ -30,6 +43,7 @@ class ExecutionConfig:
 class SkillConfig:
     requirements: frozenset[str] = frozenset()
     execution: ExecutionConfig = ExecutionConfig()
+    quality_phases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -224,9 +238,16 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
         unknown_workers = sorted(set(preferred) - workers.keys())
         if unknown_workers:
             raise ValueError(f"Skill '{name}' prefers unknown worker '{unknown_workers[0]}'")
+        quality = data.get("quality", {})
+        if not isinstance(quality, Mapping):
+            raise ValueError(f"Skill '{name}'.quality must be a table")
+        quality_phases = _string_list(
+            quality.get("required", []), f"Skill '{name}'.quality.required"
+        )
         skills[name] = SkillConfig(
             requirements=frozenset(_string_list(data.get("requires", []), f"Skill '{name}'.requires")),
             execution=ExecutionConfig(preferred=preferred),
+            quality_phases=quality_phases,
         )
 
     workflows: dict[str, WorkflowConfig] = {}
@@ -238,6 +259,11 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
         if duplicate_steps:
             raise ValueError(
                 f"Workflow '{name}' contains duplicate step '{duplicate_steps[0]}'"
+            )
+        if name == "feature-development" and steps != FEATURE_DEVELOPMENT_STEPS:
+            raise ValueError(
+                "Workflow 'feature-development' must contain exactly the macro steps "
+                "grill-with-docs, to-spec, to-tickets, implement"
             )
         parallel = data.get("parallel", False)
         if not isinstance(parallel, bool):
@@ -299,6 +325,18 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
                     )
                 mapping[destination] = source
             mappings[target] = mapping
+        if name == "feature-development":
+            implement = skills.get("implement")
+            if implement is None or implement.quality_phases != IMPLEMENT_QUALITY_PHASES:
+                raise ValueError(
+                    "Skill 'implement' must require quality phases "
+                    "tdd, code-review, qa-gate for workflow 'feature-development'"
+                )
+            for target, expected_mapping in FEATURE_DEVELOPMENT_MAPPINGS.items():
+                if mappings.get(target, {}) != expected_mapping:
+                    raise ValueError(
+                        f"Workflow 'feature-development' must define mapping for '{target}'"
+                    )
         workflows[name] = WorkflowConfig(
             steps=steps, parallel=parallel, mappings=mappings
         )
