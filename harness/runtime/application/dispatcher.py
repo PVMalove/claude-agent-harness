@@ -8,6 +8,7 @@ from ..domain.events import (
     ExecutionStarted,
     ProviderSelected,
 )
+from ..domain.skill import Skill
 from .registry import SkillRegistry
 from .routing.resolver import CapabilityResolver
 from .routing.policy import PolicyEngine
@@ -164,8 +165,8 @@ class Dispatcher:
         return result
 
     @staticmethod
-    def _enforce_quality_contract(skill: Any, result: ExecutionResult) -> ExecutionResult:
-        required_phases = getattr(skill, "quality_phases", ())
+    def _enforce_quality_contract(skill: Skill, result: ExecutionResult) -> ExecutionResult:
+        required_phases = skill.quality_phases
         if result.status != "SUCCESS" or not required_phases:
             return result
 
