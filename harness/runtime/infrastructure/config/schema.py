@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import math
 from typing import Any, Mapping
 
 
@@ -7,6 +8,7 @@ class ProviderConfig:
     type: str
     command: str | None = None
     args: tuple[str, ...] = ()
+    timeout: float | None = None
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,7 @@ class WorkflowConfig:
 
 @dataclass(frozen=True)
 class RuntimeConfig:
+    default_timeout: float = 600.0
     providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
     workers: Mapping[str, WorkerConfig] = field(default_factory=dict)
     skills: Mapping[str, SkillConfig] = field(default_factory=dict)
@@ -52,9 +55,25 @@ def _string_list(value: Any, location: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _positive_number(value: Any, location: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(f"{location} must be a positive number")
+    return float(value)
+
+
 def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
     if not isinstance(raw_config, Mapping):
         raise ValueError("orchestration configuration must be a table")
+
+    runtime = _table(raw_config, "runtime")
+    default_timeout = _positive_number(
+        runtime.get("default_timeout", 600), "Runtime.default_timeout"
+    )
 
     providers: dict[str, ProviderConfig] = {}
     for name, data in _table(raw_config, "providers").items():
@@ -70,6 +89,11 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
             type=provider_type,
             command=command,
             args=_string_list(data.get("args", []), f"Provider '{name}'.args"),
+            timeout=(
+                _positive_number(data["timeout"], f"Provider '{name}'.timeout")
+                if "timeout" in data
+                else None
+            ),
         )
 
     workers: dict[str, WorkerConfig] = {}
@@ -115,6 +139,7 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
         workflows[name] = WorkflowConfig(steps=steps)
 
     return RuntimeConfig(
+        default_timeout=default_timeout,
         providers=providers,
         workers=workers,
         skills=skills,
