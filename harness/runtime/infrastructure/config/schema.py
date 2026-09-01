@@ -142,19 +142,10 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
         runtime_retry_value = runtime["retry_attempts"]
     runtime_retry = _retry_policy(runtime_retry_value, "Runtime.retry")
 
-    state_path_value: Any = runtime.get("state_path", runtime.get("state_store"))
-    if state_path_value is None:
-        state_value = runtime.get("state")
-        if isinstance(state_value, Mapping):
-            state_path_value = state_value.get("path")
-        elif state_value is not None:
-            state_path_value = state_value
-    if state_path_value is None:
-        root_state = raw_config.get("state")
-        if isinstance(root_state, Mapping):
-            state_path_value = root_state.get("path")
-        elif root_state is not None:
-            state_path_value = root_state
+    state_value = runtime.get("state", {})
+    if not isinstance(state_value, Mapping):
+        raise ValueError("Runtime.state must be a table")
+    state_path_value: Any = state_value.get("path")
     if state_path_value is None:
         state_path_value = ".harness/state.db"
     if not isinstance(state_path_value, str) or not state_path_value:
@@ -243,6 +234,11 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
         if not isinstance(data, Mapping):
             raise ValueError(f"Workflow '{name}' must be a table")
         steps = _string_list(data.get("steps", []), f"Workflow '{name}'.steps")
+        duplicate_steps = sorted({step for step in steps if steps.count(step) > 1})
+        if duplicate_steps:
+            raise ValueError(
+                f"Workflow '{name}' contains duplicate step '{duplicate_steps[0]}'"
+            )
         parallel = data.get("parallel", False)
         if not isinstance(parallel, bool):
             raise ValueError(f"Workflow '{name}'.parallel must be a boolean")
@@ -264,6 +260,10 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
                     f"Workflow '{name}'.mappings.{target} must be a table"
                 )
             mapping: dict[str, str] = {}
+            if step_indexes[target] == 0 and raw_mapping:
+                raise ValueError(
+                    f"Workflow '{name}'.mappings.{target} cannot map the first step"
+                )
             for destination, source in raw_mapping.items():
                 if not isinstance(destination, str) or not destination:
                     raise ValueError(
@@ -286,6 +286,10 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
                 elif step_indexes[source_parts[0]] >= step_indexes[target]:
                     raise ValueError(
                         f"Workflow '{name}'.mappings.{target}.{destination} must reference an earlier step"
+                    )
+                elif parallel:
+                    raise ValueError(
+                        f"Workflow '{name}'.parallel cannot map from an earlier step"
                     )
                 mapping[destination] = source
             mappings[target] = mapping

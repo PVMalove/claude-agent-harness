@@ -1,7 +1,13 @@
 import asyncio
 import json
 from typing import Any
-from ..domain.execution import ExecutionRequest, ExecutionResult
+from ..domain.execution import ExecutionContext, ExecutionRequest, ExecutionResult
+from ..domain.events import (
+    ExecutionCompleted,
+    ExecutionFailed,
+    ExecutionStarted,
+    ProviderSelected,
+)
 from .registry import SkillRegistry
 from .routing.resolver import CapabilityResolver
 from .routing.policy import PolicyEngine
@@ -110,12 +116,53 @@ class Dispatcher:
             decision=decision,
         )
 
-        # 6. Publish event (assuming we have an async publish method)
-        if hasattr(self.events, "publish"):
-            from ..domain.events import ProviderSelected
-            # await self.events.publish(ProviderSelected(...))
-            # Just a placeholder, adapt when event bus is ready
+        state_store = getattr(self.events, "state_store", None)
+        if state_store and hasattr(state_store, "save_execution"):
+            await state_store.save_execution(ExecutionContext(
+                execution_id=plan.execution_id,
+                session_id=plan.session_id,
+                parent_execution_id=plan.parent_execution_id,
+                caller=plan.caller,
+                project=plan.project_id,
+                depth=request.depth,
+                skill=plan.skill,
+                metadata={
+                    "worker": plan.worker,
+                    "provider": plan.provider,
+                    "requirements": sorted(plan.requirements),
+                    "resolved_capabilities": sorted(plan.resolved_capabilities),
+                    "routing_reason": plan.routing_reason,
+                    "routing_score": plan.routing_score,
+                },
+            ))
+        await self._publish(ExecutionStarted(
+            execution_id=plan.execution_id, skill=plan.skill, caller=plan.caller
+        ))
+        await self._publish(ProviderSelected(
+            execution_id=plan.execution_id,
+            provider=plan.provider,
+            reason=plan.routing_reason,
+        ))
 
-        # 7. Execute
+        # Execute
         async with self._slots:
-            return await self.executor.execute(plan)
+            result = await self.executor.execute(plan)
+        if state_store and hasattr(state_store, "save_execution_result"):
+            await state_store.save_execution_result(plan.execution_id, result)
+        if result.status == "SUCCESS":
+            await self._publish(ExecutionCompleted(
+                execution_id=plan.execution_id,
+                status=result.status,
+                result=result.output,
+            ))
+        else:
+            await self._publish(ExecutionFailed(
+                execution_id=plan.execution_id,
+                error=result.error or "Provider execution failed",
+            ))
+        return result
+
+    async def _publish(self, event: Any) -> None:
+        publish = getattr(self.events, "publish", None)
+        if publish:
+            await publish(event)

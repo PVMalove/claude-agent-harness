@@ -624,6 +624,7 @@ class RuntimeCliTests(unittest.TestCase):
             execution_id = re.search(r"Execution ID: ([0-9a-f-]+)", result.stdout).group(1)
             state = self.run_cli(repository, "workflow", "status", execution_id)
             self.assertIn("Context version: 1", state.stdout)
+            self.assertIn("Context: ", state.stdout)
             self.assertIn('"context_id": "first.output.context_id"', state.stdout)
 
     def test_workflow_state_survives_cli_restart_and_can_resume(self) -> None:
@@ -794,6 +795,33 @@ class RuntimeCliTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 1)
             self.assertIn("has an invalid source 'unknown.output.value'", result.stdout)
+
+    def test_workflow_rejects_duplicate_steps_before_planning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            self.write_config(
+                repository,
+                """
+                [providers.fixture]
+                type = "cli"
+                command = "fixture-agent"
+
+                [workers.coder]
+                provider = "fixture"
+                capabilities = ["filesystem"]
+
+                [skills.first]
+                requires = ["filesystem"]
+
+                [workflows.pipeline]
+                steps = ["first", "first"]
+                """,
+            )
+
+            result = self.run_cli(repository, "workflow", "plan", "pipeline")
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("contains duplicate step 'first'", result.stdout)
 
 
 if __name__ == "__main__":

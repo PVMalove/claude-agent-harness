@@ -1,5 +1,17 @@
 from dataclasses import dataclass, field
-from typing import Mapping
+from typing import Any, Mapping, TypedDict
+
+
+class WorkflowStepResult(TypedDict, total=False):
+    step: int
+    skill: str
+    execution_id: str
+    status: str
+    input: dict[str, Any]
+    lineage: dict[str, str]
+    output: dict[str, Any] | None
+    error: str | None
+    error_details: dict[str, Any] | None
 
 @dataclass
 class Workflow:

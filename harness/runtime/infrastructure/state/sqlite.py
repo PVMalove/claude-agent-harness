@@ -2,7 +2,7 @@ import sqlite3
 import datetime
 from typing import Any
 from ...domain.state import StateStore
-from ...domain.execution import ExecutionContext
+from ...domain.execution import ExecutionContext, ExecutionResult
 import json
 from pathlib import Path
 
@@ -92,6 +92,23 @@ class SQLiteStateStore(StateStore):
                 event.get("execution_id", ""),
                 event.get("event_type", "unknown"),
                 json.dumps(event, ensure_ascii=False),
+            ),
+        )
+        self.conn.commit()
+
+    async def save_execution_result(
+        self, execution_id: str, result: ExecutionResult
+    ) -> None:
+        self.conn.execute(
+            "UPDATE executions SET status = ?, result_json = ? WHERE execution_id = ?",
+            (
+                result.status,
+                json.dumps({
+                    "output": result.output,
+                    "error": result.error,
+                    "error_details": result.error_details,
+                }, ensure_ascii=False),
+                execution_id,
             ),
         )
         self.conn.commit()

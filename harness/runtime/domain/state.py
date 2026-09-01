@@ -11,6 +11,9 @@ class StateStore(Protocol):
     async def append_event(self, event: dict[str, Any]) -> None:
         ...
 
+    async def save_execution_result(self, execution_id: str, result: ExecutionResult) -> None:
+        ...
+
     async def save_workflow_execution(self, execution_id: str, state: dict[str, Any]) -> None:
         ...
 

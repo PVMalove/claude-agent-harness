@@ -289,6 +289,7 @@ def main():
             print(f"Status: {state['status']}")
             print(f"Current step: {state['current_step']}")
             print(f"Context version: {state.get('context_version', 1)}")
+            print(f"Context: {json.dumps(state.get('context', {}), ensure_ascii=False, sort_keys=True)}")
             print(f"Results: {json.dumps(state.get('results', []), ensure_ascii=False, sort_keys=True)}")
             return 0
 
