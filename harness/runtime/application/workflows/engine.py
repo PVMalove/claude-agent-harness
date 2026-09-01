@@ -14,18 +14,23 @@ class WorkflowEngine:
         steps = []
         for step_idx, skill_name in enumerate(workflow.steps):
             try:
-                skill = self.dispatcher.skills.resolve(skill_name)
-                candidates = self.dispatcher.resolver.resolve(skill.requirements)
-                authorized = self.dispatcher.policy.authorize(request, candidates)
-                healthy = self.dispatcher.health.filter(authorized)
-                worker = self.dispatcher.scheduler.select(skill, healthy)
-
+                decision = self.dispatcher.route(
+                    ExecutionRequest(
+                        skill=skill_name,
+                        input=request.input,
+                        caller=request.caller,
+                        session_id=request.session_id,
+                        project_id=request.project_id,
+                    )
+                )
                 steps.append({
                     "step": step_idx + 1,
-                    "skill": skill.name,
-                    "worker": worker.name,
-                    "provider": worker.provider,
-                    "status": "planned"
+                    "skill": decision.skill.name,
+                    "worker": decision.worker.name,
+                    "provider": decision.worker.provider,
+                    "reason": decision.reason,
+                    "rejections": decision.rejections,
+                    "status": "planned",
                 })
             except Exception as e:
                 steps.append({
@@ -63,14 +68,17 @@ class WorkflowEngine:
             skill_name = steps[step_idx]
 
             try:
-                # We need to know provider for UX print "-> claude"
-                skill = self.dispatcher.skills.resolve(skill_name)
-                candidates = self.dispatcher.resolver.resolve(skill.requirements)
-                authorized = self.dispatcher.policy.authorize(request, candidates)
-                healthy = self.dispatcher.health.filter(authorized)
-                worker = self.dispatcher.scheduler.select(skill, healthy)
-                provider_display = worker.provider
-            except:
+                decision = self.dispatcher.route(
+                    ExecutionRequest(
+                        skill=skill_name,
+                        input=request.input,
+                        caller=request.caller,
+                        session_id=request.session_id,
+                        project_id=request.project_id,
+                    )
+                )
+                provider_display = decision.worker.provider
+            except Exception:
                 provider_display = "unknown"
 
             print(f"[{step_idx + 1}/{len(steps)}] {skill_name.ljust(20)} -> {provider_display}")

@@ -199,6 +199,10 @@ def main():
             print("-" * 61)
             for s in steps:
                 print(f"{str(s['step']).ljust(20)} {s['skill'].ljust(17)} {s['worker'].ljust(12)} {s['provider']}")
+                if s["status"] == "planned":
+                    print(f"  reason: {s['reason']}")
+                    for worker, rejection in s["rejections"].items():
+                        print(f"  rejected {worker}: {rejection}")
             print("\nRouting is declarative.")
             return 1 if any(step["status"].startswith("error:") for step in steps) else 0
 
@@ -233,39 +237,31 @@ def main():
             return 0
 
         if args.sk_command == "explain":
-            skill = comps["skill_registry"].resolve(args.name)
-            print(f"Skill: {skill.name}\n\nRequirements:")
-            for req in skill.requirements:
+            decision = comps["dispatcher"].route(ExecutionRequest(skill=args.name))
+            print(f"Skill: {decision.skill.name}\n\nRequirements:")
+            for req in decision.skill.requirements:
                 print(f"  * {req}")
 
             print("\nCandidates:")
             workers = comps["workers"]
-            valid_candidates = comps["resolver"].resolve(skill.requirements)
-            selected_worker = None
-            if valid_candidates:
-                selected_worker = comps["scheduler"].select(skill, valid_candidates)
 
             for name, worker in workers.items():
-                matched_caps = len(skill.requirements.intersection(worker.capabilities))
-                total_caps = len(skill.requirements)
-                missing = skill.requirements - worker.capabilities
-                if missing:
-                    print(
-                        f"{name}: rejected; missing capabilities: "
-                        f"{', '.join(sorted(missing))}"
-                    )
+                rejection = decision.rejections.get(name)
+                if rejection:
+                    print(f"{name}: rejected; {rejection}")
                 else:
-                    score = getattr(worker, "_last_routing_score", 0)
+                    matched_caps = len(
+                        decision.skill.requirements.intersection(worker.capabilities)
+                    )
+                    total_caps = len(decision.skill.requirements)
+                    score = decision.score if worker == decision.worker else 0
                     print(
                         f"{name}: eligible; provider: {worker.provider}; "
                         f"capabilities: {matched_caps}/{total_caps}; score: {score}"
                     )
 
-            if selected_worker:
-                print(f"\nSelected: {selected_worker.name} -> {selected_worker.provider}")
-                print("Reason: capability match + preference + scheduler score")
-            else:
-                print("No suitable worker found.")
+            print(f"\nSelected: {decision.worker.name} -> {decision.worker.provider}")
+            print(f"Reason: {decision.reason}")
             return 0
 
         if args.sk_command == "run":
@@ -273,7 +269,7 @@ def main():
             req = ExecutionRequest(skill=args.name, input=req.input)
             res = asyncio.run(comps["dispatcher"].dispatch(req))
             print(f"Execution Status: {res.status}")
-            return 0
+            return 0 if res.status == "SUCCESS" else 1
 
     # Provider / Worker Actions
     elif args.command == "provider" and args.prov_command == "list":

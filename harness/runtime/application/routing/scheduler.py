@@ -1,10 +1,18 @@
-from typing import Any
-from ...domain.execution import ExecutionRequest
+from dataclasses import dataclass
+
 from ...domain.skill import Skill
 from ...domain.worker import Worker
 
+
+@dataclass(frozen=True)
+class WorkerSelection:
+    worker: Worker
+    score: int
+    reason: str
+
+
 class Scheduler:
-    def select(self, skill: Skill, candidates: list[Worker]) -> Worker:
+    def select(self, skill: Skill, candidates: list[Worker]) -> WorkerSelection:
         if not candidates:
             raise RuntimeError(f"No candidates available for skill: {skill.name}")
 
@@ -32,9 +40,8 @@ class Scheduler:
                 # Assuming we might want to store routing reasons later,
                 # we could wrap this in a selection object.
 
-        # Hack to attach routing info for the planner
-        if best_worker:
-            best_worker._last_routing_score = best_score
-            best_worker._last_routing_reason = "Highest overall score (capability + preference + health)"
-
-        return best_worker
+        return WorkerSelection(
+            worker=best_worker,
+            score=best_score,
+            reason="Highest overall score (capability + preference + health)",
+        )

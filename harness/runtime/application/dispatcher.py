@@ -7,6 +7,7 @@ from .routing.health import HealthRegistry
 from .routing.scheduler import Scheduler
 from .execution.planner import Planner
 from .execution.executor import Executor
+from .routing.decision import RoutingDecision
 
 class Dispatcher:
     def __init__(self, 
@@ -27,32 +28,58 @@ class Dispatcher:
         self.executor = executor
         self.events = events
 
-    async def dispatch(self, request: ExecutionRequest) -> ExecutionResult:
+    def route(self, request: ExecutionRequest) -> RoutingDecision:
         skill = self.skills.resolve(request.skill)
 
-        # 1. Resolve candidates based on required capabilities
         candidates = self.resolver.resolve(requirements=skill.requirements)
+        rejections = {
+            worker.name: (
+                "missing capabilities: "
+                + ", ".join(sorted(skill.requirements - worker.capabilities))
+            )
+            for worker in self.resolver.workers.values()
+            if worker not in candidates
+        }
 
-        # 2. Authorize via Policy
         authorized = self.policy.authorize(
             request=request,
             candidates=candidates,
         )
+        rejections.update(
+            {
+                worker.name: "rejected by delegation policy"
+                for worker in candidates
+                if worker not in authorized
+            }
+        )
 
-        # 3. Filter healthy workers
         healthy = self.health.filter(authorized)
+        rejections.update(
+            {
+                worker.name: "unhealthy"
+                for worker in authorized
+                if worker not in healthy
+            }
+        )
 
-        # 4. Schedule (Select best worker)
         selected = self.scheduler.select(
             skill=skill,
             candidates=healthy,
         )
+        return RoutingDecision(
+            skill=skill,
+            worker=selected.worker,
+            score=selected.score,
+            reason=selected.reason,
+            rejections=rejections,
+        )
 
-        # 5. Plan execution
+    async def dispatch(self, request: ExecutionRequest) -> ExecutionResult:
+        decision = self.route(request)
+
         plan = self.planner.create(
             request=request,
-            skill=skill,
-            worker=selected,
+            decision=decision,
         )
 
         # 6. Publish event (assuming we have an async publish method)

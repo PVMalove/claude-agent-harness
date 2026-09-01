@@ -47,8 +47,10 @@
 Пример конфигурации (`.harness/orchestration.toml`):
 ```toml
 [workflows.feature-development]
-steps = ["grill-with-docs", "to-spec", "to-tickets", "implement", "tdd", "code-review", "qa-gate"]
+steps = ["grill-with-docs", "to-spec", "to-tickets", "implement"]
 ```
+
+`implement` выполняет TDD, code review и qa-gate как обязательные внутренние фазы; их не нужно и нельзя дублировать отдельными шагами workflow.
 
 Доступные команды CLI:
 ```bash

@@ -3,6 +3,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+import json
 from pathlib import Path
 
 
@@ -74,6 +75,9 @@ class RuntimeCliTests(unittest.TestCase):
 
                 [skills.implement.execution]
                 preferred = ["complete"]
+
+                [workflows.feature-development]
+                steps = ["implement"]
                 """,
             )
 
@@ -82,6 +86,38 @@ class RuntimeCliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("limited: rejected; missing capabilities: git", result.stdout)
             self.assertIn("Selected: complete -> custom", result.stdout)
+
+            plan = self.run_cli(repository, "workflow", "plan", "feature-development")
+
+            self.assertEqual(plan.returncode, 0, plan.stderr)
+            self.assertIn("reason: Highest overall score", plan.stdout)
+            self.assertIn("rejected limited: missing capabilities: git", plan.stdout)
+
+    def test_skill_run_uses_the_resolved_capabilities_in_the_provider_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            provider_program = "import json; print(json.dumps({'status': 'SUCCESS'}))"
+            self.write_config(
+                repository,
+                f"""
+                [providers.fixture]
+                type = "cli"
+                command = {json.dumps(sys.executable)}
+                args = ["-c", {json.dumps(provider_program)}]
+
+                [workers.coder]
+                provider = "fixture"
+                capabilities = ["filesystem"]
+
+                [skills.implement]
+                requires = ["filesystem"]
+                """,
+            )
+
+            result = self.run_cli(repository, "skill", "run", "implement")
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Execution Status: SUCCESS", result.stdout)
 
 
 if __name__ == "__main__":

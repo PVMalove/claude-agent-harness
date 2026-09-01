@@ -18,7 +18,7 @@ class CLIProvider(Provider):
         request_data = {
             "execution_id": execution_id,
             "skill": plan.skill,
-            "capabilities": list(plan.capabilities)
+            "capabilities": sorted(plan.resolved_capabilities),
         }
         
         try:
