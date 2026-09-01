@@ -94,6 +94,13 @@ class CodexProviderTests(unittest.TestCase):
         self.assertEqual(output, {})
         self.assertIn("Protocol error", error)
 
+    def test_rejects_non_json_final_agent_message(self) -> None:
+        status, output, error = CodexProvider._parse_final_message("not JSON")
+
+        self.assertEqual(status, "FAILED")
+        self.assertEqual(output, {})
+        self.assertIn("Protocol error", error)
+
 
 if __name__ == "__main__":
     unittest.main()

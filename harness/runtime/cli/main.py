@@ -282,7 +282,7 @@ def main():
             state = asyncio.run(comps["state_store"].get_workflow_execution(execution_id))
             print(f"Execution ID: {execution_id}")
             _print_pause(state)
-            return 0 if state and state["status"] in {"COMPLETED", "PAUSED"} else 1
+            return _workflow_exit_code(state)
 
         if args.wf_command == "resume":
             # For resume we need to fetch state to know which workflow it is.
@@ -306,7 +306,7 @@ def main():
             state = asyncio.run(comps["state_store"].get_workflow_execution(execution_id))
             print(f"Execution ID: {execution_id}")
             _print_pause(state)
-            return 0 if state and state["status"] in {"COMPLETED", "PAUSED"} else 1
+            return _workflow_exit_code(state)
 
         if args.wf_command == "status":
             state = asyncio.run(comps["state_store"].get_workflow_execution(args.id))
@@ -425,6 +425,10 @@ def _print_pause(state: dict | None) -> None:
                 + "; ".join(str(option) for option in options)
                 + "; Other (free text)"
             )
+
+
+def _workflow_exit_code(state: dict | None) -> int:
+    return 0 if state and state.get("status") in {"COMPLETED", "PAUSED"} else 1
 
 
 if __name__ == "__main__":

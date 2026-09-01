@@ -1,3 +1,43 @@
-# Durable workflow pauses use answer-bearing execute
+# Durable workflow pauses use provider-level PAUSED results
 
-Workflow pauses are persisted as a first-class state with questions and an optional provider continuation token. Resuming starts a new ordinary provider `execute` with answers keyed by question id; a token may optimize continuation when supported, but is not required, and prior side effects are not rolled back. Answers must cover the current question ids and satisfy their options, remain available after a failed resume for retry, and be cleared after success. Resume uses an atomic claim, while explicitly interactive skills are rejected in parallel workflows before execution. This keeps the bridge usable across process and CLI restarts while placing resumability and idempotency at the skill/provider boundary.
+## Context
+
+Интерактивный skill может запросить решение пользователя внутри workflow. Провайдеры работают
+как отдельные процессы, поэтому блокирующий `input()` теряет вопрос при завершении процесса и не
+оставляет надёжного контракта для последующего возобновления.
+
+## Decision
+
+Провайдерский протокол принимает JSON-RPC `AskUserQuestion` и валидирует стабильные непустые
+уникальные ID вопросов, формулировку и UI-метаданные. Структурированные вопросы содержат короткий
+`header`, 2–4 уникальных варианта, явный `multiSelect: false` и вариант с маркером
+`(Recommended)` первым; открытые вопросы не получают искусственный список вариантов. Адаптер
+возвращает `PAUSED` с вопросами, ID запроса и необязательным continuation token, не отправляя
+ответ по исходному транспорту.
+
+Workflow сохраняет паузу и служебную lineage в SQLite. Возобновление выполняется обычным
+`execute` с зарезервированной картой ответов `_harness_answers`; `_harness_continuation_token`
+передаётся только если провайдер его выдал. После успешного resume ответы очищаются. Codex JSONL
+адаптер преобразует финальное JSON-сообщение в общий результат и отклоняет malformed protocol
+messages как структурированную ошибку.
+
+## Alternatives
+
+- Оставить провайдер в ожидании ответа через stdin и терминал.
+- Отправлять ответ на `AskUserQuestion` отдельным JSON-RPC response-сообщением.
+- Хранить состояние паузы только в живом процессе провайдера.
+- Делать отдельный provider-specific resume API для Codex.
+
+## Rejected
+
+Блокирующий ввод не переживает завершение процесса и недоступен для IDE/UI. Ответный RPC по
+исходному транспорту связывает workflow с живым процессом и возвращает проблему потери состояния.
+In-memory состояние не переживает перезапуск. Provider-specific API дублирует контракт и не
+позволяет workflow одинаково возобновлять разные адаптеры.
+
+## Consequences
+
+Пауза становится успешно сохранённым промежуточным состоянием, которое можно показать через CLI
+и возобновить после перезапуска. Адаптеры обязаны сохранять идентичность вопросов и соблюдать
+валидацию UI-контракта. Возобновление может запускать новый процесс, поэтому skills отвечают за
+идемпотентность и восстановление своих внешних эффектов; автоматического rollback нет.

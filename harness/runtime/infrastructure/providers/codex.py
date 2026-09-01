@@ -7,7 +7,7 @@ from typing import Any
 
 from ...domain.execution import ExecutionPlan, ExecutionResult
 from ...domain.policy import RetryPolicy
-from .protocol import ProtocolError, validate_questions
+from .protocol import ProtocolError, validate_pause_output
 
 
 class CodexProvider:
@@ -180,7 +180,7 @@ class CodexProvider:
     ) -> tuple[str, dict[str, Any], str | None]:
         parsed = cls._parse_json_object(message)
         if parsed is None:
-            return "SUCCESS", {"log": message}, None
+            return "FAILED", {}, "Protocol error: Codex final agent message must be a JSON object"
 
         status = parsed.get("status", "SUCCESS")
         if status not in {"SUCCESS", "FAILED", "PAUSED"}:
@@ -196,13 +196,8 @@ class CodexProvider:
         if status == "SUCCESS" and output.get("status") == "PAUSED":
             status = "PAUSED"
         if status == "PAUSED":
-            questions = output.get("questions")
-            if not isinstance(questions, list) or not questions:
-                return "FAILED", {}, "Protocol error: PAUSED result output must contain questions"
-            if not all(isinstance(question, Mapping) for question in questions):
-                return "FAILED", {}, "Protocol error: PAUSED result questions must be objects"
             try:
-                validate_questions(questions)
+                validate_pause_output(output)
             except ProtocolError as error:
                 return "FAILED", {}, f"Protocol error: {error}"
         if status == "FAILED" and not error:

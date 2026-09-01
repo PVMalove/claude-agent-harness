@@ -298,6 +298,7 @@ class WorkflowEngine:
                     self._record_context(state, skill_name, result.output)
                     state["current_step"] += 1
                     state.pop("pause", None)
+                    state["answers"] = {}
                     await self.state_store.save_workflow_execution(execution_id, state)
                 elif result.status == "PAUSED":
                     pause_output = result.output if isinstance(result.output, Mapping) else {}
@@ -305,6 +306,7 @@ class WorkflowEngine:
                     state["pause"] = {
                         "step": step_idx + 1,
                         "skill": skill_name,
+                        "question_request_id": pause_output.get("question_request_id"),
                         "questions": list(pause_output.get("questions", [])),
                         "continuation_token": pause_output.get("continuation_token"),
                     }

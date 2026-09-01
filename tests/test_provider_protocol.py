@@ -109,6 +109,17 @@ class ProviderProtocolTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             question_params(question_message([malformed]))
 
+    def test_rejects_structured_question_without_explicit_single_select_mode(self) -> None:
+        question = {
+            "id": "choice",
+            "header": "Choice",
+            "question": "Pick one?",
+            "options": ["(Recommended) A", "B"],
+        }
+
+        with self.assertRaisesRegex(ProtocolError, "single-select"):
+            question_params(question_message([question]))
+
     def test_execute_request_carries_reserved_resume_answers(self) -> None:
         request = execution_request(
             execution_id="execution-1",

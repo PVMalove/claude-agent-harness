@@ -40,7 +40,8 @@ class WorkflowPauseTests(unittest.TestCase):
                             "id": "choice",
                             "question": "Continue?",
                             "header": "Continue",
-                            "options": ["(Recommended) yes", "no"]
+                            "options": ["(Recommended) yes", "no"],
+                            "multiSelect": False
                         }]
                     }
                 }), flush=True)
@@ -91,6 +92,7 @@ class WorkflowPauseTests(unittest.TestCase):
             paused = self.run_cli(repository, "workflow", "status", execution_id)
             self.assertIn("Status: PAUSED", paused.stdout)
             self.assertIn('"choice"', paused.stdout)
+            self.assertIn('"question_request_id"', paused.stdout)
 
             resumed = self.run_cli(
                 repository,
@@ -106,6 +108,7 @@ class WorkflowPauseTests(unittest.TestCase):
             self.assertIn("Status: COMPLETED", completed.stdout)
             self.assertIn('"choice": "yes"', completed.stdout)
             self.assertIn('"answer": "yes"', completed.stdout)
+            self.assertIn("Answers: {}", completed.stdout)
 
 
 if __name__ == "__main__":

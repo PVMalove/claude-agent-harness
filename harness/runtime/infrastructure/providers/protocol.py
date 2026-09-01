@@ -87,12 +87,7 @@ def execution_result(
     if not isinstance(output, Mapping):
         raise ProtocolError("terminal result output must be an object")
     if status == "PAUSED":
-        questions = output.get("questions")
-        if not isinstance(questions, list) or not questions:
-            raise ProtocolError("PAUSED result output must contain questions")
-        if not all(isinstance(question, Mapping) for question in questions):
-            raise ProtocolError("PAUSED result questions must be objects")
-        validate_questions(questions)
+        validate_pause_output(output)
 
     error = result.get("error")
     if error is not None and not isinstance(error, str):
@@ -155,7 +150,7 @@ def validate_questions(questions: list[Mapping[str, Any]]) -> None:
             raise ProtocolError(
                 f"Structured question {question_id!r} must have a short header"
             )
-        if question.get("multiSelect", False) is not False:
+        if "multiSelect" not in question or question["multiSelect"] is not False:
             raise ProtocolError(
                 f"Structured question {question_id!r} must be single-select"
             )
@@ -167,6 +162,15 @@ def validate_questions(questions: list[Mapping[str, Any]]) -> None:
             raise ProtocolError(
                 f"Structured question {question_id!r} has a non-leading recommendation"
             )
+
+
+def validate_pause_output(output: Mapping[str, Any]) -> None:
+    questions = output.get("questions")
+    if not isinstance(questions, list) or not questions:
+        raise ProtocolError("PAUSED result output must contain questions")
+    if not all(isinstance(question, Mapping) for question in questions):
+        raise ProtocolError("PAUSED result questions must be objects")
+    validate_questions(questions)
 
 
 def _validate_version(message: Mapping[str, Any]) -> None:
