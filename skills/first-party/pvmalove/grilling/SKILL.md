@@ -32,6 +32,9 @@ description: Grill the user relentlessly about a plan, decision, or idea to stre
 - *Non-blocking:* A running tool/exploration is simply an unsettled prerequisite. Do not block the round on it—ask the rest of the current frontier immediately. Only the downstream questions wait for the tool to report.
 
 **Termination:**
-The session is done when the frontier is empty: every branch of the design tree is visited, and no silent assumptions remain. Conclude by synthesizing the final plan and explicitly asking the user to confirm that a shared understanding has been reached. Do not act on the plan until this confirmation is received.
+The session is done when the frontier is empty: every branch of the design tree is visited, and no silent assumptions remain. Conclude by synthesizing the final plan, then ask the user to confirm the plan:
 
-Keep that confirmation question separate from "should I start implementing this?" — grilling's job ends at shared understanding, not at authorization to act. Once confirmed, stop and ask what to do with the plan next (this pipeline's default is `/to-spec`, unless this session is itself a sub-step of another skill like `/wayfinder`, which hands off on its own terms) rather than treating "yes, that's right" as a green light to create tickets, branches, or code.
+- **Confirm the plan (Recommended):** tell the user that the next step is for them to invoke `/to-spec` manually, then end the grilling session.
+- **Request revisions:** ask the user to identify the decision numbers that need changes, reopen only those branches, and continue grilling.
+
+If `AskUserQuestion` is available, ask this final choice through it. Otherwise present the same two choices as plain text and wait. Do not invoke `/to-spec` yourself, and do not treat confirmation as authorization to create tickets, branches, or code.
