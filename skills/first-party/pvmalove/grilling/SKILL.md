@@ -7,7 +7,7 @@ description: Grill the user relentlessly about a plan, decision, or idea to stre
 
 **Core Mechanics:**
 1. **Rounds & The Frontier:** Work through the tree in discrete rounds. The **frontier** consists of every decision whose prerequisites are currently settled.
-    - Ask the *entire* frontier in a single round.
+    - Ask the current frontier in a single round, showing at most 4 questions; if the frontier is larger, carry the remaining questions into the next round.
     - Never ask downstream questions until their prerequisites are answered.
     - Always wait for the user's response before computing the next round.
 2. **State Tracking (The Trunk):** At the start of each round, briefly summarize the decisions that have just been settled. This confirms alignment before pushing the frontier forward.
@@ -17,8 +17,8 @@ description: Grill the user relentlessly about a plan, decision, or idea to stre
 - **Tool-Based Categorical Questions:** If the `AskUserQuestion` tool is available in this runtime, ask each round through it instead of plain text.
     - *Format:* One question per entry, so each gets its own tab with a short `header`, 2-4 mutually exclusive `options` (a `label` plus a `description` of what picking it means). The user can still type a free-form answer through the always-available "Other".
     - *Recommendation:* Put your recommended option first and suffix its label with "(Recommended)".
-    - *Constraints:* A single call caps at 4 questions — if the frontier has more, split it across multiple `AskUserQuestion` calls that all belong to this same round; issue them together, and don't let a later round's questions leak into an earlier batch.
-- **Plain Text & Open-Ended Fallback:** Not every frontier question reduces to a handful of discrete options, and not every runtime has the `AskUserQuestion` tool. For a genuinely open-ended question (e.g. "what should we call this concept?") where narrowing to 2-4 candidates would misrepresent the question, or whenever the tool isn't available at all, ask it — or the whole round — as plain text instead:
+    - *Constraints:* A single call caps at 4 questions — if the frontier has more, show the first 4 now and carry the remaining questions into the next round. Do not silently discard them or issue additional calls for the same round.
+- **Plain Text & Open-Ended Fallback:** Not every frontier question reduces to a handful of discrete options, and not every runtime has the `AskUserQuestion` tool. At the start of the session, if the tool is unavailable, warn the user once and use plain text for the rest of the session. For a genuinely open-ended question (e.g. "what should we call this concept?") where narrowing to 2-4 candidates would misrepresent the question, use plain text for that question instead:
 
   ```
   🤔 **<Question Title>**: <Question body: Explain *why* this decision is critical now and briefly outline the trade-offs at play, might be multiple paragraphs>
@@ -32,6 +32,9 @@ description: Grill the user relentlessly about a plan, decision, or idea to stre
 - *Non-blocking:* A running tool/exploration is simply an unsettled prerequisite. Do not block the round on it—ask the rest of the current frontier immediately. Only the downstream questions wait for the tool to report.
 
 **Termination:**
-The session is done when the frontier is empty: every branch of the design tree is visited, and no silent assumptions remain. Conclude by synthesizing the final plan and explicitly asking the user to confirm that a shared understanding has been reached. Do not act on the plan until this confirmation is received.
+The session is done when the frontier is empty: every branch of the design tree is visited, and no silent assumptions remain. Conclude by synthesizing the final plan, then ask the user to confirm the plan:
 
-Keep that confirmation question separate from "should I start implementing this?" — grilling's job ends at shared understanding, not at authorization to act. Once confirmed, stop and ask what to do with the plan next (this pipeline's default is `/to-spec`, unless this session is itself a sub-step of another skill like `/wayfinder`, which hands off on its own terms) rather than treating "yes, that's right" as a green light to create tickets, branches, or code.
+- **Да, перейти к `/to-spec`:** tell the user that the next step is for them to invoke `/to-spec` manually, then end the grilling session. This is the recommended option.
+- **Нет, нужны правки:** ask the user to identify the decision numbers that need changes, reopen only those branches, and continue grilling.
+
+If `AskUserQuestion` is available, ask this final choice through it. Otherwise present the same two choices as plain text and wait. Do not invoke `/to-spec` yourself, and do not treat confirmation as authorization to create tickets, branches, or code.
