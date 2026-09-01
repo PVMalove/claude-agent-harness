@@ -21,6 +21,7 @@ from ..application.dispatcher import Dispatcher
 from ..application.workflows.engine import WorkflowEngine
 
 from ..infrastructure.providers.cli import CLIProvider
+from ..infrastructure.providers.codex import CodexProvider
 from ..infrastructure.providers.mcp import MCPProvider
 from ..infrastructure.config import ProviderConfig, load_config
 from ..infrastructure.events.bus import EventBus
@@ -118,6 +119,14 @@ def setup_components(repo_path: Path):
 def _build_provider(
     name: str, config: ProviderConfig, default_timeout: float = 600.0, cwd: Path | None = None
 ):
+    if config.type == "codex":
+        return CodexProvider(
+            config.command or "codex",
+            list(config.args),
+            timeout=config.timeout if config.timeout is not None else default_timeout,
+            cwd=cwd,
+            retry_policy=config.retry_policy,
+        )
     if config.type == "cli":
         if not config.command:
             raise ValueError(f"Provider '{name}' of type 'cli' is missing 'command'")
@@ -172,6 +181,7 @@ def main():
 
     wf_resume = wf_subparsers.add_parser("resume")
     wf_resume.add_argument("id")
+    wf_resume.add_argument("--answers", default="{}")
 
     wf_cancel = wf_subparsers.add_parser("cancel")
     wf_cancel.add_argument("id")
@@ -271,7 +281,8 @@ def main():
             execution_id = asyncio.run(wf_engine.run(wf, req))
             state = asyncio.run(comps["state_store"].get_workflow_execution(execution_id))
             print(f"Execution ID: {execution_id}")
-            return 0 if state and state["status"] == "COMPLETED" else 1
+            _print_pause(state)
+            return 0 if state and state["status"] in {"COMPLETED", "PAUSED"} else 1
 
         if args.wf_command == "resume":
             # For resume we need to fetch state to know which workflow it is.
@@ -283,10 +294,19 @@ def main():
             if not wf:
                 print("Workflow definition not found")
                 return 1
-            execution_id = asyncio.run(wf_engine.run(wf, get_req(), args.id))
+            try:
+                answers = json.loads(args.answers)
+            except json.JSONDecodeError as error:
+                print(f"Invalid --answers JSON: {error}")
+                return 1
+            if not isinstance(answers, dict):
+                print("--answers must be a JSON object keyed by question_id")
+                return 1
+            execution_id = asyncio.run(wf_engine.run(wf, get_req(), args.id, answers=answers))
             state = asyncio.run(comps["state_store"].get_workflow_execution(execution_id))
             print(f"Execution ID: {execution_id}")
-            return 0 if state and state["status"] == "COMPLETED" else 1
+            _print_pause(state)
+            return 0 if state and state["status"] in {"COMPLETED", "PAUSED"} else 1
 
         if args.wf_command == "status":
             state = asyncio.run(comps["state_store"].get_workflow_execution(args.id))
@@ -300,6 +320,8 @@ def main():
             print(f"Context version: {state.get('context_version', 1)}")
             print(f"Context: {json.dumps(state.get('context', {}), ensure_ascii=False, sort_keys=True)}")
             print(f"Results: {json.dumps(state.get('results', []), ensure_ascii=False, sort_keys=True)}")
+            print(f"Answers: {json.dumps(state.get('answers', {}), ensure_ascii=False, sort_keys=True)}")
+            _print_pause(state)
             return 0
 
         if args.wf_command == "cancel":
@@ -384,6 +406,26 @@ def main():
     elif args.command == "worker" and args.wrk_command == "list":
         for name in comps["workers"]: print(name)
         return 0
+
+def _print_pause(state: dict | None) -> None:
+    if not state or state.get("status") != "PAUSED":
+        return
+    pause = state.get("pause", {})
+    print("Workflow paused. Answer questions with workflow resume --answers '<json>'.")
+    for question in pause.get("questions", []):
+        if not isinstance(question, dict):
+            continue
+        question_id = question.get("id", "")
+        prompt = question.get("question", "")
+        print(f"  [{question_id}] {prompt}")
+        options = question.get("options", [])
+        if isinstance(options, list) and options:
+            print(
+                "    options: "
+                + "; ".join(str(option) for option in options)
+                + "; Other (free text)"
+            )
+
 
 if __name__ == "__main__":
     sys.exit(main())

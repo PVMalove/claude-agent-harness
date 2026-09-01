@@ -63,6 +63,13 @@ type = "mcp"
 command = "python"
 args = ["mcp-server/server.py"]
 
+# Native Codex CLI adapter. It translates Harness JSONL requests to
+# `codex exec --json` and adapts the final agent message back to Harness.
+[providers.codex]
+type = "codex"
+command = "codex"
+args = ["exec", "--json", "--sandbox", "workspace-write"]
+
 # 2. Объявляем воркеров и привязываем их к провайдерам с набором capabilities
 [workers.coder]
 provider = "agy"
@@ -143,8 +150,11 @@ completion checks inside the skill; they are not additional workflow steps.
 
 Each workflow execution is stored in SQLite at `.harness/state.db` by default. Set
 `[runtime.state].path` to use another path. `workflow status <execution-id>` shows the
-persisted context and step lineage; `workflow resume <execution-id>` retries the current
-failed step, and `workflow cancel <execution-id>` marks a non-completed execution cancelled.
+persisted context and step lineage; `workflow resume <execution-id> --answers
+'{"question_id":"answer"}'` stores answers keyed by question id and retries the current
+paused/failed step, and `workflow cancel <execution-id>` marks a non-completed execution cancelled.
+A provider can pause by sending the JSON-RPC `AskUserQuestion` request; the workflow stores
+`PAUSED`, the questions, and its continuation token in durable state before returning control.
 
 ---
 
@@ -428,7 +438,7 @@ Output: {
 
 ### Как интерактивность работает теперь (Через JSON-RPC)
 
-Провайдеры (и MCP, и обновленные CLI-провайдеры) общаются с Диспетчером в режиме **двунаправленного потока (Bidirectional Stream)**, а не просто возвращают результат в конце. 
+Провайдеры (и MCP, и обновленные CLI-провайдеры) общаются с Диспетчером через JSONL-поток, а не просто возвращают результат в конце.
 
 Когда grill-with-docs (работающий внутри Claude) понимает, что ему нужно задать вопросы, происходит следующее:
 
@@ -443,28 +453,24 @@ Output: {
        "version": 1,
        "questions": [
          {
+           "id": "retention",
+           "header": "Retention",
            "question": "[Удаление] Каскад или soft-delete?",
-           "options": ["(Recommended) Soft-delete", "Каскад"]
+           "options": ["(Recommended) Soft-delete", "Каскад"],
+           "multiSelect": false
          }
        ]
      }
    }
    ``
-2. Диспетчер перехватывает этот method, приостанавливает ожидание процесса и **рендерит нативный UI в терминале или IDE пользователя**.
-3. Вы (пользователь) кликаете вариант "Soft-delete" или вводите его в терминале.
-4. Диспетчер отправляет ответ обратно в stdin процесса:
-   ``json
-   {
-     "jsonrpc": "2.0",
-     "id": 101,
-     "result": {
-       "protocol": "harness.provider",
-       "version": 1,
-       "answers": ["(Recommended) Soft-delete"]
-     }
-   }
-   ``
-5. Провайдер возобновляет работу, сохраняет решение в CONTEXT.md и docs/adr/000N-tag-model.md, и в конце возвращает финальный Execution Status: SUCCESS.
+2. Адаптер провайдера валидирует запрос, возвращает результат `PAUSED` с вопросами и
+   идентификаторами запроса/продолжения и закрывает поток. Ответ по этому транспорту не
+   отправляется.
+3. Workflow сохраняет паузу и успешно завершает текущий запуск. Пользователь видит ID запуска
+   и позже возобновляет его объектом ответов по ID вопроса, например:
+   `workflow resume <execution-id> --answers '{"retention":"(Recommended) Soft-delete"}'`.
+4. При возобновлении workflow отправляет новый обычный `execute` с зарезервированной картой
+   ответов. Continuation token необязателен: при его отсутствии провайдер запускается заново.
 
 ### Почему это лучше?
 * **Провайдер не знает, где он запущен.** Он отправляет универсальный запрос AskUserQuestion. Если Harness запущен в консоли, выведется текстовое меню. Если в IDE (через Antigravity UI) — появится красивая формочка с радиокнопками. 

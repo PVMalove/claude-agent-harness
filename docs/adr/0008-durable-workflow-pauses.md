@@ -1,0 +1,3 @@
+# Durable workflow pauses use answer-bearing execute
+
+Workflow pauses are persisted as a first-class state with questions and an optional provider continuation token. Resuming starts a new ordinary provider `execute` with answers keyed by question id; a token may optimize continuation when supported, but is not required, and prior side effects are not rolled back. Answers must cover the current question ids and satisfy their options, remain available after a failed resume for retry, and be cleared after success. Resume uses an atomic claim, while explicitly interactive skills are rejected in parallel workflows before execution. This keeps the bridge usable across process and CLI restarts while placing resumability and idempotency at the skill/provider boundary.

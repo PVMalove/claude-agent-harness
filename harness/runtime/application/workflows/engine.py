@@ -67,7 +67,8 @@ class WorkflowEngine:
         skill_name = workflow.steps[step_idx]
         mapping = workflow.mappings.get(skill_name)
         if mapping is None:
-            return (dict(request.input) if step_idx == 0 else {}), {}
+            values = dict(request.input) if step_idx == 0 else {}
+            return self._add_resume_input(state, step_idx, values), {}
 
         context = {"input": request.input, **state.get("context", {})}
         values: dict[str, Any] = {}
@@ -80,7 +81,22 @@ class WorkflowEngine:
                     )
                 current = current[part]
             values[destination] = current
-        return values, dict(mapping)
+        return self._add_resume_input(state, step_idx, values), dict(mapping)
+
+    @staticmethod
+    def _add_resume_input(
+        state: dict[str, Any], step_idx: int, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        pause = state.get("pause")
+        if not isinstance(pause, Mapping) or pause.get("step") != step_idx + 1:
+            return values
+        answers = state.get("answers", {})
+        if answers:
+            values["_harness_answers"] = dict(answers)
+        continuation_token = pause.get("continuation_token")
+        if isinstance(continuation_token, str) and continuation_token:
+            values["_harness_continuation_token"] = continuation_token
+        return values
 
     @staticmethod
     def _record_context(
@@ -98,7 +114,13 @@ class WorkflowEngine:
         ]
         state["results"].append(result)
 
-    async def run(self, workflow: Workflow, request: ExecutionRequest, execution_id: str | None = None) -> str:
+    async def run(
+        self,
+        workflow: Workflow,
+        request: ExecutionRequest,
+        execution_id: str | None = None,
+        answers: Mapping[str, Any] | None = None,
+    ) -> str:
         if not execution_id:
             execution_id = str(uuid.uuid4())
             state = {
@@ -114,6 +136,7 @@ class WorkflowEngine:
                 "project_id": request.project_id,
                 "depth": request.depth,
                 "cancel_requested": False,
+                "answers": {},
                 "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
             }
             await self.state_store.save_workflow_execution(execution_id, state)
@@ -124,6 +147,9 @@ class WorkflowEngine:
             if state["status"] == "COMPLETED":
                 print("Workflow already completed.")
                 return execution_id
+            if answers:
+                stored_answers = state.setdefault("answers", {})
+                stored_answers.update(dict(answers))
             if not request.input and state.get("input"):
                 request = ExecutionRequest(
                     skill=request.skill,
@@ -271,7 +297,29 @@ class WorkflowEngine:
                     })
                     self._record_context(state, skill_name, result.output)
                     state["current_step"] += 1
+                    state.pop("pause", None)
                     await self.state_store.save_workflow_execution(execution_id, state)
+                elif result.status == "PAUSED":
+                    pause_output = result.output if isinstance(result.output, Mapping) else {}
+                    state["status"] = "PAUSED"
+                    state["pause"] = {
+                        "step": step_idx + 1,
+                        "skill": skill_name,
+                        "questions": list(pause_output.get("questions", [])),
+                        "continuation_token": pause_output.get("continuation_token"),
+                    }
+                    self._store_result(state, {
+                        "step": step_idx + 1,
+                        "skill": skill_name,
+                        "execution_id": result.execution_id,
+                        "status": "PAUSED",
+                        "input": step_input,
+                        "lineage": lineage,
+                        "output": result.output,
+                    })
+                    await self.state_store.save_workflow_execution(execution_id, state)
+                    print("      [PAUSED] waiting for user answers\n")
+                    break
                 else:
                     print(f"      [FAIL] failed\n")
                     if result.error:

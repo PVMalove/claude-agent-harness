@@ -13,7 +13,6 @@ from .protocol import (
     execution_request,
     execution_result,
     question_params,
-    question_response,
 )
 
 
@@ -56,6 +55,10 @@ class CLIProvider(Provider):
                 execution_id=plan.execution_id,
                 status="FAILED",
                 error=f"Protocol error: {error}",
+                error_details={
+                    "code": "PROTOCOL_ERROR",
+                    "message": f"Protocol error: {error}",
+                },
             )
         except (TypeError, ValueError) as error:
             return ExecutionResult(
@@ -132,9 +135,15 @@ class CLIProvider(Provider):
 
             if "method" in message:
                 request_id, questions = question_params(message)
-                answers = await self._ask_user(questions)
-                await self._write_message(process, question_response(request_id, answers))
-                continue
+                return ExecutionResult(
+                    execution_id=execution_id,
+                    status="PAUSED",
+                    output={
+                        "questions": [dict(question) for question in questions],
+                        "question_request_id": request_id,
+                        "continuation_token": str(request_id),
+                    },
+                )
 
             status, output, error = execution_result(message, execution_id)
             return ExecutionResult(
@@ -153,24 +162,3 @@ class CLIProvider(Provider):
             (json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")
         )
         await process.stdin.drain()
-
-    async def _ask_user(self, questions: list[Mapping[str, Any]]) -> list[Any]:
-        answers: list[Any] = []
-        print("\n--- ВОПРОС ОТ АГЕНТА ---")
-        for question in questions:
-            prompt = question.get("question")
-            options = question.get("options", [])
-            if not isinstance(prompt, str) or not isinstance(options, list):
-                raise ProtocolError("AskUserQuestion has invalid question or options")
-            if not all(isinstance(option, str) for option in options):
-                raise ProtocolError("AskUserQuestion options must be strings")
-            print(f"В: {prompt}")
-            for index, option in enumerate(options):
-                print(f"  {index + 1}) {option}")
-            choice = await asyncio.to_thread(input, "Ваш выбор (номер): ")
-            try:
-                answers.append(options[int(choice) - 1])
-            except (ValueError, IndexError):
-                answers.append(choice)
-        print("------------------------\n")
-        return answers

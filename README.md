@@ -46,6 +46,16 @@
 
 Пример конфигурации (`.harness/orchestration.toml`):
 ```toml
+[providers.codex]
+type = "codex"
+command = "codex"
+args = ["exec", "--json", "--sandbox", "workspace-write"]
+
+[workers.codex]
+provider = "codex"
+capabilities = ["planning", "reasoning", "communication", "code-execution", "filesystem", "git"]
+priority = 10
+
 [workflows.feature-development]
 steps = ["grill-with-docs", "to-spec", "to-tickets", "implement"]
 
@@ -62,6 +72,13 @@ ticket_id = "to-tickets.output.ticket_id"
 required = ["tdd", "code-review", "qa-gate"]
 ```
 
+Provider `codex` запускает установленный Codex CLI через `codex exec --json` и преобразует его
+JSONL-события в общий протокол Harness. Для изменений в рабочем дереве добавьте к provider
+подходящий режим sandbox/approval, например `--sandbox workspace-write`; политика остаётся
+явной частью конфигурации проекта. Codex запускается как отдельный non-interactive worker:
+`grill-with-docs` может сформировать уточнения в своём ответе, но интерактивный диалог с ним
+нужно продолжить отдельным запуском, если конкретный provider не предоставляет канал вопросов.
+
 `implement` выполняет TDD, code review и qa-gate как обязательные внутренние фазы; их не нужно и нельзя дублировать отдельными шагами workflow.
 
 Доступные команды CLI:
@@ -74,6 +91,7 @@ harness workflow run feature-development --input '{"task": "Add OAuth"}'
 
 # Управление состоянием (State Store в SQLite)
 harness workflow resume <execution-id> # Продолжить упавший пайплайн с нужного шага
+harness workflow resume <execution-id> --answers '{"question_id":"answer"}'
 harness workflow status <execution-id>
 harness workflow cancel <execution-id>
 
