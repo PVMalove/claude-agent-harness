@@ -10,6 +10,7 @@ class ExecutionRequest:
     caller: str = "USER"
     session_id: str = field(default_factory=str)
     project_id: str = field(default_factory=str)
+    depth: int = 0
 
 @dataclass
 class ExecutionContext:
@@ -48,3 +49,4 @@ class ExecutionResult:
     status: str
     output: dict[str, Any] | None = None
     error: str | None = None
+    error_details: dict[str, Any] | None = None

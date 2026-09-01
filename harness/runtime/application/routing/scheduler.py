@@ -24,8 +24,7 @@ class Scheduler:
         for worker in candidates:
             # capability_score: number of capabilities
             capability_score = len(worker.capabilities)
-            # priority_score: stub
-            priority_score = 0
+            priority_score = worker.priority
             # preference_score: 100 if preferred, 0 otherwise
             preference_score = 100 if worker.name in preferred else 0
             # health_score: stub
@@ -43,5 +42,9 @@ class Scheduler:
         return WorkerSelection(
             worker=best_worker,
             score=best_score,
-            reason="Highest overall score (capability + preference + health)",
+            reason=(
+                "Selected healthy fallback; highest overall score"
+                if preferred and not any(worker.name in preferred for worker in candidates)
+                else "Highest overall score (capability + preference + health)"
+            ),
         )

@@ -48,6 +48,8 @@ version = 1
 [runtime]
 max_parallel = 8
 default_timeout = 600
+max_depth = 4
+retry = { max_attempts = 2, backoff = "none" }
 
 # 1. Задаем доступных провайдеров
 [providers.agy]
@@ -65,6 +67,8 @@ args = ["mcp-server/server.py"]
 [workers.coder]
 provider = "agy"
 capabilities = ["code-execution", "filesystem", "git"]
+priority = 10
+health = "healthy" # unhealthy workers are excluded before scoring
 
 [workers.qa]
 provider = "qa"
@@ -76,7 +80,28 @@ requires = ["code-execution", "filesystem", "git"]
 
 [skills.implement.execution]
 preferred = ["coder"] # Предпочтительный воркер, если доступно несколько
+
+# 4. Ограничения и delegation policy для вложенных dispatch-вызовов
+[policies.limits]
+max_parallel = 8
+max_depth = 4
+
+[[policies.delegation.coordinator.allow]]
+worker = "coder"
+skills = ["implement"]
 ```
+
+`runtime.max_parallel` (or `policies.limits.max_parallel`) bounds concurrent provider
+executions in one runtime process. Retry parameters use `max_attempts` and can be declared
+globally under `runtime.retry` or overridden per provider under `providers.<name>.retry`.
+`health = "unhealthy"` is useful for a declared maintenance/fallback state; an unhealthy
+preferred worker is rejected and the highest-scoring healthy candidate is selected instead.
+Delegation rules are checked before health and scheduling. A non-root caller must have an
+explicit rule for the requested skill and worker; exceeding `max_depth` returns a structured
+`DEPTH_LIMIT_EXCEEDED` routing error.
+
+Workflow steps are sequential by default. An independent workflow may set
+`parallel = true`; its dispatches still share the configured `max_parallel` limit.
 
 ---
 
@@ -102,7 +127,7 @@ preferred = ["coder"] # Предпочтительный воркер, если 
 | Команда | Описание | Пример вызова |
 |---|---|---|
 | **`providers`** | Показывает список зарегистрированных провайдеров и их классы. | `python -m harness.runtime.cli providers` |
-| **`explain`** | Дебаг-режим. Показывает, как резолвится маршрут навыка до конкретного Worker'а. | `python -m harness.runtime.cli explain implement` |
+| **`explain`** | Дебаг-режим. Показывает, как резолвится маршрут навыка до конкретного Worker'а. | `python -m harness.runtime.cli skill explain implement --caller coordinator --depth 1` |
 | **`plan`** | Создает и выводит `ExecutionPlan`, не запуская фактическое исполнение. | `python -m harness.runtime.cli plan implement` |
 | **`run`** | Выполняет план. JSON-вход передается провайдеру в `stdin`. | `python -m harness.runtime.cli run implement --input '{"file":"main.py"}'` |
 

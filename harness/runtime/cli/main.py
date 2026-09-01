@@ -44,12 +44,14 @@ def setup_components(repo_path: Path):
             name=name,
             provider=data.provider,
             capabilities=set(data.capabilities),
+            priority=data.priority,
+            health=data.health,
         )
         for name, data in config.workers.items()
     }
 
     workflows = {
-        name: Workflow(name=name, steps=list(data.steps))
+        name: Workflow(name=name, steps=list(data.steps), parallel=data.parallel)
         for name, data in config.workflows.items()
     }
 
@@ -65,8 +67,13 @@ def setup_components(repo_path: Path):
 
     skill_registry = SkillRegistry(skills)
     resolver = CapabilityResolver(workers)
-    policy_engine = PolicyEngine()
-    health_registry = HealthRegistry()
+    policy_engine = PolicyEngine(
+        delegation=dict(config.delegation),
+        max_depth=config.max_depth,
+    )
+    health_registry = HealthRegistry(
+        {name: data.health for name, data in config.workers.items()}
+    )
     scheduler = Scheduler()
     planner = Planner(provider_registry)
     executor = Executor(provider_registry)
@@ -79,7 +86,8 @@ def setup_components(repo_path: Path):
         scheduler=scheduler,
         planner=planner,
         executor=executor,
-        events=event_bus
+        events=event_bus,
+        max_parallel=config.max_parallel,
     )
 
     workflow_engine = WorkflowEngine(dispatcher, state_store)
@@ -104,9 +112,16 @@ def _build_provider(
         if not config.command:
             raise ValueError(f"Provider '{name}' of type 'cli' is missing 'command'")
         timeout = config.timeout if config.timeout is not None else default_timeout
-        return CLIProvider(config.command, list(config.args), timeout=timeout, cwd=cwd)
+        return CLIProvider(
+            config.command,
+            list(config.args),
+            timeout=timeout,
+            cwd=cwd,
+            retry_policy=config.retry_policy,
+        )
     if config.type == "mcp":
-        return MCPProvider()
+        timeout = config.timeout if config.timeout is not None else default_timeout
+        return MCPProvider(timeout=timeout, retry_policy=config.retry_policy)
     raise ValueError(f"Provider '{name}' has unsupported type '{config.type}'")
 
 def main():
@@ -125,10 +140,14 @@ def main():
 
     wf_plan = wf_subparsers.add_parser("plan")
     wf_plan.add_argument("name")
+    wf_plan.add_argument("--caller", default="USER")
+    wf_plan.add_argument("--depth", type=int, default=0)
 
     wf_run = wf_subparsers.add_parser("run")
     wf_run.add_argument("name")
     wf_run.add_argument("--input", default="{}")
+    wf_run.add_argument("--caller", default="USER")
+    wf_run.add_argument("--depth", type=int, default=0)
 
     wf_status = wf_subparsers.add_parser("status")
     wf_status.add_argument("id")
@@ -145,9 +164,13 @@ def main():
     sk_list = sk_subparsers.add_parser("list")
     sk_explain = sk_subparsers.add_parser("explain")
     sk_explain.add_argument("name")
+    sk_explain.add_argument("--caller", default="USER")
+    sk_explain.add_argument("--depth", type=int, default=0)
     sk_run = sk_subparsers.add_parser("run")
     sk_run.add_argument("name")
     sk_run.add_argument("--input", default="{}")
+    sk_run.add_argument("--caller", default="USER")
+    sk_run.add_argument("--depth", type=int, default=0)
 
     # PROVIDER and WORKER commands
     prov_parser = subparsers.add_parser("provider")
@@ -165,11 +188,13 @@ def main():
         print(error)
         return 1
 
-    def get_req(input_str="{}"):
+    def get_req(input_str="{}", *, caller="USER", depth=0):
         try:
-            return ExecutionRequest(skill="", input=json.loads(input_str))
+            return ExecutionRequest(
+                skill="", input=json.loads(input_str), caller=caller, depth=depth
+            )
         except:
-            return ExecutionRequest(skill="")
+            return ExecutionRequest(skill="", caller=caller, depth=depth)
 
     # Workflow Actions
     if args.command == "workflow":
@@ -197,7 +222,10 @@ def main():
             if not wf:
                 print("Workflow not found")
                 return 1
-            steps = wf_engine.plan(wf, get_req())
+            steps = wf_engine.plan(
+                wf,
+                get_req(caller=args.caller, depth=args.depth),
+            )
             print(f"Workflow: {wf.name}\n")
             print(f"{'STEP'.ljust(20)} {'SKILL'.ljust(17)} {'WORKER'.ljust(12)} PROVIDER")
             print("-" * 61)
@@ -207,6 +235,12 @@ def main():
                     print(f"  reason: {s['reason']}")
                     for worker, rejection in s["rejections"].items():
                         print(f"  rejected {worker}: {rejection}")
+                else:
+                    print(f"  reason: {s.get('reason', s['status'])}")
+                    if s.get("error_code"):
+                        print(f"  error: {s['error_code']}")
+                    for worker, rejection in s.get("rejections", {}).items():
+                        print(f"  rejected {worker}: {rejection}")
             print("\nRouting is declarative.")
             return 1 if any(step["status"].startswith("error:") for step in steps) else 0
 
@@ -215,9 +249,12 @@ def main():
             if not wf:
                 print("Workflow not found")
                 return 1
-            req = get_req(args.input)
-            asyncio.run(wf_engine.run(wf, req))
-            return 0
+            req = get_req(args.input, caller=args.caller, depth=args.depth)
+            execution_id = asyncio.run(wf_engine.run(wf, req))
+            state = asyncio.run(
+                comps["dispatcher"].events.state_store.get_workflow_execution(execution_id)
+            )
+            return 0 if state and state["status"] == "COMPLETED" else 1
 
         if args.wf_command == "resume":
             # For resume we need to fetch state to know which workflow it is.
@@ -241,7 +278,9 @@ def main():
             return 0
 
         if args.sk_command == "explain":
-            decision = comps["dispatcher"].route(ExecutionRequest(skill=args.name))
+            decision = comps["dispatcher"].route(
+                ExecutionRequest(skill=args.name, caller=args.caller, depth=args.depth)
+            )
             print(f"Skill: {decision.skill.name}\n\nRequirements:")
             for req in decision.skill.requirements:
                 print(f"  * {req}")
@@ -264,17 +303,33 @@ def main():
                         f"capabilities: {matched_caps}/{total_caps}; score: {score}"
                     )
 
+            if decision.worker is None:
+                print("\nSelected: NONE")
+                print(f"Reason: {decision.reason}")
+                print(f"Error: {decision.error_code or 'ROUTING_FAILED'}")
+                return 1
+
             print(f"\nSelected: {decision.worker.name} -> {decision.worker.provider}")
             print(f"Reason: {decision.reason}")
             return 0
 
         if args.sk_command == "run":
-            req = get_req(args.input)
-            req = ExecutionRequest(skill=args.name, input=req.input)
+            req = get_req(args.input, caller=args.caller, depth=args.depth)
+            req = ExecutionRequest(
+                skill=args.name,
+                input=req.input,
+                caller=req.caller,
+                depth=req.depth,
+            )
             res = asyncio.run(comps["dispatcher"].dispatch(req))
             print(f"Execution Status: {res.status}")
             if res.error:
-                print(f"Execution Error: {res.error}")
+                print(
+                    "Execution Error: "
+                    + json.dumps(res.error_details, ensure_ascii=False, sort_keys=True)
+                    if res.error_details
+                    else f"Execution Error: {res.error}"
+                )
             elif res.output:
                 print(f"Execution Output: {json.dumps(res.output, ensure_ascii=False)}")
             return 0 if res.status == "SUCCESS" else 1

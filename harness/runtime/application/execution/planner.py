@@ -27,7 +27,7 @@ class Planner:
             requirements=decision.skill.requirements,
             resolved_capabilities=decision.worker.capabilities,
             timeout=float(getattr(provider, "timeout", 600)),
-            retry_policy=RetryPolicy(),
+            retry_policy=getattr(provider, "retry_policy", RetryPolicy()),
             routing_reason=decision.reason,
             routing_score=decision.score,
             created_at=datetime.datetime.now(datetime.timezone.utc).isoformat()

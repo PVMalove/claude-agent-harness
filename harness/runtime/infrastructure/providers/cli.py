@@ -7,6 +7,7 @@ from typing import Any
 
 from ...domain.provider import Provider
 from ...domain.execution import ExecutionPlan, ExecutionResult
+from ...domain.policy import RetryPolicy
 from .protocol import (
     ProtocolError,
     execution_request,
@@ -23,6 +24,7 @@ class CLIProvider(Provider):
         args: list[str] | None = None,
         timeout: float = 600.0,
         cwd: str | Path | None = None,
+        retry_policy: RetryPolicy | None = None,
     ):
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("CLI provider timeout must be positive")
@@ -30,6 +32,7 @@ class CLIProvider(Provider):
         self.args = args or []
         self.timeout = float(timeout)
         self.cwd = str(cwd) if cwd is not None else None
+        self.retry_policy = retry_policy or RetryPolicy()
 
     async def execute(self, plan: ExecutionPlan) -> ExecutionResult:
         try:

@@ -1,3 +1,5 @@
+import asyncio
+import json
 from typing import Any
 from ..domain.execution import ExecutionRequest, ExecutionResult
 from .registry import SkillRegistry
@@ -18,7 +20,8 @@ class Dispatcher:
                  scheduler: Scheduler, 
                  planner: Planner, 
                  executor: Executor,
-                 events: Any): # events bus placeholder
+                 events: Any,
+                 max_parallel: int = 8): # events bus placeholder
         self.skills = skills
         self.resolver = resolver
         self.policy = policy
@@ -27,6 +30,7 @@ class Dispatcher:
         self.planner = planner
         self.executor = executor
         self.events = events
+        self._slots = asyncio.Semaphore(max_parallel)
 
     def route(self, request: ExecutionRequest) -> RoutingDecision:
         skill = self.skills.resolve(request.skill)
@@ -41,26 +45,37 @@ class Dispatcher:
             if worker not in candidates
         }
 
-        authorized = self.policy.authorize(
+        policy_result = self.policy.evaluate(
             request=request,
             candidates=candidates,
         )
-        rejections.update(
-            {
-                worker.name: "rejected by delegation policy"
-                for worker in candidates
-                if worker not in authorized
-            }
-        )
+        authorized = policy_result.authorized
+        rejections.update(policy_result.rejections)
 
         healthy = self.health.filter(authorized)
-        rejections.update(
-            {
-                worker.name: "unhealthy"
-                for worker in authorized
-                if worker not in healthy
-            }
-        )
+        rejections.update(self.health.rejection_reasons(authorized))
+
+        if not healthy:
+            if policy_result.error_code:
+                error_code = policy_result.error_code
+                reason = policy_result.reason or "Dispatch rejected by policy"
+            elif not candidates:
+                error_code = "NO_ELIGIBLE_WORKER"
+                reason = f"No worker has the capabilities required by skill '{skill.name}'"
+            elif not authorized:
+                error_code = "DELEGATION_DENIED"
+                reason = f"No authorized worker is available for skill '{skill.name}'"
+            else:
+                error_code = "NO_HEALTHY_WORKER"
+                reason = f"No healthy worker is available for skill '{skill.name}'"
+            return RoutingDecision(
+                skill=skill,
+                worker=None,
+                score=0,
+                reason=reason,
+                rejections=rejections,
+                error_code=error_code,
+            )
 
         selected = self.scheduler.select(
             skill=skill,
@@ -77,6 +92,19 @@ class Dispatcher:
     async def dispatch(self, request: ExecutionRequest) -> ExecutionResult:
         decision = self.route(request)
 
+        if decision.worker is None:
+            error = {
+                "code": decision.error_code or "ROUTING_FAILED",
+                "message": decision.reason,
+                "rejections": decision.rejections,
+            }
+            return ExecutionResult(
+                execution_id="",
+                status="FAILED",
+                error=json.dumps(error, ensure_ascii=False, sort_keys=True),
+                error_details=error,
+            )
+
         plan = self.planner.create(
             request=request,
             decision=decision,
@@ -89,4 +117,5 @@ class Dispatcher:
             # Just a placeholder, adapt when event bus is ready
 
         # 7. Execute
-        return await self.executor.execute(plan)
+        async with self._slots:
+            return await self.executor.execute(plan)
