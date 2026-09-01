@@ -48,6 +48,15 @@
 ```toml
 [workflows.feature-development]
 steps = ["grill-with-docs", "to-spec", "to-tickets", "implement"]
+
+[workflows.feature-development.mappings.to-spec]
+context_id = "grill-with-docs.output.context_id"
+
+[workflows.feature-development.mappings.to-tickets]
+spec_file = "to-spec.output.spec_file"
+
+[workflows.feature-development.mappings.implement]
+ticket_id = "to-tickets.output.ticket_id"
 ```
 
 `implement` выполняет TDD, code review и qa-gate как обязательные внутренние фазы; их не нужно и нельзя дублировать отдельными шагами workflow.
@@ -63,6 +72,7 @@ harness workflow run feature-development --input '{"task": "Add OAuth"}'
 # Управление состоянием (State Store в SQLite)
 harness workflow resume <execution-id> # Продолжить упавший пайплайн с нужного шага
 harness workflow status <execution-id>
+harness workflow cancel <execution-id>
 
 # Дебаг роутинга
 harness skill explain implement # Показывает очки, capabilities и отклоненных кандидатов

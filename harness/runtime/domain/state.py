@@ -16,3 +16,6 @@ class StateStore(Protocol):
 
     async def get_workflow_execution(self, execution_id: str) -> dict[str, Any] | None:
         ...
+
+    async def cancel_workflow_execution(self, execution_id: str) -> dict[str, Any] | None:
+        ...

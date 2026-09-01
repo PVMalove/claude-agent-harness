@@ -36,6 +36,7 @@ class SkillConfig:
 class WorkflowConfig:
     steps: tuple[str, ...] = ()
     parallel: bool = False
+    mappings: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class RuntimeConfig:
     skills: Mapping[str, SkillConfig] = field(default_factory=dict)
     workflows: Mapping[str, WorkflowConfig] = field(default_factory=dict)
     delegation: Mapping[str, DelegationPolicy] = field(default_factory=dict)
+    state_path: str = ".harness/state.db"
 
 
 def _table(raw_config: Mapping[str, Any], name: str) -> Mapping[str, Any]:
@@ -140,6 +142,24 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
         runtime_retry_value = runtime["retry_attempts"]
     runtime_retry = _retry_policy(runtime_retry_value, "Runtime.retry")
 
+    state_path_value: Any = runtime.get("state_path", runtime.get("state_store"))
+    if state_path_value is None:
+        state_value = runtime.get("state")
+        if isinstance(state_value, Mapping):
+            state_path_value = state_value.get("path")
+        elif state_value is not None:
+            state_path_value = state_value
+    if state_path_value is None:
+        root_state = raw_config.get("state")
+        if isinstance(root_state, Mapping):
+            state_path_value = root_state.get("path")
+        elif root_state is not None:
+            state_path_value = root_state
+    if state_path_value is None:
+        state_path_value = ".harness/state.db"
+    if not isinstance(state_path_value, str) or not state_path_value:
+        raise ValueError("Runtime.state_path must be a non-empty string")
+
     policies = _table(raw_config, "policies")
     limits = _table(policies, "limits")
     if "max_parallel" in limits:
@@ -229,7 +249,49 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
         unknown_skills = sorted(set(steps) - skills.keys())
         if unknown_skills:
             raise ValueError(f"Workflow '{name}' references unknown skill '{unknown_skills[0]}'")
-        workflows[name] = WorkflowConfig(steps=steps, parallel=parallel)
+        raw_mappings = data.get("mappings", {})
+        if not isinstance(raw_mappings, Mapping):
+            raise ValueError(f"Workflow '{name}'.mappings must be a table")
+        mappings: dict[str, dict[str, str]] = {}
+        step_indexes = {step: index for index, step in enumerate(steps)}
+        for target, raw_mapping in raw_mappings.items():
+            if target not in step_indexes:
+                raise ValueError(
+                    f"Workflow '{name}'.mappings references unknown step '{target}'"
+                )
+            if not isinstance(raw_mapping, Mapping):
+                raise ValueError(
+                    f"Workflow '{name}'.mappings.{target} must be a table"
+                )
+            mapping: dict[str, str] = {}
+            for destination, source in raw_mapping.items():
+                if not isinstance(destination, str) or not destination:
+                    raise ValueError(
+                        f"Workflow '{name}'.mappings.{target} has an invalid input name"
+                    )
+                if not isinstance(source, str) or not source:
+                    raise ValueError(
+                        f"Workflow '{name}'.mappings.{target}.{destination} must be a non-empty string"
+                    )
+                source_parts = source.split(".")
+                if source_parts[0] == "input":
+                    if len(source_parts) < 2:
+                        raise ValueError(
+                            f"Workflow '{name}'.mappings.{target}.{destination} has an invalid source '{source}'"
+                        )
+                elif source_parts[0] not in step_indexes or len(source_parts) < 3 or source_parts[1] != "output":
+                    raise ValueError(
+                        f"Workflow '{name}'.mappings.{target}.{destination} has an invalid source '{source}'"
+                    )
+                elif step_indexes[source_parts[0]] >= step_indexes[target]:
+                    raise ValueError(
+                        f"Workflow '{name}'.mappings.{target}.{destination} must reference an earlier step"
+                    )
+                mapping[destination] = source
+            mappings[target] = mapping
+        workflows[name] = WorkflowConfig(
+            steps=steps, parallel=parallel, mappings=mappings
+        )
 
     delegation: dict[str, DelegationPolicy] = {}
     for caller, data in _table(policies, "delegation").items():
@@ -268,4 +330,5 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
         skills=skills,
         workflows=workflows,
         delegation=delegation,
+        state_path=state_path_value,
     )
