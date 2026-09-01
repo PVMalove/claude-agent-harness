@@ -112,12 +112,3 @@ class CLIProvider(Provider):
                 status="FAILED",
                 error=str(e)
             )
-
-class ClaudeProvider(CLIProvider):
-    pass
-
-class AntigravityProvider(CLIProvider):
-    pass
-
-class CodexProvider(CLIProvider):
-    pass

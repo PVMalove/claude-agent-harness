@@ -1,14 +1,15 @@
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
+import datetime
 from .policy import RetryPolicy
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ExecutionRequest:
     skill: str
-    input: dict[str, Any]
-    caller: str
-    session_id: str
-    project_id: str
+    input: Mapping[str, Any] = field(default_factory=dict)
+    caller: str = "USER"
+    session_id: str = field(default_factory=str)
+    project_id: str = field(default_factory=str)
 
 @dataclass
 class ExecutionContext:
@@ -23,12 +24,23 @@ class ExecutionContext:
 
 @dataclass
 class ExecutionPlan:
+    execution_id: str
     skill: str
+    input: Mapping[str, Any]
     worker: str
     provider: str
-    capabilities: set[str]
+    provider_type: str
+    caller: str
+    session_id: str
+    project_id: str
+    parent_execution_id: str | None
+    requirements: set[str]
+    resolved_capabilities: set[str]
     timeout: int
     retry_policy: RetryPolicy
+    routing_reason: str
+    routing_score: int
+    created_at: str = field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
 
 @dataclass
 class ExecutionResult:

@@ -36,6 +36,38 @@
 - **`mattpocock-suite`** — чистый снимок апстрима, файлы никогда не редактируются вручную (`skills/vendor/`, закреплено через `third_party/mattpocock-skills/UPSTREAM.lock`).
 - **`pvmalove-suite`** — выбирается **вместо** `mattpocock-suite`, не вместе с ней (CLI откажет с `duplicate skill name`, если указать обе сразу). Расширяет её через `extends`/`overrides`/`additions` в `harness/CAPABILITIES.json`: 17 скиллов наследуются от `mattpocock-suite` без изменений, 8 переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`.
 
+## Dynamic Dispatcher & Workflow Engine (Experimental)
+
+В `harness/runtime` реализован полноценный декларативный **Workflow Orchestrator**, разделяющий логику на уровни Domain, Application, Infrastructure и CLI.
+
+Его главная идея — двухслойный UX:
+1. **Claude Code (Frontend / Intent Parser)** получает команду пользователя (например: *"Запусти feature-development"*), понимает через скилл `run-workflow`, что это бизнес-процесс, и вызывает CLI харнесса.
+2. **Harness (Backend / Orchestrator)** управляет декларативным графом, динамически подбирая `Worker` для каждого шага на основе `capabilities`, `priority` и `health`.
+
+Пример конфигурации (`.harness/orchestration.toml`):
+```toml
+[workflows.feature-development]
+steps = ["grill-with-docs", "to-spec", "to-tickets", "implement", "tdd", "code-review", "qa-gate"]
+```
+
+Доступные команды CLI:
+```bash
+# Работа с пайплайнами
+harness workflow list
+harness workflow show feature-development
+harness workflow plan feature-development # Показывает explainable routing план для всех шагов
+harness workflow run feature-development --input '{"task": "Add OAuth"}'
+
+# Управление состоянием (State Store в SQLite)
+harness workflow resume <execution-id> # Продолжить упавший пайплайн с нужного шага
+harness workflow status <execution-id>
+
+# Дебаг роутинга
+harness skill explain implement # Показывает очки, capabilities и отклоненных кандидатов
+```
+
+*Примечание: Провайдеры (ClaudeProvider, AGYProvider, MCPProvider) на данном этапе являются экспериментальными заглушками (Mocks) для валидации архитектурных границ, а CLIProvider полностью функционален.*
+
 При выборе `pvmalove-suite` `harness init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект:
 
 - `docs/agents/{git-workflow,worktrees,artifacts,issue-tracker,triage-labels,harness-guide}.md`
