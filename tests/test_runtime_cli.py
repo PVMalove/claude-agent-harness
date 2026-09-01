@@ -43,7 +43,13 @@ class RuntimeCliTests(unittest.TestCase):
                     "grill-with-docs": {"context_id": "ctx-42"},
                     "to-spec": {"spec_file": "docs/tasks/42.md"},
                     "to-tickets": {"ticket_id": "42"},
-                    "implement": {"quality_status": "passed"},
+                    "implement": {
+                        "quality_status": {
+                            "tdd": "passed",
+                            "code_review": "passed",
+                            "qa_gate": "passed",
+                        }
+                    },
                 }
                 print(json.dumps({
                     "jsonrpc": "2.0",
@@ -122,7 +128,9 @@ class RuntimeCliTests(unittest.TestCase):
             execution_id = re.search(r"Execution ID: ([0-9a-f-]+)", result.stdout).group(1)
             state = self.run_cli(repository, "workflow", "status", execution_id)
             self.assertEqual(state.returncode, 0, state.stdout + state.stderr)
-            self.assertIn('"quality_status": "passed"', state.stdout)
+            self.assertIn('"quality_status": {', state.stdout)
+            for phase in ("tdd", "code_review", "qa_gate"):
+                self.assertIn(f'"{phase}": "passed"', state.stdout)
 
             requests = [
                 json.loads(line)
@@ -136,6 +144,10 @@ class RuntimeCliTests(unittest.TestCase):
                     {"spec_file": "docs/tasks/42.md"},
                     {"ticket_id": "42"},
                 ],
+            )
+            self.assertEqual(
+                [request["params"]["skill"] for request in requests],
+                ["grill-with-docs", "to-spec", "to-tickets", "implement"],
             )
 
     def test_plan_rejects_worker_that_references_an_unknown_provider(self) -> None:
