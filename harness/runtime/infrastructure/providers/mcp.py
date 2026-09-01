@@ -7,6 +7,8 @@ from .cli import CLIProvider
 class MCPProvider(CLIProvider):
     """Run an MCP adapter using the shared provider stream contract."""
 
+    type_name = "mcp"
+
     def __init__(
         self,
         command: str,
