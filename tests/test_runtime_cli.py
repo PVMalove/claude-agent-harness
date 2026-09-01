@@ -28,6 +28,116 @@ class RuntimeCliTests(unittest.TestCase):
             textwrap.dedent(content), encoding="utf-8"
         )
 
+    def test_feature_development_forwards_context_and_quality_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            provider_program = """
+                import json
+                from pathlib import Path
+                import sys
+
+                request = json.loads(sys.stdin.readline())
+                with Path("requests.jsonl").open("a", encoding="utf-8") as requests:
+                    requests.write(json.dumps(request) + "\\n")
+                outputs = {
+                    "grill-with-docs": {"context_id": "ctx-42"},
+                    "to-spec": {"spec_file": "docs/tasks/42.md"},
+                    "to-tickets": {"ticket_id": "42"},
+                    "implement": {"quality_status": "passed"},
+                }
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": {
+                        "protocol": "harness.provider",
+                        "version": 1,
+                        "status": "SUCCESS",
+                        "output": outputs[request["params"]["skill"]],
+                    },
+                }), flush=True)
+            """
+            self.write_config(
+                repository,
+                f"""
+                [providers.fixture]
+                type = "cli"
+                command = {json.dumps(sys.executable)}
+                args = ["-c", {json.dumps(textwrap.dedent(provider_program))}]
+
+                [workers.coder]
+                provider = "fixture"
+                capabilities = ["filesystem"]
+
+                [skills.grill-with-docs]
+                requires = ["filesystem"]
+
+                [skills.to-spec]
+                requires = ["filesystem"]
+
+                [skills.to-tickets]
+                requires = ["filesystem"]
+
+                [skills.implement]
+                requires = ["filesystem"]
+
+                [workflows.feature-development]
+                steps = ["grill-with-docs", "to-spec", "to-tickets", "implement"]
+
+                [workflows.feature-development.mappings.to-spec]
+                context_id = "grill-with-docs.output.context_id"
+
+                [workflows.feature-development.mappings.to-tickets]
+                spec_file = "to-spec.output.spec_file"
+
+                [workflows.feature-development.mappings.implement]
+                ticket_id = "to-tickets.output.ticket_id"
+                """,
+            )
+
+            shown = self.run_cli(repository, "workflow", "show", "feature-development")
+            self.assertEqual(shown.returncode, 0, shown.stdout + shown.stderr)
+            self.assertEqual(
+                shown.stdout.splitlines()[2:6],
+                [
+                    "1. grill-with-docs",
+                    "2. to-spec",
+                    "3. to-tickets",
+                    "4. implement",
+                ],
+            )
+            self.assertNotIn("tdd", shown.stdout)
+            self.assertNotIn("code-review", shown.stdout)
+            self.assertNotIn("qa-gate", shown.stdout)
+
+            result = self.run_cli(
+                repository,
+                "workflow",
+                "run",
+                "feature-development",
+                "--input",
+                '{"idea":"ship feature","private":"do-not-forward"}',
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            execution_id = re.search(r"Execution ID: ([0-9a-f-]+)", result.stdout).group(1)
+            state = self.run_cli(repository, "workflow", "status", execution_id)
+            self.assertEqual(state.returncode, 0, state.stdout + state.stderr)
+            self.assertIn('"quality_status": "passed"', state.stdout)
+
+            requests = [
+                json.loads(line)
+                for line in (repository / "requests.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(
+                [request["params"]["input"] for request in requests],
+                [
+                    {"idea": "ship feature", "private": "do-not-forward"},
+                    {"context_id": "ctx-42"},
+                    {"spec_file": "docs/tasks/42.md"},
+                    {"ticket_id": "42"},
+                ],
+            )
+
     def test_plan_rejects_worker_that_references_an_unknown_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repository = Path(temporary_directory)
