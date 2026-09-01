@@ -377,6 +377,8 @@ AI-агенты неизбежно «глупеют» и начинают гал
 
 **Как это сцепляется с соседями:** `docs/agents/git-workflow.md` несёт остальные жёсткие правила (Zero Direct Commits, CLI Only, Issue First, Zero Auto-Merge) и language-aware (ru/en) 7-секционный шаблон тела PR; `qa-gate` (раздел 6) читает `qa_gate_commands` из `.harness/project.json`; `pr-composer` (раздел 6) заполняет тот же шаблон по диффу/коммитам/результату `qa-gate`; `docs/agents/triage-labels.md`/`issue-tracker.md` держат переходы `workflow::*` и общий с `/wayfinder` frontier-запрос.
 
+**Оркестрация sub-agent'ов:** если сессия работает под Orca, все supervised/параллельные sub-agent'ы запускаются через Orca Run → Task → Dispatch, а координатор ждёт `worker_done` через `orca orchestration check --wait`, обрабатывает доставленные результаты и продолжает workflow автоматически. Прямой generic agent spawn обходит lifecycle Orca и не используется. В обычном рантайме действует fallback с уведомлениями harness.
+
 ---
 
 ## 5. Автоматизированный контроль качества (Model-Invoked Skills)
