@@ -57,7 +57,9 @@ Each smell reads _what it is_ → _how to fix_; match it against the diff:
 
 ### 4. Spawn both sub-agents in parallel
 
-Invoke both via the `Agent` tool with `subagent_type: "code-review-standards"` and `subagent_type: "code-review-spec"` (defined in `.claude/agents/`) — their own frontmatter fixes the reporting brief, tools, and a turn cap; you only supply the per-run task in `prompt`.
+If the current session is Orca-managed, use Orca orchestration for both reviews: create or bind a Run, create one Task per axis, dispatch both workers, and wait with Orca's supervised `check --wait` for `worker_done`/`escalation`/`question` messages. Process every delivered result and continue the coordinator workflow in the same session. Do not use a generic agent-spawn API, because it bypasses Orca's Task/Dispatch lifecycle.
+
+Outside Orca, invoke both via the `Agent` tool with `subagent_type: "code-review-standards"` and `subagent_type: "code-review-spec"` (defined in `.claude/agents/`) — their own frontmatter fixes the reporting brief, tools, and a turn cap; you only supply the per-run task in `prompt`.
 
 **`code-review-standards` prompt** — include:
 
@@ -71,7 +73,7 @@ Invoke both via the `Agent` tool with `subagent_type: "code-review-standards"` a
 
 If the spec is missing, skip the `code-review-spec` sub-agent and note this in the final report.
 
-After launching both, stop — do not poll, schedule a wakeup (even as a "fallback heartbeat"), or launch another agent whose purpose is only to wait. The harness delivers each sub-agent's result automatically as a notification in a later turn. This still holds once one sub-agent's notification has already arrived and the other hasn't: don't poll or schedule a wakeup for the straggler either — end your turn and wait for its notification the same way.
+In an Orca-managed session, remain the coordinator after dispatching: use the supervised wait, process every `worker_done`/`escalation`/`question` delivery, and continue until both review Tasks settle. Do not end the coordinator turn while waiting for results. Outside Orca, after launching both, stop — do not poll, schedule a wakeup (even as a "fallback heartbeat"), or launch another agent whose purpose is only to wait; the harness delivers each result as a notification in a later turn.
 
 ### 5. Aggregate
 
