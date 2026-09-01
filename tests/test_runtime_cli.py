@@ -9,6 +9,25 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+MCP_FIXTURE_PROGRAM = """
+    import json
+    import sys
+
+    request = json.loads(sys.stdin.readline())
+    print(json.dumps({
+        "jsonrpc": "2.0",
+        "id": request["id"],
+        "result": {
+            "protocol": "harness.provider",
+            "version": 1,
+            "status": "SUCCESS",
+            "output": {
+                "marker": sys.argv[1],
+                "skill": request["params"]["skill"],
+            },
+        },
+    }), flush=True)
+"""
 
 
 class RuntimeCliTests(unittest.TestCase):
@@ -452,6 +471,117 @@ class RuntimeCliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("Execution Status: FAILED", result.stdout)
             self.assertIn("without a terminal result", result.stdout)
+
+    def test_mcp_provider_uses_the_configured_command_and_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            self.write_config(
+                repository,
+                f"""
+                [providers.mcp_fixture]
+                type = "mcp"
+                command = {json.dumps(sys.executable)}
+                args = ["-c", {json.dumps(textwrap.dedent(MCP_FIXTURE_PROGRAM))}, "configured-mcp"]
+
+                [workers.qa]
+                provider = "mcp_fixture"
+                capabilities = ["testing"]
+
+                [skills.qa-gate]
+                requires = ["testing"]
+                """,
+            )
+
+            result = self.run_cli(repository, "skill", "run", "qa-gate")
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('"marker": "configured-mcp"', result.stdout)
+            self.assertIn('"skill": "qa-gate"', result.stdout)
+
+    def test_mcp_provider_reports_protocol_failures_as_failed_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            provider_program = "print('{\"status\": \"SUCCESS\"}', flush=True)"
+            self.write_config(
+                repository,
+                f"""
+                [providers.mcp_fixture]
+                type = "mcp"
+                command = {json.dumps(sys.executable)}
+                args = ["-c", {json.dumps(provider_program)}]
+
+                [workers.qa]
+                provider = "mcp_fixture"
+                capabilities = ["testing"]
+
+                [skills.qa-gate]
+                requires = ["testing"]
+                """,
+            )
+
+            result = self.run_cli(repository, "skill", "run", "qa-gate")
+
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("Execution Status: FAILED", result.stdout)
+            self.assertIn("Protocol error", result.stdout)
+
+    def test_workflow_routes_review_and_qa_gate_to_the_healthy_mcp_qa_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            self.write_config(
+                repository,
+                f"""
+                [providers.cli_fixture]
+                type = "cli"
+                command = {json.dumps(sys.executable)}
+                args = ["-c", {json.dumps(textwrap.dedent(MCP_FIXTURE_PROGRAM))}, "coder"]
+
+                [providers.mcp_fixture]
+                type = "mcp"
+                command = {json.dumps(sys.executable)}
+                args = ["-c", {json.dumps(textwrap.dedent(MCP_FIXTURE_PROGRAM))}, "qa"]
+
+                [workers.coder]
+                provider = "cli_fixture"
+                capabilities = ["testing"]
+                health = "healthy"
+
+                [workers.qa]
+                provider = "mcp_fixture"
+                capabilities = ["testing"]
+                priority = 10
+                health = "healthy"
+
+                [skills.code-review]
+                requires = ["testing"]
+                [skills.code-review.execution]
+                preferred = ["qa"]
+
+                [skills.qa-gate]
+                requires = ["testing"]
+                [skills.qa-gate.execution]
+                preferred = ["qa"]
+
+                [[policies.delegation.USER.allow]]
+                worker = "qa"
+                skills = ["code-review", "qa-gate"]
+
+                [workflows.quality]
+                steps = ["code-review", "qa-gate"]
+                """,
+            )
+
+            result = self.run_cli(repository, "workflow", "run", "quality")
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("[1/2] code-review", result.stdout)
+            self.assertIn("[2/2] qa-gate", result.stdout)
+            self.assertEqual(result.stdout.count("-> mcp_fixture"), 2)
+            execution_id = re.search(r"Execution ID: ([0-9a-f-]+)", result.stdout).group(1)
+            state = self.run_cli(repository, "workflow", "status", execution_id)
+            self.assertIn("Status: COMPLETED", state.stdout)
+            self.assertIn('"marker": "qa"', state.stdout)
+            self.assertIn('"skill": "qa-gate"', state.stdout)
 
     def test_explain_reports_delegation_and_depth_policy_rejections(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

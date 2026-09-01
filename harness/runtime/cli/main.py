@@ -130,8 +130,16 @@ def _build_provider(
             retry_policy=config.retry_policy,
         )
     if config.type == "mcp":
+        if not config.command:
+            raise ValueError(f"Provider '{name}' of type 'mcp' is missing 'command'")
         timeout = config.timeout if config.timeout is not None else default_timeout
-        return MCPProvider(timeout=timeout, retry_policy=config.retry_policy)
+        return MCPProvider(
+            config.command,
+            list(config.args),
+            timeout=timeout,
+            cwd=cwd,
+            retry_policy=config.retry_policy,
+        )
     raise ValueError(f"Provider '{name}' has unsupported type '{config.type}'")
 
 def main():

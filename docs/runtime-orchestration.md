@@ -123,6 +123,18 @@ ticket_id = "to-tickets.output.ticket_id"
 
 [skills.implement.quality]
 required = ["tdd", "code-review", "qa-gate"]
+
+[skills.code-review]
+requires = ["testing"]
+
+[skills.code-review.execution]
+preferred = ["qa"]
+
+[skills.qa-gate]
+requires = ["testing", "linting", "type-checking"]
+
+[skills.qa-gate.execution]
+preferred = ["qa"]
 ```
 
 For a skill with a quality contract, a provider is successful only when its

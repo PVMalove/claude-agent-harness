@@ -18,6 +18,8 @@ from .protocol import (
 
 
 class CLIProvider(Provider):
+    type_name = "cli"
+
     def __init__(
         self,
         command: str,

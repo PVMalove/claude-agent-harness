@@ -81,7 +81,7 @@ harness workflow cancel <execution-id>
 harness skill explain implement # Показывает очки, capabilities и отклоненных кандидатов
 ```
 
-*Примечание: Провайдеры (ClaudeProvider, AGYProvider, MCPProvider) на данном этапе являются экспериментальными заглушками (Mocks) для валидации архитектурных границ, а CLIProvider полностью функционален.*
+*Примечание: CLIProvider и MCPProvider используют общий versioned JSONL/JSON-RPC provider contract; ClaudeProvider и AGYProvider остаются экспериментальными заглушками для валидации архитектурных границ.*
 
 При выборе `pvmalove-suite` `harness init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект:
 
