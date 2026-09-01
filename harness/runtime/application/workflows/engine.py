@@ -1,5 +1,6 @@
 import uuid
 import datetime
+import asyncio
 from typing import Any
 from ...domain.workflow import Workflow
 from ...domain.execution import ExecutionRequest
@@ -21,17 +22,30 @@ class WorkflowEngine:
                         caller=request.caller,
                         session_id=request.session_id,
                         project_id=request.project_id,
+                        depth=request.depth,
                     )
                 )
-                steps.append({
-                    "step": step_idx + 1,
-                    "skill": decision.skill.name,
-                    "worker": decision.worker.name,
-                    "provider": decision.worker.provider,
-                    "reason": decision.reason,
-                    "rejections": decision.rejections,
-                    "status": "planned",
-                })
+                if decision.worker is None:
+                    steps.append({
+                        "step": step_idx + 1,
+                        "skill": decision.skill.name,
+                        "worker": "UNKNOWN",
+                        "provider": "UNKNOWN",
+                        "reason": decision.reason,
+                        "rejections": decision.rejections,
+                        "error_code": decision.error_code,
+                        "status": f"error: {decision.error_code or 'ROUTING_FAILED'}",
+                    })
+                else:
+                    steps.append({
+                        "step": step_idx + 1,
+                        "skill": decision.skill.name,
+                        "worker": decision.worker.name,
+                        "provider": decision.worker.provider,
+                        "reason": decision.reason,
+                        "rejections": decision.rejections,
+                        "status": "planned",
+                    })
             except Exception as e:
                 steps.append({
                     "step": step_idx + 1,
@@ -63,6 +77,53 @@ class WorkflowEngine:
 
         steps = workflow.steps
 
+        if workflow.parallel and state["current_step"] == 0:
+            results = await asyncio.gather(
+                *(
+                    self.dispatcher.dispatch(
+                        ExecutionRequest(
+                            skill=skill_name,
+                            input=request.input,
+                            caller=request.caller,
+                            session_id=request.session_id,
+                            project_id=request.project_id,
+                            depth=request.depth,
+                        )
+                    )
+                    for skill_name in steps
+                ),
+                return_exceptions=True,
+            )
+            for skill_name, result in zip(steps, results):
+                if isinstance(result, Exception):
+                    state["results"].append({
+                        "skill": skill_name,
+                        "status": "FAILED",
+                        "error": str(result),
+                        "error_details": None,
+                    })
+                else:
+                    state["results"].append({
+                        "skill": skill_name,
+                        "status": result.status,
+                        "output": result.output,
+                        "error": result.error,
+                        "error_details": result.error_details,
+                    })
+            if all(item["status"] == "SUCCESS" for item in state["results"]):
+                state["current_step"] = len(steps)
+                state["status"] = "COMPLETED"
+                print("Workflow completed.")
+            else:
+                state["status"] = "FAILED"
+                for item in state["results"]:
+                    if item["status"] != "SUCCESS" and item.get("error"):
+                        print(
+                            f"      [FAIL] {item.get('error_details') or item['error']}"
+                        )
+            await self.state_store.save_workflow_execution(execution_id, state)
+            return execution_id
+
         while state["current_step"] < len(steps):
             step_idx = state["current_step"]
             skill_name = steps[step_idx]
@@ -75,6 +136,7 @@ class WorkflowEngine:
                         caller=request.caller,
                         session_id=request.session_id,
                         project_id=request.project_id,
+                        depth=request.depth,
                     )
                 )
                 provider_display = decision.worker.provider
@@ -88,7 +150,8 @@ class WorkflowEngine:
                 input=request.input,
                 caller=request.caller,
                 session_id=request.session_id,
-                project_id=request.project_id
+                project_id=request.project_id,
+                depth=request.depth,
             )
 
             try:
@@ -104,11 +167,14 @@ class WorkflowEngine:
                     await self.state_store.save_workflow_execution(execution_id, state)
                 else:
                     print(f"      [FAIL] failed\n")
+                    if result.error:
+                        print(f"      [ERROR] {result.error}")
                     state["status"] = "FAILED"
                     state["results"].append({
                         "skill": skill_name,
                         "status": "FAILED",
-                        "error": result.error
+                        "error": result.error,
+                        "error_details": result.error_details,
                     })
                     await self.state_store.save_workflow_execution(execution_id, state)
                     break
