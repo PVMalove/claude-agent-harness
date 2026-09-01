@@ -28,6 +28,60 @@ class RuntimeCliTests(unittest.TestCase):
             textwrap.dedent(content), encoding="utf-8"
         )
 
+    def write_feature_development_config(
+        self,
+        repository: Path,
+        provider_program: str,
+        *,
+        steps: str = '["grill-with-docs", "to-spec", "to-tickets", "implement"]',
+        quality_phases: str | None = '["tdd", "code-review", "qa-gate"]',
+    ) -> None:
+        quality_config = (
+            f"""
+                [skills.implement.quality]
+                required = {quality_phases}
+            """
+            if quality_phases is not None
+            else ""
+        )
+        self.write_config(
+            repository,
+            f"""
+            [providers.fixture]
+            type = "cli"
+            command = {json.dumps(sys.executable)}
+            args = ["-c", {json.dumps(textwrap.dedent(provider_program))}]
+
+            [workers.coder]
+            provider = "fixture"
+            capabilities = ["filesystem"]
+
+            [skills.grill-with-docs]
+            requires = ["filesystem"]
+
+            [skills.to-spec]
+            requires = ["filesystem"]
+
+            [skills.to-tickets]
+            requires = ["filesystem"]
+
+            [skills.implement]
+            requires = ["filesystem"]
+            {quality_config}
+            [workflows.feature-development]
+            steps = {steps}
+
+            [workflows.feature-development.mappings.to-spec]
+            context_id = "grill-with-docs.output.context_id"
+
+            [workflows.feature-development.mappings.to-tickets]
+            spec_file = "to-spec.output.spec_file"
+
+            [workflows.feature-development.mappings.implement]
+            ticket_id = "to-tickets.output.ticket_id"
+            """,
+        )
+
     def test_feature_development_forwards_context_and_quality_status(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repository = Path(temporary_directory)
@@ -62,45 +116,9 @@ class RuntimeCliTests(unittest.TestCase):
                     },
                 }), flush=True)
             """
-            self.write_config(
+            self.write_feature_development_config(
                 repository,
-                f"""
-                [providers.fixture]
-                type = "cli"
-                command = {json.dumps(sys.executable)}
-                args = ["-c", {json.dumps(textwrap.dedent(provider_program))}]
-
-                [workers.coder]
-                provider = "fixture"
-                capabilities = ["filesystem"]
-
-                [skills.grill-with-docs]
-                requires = ["filesystem"]
-
-                [skills.to-spec]
-                requires = ["filesystem"]
-
-                [skills.to-tickets]
-                requires = ["filesystem"]
-
-                [skills.implement]
-                requires = ["filesystem"]
-
-                [skills.implement.quality]
-                required = ["tdd", "code-review", "qa-gate"]
-
-                [workflows.feature-development]
-                steps = ["grill-with-docs", "to-spec", "to-tickets", "implement"]
-
-                [workflows.feature-development.mappings.to-spec]
-                context_id = "grill-with-docs.output.context_id"
-
-                [workflows.feature-development.mappings.to-tickets]
-                spec_file = "to-spec.output.spec_file"
-
-                [workflows.feature-development.mappings.implement]
-                ticket_id = "to-tickets.output.ticket_id"
-                """,
+                provider_program,
             )
 
             shown = self.run_cli(repository, "workflow", "show", "feature-development")
@@ -161,6 +179,12 @@ class RuntimeCliTests(unittest.TestCase):
                 import sys
 
                 request = json.loads(sys.stdin.readline())
+                outputs = {
+                    "grill-with-docs": {"context_id": "ctx-42"},
+                    "to-spec": {"spec_file": "docs/tasks/42.md"},
+                    "to-tickets": {"ticket_id": "42"},
+                    "implement": {"quality_status": {"tdd": "passed"}},
+                }
                 print(json.dumps({
                     "jsonrpc": "2.0",
                     "id": request["id"],
@@ -168,31 +192,13 @@ class RuntimeCliTests(unittest.TestCase):
                         "protocol": "harness.provider",
                         "version": 1,
                         "status": "SUCCESS",
-                        "output": {"quality_status": {"tdd": "passed"}},
+                        "output": outputs[request["params"]["skill"]],
                     },
                 }), flush=True)
             """
-            self.write_config(
+            self.write_feature_development_config(
                 repository,
-                f"""
-                [providers.fixture]
-                type = "cli"
-                command = {json.dumps(sys.executable)}
-                args = ["-c", {json.dumps(textwrap.dedent(provider_program))}]
-
-                [workers.coder]
-                provider = "fixture"
-                capabilities = ["filesystem"]
-
-                [skills.implement]
-                requires = ["filesystem"]
-
-                [skills.implement.quality]
-                required = ["tdd", "code-review", "qa-gate"]
-
-                [workflows.feature-development]
-                steps = ["implement"]
-                """,
+                provider_program,
             )
 
             result = self.run_cli(
@@ -212,6 +218,37 @@ class RuntimeCliTests(unittest.TestCase):
             self.assertIn('"code": "QUALITY_CONTRACT_FAILED"', state.stdout)
             self.assertIn('"failed_phases": ["code-review", "qa-gate"]', state.stdout)
 
+    def test_feature_development_requires_its_quality_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            self.write_feature_development_config(
+                repository,
+                "pass",
+                quality_phases=None,
+            )
+
+            result = self.run_cli(repository, "workflow", "show", "feature-development")
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("must require quality phases", result.stdout)
+
+    def test_feature_development_rejects_quality_phases_as_workflow_nodes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            self.write_feature_development_config(
+                repository,
+                "pass",
+                steps=(
+                    '["grill-with-docs", "to-spec", "to-tickets", "implement", '
+                    '"tdd", "code-review", "qa-gate"]'
+                ),
+            )
+
+            result = self.run_cli(repository, "workflow", "show", "feature-development")
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("must contain exactly the macro steps", result.stdout)
+
     def test_plan_rejects_worker_that_references_an_unknown_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repository = Path(temporary_directory)
@@ -225,12 +262,12 @@ class RuntimeCliTests(unittest.TestCase):
                 [skills.implement]
                 requires = ["filesystem"]
 
-                [workflows.feature-development]
+                [workflows.routing-workflow]
                 steps = ["implement"]
                 """,
             )
 
-            result = self.run_cli(repository, "workflow", "plan", "feature-development")
+            result = self.run_cli(repository, "workflow", "plan", "routing-workflow")
 
             self.assertEqual(result.returncode, 1)
             self.assertIn(
@@ -261,7 +298,7 @@ class RuntimeCliTests(unittest.TestCase):
                 [skills.implement.execution]
                 preferred = ["complete"]
 
-                [workflows.feature-development]
+                [workflows.routing-workflow]
                 steps = ["implement"]
                 """,
             )
@@ -272,7 +309,7 @@ class RuntimeCliTests(unittest.TestCase):
             self.assertIn("limited: rejected; missing capabilities: git", result.stdout)
             self.assertIn("Selected: complete -> custom", result.stdout)
 
-            plan = self.run_cli(repository, "workflow", "plan", "feature-development")
+            plan = self.run_cli(repository, "workflow", "plan", "routing-workflow")
 
             self.assertEqual(plan.returncode, 0, plan.stderr)
             self.assertIn("reason: Highest overall score", plan.stdout)
@@ -440,7 +477,7 @@ class RuntimeCliTests(unittest.TestCase):
                 [policies.limits]
                 max_depth = 1
 
-                [workflows.feature-development]
+                [workflows.policy-workflow]
                 steps = ["implement"]
                 """,
             )
@@ -484,7 +521,7 @@ class RuntimeCliTests(unittest.TestCase):
                 repository,
                 "workflow",
                 "plan",
-                "feature-development",
+                "policy-workflow",
                 "--caller",
                 "auditor",
             )
@@ -495,7 +532,7 @@ class RuntimeCliTests(unittest.TestCase):
                 repository,
                 "workflow",
                 "run",
-                "feature-development",
+                "policy-workflow",
                 "--caller",
                 "auditor",
             )
