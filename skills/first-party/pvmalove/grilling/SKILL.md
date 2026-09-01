@@ -7,7 +7,7 @@ description: Grill the user relentlessly about a plan, decision, or idea to stre
 
 **Core Mechanics:**
 1. **Rounds & The Frontier:** Work through the tree in discrete rounds. The **frontier** consists of every decision whose prerequisites are currently settled.
-    - Ask the *entire* frontier in a single round.
+    - Ask the current frontier in a single round, showing at most 4 questions; if the frontier is larger, carry the remaining questions into the next round.
     - Never ask downstream questions until their prerequisites are answered.
     - Always wait for the user's response before computing the next round.
 2. **State Tracking (The Trunk):** At the start of each round, briefly summarize the decisions that have just been settled. This confirms alignment before pushing the frontier forward.
@@ -34,7 +34,7 @@ description: Grill the user relentlessly about a plan, decision, or idea to stre
 **Termination:**
 The session is done when the frontier is empty: every branch of the design tree is visited, and no silent assumptions remain. Conclude by synthesizing the final plan, then ask the user to confirm the plan:
 
-- **Confirm the plan (Recommended):** tell the user that the next step is for them to invoke `/to-spec` manually, then end the grilling session.
-- **Request revisions:** ask the user to identify the decision numbers that need changes, reopen only those branches, and continue grilling.
+- **Да, перейти к `/to-spec` (Recommended):** tell the user that the next step is for them to invoke `/to-spec` manually, then end the grilling session.
+- **Нет, нужны правки:** ask the user to identify the decision numbers that need changes, reopen only those branches, and continue grilling.
 
 If `AskUserQuestion` is available, ask this final choice through it. Otherwise present the same two choices as plain text and wait. Do not invoke `/to-spec` yourself, and do not treat confirmation as authorization to create tickets, branches, or code.
