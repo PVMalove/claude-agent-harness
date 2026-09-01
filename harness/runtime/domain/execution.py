@@ -36,7 +36,7 @@ class ExecutionPlan:
     parent_execution_id: str | None
     requirements: set[str]
     resolved_capabilities: set[str]
-    timeout: int
+    timeout: float
     retry_policy: RetryPolicy
     routing_reason: str
     routing_score: int

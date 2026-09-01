@@ -96,7 +96,91 @@ class RuntimeCliTests(unittest.TestCase):
     def test_skill_run_uses_the_resolved_capabilities_in_the_provider_request(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repository = Path(temporary_directory)
-            provider_program = "import json; print(json.dumps({'status': 'SUCCESS'}))"
+            provider_program = """
+                import json
+                import sys
+
+                request = json.loads(sys.stdin.readline())
+                assert request["jsonrpc"] == "2.0"
+                assert request["method"] == "execute"
+                assert request["params"]["protocol"] == "harness.provider"
+                assert request["params"]["version"] == 1
+                assert request["params"]["input"] == {"file": "main.py"}
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": {
+                        "protocol": "harness.provider",
+                        "version": 1,
+                        "status": "SUCCESS",
+                        "output": {"echo": request["params"]["input"]},
+                    },
+                }), flush=True)
+            """
+            self.write_config(
+                repository,
+                f"""
+                [providers.fixture]
+                type = "cli"
+                command = {json.dumps(sys.executable)}
+                args = ["-c", {json.dumps(provider_program)}]
+
+                [workers.coder]
+                provider = "fixture"
+                capabilities = ["filesystem"]
+
+                [skills.implement]
+                requires = ["filesystem"]
+                """,
+            )
+
+            result = self.run_cli(
+                repository,
+                "skill",
+                "run",
+                "implement",
+                "--input",
+                '{"file":"main.py"}',
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Execution Status: SUCCESS", result.stdout)
+            self.assertIn(
+                'Execution Output: {"echo": {"file": "main.py"}}', result.stdout
+            )
+
+    def test_skill_run_reports_timeout_from_the_declared_provider_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            provider_program = "import time; time.sleep(1)"
+            self.write_config(
+                repository,
+                f"""
+                [providers.fixture]
+                type = "cli"
+                command = {json.dumps(sys.executable)}
+                args = ["-c", {json.dumps(provider_program)}]
+                timeout = 0.05
+
+                [workers.coder]
+                provider = "fixture"
+                capabilities = ["filesystem"]
+
+                [skills.implement]
+                requires = ["filesystem"]
+                """,
+            )
+
+            result = self.run_cli(repository, "skill", "run", "implement")
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Execution Status: TIMEOUT", result.stdout)
+            self.assertIn("timed out", result.stdout)
+
+    def test_skill_run_rejects_an_invalid_provider_response(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            provider_program = "print('{\"status\": \"SUCCESS\"}', flush=True)"
             self.write_config(
                 repository,
                 f"""
@@ -116,8 +200,36 @@ class RuntimeCliTests(unittest.TestCase):
 
             result = self.run_cli(repository, "skill", "run", "implement")
 
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("Execution Status: SUCCESS", result.stdout)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Execution Status: FAILED", result.stdout)
+            self.assertIn("Protocol error", result.stdout)
+
+    def test_skill_run_rejects_a_provider_that_closes_without_a_terminal_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            provider_program = "import sys; sys.stdin.readline()"
+            self.write_config(
+                repository,
+                f"""
+                [providers.fixture]
+                type = "cli"
+                command = {json.dumps(sys.executable)}
+                args = ["-c", {json.dumps(provider_program)}]
+
+                [workers.coder]
+                provider = "fixture"
+                capabilities = ["filesystem"]
+
+                [skills.implement]
+                requires = ["filesystem"]
+                """,
+            )
+
+            result = self.run_cli(repository, "skill", "run", "implement")
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Execution Status: FAILED", result.stdout)
+            self.assertIn("without a terminal result", result.stdout)
 
 
 if __name__ == "__main__":

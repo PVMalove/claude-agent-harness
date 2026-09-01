@@ -26,7 +26,7 @@ class Planner:
             parent_execution_id=None,
             requirements=decision.skill.requirements,
             resolved_capabilities=decision.worker.capabilities,
-            timeout=600, # Should come from config or policy
+            timeout=float(getattr(provider, "timeout", 600)),
             retry_policy=RetryPolicy(),
             routing_reason=decision.reason,
             routing_score=decision.score,

@@ -56,7 +56,8 @@ def setup_components(repo_path: Path):
     provider_registry = ProviderRegistry()
     for provider_name, provider_config in config.providers.items():
         provider_registry.register(
-            provider_name, _build_provider(provider_name, provider_config)
+            provider_name,
+            _build_provider(provider_name, provider_config, config.default_timeout, repo_path),
         )
 
     state_store = SQLiteStateStore()
@@ -96,11 +97,14 @@ def setup_components(repo_path: Path):
     }
 
 
-def _build_provider(name: str, config: ProviderConfig):
+def _build_provider(
+    name: str, config: ProviderConfig, default_timeout: float = 600.0, cwd: Path | None = None
+):
     if config.type == "cli":
         if not config.command:
             raise ValueError(f"Provider '{name}' of type 'cli' is missing 'command'")
-        return CLIProvider(config.command, list(config.args))
+        timeout = config.timeout if config.timeout is not None else default_timeout
+        return CLIProvider(config.command, list(config.args), timeout=timeout, cwd=cwd)
     if config.type == "mcp":
         return MCPProvider()
     raise ValueError(f"Provider '{name}' has unsupported type '{config.type}'")
@@ -269,6 +273,10 @@ def main():
             req = ExecutionRequest(skill=args.name, input=req.input)
             res = asyncio.run(comps["dispatcher"].dispatch(req))
             print(f"Execution Status: {res.status}")
+            if res.error:
+                print(f"Execution Error: {res.error}")
+            elif res.output:
+                print(f"Execution Output: {json.dumps(res.output, ensure_ascii=False)}")
             return 0 if res.status == "SUCCESS" else 1
 
     # Provider / Worker Actions

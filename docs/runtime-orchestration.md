@@ -53,6 +53,8 @@ default_timeout = 600
 [providers.agy]
 type = "cli"
 command = "agy"
+args = ["--json"]
+timeout = 600
 
 [providers.qa]
 type = "mcp"
@@ -134,17 +136,47 @@ capabilities = ["code-execution", "filesystem"]
 
 ## 6. Механизм передачи данных (Generic CLI Integration)
 
-Провайдеры типа `cli`, `llm`, `mcp` работают через интерфейс subprocess. Диспетчер формирует запрос и передает его в поток ввода (`stdin`) целевого процесса в виде JSON:
+CLI-provider запускается с ровно теми `command` и `args`, которые объявлены в TOML, из корня
+целевого репозитория. `providers.<name>.timeout` задаёт ограничение в секундах; если оно не
+указано, используется `runtime.default_timeout`.
+
+Обмен идёт по JSONL поверх JSON-RPC 2.0. Каждое сообщение содержит versioned envelope
+protocol = "harness.provider" и version = 1 в params или result. Стартовый request:
 
 ```json
 {
-  "execution_id": "ab12-cd34-...",
-  "skill": "implement",
-  "capabilities": ["code-execution", "filesystem", "git"]
+  "jsonrpc": "2.0",
+  "id": "ab12-cd34-...",
+  "method": "execute",
+  "params": {
+    "protocol": "harness.provider",
+    "version": 1,
+    "execution_id": "ab12-cd34-...",
+    "skill": "implement",
+    "input": {"file": "main.py"},
+    "capabilities": ["code-execution", "filesystem", "git"]
+  }
 }
 ```
 
-Оркестратор ожидает, что процесс вернет JSON-ответ в свой поток вывода (`stdout`). Если ответ невалиден, процесс завершается с ошибкой (`FAILED`). Это позволяет легко тестировать агентов даже с помощью bash-скриптов или Python-утилит, не меняя код Harness.
+Провайдер должен завершить поток terminal result с тем же id:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "ab12-cd34-...",
+  "result": {
+    "protocol": "harness.provider",
+    "version": 1,
+    "status": "SUCCESS",
+    "output": {"changed": true}
+  }
+}
+```
+
+Malformed JSON, неверная версия/структура, несовпадающий id или закрытие stdout без
+terminal result приводят к FAILED; успешный статус никогда не выводится по умолчанию.
+Превышение timeout приводит к TIMEOUT, а ненулевой exit code — к FAILED.
 ---
 
 ## 7. Пример сложного воркфлоу: От Идеи до Кода
@@ -339,6 +371,8 @@ Output: {
      "id": 101,
      "method": "AskUserQuestion",
      "params": {
+       "protocol": "harness.provider",
+       "version": 1,
        "questions": [
          {
            "question": "[Удаление] Каскад или soft-delete?",
@@ -356,6 +390,8 @@ Output: {
      "jsonrpc": "2.0",
      "id": 101,
      "result": {
+       "protocol": "harness.provider",
+       "version": 1,
        "answers": ["(Recommended) Soft-delete"]
      }
    }
