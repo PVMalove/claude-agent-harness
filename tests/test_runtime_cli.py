@@ -796,6 +796,39 @@ class RuntimeCliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("has an invalid source 'unknown.output.value'", result.stdout)
 
+    def test_workflow_rejects_a_malformed_context_mapping_path_before_running(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            self.write_config(
+                repository,
+                """
+                [providers.fixture]
+                type = "cli"
+                command = "fixture-agent"
+
+                [workers.coder]
+                provider = "fixture"
+                capabilities = ["filesystem"]
+
+                [skills.first]
+                requires = ["filesystem"]
+
+                [skills.second]
+                requires = ["filesystem"]
+
+                [workflows.pipeline]
+                steps = ["first", "second"]
+
+                [workflows.pipeline.mappings.second]
+                value = "first.output.value."
+                """,
+            )
+
+            result = self.run_cli(repository, "workflow", "plan", "pipeline")
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("has an invalid source 'first.output.value.'", result.stdout)
+
     def test_workflow_rejects_duplicate_steps_before_planning(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repository = Path(temporary_directory)

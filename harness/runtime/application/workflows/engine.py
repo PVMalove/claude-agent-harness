@@ -67,7 +67,7 @@ class WorkflowEngine:
         skill_name = workflow.steps[step_idx]
         mapping = workflow.mappings.get(skill_name)
         if mapping is None:
-            return (dict(request.input) if (step_idx == 0 or parallel) else {}), {}
+            return (dict(request.input) if step_idx == 0 else {}), {}
 
         context = {"input": request.input, **state.get("context", {})}
         values: dict[str, Any] = {}

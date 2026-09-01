@@ -264,6 +264,8 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
                 raise ValueError(
                     f"Workflow '{name}'.mappings.{target} cannot map the first step"
                 )
+            if step_indexes[target] == 0:
+                continue
             for destination, source in raw_mapping.items():
                 if not isinstance(destination, str) or not destination:
                     raise ValueError(
@@ -274,6 +276,10 @@ def validate_config(raw_config: Mapping[str, Any]) -> RuntimeConfig:
                         f"Workflow '{name}'.mappings.{target}.{destination} must be a non-empty string"
                     )
                 source_parts = source.split(".")
+                if not all(source_parts):
+                    raise ValueError(
+                        f"Workflow '{name}'.mappings.{target}.{destination} has an invalid source '{source}'"
+                    )
                 if source_parts[0] == "input":
                     if len(source_parts) < 2:
                         raise ValueError(
