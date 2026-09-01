@@ -4,6 +4,7 @@ import tempfile
 import textwrap
 import unittest
 import json
+import re
 from pathlib import Path
 
 
@@ -538,6 +539,322 @@ class RuntimeCliTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("Workflow completed.", result.stdout)
+
+    def test_workflow_passes_only_explicitly_mapped_context_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            provider_program = """
+                import json
+                from pathlib import Path
+                import sys
+
+                request = json.loads(sys.stdin.readline())
+                with Path("requests.jsonl").open("a", encoding="utf-8") as requests:
+                    requests.write(json.dumps(request) + "\\n")
+                outputs = {
+                    "first": {"context_id": "ctx-123", "private": "do-not-forward"},
+                    "second": {"spec_file": "docs/spec.md"},
+                    "third": {"ticket_id": "TASK-41"},
+                }
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": {
+                        "protocol": "harness.provider",
+                        "version": 1,
+                        "status": "SUCCESS",
+                        "output": outputs[request["params"]["skill"]],
+                    },
+                }), flush=True)
+                """
+            self.write_config(
+                repository,
+                f"""
+                [providers.fixture]
+                type = "cli"
+                command = {json.dumps(sys.executable)}
+                args = ["-c", {json.dumps(textwrap.dedent(provider_program))}]
+
+                [workers.coder]
+                provider = "fixture"
+                capabilities = ["filesystem"]
+
+                [skills.first]
+                requires = ["filesystem"]
+
+                [skills.second]
+                requires = ["filesystem"]
+
+                [skills.third]
+                requires = ["filesystem"]
+
+                [workflows.pipeline]
+                steps = ["first", "second", "third"]
+
+                [workflows.pipeline.mappings.second]
+                context_id = "first.output.context_id"
+
+                [workflows.pipeline.mappings.third]
+                spec_file = "second.output.spec_file"
+                """,
+            )
+
+            result = self.run_cli(
+                repository,
+                "workflow",
+                "run",
+                "pipeline",
+                "--input",
+                '{"idea":"add durable state","private":"secret"}',
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            requests = [
+                json.loads(line)
+                for line in (repository / "requests.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(
+                [request["params"]["input"] for request in requests],
+                [
+                    {"idea": "add durable state", "private": "secret"},
+                    {"context_id": "ctx-123"},
+                    {"spec_file": "docs/spec.md"},
+                ],
+            )
+            execution_id = re.search(r"Execution ID: ([0-9a-f-]+)", result.stdout).group(1)
+            state = self.run_cli(repository, "workflow", "status", execution_id)
+            self.assertIn("Context version: 1", state.stdout)
+            self.assertIn("Context: ", state.stdout)
+            self.assertIn('"context_id": "first.output.context_id"', state.stdout)
+
+    def test_workflow_state_survives_cli_restart_and_can_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            provider_program = """
+                import json
+                from pathlib import Path
+                import sys
+
+                request = json.loads(sys.stdin.readline())
+                skill = request["params"]["skill"]
+                if skill == "second" and not Path("failed-once").exists():
+                    Path("failed-once").write_text("yes", encoding="utf-8")
+                    result = {"status": "FAILED", "error": "try again"}
+                else:
+                    result = {
+                        "status": "SUCCESS",
+                        "output": {"value": "ready"},
+                    }
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": {
+                        "protocol": "harness.provider",
+                        "version": 1,
+                        **result,
+                    },
+                }), flush=True)
+                """
+            self.write_config(
+                repository,
+                f"""
+                [providers.fixture]
+                type = "cli"
+                command = {json.dumps(sys.executable)}
+                args = ["-c", {json.dumps(textwrap.dedent(provider_program))}]
+
+                [workers.coder]
+                provider = "fixture"
+                capabilities = ["filesystem"]
+
+                [skills.first]
+                requires = ["filesystem"]
+
+                [skills.second]
+                requires = ["filesystem"]
+
+                [workflows.pipeline]
+                steps = ["first", "second"]
+
+                [workflows.pipeline.mappings.second]
+                value = "first.output.value"
+                """,
+            )
+
+            first_run = self.run_cli(
+                repository,
+                "workflow",
+                "run",
+                "pipeline",
+                "--input",
+                '{"seed":"start"}',
+            )
+            self.assertEqual(first_run.returncode, 1, first_run.stdout + first_run.stderr)
+            execution_id = re.search(r"Execution ID: ([0-9a-f-]+)", first_run.stdout).group(1)
+
+            status = self.run_cli(repository, "workflow", "status", execution_id)
+            self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+            self.assertIn("Status: FAILED", status.stdout)
+            self.assertIn('"value": "ready"', status.stdout)
+
+            resumed = self.run_cli(repository, "workflow", "resume", execution_id)
+            self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+
+            completed = self.run_cli(repository, "workflow", "status", execution_id)
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertIn("Status: COMPLETED", completed.stdout)
+
+    def test_workflow_can_be_cancelled_and_resumed_from_durable_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            provider_program = """
+                import json
+                from pathlib import Path
+                import sys
+
+                request = json.loads(sys.stdin.readline())
+                if request["params"]["skill"] == "second" and not Path("failed-once").exists():
+                    Path("failed-once").write_text("yes", encoding="utf-8")
+                    result = {"status": "FAILED", "error": "pause me"}
+                else:
+                    result = {"status": "SUCCESS", "output": {"done": True}}
+                print(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": {
+                        "protocol": "harness.provider",
+                        "version": 1,
+                        **result,
+                    },
+                }), flush=True)
+                """
+            self.write_config(
+                repository,
+                f"""
+                [providers.fixture]
+                type = "cli"
+                command = {json.dumps(sys.executable)}
+                args = ["-c", {json.dumps(textwrap.dedent(provider_program))}]
+
+                [workers.coder]
+                provider = "fixture"
+                capabilities = ["filesystem"]
+
+                [skills.first]
+                requires = ["filesystem"]
+
+                [skills.second]
+                requires = ["filesystem"]
+
+                [workflows.pipeline]
+                steps = ["first", "second"]
+                """,
+            )
+
+            first_run = self.run_cli(repository, "workflow", "run", "pipeline")
+            execution_id = re.search(r"Execution ID: ([0-9a-f-]+)", first_run.stdout).group(1)
+
+            cancelled = self.run_cli(repository, "workflow", "cancel", execution_id)
+            self.assertEqual(cancelled.returncode, 0, cancelled.stdout + cancelled.stderr)
+            self.assertIn("Status: CANCELLED", cancelled.stdout)
+
+            resumed = self.run_cli(repository, "workflow", "resume", execution_id)
+            self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+            completed = self.run_cli(repository, "workflow", "status", execution_id)
+            self.assertIn("Status: COMPLETED", completed.stdout)
+
+    def test_workflow_rejects_an_invalid_context_mapping_before_running(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            self.write_config(
+                repository,
+                """
+                [providers.fixture]
+                type = "cli"
+                command = "fixture-agent"
+
+                [workers.coder]
+                provider = "fixture"
+                capabilities = ["filesystem"]
+
+                [skills.first]
+                requires = ["filesystem"]
+
+                [skills.second]
+                requires = ["filesystem"]
+
+                [workflows.pipeline]
+                steps = ["first", "second"]
+
+                [workflows.pipeline.mappings.second]
+                value = "unknown.output.value"
+                """,
+            )
+
+            result = self.run_cli(repository, "workflow", "plan", "pipeline")
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("has an invalid source 'unknown.output.value'", result.stdout)
+
+    def test_workflow_rejects_a_malformed_context_mapping_path_before_running(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            self.write_config(
+                repository,
+                """
+                [providers.fixture]
+                type = "cli"
+                command = "fixture-agent"
+
+                [workers.coder]
+                provider = "fixture"
+                capabilities = ["filesystem"]
+
+                [skills.first]
+                requires = ["filesystem"]
+
+                [skills.second]
+                requires = ["filesystem"]
+
+                [workflows.pipeline]
+                steps = ["first", "second"]
+
+                [workflows.pipeline.mappings.second]
+                value = "first.output.value."
+                """,
+            )
+
+            result = self.run_cli(repository, "workflow", "plan", "pipeline")
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("has an invalid source 'first.output.value.'", result.stdout)
+
+    def test_workflow_rejects_duplicate_steps_before_planning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            self.write_config(
+                repository,
+                """
+                [providers.fixture]
+                type = "cli"
+                command = "fixture-agent"
+
+                [workers.coder]
+                provider = "fixture"
+                capabilities = ["filesystem"]
+
+                [skills.first]
+                requires = ["filesystem"]
+
+                [workflows.pipeline]
+                steps = ["first", "first"]
+                """,
+            )
+
+            result = self.run_cli(repository, "workflow", "plan", "pipeline")
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("contains duplicate step 'first'", result.stdout)
 
 
 if __name__ == "__main__":

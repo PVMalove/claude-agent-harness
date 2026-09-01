@@ -51,7 +51,12 @@ def setup_components(repo_path: Path):
     }
 
     workflows = {
-        name: Workflow(name=name, steps=list(data.steps), parallel=data.parallel)
+        name: Workflow(
+            name=name,
+            steps=list(data.steps),
+            parallel=data.parallel,
+            mappings=data.mappings,
+        )
         for name, data in config.workflows.items()
     }
 
@@ -62,7 +67,10 @@ def setup_components(repo_path: Path):
             _build_provider(provider_name, provider_config, config.default_timeout, repo_path),
         )
 
-    state_store = SQLiteStateStore()
+    state_path = Path(config.state_path)
+    if not state_path.is_absolute():
+        state_path = repo_path / state_path
+    state_store = SQLiteStateStore(str(state_path))
     event_bus = EventBus(state_store)
 
     skill_registry = SkillRegistry(skills)
@@ -101,7 +109,8 @@ def setup_components(repo_path: Path):
         "resolver": resolver,
         "scheduler": scheduler,
         "dispatcher": dispatcher,
-        "workflow_engine": workflow_engine
+        "workflow_engine": workflow_engine,
+        "state_store": state_store,
     }
 
 
@@ -251,14 +260,13 @@ def main():
                 return 1
             req = get_req(args.input, caller=args.caller, depth=args.depth)
             execution_id = asyncio.run(wf_engine.run(wf, req))
-            state = asyncio.run(
-                comps["dispatcher"].events.state_store.get_workflow_execution(execution_id)
-            )
+            state = asyncio.run(comps["state_store"].get_workflow_execution(execution_id))
+            print(f"Execution ID: {execution_id}")
             return 0 if state and state["status"] == "COMPLETED" else 1
 
         if args.wf_command == "resume":
             # For resume we need to fetch state to know which workflow it is.
-            state = asyncio.run(comps["dispatcher"].events.state_store.get_workflow_execution(args.id))
+            state = asyncio.run(comps["state_store"].get_workflow_execution(args.id))
             if not state:
                 print("Workflow execution not found")
                 return 1
@@ -266,7 +274,32 @@ def main():
             if not wf:
                 print("Workflow definition not found")
                 return 1
-            asyncio.run(wf_engine.run(wf, get_req(), args.id))
+            execution_id = asyncio.run(wf_engine.run(wf, get_req(), args.id))
+            state = asyncio.run(comps["state_store"].get_workflow_execution(execution_id))
+            print(f"Execution ID: {execution_id}")
+            return 0 if state and state["status"] == "COMPLETED" else 1
+
+        if args.wf_command == "status":
+            state = asyncio.run(comps["state_store"].get_workflow_execution(args.id))
+            if not state:
+                print("Workflow execution not found")
+                return 1
+            print(f"Execution ID: {args.id}")
+            print(f"Workflow: {state['workflow_name']}")
+            print(f"Status: {state['status']}")
+            print(f"Current step: {state['current_step']}")
+            print(f"Context version: {state.get('context_version', 1)}")
+            print(f"Context: {json.dumps(state.get('context', {}), ensure_ascii=False, sort_keys=True)}")
+            print(f"Results: {json.dumps(state.get('results', []), ensure_ascii=False, sort_keys=True)}")
+            return 0
+
+        if args.wf_command == "cancel":
+            state = asyncio.run(comps["state_store"].cancel_workflow_execution(args.id))
+            if not state:
+                print("Workflow execution not found")
+                return 1
+            print(f"Execution ID: {args.id}")
+            print(f"Status: {state['status']}")
             return 0
 
         # ... (other wf commands omitted for brevity but can be added similarly)

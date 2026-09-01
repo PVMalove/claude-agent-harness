@@ -1,8 +1,8 @@
 import uuid
 import datetime
 import asyncio
-from typing import Any
-from ...domain.workflow import Workflow
+from typing import Any, Mapping
+from ...domain.workflow import Workflow, WorkflowStepResult
 from ...domain.execution import ExecutionRequest
 from ..dispatcher import Dispatcher
 
@@ -56,6 +56,48 @@ class WorkflowEngine:
                 })
         return steps
 
+    def _step_input(
+        self,
+        workflow: Workflow,
+        state: dict[str, Any],
+        step_idx: int,
+        request: ExecutionRequest,
+        parallel: bool = False,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        skill_name = workflow.steps[step_idx]
+        mapping = workflow.mappings.get(skill_name)
+        if mapping is None:
+            return (dict(request.input) if step_idx == 0 else {}), {}
+
+        context = {"input": request.input, **state.get("context", {})}
+        values: dict[str, Any] = {}
+        for destination, source in mapping.items():
+            current: Any = context
+            for part in source.split("."):
+                if not isinstance(current, Mapping) or part not in current:
+                    raise ValueError(
+                        f"Workflow step '{skill_name}' cannot resolve context value '{source}'"
+                    )
+                current = current[part]
+            values[destination] = current
+        return values, dict(mapping)
+
+    @staticmethod
+    def _record_context(
+        state: dict[str, Any],
+        skill_name: str,
+        output: dict[str, Any] | None,
+    ) -> None:
+        state.setdefault("context", {})[skill_name] = {"output": output or {}}
+
+    @staticmethod
+    def _store_result(state: dict[str, Any], result: WorkflowStepResult) -> None:
+        state["results"] = [
+            existing for existing in state.get("results", [])
+            if existing.get("step") != result.get("step")
+        ]
+        state["results"].append(result)
+
     async def run(self, workflow: Workflow, request: ExecutionRequest, execution_id: str | None = None) -> str:
         if not execution_id:
             execution_id = str(uuid.uuid4())
@@ -64,6 +106,14 @@ class WorkflowEngine:
                 "status": "RUNNING",
                 "current_step": 0,
                 "results": [],
+                "context_version": 1,
+                "context": {},
+                "input": dict(request.input),
+                "caller": request.caller,
+                "session_id": request.session_id,
+                "project_id": request.project_id,
+                "depth": request.depth,
+                "cancel_requested": False,
                 "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
             }
             await self.state_store.save_workflow_execution(execution_id, state)
@@ -74,43 +124,75 @@ class WorkflowEngine:
             if state["status"] == "COMPLETED":
                 print("Workflow already completed.")
                 return execution_id
+            if not request.input and state.get("input"):
+                request = ExecutionRequest(
+                    skill=request.skill,
+                    input=state["input"],
+                    caller=state.get("caller", request.caller),
+                    session_id=state.get("session_id", request.session_id),
+                    project_id=state.get("project_id", request.project_id),
+                    depth=state.get("depth", request.depth),
+                )
+            state["status"] = "RUNNING"
+            state["cancel_requested"] = False
+            await self.state_store.save_workflow_execution(execution_id, state)
 
         steps = workflow.steps
 
         if workflow.parallel and state["current_step"] == 0:
-            results = await asyncio.gather(
-                *(
-                    self.dispatcher.dispatch(
-                        ExecutionRequest(
-                            skill=skill_name,
-                            input=request.input,
-                            caller=request.caller,
-                            session_id=request.session_id,
-                            project_id=request.project_id,
-                            depth=request.depth,
-                        )
+            successful_steps = {
+                item.get("step") for item in state.get("results", [])
+                if item.get("status") == "SUCCESS"
+            }
+            pending = [
+                index for index in range(len(steps)) if index + 1 not in successful_steps
+            ]
+
+            async def run_parallel_step(step_idx: int) -> WorkflowStepResult:
+                skill_name = steps[step_idx]
+                try:
+                    step_input, lineage = self._step_input(
+                        workflow, state, step_idx, request, parallel=True
                     )
-                    for skill_name in steps
-                ),
-                return_exceptions=True,
-            )
-            for skill_name, result in zip(steps, results):
-                if isinstance(result, Exception):
-                    state["results"].append({
+                    result = await self.dispatcher.dispatch(ExecutionRequest(
+                        skill=skill_name,
+                        input=step_input,
+                        caller=request.caller,
+                        session_id=request.session_id,
+                        project_id=request.project_id,
+                        depth=request.depth,
+                    ))
+                    return {
+                        "step": step_idx + 1,
                         "skill": skill_name,
-                        "status": "FAILED",
-                        "error": str(result),
-                        "error_details": None,
-                    })
-                else:
-                    state["results"].append({
-                        "skill": skill_name,
+                        "execution_id": result.execution_id,
                         "status": result.status,
+                        "input": step_input,
+                        "lineage": lineage,
                         "output": result.output,
                         "error": result.error,
                         "error_details": result.error_details,
-                    })
-            if all(item["status"] == "SUCCESS" for item in state["results"]):
+                    }
+                except Exception as error:
+                    return {
+                        "step": step_idx + 1,
+                        "skill": skill_name,
+                        "execution_id": "",
+                        "status": "FAILED",
+                        "input": {},
+                        "lineage": {},
+                        "error": str(error),
+                        "error_details": None,
+                    }
+
+            results = await asyncio.gather(*(run_parallel_step(index) for index in pending))
+            for result in results:
+                self._store_result(state, result)
+                if result["status"] == "SUCCESS":
+                    self._record_context(state, result["skill"], result.get("output"))
+            if len(state.get("results", [])) == len(steps) and all(
+                item["status"] == "SUCCESS" for item in state["results"]
+            ):
                 state["current_step"] = len(steps)
                 state["status"] = "COMPLETED"
                 print("Workflow completed.")
@@ -118,21 +200,41 @@ class WorkflowEngine:
                 state["status"] = "FAILED"
                 for item in state["results"]:
                     if item["status"] != "SUCCESS" and item.get("error"):
-                        print(
-                            f"      [FAIL] {item.get('error_details') or item['error']}"
-                        )
+                        print(f"      [FAIL] {item.get('error_details') or item['error']}")
             await self.state_store.save_workflow_execution(execution_id, state)
             return execution_id
 
         while state["current_step"] < len(steps):
             step_idx = state["current_step"]
             skill_name = steps[step_idx]
+            if state.get("cancel_requested") or state.get("status") == "CANCELLED":
+                state["status"] = "CANCELLED"
+                await self.state_store.save_workflow_execution(execution_id, state)
+                print("Workflow cancelled.")
+                break
+            try:
+                step_input, lineage = self._step_input(workflow, state, step_idx, request)
+            except ValueError as error:
+                print(f"      [FAIL] {error}\n")
+                state["status"] = "FAILED"
+                self._store_result(state, {
+                    "step": step_idx + 1,
+                    "skill": skill_name,
+                    "execution_id": "",
+                    "status": "FAILED",
+                    "input": {},
+                    "lineage": {},
+                    "error": str(error),
+                    "error_details": None,
+                })
+                await self.state_store.save_workflow_execution(execution_id, state)
+                break
 
             try:
                 decision = self.dispatcher.route(
                     ExecutionRequest(
                         skill=skill_name,
-                        input=request.input,
+                        input=step_input,
                         caller=request.caller,
                         session_id=request.session_id,
                         project_id=request.project_id,
@@ -147,7 +249,7 @@ class WorkflowEngine:
 
             step_request = ExecutionRequest(
                 skill=skill_name,
-                input=request.input,
+                input=step_input,
                 caller=request.caller,
                 session_id=request.session_id,
                 project_id=request.project_id,
@@ -158,11 +260,16 @@ class WorkflowEngine:
                 result = await self.dispatcher.dispatch(step_request)
                 if result.status == "SUCCESS":
                     print(f"      [OK] completed\n")
-                    state["results"].append({
+                    self._store_result(state, {
+                        "step": step_idx + 1,
                         "skill": skill_name,
+                        "execution_id": result.execution_id,
                         "status": "SUCCESS",
-                        "output": result.output
+                        "input": step_input,
+                        "lineage": lineage,
+                        "output": result.output,
                     })
+                    self._record_context(state, skill_name, result.output)
                     state["current_step"] += 1
                     await self.state_store.save_workflow_execution(execution_id, state)
                 else:
@@ -170,9 +277,13 @@ class WorkflowEngine:
                     if result.error:
                         print(f"      [ERROR] {result.error}")
                     state["status"] = "FAILED"
-                    state["results"].append({
+                    self._store_result(state, {
+                        "step": step_idx + 1,
                         "skill": skill_name,
+                        "execution_id": result.execution_id,
                         "status": "FAILED",
+                        "input": step_input,
+                        "lineage": lineage,
                         "error": result.error,
                         "error_details": result.error_details,
                     })
@@ -181,10 +292,15 @@ class WorkflowEngine:
             except Exception as e:
                 print(f"      [FAIL] failed with exception: {e}\n")
                 state["status"] = "FAILED"
-                state["results"].append({
+                self._store_result(state, {
+                    "step": step_idx + 1,
                     "skill": skill_name,
+                    "execution_id": "",
                     "status": "FAILED",
-                    "error": str(e)
+                    "input": step_input,
+                    "lineage": lineage,
+                    "error": str(e),
+                    "error_details": None,
                 })
                 await self.state_store.save_workflow_execution(execution_id, state)
                 break

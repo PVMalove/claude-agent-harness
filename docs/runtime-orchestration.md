@@ -103,6 +103,30 @@ explicit rule for the requested skill and worker; exceeding `max_depth` returns 
 Workflow steps are sequential by default. An independent workflow may set
 `parallel = true`; its dispatches still share the configured `max_parallel` limit.
 
+Sequential workflows can declare explicit context mappings. The first step receives the
+workflow's initial input; every later step receives only the fields listed in its mapping.
+Sources use `<step>.output.<field>` for an earlier step result, or `input.<field>` for the
+initial request:
+
+```toml
+[workflows.feature-development]
+steps = ["grill-with-docs", "to-spec", "to-tickets", "implement"]
+
+[workflows.feature-development.mappings.to-spec]
+context_id = "grill-with-docs.output.context_id"
+
+[workflows.feature-development.mappings.to-tickets]
+spec_file = "to-spec.output.spec_file"
+
+[workflows.feature-development.mappings.implement]
+ticket_id = "to-tickets.output.ticket_id"
+```
+
+Each workflow execution is stored in SQLite at `.harness/state.db` by default. Set
+`[runtime.state].path` to use another path. `workflow status <execution-id>` shows the
+persisted context and step lineage; `workflow resume <execution-id>` retries the current
+failed step, and `workflow cancel <execution-id>` marks a non-completed execution cancelled.
+
 ---
 
 ## 3. Словарь терминов (Доменная модель)
