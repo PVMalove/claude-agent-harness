@@ -1,4 +1,4 @@
-﻿# Справочник команд и скиллов Claude Code
+# Справочник команд и скиллов Claude Code
 
 Гайд по установке и использованию харнесса из [PVMalove/claude-agent-harness](https://github.com/PVMalove/claude-agent-harness) — портативного набора скиллов, правил, хуков и doc'ов для AI-агентов, который одной командой разворачивается в любой проект (раздел 0) и дальше живёт там независимо от исходного репозитория. В основе — **mattpocock-suite**, 25 скиллов Matt Pocock ([aihero.dev](https://www.aihero.dev/)), закреплённых на конкретном коммите апстрима; эта сборка добавляет поверх неё capability **pvmalove-suite** с личными доработками (раздел 7), которую и описывает всё дальнейшее.
 
@@ -190,6 +190,40 @@ python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claud
 | `discovery path already exists and is not managed: <path> (...)` | `.agents/skills`/`.claude/skills` — что-то постороннее на месте discovery-symlink'а | Подсказка в скобках зависит от команды: `init` — убрать вручную или использовать `adopt`; `adopt` — `--replace-conflicts`; `update` — `--force`. |
 | `install-global`: `[CONFLICT] ... (re-run with --replace-conflicts ...)` | На месте профиля/симлинка глобального слоя уже что-то другое | Повторить с `--replace-conflicts` — сначала бэкапит в `~/.agent-harness-backups/<timestamp>/...`. |
 | `install-global`: `[ERROR] Failed to create symlink: ...` + подсказка про Developer Mode (только Windows) | Windows требует включённый Developer Mode либо администраторские права для символьных ссылок на директории | Включить Developer Mode (Settings → For developers) либо перезапустить терминал от имени администратора. |
+
+---
+
+## 0.5. Workflow Orchestrator (Dynamic Dispatcher)
+
+В дополнение к установочному скрипту (`harness/bin/harness`), проект предоставляет полноценный рантайм для исполнения декларативных пайплайнов — **Workflow Engine**. Он управляет динамической маршрутизацией задач (скиллов) на подходящих исполнителей (Workers/Providers) в зависимости от требуемых capabilities, приоритетов и доступности.
+
+Если вы установили проект через `pip install -e .`, вам доступна глобальная команда `harness`:
+
+**Список воркфлоу:**
+```bash
+harness workflow list
+harness workflow show feature-development
+```
+
+**Планирование воркфлоу (dry-run):**
+```bash
+harness workflow plan feature-development
+```
+Покажет таблицу, объясняющую, какой воркер и какой провайдер (например, `agy`, `claude`, `mcp`) возьмёт на себя каждый из шагов на основе `.harness/orchestration.toml`.
+
+**Запуск и управление:**
+```bash
+harness workflow run feature-development --input '{"task": "Add OAuth"}'
+harness workflow resume <execution_id> # Если пайплайн упал, его можно продолжить с того же места
+```
+
+**Отладка роутинга:**
+```bash
+harness skill explain implement
+```
+Покажет, почему для скилла `implement` был выбран конкретный Worker, сколько очков capabilities совпало и какие кандидаты были отклонены (и почему).
+
+Claude Code использует скилл `run-workflow` для автоматического запуска этого пайплайна в ответ на высокоуровневые запросы пользователя.
 
 ---
 

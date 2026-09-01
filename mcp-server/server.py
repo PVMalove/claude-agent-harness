@@ -1,9 +1,9 @@
 import os
 import subprocess
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 # Создаем инстанс MCP сервера
-mcp = FastMCP("Antigravity-Harness-Wrapper")
+mcp = MCPServer("Antigravity-Harness-Wrapper")
 
 # Определяем корень проекта. По умолчанию - это родительская папка (корень claude-agent-harness)
 DEFAULT_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -14,7 +14,7 @@ def invoke_agy_qa_gate() -> str:
     cmd = [
         "agy", 
         "--prompt", "/qa-gate",
-        "--auto-approve" # Флаг для неинтерактивного запуска, если применимо
+        "--dangerously-skip-permissions" # Флаг для неинтерактивного запуска, если применимо
     ]
     
     try:

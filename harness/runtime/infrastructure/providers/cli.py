@@ -18,7 +18,7 @@ class CLIProvider(Provider):
         request_data = {
             "execution_id": execution_id,
             "skill": plan.skill,
-            "capabilities": list(plan.capabilities)
+            "capabilities": sorted(plan.resolved_capabilities),
         }
         
         try:
@@ -112,12 +112,3 @@ class CLIProvider(Provider):
                 status="FAILED",
                 error=str(e)
             )
-
-class ClaudeProvider(CLIProvider):
-    pass
-
-class AntigravityProvider(CLIProvider):
-    pass
-
-class CodexProvider(CLIProvider):
-    pass
