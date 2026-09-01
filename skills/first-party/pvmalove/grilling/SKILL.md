@@ -17,8 +17,8 @@ description: Grill the user relentlessly about a plan, decision, or idea to stre
 - **Tool-Based Categorical Questions:** If the `AskUserQuestion` tool is available in this runtime, ask each round through it instead of plain text.
     - *Format:* One question per entry, so each gets its own tab with a short `header`, 2-4 mutually exclusive `options` (a `label` plus a `description` of what picking it means). The user can still type a free-form answer through the always-available "Other".
     - *Recommendation:* Put your recommended option first and suffix its label with "(Recommended)".
-    - *Constraints:* A single call caps at 4 questions — if the frontier has more, split it across multiple `AskUserQuestion` calls that all belong to this same round; issue them together, and don't let a later round's questions leak into an earlier batch.
-- **Plain Text & Open-Ended Fallback:** Not every frontier question reduces to a handful of discrete options, and not every runtime has the `AskUserQuestion` tool. For a genuinely open-ended question (e.g. "what should we call this concept?") where narrowing to 2-4 candidates would misrepresent the question, or whenever the tool isn't available at all, ask it — or the whole round — as plain text instead:
+    - *Constraints:* A single call caps at 4 questions — if the frontier has more, show the first 4 now and carry the remaining questions into the next round. Do not silently discard them or issue additional calls for the same round.
+- **Plain Text & Open-Ended Fallback:** Not every frontier question reduces to a handful of discrete options, and not every runtime has the `AskUserQuestion` tool. At the start of the session, if the tool is unavailable, warn the user once and use plain text for the rest of the session. For a genuinely open-ended question (e.g. "what should we call this concept?") where narrowing to 2-4 candidates would misrepresent the question, use plain text for that question instead:
 
   ```
   🤔 **<Question Title>**: <Question body: Explain *why* this decision is critical now and briefly outline the trade-offs at play, might be multiple paragraphs>
