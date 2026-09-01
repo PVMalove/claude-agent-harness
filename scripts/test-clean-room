@@ -197,7 +197,7 @@ def _run(test_root: Path):
     ):
         sys.exit("selecting mattpocock-suite and pvmalove-suite together unexpectedly succeeded")
 
-    # pvmalove-suite exercises extends (inherits mattpocock-suite's 25 skills), overrides (8 of
+    # pvmalove-suite exercises extends (inherits mattpocock-suite's 25 skills), overrides (10 of
     # those 25 swapped for a first-party source under the same name) and additions (3 new names
     # with no mattpocock-suite equivalent) - docs/adr/0001. 25 + 3 = 28 distinct skill names.
     pv_project = test_root / "pv_project"
@@ -234,6 +234,13 @@ def _run(test_root: Path):
         shallow=False,
     ):
         sys.exit("pvmalove-suite override did not install the first-party to-spec")
+    for name in ("grill-me", "grill-with-docs"):
+        if not filecmp.cmp(
+            ROOT / "skills" / "first-party" / "pvmalove" / name / "SKILL.md",
+            pv_project / ".harness" / "skills" / name / "SKILL.md",
+            shallow=False,
+        ):
+            sys.exit(f"pvmalove-suite override did not install the first-party {name}")
     if not filecmp.cmp(
         ROOT / "skills" / "vendor" / "mattpocock" / "engineering" / "diagnosing-bugs" / "SKILL.md",
         pv_project / ".harness" / "skills" / "diagnosing-bugs" / "SKILL.md",
