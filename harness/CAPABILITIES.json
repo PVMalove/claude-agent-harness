@@ -57,7 +57,8 @@
     "additions": [
       "first-party/pvmalove/qa-gate",
       "first-party/pvmalove/to-guide",
-      "first-party/pvmalove/setup-labels"
+      "first-party/pvmalove/setup-labels",
+      "first-party/pvmalove/run-workflow"
     ]
   }
 }

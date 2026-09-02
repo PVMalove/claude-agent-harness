@@ -1,8 +1,8 @@
-﻿# Справочник команд и скиллов Claude Code
+# Справочник команд и скиллов Agent Harness
 
-Гайд по установке и использованию харнесса из [PVMalove/claude-agent-harness](https://github.com/PVMalove/claude-agent-harness) — портативного набора скиллов, правил, хуков и doc'ов для AI-агентов, который одной командой разворачивается в любой проект (раздел 0) и дальше живёт там независимо от исходного репозитория. В основе — **mattpocock-suite**, 25 скиллов Matt Pocock ([aihero.dev](https://www.aihero.dev/)), закреплённых на конкретном коммите апстрима; эта сборка добавляет поверх неё capability **pvmalove-suite** с личными доработками (раздел 7), которую и описывает всё дальнейшее.
+Гайд по установке и использованию харнесса из [PVMalove/claude-agent-harness](https://github.com/PVMalove/claude-agent-harness) — портативного набора скиллов, правил, хуков и документов для Claude Code, Codex, Kimi Code, OpenCode и Hermes Agent, который одной командой разворачивается в любой проект (раздел 0) и дальше живёт там независимо от исходного репозитория. По умолчанию используется доменно-нейтральная capability **project-foundation** из 5 скиллов; инженерные проекты могут выбрать **mattpocock-suite** (25 upstream-скиллов) или эту сборку — capability **pvmalove-suite** с локальными доработками (раздел 7).
 
-Разбивает разработку с AI-агентами на строгие фазы — от устранения неопределённости через спецификацию и тикетирование до TDD-реализации вертикальных слайсов и автоматического ревью (два примера целиком — разделы 14-15) — плюс метки триажа (раздел 8), проектные надстройки `qa-gate`/`pr-composer` (раздел 6) и детерминированные hooks (раздел 9) поверх апстрима.
+Разбивает разработку с AI-агентами на строгие фазы — от устранения неопределённости через спецификацию и тикетирование до TDD-реализации вертикальных слайсов и автоматического ревью (три сквозных примера — раздел 14) — плюс метки триажа (раздел 8), проектные надстройки `qa-gate`/`pr-composer` (раздел 6) и детерминированные hooks (раздел 9) поверх апстрима.
 
 ---
 
@@ -31,7 +31,7 @@ cd claude-agent-harness
 |---|---|---|
 | Когда | Репозиторий без харнесса вообще | Репозиторий, где под именами выбранной capability уже лежат свои скиллы |
 | Требование | Падает, если `.harness/harness.lock` уже есть | Не требует пустоты — сохраняет все project-owned скиллы вне выбранной capability |
-| Конфликт с существующим `.agents/skills`/`.claude/skills` | Падает без обходного флага — фикс только вручную или через `adopt` | `--replace-conflicts` бэкапит и заменяет только конфликтующие имена |
+| Конфликт с существующим `.agents/skills`/`.claude/skills` | Падает без обходного флага — фикс только вручную или через `adopt` | `--replace-conflicts` заменяет только конфликтующие имена; перед запуском проверьте их |
 
 | | `diff` | `update` |
 |---|---|---|
@@ -103,10 +103,10 @@ python3 harness/bin/harness diff /path/to/repository [--json]
 **`update` — подтянуть новую версию харнесса поверх существующей установки** (апстрим сдвинулся, или изменились первопартийные скиллы):
 
 ```bash
-python3 harness/bin/harness update /path/to/repository --capability pvmalove-suite [--force]
+python3 harness/bin/harness update /path/to/repository --capability pvmalove-suite [--force] [--force-seed-files]
 ```
 
-Без `--force` отказывается перезаписывать локально изменённые файлы — сначала покажет их (как `diff`) и остановится. С `--force` перезаписывает, включая удаление файлов, которых больше нет в текущей версии выбранной capability. `.harness/overlays/project-local.lock` и `.harness/integrations.json` (ниже) `update` не проверяет и не трогает — это отдельная от capability-снимка подсистема, `update` физически не пишет в эти файлы.
+Без `--force` отказывается перезаписывать локально изменённые managed skills — сначала покажет их (как `diff`) и остановится. `--force` перезаписывает managed snapshot, включая удаление файлов, которых больше нет в текущей версии выбранной capability. Seed-файлы (`docs/agents/`, hooks, rules, agents и `.harness/project.json`) по умолчанию сохраняются; `--force-seed-files` явно разрешает их перезапись и возможную потерю локальных изменений. `.harness/overlays/project-local.lock` и `.harness/integrations.json` `update` не проверяет и не трогает — это отдельная от capability-снимка подсистема.
 
 **`registry` — перегенерировать `.harness/skills/REGISTRY.md` вручную** (без пересборки самого снимка скиллов):
 
@@ -144,7 +144,7 @@ python3 harness/bin/harness list /path/to/repository
 python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
 ```
 
-`--runtime` повторяем, пять значений — `codex`, `claude`, `kimi`, `opencode`, `hermes`; для каждого ставит instruction-файл (копию `global/AGENTS.md`) и symlink на `global-skills/start-project` в discovery-корень рантайма:
+`--runtime` повторяем, пять значений — `codex`, `claude`, `kimi`, `opencode`, `hermes`; для поддерживающих runtime ставит копию `global/AGENTS.md`, а Hermes читает project `AGENTS.md`; для каждого runtime создаётся symlink на `global-skills/start-project` в его discovery-корень:
 
 | Рантайм | Instruction-файл | Discovery-корень для `start-project` |
 |---|---|---|
@@ -161,7 +161,7 @@ python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claud
 
 Заодно чистит entry-скиллы прошлых версий инструмента, которых больше нет в `global-skills/` (`project-harness-bootstrap`, `skill-library`) — если по этому имени лежит symlink именно на них, снимает; если лежит что-то постороннее (не symlink, или symlink на чужую цель) — падает как конфликт и не трогает, чтобы не задеть чужой файл с тем же именем.
 
-`bin/install-global` — Python-скрипт (`#!/usr/bin/env python3`, требует 3.9+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness`: `python3 bin/install-global ...` (bash) или `python bin\install-global ...` / `py bin\install-global ...` (PowerShell/cmd), никакого отдельного `.sh`/`.ps1` не нужно. На Windows для создания настоящих (не «сломанных» файлового типа) символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с ошибкой на создании линка и подсказывает, что делать, вместо того чтобы притвориться, что всё установилось.
+`bin/install-global` — Python-скрипт (`#!/usr/bin/env python3`, standalone floor — 3.9+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness`: `python3 bin/install-global ...` (bash) или `python bin\install-global ...` / `py bin\install-global ...` (PowerShell/cmd), никакого отдельного `.sh`/`.ps1` не нужно. Метаданные проекта в `pyproject.toml` отдельно объявляют `requires-python >=3.14`. На Windows для создания настоящих символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с подсказкой.
 
 **Как это подключено.** Скиллы физически лежат в `.harness/skills/*/SKILL.md` (управляются `.harness/harness.lock` — хэши файлов, версия, `source_revision`). Claude Code и Codex находят их через symlink'и в корне репозитория:
 
@@ -185,7 +185,7 @@ python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claud
 | `not a Git repository: <path> (run 'git init' there first)` | `init`/`adopt`/`update` нацелены на путь без git-репозитория | `git init` в целевом каталоге, затем повторить команду. |
 | `project harness already exists; use 'harness update <repo>'` | `init` на репозитории, где `.harness/harness.lock` уже есть | Запустить показанную команду `harness update` вместо `init`. |
 | `project harness is missing; use 'harness init <repo>'` | `update` на репозитории без `.harness/harness.lock` | Запустить показанную команду `harness init` вместо `update`. |
-| `selected skill names already exist; inspect them or use --replace-conflicts` | `adopt` — под именами выбранной capability уже лежат свои скиллы | Проверить перечисленные конфликты; если замена ожидаема — повторить с `--replace-conflicts` (бэкапит перед заменой). |
+| `selected skill names already exist; inspect them or use --replace-conflicts` | `adopt` — под именами выбранной capability уже лежат свои скиллы | Проверить перечисленные конфликты; если замена ожидаема — повторить с `--replace-conflicts` (конфликтующие каталоги заменяются без backup). |
 | `local skill changes would be overwritten; review them or use --force` | `update` — на диске есть локальные правки managed-файлов | Изучить напечатанный diff; если перезапись осознанная — повторить с `--force`. |
 | `discovery path already exists and is not managed: <path> (...)` | `.agents/skills`/`.claude/skills` — что-то постороннее на месте discovery-symlink'а | Подсказка в скобках зависит от команды: `init` — убрать вручную или использовать `adopt`; `adopt` — `--replace-conflicts`; `update` — `--force`. |
 | `install-global`: `[CONFLICT] ... (re-run with --replace-conflicts ...)` | На месте профиля/симлинка глобального слоя уже что-то другое | Повторить с `--replace-conflicts` — сначала бэкапит в `~/.agent-harness-backups/<timestamp>/...`. |
@@ -558,7 +558,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 
 ## 12. Полный каталог скиллов проекта
 
-Все 25 скиллов апстрима (`.harness/skills/`, capability `mattpocock-suite`) + 3 проектных (`qa-gate`, `to-guide`, `setup-labels`, раздел 6). «Только вручную» = `disable-model-invocation: true` (не вызывается моделью автоматически, только `/имя`).
+Все 25 скиллов апстрима (`.harness/skills/`, capability `mattpocock-suite`) + 4 проектных (`qa-gate`, `to-guide`, `setup-labels`, `run-workflow`, раздел 6). «Только вручную» = `disable-model-invocation: true` (не вызывается моделью автоматически, только `/имя`).
 
 ### Инженерные
 
@@ -568,7 +568,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 | `grill-with-docs` | да | Интервью для проектирования с учётом существующего кода; параллельно ведёт `CONTEXT.md`/ADR. |
 | `triage` | да | Проводит issue/PR через state machine триажа: категоризация, верификация, при необходимости — grilling, agent-ready брифы. First-party override — говорит на `workflow::*`/`hitl`/`afk`, не на канонических ролях апстрима (раздел 7). |
 | `improve-codebase-architecture` | да | Сканирует кодовую базу на предмет «deepening»-возможностей, показывает визуальный HTML-отчёт, затем прожарка по выбранной. |
-| `setup-matt-pocock-skills` | да | Разовая настройка issue-трекера, таксономии триажа и layout доменных доков для репозитория — см. `docs/agents/{issue-tracker,triage-labels,domain}.md`. |
+| `setup-matt-pocock-skills` | да | Разовая настройка issue-трекера, таксономии триажа и layout доменных доков для репозитория — см. `docs/agents/{issue-tracker,triage-labels}.md` и `CONTEXT.md`. |
 | `tdd` | нет | Test-Driven Development: red → green → refactor (раздел 5). |
 | `to-spec` | да | Синтез диалога в спецификацию + публикация в трекер (раздел 2). |
 | `to-tickets` | да | Нарезка спеки/плана на тикеты-вертикальные слайсы с blocking edges (раздел 3). |
@@ -603,6 +603,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 | `pr-composer` (subagent) | Заполняет структурированный PR-шаблон (раздел 6). |
 | `to-guide` (skill) | `hitl`-аналог `/implement` — гайд с промптами для ручного кодинга вместо реализации агентом (раздел 6). |
 | `setup-labels` (skill) | Разово создаёт/обновляет GitHub-лейблы (`workflow::*`, `hitl`/`afk`, `task-report::required`, `out-of-scope`, `wayfinder:*`) по таблицам `docs/agents/triage-labels.md` — перед первым использованием `triage`/`to-spec`/`to-tickets`/`implement`/`to-guide`/`wayfinder` (раздел 6). |
+| `run-workflow` (skill) | Запускает декларативный многошаговый workflow (`feature-development`, `bug-fix`) через Harness Orchestrator вместо ручного выполнения шагов агентом. |
 
 ---
 
@@ -611,20 +612,20 @@ AI-агенты неизбежно «глупеют» и начинают гал
 ```text
 <repo>/
 ├── .git/
-├── .harness/            # Скиллы (vendored + first-party), не в git
+├── .harness/            # Managed project snapshot, lock, registry и optional overlays
 │   └── skills/
-├── .claude/             # rules, agents, hooks, settings.local.json — не в git
+├── .claude/             # Claude rules, agents, hooks и runtime settings
 │   ├── rules/
 │   ├── agents/
 │   └── hooks/
 ├── docs/
 │   ├── agents/          # git-workflow.md, issue-tracker.md, triage-labels.md,
-│   │                    #   domain.md, artifacts.md, worktrees.md, этот файл
+│   │                    #   artifacts.md, worktrees.md, этот файл
 │   ├── adr/             # Architecture Decision Records
 │   └── tasks/           # Спеки и скретчпады задач
-├── AGENTS.md            # Кросс-рантаймовый контракт (не в git)
-├── CLAUDE.md            # Правила поведения агента (в git)
-└── CONTEXT.md           # Словарь терминов и бизнес-логика (не в git)
+├── AGENTS.md            # Кросс-рантаймовый контракт проекта
+├── CLAUDE.md            # Точка входа Claude Code
+└── CONTEXT.md           # Словарь терминов и доменная модель
 ```
 
 ---

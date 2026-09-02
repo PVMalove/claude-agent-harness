@@ -226,8 +226,8 @@ def _run(test_root: Path):
     run_ok(HARNESS + ["health", str(pv_project)])
 
     pv_skill_count = count_skill_files(pv_project / ".harness" / "skills")
-    if pv_skill_count != 28:
-        sys.exit(f"expected 28 skills in a pvmalove-suite project (25 inherited + 3 additions), found {pv_skill_count}")
+    if pv_skill_count != 29:
+        sys.exit(f"expected 29 skills in a pvmalove-suite project (25 inherited + 4 additions), found {pv_skill_count}")
     if not filecmp.cmp(
         ROOT / "skills" / "first-party" / "pvmalove" / "to-spec" / "SKILL.md",
         pv_project / ".harness" / "skills" / "to-spec" / "SKILL.md",

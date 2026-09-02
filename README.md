@@ -1,8 +1,8 @@
 # claude-agent-harness
 
-Портативный харнесс для кодинг-агентов (Claude Code) — набор скиллов, правил, хуков и doc'ов, который одной командой разворачивается в любой проект и живёт там независимо от этого репозитория.
+Портативный харнесс для coding agents (Claude Code, Codex, Kimi Code, OpenCode и Hermes Agent) — набор скиллов, правил, хуков и документов, который одной командой разворачивается в любой проект и живёт там независимо от этого репозитория.
 
-В чистом виде поставляет **mattpocock-suite** — 25 скиллов Matt Pocock (aihero.dev), закреплённых на конкретном коммите апстрима. Этот репозиторий добавляет поверх неё вторую, самодостаточную capability — **pvmalove-suite** — с личными доработками: эпик- и blocked-by-ticket-лейблы в `to-spec`/`to-tickets`/`implement` поверх канонической triage-таксономии апстрима, обязательная пауза перед открытием PR без авто-мерджа, настраиваемый язык вывода, и конфиг-драйвен `qa-gate`.
+По умолчанию устанавливается лёгкая доменно-нейтральная capability **project-foundation** из 5 скиллов. Полная upstream-сборка — **mattpocock-suite**, 25 скиллов Matt Pocock (aihero.dev), закреплённых на конкретном коммите. Этот репозиторий добавляет поверх неё вторую capability — **pvmalove-suite** — с личными доработками: эпик- и blocked-by-ticket-лейблы в `to-spec`/`to-tickets`/`implement` поверх канонической triage-таксономии апстрима, обязательная пауза перед открытием PR без авто-мерджа, настраиваемый язык вывода, и конфиг-драйвен `qa-gate`.
 
 Термины ниже (капабилити, vendor/first-party-скилл, переопределение, дрейф, проектный конфиг) разобраны в [CONTEXT.md](./CONTEXT.md); значимые архитектурные решения и почему они приняты — в [docs/adr/](./docs/adr/); пошаговое использование — в [docs/agents/harness-guide.md](./docs/agents/harness-guide.md); как скиллы находят Codex, Kimi Code, OpenCode и Hermes Agent (не только Claude Code) — в [docs/runtime-discovery.md](./docs/runtime-discovery.md).
 
@@ -27,14 +27,14 @@
 | Слой | Назначение |
 |---|---|
 | Runtime | Модель, встроенные инструменты, права, сессии — то, что уже умеет Claude Code |
-| Глобальный профиль | Небольшой кросс-проектный контракт безопасности + `start-project` (не персонализирован, ставится как есть из апстрима) |
+| Глобальный профиль | Небольшой кросс-проектный контракт безопасности + `start-project`/`integrate-project` (не персонализирован) |
 | Харнесс проекта | Инструкции проекта, выбранные скиллы, ссылки обнаружения и lock-файл |
 | Опциональная надстройка | `pvmalove-suite` — личные скиллы, doc'и, хуки поверх обычного харнесса |
 
 ## Две capability
 
 - **`mattpocock-suite`** — чистый снимок апстрима, файлы никогда не редактируются вручную (`skills/vendor/`, закреплено через `third_party/mattpocock-skills/UPSTREAM.lock`).
-- **`pvmalove-suite`** — выбирается **вместо** `mattpocock-suite`, не вместе с ней (CLI откажет с `duplicate skill name`, если указать обе сразу). Расширяет её через `extends`/`overrides`/`additions` в `harness/CAPABILITIES.json`: 15 скиллов наследуются от `mattpocock-suite` без изменений, 10 переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`.
+- **`pvmalove-suite`** — выбирается **вместо** `mattpocock-suite`, не вместе с ней (CLI откажет с `duplicate skill name`, если указать обе сразу). Расширяет её через `extends`/`overrides`/`additions` в `harness/CAPABILITIES.json`: 15 скиллов наследуются от `mattpocock-suite` без изменений, 10 переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `run-workflow`.
 
 При выборе `pvmalove-suite` `harness init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект:
 
@@ -57,9 +57,9 @@ Windows (PowerShell):
 python bin\install-global --target-home $HOME --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
 ```
 
-`bin/install-global` — Python-скрипт (`#!/usr/bin/env python3`, требует 3.9+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness` ниже (тоже требует 3.9+ и явно откажется на более старой версии), никакого отдельного `.sh`/`.ps1` не нужно. На Windows для создания настоящих (не «сломанных» файлового типа) символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с ошибкой на создании линка и подсказывает, что делать.
+`bin/install-global` — Python-скрипт (`#!/usr/bin/env python3`, standalone floor — 3.9+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness` ниже; отдельного `.sh`/`.ps1` не нужно. Метаданные проекта в `pyproject.toml` отдельно объявляют `requires-python >=3.14`. На Windows для создания настоящих символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с подсказкой.
 
-Флаги `--check` (ничего не пишет, только сверяет), `--replace-conflicts` (бэкапит перед заменой) и `--skills-only` (без instruction-файла, только `start-project`) — полный разбор, что именно ставится каждому из пяти рантаймов и куда, в [docs/agents/harness-guide.md](./docs/agents/harness-guide.md), раздел 0.
+`bin/install-global` устанавливает только глобальный профиль и entry skills; MCP, plugins и project integrations он не устанавливает. Флаги `--check` (ничего не пишет, только сверяет), `--replace-conflicts` (перемещает конфликтующие файлы в backup) и `--skills-only` (без профиля) — полный разбор, что именно ставится каждому из пяти рантаймов и куда, в [docs/agents/harness-guide.md](./docs/agents/harness-guide.md), раздел 0.
 
 Харнесс проекта — личная сборка:
 ```bash
@@ -101,6 +101,7 @@ python3 harness/bin/harness adopt /path/to/repository --capability pvmalove-suit
 
 ```bash
 python3 harness/bin/harness diff /path/to/repository
+python3 harness/bin/harness diff /path/to/repository --json
 python3 harness/bin/harness update /path/to/repository --capability pvmalove-suite
 python3 harness/bin/harness registry /path/to/repository
 python3 harness/bin/harness lock-project-skills /path/to/repository
@@ -111,6 +112,7 @@ python3 harness/bin/harness list /path/to/repository
 Windows (PowerShell):
 ```powershell
 python harness\bin\harness diff C:\path\to\repository
+python harness\bin\harness diff C:\path\to\repository --json
 python harness\bin\harness update C:\path\to\repository --capability pvmalove-suite
 python harness\bin\harness registry C:\path\to\repository
 python harness\bin\harness lock-project-skills C:\path\to\repository
@@ -127,6 +129,10 @@ python harness\bin\harness list C:\path\to\repository
 попадают). Нативные MCP/plugin/hook/runtime-конфиги (`.mcp.json`, `.claude/settings.json` и т.п.)
 таким же образом инвентаризируются в `.harness/integrations.json` — путь, sha256, целевые рантаймы,
 текстовое verify-действие и имена секретных env-переменных, но никогда сами секреты.
+
+`skills/REGISTRY.md` — отдельный сгенерированный каталог исходников этого репозитория,
+обновляемый через `scripts/build-registry`; его не следует путать с runtime-реестром
+`.harness/skills/REGISTRY.md` в целевом проекте.
 
 ## Политика репозитория
 
@@ -146,3 +152,5 @@ python harness\bin\harness list C:\path\to\repository
 - `docs/agents/*.md` и `harness/project/docs-agents/*.md` — одно и то же по смыслу в двух местах
   (вторая копия — то, что `pvmalove-suite` реально разворачивает в целевые проекты); `scripts/verify`
   сверяет обе копии по содержимому (без учёта BOM/CRLF) и не даст молча разойтись.
+- `harness update` по умолчанию не перезаписывает изменённые managed skills и seed-файлы; для
+  managed skills используется `--force`, для seed-файлов — отдельный `--force-seed-files`.
