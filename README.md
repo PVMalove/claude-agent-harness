@@ -40,6 +40,7 @@
 
 - `docs/agents/{git-workflow,worktrees,artifacts,issue-tracker,triage-labels,harness-guide}.md`
 - `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json`
+- hook для блокировки автоматической атрибуции в commit/PR metadata; CI повторяет эту проверку
 - `.claude/rules/karpathy-guidelines.md`
 - `.claude/agents/pr-composer.md` (Claude Code subagent — вне системы skills/capability, отдельный механизм обнаружения)
 - `.harness/project.json` — язык вывода, паттерн имени ветки, базовая ветка для PR, команды `qa-gate` (спрашивается интерактивно, либо флагами)
@@ -138,6 +139,7 @@ python harness\bin\harness list C:\path\to\repository
 
 - Файлы под `skills/vendor/` никогда не редактируются вручную — только полная замена закреплённого снимка.
 - Личные скиллы и надстройки живут в `skills/first-party/pvmalove/` и `harness/project/`, не смешиваются с vendor-деревом.
+- `/to-spec` выбирает для эпика `integration/<service-or-team>` и создаёт её от проектной `base_branch`, если такой ветки ещё нет; `/to-tickets` переносит её в дочерние тикеты, а issue-ветки и PR используют её как базу.
 - Апстримные ревизии закреплены, provenance (`third_party/mattpocock-skills/`) сохраняется.
 - Новые ADR (`docs/adr/`) — по [`docs/adr/template.md`](./docs/adr/template.md): обязательные секции
   Context/Decision/Alternatives/Rejected/Consequences, язык — как у остального репозитория (сейчас

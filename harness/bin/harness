@@ -810,7 +810,7 @@ def scaffold_pvmalove_extras(repo: Path, args: argparse.Namespace) -> list[str]:
     if not project_json.exists():
         language = getattr(args, "language", None) or _prompt("language (ru/en)", "ru")
         base_branch = getattr(args, "pr_base_branch", None) or _prompt(
-            "PR base branch", getattr(args, "base_branch", None) or "main"
+            "Release/base branch", getattr(args, "base_branch", None) or "main"
         )
         branch_pattern = getattr(args, "branch_pattern", None) or _prompt(
             "branch_pattern (regex)", "^feature/issue-[0-9]+-.+"
@@ -1102,7 +1102,7 @@ def _add_pvmalove_args(sub: argparse.ArgumentParser) -> None:
         "--language", choices=["ru", "en"], default=None, help="pvmalove-suite: .harness/project.json language"
     )
     sub.add_argument(
-        "--pr-base-branch", default=None, help="pvmalove-suite: base branch for PR diffs (default: --base-branch)"
+        "--pr-base-branch", default=None, help="pvmalove-suite: release/base branch for epic integration branches (default: --base-branch)"
     )
     sub.add_argument("--branch-pattern", default=None, help="pvmalove-suite: branch name regex")
     sub.add_argument(

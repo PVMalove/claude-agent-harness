@@ -3,9 +3,9 @@
 # numeric ID it encodes is a real, registered tracker issue ("Issue First", docs/agents/git-workflow.md).
 INPUT=$(cat)
 
-if echo "$INPUT" | grep -qE '"command"[[:space:]]*:[[:space:]]*"[^"]*git checkout -b'; then
+if echo "$INPUT" | grep -qE '"command"[[:space:]]*:[[:space:]]*"[^"]*git (checkout -b|switch -c)'; then
   RAW=$(echo "$INPUT" | grep -oE '"command"[[:space:]]*:[[:space:]]*"[^"]*"')
-  BRANCH=$(echo "$RAW" | sed -E 's/.*git checkout -b[[:space:]]+([^ "]+).*/\1/')
+  BRANCH=$(echo "$RAW" | sed -E 's/.*git (checkout -b|switch -c)[[:space:]]+([^ "]+).*/\2/')
 
   REPO_DIR="${CLAUDE_PROJECT_DIR:-.}"
   PROJECT_JSON="$REPO_DIR/.harness/project.json"

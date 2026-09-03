@@ -49,9 +49,14 @@ _Avoid_: рассинхронизация, устаревание.
 
 **Проектный конфиг** (`.harness/project.json`):
 Источник проектных значений для `qa-gate`, `pr-composer`, `code-review`, `to-guide` и branch
-hooks: язык, base branch, branch pattern и QA-команды; форма описана в
+hooks: язык, release/base branch, branch pattern и QA-команды; форма описана в
 `harness/project/project.schema.json`.
 _Avoid_: конфигурация проекта, settings.
+
+**Интеграционная ветка эпика** (`integration/<service-or-team>`):
+Ветка, которую `/to-spec` создаёт от `base_branch` после публикации эпика. `/to-tickets` переносит
+её в дочерние тикеты; issue-ветки создаются от неё, а их PR направляются обратно в неё.
+_Avoid_: project-level base branch, ветка реализации отдельного тикета.
 
 **Реестр скиллов проекта** (`.harness/skills/REGISTRY.md`):
 Компактный каталог имён, путей и описаний скиллов, используемый как fallback-маршрут для runtime
