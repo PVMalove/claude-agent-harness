@@ -1,9 +1,31 @@
 #!/bin/bash
 # PreToolUse(Bash): keeps commit messages and PR metadata project-only.
 INPUT=$(cat)
-# Decode only escaped quotes for reliable matching; keep the command intact so a quoted
-# `git commit -m "..."` is not truncated before its message.
-COMMAND="$(printf '%s\n' "$INPUT" | sed 's/\\\\\"/\"/g')"
+PY="$(command -v python3 || command -v python)"
+if [ -z "$PY" ]; then
+  echo "Невозможно проверить публичные Git-метаданные: Python 3.9+ не найден." >&2
+  exit 2
+fi
+# Parse the hook JSON properly instead of grepping a "command" field regex, so an embedded/escaped
+# quote inside a multi-line commit message never truncates matching — and so this only inspects
+# the actual command text, not unrelated payload fields (cwd, transcript_path, session_id, ...),
+# which always contain this repo's own name ("claude-agent-harness") and would otherwise
+# self-trigger FORBIDDEN on every single invocation regardless of the command being run.
+COMMAND="$(printf '%s' "$INPUT" | "$PY" -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    command = data["tool_input"]["command"]
+except (json.JSONDecodeError, KeyError, TypeError):
+    sys.exit(1)
+if not isinstance(command, str):
+    sys.exit(1)
+sys.stdout.write(command)
+')"
+if [ $? -ne 0 ]; then
+  echo "Невозможно проверить публичные Git-метаданные: hook payload не содержит tool_input.command." >&2
+  exit 2
+fi
 
 FORBIDDEN='claude|claude\.ai/code/session|openai|chatgpt|gpt[-_ ]?[0-9]|copilot|gemini|codex|co-authored[- ]by|ai[-_ ]?(agent|assistant|generated)'
 
@@ -16,8 +38,89 @@ printf '%s\n' "$COMMAND" | grep -qiE 'git[[:space:]]+push' && is_push=1
 
 [ "$is_commit" -eq 0 ] && [ "$is_pr" -eq 0 ] && [ "$is_push" -eq 0 ] && exit 0
 
-if printf '%s\n' "$COMMAND" | grep -qiE "$FORBIDDEN"; then
-  echo "Публичные Git-метаданные должны содержать только сведения об изменении проекта: автоматическая атрибуция, имена моделей и session URL запрещены." >&2
+validate_command_metadata() {
+  printf '%s' "$COMMAND" | FORBIDDEN="$FORBIDDEN" "$PY" -c '
+import os
+import re
+import shlex
+import sys
+
+
+def fail(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(2)
+
+
+try:
+    lexer = shlex.shlex(sys.stdin.read(), posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    lexer.escape = ""
+    tokens = list(lexer)
+except ValueError:
+    fail("Невозможно проверить публичные Git-метаданные: команда содержит незакрытую кавычку.")
+
+forbidden = re.compile(os.environ["FORBIDDEN"], re.IGNORECASE)
+
+
+def has_sequence(*parts):
+    return any(tokens[index : index + len(parts)] == list(parts) for index in range(len(tokens)))
+
+
+def values(options):
+    result = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in options:
+            if index + 1 >= len(tokens):
+                fail("Невозможно проверить публичные Git-метаданные: у параметра сообщения нет значения.")
+            result.append(tokens[index + 1])
+            index += 2
+            continue
+        for option in options:
+            if option.startswith("--") and token.startswith(option + "="):
+                result.append(token[len(option) + 1 :])
+                break
+        else:
+            index += 1
+            continue
+        index += 1
+    return result
+
+
+def check_text(text):
+    if forbidden.search(text):
+        fail("Публичные Git-метаданные должны содержать только сведения об изменении проекта: автоматическая атрибуция, имена моделей и session URL запрещены.")
+
+
+def check_files(paths):
+    for path in paths:
+        if not os.path.isfile(path):
+            fail("Невозможно проверить публичные Git-метаданные: файл сообщения должен быть доступен по literal-пути.")
+        try:
+            with open(path, encoding="utf-8") as source:
+                check_text(source.read())
+        except OSError:
+            fail("Невозможно прочитать файл публичных Git-метаданных.")
+
+
+if has_sequence("git", "commit"):
+    check_texts = values({"-m", "--message", "--trailer"})
+    check_files(values({"-F", "--file"}))
+    for text in check_texts:
+        check_text(text)
+
+if (has_sequence("gh", "pr", "create") or has_sequence("gh", "pr", "edit") or
+        has_sequence("glab", "mr", "create") or has_sequence("glab", "mr", "edit")):
+    check_files(values({"--body-file", "--description-file"}))
+    for text in values({"--title", "--body", "--description"}):
+        check_text(text)
+'
+}
+
+validate_command_metadata
+if [ $? -ne 0 ]; then
   exit 2
 fi
 
@@ -27,32 +130,6 @@ if [ "$is_push" -eq 1 ] || [ "$is_pr" -eq 1 ]; then
     echo "Публикация заблокирована: непереданный commit message содержит запрещённую автоматическую атрибуцию или ссылку на сессию." >&2
     exit 2
   fi
-fi
-
-extract_file() {
-  local option="$1"
-  if [[ "$COMMAND" =~ $option[[:space:]]+\"([^\"]+)\" ]]; then
-    printf '%s' "${BASH_REMATCH[2]}"
-  elif [[ "$COMMAND" =~ $option[[:space:]]+([^[:space:]\"]+) ]]; then
-    printf '%s' "${BASH_REMATCH[2]}"
-  elif [[ "$COMMAND" =~ $option=\"([^\"]+)\" ]]; then
-    printf '%s' "${BASH_REMATCH[2]}"
-  elif [[ "$COMMAND" =~ $option=([^[:space:]\"]+) ]]; then
-    printf '%s' "${BASH_REMATCH[2]}"
-  fi
-}
-
-MESSAGE_FILE=""
-if [ "$is_commit" -eq 1 ]; then
-  MESSAGE_FILE="$(extract_file '(-F|--file)')"
-fi
-if [ "$is_pr" -eq 1 ] && [ -z "$MESSAGE_FILE" ]; then
-  MESSAGE_FILE="$(extract_file '(--body-file|--description-file)')"
-fi
-
-if [ -n "$MESSAGE_FILE" ] && [ -f "$MESSAGE_FILE" ] && grep -qiE "$FORBIDDEN" "$MESSAGE_FILE"; then
-  echo "Публичные Git-метаданные в файле сообщения содержат запрещённую автоматическую атрибуцию или ссылку на сессию." >&2
-  exit 2
 fi
 
 exit 0

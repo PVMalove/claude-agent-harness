@@ -374,8 +374,8 @@ AI-агенты неизбежно «глупеют» и начинают гал
 
 **Phase 3 — PR & Wrap-up:**
 
-1. **Открыть PR** по `docs/agents/git-workflow.md` — с его собственными чекпоинтами подтверждения, которые легко перепутать: **«PR Confirmation Required»** — спросить у разработчика *до* `gh pr create` (готовность реализации/тестов/ревью сама по себе согласия не даёт), и отдельно, уже после того как PR открыт, **«Human QA & Merge»** — спросить, хочет ли разработчик ревьюить сам; мерджить самому — никогда. Перед `gh pr create` обязательно прогнать `qa-gate` (раздел 6), если он в репо есть — только после PASS. Шаблон тела PR структурнее короткой сводки (в этом репо — да, 7 секций, `docs/agents/git-workflow.md` §3) — тело делегируется субагенту `pr-composer` (раздел 6), а не импровизируется инлайн.
-2. **Закрыть тикет.** GitHub/GitLab: обязательный `Closes #<ID>` в теле PR закроет его сам при мердже — дополнительно ничего делать не нужно; если тикет несёт `task-report::required` — при открытии PR опубликовать комментарий-отчёт (переиспользуя результат `qa-gate`, если он в этой сессии запускался). Локальный трекер: нет шага PR/merge — по завершении выставить `**Workflow:** done`, при необходимости вписав туда же отчёт.
+1. **Открыть PR** по `docs/agents/git-workflow.md` — с его собственными чекпоинтами подтверждения, которые легко перепутать: **«PR Confirmation Required»** — спросить у разработчика *до* `gh pr create` (готовность реализации/тестов/ревью сама по себе согласия не даёт), и отдельно, уже после того как PR открыт, **«Human QA & Merge»** — спросить, хочет ли разработчик ревьюить сам; мерджить самому — никогда. Перед `gh pr create` обязательно прогнать `qa-gate` (раздел 6), если он в репо есть — только после PASS. Шаблон тела PR структурнее короткой сводки (в этом репо — да, 7 секций, `docs/agents/git-workflow.md` §3) — тело делегируется субагенту `pr-composer` (раздел 6), а не импровизируется инлайн; `pr-composer` сверяет target с default branch и выбирает `Closes #<ID>` либо `Related to #<ID>`.
+2. **Закрыть тикет.** GitHub/GitLab применяют closing pattern только при merge в default branch; после такого merge проверить, что тикет действительно закрыт (в GitLab pattern может быть отключён или изменён). Для PR/MR в `integration/*` тело содержит `Related to #<ID>`; после подтверждённого разработчиком merge он вручную закрывает тикет через `gh issue close <ID> --reason completed` или `glab issue close <ID>` (либо явно поручает это активной сессии). Если тикет несёт `task-report::required`, при открытии PR публикуется комментарий-отчёт с результатом `qa-gate`. Локальный трекер: нет шага PR/merge — по завершении выставить `**Workflow:** done`, при необходимости вписав туда же отчёт.
 
 **Как это сцепляется с соседями:** `docs/agents/git-workflow.md` несёт остальные жёсткие правила (Zero Direct Commits, CLI Only, Issue First, Zero Auto-Merge) и language-aware (ru/en) 7-секционный шаблон тела PR; `qa-gate` (раздел 6) читает `qa_gate_commands` из `.harness/project.json`; `pr-composer` (раздел 6) заполняет тот же шаблон по диффу/коммитам/результату `qa-gate`; `docs/agents/triage-labels.md`/`issue-tracker.md` держат переходы `workflow::*` и общий с `/wayfinder` frontier-запрос.
 
@@ -443,7 +443,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 4. **Переводит в `workflow::in-progress`.**
 5. **Пишет гайд** по шаблону в `docs/tasks/` (в папку эпика, если тикет из декомпозиции — `docs/agents/artifacts.md`), **в языке из `.harness/project.json`** (по умолчанию `ru`) — в отличие от узкой language-области `/to-tickets` (там только колонка сводки), здесь весь документ целиком, промпты включая: это локальный артефакт для человека-мейнтейнера, а не тикет, публикуемый во внешний трекер.
 
-**Шаблон гайда:** Context & Constraints → File Map (`[Create]`/`[Update]`) → Steps & Prompts (по шагам, каждый — самодостаточный copy-paste промпт для AI IDE, указывающий на существующий код как образец, TDD-first явным текстом — `/implement` получает это бесплатно через `/tdd`, здесь нужно проговорить руками) → Verification (точная команда теста или ручная проверка из критериев приёмки) → **When you're done** — ручной чек-лист закрытия, которого сам `/to-guide` не выполняет: `/code-review` → commit+push (Semantic Commit) → `/qa-gate` → PR (`gh pr create` + `Closes #ID`, опционально `pr-composer`) или, для локального трекера, `**Workflow:** done`.
+**Шаблон гайда:** Context & Constraints → File Map (`[Create]`/`[Update]`) → Steps & Prompts (по шагам, каждый — самодостаточный copy-paste промпт для AI IDE, указывающий на существующий код как образец, TDD-first явным текстом — `/implement` получает это бесплатно через `/tdd`, здесь нужно проговорить руками) → Verification (точная команда теста или ручная проверка из критериев приёмки) → **When you're done** — ручной чек-лист закрытия, которого сам `/to-guide` не выполняет: `/code-review` → commit+push (Semantic Commit) → `/qa-gate` → PR (`gh pr create`; `Closes #ID` только в default branch, иначе `Related to #ID` и закрытие тикета после подтверждённого merge; опционально `pr-composer`) или, для локального трекера, `**Workflow:** done`.
 
 `/to-guide` сознательно не запускает ни `/implement`, ни `qa-gate`, ни `pr-composer` сам и не вызывается повторно для того же тикета — путь полностью ручной, скилл только готовит промпты и клеймит/помечает тикет.
 
@@ -524,7 +524,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 | Hook | Событие | Что блокирует |
 |---|---|---|
 | `block-direct-master.sh` | `PreToolUse(Bash)` | `git commit`/`git push` из `base_branch` или `integration/*`, а также push в эти защищённые рефы. |
-| `block-public-attribution.sh` | `PreToolUse(Bash)` | Commit messages и PR titles/bodies с автоматической атрибуцией, именами моделей, session URL или `Co-Authored-By`; push непереданных коммитов с тем же содержимым. |
+| `block-public-attribution.sh` | `PreToolUse(Bash)` | Запрещённые сведения в commit messages, PR/MR titles/bodies и содержимом их файлов; push непереданных коммитов с тем же содержимым. |
 | `block-pr-merge.sh` | `PreToolUse(Bash)` | `gh pr merge` — безусловно, мердж только вручную. |
 | `check-branch-name.sh` | `PreToolUse(Bash)` | `git checkout -b`/`git switch -c <имя>`, не соответствующее `branch_pattern` из `.harness/project.json`. |
 | `check-worktree-branch-name.sh` | `PreToolUse(EnterWorktree)` | То же правило имени для нативного worktree-инструмента (раздел 10). |
@@ -537,7 +537,18 @@ AI-агенты неизбежно «глупеют» и начинают гал
 
 ### Атрибуция коммитов
 
-`.claude/settings.local.json` оставляет встроенную атрибуцию пустой. Это дополнительный слой; фактический запрет обеспечивают `block-public-attribution.sh` до команды и `scripts/check-public-metadata.py` в CI. При блокировке исправь только метаданные проекта и повтори проверку.
+`.claude/settings.local.json` оставляет встроенную атрибуцию пустой. Это дополнительный слой; фактический запрет обеспечивают `block-public-attribution.sh` до команды и `scripts/check-public-metadata.py` в CI.
+
+Hook строго разбирает JSON payload и рассматривает только `tool_input.command`. В `git commit` он
+проверяет `-m`/`--message`/`--trailer` и содержимое `-F`/`--file`; в `gh pr` и `glab mr`
+`create`/`edit` — `--title`, `--body`/`--description` и содержимое `--body-file`/
+`--description-file`. Путь body-файла не сканируется как текст PR: допустим literal-путь в том
+числе внутри временной `.claude`-директории. Файл должен быть доступен по literal-пути —
+переменная shell, несуществующий путь, некорректный payload или незакрытая кавычка блокируют
+команду. Для `git push` и PR/MR hook также проверяет непереданные commit messages.
+
+При блокировке исправь только метаданные проекта либо передай доступный literal-файл с телом и
+повтори проверку.
 
 ---
 
@@ -641,7 +652,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 
 1. **Issue #150 приходит извне** — пользователь: «В PDF-отчётах даты на день раньше, чем в интерфейсе».
 2. **`/triage #150`** — собрать контекст (тело, лейблов и прошлых триаж-заметок нет); redundancy-check (форматирование дат уже есть в коде, не задвоено) и prior-rejection (`.out-of-scope/` пусто). Верифицировать: воспроизвести по шагам репортера — подтверждено, PDF-сервис берёт `datetime.utcnow()` вместо таймзоны проекта. Рекомендация: `bug` + `afk` (чисто техническая правка, не архитектурное решение) + `workflow::ready` (маленький баг, не эпик). Грилинг не нужен — причина однозначна. Применить исход: agent-ready бриф (`AGENT-BRIEF.md`), лейблы `bug` + `workflow::ready` + `afk`.
-3. **`/implement #150`** — Pre-flight: тикет назван явно, не `hitl` → продолжить; блокеров нет → сразу `workflow::in-progress`. Coding: `/tdd` — тест, что PDF-сервис форматирует дату в таймзоне проекта, а не UTC → фикс → `/code-review` чисто → коммит `fix: use project timezone in PDF export dates (#150)`. PR & Wrap-up: `qa-gate` PASS → `gh pr create` с `Closes #150` → разработчик сам ревьюит и мерджит.
+3. **`/implement #150`** — Pre-flight: тикет назван явно, не `hitl` → продолжить; блокеров нет → сразу `workflow::in-progress`. Coding: `/tdd` — тест, что PDF-сервис форматирует дату в таймзоне проекта, а не UTC → фикс → `/code-review` чисто → коммит `fix: use project timezone in PDF export dates (#150)`. PR & Wrap-up: `qa-gate` PASS → PR направляется в default branch с `Closes #150` → разработчик сам ревьюит и мерджит.
 4. Мердж закрывает #150. `/to-spec` и `/to-tickets` в этой цепочке не вызывались ни разу.
 
 Если бы на шаге 2 триаж определил `hitl` вместо `afk` — тот же бриф, но шаг 3 стал бы `/to-guide #150` вместо `/implement #150`: тикет уже есть (его создал `/triage`, не `/to-tickets`), поэтому и здесь `/to-spec`/`/to-tickets` остаются не задействованы.
@@ -655,8 +666,8 @@ AI-агенты неизбежно «глупеют» и начинают гал
 3. **`/to-tickets #101`** — Phase 1: два вертикальных слайса показаны, подтверждены без правок. Phase 2 публикует:
    - **#102** «CSV-сервис форматирования» — `workflow::ready`, `afk`, sub-issue от #101, blocked by: none.
    - **#103** «Кнопка экспорта на странице отчёта» — `workflow::blocked` (ждёт #102), `afk`, sub-issue от #101.
-4. **`/implement #102`** — Phase 1: тикет уже `workflow::ready`+`afk`, блокеров нет → сразу `workflow::in-progress`; issue-ветка создаётся от `integration/reports`, PR направляется туда. Phase 2: `/tdd` пишет тест на форматирование чисел/дат под locale, реализует сервис, `/code-review` проходит без замечаний, коммит `feat: add CSV formatting service (#102)`. Phase 3: разработчик подтверждает готовность к PR → `qa-gate` PASS → `gh pr create` с `Closes #102` → разработчик подтверждает ревью на месте — **мерджит сам**, агент не трогает мердж.
-5. Мердж PR закрывает #102 автоматически → #103 становится разблокированным (`blocked_by: 0`) → `/implement #101` (уже на эпик, без конкретного тикета) сам находит и клеймит #103 по фронтиру, повторяет Phase 1-3.
+4. **`/implement #102`** — Phase 1: тикет уже `workflow::ready`+`afk`, блокеров нет → сразу `workflow::in-progress`; issue-ветка создаётся от `integration/reports`, PR направляется туда. Phase 2: `/tdd` пишет тест на форматирование чисел/дат под locale, реализует сервис, `/code-review` проходит без замечаний, коммит `feat: add CSV formatting service (#102)`. Phase 3: разработчик подтверждает готовность к PR → `qa-gate` PASS → `gh pr create` с `Related to #102` → разработчик подтверждает ревью на месте и мерджит; затем закрывает #102 через `gh issue close 102 --reason completed`.
+5. Закрытие #102 разблокирует #103 (`blocked_by: 0`) → `/implement #101` (уже на эпик, без конкретного тикета) сам находит и клеймит #103 по фронтиру, повторяет Phase 1-3.
 6. Оба дочерних тикета закрыты → эпик #101 остаётся открытым с дописанным списком «Sub-issues: #102, #103» (раздел 3) — закрывать его руками не нужно.
 
 ### Точка входа 2 — эпик-сайз, ветка `hitl` через `/to-guide`
@@ -667,8 +678,8 @@ AI-агенты неизбежно «глупеют» и начинают гал
 2. **`/to-spec`** → **#104**, `enhancement` + `workflow::specs`.
 3. **`/to-tickets #104`** → один тикет, **#105** «Мигрировать конфиг экспорта YAML→TOML» — Phase 1 явно проставляет `hitl` (не `afk` — решение зафиксировано на грилинге), `workflow::ready`, sub-issue от #104.
 4. **`/to-guide #105`** — читает тикет (`hitl` + `workflow::ready` — можно продолжать), исследует код, находит `config/export.yaml` и парсер конфига, клеймит (`--add-assignee @me`), ставит `workflow::in-progress`, пишет `docs/tasks/issue-105-export-config-toml.md`: File Map (`[Create] config/export.toml`, `[Update] src/config/loader.py`), три шага с готовыми промптами для AI IDE («Сначала напиши тест, что loader.py принимает и .yaml, и .toml…», «Теперь добавь запись нового формата…», «Удали чтение YAML, оставь только миграционное предупреждение…»), команда проверки (`pytest tests/config/`).
-5. **Дальше полностью вручную**, по чек-листу из раздела «When you're done» самого гайда: разработчик кодит в Cursor по промптам → просит эту сессию прогнать `/code-review` → коммитит (`fix: migrate export config to TOML (#105)`) и пушит → просит `/qa-gate` → сам открывает PR (`gh pr create`, `Closes #105`) → сам решает вопрос ревью → сам мерджит.
-6. #105 закрывается мерджем → #104 остаётся открытым со списком sub-issues, так же как #101 в примере с `/implement`.
+5. **Дальше полностью вручную**, по чек-листу из раздела «When you're done» самого гайда: разработчик кодит в Cursor по промптам → просит эту сессию прогнать `/code-review` → коммитит (`fix: migrate export config to TOML (#105)`) и пушит → просит `/qa-gate` → сам открывает PR в `integration/*` (`gh pr create`, `Related to #105`) → сам решает вопрос ревью и мерджит → закрывает #105 через `gh issue close 105 --reason completed`.
+6. Закрытие #105 оставляет #104 открытым со списком sub-issues, так же как #101 в примере с `/implement`.
 
 ### Точка входа 3 — огромный нечёткий объём через `/wayfinder`
 

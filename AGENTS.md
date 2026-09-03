@@ -51,9 +51,14 @@ When a task matches a skill, open only its relevant `SKILL.md` through `.agents/
   recorded `integration/<service-or-team>` branch as the task base, create an isolated issue branch
   matching `.harness/project.json`, test before commits, use CLI-only Git and tracker operations,
   get explicit confirmation before opening a PR, and never auto-merge. Use
+  `Closes #<ID>` only when the PR targets the repository's default branch, then verify the issue
+  closed; for an integration PR, use `Related to #<ID>` and close the issue only after the developer
+  confirms its merge. Use
   `docs/agents/artifacts.md` and `docs/agents/worktrees.md` for their respective workflows.
 - Keep commit messages and PR titles/bodies project-only: never add automated-agent attribution,
   model names, session URLs, or `Co-Authored-By` trailers. The project hook and CI check enforce this.
+  For `-F`/`--file` and PR `--body-file`/`--description-file`, pass a readable literal path: the hook
+  checks the file's content, never its path, and rejects an unavailable or shell-variable path.
 - Run QA commands from `.harness/project.json`. After changing `harness/CAPABILITIES.json` or
   anything under `skills/`, run `scripts/verify` before completion; `scripts/test-clean-room` is
   the faster local loop. On failure, inspect the immediate error, form a direct hypothesis, fix it,

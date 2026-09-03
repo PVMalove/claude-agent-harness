@@ -35,18 +35,19 @@ branch is the PR target for child work; `base_branch` is the release target for 
    * Once the developer confirms, run the `qa-gate` skill (see [issue-tracker.md](./issue-tracker.md)'s "When a skill says…" conventions for how tickets are referenced) and only proceed once it passes.
    * If the PR body template in [§3](#3-pr-body-template) has more structure than a short summary, delegate the body to the `pr-composer` subagent instead of improvising it inline — give it a temp file path to write to, then pass that path to `--body-file` below and delete the temp file once the PR is created.
    * PR creation is performed via CLI: `gh pr create --body-file <path>` (`glab mr create` on GitLab) — see §1 ("Body via File, Not Inline"); never inline `--body`.
-   * **Mandatory Requirement:** A child PR targets the epic's integration branch and its body MUST contain the phrase `Closes #<ID>` to automatically link and close the original ticket upon successful merge. An integration-to-`base_branch` PR is a separate release action and does not replace child PRs.
+   * **Ticket footer:** A child PR targets the epic's integration branch. Before writing its body, resolve the repository's default branch through the tracker CLI. Use `Closes #<ID>` only when the PR target is that default branch; otherwise use `Related to #<ID>`. GitHub ignores closing keywords on every other target branch; GitLab closes a matching issue only when the MR or commit reaches the default branch, and a project may disable or customize its closing pattern. An integration-to-`base_branch` PR is a separate release action and does not replace child PRs.
    * **Mandatory Requirement:** The pull request body MUST follow the template in [§3 PR Body Template](#3-pr-body-template) below.
 7. **Human QA & Merge:**
    * Once the PR is open, explicitly ask the developer whether they want to review the change themselves before it's considered ready — do not assume silence means approval.
    * **If the developer confirms:** tell them the PR is ready and stop there. Do not merge it — merging is always a manual action the developer performs themselves.
    * **If the developer requests changes or clarifications:** address them with new commits on the same branch (repeat steps 3–5: implement, commit, push), then ask again. Repeat until the developer confirms.
+   * **Close the ticket after merge:** once the developer confirms that a PR with `Related to #<ID>` was merged, close its ticket explicitly with the tracker CLI (GitHub: `gh issue close <ID> --reason completed`; GitLab: `glab issue close <ID>`). The developer performs this when working alone; an agent may do it only after the developer confirms the merge in the active session. After a default-branch PR with `Closes #<ID>` merges, verify that the ticket closed; if its tracker did not auto-close it, use the same explicit command. Do not close an issue when its PR merely opens or closes without merging.
 
 ### 3. PR Body Template
 
 Read `language` from `.harness/project.json` (default `ru`) to pick which template below applies.
 
-**`language: ru`** — every `gh pr create --body` MUST start with the following HTML comment verbatim (invisible when GitHub renders the PR, but a checklist for the author and a navigator for the reviewer), followed by the seven sections it describes, filled in for the actual change:
+**`language: ru`** — every PR body passed via `gh pr create --body-file` MUST start with the following HTML comment verbatim (invisible when GitHub renders the PR, but a checklist for the author and a navigator for the reviewer), followed by the seven sections it describes, filled in for the actual change:
 
 ```html
 <!--
@@ -90,7 +91,8 @@ Read `language` from `.harness/project.json` (default `ru`) to pick which templa
 
 ## Интеграция
 
-Closes #<ID>
+<!-- Выбрать ровно один footer: `Closes #<ID>` для PR в default branch; `Related to #<ID>` для любого другого target. -->
+Related to #<ID>
 ```
 
 **`language: en`** — the same checklist and seven sections, in English:
@@ -137,5 +139,6 @@ What needs to happen when deploying to other environments — DB migrations, new
 
 ## Integration
 
-Closes #<ID>
+<!-- Choose exactly one footer: `Closes #<ID>` for a PR targeting the default branch; `Related to #<ID>` for every other target. -->
+Related to #<ID>
 ```
