@@ -49,8 +49,9 @@ _Avoid_: рассинхронизация, устаревание.
 
 **Проектный конфиг** (`.harness/project.json`):
 Источник проектных значений для `qa-gate`, `pr-composer`, `code-review`, `to-guide` и branch
-hooks: язык, release/base branch, branch pattern и QA-команды; форма описана в
-`harness/project/project.schema.json`.
+hooks: `language`, `base_branch`, `branch_pattern` и `qa_gate_commands`; необязателен только
+`$schema`. Форма описана в `harness/project/project.schema.json`, а `harness health` применяет тот
+же строгий контракт и отклоняет неизвестные поля.
 _Avoid_: конфигурация проекта, settings.
 
 **Интеграционная ветка эпика** (`integration/<service-or-team>`):

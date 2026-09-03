@@ -58,6 +58,9 @@ When a task matches a skill, open only its relevant `SKILL.md` through `.agents/
   anything under `skills/`, run `scripts/verify` before completion; `scripts/test-clean-room` is
   the faster local loop. On failure, inspect the immediate error, form a direct hypothesis, fix it,
   and report what was not checked.
+- Treat `harness/project/project.schema.json` and `validate_project_json` in `harness/bin/harness`
+  as one contract. After changing either or hand-editing `.harness/project.json`, run `harness health`
+  for the target repository; keep the schema, template, validator, and relevant guide text aligned.
 
 ## Supervised subagents
 
