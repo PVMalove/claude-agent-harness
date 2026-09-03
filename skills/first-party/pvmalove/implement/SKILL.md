@@ -30,6 +30,13 @@ A strict pipeline, resolved in order: **Pre-flight** (confirm the ticket is actu
 3. **Mark it in progress**, once you actually start work:
     - **GitHub/GitLab:** set the `workflow::in-progress` label.
     - **Local tracker:** set the file's `**Workflow:**` line to `workflow::in-progress`.
+4. **Git pre-flight, before editing files:**
+    - Resolve the exact integration branch from the ticket's `## Integration Branch` section or,
+      for a child ticket that omits it, from its parent epic. An absent value is a blocker; do not
+      infer a branch from memory, the current checkout, or a service name.
+    - The current branch must match `branch_pattern` and be an issue branch. If it does not,
+      fetch the integration branch and create `feature/issue-<ID>-<slug>` from it before coding.
+      Never commit or push directly to the project base branch or an `integration/*` branch.
 
 ### Phase 2: Coding
 
@@ -40,9 +47,9 @@ A strict pipeline, resolved in order: **Pre-flight** (confirm the ticket is actu
 
 ### Phase 3: PR & Wrap-up
 
-1. **Open the PR**, if this repo defines a git workflow doc (e.g. `docs/agents/git-workflow.md`) — follow it, then pause and ask the developer whether they want to review before it's considered done. Never merge the PR yourself — merging is the developer's call.
+1. **Open the PR**, if this repo defines a git workflow doc (e.g. `docs/agents/git-workflow.md`) — target the resolved epic integration branch, follow that document, then pause and ask the developer whether they want to review before it's considered done. Never merge the PR yourself — merging is the developer's call.
     - Before opening, run the `qa-gate` skill if this repo has one — the full local check/test suite, run in isolation so its output doesn't clutter this context. Only proceed to `gh pr create` once it passes.
-    - If the PR body template has more structure than a short summary (e.g. numbered sections), delegate the body to the `pr-composer` subagent if this repo has one, instead of improvising a shorter body inline. In an Orca-managed session, create a supervised Orca Task/Dispatch for it and wait for `worker_done` before continuing.
+    - If the PR body template has more structure than a short summary (e.g. numbered sections), delegate the body to the `pr-composer` subagent if this repo has one, instead of improvising a shorter body inline. Give it the resolved integration branch as the diff base. In an Orca-managed session, create a supervised Orca Task/Dispatch for it and wait for `worker_done` before continuing.
     - In an Orca-managed session, remain the coordinator while `pr-composer` runs: use Orca's supervised wait, process its delivered result, and continue the PR workflow in the same session. Outside Orca, after launching `pr-composer`, stop — do not poll it, schedule a wakeup (even as a "fallback heartbeat") to check on it, or launch another agent whose only job is to wait; the harness delivers its result as a notification in a later turn.
 2. **Close out the ticket**, if this work is tied to the ticket resolved in Phase 1:
     - **GitHub/GitLab:** the git workflow doc's mandatory `Closes #<ID>` in the PR body already closes the ticket on merge — nothing further to do here. If it carries `task-report::required` (see `docs/agents/triage-labels.md`), post a completion-report comment on the issue when you open the PR — a short summary of what was implemented and how it was verified (reuse the `qa-gate` result if one ran this session), referencing the PR — unless the maintainer said to skip it.

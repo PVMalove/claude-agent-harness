@@ -19,7 +19,9 @@ You must execute this skill in two distinct phases to ensure the user agrees wit
     - Prefer existing seams over new ones.
     - Use the highest seam possible.
     - Ideal state: exactly *one* seam for the whole feature.
-3. **STOP AND ASK:** Present your proposed seams to the user and explicitly ask for their approval. **Do not proceed to Phase 2 until the user confirms.**
+3. **STOP AND ASK:** Present your proposed seams and one integration branch name in the form
+   `integration/<service-or-team>`. Derive the slug from explicit project/domain language; never
+   guess it. Ask the user to approve both. **Do not proceed to Phase 2 until the user confirms.**
 
 ### Phase 2: Drafting & Publishing (After User Approval)
 1. **Draft the File:** Write the spec using the `<spec-template>` below, in its own folder under `docs/tasks/`.
@@ -31,6 +33,18 @@ You must execute this skill in two distinct phases to ensure the user agrees wit
     - `workflow::specs` (Do NOT use `workflow::ready` as it requires decomposition first).
     - `task-report::required` (unless told to skip).
     - *Note:* Do NOT create ad-hoc `epic::<slug>` labels. `/to-tickets` will handle linking sub-tasks natively later, as GitHub sub-issues — see `docs/agents/issue-tracker.md#wayfinding-operations` for the mechanism.
+4. **Ensure the selected integration branch exists after the epic issue succeeds:**
+    - Read `base_branch` from `.harness/project.json` (default `main`). This is the release/base
+      branch from which the epic integration branch starts.
+    - Fetch the base ref. Create `integration/<service-or-team>` from `origin/<base_branch>` when
+      a remote exists, otherwise from the local base branch. Do not switch the current worktree;
+      it may contain unrelated changes.
+    - If the integration branch already exists locally or remotely, reuse it without resetting,
+      force-updating, or deleting it. If publication succeeds but branch creation fails, report
+      the partial state and the exact recovery action; do not recreate the epic issue.
+    - Push a newly created remote branch with `git push -u origin integration/<service-or-team>`.
+      For a local tracker or a repository without a remote, create the local branch and report
+      that it was not pushed.
 
 ---
 
@@ -59,6 +73,12 @@ A list of modules to build/modify, interface changes, technical clarifications, 
 
 ## Out of Scope
 A strict list of things that will NOT be done. This is your insurance policy against over-engineering. Be explicit about boundaries so future agents do not build more than requested.
+
+## Integration Branch
+
+- Branch: `integration/<service-or-team>`
+- Created from: `base_branch` in `.harness/project.json`
+- Child issue branches start from this integration branch and open PRs back to it.
 
 ## Further Notes
 Any remaining context or constraints.

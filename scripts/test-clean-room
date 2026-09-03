@@ -259,6 +259,21 @@ def _run(test_root: Path):
     hook = pv_project / ".claude" / "hooks" / "check-branch-name.sh"
     if not hook.is_file():
         sys.exit("pvmalove-suite init did not scaffold check-branch-name.sh")
+    metadata_hook = pv_project / ".claude" / "hooks" / "block-public-attribution.sh"
+    if not metadata_hook.is_file():
+        sys.exit("pvmalove-suite init did not scaffold block-public-attribution.sh")
+
+    if run_hook(metadata_hook, pv_project, 'git commit -m "feat: document runtime behavior"').returncode != 0:
+        sys.exit("block-public-attribution.sh rejected a project-only commit message")
+    if run_hook(metadata_hook, pv_project, 'git commit -m "chore: add Claude-Session trailer"').returncode == 0:
+        sys.exit("block-public-attribution.sh allowed forbidden commit attribution")
+    pr_body = pv_project / "pr-body.md"
+    pr_body.write_text("## Summary\nKeep the change focused.\n", encoding="utf-8")
+    if run_hook(metadata_hook, pv_project, f"gh pr create --body-file {pr_body}").returncode != 0:
+        sys.exit("block-public-attribution.sh rejected a project-only PR body")
+    pr_body.write_text("## Summary\nhttps://claude.ai/code/session/example\n", encoding="utf-8")
+    if run_hook(metadata_hook, pv_project, f"gh pr create --body-file {pr_body}").returncode == 0:
+        sys.exit("block-public-attribution.sh allowed forbidden PR attribution")
 
     # .harness/project.json is present, with branch_pattern set above to a distinctive regex
     # that differs from the hook's own built-in default - prove the configured value, not the
@@ -268,6 +283,20 @@ def _run(test_root: Path):
     result = run_hook(hook, pv_project, "git checkout -b release/rel-1-test")
     if result.returncode != 0:
         sys.exit(f"check-branch-name.sh rejected a branch matching the configured pattern: {result.stderr}")
+    result = run_hook(hook, pv_project, "git switch -c release/rel-2-test")
+    if result.returncode != 0:
+        sys.exit(f"check-branch-name.sh rejected a switch command matching the configured pattern: {result.stderr}")
+
+    # The direct-commit guard must protect both the configured base branch and every epic
+    # integration branch, while allowing an issue branch to push normally.
+    direct_hook = pv_project / ".claude" / "hooks" / "block-direct-master.sh"
+    subprocess.run(["git", "checkout", "-q", "-b", "release/rel-1-test"], cwd=pv_project, check=True)
+    if run_hook(direct_hook, pv_project, "git push origin release/rel-1-test").returncode != 0:
+        sys.exit("block-direct-master.sh rejected a push from an issue branch")
+    if run_hook(direct_hook, pv_project, "git push origin HEAD:main").returncode == 0:
+        sys.exit("block-direct-master.sh allowed a push to base_branch")
+    if run_hook(direct_hook, pv_project, "git push origin HEAD:integration/payments").returncode == 0:
+        sys.exit("block-direct-master.sh allowed a push to an integration branch")
 
     # Remove .harness/project.json entirely - the hook must fall back to its own built-in
     # default pattern instead of crashing or blocking every branch name.

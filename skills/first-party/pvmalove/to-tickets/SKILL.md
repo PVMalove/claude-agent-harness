@@ -32,6 +32,9 @@ You must execute this skill in two distinct phases. Do NOT publish anything to t
 
 ### Phase 2: Publishing & Summarizing (After Approval)
 1. **Publish to the Tracker:** The method depends on the configured tracker:
+    - **Integration branch:** Read the parent epic's `## Integration Branch` section before writing
+      any child ticket. Copy its exact branch name into every child ticket; if the epic has no
+      integration branch, stop and report the missing prerequisite instead of inferring one.
     - **Local files:** Write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md` (01, 02...). Use `<local-ticket-template>`. Set `**Workflow:**` to `workflow::blocked` if it has blockers, otherwise `workflow::ready`. Set `**Execution:**` to `hitl` or `afk` per your best judgment of the ticket (see `docs/agents/triage-labels.md`). Add `**Task report:** required` unless told to skip it (omit the line entirely if not required). `/implement` finds the next ticket by reading each file's `**Workflow:**` field — a purely linear chain resolves top to bottom.
     - **GitHub / Real Tracker:**
         - Publish one issue per ticket in dependency order using `gh issue create --body-file <path>`. **CRITICAL:** Do NOT use inline `--body` heredoc, as it breaks bash quoting.
@@ -56,6 +59,7 @@ You must execute this skill in two distinct phases. Do NOT publish anything to t
 
 **What to build:** The end-to-end behavior this ticket makes work from the user's perspective.
 **Blocked by:** The numbers/titles of the tickets that gate this one, or "None — can start immediately".
+**Integration branch:** The exact branch recorded by the parent epic.
 
 **Category:** bug / enhancement
 **Workflow:** workflow::ready (or workflow::blocked)
@@ -69,6 +73,11 @@ You must execute this skill in two distinct phases. Do NOT publish anything to t
 <issue-template>
 ## Parent
 A reference to the parent issue on the tracker (if applicable).
+
+## Integration Branch
+
+The exact integration branch recorded by the parent epic. Child implementation branches start
+from this branch and their PRs target it.
 
 ## What to build
 The end-to-end behavior this ticket makes work from the user's perspective.

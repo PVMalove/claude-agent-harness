@@ -11,6 +11,6 @@ For a subagent spawned via the `Agent` tool to work on an independent ticket in 
 ## Conventions
 
 - **Branch naming still applies.** `EnterWorktree`'s `name` parameter becomes the new branch name — use the same format as any other branch in this repo, per `branch_pattern` in `.harness/project.json` (see [git-workflow.md](./git-workflow.md#2-workflow-sequence)). Don't let it default to a random name for ticket work.
-- **Base ref**: a fresh worktree branches from `origin/<base_branch>` (`.harness/project.json`) unless the task specifically needs to branch from the current local `HEAD` (`worktree.baseRef` setting).
+- **Base ref**: a fresh worktree for a child ticket branches from the epic's recorded `origin/<integration-branch>`; an epic-less task uses `origin/<base_branch>` from `.harness/project.json`. Use the current local `HEAD` only when the task specifically requires it (`worktree.baseRef` setting).
 - **Everything else in [git-workflow.md](./git-workflow.md) still applies inside a worktree** — TDD, `qa-gate` before opening a PR, the PR confirmation checkpoint, never merging. A worktree changes *where* the work happens, not the process.
 - **Cleanup**: once a ticket in a worktree is done and its PR is open (or abandoned), exit with `ExitWorktree`. Use `remove` for a finished/abandoned ticket, `keep` only if the developer wants to return to it later. Don't leave worktrees accumulating under `.claude/worktrees/`.

@@ -47,10 +47,13 @@ When a task matches a skill, open only its relevant `SKILL.md` through `.agents/
   and project-specific integrations. Do not update profiles or projects from session-start hooks.
 - Never edit `skills/vendor/` manually. Replace a complete pinned snapshot only; use exact upstream
   revisions and retain license and provenance files.
-- For implementation or delivery, follow `docs/agents/git-workflow.md`: issue first, an isolated
-  branch matching `.harness/project.json`, local testing before commits, CLI-only Git and tracker
-  operations, explicit confirmation before opening a PR, and no auto-merge. Use
+- For implementation or delivery, follow `docs/agents/git-workflow.md`: issue first, use the epic's
+  recorded `integration/<service-or-team>` branch as the task base, create an isolated issue branch
+  matching `.harness/project.json`, test before commits, use CLI-only Git and tracker operations,
+  get explicit confirmation before opening a PR, and never auto-merge. Use
   `docs/agents/artifacts.md` and `docs/agents/worktrees.md` for their respective workflows.
+- Keep commit messages and PR titles/bodies project-only: never add automated-agent attribution,
+  model names, session URLs, or `Co-Authored-By` trailers. The project hook and CI check enforce this.
 - Run QA commands from `.harness/project.json`. After changing `harness/CAPABILITIES.json` or
   anything under `skills/`, run `scripts/verify` before completion; `scripts/test-clean-room` is
   the faster local loop. On failure, inspect the immediate error, form a direct hypothesis, fix it,

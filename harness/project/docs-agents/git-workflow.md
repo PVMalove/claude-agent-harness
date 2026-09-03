@@ -1,26 +1,32 @@
 # Git workflow: feature branch + PR
 
 ### 1. Fundamental Constraints & Tooling
-* **Zero Direct Commits:** Any direct commits to the main branch (`master`/`main`) or the current working branch are strictly prohibited unless it is an isolated feature branch.
+* **Zero Direct Commits:** `base_branch` and every `integration/*` branch are protected targets. Agents commit and push only from an isolated issue branch matching `branch_pattern`.
 * **CLI Only:** Rely exclusively on `git` and your tracker's CLI — GitHub CLI (`gh`) or GitLab CLI (`glab`) — for repository and task operations.
 * **Body via File, Not Inline:** Any multiline body passed to `gh`/`glab` (`issue create`, `pr create`, `pr comment`, or equivalents) MUST go through `--body-file <path>`, never inline `--body "..."` or a shell heredoc — nested quotes, backticks, and PowerShell's escaping rules all break it unpredictably. For an issue or spec, the path is the already-written draft file (see [issue-tracker.md](./issue-tracker.md)). For a PR body or a comment, write it to a temp file first, then delete that temp file once the command succeeds.
+* **Project-Only Metadata:** Commit messages and PR titles/bodies contain only the project change. Automated-agent attribution, model names, session URLs, and `Co-Authored-By` trailers are forbidden; the local hook and CI check reject them.
 * **Issue First:** No development begins without a registered ticket. All implementation tasks MUST be created beforehand using `gh issue create` (`glab issue create` on GitLab). For the local markdown tracker, creating the ticket file under `.scratch/<feature-slug>/issues/` satisfies this instead — see [issue-tracker.md](./issue-tracker.md); that tracker also skips steps 6–7 below entirely (see `implement/SKILL.md` Phase 3 — no PR/merge step).
-* **Zero Auto-Merge:** The agent must never merge a pull request itself (`gh pr merge`/`glab mr merge` or equivalent). Merging into `master`/`main` is exclusively a manual action performed by the developer, after they confirm in the Human QA & Merge step below. This is unconditional regardless of the ticket's `hitl`/`afk` execution mode (see `docs/agents/triage-labels.md`) — `afk` means an agent can implement the work unattended, never that it may ship unattended.
+* **Zero Auto-Merge:** The agent must never merge a pull request itself (`gh pr merge`/`glab mr merge` or equivalent). Merging into `integration/*` or `base_branch` is exclusively a manual action performed by the developer, after they confirm in the Human QA & Merge step below. This is unconditional regardless of the ticket's `hitl`/`afk` execution mode (see `docs/agents/triage-labels.md`) — `afk` means an agent can implement the work unattended, never that it may ship unattended.
 * **PR Confirmation Required:** The agent must not run `gh pr create`/`glab mr create` without first getting the developer's explicit go-ahead that the branch is ready to become a PR. This is a separate, earlier checkpoint than Human QA & Merge below (which covers review *after* the PR already exists) — finishing implementation, tests, and code-review does NOT by itself imply consent to open the PR. Like Zero Auto-Merge above, this gate does not relax for `afk`-labeled tickets.
 
 ### 2. Workflow Sequence
 
+An epic selects one integration branch named `integration/<service-or-team>`. `/to-spec` creates it
+from `origin/<base_branch>` after publishing the epic when it is absent, records it in the epic, and never switches
+the current worktree. `/to-tickets` copies the exact value to every child ticket. The integration
+branch is the PR target for child work; `base_branch` is the release target for a separate PR.
+
 1. **Initialization (Branching):**
-   An isolated branch is created for each task, from an up-to-date `base_branch` — never from whatever branch happens to already be checked out.
+   An isolated issue branch is created for each task from the epic's exact integration branch — never from whatever branch happens to already be checked out. If the task has no epic, use `base_branch`.
    * **Format:** must match `branch_pattern` in `.harness/project.json` (default: `feature/issue-<ID>-<short-slug>`, where `<ID>` is the tracker issue number and `<short-slug>` is a short task description — transliterated per whatever convention this project's `.harness/project.json` documents, words separated by hyphens or underscores).
-   * **Command:** `git checkout <base_branch> && git pull && git checkout -b feature/issue-<ID>-<slug>`, where `<base_branch>` is `base_branch` in `.harness/project.json` (default `main`).
+   * **Command:** `git fetch origin <integration-branch> && git switch -c feature/issue-<ID>-<slug> --track origin/<integration-branch>`. For an epic-less task, replace `<integration-branch>` with `base_branch` from `.harness/project.json` (default `main`).
 2. **Post-branch Push:**
    * Immediately after creating the branch, push it to GitHub so it exists remotely: `git push -u origin feature/issue-<ID>-<slug>`.
 3. **Implementation & Quality Assurance (TDD):**
    * Code MUST be written in strict accordance with the **TDD** (Test-Driven Development) methodology.
    * Local testing is mandatory before committing any changes.
 4. **Committing Changes:**
-   * Commits are made only to the current feature branch.
+   * Commits are made only to the current issue branch. Before the first edit and before every commit, verify that the current branch matches `branch_pattern` and is not `base_branch` or `integration/*`.
    * Commit messages **MUST** follow the **Semantic Commit Messages** standard (e.g., `feat: ...`, `fix: ...`, `refactor: ...`).
 5. **Continuous Push:**
    * Push commits to GitHub both while implementing the task and after addressing code-review feedback: `git push origin feature/issue-<ID>-<slug>`. Never leave finished commits sitting only in the local repo.
@@ -29,7 +35,7 @@
    * Once the developer confirms, run the `qa-gate` skill (see [issue-tracker.md](./issue-tracker.md)'s "When a skill says…" conventions for how tickets are referenced) and only proceed once it passes.
    * If the PR body template in [§3](#3-pr-body-template) has more structure than a short summary, delegate the body to the `pr-composer` subagent instead of improvising it inline — give it a temp file path to write to, then pass that path to `--body-file` below and delete the temp file once the PR is created.
    * PR creation is performed via CLI: `gh pr create --body-file <path>` (`glab mr create` on GitLab) — see §1 ("Body via File, Not Inline"); never inline `--body`.
-   * **Mandatory Requirement:** The pull request body MUST contain the phrase `Closes #<ID>` to automatically link and close the original ticket upon successful merge.
+   * **Mandatory Requirement:** A child PR targets the epic's integration branch and its body MUST contain the phrase `Closes #<ID>` to automatically link and close the original ticket upon successful merge. An integration-to-`base_branch` PR is a separate release action and does not replace child PRs.
    * **Mandatory Requirement:** The pull request body MUST follow the template in [§3 PR Body Template](#3-pr-body-template) below.
 7. **Human QA & Merge:**
    * Once the PR is open, explicitly ask the developer whether they want to review the change themselves before it's considered ready — do not assume silence means approval.
