@@ -559,7 +559,7 @@ elif command == "task-create":
 elif command == "worker-start":
     model = args[args.index("--model") + 1]
     if model == os.environ.get("FAKE_ORCA_FAIL_MODEL"):
-        print(json.dumps({"ok": False}), file=sys.stderr)
+        print(json.dumps({"ok": False, "error": {"code": "model_unavailable"}}))
         raise SystemExit(1)
     print(json.dumps({"ok": True, "result": {"worker": {"id": "fake-worker"}}}))
 else:

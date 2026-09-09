@@ -28,6 +28,14 @@ class DispatchError(Exception):
     """An invalid or unsafe request that must not reach Orca."""
 
 
+class OrcaLaunchRejected(DispatchError):
+    """An Orca launch rejection whose recovery safety is explicit."""
+
+    def __init__(self, safe_to_fallback: bool):
+        super().__init__("Orca rejected the dispatch request")
+        self.safe_to_fallback = safe_to_fallback
+
+
 def _read_json(path: Path, label: str) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -198,12 +206,16 @@ def _orca_command(orca_bin: str, args: list[str]) -> list[str]:
 
 def _run_orca(orca_bin: str, args: list[str]) -> dict[str, Any]:
     result = subprocess.run(_orca_command(orca_bin, args), capture_output=True, text=True)
-    if result.returncode:
-        raise DispatchError("Orca rejected the dispatch request")
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
+        if result.returncode:
+            raise DispatchError("Orca returned non-JSON output for a rejected dispatch") from exc
         raise DispatchError("Orca returned non-JSON output") from exc
+    if result.returncode:
+        error = payload.get("error") if isinstance(payload, dict) else None
+        code = error.get("code") if isinstance(error, dict) else None
+        raise OrcaLaunchRejected(code in {"agent_unavailable", "model_unavailable", "account_unavailable"})
     if not isinstance(payload, dict) or payload.get("ok") is False:
         raise DispatchError("Orca returned an unsuccessful dispatch result")
     return payload
@@ -283,7 +295,9 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
                     "--model", profile["default_model"], "--setup", "run", "--json",
                 ],
             )
-        except DispatchError as exc:
+        except OrcaLaunchRejected as exc:
+            if not exc.safe_to_fallback:
+                raise DispatchError("Orca launch outcome is uncertain; no fallback dispatch was created") from exc
             last_error = exc
             continue
         record = {
