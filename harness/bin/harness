@@ -233,6 +233,13 @@ def _resolve_skill_source(entry: str) -> Path:
     return source
 
 
+def _resolve_resource_source(entry: str) -> Path:
+    source = PACKAGE / entry
+    if not source.is_dir():
+        fail(f"missing capability resource: harness/{entry}")
+    return source
+
+
 def resolve_capability_skills(name: str, catalog: dict, _stack: tuple[str, ...] = ()) -> dict[str, Path]:
     """Resolve one capability to {skill_name: source_path}, following `extends`
     (inherit another capability's resolved set), `overrides` (swap an inherited
@@ -268,6 +275,31 @@ def resolve_capability_skills(name: str, catalog: dict, _stack: tuple[str, ...] 
     return resolved
 
 
+def resolve_capability_resources(name: str, catalog: dict, _stack: tuple[str, ...] = ()) -> dict[str, Path]:
+    """Resolve managed non-skill resources for one capability and its parents.
+
+    Resources retain their path below ``harness/`` when materialized below a
+    project's ``.harness/`` directory. This keeps capability-owned contracts
+    out of the project seed-file namespace while allowing update and drift
+    detection to manage them through the ordinary snapshot lock.
+    """
+    if name in _stack:
+        fail(f"capability cycle: {' -> '.join(_stack + (name,))}")
+    definition = catalog[name]
+    resolved: dict[str, Path] = {}
+
+    extends = definition.get("extends")
+    if extends:
+        if extends not in catalog:
+            fail(f"capability {name!r} extends unknown capability {extends!r}")
+        resolved.update(resolve_capability_resources(extends, catalog, _stack + (name,)))
+
+    for entry in definition.get("resources") or []:
+        resolved[entry] = _resolve_resource_source(entry)
+
+    return resolved
+
+
 def selected_skills(names: list[str]) -> list[Path]:
     catalog = capabilities()
     paths: list[Path] = []
@@ -282,6 +314,24 @@ def selected_skills(names: list[str]) -> list[Path]:
     return paths
 
 
+def selected_resources(names: list[str]) -> list[Path]:
+    catalog = capabilities()
+    paths: list[Path] = []
+    seen_destinations: dict[Path, Path] = {}
+    for capability in names:
+        for source in resolve_capability_resources(capability, catalog).values():
+            destination = source.relative_to(PACKAGE)
+            if destination in seen_destinations and seen_destinations[destination] != source:
+                fail(
+                    f"duplicate capability resource {destination}: "
+                    f"{seen_destinations[destination]} and {source}"
+                )
+            if destination not in seen_destinations:
+                seen_destinations[destination] = source
+                paths.append(source)
+    return paths
+
+
 def package_files(names: list[str]) -> dict[str, bytes]:
     result: dict[str, bytes] = {}
     for source in selected_skills(names):
@@ -290,6 +340,13 @@ def package_files(names: list[str]) -> dict[str, bytes]:
                 continue
             relative = path.relative_to(source)
             target = Path(".harness/skills") / source.name / relative
+            result[target.as_posix()] = path.read_bytes()
+    for source in selected_resources(names):
+        for path in sorted(source.rglob("*")):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(source)
+            target = Path(".harness") / source.relative_to(PACKAGE) / relative
             result[target.as_posix()] = path.read_bytes()
     return result
 

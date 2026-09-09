@@ -262,6 +262,47 @@ def _run(test_root: Path):
     if not (pv_project / ".harness" / "skills" / "qa-gate" / "SKILL.md").is_file():
         sys.exit("pvmalove-suite addition qa-gate missing")
 
+    # backend-orchestration is opt-in: it extends pvmalove-suite with the portable
+    # role contracts, while a regular pvmalove-suite project receives none of them.
+    if (pv_project / ".harness" / "orchestration").exists():
+        sys.exit("pvmalove-suite unexpectedly installed orchestration resources")
+
+    orchestration_project = test_root / "orchestration_project"
+    orchestration_project.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=orchestration_project, check=True)
+    run_ok(
+        HARNESS
+        + [
+            "init",
+            str(orchestration_project),
+            "--capability",
+            "backend-orchestration",
+            "--base-branch",
+            "main",
+            "--language",
+            "ru",
+            "--pr-base-branch",
+            "main",
+            "--branch-pattern",
+            "^feature/issue-[0-9]+-.+",
+            "--qa-gate-command",
+            "echo test",
+        ]
+    )
+    fill_agents(orchestration_project)
+    run_ok(HARNESS + ["health", str(orchestration_project)])
+    for name in (
+        "_common.md",
+        "architect.md",
+        "code-review.md",
+        "database-migrations.md",
+        "developer.md",
+        "messaging-integration.md",
+        "qa.md",
+    ):
+        if not (orchestration_project / ".harness" / "orchestration" / "roles" / name).is_file():
+            sys.exit(f"backend-orchestration role manifest missing: {name}")
+
     project_json = pv_project / ".harness" / "project.json"
     if not project_json.is_file():
         sys.exit("pvmalove-suite init did not scaffold .harness/project.json")
