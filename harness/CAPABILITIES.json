@@ -65,7 +65,7 @@
     "description": "Optional portable backend orchestration role manifests. Extends pvmalove-suite without changing projects that do not explicitly select it.",
     "extends": "pvmalove-suite",
     "resources": [
-      "orchestration/roles"
+      "orchestration"
     ]
   }
 }

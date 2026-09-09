@@ -67,6 +67,14 @@ def run_fails(cmd, quiet=False, quiet_all=False) -> bool:
     return result.returncode != 0
 
 
+def fail_output(cmd) -> str:
+    """Run a command that must fail and return its combined diagnostic output."""
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        sys.exit("command unexpectedly succeeded: " + " ".join(map(str, cmd)))
+    return result.stdout + result.stderr
+
+
 def capture(cmd) -> str:
     return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
 
@@ -266,6 +274,8 @@ def _run(test_root: Path):
     # role contracts, while a regular pvmalove-suite project receives none of them.
     if (pv_project / ".harness" / "orchestration").exists():
         sys.exit("pvmalove-suite unexpectedly installed orchestration resources")
+    if (pv_project / ".harness" / "orchestration.json").exists():
+        sys.exit("pvmalove-suite unexpectedly installed orchestration config")
 
     orchestration_project = test_root / "orchestration_project"
     orchestration_project.mkdir(parents=True)
@@ -291,6 +301,12 @@ def _run(test_root: Path):
     )
     fill_agents(orchestration_project)
     run_ok(HARNESS + ["health", str(orchestration_project)])
+    orchestration_root = orchestration_project / ".harness" / "orchestration"
+    if not (orchestration_root / "orchestration.schema.json").is_file():
+        sys.exit("backend-orchestration schema missing")
+    orchestration_config = orchestration_project / ".harness" / "orchestration.json"
+    if not orchestration_config.is_file():
+        sys.exit("backend-orchestration config seed missing")
     for name in (
         "_common.md",
         "architect.md",
@@ -302,6 +318,83 @@ def _run(test_root: Path):
     ):
         if not (orchestration_project / ".harness" / "orchestration" / "roles" / name).is_file():
             sys.exit(f"backend-orchestration role manifest missing: {name}")
+
+    role_names = (
+        "developer",
+        "architect",
+        "qa",
+        "database-migrations",
+        "messaging-integration",
+        "code-review",
+    )
+    valid_orchestration = {
+        "$schema": "./orchestration/orchestration.schema.json",
+        "provider_profiles": {
+            "backend-default": {
+                "capabilities": [
+                    "backend-development",
+                    "architecture-analysis",
+                    "independent-verification",
+                    "database-migrations",
+                    "messaging-integration",
+                    "code-review",
+                ],
+                "default_model": "project-model",
+                "fallback": [],
+                "known_limitations": ["project-defined limitations"],
+            }
+        },
+        "assignment_plans": {
+            role: {"profiles": ["backend-default"], "zone": "backend"} for role in role_names
+        },
+        "backend_zones": {"backend": {"paths": ["services/**"]}},
+        "concurrency_budget": 2,
+        "verification_commands": ["python -m pytest"],
+    }
+    orchestration_config.write_text(json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8")
+    run_ok(HARNESS + ["health", str(orchestration_project)])
+
+    invalid_role = json.loads(json.dumps(valid_orchestration))
+    invalid_role["assignment_plans"]["unknown-role"] = invalid_role["assignment_plans"]["developer"]
+    orchestration_config.write_text(json.dumps(invalid_role, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "unknown role" not in output:
+        sys.exit("health did not explain unknown orchestration role")
+
+    invalid_profile = json.loads(json.dumps(valid_orchestration))
+    invalid_profile["assignment_plans"]["developer"]["profiles"] = ["missing-profile"]
+    orchestration_config.write_text(json.dumps(invalid_profile, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "unknown provider profile" not in output:
+        sys.exit("health did not explain unknown provider profile")
+
+    incompatible = json.loads(json.dumps(valid_orchestration))
+    incompatible["provider_profiles"]["backend-default"]["capabilities"] = ["independent-verification"]
+    orchestration_config.write_text(json.dumps(incompatible, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "incompatible capability" not in output:
+        sys.exit("health did not explain incompatible provider capability")
+
+    invalid_zone = json.loads(json.dumps(valid_orchestration))
+    invalid_zone["assignment_plans"]["developer"]["zone"] = "missing-zone"
+    orchestration_config.write_text(json.dumps(invalid_zone, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "unknown backend zone" not in output:
+        sys.exit("health did not explain unknown backend zone")
+
+    policy_override = json.loads(json.dumps(valid_orchestration))
+    policy_override["assignment_plans"]["developer"]["mode"] = "read-only"
+    orchestration_config.write_text(json.dumps(policy_override, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "cannot override role manifest" not in output:
+        sys.exit("health allowed an assignment to override role policy")
+
+    credential_field = json.loads(json.dumps(valid_orchestration))
+    credential_field["provider_profiles"]["backend-default"]["api_key"] = "environment-only"
+    orchestration_config.write_text(json.dumps(credential_field, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "credentials" not in output:
+        sys.exit("health did not reject credential-shaped provider profile data")
 
     project_json = pv_project / ".harness" / "project.json"
     if not project_json.is_file():
