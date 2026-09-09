@@ -31,14 +31,15 @@
 | Харнесс проекта | Инструкции проекта, выбранные скиллы, ссылки обнаружения и lock-файл |
 | Опциональная надстройка | `pvmalove-suite` — личные скиллы, doc'и, хуки поверх обычного харнесса |
 
-## Две capability
+## Три capability
 
 - **`mattpocock-suite`** — чистый снимок апстрима, файлы никогда не редактируются вручную (`skills/vendor/`, закреплено через `third_party/mattpocock-skills/UPSTREAM.lock`).
 - **`pvmalove-suite`** — выбирается **вместо** `mattpocock-suite`, не вместе с ней (CLI откажет с `duplicate skill name`, если указать обе сразу). Расширяет её через `extends`/`overrides`/`additions` в `harness/CAPABILITIES.json`: 15 скиллов наследуются от `mattpocock-suite` без изменений, 10 переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pr`.
+- **`backend-orchestration`** — необязательная надстройка над `pvmalove-suite`: переносимые role manifest'ы, проектный контракт назначений, lifecycle batch и optional Orca adapter. Она не включается сама и не превращает харнесс в автономный scheduler: каждый dispatch утверждает человек. Настройка, ручной протокол, JSON-пример и запуск через Orca описаны в [руководстве по backend-оркестрации](./docs/agents/backend-orchestration.md).
 
 При выборе `pvmalove-suite` `harness init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект:
 
-- `docs/agents/{git-workflow,worktrees,artifacts,issue-tracker,triage-labels,harness-guide}.md`
+- `docs/agents/{artifacts,backend-orchestration,git-workflow,harness-guide,issue-tracker,triage-labels,worktrees}.md`
 - `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json`
 - hook для блокировки автоматической атрибуции в commit/PR metadata; CI повторяет эту проверку
 - `.claude/rules/karpathy-guidelines.md`
