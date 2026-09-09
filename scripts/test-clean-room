@@ -319,6 +319,67 @@ def _run(test_root: Path):
         if not (orchestration_project / ".harness" / "orchestration" / "roles" / name).is_file():
             sys.exit(f"backend-orchestration role manifest missing: {name}")
 
+    playbook_path = orchestration_root / "playbook.md"
+    if not playbook_path.is_file():
+        sys.exit("backend-orchestration playbook missing")
+    playbook = playbook_path.read_text(encoding="utf-8")
+    for required_contract in (
+        "## Lifecycle",
+        "planned",
+        "approved",
+        "dispatched",
+        "working",
+        "completed",
+        "blocked",
+        "failed",
+        "## Immutable handoff brief",
+        "ticket",
+        "zone IDs",
+        "branch/worktree",
+        "Definition of Done",
+        "prohibited changes",
+        "verification commands",
+        "## Completion report",
+        "commit SHA",
+        "changed files",
+        "checks run",
+        "risks",
+        "blockers",
+        "new coordinator decision",
+        "new dispatch",
+        "one active writer",
+        "serialized quality-gate lane",
+        "agent starts per closed ticket",
+        "tokens per batch",
+        "quality-gate wall time",
+        "post-integration defects",
+    ):
+        if required_contract not in playbook:
+            sys.exit(f"backend-orchestration playbook missing contract: {required_contract}")
+    lifecycle_states = [f"`{state}`" for state in (
+        "planned",
+        "approved",
+        "dispatched",
+        "working",
+        "completed",
+        "blocked",
+        "failed",
+    )]
+    lifecycle_positions = [playbook.index(f"| {state} |") for state in lifecycle_states]
+    if lifecycle_positions != sorted(lifecycle_positions):
+        sys.exit("backend-orchestration playbook lifecycle states are out of order")
+    normalized_playbook = " ".join(playbook.split())
+    for required_rule in (
+        "A retry is a new dispatch with a new brief and a new dispatch ID",
+        "The original brief remains immutable",
+        "one active writer at a time",
+        "multiple roles must never write to the same batch simultaneously",
+        "one serialized quality-gate lane",
+        "without importing a provider, runtime, or fixed numerical target",
+    ):
+        if required_rule not in normalized_playbook:
+            sys.exit(f"backend-orchestration playbook missing rule: {required_rule}")
+
     code_review_role = (
         orchestration_project / ".harness" / "orchestration" / "roles" / "code-review.md"
     ).read_text(encoding="utf-8")
