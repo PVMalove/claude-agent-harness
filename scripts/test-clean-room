@@ -319,6 +319,74 @@ def _run(test_root: Path):
         if not (orchestration_project / ".harness" / "orchestration" / "roles" / name).is_file():
             sys.exit(f"backend-orchestration role manifest missing: {name}")
 
+    code_review_role = (
+        orchestration_project / ".harness" / "orchestration" / "roles" / "code-review.md"
+    ).read_text(encoding="utf-8")
+    role_frontmatter = code_review_role.split("---", 2)[1]
+    if "name: code-review" not in role_frontmatter or "mode: read-only" not in role_frontmatter:
+        sys.exit("code-review role metadata must remain read-only and named code-review")
+
+    def frontmatter_list(field):
+        lines = role_frontmatter.splitlines()
+        try:
+            start = lines.index(f"{field}:") + 1
+        except ValueError:
+            return set()
+        values = set()
+        for line in lines[start:]:
+            item = line.strip()
+            if not item.startswith("-"):
+                break
+            values.add(item[2:].strip())
+        return values
+
+    actual_capabilities = frontmatter_list("required_capabilities")
+    if actual_capabilities != {"code-review"}:
+        sys.exit(f"code-review role capabilities changed: {sorted(actual_capabilities)}")
+    actual_triggers = frontmatter_list("risk_triggers")
+    expected_triggers = {
+        "api-public-contract",
+        "schema-change",
+        "data-migration",
+        "outbox",
+        "queues",
+        "message-schema-routing",
+        "transactions",
+        "authorization-security",
+        "concurrency-retry",
+        "retry-dlq",
+    }
+    if actual_triggers != expected_triggers:
+        sys.exit(f"code-review role risk triggers changed: {sorted(actual_triggers)}")
+    for required_contract in (
+        "mandatory two-axis review gate",
+        "API/public contracts",
+        "schema/data migrations",
+        "outbox/queues",
+        "transactions",
+        "authorization/security",
+        "concurrency/retry",
+        "evidence",
+        "residual risks",
+        "blockers",
+        "must not change production code or integrate",
+        "reviewed branch",
+        "must not mark a high-risk batch complete until both the Standards and Spec reports",
+    ):
+        if required_contract not in code_review_role:
+            sys.exit(f"code-review role contract missing: {required_contract}")
+
+    installed_review_skill = (
+        orchestration_project / ".harness" / "skills" / "code-review" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    for required_boundary in (
+        "`language` from `.harness/project.json`",
+        "runtime-neutral",
+        "must not launch a runtime-specific adapter",
+    ):
+        if required_boundary not in installed_review_skill:
+            sys.exit(f"code-review workflow boundary missing: {required_boundary}")
+
     role_names = (
         "developer",
         "architect",
@@ -353,6 +421,41 @@ def _run(test_root: Path):
     }
     orchestration_config.write_text(json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8")
     run_ok(HARNESS + ["health", str(orchestration_project)])
+
+    missing_review_assignment = json.loads(json.dumps(valid_orchestration))
+    del missing_review_assignment["assignment_plans"]["code-review"]
+    orchestration_config.write_text(
+        json.dumps(missing_review_assignment, indent=2) + "\n", encoding="utf-8"
+    )
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "must include code-review for the mandatory high-risk role gate" not in output:
+        sys.exit("health allowed orchestration config without the code-review role gate")
+
+    role_path = orchestration_root / "roles" / "code-review.md"
+    original_role = role_path.read_text(encoding="utf-8")
+    role_path.write_text(original_role.replace("  - retry-dlq\n", ""), encoding="utf-8")
+    if "  - retry-dlq\n" in role_path.read_text(encoding="utf-8"):
+        sys.exit("clean-room test could not remove retry-dlq trigger")
+    orchestration_config.write_text(json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "code-review role manifest is missing required risk trigger" not in output:
+        sys.exit("health allowed code-review without the complete high-risk trigger contract")
+    role_path.write_text(original_role, encoding="utf-8")
+
+    role_path.write_text(original_role.replace("mode: read-only", "mode: write"), encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "code-review role manifest must remain read-only" not in output:
+        sys.exit("health allowed code-review with a write mode")
+    role_path.write_text(original_role, encoding="utf-8")
+
+    role_path.write_text(
+        original_role.replace("  - code-review\nrisk_triggers:", "  - backend-development\nrisk_triggers:"),
+        encoding="utf-8",
+    )
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "code-review role manifest must require the code-review capability" not in output:
+        sys.exit("health allowed code-review without its required capability")
+    role_path.write_text(original_role, encoding="utf-8")
 
     invalid_role = json.loads(json.dumps(valid_orchestration))
     invalid_role["assignment_plans"]["unknown-role"] = invalid_role["assignment_plans"]["developer"]
