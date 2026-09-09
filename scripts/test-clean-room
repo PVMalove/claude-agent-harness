@@ -307,15 +307,24 @@ def _run(test_root: Path):
     orchestration_config = orchestration_project / ".harness" / "orchestration.json"
     if not orchestration_config.is_file():
         sys.exit("backend-orchestration config seed missing")
-    for name in (
-        "_common.md",
+    expected_role_files = {
         "architect.md",
         "code-review.md",
         "database-migrations.md",
         "developer.md",
         "messaging-integration.md",
         "qa.md",
-    ):
+    }
+    actual_role_files = {
+        path.name for path in (orchestration_project / ".harness" / "orchestration" / "roles").glob("*.md")
+        if path.name != "_common.md"
+    }
+    if actual_role_files != expected_role_files:
+        sys.exit(
+            "backend-orchestration role set changed: "
+            f"expected {sorted(expected_role_files)}, found {sorted(actual_role_files)}"
+        )
+    for name in ("_common.md", *sorted(expected_role_files)):
         if not (orchestration_project / ".harness" / "orchestration" / "roles" / name).is_file():
             sys.exit(f"backend-orchestration role manifest missing: {name}")
 
@@ -323,6 +332,43 @@ def _run(test_root: Path):
     if not playbook_path.is_file():
         sys.exit("backend-orchestration playbook missing")
     playbook = playbook_path.read_text(encoding="utf-8")
+    pilot_path = orchestration_root / "pilot.md"
+    if not pilot_path.is_file():
+        sys.exit("backend-orchestration pilot guide missing")
+    pilot = pilot_path.read_text(encoding="utf-8")
+    normalized_pilot = " ".join(pilot.split())
+    for required_pilot_contract in (
+        "## Purpose",
+        "## Before the first run",
+        "## Observation period",
+        "## Record each batch",
+        "## Measure the quality gate",
+        "## Record post-integration defects",
+        "## Baseline worksheet",
+        "measurement period",
+        "batch/ticket IDs",
+        "missing-data notes",
+        "same counting rules",
+        "does not prescribe a named provider, model, runtime, or platform, or a hard numerical target",
+    ):
+        if required_pilot_contract not in normalized_pilot:
+            sys.exit(f"backend-orchestration pilot guide missing contract: {required_pilot_contract}")
+    if "pilot.md" not in playbook:
+        sys.exit("backend-orchestration playbook does not link the pilot guide")
+    if re.search(r"(?im)^\s*(?:provider|model|runtime|platform)\s*[:=]", pilot):
+        sys.exit("backend-orchestration pilot guide declares a provider, model, runtime, or platform")
+    if re.search(
+        r"(?i)\b(?:use|choose|select|require|default|must|should)\b.{0,40}"
+        r"\b(?:provider|model|runtime|platform)\b",
+        normalized_pilot,
+    ):
+        sys.exit("backend-orchestration pilot guide prescribes a provider, model, runtime, or platform")
+    if re.search(
+        r"(?i)\b(?:at most|at least|no more than|maximum|minimum|limit|target)\s+"
+        r"(?:\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten)\b",
+        normalized_pilot,
+    ):
+        sys.exit("backend-orchestration pilot guide contains a hard numerical target")
     for required_contract in (
         "## Lifecycle",
         "planned",

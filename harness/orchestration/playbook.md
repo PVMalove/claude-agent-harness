@@ -165,3 +165,6 @@ notes, and the same counting rules across the period.
 
 The baseline is evidence for later targets, not a hidden limit. It must not prescribe a provider,
 model, Orca behavior, or hard-coded concurrency or token number.
+
+Use the accompanying [pilot guide](pilot.md) to record the first observation period with the same
+counting rules and missing-data treatment across batches.
