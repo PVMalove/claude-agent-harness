@@ -151,7 +151,8 @@ _Avoid_: свободный выбор агента воркером, role manif
 
 **Provider profile**:
 Именованная project-owned запись о доступном агенте: capability, default model, fallback и known
-limitations. Роль ссылается на требуемую capability, а не на provider profile напрямую.
+limitations; при включённом Orca adapter добавляется agent identifier. Роль ссылается на требуемую
+capability, а не на provider profile напрямую.
 _Avoid_: agent name в role manifest, глобальная таблица моделей.
 
 **Handoff brief**:
