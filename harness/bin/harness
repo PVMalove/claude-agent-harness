@@ -702,6 +702,20 @@ ORCHESTRATION_CONFIG_REQUIRED_FIELDS = (
 )
 ORCHESTRATION_CONFIG_ALLOWED_FIELDS = frozenset(ORCHESTRATION_CONFIG_REQUIRED_FIELDS) | {"$schema"}
 ROLE_METADATA_FIELDS = frozenset({"name", "mode", "required_capabilities", "risk_triggers"})
+CODE_REVIEW_REQUIRED_RISK_TRIGGERS = frozenset(
+    {
+        "api-public-contract",
+        "schema-change",
+        "data-migration",
+        "outbox",
+        "queues",
+        "message-schema-routing",
+        "transactions",
+        "authorization-security",
+        "concurrency-retry",
+        "retry-dlq",
+    }
+)
 
 
 def _non_empty_string(value: object) -> bool:
@@ -879,6 +893,23 @@ def validate_orchestration_config(repo: Path, problems: list[str]) -> None:
         problems.append("orchestration assignment_plans must be an object")
         assignments = {}
     roles = orchestration_roles(repo, problems)
+    code_review = roles.get("code-review")
+    if code_review is not None:
+        if code_review.get("mode") != "read-only":
+            problems.append("code-review role manifest must remain read-only")
+        if "code-review" not in set(code_review.get("required_capabilities", [])):
+            problems.append("code-review role manifest must require the code-review capability")
+        actual_triggers = set(code_review.get("risk_triggers", []))
+        missing_triggers = sorted(CODE_REVIEW_REQUIRED_RISK_TRIGGERS - actual_triggers)
+        if missing_triggers:
+            problems.append(
+                "code-review role manifest is missing required risk trigger(s): "
+                + ", ".join(missing_triggers)
+            )
+    if assignments and "code-review" not in assignments:
+        problems.append(
+            "orchestration assignment_plans must include code-review for the mandatory high-risk role gate"
+        )
     for role_name, plan in assignments.items():
         if role_name not in roles:
             problems.append(f"unknown role in orchestration assignment_plans: {role_name}")
