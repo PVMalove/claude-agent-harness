@@ -514,6 +514,7 @@ def _run(test_root: Path):
                     "messaging-integration",
                     "code-review",
                 ],
+                "agent": "codex",
                 "default_model": "project-model",
                 "fallback": [],
                 "known_limitations": ["project-defined limitations"],
@@ -528,6 +529,172 @@ def _run(test_root: Path):
     }
     orchestration_config.write_text(json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8")
     run_ok(HARNESS + ["health", str(orchestration_project)])
+
+    # The Orca adapter is an opt-in managed resource. Its public CLI must reject an
+    # unapproved brief before it ever invokes the runtime boundary.
+    adapter_path = orchestration_root / "orca_adapter.py"
+    if not adapter_path.is_file():
+        sys.exit("backend-orchestration Orca adapter missing")
+
+    fake_orca = test_root / "fake-orca.py"
+    fake_orca_log = test_root / "fake-orca-log.jsonl"
+    fake_orca.write_text(
+        """import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+log_path = Path(os.environ["FAKE_ORCA_LOG"])
+with log_path.open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(args) + "\\n")
+if args[:2] != ["orchestration", args[1] if len(args) > 1 else ""]:
+    raise SystemExit("expected an Orca orchestration command")
+command = args[1]
+if command == "worker-list":
+    workers = [{"id": "existing", "state": "working"}] if os.environ.get("FAKE_ORCA_ACTIVE") else []
+    print(json.dumps({"ok": True, "result": {"workers": workers}}))
+elif command == "task-create":
+    print(json.dumps({"ok": True, "result": {"task": {"id": "fake-task"}}}))
+elif command == "worker-start":
+    model = args[args.index("--model") + 1]
+    if model == os.environ.get("FAKE_ORCA_FAIL_MODEL"):
+        print(json.dumps({"ok": False, "error": {"code": "model_unavailable"}}))
+        raise SystemExit(1)
+    print(json.dumps({"ok": True, "result": {"worker": {"id": "fake-worker"}}}))
+else:
+    raise SystemExit("unexpected command: " + command)
+""",
+        encoding="utf-8",
+    )
+
+    adapter_config = json.loads(json.dumps(valid_orchestration))
+    adapter_config["provider_profiles"]["backend-default"]["fallback"] = ["backend-fallback"]
+    adapter_config["provider_profiles"]["backend-fallback"] = {
+        "capabilities": adapter_config["provider_profiles"]["backend-default"]["capabilities"],
+        "agent": "codex",
+        "default_model": "project-fallback-model",
+        "fallback": [],
+        "known_limitations": ["project-defined limitations"],
+    }
+    orchestration_config.write_text(json.dumps(adapter_config, indent=2) + "\n", encoding="utf-8")
+
+    approved_brief = {
+        "ticket": "#900",
+        "role": "developer",
+        "access": "write",
+        "zone": "backend",
+        "write_paths": ["services/**"],
+        "branch": "feature/issue-900-approved-dispatch",
+        "worktree": "isolated-orca-worktree",
+        "definition_of_done": ["produce the requested backend change"],
+        "prohibited_changes": ["no merge or production operations"],
+        "verification_commands": ["python -m pytest"],
+        "required_gates": ["code review"],
+        "dependencies": ["approved project config"],
+        "coordinator_approval": {"approved_by": "project coordinator", "approved_at": "2026-09-09T12:00:00Z"},
+    }
+    brief_path = test_root / "approved-dispatch.json"
+    brief_path.write_text(json.dumps(approved_brief, indent=2) + "\n", encoding="utf-8")
+
+    def adapter_run(path, *, active=False):
+        env = dict(os.environ, FAKE_ORCA_LOG=str(fake_orca_log), FAKE_ORCA_FAIL_MODEL="project-model")
+        if active:
+            env["FAKE_ORCA_ACTIVE"] = "1"
+        return subprocess.run(
+            [
+                sys.executable,
+                str(adapter_path),
+                "dispatch",
+                "--repo",
+                str(orchestration_project),
+                "--brief",
+                str(path),
+                "--run",
+                "fake-run",
+                "--orca-bin",
+                str(fake_orca),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    unapproved_brief = json.loads(json.dumps(approved_brief))
+    del unapproved_brief["coordinator_approval"]
+    unapproved_path = test_root / "unapproved-dispatch.json"
+    unapproved_path.write_text(json.dumps(unapproved_brief), encoding="utf-8")
+    if adapter_run(unapproved_path).returncode == 0:
+        sys.exit("Orca adapter accepted a dispatch without coordinator approval")
+    if fake_orca_log.exists():
+        sys.exit("Orca adapter invoked the runtime before rejecting an unapproved dispatch")
+
+    invalid_zone_brief = json.loads(json.dumps(approved_brief))
+    invalid_zone_brief["zone"] = "unknown-zone"
+    invalid_zone_path = test_root / "invalid-zone-dispatch.json"
+    invalid_zone_path.write_text(json.dumps(invalid_zone_brief), encoding="utf-8")
+    if adapter_run(invalid_zone_path).returncode == 0:
+        sys.exit("Orca adapter accepted a dispatch outside its declared zone")
+    if fake_orca_log.exists():
+        sys.exit("Orca adapter invoked the runtime before rejecting an invalid zone")
+
+    read_only_brief = json.loads(json.dumps(approved_brief))
+    read_only_brief.update({"role": "code-review", "access": "write", "write_paths": ["services/**"]})
+    read_only_path = test_root / "read-only-write-dispatch.json"
+    read_only_path.write_text(json.dumps(read_only_brief), encoding="utf-8")
+    if adapter_run(read_only_path).returncode == 0:
+        sys.exit("Orca adapter gave a read-only role write access")
+    if fake_orca_log.exists():
+        sys.exit("Orca adapter invoked the runtime before rejecting a role-mode mismatch")
+
+    first_dispatch = adapter_run(brief_path)
+    if first_dispatch.returncode != 0:
+        sys.exit("Orca adapter rejected an approved dispatch: " + first_dispatch.stderr)
+    records_dir = orchestration_project / ".harness" / "orca-dispatches"
+    records = sorted(records_dir.glob("*.json"))
+    if len(records) != 1:
+        sys.exit("Orca adapter did not create one immutable dispatch record")
+    first_record_path = records[0]
+    first_record_bytes = first_record_path.read_bytes()
+    first_record = json.loads(first_record_bytes)
+    if first_record["brief"] != approved_brief:
+        sys.exit("Orca adapter did not preserve the approved dispatch brief verbatim")
+    if first_record["resolved"] != {
+        "profile": "backend-fallback", "agent": "codex", "model": "project-fallback-model"
+    }:
+        sys.exit("Orca adapter did not record the project-configured fallback resolution")
+    if first_record["terminal_outcome"] != "ready":
+        sys.exit("Orca adapter did not record the Orca terminal outcome")
+    fake_calls = [json.loads(line) for line in fake_orca_log.read_text(encoding="utf-8").splitlines()]
+    worker_calls = [call for call in fake_calls if call[1] == "worker-start"]
+    if len(worker_calls) != 2:
+        sys.exit("Orca adapter did not try the configured fallback exactly once")
+    for call in worker_calls:
+        if call[call.index("--worktree") + 1] != "new-top-level":
+            sys.exit("Orca adapter did not request an isolated Orca worktree")
+        if call[call.index("--base-branch") + 1] != approved_brief["branch"]:
+            sys.exit("Orca adapter did not dispatch from the approved issue branch")
+
+    retry_dispatch = adapter_run(brief_path)
+    if retry_dispatch.returncode != 0:
+        sys.exit("Orca adapter rejected a valid retry: " + retry_dispatch.stderr)
+    records = sorted(records_dir.glob("*.json"))
+    if len(records) != 2 or first_record_path.read_bytes() != first_record_bytes:
+        sys.exit("Orca adapter retry changed an immutable prior dispatch record")
+    if len({json.loads(path.read_text(encoding="utf-8"))["dispatch_id"] for path in records}) != 2:
+        sys.exit("Orca adapter retry reused a dispatch ID")
+
+    adapter_config["concurrency_budget"] = 1
+    orchestration_config.write_text(json.dumps(adapter_config, indent=2) + "\n", encoding="utf-8")
+    calls_before_budget_rejection = len(fake_orca_log.read_text(encoding="utf-8").splitlines())
+    if adapter_run(brief_path, active=True).returncode == 0:
+        sys.exit("Orca adapter exceeded the project concurrency budget")
+    budget_calls = [
+        json.loads(line)
+        for line in fake_orca_log.read_text(encoding="utf-8").splitlines()[calls_before_budget_rejection:]
+    ]
+    if [call[1] for call in budget_calls] != ["worker-list"]:
+        sys.exit("Orca adapter created a task after concurrency-budget rejection")
 
     missing_review_assignment = json.loads(json.dumps(valid_orchestration))
     del missing_review_assignment["assignment_plans"]["code-review"]

@@ -66,6 +66,11 @@
           },
           "description": "Capabilities this profile can satisfy; credentials are never stored here."
         },
+        "agent": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Orca agent identifier selected by this project-owned profile."
+        },
         "default_model": {
           "type": "string",
           "minLength": 1
