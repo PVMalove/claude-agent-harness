@@ -108,6 +108,12 @@ _Avoid_: ядро оркестрации, role manifest.
 агента и модель; одноразовый override действует только на этот запуск.
 _Avoid_: автономный запуск, свободный выбор модели воркером.
 
+**Coordinator**:
+Человек или назначенная им управляющая сессия, которая планирует batch, сравнивает зоны, утверждает
+dispatch, сохраняет immutable brief и принимает completion report. Это не роль-исполнитель и не
+автономный scheduler.
+_Avoid_: воркер, сам меняющий свой scope или состояние batch.
+
 **Baseline оркестрации**:
 Начальный замер запусков агентов на закрытый тикет, токенов на batch, wall-clock quality gate и
 дефектов после интеграции, по которому задаются последующие численные цели.
@@ -191,7 +197,9 @@ _Avoid_: специализация каждой сервисной правки
 
 **Backend orchestration capability**:
 Необязательная capability `backend-orchestration`, расширяющая `pvmalove-suite` и доставляющая
-role manifests, config contract, lifecycle и handoff без изменения существующих проектов.
+role manifests, config contract, lifecycle, handoff и optional Orca adapter без изменения
+существующих проектов. Практический порядок включения и запуска —
+`docs/agents/backend-orchestration.md`.
 _Avoid_: неявное включение orchestration, изменение базовой capability.
 
 **Batch lifecycle**:
@@ -200,8 +208,9 @@ failed`. Повторная попытка — новый dispatch с новым
 _Avoid_: self-transition воркера, повторное использование старого dispatch.
 
 **Orca adapter**:
-Отдельный последующий slice, который реализует runtime adapter для Orca после backend-pilot; он не
-является частью первого declarative orchestration slice.
+Необязательная runtime-граница в `backend-orchestration`: после ручного approval переводит валидный
+JSON brief в Orca task и isolated worker, фиксируя неизменяемую запись dispatch. Он не выбирает
+scope, не утверждает запуск, не выполняет project checks и не мержит PR.
 _Avoid_: обязательная Orca dependency, config-only ядро с командами Orca.
 
 **Role common contract** (`harness/orchestration/roles/_common.md`):
