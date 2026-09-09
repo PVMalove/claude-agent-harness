@@ -46,7 +46,7 @@ Contradictions section of the closing report.
 
 Components and their responsibilities, how they interact, key abstractions and interfaces, data
 flows, dependencies, constraints, and conventions binding future work. Call out, separately, any
-decision specific to AI agent / orchestration / tool / memory / session / RAG / LLM integration
+decision specific to AI agent / tool / memory / session / RAG / LLM integration
 architecture, when the repository has any.
 
 ## When a decision earns an ADR

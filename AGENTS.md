@@ -67,11 +67,10 @@ When a task matches a skill, open only its relevant `SKILL.md` through `.agents/
   as one contract. After changing either or hand-editing `.harness/project.json`, run `harness health`
   for the target repository; keep the schema, template, validator, and relevant guide text aligned.
 
-## Supervised subagents
+## Subagents
 
-In an Orca-managed session, coordinated subagents must use Orca Run → Task → Dispatch and the
-supervised wait for `worker_done`; direct generic subagent APIs are invalid. Outside Orca, let the
-harness deliver results as notifications; never poll, schedule wakeups, or launch a wait-only agent.
+Configure, launch, and monitor subagents manually in the coding application. When a skill requires
+subagents, return their results to the primary session after they finish.
 
 Codex only: when the user explicitly asks to launch or use subagents, run them with `gpt-5.6-luna`
 and `max` reasoning effort. Do not apply this rule outside Codex.

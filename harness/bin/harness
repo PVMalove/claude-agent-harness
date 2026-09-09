@@ -373,10 +373,31 @@ def write_snapshot(repo: Path, selected: list[str], *, force: bool) -> list[str]
     lock_path = repo / LOCK_REL
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text(json.dumps(lock, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+    prune_empty_skill_directories(repo)
     write_registry(repo)
     written.append(LOCK_REL.as_posix())
     written.append(REGISTRY_REL.as_posix())
     return written
+
+
+def prune_empty_skill_directories(repo: Path) -> None:
+    """Remove only empty top-level skill directories left by retired managed skills.
+
+    A previous update may have removed a retired skill's files before regenerating the
+    registry, but left its now-empty directory behind. The registry rightfully rejects
+    such a directory because it has no SKILL.md. Do not recursively remove anything:
+    a directory containing project-owned files remains untouched for the developer to
+    resolve explicitly.
+    """
+    root = repo / ".harness/skills"
+    if not root.is_dir():
+        return
+    for directory in root.iterdir():
+        if directory.is_dir() and not directory.is_symlink():
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
 
 
 def public_skill_names(lock: dict) -> set[str]:

@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 ## Execution in Three Phases
 
-A strict pipeline, resolved in order: **Pre-flight** (confirm the ticket is actually startable, and by this agent) → **Coding** (TDD, tests, review, commit) → **PR & Wrap-up** (open the PR, close out the ticket). Phase 3 carries its own confirmation checkpoints from `docs/agents/git-workflow.md` (ask before `gh pr create`, ask again once the PR is open) — those apply in addition to, not instead of, this phase order.
+A strict pipeline, resolved in order: **Pre-flight** (confirm the ticket is actually startable, and by this agent) → **Coding** (TDD, tests, an explicitly approved review, commit, and push) → **PR & Wrap-up** (offer the separate `/to-pr` command). Only the developer can select `/to-pr`.
 
 ### Phase 1: Pre-flight
 
@@ -42,15 +42,12 @@ A strict pipeline, resolved in order: **Pre-flight** (confirm the ticket is actu
 
 1. Use `/tdd` where possible, at pre-agreed seams.
 2. Run typechecking regularly, single test files regularly, and the full test suite once at the end.
-3. Once done, use `/code-review` to review the work.
-4. Commit your work to the current branch.
+3. Ask the developer: “Провести code review?” Stop for their answer.
+    - **Yes:** run `/code-review`. It launches the Standards and Spec subagents through the coding application's manually configured mechanism, waits for both reports, and returns its separate `## Standards` and `## Spec` report to this primary session. Address any requested changes, then repeat the relevant tests before continuing.
+    - **No:** record that the developer declined review and continue.
+4. Ask the developer for explicit permission to commit and push. Stop for their answer.
+5. After approval, verify that the current branch still matches `branch_pattern` and is neither `base_branch` nor `integration/*`; commit the completed work with a Semantic Commit Message and push it to the current issue branch. Report the commit and push result to the developer.
 
 ### Phase 3: PR & Wrap-up
 
-1. **Open the PR**, if this repo defines a git workflow doc (e.g. `docs/agents/git-workflow.md`) — target the resolved epic integration branch, follow that document, then pause and ask the developer whether they want to review before it's considered done. Never merge the PR yourself — merging is the developer's call.
-    - Before opening, run the `qa-gate` skill if this repo has one — the full local check/test suite, run in isolation so its output doesn't clutter this context. Only proceed to `gh pr create` once it passes.
-    - If the PR body template has more structure than a short summary (e.g. numbered sections), delegate the body to the `pr-composer` subagent if this repo has one, instead of improvising a shorter body inline. Give it the resolved PR target branch as the diff base. In an Orca-managed session, create a supervised Orca Task/Dispatch for it and wait for `worker_done` before continuing.
-    - In an Orca-managed session, remain the coordinator while `pr-composer` runs: use Orca's supervised wait, process its delivered result, and continue the PR workflow in the same session. Outside Orca, after launching `pr-composer`, stop — do not poll it, schedule a wakeup (even as a "fallback heartbeat") to check on it, or launch another agent whose only job is to wait; the harness delivers its result as a notification in a later turn.
-2. **Close out the ticket**, if this work is tied to the ticket resolved in Phase 1:
-    - **GitHub/GitLab:** follow the git workflow doc's branch-aware ticket footer. Use `Closes #<ID>` only for the default-branch target, then verify the ticket actually closed; GitLab may disable or customize its closing pattern. For a PR to an integration branch, use `Related to #<ID>` and close the ticket explicitly only after the developer confirms that merge. If it carries `task-report::required` (see `docs/agents/triage-labels.md`), post a completion-report comment on the issue when you open the PR — a short summary of what was implemented and how it was verified (reuse the `qa-gate` result if one ran this session), referencing the PR — unless the maintainer said to skip it.
-    - **Local tracker:** there's no PR/merge step. Once this ticket's work is complete, set its `**Workflow:**` line to `done`; if it carries `**Task report:** required`, fold the same summary into that update instead of a separate comment.
+After a successful push, offer `/to-pr <ticket>` as the next command. Do not invoke it automatically, open a PR, run `qa-gate`, or close the ticket in this skill.
