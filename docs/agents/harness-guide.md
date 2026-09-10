@@ -49,6 +49,17 @@ cd claude-agent-harness
 
 `backend-orchestration` расширяет `pvmalove-suite`, поэтому выбирается одной capability — `--capability backend-orchestration`, а не вместе с `pvmalove-suite`. Она добавляет role manifest'ы, `.harness/orchestration.json`, playbook и optional Orca adapter; не запускает воркеры без явно одобренного dispatch. Полный порядок действий, включая пример конфигурации и immutable brief, — в [отдельном руководстве](./backend-orchestration.md).
 
+Это строго opt-in маршрут: он включается только при выбранной capability и валидной
+`.harness/orchestration.json`; иначе обычное поведение `/implement` остаётся без изменений. Один
+batch хранит ticket, issue-ветку, worktree и history evidence, а каждый его dispatch имеет
+собственный immutable brief, terminal report и новое явное человеческое approval. Developer создаёт
+candidate commit; coordinator детерминированно оценивает риск по DoD, diff и developer trigger,
+при необходимости назначает независимые оси Standards и Spec, затем обязательно запускает полный
+clean-room QA для того же SHA. Report остаётся `reported` до решения человека. Только developer
+публикует принятый SHA; после этого `/to-pull-requests` вручную ведёт PR workflow. Adapter только
+транспортирует уже утверждённый dispatch и не принимает report, не запускает следующий шаг и не
+создаёт либо не мержит PR.
+
 | | `mattpocock-suite` как есть | Своя capability (по образцу `pvmalove-suite`) |
 |---|---|---|
 | Когда | Апстримный pipeline устраивает без изменений | Нужны свои правки — лейблы, языки, доп. скиллы |

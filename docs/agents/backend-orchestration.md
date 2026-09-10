@@ -19,9 +19,10 @@
 - `.harness/orchestration/orca_adapter.py` — необязательная runtime-граница для Orca;
 - `.harness/orchestration.json` — project-owned конфигурация назначений, зон и проверок.
 
-Coordinator state и immutable briefs/reports создаются локально в
+Coordinator state, immutable briefs/reports и санитизированные QA-артефакты создаются локально в
 `.harness/orchestration/state/`; содержимое этой директории gitignored и не является исходным
-кодом проекта.
+кодом проекта. Оно остаётся локальным evidence до явного решения coordinator-а о безопасной очистке:
+роль и adapter не удаляют историю batch.
 
 Manifest определяет режим роли (`write` или `read-only`), capability и risk triggers. Проектный
 конфиг выбирает agent/model, fallback, зону, бюджет параллелизма и команды проверки; он не может
@@ -149,6 +150,13 @@ serialized quality-gate lane.
 authorization/security и concurrency/retry completion невозможен, пока coordinator не получил оба
 независимых отчёта `code-review`: Standards и Spec.
 
+После developer dispatch candidate commit получает детерминированную оценку рисков из DoD, changed
+files и developer-reported triggers. Если есть trigger, создаётся один composite read-only
+`code-review` dispatch, но его оси Standards и Spec остаются отдельными evidence. Только после
+принятого review (если он обязателен) создаётся отдельный QA dispatch: обязательный полный QA gate
+в clean-room нельзя заменить локальной проверкой developer-а. Любой новый candidate commit после
+finding или failed QA снова проходит оценку риска.
+
 ## 4. Coordinator CLI и lifecycle
 
 Runtime-neutral режим не имеет команды «запустить всех». Coordinator CLI ведёт записи по
@@ -187,7 +195,9 @@ batch в `awaiting-approval` и оставляет dispatch в `reported` до �
    python .harness/orchestration/coordinator.py --repo . report submit \
      --file developer-report.json
    ```
-   До следующего dispatch coordinator должен записать отдельное решение:
+   До следующего dispatch coordinator должен записать отдельное решение. `reported` — не
+   автоматический переход: человек принимает report, override-ит только warning или требует retry,
+   а новая роль всё равно ждёт собственного approval:
 
    ```bash
    python .harness/orchestration/coordinator.py --repo . batch decide \
@@ -242,6 +252,12 @@ python .harness/orchestration/coordinator.py --repo . qa clear-stale-lease \
 Провал gate остаётся QA finding и требует нового одобренного developer dispatch — runner не правит
 код и не перезапускает проверку самостоятельно.
 
+После accepted QA evidence coordinator создаёт, но не запускает, publish dispatch для того же
+candidate SHA. Только developer publish отправляет этот SHA; ни QA, ни review, ни adapter не создают
+и не мержат PR. После publish человек вручную запускает `/to-pull-requests <ticket>`: этот шаг
+проверяет accepted QA evidence текущего SHA и ведёт обычный ручной PR workflow без повторного
+тяжёлого gate.
+
 Готовый запрос управляющей сессии можно сформулировать так:
 
 ```text
@@ -253,8 +269,9 @@ python .harness/orchestration/coordinator.py --repo . qa clear-stale-lease \
 
 ## 5. Необязательный запуск через Orca
 
-`orca_adapter.py` переводит **уже одобренный** JSON brief в Orca task и isolated worker. Он не
-выбирает scope, не запускает checks, не принимает report и не мержит PR. Перед запуском выполните
+`orca_adapter.py` — transport-only граница: он переводит **уже одобренный** JSON brief в Orca task и
+isolated worker. Он не выбирает scope, не запускает checks, не принимает report, не планирует
+следующий dispatch и не мержит PR. Перед запуском выполните
 `harness health`, проверьте, что profile выбранной роли содержит непустые `agent` и `default_model`,
 а branch соответствует `branch_pattern` из `.harness/project.json` и не является base или
 `integration/*`.
@@ -313,3 +330,10 @@ post-integration defects, включая источник и отсутству�
 Полный нормативный источник — `.harness/orchestration/playbook.md`; role-specific границы — в
 `.harness/orchestration/roles/`. При противоречии между удобством конкретного runtime и этим
 контрактом приоритет у manifest'а, immutable brief и явного approval.
+
+Архитектурные основания маршрута: [ADR 0014](../adr/0014-risk-aware-review-before-qa-gate.md)
+(review перед QA), [0015](../adr/0015-batches-contain-terminal-role-dispatches.md) (два уровня
+batch/dispatch), [0016](../adr/0016-batch-awaits-approval-between-dispatches.md) (approval после
+report), [0018](../adr/0018-pin-clean-room-qa-to-a-commit-in-a-repository-lane.md) (pinned
+clean-room QA), [0019](../adr/0019-use-a-coordinator-cleared-fifo-lease-for-qa.md) (stale lease) и
+[0020](../adr/0020-keep-coordinator-state-outside-the-runtime-adapter.md) (local sanitised state).
