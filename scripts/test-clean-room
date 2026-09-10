@@ -67,6 +67,14 @@ def run_fails(cmd, quiet=False, quiet_all=False) -> bool:
     return result.returncode != 0
 
 
+def fail_output(cmd) -> str:
+    """Run a command that must fail and return its combined diagnostic output."""
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        sys.exit("command unexpectedly succeeded: " + " ".join(map(str, cmd)))
+    return result.stdout + result.stderr
+
+
 def capture(cmd) -> str:
     return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
 
@@ -261,6 +269,654 @@ def _run(test_root: Path):
         sys.exit("pvmalove-suite unexpectedly changed a skill it neither overrides nor adds")
     if not (pv_project / ".harness" / "skills" / "qa-gate" / "SKILL.md").is_file():
         sys.exit("pvmalove-suite addition qa-gate missing")
+
+    # backend-orchestration is opt-in: it extends pvmalove-suite with the portable
+    # role contracts, while a regular pvmalove-suite project receives none of them.
+    if (pv_project / ".harness" / "orchestration").exists():
+        sys.exit("pvmalove-suite unexpectedly installed orchestration resources")
+    if (pv_project / ".harness" / "orchestration.json").exists():
+        sys.exit("pvmalove-suite unexpectedly installed orchestration config")
+
+    orchestration_project = test_root / "orchestration_project"
+    orchestration_project.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=orchestration_project, check=True)
+    run_ok(
+        HARNESS
+        + [
+            "init",
+            str(orchestration_project),
+            "--capability",
+            "backend-orchestration",
+            "--base-branch",
+            "main",
+            "--language",
+            "ru",
+            "--pr-base-branch",
+            "main",
+            "--branch-pattern",
+            "^feature/issue-[0-9]+-.+",
+            "--qa-gate-command",
+            "echo test",
+        ]
+    )
+    fill_agents(orchestration_project)
+    run_ok(HARNESS + ["health", str(orchestration_project)])
+    orchestration_root = orchestration_project / ".harness" / "orchestration"
+    if not (orchestration_root / "orchestration.schema.json").is_file():
+        sys.exit("backend-orchestration schema missing")
+    orchestration_config = orchestration_project / ".harness" / "orchestration.json"
+    if not orchestration_config.is_file():
+        sys.exit("backend-orchestration config seed missing")
+    expected_role_files = {
+        "architect.md",
+        "code-review.md",
+        "database-migrations.md",
+        "developer.md",
+        "messaging-integration.md",
+        "qa.md",
+    }
+    actual_role_files = {
+        path.name for path in (orchestration_project / ".harness" / "orchestration" / "roles").glob("*.md")
+        if path.name != "_common.md"
+    }
+    if actual_role_files != expected_role_files:
+        sys.exit(
+            "backend-orchestration role set changed: "
+            f"expected {sorted(expected_role_files)}, found {sorted(actual_role_files)}"
+        )
+    for name in ("_common.md", *sorted(expected_role_files)):
+        if not (orchestration_project / ".harness" / "orchestration" / "roles" / name).is_file():
+            sys.exit(f"backend-orchestration role manifest missing: {name}")
+
+    playbook_path = orchestration_root / "playbook.md"
+    if not playbook_path.is_file():
+        sys.exit("backend-orchestration playbook missing")
+    playbook = playbook_path.read_text(encoding="utf-8")
+    pilot_path = orchestration_root / "pilot.md"
+    if not pilot_path.is_file():
+        sys.exit("backend-orchestration pilot guide missing")
+    pilot = pilot_path.read_text(encoding="utf-8")
+    normalized_pilot = " ".join(pilot.split())
+    for required_pilot_contract in (
+        "## Purpose",
+        "## Before the first run",
+        "## Observation period",
+        "## Record each batch",
+        "## Measure the quality gate",
+        "## Record post-integration defects",
+        "## Baseline worksheet",
+        "measurement period",
+        "batch/ticket IDs",
+        "missing-data notes",
+        "same counting rules",
+        "does not prescribe a named provider, model, runtime, or platform, or a hard numerical target",
+    ):
+        if required_pilot_contract not in normalized_pilot:
+            sys.exit(f"backend-orchestration pilot guide missing contract: {required_pilot_contract}")
+    if "pilot.md" not in playbook:
+        sys.exit("backend-orchestration playbook does not link the pilot guide")
+    if re.search(r"(?im)^\s*(?:provider|model|runtime|platform)\s*[:=]", pilot):
+        sys.exit("backend-orchestration pilot guide declares a provider, model, runtime, or platform")
+    if re.search(
+        r"(?i)\b(?:use|choose|select|require|default|must|should)\b.{0,40}"
+        r"\b(?:provider|model|runtime|platform)\b",
+        normalized_pilot,
+    ):
+        sys.exit("backend-orchestration pilot guide prescribes a provider, model, runtime, or platform")
+    if re.search(
+        r"(?i)\b(?:at most|at least|no more than|maximum|minimum|limit|target)\s+"
+        r"(?:\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten)\b",
+        normalized_pilot,
+    ):
+        sys.exit("backend-orchestration pilot guide contains a hard numerical target")
+    for required_contract in (
+        "## Lifecycle",
+        "planned",
+        "awaiting-approval",
+        "active",
+        "reported",
+        "completed",
+        "blocked",
+        "failed",
+        "## Immutable handoff brief",
+        "ticket",
+        "zone IDs",
+        "branch/worktree",
+        "Definition of Done",
+        "prohibited changes",
+        "verification commands",
+        "## Completion report",
+        "commit SHA",
+        "changed files",
+        "checks run",
+        "risks",
+        "blockers",
+        "new coordinator decision",
+        "new dispatch",
+        "one active writer",
+        "serialized quality-gate lane",
+        "agent starts per closed ticket",
+        "tokens per batch",
+        "quality-gate wall time",
+        "post-integration defects",
+    ):
+        if required_contract not in playbook:
+            sys.exit(f"backend-orchestration playbook missing contract: {required_contract}")
+    lifecycle_states = [f"`{state}`" for state in (
+        "planned",
+        "awaiting-approval",
+        "active",
+        "completed",
+        "blocked",
+        "failed",
+    )]
+    lifecycle_positions = [playbook.index(f"| {state} |") for state in lifecycle_states]
+    if lifecycle_positions != sorted(lifecycle_positions):
+        sys.exit("backend-orchestration playbook lifecycle states are out of order")
+    normalized_playbook = " ".join(playbook.split())
+    for required_rule in (
+        "A retry is a new dispatch with a new brief and a new dispatch ID",
+        "The original brief remains immutable",
+        "one active writer at a time",
+        "multiple roles must never write to the same batch simultaneously",
+        "one serialized quality-gate lane",
+        "without importing a provider, runtime, or fixed numerical target",
+    ):
+        if required_rule not in normalized_playbook:
+            sys.exit(f"backend-orchestration playbook missing rule: {required_rule}")
+
+    code_review_role = (
+        orchestration_project / ".harness" / "orchestration" / "roles" / "code-review.md"
+    ).read_text(encoding="utf-8")
+    role_frontmatter = code_review_role.split("---", 2)[1]
+    if "name: code-review" not in role_frontmatter or "mode: read-only" not in role_frontmatter:
+        sys.exit("code-review role metadata must remain read-only and named code-review")
+
+    def frontmatter_list(field):
+        lines = role_frontmatter.splitlines()
+        try:
+            start = lines.index(f"{field}:") + 1
+        except ValueError:
+            return set()
+        values = set()
+        for line in lines[start:]:
+            item = line.strip()
+            if not item.startswith("-"):
+                break
+            values.add(item[2:].strip())
+        return values
+
+    actual_capabilities = frontmatter_list("required_capabilities")
+    if actual_capabilities != {"code-review"}:
+        sys.exit(f"code-review role capabilities changed: {sorted(actual_capabilities)}")
+    actual_triggers = frontmatter_list("risk_triggers")
+    expected_triggers = {
+        "api-public-contract",
+        "schema-change",
+        "data-migration",
+        "outbox",
+        "queues",
+        "message-schema-routing",
+        "transactions",
+        "authorization-security",
+        "concurrency-retry",
+        "retry-dlq",
+    }
+    if actual_triggers != expected_triggers:
+        sys.exit(f"code-review role risk triggers changed: {sorted(actual_triggers)}")
+    for required_contract in (
+        "mandatory two-axis review gate",
+        "API/public contracts",
+        "schema/data migrations",
+        "outbox/queues",
+        "transactions",
+        "authorization/security",
+        "concurrency/retry",
+        "evidence",
+        "residual risks",
+        "blockers",
+        "must not change production code or integrate",
+        "reviewed branch",
+        "must not mark a high-risk batch complete until both the Standards and Spec reports",
+    ):
+        if required_contract not in code_review_role:
+            sys.exit(f"code-review role contract missing: {required_contract}")
+
+    installed_review_skill = (
+        orchestration_project / ".harness" / "skills" / "code-review" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    for required_boundary in (
+        "`language` from `.harness/project.json`",
+        "runtime-neutral",
+        "must not launch a runtime-specific adapter",
+    ):
+        if required_boundary not in installed_review_skill:
+            sys.exit(f"code-review workflow boundary missing: {required_boundary}")
+
+    role_names = (
+        "developer",
+        "architect",
+        "qa",
+        "database-migrations",
+        "messaging-integration",
+        "code-review",
+    )
+    valid_orchestration = {
+        "$schema": "./orchestration/orchestration.schema.json",
+        "provider_profiles": {
+            "backend-default": {
+                "capabilities": [
+                    "backend-development",
+                    "architecture-analysis",
+                    "independent-verification",
+                    "database-migrations",
+                    "messaging-integration",
+                    "code-review",
+                ],
+                "agent": "codex",
+                "default_model": "project-model",
+                "fallback": [],
+                "known_limitations": ["project-defined limitations"],
+            }
+        },
+        "assignment_plans": {
+            role: {"profiles": ["backend-default"], "zone": "backend"} for role in role_names
+        },
+        "backend_zones": {"backend": {"paths": ["services/**"]}},
+        "concurrency_budget": 2,
+        "verification_commands": ["python -m pytest"],
+    }
+    orchestration_config.write_text(json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8")
+    run_ok(HARNESS + ["health", str(orchestration_project)])
+
+    # The Orca adapter is an opt-in managed resource. Its public CLI must reject an
+    # unapproved brief before it ever invokes the runtime boundary.
+    adapter_path = orchestration_root / "orca_adapter.py"
+    if not adapter_path.is_file():
+        sys.exit("backend-orchestration Orca adapter missing")
+
+    fake_orca = test_root / "fake-orca.py"
+    fake_orca_log = test_root / "fake-orca-log.jsonl"
+    fake_orca.write_text(
+        """import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+log_path = Path(os.environ["FAKE_ORCA_LOG"])
+with log_path.open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(args) + "\\n")
+if args[:2] != ["orchestration", args[1] if len(args) > 1 else ""]:
+    raise SystemExit("expected an Orca orchestration command")
+command = args[1]
+if command == "worker-list":
+    workers = [{"id": "existing", "state": "working"}] if os.environ.get("FAKE_ORCA_ACTIVE") else []
+    print(json.dumps({"ok": True, "result": {"workers": workers}}))
+elif command == "task-create":
+    print(json.dumps({"ok": True, "result": {"task": {"id": "fake-task"}}}))
+elif command == "worker-start":
+    model = args[args.index("--model") + 1]
+    if model == os.environ.get("FAKE_ORCA_FAIL_MODEL"):
+        print(json.dumps({"ok": False, "error": {"code": "model_unavailable"}}))
+        raise SystemExit(1)
+    print(json.dumps({"ok": True, "result": {"worker": {"id": "fake-worker"}}}))
+else:
+    raise SystemExit("unexpected command: " + command)
+""",
+        encoding="utf-8",
+    )
+
+    adapter_config = json.loads(json.dumps(valid_orchestration))
+    adapter_config["provider_profiles"]["backend-default"]["fallback"] = ["backend-fallback"]
+    adapter_config["provider_profiles"]["backend-fallback"] = {
+        "capabilities": adapter_config["provider_profiles"]["backend-default"]["capabilities"],
+        "agent": "codex",
+        "default_model": "project-fallback-model",
+        "fallback": [],
+        "known_limitations": ["project-defined limitations"],
+    }
+    orchestration_config.write_text(json.dumps(adapter_config, indent=2) + "\n", encoding="utf-8")
+
+    approved_brief = {
+        "ticket": "#900",
+        "role": "developer",
+        "access": "write",
+        "zone": "backend",
+        "write_paths": ["services/**"],
+        "branch": "feature/issue-900-approved-dispatch",
+        "worktree": "isolated-orca-worktree",
+        "definition_of_done": ["produce the requested backend change"],
+        "prohibited_changes": ["no merge or production operations"],
+        "verification_commands": ["python -m pytest"],
+        "required_gates": ["code review"],
+        "dependencies": ["approved project config"],
+        "coordinator_approval": {"approved_by": "project coordinator", "approved_at": "2026-09-09T12:00:00Z"},
+    }
+    brief_path = test_root / "approved-dispatch.json"
+    brief_path.write_text(json.dumps(approved_brief, indent=2) + "\n", encoding="utf-8")
+
+    def adapter_run(path, *, active=False):
+        env = dict(os.environ, FAKE_ORCA_LOG=str(fake_orca_log), FAKE_ORCA_FAIL_MODEL="project-model")
+        if active:
+            env["FAKE_ORCA_ACTIVE"] = "1"
+        return subprocess.run(
+            [
+                sys.executable,
+                str(adapter_path),
+                "dispatch",
+                "--repo",
+                str(orchestration_project),
+                "--brief",
+                str(path),
+                "--run",
+                "fake-run",
+                "--orca-bin",
+                str(fake_orca),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    unapproved_brief = json.loads(json.dumps(approved_brief))
+    del unapproved_brief["coordinator_approval"]
+    unapproved_path = test_root / "unapproved-dispatch.json"
+    unapproved_path.write_text(json.dumps(unapproved_brief), encoding="utf-8")
+    if adapter_run(unapproved_path).returncode == 0:
+        sys.exit("Orca adapter accepted a dispatch without coordinator approval")
+    if fake_orca_log.exists():
+        sys.exit("Orca adapter invoked the runtime before rejecting an unapproved dispatch")
+
+    invalid_zone_brief = json.loads(json.dumps(approved_brief))
+    invalid_zone_brief["zone"] = "unknown-zone"
+    invalid_zone_path = test_root / "invalid-zone-dispatch.json"
+    invalid_zone_path.write_text(json.dumps(invalid_zone_brief), encoding="utf-8")
+    if adapter_run(invalid_zone_path).returncode == 0:
+        sys.exit("Orca adapter accepted a dispatch outside its declared zone")
+    if fake_orca_log.exists():
+        sys.exit("Orca adapter invoked the runtime before rejecting an invalid zone")
+
+    read_only_brief = json.loads(json.dumps(approved_brief))
+    read_only_brief.update({"role": "code-review", "access": "write", "write_paths": ["services/**"]})
+    read_only_path = test_root / "read-only-write-dispatch.json"
+    read_only_path.write_text(json.dumps(read_only_brief), encoding="utf-8")
+    if adapter_run(read_only_path).returncode == 0:
+        sys.exit("Orca adapter gave a read-only role write access")
+    if fake_orca_log.exists():
+        sys.exit("Orca adapter invoked the runtime before rejecting a role-mode mismatch")
+
+    first_dispatch = adapter_run(brief_path)
+    if first_dispatch.returncode != 0:
+        sys.exit("Orca adapter rejected an approved dispatch: " + first_dispatch.stderr)
+    records_dir = orchestration_project / ".harness" / "orca-dispatches"
+    records = sorted(records_dir.glob("*.json"))
+    if len(records) != 1:
+        sys.exit("Orca adapter did not create one immutable dispatch record")
+    first_record_path = records[0]
+    first_record_bytes = first_record_path.read_bytes()
+    first_record = json.loads(first_record_bytes)
+    if first_record["brief"] != approved_brief:
+        sys.exit("Orca adapter did not preserve the approved dispatch brief verbatim")
+    if first_record["resolved"] != {
+        "profile": "backend-fallback", "agent": "codex", "model": "project-fallback-model"
+    }:
+        sys.exit("Orca adapter did not record the project-configured fallback resolution")
+    if first_record["terminal_outcome"] != "ready":
+        sys.exit("Orca adapter did not record the Orca terminal outcome")
+    fake_calls = [json.loads(line) for line in fake_orca_log.read_text(encoding="utf-8").splitlines()]
+    worker_calls = [call for call in fake_calls if call[1] == "worker-start"]
+    if len(worker_calls) != 2:
+        sys.exit("Orca adapter did not try the configured fallback exactly once")
+    for call in worker_calls:
+        if call[call.index("--worktree") + 1] != "new-top-level":
+            sys.exit("Orca adapter did not request an isolated Orca worktree")
+        if call[call.index("--base-branch") + 1] != approved_brief["branch"]:
+            sys.exit("Orca adapter did not dispatch from the approved issue branch")
+
+    retry_dispatch = adapter_run(brief_path)
+    if retry_dispatch.returncode != 0:
+        sys.exit("Orca adapter rejected a valid retry: " + retry_dispatch.stderr)
+    records = sorted(records_dir.glob("*.json"))
+    if len(records) != 2 or first_record_path.read_bytes() != first_record_bytes:
+        sys.exit("Orca adapter retry changed an immutable prior dispatch record")
+    if len({json.loads(path.read_text(encoding="utf-8"))["dispatch_id"] for path in records}) != 2:
+        sys.exit("Orca adapter retry reused a dispatch ID")
+
+    adapter_config["concurrency_budget"] = 1
+    orchestration_config.write_text(json.dumps(adapter_config, indent=2) + "\n", encoding="utf-8")
+    calls_before_budget_rejection = len(fake_orca_log.read_text(encoding="utf-8").splitlines())
+    if adapter_run(brief_path, active=True).returncode == 0:
+        sys.exit("Orca adapter exceeded the project concurrency budget")
+    budget_calls = [
+        json.loads(line)
+        for line in fake_orca_log.read_text(encoding="utf-8").splitlines()[calls_before_budget_rejection:]
+    ]
+    if [call[1] for call in budget_calls] != ["worker-list"]:
+        sys.exit("Orca adapter created a task after concurrency-budget rejection")
+
+    # The coordinator is the runtime-neutral public seam: it owns the batch and report
+    # records, and passes only an explicitly approved immutable brief to a transport adapter.
+    coordinator_path = orchestration_root / "coordinator.py"
+    if not coordinator_path.is_file():
+        sys.exit("backend-orchestration coordinator CLI missing")
+
+    state_root = orchestration_project / ".harness" / "orchestration" / "state"
+    fake_adapter = test_root / "fake-adapter.py"
+    fake_adapter_log = test_root / "fake-adapter-log.json"
+    fake_adapter.write_text(
+        """import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+Path(os.environ["FAKE_ADAPTER_LOG"]).write_text(json.dumps(args), encoding="utf-8")
+if "--brief" not in args:
+    raise SystemExit("missing approved brief")
+brief = json.loads(Path(args[args.index("--brief") + 1]).read_text(encoding="utf-8"))
+if not brief.get("coordinator_approval"):
+    raise SystemExit("adapter received an unapproved brief")
+print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
+""",
+        encoding="utf-8",
+    )
+
+    def coordinator_run(*arguments, env=None):
+        coordinator_env = dict(os.environ, FAKE_ADAPTER_LOG=str(fake_adapter_log))
+        if env:
+            coordinator_env.update(env)
+        return subprocess.run(
+            [sys.executable, str(coordinator_path), "--repo", str(orchestration_project), *arguments],
+            capture_output=True,
+            text=True,
+            env=coordinator_env,
+        )
+
+    planned = coordinator_run(
+        "batch", "create", "--ticket", "#901", "--branch", "feature/issue-901-coordinator",
+        "--worktree", "issue-901-coordinator", "--zone", "backend", "--definition-of-done",
+        "implement the requested backend change", "--prohibited-change", "do not merge",
+    )
+    if planned.returncode != 0:
+        sys.exit("coordinator rejected a valid planned batch: " + planned.stderr)
+    batch = json.loads(planned.stdout)
+    if batch["state"] != "planned" or not batch["batch_id"].startswith("batch-"):
+        sys.exit("coordinator did not create a planned batch")
+    batch_id = batch["batch_id"]
+
+    approved_batch = coordinator_run(
+        "batch", "approve", "--batch", batch_id, "--approved-by", "project coordinator",
+        "--approved-at", "2026-09-09T12:00:00Z",
+    )
+    if approved_batch.returncode != 0 or json.loads(approved_batch.stdout)["state"] != "awaiting-approval":
+        sys.exit("coordinator did not move the batch to awaiting-approval")
+
+    dispatch = coordinator_run(
+        "dispatch", "create", "--batch", batch_id, "--role", "developer", "--approved-by",
+        "project coordinator", "--approved-at", "2026-09-09T12:01:00Z",
+    )
+    if dispatch.returncode != 0:
+        sys.exit("coordinator rejected a valid approved dispatch: " + dispatch.stderr)
+    dispatch_record = json.loads(dispatch.stdout)
+    dispatch_id = dispatch_record["dispatch_id"]
+    brief_file = state_root / "dispatches" / f"{dispatch_id}.json"
+    brief_bytes = brief_file.read_bytes()
+    if dispatch_record["state"] != "approved" or dispatch_record["brief"]["role"] != "developer":
+        sys.exit("coordinator did not create an approved developer dispatch")
+
+    if coordinator_run(
+        "dispatch", "send", "--dispatch", dispatch_id, "--adapter", str(fake_adapter),
+        "--adapter-arg=--brief", "--adapter-arg=unapproved.json",
+    ).returncode == 0:
+        sys.exit("coordinator allowed adapter arguments to replace the approved brief")
+    if fake_adapter_log.exists():
+        sys.exit("coordinator invoked the adapter after rejecting an unsafe adapter argument")
+
+    sent = coordinator_run(
+        "dispatch", "send", "--dispatch", dispatch_id, "--adapter", str(fake_adapter),
+    )
+    if sent.returncode != 0:
+        sys.exit("coordinator rejected an approved adapter handoff: " + sent.stderr)
+    adapter_args = json.loads(fake_adapter_log.read_text(encoding="utf-8"))
+    if adapter_args[adapter_args.index("--brief") + 1] != str(brief_file):
+        sys.exit("coordinator did not pass the approved immutable brief to the adapter")
+    if brief_file.read_bytes() != brief_bytes:
+        sys.exit("coordinator changed the immutable dispatch brief")
+    if coordinator_run(
+        "dispatch", "send", "--dispatch", dispatch_id, "--adapter", str(fake_adapter),
+    ).returncode == 0:
+        sys.exit("coordinator reused a dispatched identifier instead of requiring a new approval")
+
+    report_file = test_root / "developer-report.json"
+    report_payload = {
+        "dispatch_id": dispatch_id,
+        "ticket": "#901",
+        "role": "developer",
+        "outcome": "completed",
+        "output": "implemented the requested backend change",
+        "commit_sha": "a" * 40,
+        "changed_files": ["services/payments/app.py"],
+        "checks_run": [{"command": "python -m pytest", "result": "pass", "evidence": "1 passed"}],
+        "risks": "none",
+        "blockers": "none",
+        "next_coordinator_action": "accept",
+    }
+    report_file.write_text(json.dumps(report_payload, indent=2) + "\n", encoding="utf-8")
+    reported = coordinator_run("report", "submit", "--file", str(report_file))
+    if reported.returncode != 0:
+        sys.exit("coordinator rejected a valid completion report: " + reported.stderr)
+    report_result = json.loads(reported.stdout)
+    if report_result["state"] != "reported":
+        sys.exit("coordinator did not leave the dispatch at reported")
+    stored_report = state_root / "reports" / f"{dispatch_id}.json"
+    stored_markdown = state_root / "reports" / f"{dispatch_id}.md"
+    if not stored_report.is_file() or not stored_markdown.is_file():
+        sys.exit("coordinator did not store canonical JSON and Markdown report")
+    if json.loads(stored_report.read_text(encoding="utf-8")) != report_payload:
+        sys.exit("coordinator changed the canonical completion report")
+
+    invalid_report = test_root / "invalid-report.json"
+    invalid_payload = dict(report_payload, role="qa")
+    invalid_report.write_text(json.dumps(invalid_payload), encoding="utf-8")
+    if coordinator_run("report", "submit", "--file", str(invalid_report)).returncode == 0:
+        sys.exit("coordinator accepted a role-incompatible report")
+    if stored_report.read_text(encoding="utf-8") != json.dumps(report_payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n":
+        sys.exit("coordinator changed a report after rejecting an incompatible report")
+
+    secret_report = test_root / "secret-report.json"
+    secret_report.write_text(json.dumps(dict(report_payload, api_token="must-not-pass")), encoding="utf-8")
+    if coordinator_run("report", "submit", "--file", str(secret_report)).returncode == 0:
+        sys.exit("coordinator accepted a secret-shaped report")
+
+    overwritten_report = test_root / "overwritten-report.json"
+    overwritten_report.write_text(json.dumps(report_payload), encoding="utf-8")
+    if coordinator_run("report", "submit", "--file", str(overwritten_report)).returncode == 0:
+        sys.exit("coordinator overwrote an immutable report")
+
+    decision = coordinator_run(
+        "batch", "decide", "--batch", batch_id, "--decision", "accept",
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T12:02:00Z",
+    )
+    if decision.returncode != 0 or json.loads(decision.stdout)["state"] != "awaiting-approval":
+        sys.exit("coordinator did not record the explicit post-report decision")
+
+    missing_review_assignment = json.loads(json.dumps(valid_orchestration))
+    del missing_review_assignment["assignment_plans"]["code-review"]
+    orchestration_config.write_text(
+        json.dumps(missing_review_assignment, indent=2) + "\n", encoding="utf-8"
+    )
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "must include code-review for the mandatory high-risk role gate" not in output:
+        sys.exit("health allowed orchestration config without the code-review role gate")
+
+    role_path = orchestration_root / "roles" / "code-review.md"
+    original_role = role_path.read_text(encoding="utf-8")
+    role_path.write_text(original_role.replace("  - retry-dlq\n", ""), encoding="utf-8")
+    if "  - retry-dlq\n" in role_path.read_text(encoding="utf-8"):
+        sys.exit("clean-room test could not remove retry-dlq trigger")
+    orchestration_config.write_text(json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "code-review role manifest is missing required risk trigger" not in output:
+        sys.exit("health allowed code-review without the complete high-risk trigger contract")
+    role_path.write_text(original_role, encoding="utf-8")
+
+    role_path.write_text(original_role.replace("mode: read-only", "mode: write"), encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "code-review role manifest must remain read-only" not in output:
+        sys.exit("health allowed code-review with a write mode")
+    role_path.write_text(original_role, encoding="utf-8")
+
+    role_path.write_text(
+        original_role.replace("  - code-review\nrisk_triggers:", "  - backend-development\nrisk_triggers:"),
+        encoding="utf-8",
+    )
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "code-review role manifest must require the code-review capability" not in output:
+        sys.exit("health allowed code-review without its required capability")
+    role_path.write_text(original_role, encoding="utf-8")
+
+    invalid_role = json.loads(json.dumps(valid_orchestration))
+    invalid_role["assignment_plans"]["unknown-role"] = invalid_role["assignment_plans"]["developer"]
+    orchestration_config.write_text(json.dumps(invalid_role, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "unknown role" not in output:
+        sys.exit("health did not explain unknown orchestration role")
+
+    invalid_profile = json.loads(json.dumps(valid_orchestration))
+    invalid_profile["assignment_plans"]["developer"]["profiles"] = ["missing-profile"]
+    orchestration_config.write_text(json.dumps(invalid_profile, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "unknown provider profile" not in output:
+        sys.exit("health did not explain unknown provider profile")
+
+    incompatible = json.loads(json.dumps(valid_orchestration))
+    incompatible["provider_profiles"]["backend-default"]["capabilities"] = ["independent-verification"]
+    orchestration_config.write_text(json.dumps(incompatible, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "incompatible capability" not in output:
+        sys.exit("health did not explain incompatible provider capability")
+
+    invalid_zone = json.loads(json.dumps(valid_orchestration))
+    invalid_zone["assignment_plans"]["developer"]["zone"] = "missing-zone"
+    orchestration_config.write_text(json.dumps(invalid_zone, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "unknown backend zone" not in output:
+        sys.exit("health did not explain unknown backend zone")
+
+    policy_override = json.loads(json.dumps(valid_orchestration))
+    policy_override["assignment_plans"]["developer"]["mode"] = "read-only"
+    orchestration_config.write_text(json.dumps(policy_override, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "cannot override role manifest" not in output:
+        sys.exit("health allowed an assignment to override role policy")
+
+    credential_field = json.loads(json.dumps(valid_orchestration))
+    credential_field["provider_profiles"]["backend-default"]["api_key"] = "environment-only"
+    orchestration_config.write_text(json.dumps(credential_field, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "credentials" not in output:
+        sys.exit("health did not reject credential-shaped provider profile data")
 
     project_json = pv_project / ".harness" / "project.json"
     if not project_json.is_file():

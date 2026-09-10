@@ -60,5 +60,12 @@
       "first-party/pvmalove/setup-labels",
       "first-party/pvmalove/to-pr"
     ]
+  },
+  "backend-orchestration": {
+    "description": "Optional portable backend orchestration role manifests. Extends pvmalove-suite without changing projects that do not explicitly select it.",
+    "extends": "pvmalove-suite",
+    "resources": [
+      "orchestration"
+    ]
   }
 }

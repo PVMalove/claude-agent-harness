@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "backend orchestration project config",
+  "description": "Project-owned provider profiles and role assignment plans for the optional backend-orchestration capability. This contract is separate from .harness/project.json and does not contain credentials.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "provider_profiles",
+    "assignment_plans",
+    "backend_zones",
+    "concurrency_budget",
+    "verification_commands"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Editor-facing pointer to this schema; the harness does not read it to resolve the config."
+    },
+    "provider_profiles": {
+      "type": "object",
+      "description": "Named project-owned provider profiles. Profile IDs are referenced by ordered assignment plans.",
+      "additionalProperties": {
+        "$ref": "#/definitions/providerProfile"
+      }
+    },
+    "assignment_plans": {
+      "type": "object",
+      "description": "Role-to-profile plans. The first profile is selected first; later profiles are fallbacks.",
+      "additionalProperties": {
+        "$ref": "#/definitions/assignmentPlan"
+      }
+    },
+    "backend_zones": {
+      "type": "object",
+      "description": "Named write/read boundaries referenced by assignment plans.",
+      "additionalProperties": {
+        "$ref": "#/definitions/backendZone"
+      }
+    },
+    "concurrency_budget": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum number of coordinator-approved active batches."
+    },
+    "verification_commands": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Project commands a coordinator requires as orchestration proof."
+    }
+  },
+  "definitions": {
+    "providerProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capabilities", "default_model", "fallback", "known_limitations"],
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Capabilities this profile can satisfy; credentials are never stored here."
+        },
+        "agent": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Orca agent identifier selected by this project-owned profile."
+        },
+        "default_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fallback": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Ordered fallback provider profile IDs."
+        },
+        "known_limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "assignmentPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profiles", "zone"],
+      "properties": {
+        "profiles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Ordered provider profile IDs; the role manifest remains authoritative for capability and risk limits."
+        },
+        "zone": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "backendZone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["paths"],
+      "properties": {
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}
