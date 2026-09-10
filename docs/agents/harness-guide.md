@@ -2,6 +2,10 @@
 
 Гайд по установке и использованию харнесса из [PVMalove/claude-agent-harness](https://github.com/PVMalove/claude-agent-harness) — портативного набора скиллов, правил, хуков и документов для Claude Code, Codex, Kimi Code, OpenCode и Hermes Agent, который одной командой разворачивается в любой проект (раздел 0) и дальше живёт там независимо от исходного репозитория. По умолчанию используется доменно-нейтральная capability **project-foundation** из 5 скиллов; инженерные проекты могут выбрать **mattpocock-suite** (25 upstream-скиллов) или эту сборку — capability **pvmalove-suite** с локальными доработками (раздел 7). Для согласованной backend-работы несколькими ролями есть отдельная opt-in capability **backend-orchestration**; её настройка и запуск вынесены в [руководство по backend-оркестрации](./backend-orchestration.md).
 
+Целостное описание действующей архитектуры, lifecycle coordinator, ролей, clean-room QA и локального
+state находится в [current-state.md](./current-state.md). Этот гайд остаётся справочником установки,
+команд и skills.
+
 Разбивает разработку с AI-агентами на строгие фазы — от устранения неопределённости через спецификацию и тикетирование до TDD-реализации вертикальных слайсов и автоматического ревью (три сквозных примера — раздел 14) — плюс метки триажа (раздел 8), проектные надстройки `qa-gate`/`pr-composer` (раздел 6) и детерминированные hooks (раздел 9) поверх апстрима.
 
 ---
@@ -97,7 +101,7 @@ python harness\bin\harness init C:\path\to\repository `
 - `--base-branch` — базовая ветка репозитория (по умолчанию `main`).
 - `--language`/`--pr-base-branch`/`--branch-pattern`/`--qa-gate-command` — читает только `pvmalove-suite`, пишутся в `.harness/project.json`; можно опустить — `init` спросит их интерактивно. `--qa-gate-command` повторяем, порядок сохраняется (раздел 6).
 
-При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{artifacts,backend-orchestration,git-workflow,harness-guide,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`, см. `lock-project-skills` ниже), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md`, и само `.harness/project.json`. Только `backend-orchestration` дополнительно создаёт `.harness/orchestration/` и шаблон `.harness/orchestration.json`.
+При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{artifacts,backend-orchestration,current-state,git-workflow,harness-guide,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`, см. `lock-project-skills` ниже), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md`, и само `.harness/project.json`. Только `backend-orchestration` дополнительно создаёт `.harness/orchestration/` и шаблон `.harness/orchestration.json`.
 
 **`adopt` — установка в проект, где уже есть свои (не харнесс-управляемые) скиллы под теми же именами.** Не требует пустого `.harness/` (в отличие от `init`) — сохраняет все проектные скиллы, которых нет в выбранной capability; если что-то из выбранной capability совпадает по имени с уже существующим — падает со списком конфликтов, если не передан `--replace-conflicts` (тогда конфликтующие заменяются, остальное не тронуто). Те же `--capability`/pvmalove-флаги, что у `init`:
 

@@ -1,7 +1,22 @@
-# Optional backend orchestration capability
+# Необязательная capability backend-оркестрации
 
-Backend orchestration will ship as an optional `backend-orchestration` capability extending `pvmalove-suite`. Its first slice contains six role manifests, a schema/template and health validation for project-owned provider profiles, batch lifecycle and handoff documentation, and clean-room tests. It defines no concrete provider or model; projects supply those profiles themselves.
+## Контекст системы
 
-## Consequences
+Backend orchestration применяется только там, где проекту требуются роли, project-owned provider
+profiles, контролируемые handoff и clean-room QA.
 
-Existing harness installations remain unchanged until they opt in. The batch lifecycle is coordinator-owned (`planned → approved → dispatched → working → completed | blocked | failed`) and each retry is a new dispatch. Orca support is deferred to a separate adapter slice validated against a real backend pilot.
+## Действующий контракт
+
+`backend-orchestration` расширяет `pvmalove-suite` и поставляет шесть role manifests, schema и
+template `.harness/orchestration.json`, health validation, coordinator lifecycle, handoff rules,
+clean-room QA и optional Orca adapter. Конкретные provider и model определяет проект в provider
+profiles.
+
+Coordinator ведёт lifecycle `planned → awaiting-approval ↔ active → completed | blocked | failed`.
+Каждый report переводит dispatch в `reported`, а повтор работы всегда создаёт новый dispatch с
+новым immutable brief.
+
+## Операционные последствия
+
+Установки без явного выбора capability сохраняют обычный workflow. Проект с capability проходит
+`harness health` после установки или изменения orchestration-конфигурации.

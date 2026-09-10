@@ -1,7 +1,22 @@
-# Role manifests and isolated backend batches
+# Role manifests и изолированные backend batches
 
-Portable role manifests will be one Markdown file per role under `harness/orchestration/roles/`; each project will map roles to agents, models, fallbacks, budgets, and verification commands in `.harness/orchestration.json`. `developer`, `database-migrations`, and `messaging-integration` may write only in declared zones, while `architect`, `qa`, and `code-review` are read-only. A batch owns one issue branch and worktree, and concurrent batches cannot overlap a service, bounded context, or infrastructure zone.
+## Контекст системы
 
-## Consequences
+Backend-работа несколькими ролями требует наблюдаемых границ записи и исключения конфликтующих
+изменений.
 
-The harness must validate both configuration layers and make role boundaries observable before dispatch. Cross-role work inside one batch is a sequential handoff, not simultaneous writes. Code review becomes mandatory for API contracts, migrations, messaging/outbox, transactions, authorization/security, and concurrency/retry.
+## Действующий контракт
+
+Каждая роль имеет переносимый Markdown manifest в `harness/orchestration/roles/`. Проектная
+`.harness/orchestration.json` сопоставляет роль provider profiles, model fallback, budgets, зоны и
+verification commands. `developer`, `database-migrations` и `messaging-integration` записывают
+только в объявленные зоны; `architect`, `qa` и `code-review` работают read-only.
+
+Batch владеет одной issue-веткой и worktree. Одновременные batches не пересекают service, bounded
+context или infrastructure zone. Внутри batch handoff последовательны, а одновременно активен
+только один writer. Тяжёлые integration и quality checks используют одну serialised lane.
+
+## Операционные последствия
+
+Coordinator проверяет границы роли, зоны, writer и lane до dispatch. API contracts, migrations,
+messaging/outbox, transactions, authorization/security и concurrency/retry требуют code-review.

@@ -1,7 +1,23 @@
-# Capability-resolved assignments and immutable handoffs
+# Capability-resolved assignments и immutable handoff
 
-Assignments resolve from role manifest to project mapping to a one-run override, and every resolved provider profile must satisfy the role's required capability and limitations. Provider profiles remain project-owned and declare a default model, fallback, and known limitations. Each dispatched batch receives an immutable handoff brief and returns one completion report; later information is a new coordinator decision.
+## Контекст системы
 
-## Consequences
+Роли должны сохранять переносимые требования, а runtime-specific provider choice не должен
+неявно расширять scope или заменять commit и verification evidence.
 
-Roles remain portable across runtimes and providers. Agents cannot silently choose an incompatible model, mutate their original scope through chat, or substitute a textual "done" report for commit and verification evidence. Heavy integration and quality gates run in one serialized lane while independent work remains parallel.
+## Действующий контракт
+
+Assignment разрешается от role manifest через project mapping к допустимому one-run override.
+Каждый provider profile объявляется проектом, содержит default model, fallback и known limitations
+и обязан удовлетворять required capabilities и ограничениям роли.
+
+Каждый dispatched batch получает immutable brief и возвращает один completion report. Новый факт,
+изменение scope, зоны, DoD, assignment или proof оформляется отдельным решением coordinator и
+новым dispatch. Write-role report содержит commit SHA и verification evidence; read-only role
+фиксирует соответствующее read-only evidence.
+
+## Операционные последствия
+
+Агент не выбирает несовместимую модель, не меняет исходный scope через чат и не заменяет evidence
+текстовым сообщением о завершении. Независимая работа может выполняться параллельно в непересекающихся
+зонах, а тяжёлые integration и quality gates остаются сериализованными.

@@ -1,5 +1,8 @@
 # Issue tracker
 
+The system-wide workflow and the boundary between interactive delivery and backend orchestration are
+described in [current-state.md](./current-state.md). This guide defines tracker-specific operations.
+
 Detect which section below applies from `git remote -v` (the same check `check-branch-name.sh` uses): a `github.com` remote → GitHub; a `gitlab.`-hosted remote → GitLab; anything else, including no remote at all, → Local markdown. For a different tracker entirely (Jira, Linear, ...), replace this file's content with a description of that workflow instead — see `/setup-matt-pocock-skills`.
 
 This repo's triage label vocabulary is a first-party namespaced taxonomy — `bug`/`enhancement` category, `hitl`/`afk` execution mode, `workflow::*` pipeline state, plus the `task-report::required`/`out-of-scope` context labels — see [triage-labels.md](./triage-labels.md) before applying or querying labels, whichever section below applies.
