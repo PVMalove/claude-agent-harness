@@ -25,7 +25,7 @@
     },
     "assignment_plans": {
       "type": "object",
-      "description": "Role-to-profile plans. The first profile is selected first; later profiles are fallbacks.",
+      "description": "Role plans with an explicit runtime-specific profile, model, and reasoning effort.",
       "additionalProperties": {
         "$ref": "#/definitions/assignmentPlan"
       }
@@ -55,7 +55,7 @@
     "providerProfile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["capabilities", "default_model", "fallback", "known_limitations"],
+      "required": ["capabilities", "fallback", "known_limitations"],
       "properties": {
         "capabilities": {
           "type": "array",
@@ -70,10 +70,6 @@
           "type": "string",
           "minLength": 1,
           "description": "Orca agent identifier selected by this project-owned profile."
-        },
-        "default_model": {
-          "type": "string",
-          "minLength": 1
         },
         "fallback": {
           "type": "array",
@@ -95,21 +91,43 @@
     "assignmentPlan": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["profiles", "zone"],
+      "required": ["zone", "runtimes"],
       "properties": {
-        "profiles": {
+        "zone": {
+          "type": "string",
+          "minLength": 1
+        },
+        "write_paths": {
           "type": "array",
           "minItems": 1,
           "items": {
             "type": "string",
             "minLength": 1
           },
-          "description": "Ordered provider profile IDs; the role manifest remains authoritative for capability and risk limits."
+          "description": "Optional narrower write boundary for this role. It must remain inside the assigned zone."
         },
-        "zone": {
-          "type": "string",
-          "minLength": 1
+        "runtimes": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/definitions/runtimeAssignment"
+          },
+          "description": "Named runtime assignments, such as codex or claude."
         }
+      }
+    },
+    "runtimeAssignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profiles", "model", "effort"],
+      "properties": {
+        "profiles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "model": {"type": "string", "minLength": 1},
+        "effort": {"type": "string", "minLength": 1}
       }
     },
     "backendZone": {

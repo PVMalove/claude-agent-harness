@@ -1,0 +1,41 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Backend orchestration: select runtime and dispatch",
+    "quality_profile": "showcase",
+    "viewBox": [1080, 652]
+  },
+  "lanes": [
+    {"id": "human", "label": "Coordinator"},
+    {"id": "config", "label": "Project configuration"},
+    {"id": "runtime", "label": "Runtime adapter"},
+    {"id": "evidence", "label": "Evidence and quality", "variant": "exception"}
+  ],
+  "phases": [
+    {"id": "plan", "label": "Plan and approve", "fromCol": 0, "toCol": 1},
+    {"id": "resolve", "label": "Resolve runtime", "fromCol": 2, "toCol": 3, "variant": "emphasis"},
+    {"id": "execute", "label": "Dispatch and verify", "fromCol": 4, "toCol": 5, "variant": "dashed"}
+  ],
+  "mainPath": ["issue", "approval", "assignment", "brief", "adapter", "worker"],
+  "nodes": [
+    {"id": "issue", "lane": "human", "col": 0, "type": "external", "label": "Issue", "sublabel": "ticket and DoD", "width": 132},
+    {"id": "approval", "lane": "human", "col": 1, "type": "security", "label": "Approval", "sublabel": "batch and dispatch", "width": 132},
+    {"id": "assignment", "lane": "config", "col": 2, "type": "database", "label": "Assignment", "sublabel": "runtime by role", "width": 132},
+    {"id": "brief", "lane": "config", "col": 3, "type": "database", "label": "Brief", "sublabel": "runtime, model, effort", "width": 132},
+    {"id": "adapter", "lane": "runtime", "col": 4, "type": "backend", "label": "Orca adapter", "sublabel": "validate then transport", "width": 132},
+    {"id": "worker", "lane": "runtime", "col": 5, "type": "cloud", "label": "Worker", "sublabel": "Codex or Claude Code", "width": 132},
+    {"id": "report", "lane": "evidence", "col": 4, "type": "messagebus", "label": "Report", "sublabel": "one evidence record", "width": 132},
+    {"id": "qa", "lane": "evidence", "col": 5, "type": "security", "label": "Risk and QA", "sublabel": "when required", "width": 132}
+  ],
+  "edges": [
+    {"from": "issue", "to": "approval", "label": "propose batch"},
+    {"from": "approval", "to": "assignment", "label": "approved runtime", "variant": "emphasis"},
+    {"from": "assignment", "to": "brief", "label": "resolve profiles, model, effort"},
+    {"from": "brief", "to": "adapter", "label": "approved dispatch", "variant": "emphasis"},
+    {"from": "adapter", "to": "worker", "label": "worker-start"},
+    {"from": "worker", "to": "report", "label": "completion evidence", "role": "return"},
+    {"from": "report", "to": "qa", "label": "high-risk candidate", "variant": "security"},
+    {"from": "qa", "to": "approval", "label": "accepted result or retry", "role": "return", "variant": "emphasis"}
+  ]
+}

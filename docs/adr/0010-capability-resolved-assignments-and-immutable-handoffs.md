@@ -8,8 +8,9 @@
 ## Действующий контракт
 
 Assignment разрешается от role manifest через project mapping к допустимому one-run override.
-Каждый provider profile объявляется проектом, содержит default model, fallback и known limitations
-и обязан удовлетворять required capabilities и ограничениям роли.
+Каждый provider profile объявляется проектом, содержит fallback и known limitations и обязан
+удовлетворять required capabilities и ограничениям роли. Assignment plan роли обязательно задаёт
+model и effort для dispatch.
 
 Каждый dispatched batch получает immutable brief и возвращает один completion report. Новый факт,
 изменение scope, зоны, DoD, assignment или proof оформляется отдельным решением coordinator и

@@ -44,6 +44,9 @@
 операционные команды находятся в [руководстве по backend-оркестрации](./docs/agents/backend-orchestration.md)
 и [справочнике харнесса](./docs/agents/harness-guide.md).
 
+Визуальные карты процесса: [lifecycle backend-batch](./docs/diagrams/backend-batch.lifecycle.html)
+и [выбор runtime и dispatch](./docs/diagrams/backend-runtime.workflow.html).
+
 При выборе `pvmalove-suite` `harness init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект:
 
 - `docs/agents/{artifacts,backend-orchestration,current-state,git-workflow,harness-guide,issue-tracker,triage-labels,worktrees}.md`
