@@ -28,14 +28,17 @@ SENSITIVE_KEY = re.compile(r"(?:api[_-]?key|credential|password|secret|token)", 
 ROLE_MODES = {"write", "read-only"}
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
 DECISIONS = {"accept", "override-warning", "retry", "block"}
+REVIEW_SEVERITIES = {"none", "clean", "warning", "blocker"}
+FINDING_SEVERITIES = {"info", "warning", "blocker"}
 PLAN_FIELDS = (
-    "batch_id", "created_at", "ticket", "branch", "worktree", "zone", "definition_of_done",
+    "batch_id", "created_at", "base_commit", "ticket", "branch", "worktree", "zone", "definition_of_done",
     "prohibited_changes", "verification_commands", "required_gates", "dependencies",
 )
 DISPATCH_FIELDS = {
     "dispatch_id", "batch_id", "ticket", "role", "access", "zone", "write_paths", "branch", "worktree",
     "definition_of_done", "prohibited_changes", "verification_commands", "required_gates", "dependencies",
-    "resolved_provider_profile", "resolved_model", "coordinator_approval", "state", "created_at",
+    "resolved_provider_profile", "resolved_model", "coordinator_approval", "candidate_commit", "review_base", "review_scope",
+    "risk_assessment_id", "state", "created_at",
 }
 REPORT_FIELDS = {
     "dispatch_id",
@@ -49,6 +52,11 @@ REPORT_FIELDS = {
     "risks",
     "blockers",
     "next_coordinator_action",
+}
+REPORT_OPTIONAL_FIELDS = {"risk_triggers", "review"}
+RISK_ASSESSMENT_FIELDS = {
+    "risk_assessment_id", "batch_id", "candidate_commit", "base_commit", "changed_files", "matched_triggers",
+    "developer_triggers", "review_required", "review_scope", "created_at",
 }
 
 
@@ -120,7 +128,7 @@ def _replace(path: Path, value: dict[str, Any]) -> None:
 
 
 def _safe_id(value: object, label: str) -> str:
-    if not isinstance(value, str) or re.fullmatch(r"(?:batch|dispatch)-[0-9a-f-]+", value) is None:
+    if not isinstance(value, str) or re.fullmatch(r"(?:batch|dispatch|risk)-[0-9a-f-]+", value) is None:
         raise CoordinatorError(f"{label} is not a valid coordinator ID")
     return value
 
@@ -159,6 +167,127 @@ def _config(repo: Path) -> dict[str, Any]:
     value = _read_object(repo / ".harness/orchestration.json", "project orchestration config")
     _reject_sensitive(value, "project orchestration config")
     return value
+
+
+def _git(repo: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *arguments], capture_output=True, text=True, encoding="utf-8"
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise CoordinatorError(f"git command failed: {detail or 'unknown error'}")
+    return result.stdout.strip()
+
+
+def _head_commit(repo: Path) -> str | None:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _candidate_commit(repo: Path, value: object) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-fA-F]{7,64}", value.strip()) is None:
+        raise CoordinatorError("candidate_commit must be a hexadecimal commit SHA")
+    try:
+        return _git(repo, "rev-parse", "--verify", f"{value.strip()}^{{commit}}")
+    except CoordinatorError as exc:
+        raise CoordinatorError("candidate_commit does not resolve to a commit") from exc
+
+
+def _commit_changed_files(repo: Path, commit: str) -> list[str]:
+    output = _git(repo, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", commit)
+    return [line.replace("\\", "/") for line in output.splitlines() if line.strip()]
+
+
+def _commit_parent(repo: Path, commit: str) -> str | None:
+    output = _git(repo, "rev-list", "--parents", "-n", "1", commit).split()
+    return output[1] if len(output) > 1 else None
+
+
+def _git_is_ancestor(repo: Path, base: str, candidate: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", base, candidate],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if result.returncode not in {0, 1}:
+        raise CoordinatorError("cannot verify the candidate diff ancestry")
+    return result.returncode == 0
+
+
+def _changed_files_between(repo: Path, base: str, candidate: str) -> list[str]:
+    output = _git(repo, "diff", "--name-only", "--no-renames", base, candidate)
+    return [line.replace("\\", "/") for line in output.splitlines() if line.strip()]
+
+
+def _commit_evidence(repo: Path, base: str | None, commit: str) -> str:
+    if base:
+        return "\n".join(
+            (
+                _git(repo, "log", "--format=%B", f"{base}..{commit}"),
+                _git(repo, "diff", "--no-ext-diff", "--no-renames", base, commit),
+            )
+        )
+    return _git(repo, "show", "--format=%B", "--no-ext-diff", "--no-renames", commit)
+
+
+def _risk_triggers(repo: Path) -> list[str]:
+    role = _role(repo, "code-review")
+    triggers = role.get("risk_triggers")
+    if not isinstance(triggers, list) or not all(_non_empty(item) for item in triggers):
+        raise CoordinatorError("code-review role has no valid risk triggers")
+    return list(triggers)
+
+
+def _validate_trigger_names(triggers: object, label: str, known: list[str]) -> list[str]:
+    values = _strings(triggers, label, allow_empty=True)
+    unknown = [trigger for trigger in values if trigger not in known]
+    if unknown:
+        raise CoordinatorError(f"{label} contains unknown risk triggers: {unknown}")
+    return list(dict.fromkeys(values))
+
+
+def _matching_triggers(text: str, known: list[str]) -> list[str]:
+    normalized = text.casefold()
+    return [
+        trigger
+        for trigger in known
+        if trigger in normalized
+        or any(re.search(pattern, normalized, re.IGNORECASE) for pattern in _trigger_patterns(trigger))
+    ]
+
+
+def _trigger_patterns(trigger: str) -> tuple[str, ...]:
+    words = [
+        word
+        for word in re.split(r"[^a-z0-9]+", trigger.casefold())
+        if word and word not in {"change", "changes"}
+    ]
+    patterns = [rf"\b{re.escape(word)}\b" for word in words]
+    for word in words:
+        if word.endswith("s") and not word.endswith(("is", "us", "ss")):
+            patterns.append(rf"\b{re.escape(word[:-1])}s?\b")
+    joined = set(words)
+    if "api" in joined:
+        patterns.extend((r"\bopenapi\b", r"endpoint", r"public[ _-]+contract"))
+    if "migration" in joined:
+        patterns.append(r"\bmigrate\b")
+    if "message" in joined or "routing" in joined:
+        patterns.extend((r"\bmessaging\b", r"\broute\b"))
+    if "transaction" in joined:
+        patterns.append(r"\batomic\b")
+    if "authorization" in joined:
+        patterns.extend((r"authori[sz]", r"security", r"permission", r"credential"))
+    if "concurrency" in joined:
+        patterns.extend((r"concurr", r"parallel", r"lock", r"retry"))
+    if "retry" in joined:
+        patterns.extend((r"\bdlq\b", r"dead[- ]letter"))
+    return tuple(patterns)
 
 
 def _role(repo: Path, name: str) -> dict[str, Any]:
@@ -257,6 +386,10 @@ def _dispatch_status_path(root: Path, dispatch_id: str) -> Path:
     return root / "dispatch-status" / f"{_safe_id(dispatch_id, 'dispatch')}.json"
 
 
+def _risk_path(root: Path, risk_id: str) -> Path:
+    return root / "risk-assessments" / f"{_safe_id(risk_id, 'risk assessment')}.json"
+
+
 def _plan_path(root: Path, batch_id: str) -> Path:
     return root / "plans" / f"{_safe_id(batch_id, 'batch')}.json"
 
@@ -271,6 +404,66 @@ def _load_dispatch(root: Path, dispatch_id: str) -> dict[str, Any]:
 
 def _load_dispatch_status(root: Path, dispatch_id: str) -> dict[str, Any]:
     return _read_object(_dispatch_status_path(root, dispatch_id), "dispatch status")
+
+
+def _load_risk(root: Path, risk_id: str) -> dict[str, Any]:
+    return _read_object(_risk_path(root, risk_id), "risk assessment")
+
+
+def _validate_risk(root: Path, batch: dict[str, Any], risk: dict[str, Any]) -> None:
+    _reject_sensitive(risk, "risk assessment")
+    if set(risk) != RISK_ASSESSMENT_FIELDS:
+        raise CoordinatorError("risk assessment schema mismatch")
+    if risk["batch_id"] != batch["batch_id"]:
+        raise CoordinatorError("risk assessment does not belong to its batch")
+    if not isinstance(risk["candidate_commit"], str) or re.fullmatch(r"[0-9a-f]{40}", risk["candidate_commit"]) is None:
+        raise CoordinatorError("risk assessment has an invalid candidate commit")
+    if risk["base_commit"] is not None and (
+        not isinstance(risk["base_commit"], str) or re.fullmatch(r"[0-9a-f]{40}", risk["base_commit"]) is None
+    ):
+        raise CoordinatorError("risk assessment has an invalid base commit")
+    if not isinstance(risk["changed_files"], list) or not all(_non_empty(item) for item in risk["changed_files"]):
+        raise CoordinatorError("risk assessment has invalid changed files")
+    if not isinstance(risk["matched_triggers"], list) or not all(_non_empty(item) for item in risk["matched_triggers"]):
+        raise CoordinatorError("risk assessment has invalid matched triggers")
+    if not isinstance(risk["developer_triggers"], list) or not all(_non_empty(item) for item in risk["developer_triggers"]):
+        raise CoordinatorError("risk assessment has invalid developer triggers")
+    if not isinstance(risk["review_required"], bool) or risk["review_scope"] != risk["changed_files"]:
+        raise CoordinatorError("risk assessment review scope is invalid")
+    entry = next(
+        (item for item in batch.get("risk_assessments", []) if item.get("risk_assessment_id") == risk["risk_assessment_id"]),
+        None,
+    )
+    expected = hashlib.sha256(_canonical(risk).encode("utf-8")).hexdigest()
+    if not entry or entry.get("record_sha256") != expected:
+        raise CoordinatorError("risk assessment failed immutable record integrity check")
+
+
+def _risk_for_candidate(root: Path, batch: dict[str, Any], candidate: str) -> dict[str, Any] | None:
+    matches = [
+        item for item in batch.get("risk_assessments", []) if item.get("candidate_commit") == candidate
+    ]
+    if not matches:
+        return None
+    risk = _load_risk(root, matches[-1].get("risk_assessment_id"))
+    _validate_risk(root, batch, risk)
+    return risk
+
+
+def _latest_developer_candidate(repo: Path, root: Path, batch: dict[str, Any]) -> str:
+    accepted = [
+        item for item in batch.get("dispatches", [])
+        if item.get("role") == "developer"
+        and item.get("state") == "reported"
+        and item.get("decision", {}).get("decision") in {"accept", "override-warning"}
+    ]
+    if not accepted:
+        raise CoordinatorError("candidate dispatch requires an accepted developer completion report")
+    report = _pending_report(root, batch, accepted[-1])
+    try:
+        return _candidate_commit(repo, report["commit_sha"])
+    except (KeyError, CoordinatorError) as exc:
+        raise CoordinatorError("accepted developer report has no resolvable candidate commit") from exc
 
 
 def _validate_batch_integrity(root: Path, batch: dict[str, Any]) -> None:
@@ -305,6 +498,22 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
     approval = dispatch.get("coordinator_approval")
     if not isinstance(approval, dict) or set(approval) != {"approved_by", "approved_at"} or not all(_non_empty(value) for value in approval.values()):
         raise CoordinatorError("dispatch record has invalid coordinator approval")
+    candidate = dispatch.get("candidate_commit")
+    if dispatch["role"] in {"code-review", "qa"} and not isinstance(candidate, str):
+        raise CoordinatorError("review and QA dispatches must pin a candidate commit")
+    if candidate is not None:
+        resolved = _candidate_commit(repo, candidate)
+        if resolved != candidate:
+            raise CoordinatorError("dispatch candidate_commit must be the full resolved commit SHA")
+        risk = _risk_for_candidate(root, batch, candidate)
+        if risk is None or dispatch.get("risk_assessment_id") != risk["risk_assessment_id"]:
+            raise CoordinatorError("dispatch candidate is not linked to its immutable risk assessment")
+        if dispatch["role"] == "code-review" and dispatch.get("review_scope") != risk["review_scope"]:
+            raise CoordinatorError("review dispatch scope does not match its immutable risk assessment")
+        if dispatch["role"] == "code-review" and dispatch.get("review_base") != risk["base_commit"]:
+            raise CoordinatorError("review dispatch base does not match its immutable risk assessment")
+    elif dispatch.get("review_scope") or dispatch.get("risk_assessment_id"):
+        raise CoordinatorError("dispatch contains review metadata without a candidate commit")
 
 
 def _check_batch_conflicts(root: Path, config: dict[str, Any], batch: dict[str, Any]) -> None:
@@ -333,6 +542,81 @@ def _approval(args: argparse.Namespace) -> dict[str, str]:
     return result
 
 
+def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    known = _risk_triggers(repo)
+    candidate = _candidate_commit(repo, args.candidate_commit)
+    changed_files = [item.replace("\\", "/") for item in _strings(args.changed_file, "changed_files")]
+    developer_triggers = _validate_trigger_names(args.developer_trigger or [], "developer_triggers", known)
+    with _state_lock(root):
+        batch = _load_batch(root, args.batch)
+        _validate_batch_integrity(root, batch)
+        if batch.get("state") != "awaiting-approval":
+            raise CoordinatorError("risk assessment requires a batch awaiting coordinator approval")
+        base = batch.get("base_commit")
+        if args.base_commit:
+            requested_base = _candidate_commit(repo, args.base_commit)
+            if requested_base != base:
+                raise CoordinatorError("risk assessment base must match the batch-captured base commit")
+        if base and not _git_is_ancestor(repo, base, candidate):
+            raise CoordinatorError("risk assessment base must be an ancestor of the candidate commit")
+        actual_files = _changed_files_between(repo, base, candidate) if base else _commit_changed_files(repo, candidate)
+        if actual_files != changed_files:
+            raise CoordinatorError("changed_files must exactly match the candidate diff")
+        if _latest_developer_candidate(repo, root, batch) != candidate:
+            raise CoordinatorError("candidate commit does not match the accepted developer report")
+        inherited_triggers = {
+            trigger
+            for escalation in batch.get("risk_escalations", [])
+            if escalation.get("candidate_commit") == candidate
+            for trigger in escalation.get("triggers", [])
+        }
+        for trigger in sorted(inherited_triggers):
+            if trigger not in developer_triggers:
+                developer_triggers.append(trigger)
+        evidence = " ".join(batch["definition_of_done"] + changed_files) + "\n" + _commit_evidence(repo, base, candidate)
+        matched = _matching_triggers(evidence, known)
+        for trigger in developer_triggers:
+            if trigger not in matched:
+                matched.append(trigger)
+        risk = {
+            "risk_assessment_id": f"risk-{uuid.uuid4()}",
+            "batch_id": batch["batch_id"],
+            "candidate_commit": candidate,
+            "base_commit": base,
+            "changed_files": changed_files,
+            "matched_triggers": matched,
+            "developer_triggers": developer_triggers,
+            "review_required": bool(matched),
+            "review_scope": list(changed_files),
+            "created_at": _now(),
+        }
+        _reject_sensitive(risk, "risk assessment")
+        _write_exclusive(_risk_path(root, risk["risk_assessment_id"]), risk)
+        batch.setdefault("risk_assessments", []).append(
+            {
+                "risk_assessment_id": risk["risk_assessment_id"],
+                "candidate_commit": candidate,
+                "matched_triggers": matched,
+                "review_required": risk["review_required"],
+                "record_sha256": hashlib.sha256(_canonical(risk).encode("utf-8")).hexdigest(),
+            }
+        )
+        pending_candidate = batch.get("risk_reassessment_candidate")
+        pending_triggers = set(batch.get("risk_reassessment_triggers", []))
+        if (
+            batch.get("risk_reassessment_required")
+            and pending_candidate == candidate
+            and pending_triggers <= set(matched)
+        ):
+            batch["risk_reassessment_required"] = False
+            batch.pop("risk_reassessment_candidate", None)
+            batch.pop("risk_reassessment_triggers", None)
+        _replace(_batch_path(root, batch["batch_id"]), batch)
+    return risk
+
+
 def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     config = _config(repo)
@@ -350,6 +634,7 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     record = {
         "batch_id": f"batch-{uuid.uuid4()}",
         "created_at": _now(),
+        "base_commit": _head_commit(repo),
         "state": "planned",
         "ticket": ticket.strip(),
         "branch": branch.strip(),
@@ -361,6 +646,9 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
         "required_gates": _strings(getattr(args, "required_gate", None) or ["none"], "required_gates"),
         "dependencies": _strings(getattr(args, "dependency", None) or ["none"], "dependencies"),
         "dispatches": [],
+        "risk_assessments": [],
+        "risk_escalations": [],
+        "risk_reassessment_required": False,
     }
     _reject_sensitive(record, "batch")
     root = _state_root(args, repo)
@@ -384,6 +672,22 @@ def approve_batch(args: argparse.Namespace) -> dict[str, Any]:
     return record
 
 
+def _pending_report(root: Path, batch: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
+    report_path = entry.get("report")
+    if not isinstance(report_path, str):
+        raise CoordinatorError("reported dispatch has no completion report")
+    report = _read_object(root / report_path, "completion report")
+    expected = entry.get("report_sha256")
+    actual = hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest()
+    if not isinstance(expected, str) or expected != actual:
+        raise CoordinatorError("completion report failed immutable integrity check")
+    return report
+
+
+def _review_severity(review: dict[str, Any]) -> dict[str, str]:
+    return {axis: review[axis]["severity"] for axis in ("standards", "spec")}
+
+
 def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -393,6 +697,26 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
         pending = [item for item in batch.get("dispatches", []) if item.get("state") == "reported" and "decision" not in item]
         if len(pending) != 1:
             raise CoordinatorError("batch has no single completion report awaiting a coordinator decision")
+        report = _pending_report(root, batch, pending[0])
+        dispatch = _load_dispatch(root, pending[0]["dispatch_id"])
+        _validate_dispatch(repo, _config(repo), root, batch, dispatch)
+        _validate_report(report, dispatch, _role(repo, dispatch["role"]), repo, batch.get("base_commit"))
+        if report.get("outcome") != "completed" and args.decision in {"accept", "override-warning"}:
+            raise CoordinatorError("a non-completed role report cannot be accepted or warning-overridden")
+        if report.get("role") == "code-review":
+            severities = _review_severity(report["review"])
+            if any(value == "blocker" for value in severities.values()):
+                if args.decision != "retry":
+                    raise CoordinatorError("a review blocker requires a new developer retry")
+            elif any(value == "warning" for value in severities.values()):
+                if args.decision == "accept":
+                    raise CoordinatorError("a review warning requires override-warning or retry")
+                if args.decision == "override-warning" and not _non_empty(args.note):
+                    raise CoordinatorError("warning override requires a recorded note")
+            elif args.decision == "override-warning":
+                raise CoordinatorError("override-warning requires a review warning")
+        elif args.decision == "override-warning":
+            raise CoordinatorError("only a recorded review warning can be overridden")
         decision = {
             "decision": args.decision,
             "approved_by": _approval(args)["approved_by"],
@@ -401,6 +725,9 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
         }
         pending[0]["decision"] = decision
         batch.setdefault("coordinator_decisions", []).append({"dispatch_id": pending[0]["dispatch_id"], **decision})
+        if args.decision == "retry":
+            batch["required_next_role"] = "developer"
+            batch["retry_candidate_required"] = True
         batch["state"] = "blocked" if args.decision == "block" else "awaiting-approval"
         _replace(_batch_path(root, batch["batch_id"]), batch)
     return batch
@@ -421,6 +748,39 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         _check_batch_conflicts(root, config, batch)
         role_name = args.role
         role, zone, profile_id, model = _resolve_assignment(repo, config, role_name, batch["zone"])
+        candidate = None
+        risk = None
+        review_scope: list[str] = []
+        if args.candidate_commit is not None:
+            candidate = _candidate_commit(repo, args.candidate_commit)
+        if role_name in {"code-review", "qa"} and candidate is None:
+            raise CoordinatorError(f"{role_name} dispatch requires candidate_commit")
+        if candidate is not None:
+            risk = _risk_for_candidate(root, batch, candidate)
+        if role_name in {"code-review", "qa"} and candidate != _latest_developer_candidate(repo, root, batch):
+            raise CoordinatorError("review and QA dispatches must use the latest accepted developer candidate")
+        if role_name in {"code-review", "qa"} and risk is None:
+            raise CoordinatorError("candidate commit has no coordinator risk assessment")
+        if role_name == "code-review":
+            if not risk["review_required"]:
+                raise CoordinatorError("code-review dispatch is not required by the risk assessment")
+            review_scope = list(risk["review_scope"])
+        if role_name == "qa":
+            if batch.get("risk_reassessment_required"):
+                raise CoordinatorError("QA is blocked until the candidate is risk-assessed again")
+            if risk["review_required"]:
+                accepted_review = any(
+                    item.get("role") == "code-review"
+                    and item.get("state") == "reported"
+                    and item.get("decision", {}).get("decision") in {"accept", "override-warning"}
+                    and _load_dispatch(root, item["dispatch_id"]).get("candidate_commit") == candidate
+                    for item in batch.get("dispatches", [])
+                )
+                if not accepted_review:
+                    raise CoordinatorError("QA requires an accepted composite review for the candidate")
+        required_role = batch.get("required_next_role")
+        if required_role and role_name != required_role:
+            raise CoordinatorError(f"the coordinator requires a new {required_role} dispatch before this role")
         approval = _approval(args)
         dispatch_id = f"dispatch-{uuid.uuid4()}"
         brief: dict[str, Any] = {
@@ -441,6 +801,10 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "resolved_provider_profile": profile_id,
             "resolved_model": model,
             "coordinator_approval": approval,
+            "candidate_commit": candidate,
+            "review_base": risk["base_commit"] if risk else None,
+            "review_scope": review_scope,
+            "risk_assessment_id": risk["risk_assessment_id"] if risk else None,
         }
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the
@@ -456,9 +820,33 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "state": "approved",
             "brief_sha256": hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest(),
         })
+        if required_role and role_name == required_role:
+            batch.pop("required_next_role", None)
         batch["state"] = "active"
         _replace(_batch_path(root, batch["batch_id"]), batch)
     return {"dispatch_id": dispatch_id, "batch_id": batch["batch_id"], "state": "approved", "brief": brief}
+
+
+def _validate_checkout(checkout: Path, candidate: str, base: str | None, scope: list[str]) -> None:
+    if not checkout.is_dir():
+        raise CoordinatorError(f"review checkout does not exist: {checkout}")
+    try:
+        actual = _git(checkout, "rev-parse", "--verify", "HEAD^{commit}")
+    except CoordinatorError as exc:
+        raise CoordinatorError("review checkout is not a git worktree") from exc
+    if actual != candidate:
+        raise CoordinatorError("review checkout HEAD does not match the pinned candidate commit")
+    status = _git(checkout, "status", "--porcelain", "--ignored", "--untracked-files=all")
+    mutable_paths = []
+    for line in status.splitlines():
+        path = line[3:].split(" -> ", 1)[-1].replace("\\", "/")
+        if not path.startswith(".harness/orchestration/state/"):
+            mutable_paths.append(path)
+    if mutable_paths:
+        raise CoordinatorError("review checkout must be clean; mutable files are outside the pinned scope")
+    actual_files = _changed_files_between(checkout, base, candidate) if base else _commit_changed_files(checkout, candidate)
+    if actual_files != scope:
+        raise CoordinatorError("review checkout changed files do not match the immutable review scope")
 
 
 def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
@@ -473,6 +861,11 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         _validate_batch_integrity(root, batch)
         config = _config(repo)
         _validate_dispatch(repo, config, root, batch, dispatch)
+        if dispatch["role"] == "code-review":
+            checkout = Path(args.checkout).resolve() if args.checkout else None
+            if checkout is None:
+                raise CoordinatorError("code-review dispatch requires an explicit checkout")
+            _validate_checkout(checkout, dispatch["candidate_commit"], dispatch["review_base"], dispatch["review_scope"])
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
         if status.get("state") != "approved":
             raise CoordinatorError("only an approved dispatch may be sent to a runtime adapter")
@@ -507,11 +900,47 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     return {"dispatch_id": dispatch["dispatch_id"], "state": "dispatched"}
 
 
-def _validate_report(report: dict[str, Any], dispatch: dict[str, Any], role: dict[str, Any]) -> None:
+def _validate_review(review: object, dispatch: dict[str, Any]) -> None:
+    if not isinstance(review, dict) or set(review) != {"candidate_commit", "scope", "standards", "spec"}:
+        raise CoordinatorError("composite review must contain independent standards and spec evidence")
+    if review["candidate_commit"] != dispatch["candidate_commit"] or review["scope"] != dispatch["review_scope"]:
+        raise CoordinatorError("composite review evidence does not match the approved review brief")
+    for axis in ("standards", "spec"):
+        evidence = review[axis]
+        if not isinstance(evidence, dict) or set(evidence) != {"severity", "findings", "risks", "blockers"}:
+            raise CoordinatorError(f"composite review {axis} evidence has an invalid schema")
+        if evidence["severity"] not in REVIEW_SEVERITIES:
+            raise CoordinatorError(f"composite review {axis} severity is invalid")
+        if not isinstance(evidence["findings"], list):
+            raise CoordinatorError(f"composite review {axis} findings must be a list")
+        highest = "none"
+        for finding in evidence["findings"]:
+            if not isinstance(finding, dict) or set(finding) != {"severity", "summary", "evidence"}:
+                raise CoordinatorError(f"composite review {axis} finding has an invalid schema")
+            if finding["severity"] not in FINDING_SEVERITIES or not all(
+                _non_empty(finding[field]) for field in ("summary", "evidence")
+            ):
+                raise CoordinatorError(f"composite review {axis} finding is invalid")
+            if finding["severity"] == "blocker":
+                highest = "blocker"
+            elif finding["severity"] == "warning" and highest == "none":
+                highest = "warning"
+        if highest == "blocker" and evidence["severity"] != "blocker":
+            raise CoordinatorError(f"composite review {axis} hides a blocker finding")
+        if highest == "warning" and evidence["severity"] in {"none", "clean"}:
+            raise CoordinatorError(f"composite review {axis} hides a warning finding")
+        if not _non_empty(evidence["risks"]) or not _non_empty(evidence["blockers"]):
+            raise CoordinatorError(f"composite review {axis} must state risks and blockers")
+
+
+def _validate_report(
+    report: dict[str, Any], dispatch: dict[str, Any], role: dict[str, Any], repo: Path | None = None,
+    base_commit: str | None = None,
+) -> None:
     _reject_sensitive(report, "completion report")
-    if set(report) != REPORT_FIELDS:
+    if not REPORT_FIELDS <= set(report) or set(report) - REPORT_FIELDS - REPORT_OPTIONAL_FIELDS:
         missing = sorted(REPORT_FIELDS - set(report))
-        extra = sorted(set(report) - REPORT_FIELDS)
+        extra = sorted(set(report) - REPORT_FIELDS - REPORT_OPTIONAL_FIELDS)
         raise CoordinatorError(f"completion report schema mismatch (missing={missing}, extra={extra})")
     brief = dispatch
     for field in ("dispatch_id", "ticket", "role"):
@@ -550,8 +979,19 @@ def _validate_report(report: dict[str, Any], dispatch: dict[str, Any], role: dic
                 fnmatchcase(normalized, pattern) for pattern in paths
             ):
                 raise CoordinatorError("completion report changed_files must remain inside the approved zone")
+        if repo is not None:
+            resolved = _candidate_commit(repo, commit_sha)
+            actual_files = _changed_files_between(repo, base_commit, resolved) if base_commit else _commit_changed_files(repo, resolved)
+            if actual_files != changed_files:
+                raise CoordinatorError("completion report changed_files must exactly match commit_sha")
     if role["mode"] == "read-only" and commit_sha != "not applicable — read-only role":
         raise CoordinatorError("read-only completion reports must not claim a commit SHA")
+    if "risk_triggers" in report:
+        _strings(report["risk_triggers"], "completion report risk_triggers", allow_empty=True)
+    if role.get("name") == "code-review":
+        _validate_review(report.get("review"), dispatch)
+    elif "review" in report:
+        raise CoordinatorError("only the code-review role may submit composite review evidence")
 
 
 def _report_markdown(report: dict[str, Any]) -> str:
@@ -574,9 +1014,29 @@ def _report_markdown(report: dict[str, Any]) -> str:
             f"- Risks: {report['risks']}",
             f"- Blockers: {report['blockers']}",
             f"- Next coordinator action: {report['next_coordinator_action']}",
-            "",
         ]
     )
+    review = report.get("review")
+    if isinstance(review, dict):
+        lines.extend(
+            [
+                f"- Review candidate commit: {review['candidate_commit']}",
+                f"- Review scope: {', '.join(review['scope']) or 'none'}",
+            ]
+        )
+        for axis in ("standards", "spec"):
+            evidence = review[axis]
+            lines.extend(
+                [
+                    f"- Review {axis.title()} severity: {evidence['severity']}",
+                    f"- Review {axis.title()} findings: {len(evidence['findings'])}",
+                    f"- Review {axis.title()} risks: {evidence['risks']}",
+                    f"- Review {axis.title()} blockers: {evidence['blockers']}",
+                ]
+            )
+            for finding in evidence["findings"]:
+                lines.append(f"  - [{finding['severity']}] {finding['summary']}: {finding['evidence']}")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -598,7 +1058,55 @@ def submit_report(args: argparse.Namespace) -> dict[str, Any]:
         if not entry or entry.get("state") != "dispatched" or status.get("state") != "dispatched":
             raise CoordinatorError("completion report requires a dispatched role")
         role = _role(repo, dispatch["role"])
-        _validate_report(report, dispatch, role)
+        _validate_report(report, dispatch, role, repo, batch.get("base_commit"))
+        retry_candidate: str | None = None
+        was_retry = False
+        if role["name"] == "developer" and batch.get("retry_candidate_required"):
+            retry_candidate = _candidate_commit(repo, report["commit_sha"])
+            was_retry = True
+            prior_candidates = {
+                item.get("candidate_commit")
+                for item in batch.get("risk_assessments", [])
+                if isinstance(item.get("candidate_commit"), str)
+            }
+            if retry_candidate in prior_candidates:
+                raise CoordinatorError("a retry must produce a new candidate commit before review or QA")
+            batch["retry_candidate_required"] = False
+        if "risk_triggers" in report and role["name"] == "developer":
+            triggers = _validate_trigger_names(
+                report["risk_triggers"], "completion report risk_triggers", _risk_triggers(repo)
+            )
+            if triggers:
+                escalated_candidate = _candidate_commit(repo, report["commit_sha"])
+                batch.setdefault("risk_escalations", []).append(
+                    {"dispatch_id": dispatch["dispatch_id"], "candidate_commit": escalated_candidate, "triggers": triggers}
+                )
+                batch["risk_reassessment_required"] = True
+                batch["risk_reassessment_candidate"] = escalated_candidate
+                batch["risk_reassessment_triggers"] = triggers
+            elif was_retry:
+                inherited = sorted(
+                    {
+                        trigger
+                        for escalation in batch.get("risk_escalations", [])
+                        for trigger in escalation.get("triggers", [])
+                    }
+                )
+                if inherited:
+                    batch.setdefault("risk_escalations", []).append(
+                        {"dispatch_id": dispatch["dispatch_id"], "candidate_commit": retry_candidate, "triggers": inherited}
+                    )
+                    batch["risk_reassessment_required"] = True
+                    batch["risk_reassessment_candidate"] = retry_candidate
+                    batch["risk_reassessment_triggers"] = inherited
+                else:
+                    batch["risk_reassessment_required"] = False
+                    batch.pop("risk_reassessment_candidate", None)
+                    batch.pop("risk_reassessment_triggers", None)
+            elif not batch.get("risk_reassessment_required"):
+                batch["risk_reassessment_required"] = False
+                batch.pop("risk_reassessment_candidate", None)
+                batch.pop("risk_reassessment_triggers", None)
         report_json = root / "reports" / f"{dispatch['dispatch_id']}.json"
         report_md = root / "reports" / f"{dispatch['dispatch_id']}.md"
         if report_json.exists() or report_md.exists():
@@ -614,6 +1122,7 @@ def submit_report(args: argparse.Namespace) -> dict[str, Any]:
             if entry["dispatch_id"] == dispatch["dispatch_id"]:
                 entry["state"] = "reported"
                 entry["report"] = f"reports/{dispatch['dispatch_id']}.json"
+                entry["report_sha256"] = hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest()
                 break
         else:
             raise CoordinatorError("dispatch is not registered in its batch")
@@ -664,12 +1173,24 @@ def parser() -> argparse.ArgumentParser:
     decide.add_argument("--note", default="none")
     decide.set_defaults(handler=decide_batch)
 
+    risk = commands.add_parser("risk")
+    risk_commands = risk.add_subparsers(dest="risk_command", required=True)
+    assess = risk_commands.add_parser("assess")
+    _common(assess)
+    assess.add_argument("--batch", required=True)
+    assess.add_argument("--candidate-commit", required=True)
+    assess.add_argument("--base-commit", help="optional immutable diff base for a multi-commit candidate")
+    assess.add_argument("--changed-file", action="append", required=True)
+    assess.add_argument("--developer-trigger", action="append")
+    assess.set_defaults(handler=assess_risk)
+
     dispatch = commands.add_parser("dispatch")
     dispatch_commands = dispatch.add_subparsers(dest="dispatch_command", required=True)
     dispatch_create = dispatch_commands.add_parser("create", aliases=["approve"])
     _common(dispatch_create)
     dispatch_create.add_argument("--batch", required=True)
     dispatch_create.add_argument("--role", default="developer")
+    dispatch_create.add_argument("--candidate-commit")
     dispatch_create.add_argument("--approved-by", required=True)
     dispatch_create.add_argument("--approved-at", required=True)
     dispatch_create.set_defaults(handler=create_dispatch)
@@ -679,6 +1200,7 @@ def parser() -> argparse.ArgumentParser:
     dispatch_send.add_argument("--dispatch", required=True)
     dispatch_send.add_argument("--adapter", required=True)
     dispatch_send.add_argument("--adapter-arg", action="append")
+    dispatch_send.add_argument("--checkout")
     dispatch_send.set_defaults(handler=send_dispatch)
 
     report = commands.add_parser("report")
