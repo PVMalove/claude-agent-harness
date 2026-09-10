@@ -82,6 +82,29 @@ def _moment(value: object) -> Optional[datetime]:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _same_path(recorded: object, repo: Path, _cache: dict = {}) -> bool:
+    """Whether a recorded working directory is this repository.
+
+    A string comparison is not enough: Windows records an 8.3 short path ("RUNNER~1") for the same
+    directory the caller resolved, and case differs freely. Resolution is cached because the same
+    handful of directories repeat across every record of a session.
+    """
+    if not isinstance(recorded, str) or not recorded:
+        return False
+    key = (recorded, str(repo))
+    hit = _cache.get(key)
+    if hit is None:
+        if recorded.replace("\\", "/").lower() == str(repo).replace("\\", "/").lower():
+            hit = True
+        else:
+            try:
+                hit = Path(recorded).resolve() == repo
+            except OSError:
+                hit = False
+        _cache[key] = hit
+    return hit
+
+
 def _int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
@@ -341,14 +364,13 @@ def claude_project_dir(home: Path, repo: Path) -> Optional[Path]:
     if direct.is_dir():
         return direct
     # The naming scheme is not a published contract; fall back to matching the recorded cwd.
-    target = str(repo).replace("\\", "/").lower()
     for candidate in sorted(root.iterdir()):
         if not candidate.is_dir():
             continue
         for transcript in sorted(candidate.glob("*.jsonl"))[:1]:
             for record in _read_jsonl(transcript):
                 cwd = record.get("cwd")
-                if isinstance(cwd, str) and cwd.replace("\\", "/").lower() == target:
+                if _same_path(cwd, repo):
                     return candidate
                 break
     return None
@@ -434,7 +456,6 @@ def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple) -> dic
     start, end = window
     if start is None or end is None:
         return {"status": MISSING, "reason": "нет окна активности, к которому можно отнести работу Codex"}
-    target = str(repo).replace("\\", "/").lower()
     models: dict = {}
     sessions: set = set()
     rate_limits: Any = None
@@ -449,7 +470,7 @@ def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple) -> dic
             payload = record.get("payload")
             payload = payload if isinstance(payload, dict) else {}
             cwd = payload.get("cwd") or record.get("cwd")
-            if isinstance(cwd, str) and cwd.replace("\\", "/").lower() == target:
+            if _same_path(cwd, repo):
                 in_repo = True
             if payload.get("model"):
                 current_model = payload["model"]
