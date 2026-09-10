@@ -1002,7 +1002,9 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if sent.returncode != 0:
         sys.exit("coordinator rejected an approved adapter handoff: " + sent.stderr)
     adapter_args = json.loads(fake_adapter_log.read_text(encoding="utf-8"))
-    if adapter_args[adapter_args.index("--brief") + 1] != str(brief_file):
+    # Compare resolved paths: the coordinator resolves --repo, and on Windows that expands an 8.3
+    # short name (a runner's TEMP under RUNNER~1), so the raw strings differ for the same file.
+    if Path(adapter_args[adapter_args.index("--brief") + 1]).resolve() != brief_file.resolve():
         sys.exit("coordinator did not pass the approved immutable brief to the adapter")
     if brief_file.read_bytes() != brief_bytes:
         sys.exit("coordinator changed the immutable dispatch brief")
