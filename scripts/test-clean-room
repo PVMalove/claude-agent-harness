@@ -621,7 +621,7 @@ def _run(test_root: Path):
         },
         "backend_zones": {"backend": {"paths": ["services/**"]}},
         "concurrency_budget": 2,
-        "verification_commands": ["python -m pytest -s"],
+        "verification_commands": ["python qa_baseline.py"],
     }
     orchestration_config.write_text(json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8")
     run_ok(HARNESS + ["health", str(orchestration_project)])
@@ -689,7 +689,7 @@ else:
         "worktree": "isolated-orca-worktree",
         "definition_of_done": ["produce the requested backend change"],
         "prohibited_changes": ["no merge or production operations"],
-        "verification_commands": ["python -m pytest -s"],
+        "verification_commands": ["python qa_baseline.py"],
         "required_gates": ["code review"],
         "dependencies": ["approved project config"],
         "coordinator_approval": {"approved_by": "project coordinator", "approved_at": "2026-09-09T12:00:00Z"},
@@ -871,8 +871,11 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
 
     baseline_file = orchestration_project / "README.md"
     baseline_file.write_text("clean-room baseline\n", encoding="utf-8")
-    (orchestration_project / "test_qa_baseline.py").write_text(
-        "def test_clean_room_baseline():\n    print('token=visible')\n    assert True\n", encoding="utf-8"
+    # The QA lane runs this project's own verification command verbatim. Keep that command
+    # dependency-free: a third-party test runner is not installed on every clean-room host, and the
+    # gate is here to prove the lane's behaviour, not pytest's.
+    (orchestration_project / "qa_baseline.py").write_text(
+        'print("token=visible")\n', encoding="utf-8"
     )
     subprocess.run(["git", "add", "."], cwd=orchestration_project, check=True)
     subprocess.run(["git", "commit", "-qm", "chore: create baseline"], cwd=orchestration_project, check=True)
@@ -931,7 +934,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "recorded the boundary decision and acceptance criteria",
         "commit_sha": "not applicable — read-only role",
         "changed_files": [],
-        "checks_run": [{"command": "python -m pytest -s", "result": "pass", "evidence": "repository evidence inspected"}],
+        "checks_run": [{"command": "python qa_baseline.py", "result": "pass", "evidence": "repository evidence inspected"}],
         "risks": "none",
         "blockers": "none",
         "next_coordinator_action": "accept and dispatch the developer",
@@ -1029,7 +1032,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "implemented the requested backend change",
         "commit_sha": candidate_sha,
         "changed_files": ["services/retry.py"],
-        "checks_run": [{"command": "python -m pytest -s", "result": "pass", "evidence": "1 passed"}],
+        "checks_run": [{"command": "python qa_baseline.py", "result": "pass", "evidence": "1 passed"}],
         "risks": "none",
         "blockers": "none",
         "next_coordinator_action": "accept",
@@ -1152,7 +1155,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "independent composite review completed",
         "commit_sha": "not applicable — read-only role",
         "changed_files": [],
-        "checks_run": [{"command": "python -m pytest -s", "result": "pass", "evidence": "review scope inspected"}],
+        "checks_run": [{"command": "python qa_baseline.py", "result": "pass", "evidence": "review scope inspected"}],
         "risks": "standards warning requires coordinator decision",
         "blockers": "none",
         "next_coordinator_action": "override-warning or retry",
@@ -1248,7 +1251,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if not artifact.is_file() or hashlib.sha256(artifact.read_bytes()).hexdigest() != qa_result["sha256"]:
         sys.exit("QA evidence artifact is not immutable and checksum-addressed")
     artifact_text = artifact.read_text(encoding="utf-8")
-    if not artifact_text.startswith("$ python -m pytest -s\nexit_code=0\n"):
+    if not artifact_text.startswith("$ python qa_baseline.py\nexit_code=0\n"):
         sys.exit("QA evidence artifact does not contain the full gate output")
     if "token=visible" in artifact_text or "token=<redacted>" not in artifact_text:
         sys.exit("QA evidence artifact was not sanitised")
@@ -1358,7 +1361,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "dispatch_id": role_dispatch, "ticket": "#904", "role": role_name, "outcome": "completed",
             "output": f"{role_name} finished the requested step", "commit_sha": "not applicable — read-only role",
             "changed_files": [],
-            "checks_run": [{"command": "python -m pytest -s", "result": "pass", "evidence": "1 passed"}],
+            "checks_run": [{"command": "python qa_baseline.py", "result": "pass", "evidence": "1 passed"}],
             "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
         }
         payload.update(payload_extra)
