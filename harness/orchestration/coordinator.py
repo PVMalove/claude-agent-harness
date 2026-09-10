@@ -13,11 +13,14 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -30,6 +33,11 @@ REPORT_OUTCOMES = {"completed", "blocked", "failed"}
 DECISIONS = {"accept", "override-warning", "retry", "block"}
 REVIEW_SEVERITIES = {"none", "clean", "warning", "blocker"}
 FINDING_SEVERITIES = {"info", "warning", "blocker"}
+QA_LEASE_FIELDS = {"dispatch_id", "host", "pid", "acquired_at", "expires_at"}
+QA_QUEUE_FIELDS = {"dispatch_id", "sequence", "queued_at"}
+SENSITIVE_OUTPUT = re.compile(
+    r"(?i)\b(api[_-]?key|credential|password|secret|token)\b(\s*(?:[:=]|is)\s*)([^\s]+)"
+)
 PLAN_FIELDS = (
     "batch_id", "created_at", "base_commit", "ticket", "branch", "worktree", "zone", "definition_of_done",
     "prohibited_changes", "verification_commands", "required_gates", "dependencies",
@@ -114,6 +122,16 @@ def _write_exclusive(path: Path, value: dict[str, Any]) -> None:
         raise CoordinatorError(f"refusing to overwrite immutable record: {path.name}") from exc
 
 
+def _write_text_exclusive(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("x", encoding="utf-8", newline="\n") as stream:
+            stream.write(value)
+    except FileExistsError as exc:
+        if path.read_text(encoding="utf-8") != value:
+            raise CoordinatorError(f"refusing to overwrite immutable artifact: {path.name}") from exc
+
+
 def _replace(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -140,6 +158,12 @@ def _repo(args: argparse.Namespace) -> Path:
 def _state_root(args: argparse.Namespace, repo: Path) -> Path:
     supplied = getattr(args, "state_dir", None)
     return (Path(supplied).resolve() if supplied else repo / STATE_REL).resolve()
+
+
+def _qa_state_root(args: argparse.Namespace, repo: Path) -> Path:
+    if getattr(args, "state_dir", None):
+        raise CoordinatorError("QA lane is repository-scoped and does not support --state-dir")
+    return repo / STATE_REL
 
 
 @contextmanager
@@ -392,6 +416,85 @@ def _risk_path(root: Path, risk_id: str) -> Path:
 
 def _plan_path(root: Path, batch_id: str) -> Path:
     return root / "plans" / f"{_safe_id(batch_id, 'batch')}.json"
+
+
+def _qa_lane_path(root: Path) -> Path:
+    return root / "qa-lane" / "lease.json"
+
+
+def _qa_queue_root(root: Path) -> Path:
+    return root / "qa-lane" / "queue"
+
+
+def _qa_queue_counter_path(root: Path) -> Path:
+    return root / "qa-lane" / "sequence.json"
+
+
+def _qa_artifact_path(root: Path, checksum: str) -> Path:
+    return root / "qa-artifacts" / f"{checksum}.log"
+
+
+def _qa_queue_entries(root: Path) -> list[tuple[Path, dict[str, Any]]]:
+    entries: list[tuple[Path, dict[str, Any]]] = []
+    for path in _qa_queue_root(root).glob("*.json"):
+        entry = _read_object(path, "QA queue entry")
+        if set(entry) != QA_QUEUE_FIELDS or not isinstance(entry["sequence"], int) or entry["sequence"] < 1:
+            raise CoordinatorError("QA queue entry has an invalid schema")
+        _safe_id(entry["dispatch_id"], "QA queue dispatch")
+        if not _non_empty(entry["queued_at"]):
+            raise CoordinatorError("QA queue entry has an invalid queued_at value")
+        entries.append((path, entry))
+    return sorted(entries, key=lambda item: item[1]["sequence"])
+
+
+def _qa_enqueue(root: Path, dispatch_id: str) -> tuple[Path, dict[str, Any]]:
+    for path, entry in _qa_queue_entries(root):
+        if entry["dispatch_id"] == dispatch_id:
+            return path, entry
+    counter_path = _qa_queue_counter_path(root)
+    counter = _read_object(counter_path, "QA queue sequence") if counter_path.exists() else {"next": 1}
+    if set(counter) != {"next"} or not isinstance(counter["next"], int) or counter["next"] < 1:
+        raise CoordinatorError("QA queue sequence is invalid")
+    entry = {"dispatch_id": dispatch_id, "sequence": counter["next"], "queued_at": _now()}
+    path = _qa_queue_root(root) / f"{entry['sequence']:020d}-{dispatch_id}.json"
+    _write_exclusive(path, entry)
+    _replace(counter_path, {"next": counter["next"] + 1})
+    return path, entry
+
+
+def _qa_lease(root: Path) -> dict[str, Any] | None:
+    path = _qa_lane_path(root)
+    if not path.exists():
+        return None
+    lease = _read_object(path, "QA lease")
+    if set(lease) != QA_LEASE_FIELDS or not _non_empty(lease.get("host")) or not isinstance(lease.get("pid"), int):
+        raise CoordinatorError("QA lease has an invalid schema")
+    _safe_id(lease.get("dispatch_id"), "QA lease dispatch")
+    for field in ("acquired_at", "expires_at"):
+        if not _non_empty(lease.get(field)):
+            raise CoordinatorError(f"QA lease has an invalid {field}")
+    return lease
+
+
+def _lease_expired(lease: dict[str, Any]) -> bool:
+    try:
+        expiry = datetime.fromisoformat(lease["expires_at"])
+    except ValueError as exc:
+        raise CoordinatorError("QA lease has an unreadable expiry") from exc
+    if expiry.tzinfo is None:
+        raise CoordinatorError("QA lease expiry must include a timezone")
+    return expiry <= datetime.now(timezone.utc)
+
+
+def _sanitise(text: str) -> str:
+    return SENSITIVE_OUTPUT.sub(lambda match: f"{match.group(1)}{match.group(2)}<redacted>", text)
+
+
+def _concise_evidence(text: str) -> str:
+    lines = [line.strip() for line in _sanitise(text).splitlines() if line.strip()]
+    if not lines:
+        return "no output"
+    return lines[0][:240]
 
 
 def _load_batch(root: Path, batch_id: str) -> dict[str, Any]:
@@ -852,6 +955,8 @@ def _validate_checkout(checkout: Path, candidate: str, base: str | None, scope: 
 def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
+    if _load_dispatch(root, args.dispatch).get("role") == "qa":
+        raise CoordinatorError("QA dispatches must run through the clean-room QA lane, never a runtime adapter")
     adapter = Path(args.adapter).resolve()
     if not adapter.is_file():
         raise CoordinatorError(f"runtime adapter does not exist: {adapter}")
@@ -898,6 +1003,200 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {"dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": _now()})
         _replace(_batch_path(root, batch["batch_id"]), batch)
     return {"dispatch_id": dispatch["dispatch_id"], "state": "dispatched"}
+
+
+def _qa_report(dispatch: dict[str, Any], checks: list[dict[str, str]], artifact: Path, checksum: str) -> dict[str, Any]:
+    failed = any(check["result"] == "fail" for check in checks)
+    return {
+        "dispatch_id": dispatch["dispatch_id"],
+        "ticket": dispatch["ticket"],
+        "role": "qa",
+        "outcome": "failed" if failed else "completed",
+        "output": (
+            f"QA gate {'failed' if failed else 'passed'}; full sanitised output: "
+            f"{artifact.as_posix()} (sha256:{checksum})"
+        ),
+        "commit_sha": "not applicable — read-only role",
+        "changed_files": [],
+        "checks_run": checks,
+        "risks": "QA gate failed; inspect immutable evidence" if failed else "none",
+        "blockers": "new approved developer retry required" if failed else "none",
+        "next_coordinator_action": "create a new approved developer retry" if failed else "accept or continue",
+    }
+
+
+def _persist_report(root: Path, batch: dict[str, Any], dispatch: dict[str, Any], report: dict[str, Any]) -> Path:
+    report_json = root / "reports" / f"{dispatch['dispatch_id']}.json"
+    report_md = root / "reports" / f"{dispatch['dispatch_id']}.md"
+    if report_json.exists() or report_md.exists():
+        raise CoordinatorError("refusing to overwrite immutable completion report")
+    _write_exclusive(report_json, report)
+    try:
+        _write_text_exclusive(report_md, _report_markdown(report))
+    except CoordinatorError as exc:
+        raise CoordinatorError("refusing to overwrite immutable Markdown report") from exc
+    entry = next((item for item in batch["dispatches"] if item["dispatch_id"] == dispatch["dispatch_id"]), None)
+    if entry is None:
+        raise CoordinatorError("dispatch is not registered in its batch")
+    entry["state"] = "reported"
+    entry["report"] = f"reports/{dispatch['dispatch_id']}.json"
+    entry["report_sha256"] = hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest()
+    batch["state"] = "awaiting-approval"
+    _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
+        "dispatch_id": dispatch["dispatch_id"], "state": "reported", "updated_at": _now(),
+    })
+    _replace(_batch_path(root, batch["batch_id"]), batch)
+    return report_json
+
+
+def _record_qa_report(root: Path, repo: Path, dispatch: dict[str, Any], report: dict[str, Any]) -> Path:
+    batch = _load_batch(root, dispatch["batch_id"])
+    _validate_batch_integrity(root, batch)
+    _validate_dispatch(repo, _config(repo), root, batch, dispatch)
+    status = _load_dispatch_status(root, dispatch["dispatch_id"])
+    entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
+    if not entry or entry.get("state") != "dispatched" or status.get("state") != "working":
+        raise CoordinatorError("QA report requires a running QA dispatch")
+    _validate_report(report, dispatch, _role(repo, "qa"), repo, batch.get("base_commit"))
+    return _persist_report(root, batch, dispatch, report)
+
+
+def run_qa(args: argparse.Namespace) -> dict[str, Any]:
+    repo = _repo(args)
+    root = _qa_state_root(args, repo)
+    lease_seconds = args.lease_seconds
+    if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or lease_seconds < 1:
+        raise CoordinatorError("QA lease-seconds must be a positive integer")
+    with _state_lock(root):
+        dispatch = _load_dispatch(root, args.dispatch)
+        batch = _load_batch(root, dispatch["batch_id"])
+        _validate_batch_integrity(root, batch)
+        _validate_dispatch(repo, _config(repo), root, batch, dispatch)
+        if dispatch["role"] != "qa":
+            raise CoordinatorError("clean-room QA runner accepts only QA dispatches")
+        if not dispatch["verification_commands"]:
+            raise CoordinatorError("clean-room QA runner requires configured verification_commands")
+        status = _load_dispatch_status(root, dispatch["dispatch_id"])
+        entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
+        if not entry or entry.get("state") != "approved" or status.get("state") != "approved":
+            raise CoordinatorError("QA runner requires an approved, unsent dispatch")
+        queue_path, queue_entry = _qa_enqueue(root, dispatch["dispatch_id"])
+        queue = _qa_queue_entries(root)
+        position = next(index for index, (_, item) in enumerate(queue, start=1) if item["dispatch_id"] == dispatch["dispatch_id"])
+        lease = _qa_lease(root)
+        if lease is not None:
+            if _lease_expired(lease):
+                raise CoordinatorError("QA lease is stale; a coordinator must clear it explicitly before another gate runs")
+            return {"dispatch_id": dispatch["dispatch_id"], "state": "queued", "position": position}
+        if position != 1:
+            return {"dispatch_id": dispatch["dispatch_id"], "state": "queued", "position": position}
+        acquired = _now()
+        lease = {
+            "dispatch_id": dispatch["dispatch_id"],
+            "host": socket.gethostname(),
+            "pid": os.getpid(),
+            "acquired_at": acquired,
+            "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat(),
+        }
+        _write_exclusive(_qa_lane_path(root), lease)
+        entry["state"] = "dispatched"
+        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
+            "dispatch_id": dispatch["dispatch_id"], "state": "working", "updated_at": _now(),
+        })
+        _replace(_batch_path(root, batch["batch_id"]), batch)
+
+    worktree_root = Path(tempfile.mkdtemp(prefix="agent-harness-qa-"))
+    checkout = worktree_root / "checkout"
+    outputs: list[str] = []
+    checks: list[dict[str, str]] = []
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "--detach", str(checkout), dispatch["candidate_commit"]],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        if result.returncode != 0:
+            detail = _sanitise((result.stderr or result.stdout).strip())
+            raise CoordinatorError(f"could not create clean QA worktree: {detail or 'unknown error'}")
+        if _git(checkout, "rev-parse", "--verify", "HEAD^{commit}") != dispatch["candidate_commit"]:
+            raise CoordinatorError("clean QA worktree HEAD does not match the pinned candidate commit")
+        if _git(checkout, "status", "--porcelain", "--untracked-files=all"):
+            raise CoordinatorError("clean QA worktree contains mutable files")
+        for command in dispatch["verification_commands"]:
+            result = subprocess.run(command, cwd=checkout, shell=True, capture_output=True, text=True, encoding="utf-8")
+            combined = _sanitise((result.stdout or "") + ("\n" if result.stdout and result.stderr else "") + (result.stderr or ""))
+            outputs.append(f"$ {_sanitise(command)}\nexit_code={result.returncode}\n{combined}\n")
+            checks.append({
+                "command": command,
+                "result": "pass" if result.returncode == 0 else "fail",
+                "evidence": f"exit {result.returncode}; {_concise_evidence(combined)}",
+            })
+    finally:
+        if checkout.exists():
+            subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(checkout)], capture_output=True, text=True)
+        shutil.rmtree(worktree_root, ignore_errors=True)
+
+    artifact_text = "\n".join(outputs)
+    checksum = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
+    artifact = _qa_artifact_path(root, checksum)
+    try:
+        _write_text_exclusive(artifact, artifact_text)
+    except CoordinatorError as exc:
+        raise CoordinatorError("could not persist immutable QA evidence") from exc
+    report = _qa_report(dispatch, checks, artifact, checksum)
+    with _state_lock(root):
+        report_path = _record_qa_report(root, repo, dispatch, report)
+        _qa_queue_entries(root)  # validate before removing the completed request
+        queue_path.unlink(missing_ok=True)
+        lease_path = _qa_lane_path(root)
+        current = _qa_lease(root)
+        if current and current["dispatch_id"] == dispatch["dispatch_id"]:
+            lease_path.unlink()
+    return {
+        "dispatch_id": dispatch["dispatch_id"],
+        "state": "reported",
+        "report": str(report_path),
+        "artifact": str(artifact),
+        "sha256": checksum,
+    }
+
+
+def qa_status(args: argparse.Namespace) -> dict[str, Any]:
+    repo = _repo(args)
+    root = _qa_state_root(args, repo)
+    with _state_lock(root):
+        queue = _qa_queue_entries(root)
+        lease = _qa_lease(root)
+        return {
+            "lease": lease,
+            "lease_stale": _lease_expired(lease) if lease else False,
+            "queue": [entry for _, entry in queue],
+        }
+
+
+def clear_qa_lease(args: argparse.Namespace) -> dict[str, Any]:
+    repo = _repo(args)
+    root = _qa_state_root(args, repo)
+    with _state_lock(root):
+        lease = _qa_lease(root)
+        if lease is None:
+            raise CoordinatorError("there is no QA lease to clear")
+        if not _lease_expired(lease):
+            raise CoordinatorError("a live QA lease cannot be force-unlocked")
+        expected = {"host": args.expected_host, "pid": args.expected_pid, "expires_at": args.expected_expiry}
+        if any(lease[field] != value for field, value in expected.items()):
+            raise CoordinatorError("QA lease changed; coordinator must validate the current owner again")
+        approval = _approval(args)
+        queue = _qa_queue_entries(root)
+        recovery = {
+            "cleared_dispatch_id": lease["dispatch_id"], "lease": lease, "approval": approval,
+            "reason": args.reason.strip(), "cleared_at": _now(),
+        }
+        _write_exclusive(root / "qa-lane" / "recoveries" / f"{uuid.uuid4()}.json", recovery)
+        owner = next(((path, entry) for path, entry in queue if entry["dispatch_id"] == lease["dispatch_id"]), None)
+        if owner is not None:
+            owner[0].unlink()
+        _qa_lane_path(root).unlink()
+    return {"state": "cleared", "dispatch_id": lease["dispatch_id"]}
 
 
 def _validate_review(review: object, dispatch: dict[str, Any]) -> None:
@@ -1053,6 +1352,8 @@ def submit_report(args: argparse.Namespace) -> dict[str, Any]:
         _validate_batch_integrity(root, batch)
         config = _config(repo)
         _validate_dispatch(repo, config, root, batch, dispatch)
+        if dispatch["role"] == "qa":
+            raise CoordinatorError("QA reports must be produced by the clean-room QA runner")
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
         entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
         if not entry or entry.get("state") != "dispatched" or status.get("state") != "dispatched":
@@ -1107,28 +1408,7 @@ def submit_report(args: argparse.Namespace) -> dict[str, Any]:
                 batch["risk_reassessment_required"] = False
                 batch.pop("risk_reassessment_candidate", None)
                 batch.pop("risk_reassessment_triggers", None)
-        report_json = root / "reports" / f"{dispatch['dispatch_id']}.json"
-        report_md = root / "reports" / f"{dispatch['dispatch_id']}.md"
-        if report_json.exists() or report_md.exists():
-            raise CoordinatorError("refusing to overwrite immutable completion report")
-        _write_exclusive(report_json, report)
-        report_md.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with report_md.open("x", encoding="utf-8", newline="\n") as stream:
-                stream.write(_report_markdown(report))
-        except FileExistsError as exc:
-            raise CoordinatorError("refusing to overwrite immutable Markdown report") from exc
-        for entry in batch["dispatches"]:
-            if entry["dispatch_id"] == dispatch["dispatch_id"]:
-                entry["state"] = "reported"
-                entry["report"] = f"reports/{dispatch['dispatch_id']}.json"
-                entry["report_sha256"] = hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest()
-                break
-        else:
-            raise CoordinatorError("dispatch is not registered in its batch")
-        batch["state"] = "awaiting-approval"
-        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {"dispatch_id": dispatch["dispatch_id"], "state": "reported", "updated_at": _now()})
-        _replace(_batch_path(root, batch["batch_id"]), batch)
+        report_json = _persist_report(root, batch, dispatch, report)
     return {"dispatch_id": dispatch["dispatch_id"], "state": "reported", "report": str(report_json)}
 
 
@@ -1202,6 +1482,28 @@ def parser() -> argparse.ArgumentParser:
     dispatch_send.add_argument("--adapter-arg", action="append")
     dispatch_send.add_argument("--checkout")
     dispatch_send.set_defaults(handler=send_dispatch)
+
+    qa = commands.add_parser("qa")
+    qa_commands = qa.add_subparsers(dest="qa_command", required=True)
+    qa_run = qa_commands.add_parser("run")
+    _common(qa_run)
+    qa_run.add_argument("--dispatch", required=True)
+    qa_run.add_argument("--lease-seconds", type=int, default=1800)
+    qa_run.set_defaults(handler=run_qa)
+
+    qa_status_command = qa_commands.add_parser("status")
+    _common(qa_status_command)
+    qa_status_command.set_defaults(handler=qa_status)
+
+    qa_clear = qa_commands.add_parser("clear-stale-lease")
+    _common(qa_clear)
+    qa_clear.add_argument("--approved-by", required=True)
+    qa_clear.add_argument("--approved-at", required=True)
+    qa_clear.add_argument("--expected-host", required=True)
+    qa_clear.add_argument("--expected-pid", type=int, required=True)
+    qa_clear.add_argument("--expected-expiry", required=True)
+    qa_clear.add_argument("--reason", required=True)
+    qa_clear.set_defaults(handler=clear_qa_lease)
 
     report = commands.add_parser("report")
     report_commands = report.add_subparsers(dest="report_command", required=True)
