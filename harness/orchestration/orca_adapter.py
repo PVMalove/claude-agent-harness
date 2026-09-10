@@ -21,7 +21,7 @@ from typing import Any
 
 
 SENSITIVE_KEY = re.compile(r"(?:api[_-]?key|credential|password|secret|token)", re.IGNORECASE)
-TERMINAL_WORKER_STATES = {"blocked", "completed", "failed", "stopped"}
+MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
 
 
 class DispatchError(Exception):
@@ -48,6 +48,28 @@ def _read_json(path: Path, label: str) -> dict[str, Any]:
 
 def _non_empty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _validate_model_id(value: object) -> str:
+    if not _non_empty_string(value) or MODEL_ID.fullmatch(value.strip()) is None:
+        raise DispatchError("assignment model must be a CLI model ID or alias without spaces")
+    return value.strip()
+
+
+def _issue_branch_exists(repo: Path, branch: str) -> None:
+    for reference in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"):
+        result = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", reference])
+        if result.returncode == 0:
+            return
+    raise DispatchError("approved issue branch does not exist locally or on origin")
+
+
+def _paths_within_zone(paths: list[str], zone_paths: list[str]) -> bool:
+    def inside(path: str, boundary: str) -> bool:
+        prefix = boundary[:-2] if boundary.endswith("**") else boundary
+        return path == boundary or path.startswith(prefix)
+
+    return all(any(inside(path, boundary) for boundary in zone_paths) for path in paths)
 
 
 def _resolved_commit(repo: Path, value: object) -> str:
@@ -188,15 +210,27 @@ def _validate_brief(brief: dict[str, Any], repo: Path, config: dict[str, Any]) -
     plan = assignments.get(role_name)
     if not isinstance(plan, dict) or plan.get("zone") != brief["zone"]:
         raise DispatchError(f"dispatch brief zone does not match the project assignment for role {role_name!r}")
+    runtime_name = brief.get("resolved_runtime", "codex")
+    runtime_plans = plan.get("runtimes")
+    if not _non_empty_string(runtime_name) or not isinstance(runtime_plans, dict):
+        raise DispatchError("dispatch brief runtime does not match a project runtime assignment")
+    plan = runtime_plans.get(runtime_name)
+    if not isinstance(plan, dict):
+        raise DispatchError(f"dispatch brief runtime {runtime_name!r} is not assigned to role {role_name!r}")
     zone = zones.get(brief["zone"])
     if not isinstance(zone, dict) or not isinstance(zone.get("paths"), list) or not zone["paths"]:
         raise DispatchError(f"dispatch brief references invalid zone {brief['zone']!r}")
+    assigned_paths = assignments[role_name].get("write_paths", zone["paths"])
+    if role["mode"] == "write" and (not isinstance(assigned_paths, list) or not assigned_paths):
+        raise DispatchError("write role assignment must declare valid write_paths")
+    if role["mode"] == "write" and not _paths_within_zone(assigned_paths, zone["paths"]):
+        raise DispatchError("write role assignment paths must remain inside its backend zone")
     if role["mode"] == "write" and not isinstance(brief.get("write_paths"), list):
         raise DispatchError("write dispatch must declare its one allowed zone paths")
     if role["mode"] == "read-only" and brief.get("write_paths"):
         raise DispatchError("read-only role cannot receive write paths")
-    if role["mode"] == "write" and brief["write_paths"] != zone["paths"]:
-        raise DispatchError("write dispatch paths must exactly match its one allowed project zone")
+    if role["mode"] == "write" and brief["write_paths"] != assigned_paths:
+        raise DispatchError("write dispatch paths must exactly match its role assignment")
     candidate = brief.get("candidate_commit")
     if role_name in {"code-review", "qa"} and candidate is None:
         raise DispatchError(f"{role_name} dispatch must pin candidate_commit")
@@ -220,29 +254,31 @@ def _validate_brief(brief: dict[str, Any], repo: Path, config: dict[str, Any]) -
 
 def _candidate_profiles(
     config: dict[str, Any], plan: dict[str, Any], role: dict[str, Any], preferred: object = None
-) -> list[str]:
+) -> list[tuple[str, str, str | None]]:
     profiles = config.get("provider_profiles")
     if not isinstance(profiles, dict) or not isinstance(plan.get("profiles"), list):
         raise DispatchError("project orchestration config has no valid provider profiles")
-    candidates: list[str] = []
+    candidates: list[tuple[str, str, str | None]] = []
+    role_model = _validate_model_id(plan.get("model"))
+    role_effort = plan.get("effort")
+    if not _non_empty_string(role_effort):
+        raise DispatchError("assignment plan effort must be a non-empty string")
 
     def add(profile_id: object) -> None:
         if not _non_empty_string(profile_id) or profile_id not in profiles:
             raise DispatchError("assignment plan references an unknown provider profile")
-        if profile_id in candidates:
+        if any(candidate[0] == profile_id for candidate in candidates):
             return
         profile = profiles[profile_id]
-        if not isinstance(profile, dict) or not _non_empty_string(profile.get("agent")) or not _non_empty_string(
-            profile.get("default_model")
-        ):
-            raise DispatchError(f"provider profile {profile_id!r} has no valid agent/model")
+        if not isinstance(profile, dict) or not _non_empty_string(profile.get("agent")):
+            raise DispatchError(f"provider profile {profile_id!r} has no valid agent")
         capabilities = profile.get("capabilities")
         required_capabilities = role.get("required_capabilities")
         if not isinstance(capabilities, list) or not isinstance(required_capabilities, list) or not set(capabilities).intersection(
             required_capabilities
         ):
             raise DispatchError(f"provider profile {profile_id!r} is incompatible with the requested role")
-        candidates.append(profile_id)
+        candidates.append((profile_id, role_model, role_effort))
         fallback = profile.get("fallback")
         if not isinstance(fallback, list):
             raise DispatchError(f"provider profile {profile_id!r} has invalid fallback")
@@ -286,11 +322,7 @@ def _active_workers(payload: dict[str, Any]) -> int:
     workers = result.get("workers", []) if isinstance(result, dict) else []
     if not isinstance(workers, list):
         raise DispatchError("Orca worker listing is invalid")
-    return sum(
-        1
-        for worker in workers
-        if not isinstance(worker, dict) or str(worker.get("state", "working")).lower() not in TERMINAL_WORKER_STATES
-    )
+    return len(workers)
 
 
 def _result_id(payload: dict[str, Any], keys: tuple[str, ...]) -> str | None:
@@ -321,11 +353,23 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
     _reject_sensitive_keys(config, "project orchestration config")
     role, plan = _validate_brief(brief, repo, config)
     candidates = _candidate_profiles(config, plan, role, brief.get("resolved_provider_profile"))
+    primary_profile, primary_model, primary_effort = candidates[0]
+    if brief.get("resolved_runtime", "codex") not in config.get("assignment_plans", {}).get(brief["role"], {}).get("runtimes", {}):
+        raise DispatchError("dispatch brief runtime does not match the project assignment")
+    if brief.get("resolved_provider_profile") is not None and brief["resolved_provider_profile"] != primary_profile:
+        raise DispatchError("dispatch brief provider profile does not match the project assignment")
+    if brief.get("resolved_model") is not None and brief["resolved_model"] != primary_model:
+        raise DispatchError("dispatch brief model does not match the project assignment")
+    if brief.get("resolved_effort") is not None and brief["resolved_effort"] != primary_effort:
+        raise DispatchError("dispatch brief effort does not match the project assignment")
     budget = config.get("concurrency_budget")
     if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
         raise DispatchError("project orchestration config has an invalid concurrency_budget")
 
-    active = _active_workers(_run_orca(args.orca_bin, ["orchestration", "worker-list", "--json"]))
+    _issue_branch_exists(repo, brief["branch"])
+    active = _active_workers(
+        _run_orca(args.orca_bin, ["orchestration", "worker-list", "--run", args.run, "--terminal-state", "active", "--json"])
+    )
     if active >= budget:
         raise DispatchError("concurrency_budget is exhausted; no dispatch was created")
 
@@ -344,7 +388,7 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
     profiles = config["provider_profiles"]
     base_ref = brief.get("candidate_commit") or brief["branch"]
     last_error: DispatchError | None = None
-    for profile_id in candidates:
+    for profile_id, model, effort in candidates:
         profile = profiles[profile_id]
         try:
             worker = _run_orca(
@@ -353,7 +397,9 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
                     "orchestration", "worker-start", "--run", args.run, "--task", task_id, "--worktree", "new-top-level", "--repo",
                     f"path:{repo}", "--base-branch", base_ref, "--name", brief["branch"], "--display-name",
                     brief["worktree"], "--agent", profile["agent"],
-                    "--model", profile["default_model"], "--setup", "run", "--json",
+                    "--model", model,
+                    *( ["--effort", effort] if effort is not None else [] ),
+                    "--setup", "run", "--json",
                 ],
             )
         except OrcaLaunchRejected as exc:
@@ -365,13 +411,19 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
             "dispatch_id": dispatch_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "brief": copy.deepcopy(brief),
-            "resolved": {"profile": profile_id, "agent": profile["agent"], "model": profile["default_model"]},
+            "resolved": {"profile": profile_id, "agent": profile["agent"], "model": model, "effort": effort},
             "role": {"name": brief["role"], "mode": role["mode"], "zone": brief["zone"]},
             "orca": {"task_id": task_id, "worker_id": _result_id(worker, ("worker", "id"))},
             "terminal_outcome": "ready",
         }
         record_path = _write_record(records_dir, record)
-        return {"dispatch_id": dispatch_id, "record": str(record_path), "profile": profile_id, "model": profile["default_model"]}
+        return {
+            "dispatch_id": dispatch_id,
+            "record": str(record_path),
+            "profile": profile_id,
+            "model": model,
+            "effort": effort,
+        }
     raise DispatchError("all project-configured provider profiles rejected the dispatch") from last_error
 
 

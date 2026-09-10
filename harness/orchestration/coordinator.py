@@ -46,7 +46,7 @@ PLAN_FIELDS = (
 DISPATCH_FIELDS = {
     "dispatch_id", "batch_id", "ticket", "role", "access", "zone", "write_paths", "branch", "worktree",
     "definition_of_done", "prohibited_changes", "verification_commands", "required_gates", "dependencies",
-    "resolved_provider_profile", "resolved_model", "coordinator_approval", "candidate_commit", "review_base", "review_scope",
+    "resolved_runtime", "resolved_provider_profile", "resolved_model", "resolved_effort", "coordinator_approval", "candidate_commit", "review_base", "review_scope",
     "risk_assessment_id", "purpose", "state", "created_at",
 }
 REPORT_FIELDS = {
@@ -369,9 +369,17 @@ def _verification_commands(config: dict[str, Any]) -> list[str]:
     return _strings(commands, "verification_commands", allow_empty=True)
 
 
+def _paths_within_zone(paths: list[str], zone_paths: list[str]) -> bool:
+    def inside(path: str, boundary: str) -> bool:
+        prefix = boundary[:-2] if boundary.endswith("**") else boundary
+        return path == boundary or path.startswith(prefix)
+
+    return all(any(inside(path, boundary) for boundary in zone_paths) for path in paths)
+
+
 def _resolve_assignment(
-    repo: Path, config: dict[str, Any], role_name: str, zone_name: str
-) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+    repo: Path, config: dict[str, Any], role_name: str, zone_name: str, runtime_name: str
+) -> tuple[dict[str, Any], dict[str, Any], str, str, str]:
     role = _role(repo, role_name)
     assignments = config.get("assignment_plans")
     zones = config.get("backend_zones")
@@ -385,18 +393,39 @@ def _resolve_assignment(
     paths = zone.get("paths") if isinstance(zone, dict) else None
     if not isinstance(paths, list) or not paths or not all(_non_empty(item) for item in paths):
         raise CoordinatorError(f"backend zone {zone_name!r} is invalid")
-    profile_ids = plan.get("profiles")
+    assigned_paths = plan.get("write_paths", paths)
+    if not isinstance(assigned_paths, list) or not assigned_paths or not all(_non_empty(item) for item in assigned_paths):
+        raise CoordinatorError(f"role {role_name!r} has invalid write_paths")
+    if not _paths_within_zone(assigned_paths, paths):
+        raise CoordinatorError(f"role {role_name!r} write_paths must remain inside backend zone {zone_name!r}")
+    if role.get("mode") == "read-only":
+        assigned_paths = []
+    runtime_plans = plan.get("runtimes")
+    if not isinstance(runtime_plans, dict):
+        raise CoordinatorError(f"role {role_name!r} has no runtime assignments")
+    runtime_plan = runtime_plans.get(runtime_name)
+    if not isinstance(runtime_plan, dict):
+        raise CoordinatorError(f"role {role_name!r} is not assigned to runtime {runtime_name!r}")
+    profile_ids = runtime_plan.get("profiles")
     if not isinstance(profile_ids, list) or not profile_ids or not _non_empty(profile_ids[0]):
         raise CoordinatorError(f"role {role_name!r} has no provider profile")
     profile_id = profile_ids[0]
     profile = profiles.get(profile_id)
     required = set(role.get("required_capabilities", []))
     capabilities = profile.get("capabilities") if isinstance(profile, dict) else None
-    if not isinstance(profile, dict) or not _non_empty(profile.get("default_model")):
+    if not isinstance(profile, dict):
         raise CoordinatorError(f"provider profile {profile_id!r} is invalid")
     if not isinstance(capabilities, list) or not required.intersection(capabilities):
         raise CoordinatorError(f"provider profile {profile_id!r} is incompatible with role {role_name!r}")
-    return role, zone, profile_id, profile["default_model"]
+    role_model = runtime_plan.get("model")
+    role_effort = runtime_plan.get("effort")
+    if not _non_empty(role_model):
+        raise CoordinatorError(f"assignment plan for role {role_name!r} has an invalid model")
+    if not _non_empty(role_effort):
+        raise CoordinatorError(f"assignment plan for role {role_name!r} has an invalid effort")
+    resolved_zone = dict(zone)
+    resolved_zone["paths"] = assigned_paths
+    return role, resolved_zone, profile_id, role_model, role_effort
 
 
 def _batch_path(root: Path, batch_id: str) -> Path:
@@ -649,8 +678,13 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
         if dispatch[field] != batch[field]:
             raise CoordinatorError(f"dispatch record {field} does not match its batch")
     _validate_branch(repo, dispatch["branch"])
-    role, zone, profile_id, model = _resolve_assignment(repo, config, dispatch["role"], batch["zone"])
-    if dispatch["access"] != role["mode"] or dispatch["resolved_provider_profile"] != profile_id or dispatch["resolved_model"] != model:
+    role, zone, profile_id, model, effort = _resolve_assignment(repo, config, dispatch["role"], batch["zone"], dispatch["resolved_runtime"])
+    if (
+        dispatch["access"] != role["mode"]
+        or dispatch["resolved_provider_profile"] != profile_id
+        or dispatch["resolved_model"] != model
+        or dispatch["resolved_effort"] != effort
+    ):
         raise CoordinatorError("dispatch record does not match the role assignment")
     expected_paths = zone["paths"] if role["mode"] == "write" else []
     if dispatch["write_paths"] != expected_paths:
@@ -904,6 +938,8 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
                     batch["state"] = "completed"
                 else:
                     batch["next_action"] = "risk-assessment"
+            elif report["role"] == "architect":
+                batch["next_action"] = "developer"
             elif report["role"] == "code-review":
                 batch["next_action"] = "qa"
             elif report["role"] == "qa":
@@ -936,7 +972,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         purpose = args.purpose
         next_action = batch.get("next_action")
         required = {
-            None: {("developer", "work")},
+            None: {("architect", "work"), ("developer", "work")},
             "code-review": {("code-review", "work")},
             "qa": {("qa", "work")},
             "publish": {("developer", "publish")},
@@ -946,7 +982,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             raise CoordinatorError("risk assessment must prepare the next dispatch before another role starts")
         if (role_name, purpose) not in required.get(next_action, set()):
             raise CoordinatorError("dispatch does not match the coordinator-prepared next action")
-        role, zone, profile_id, model = _resolve_assignment(repo, config, role_name, batch["zone"])
+        role, zone, profile_id, model, effort = _resolve_assignment(repo, config, role_name, batch["zone"], args.runtime)
         candidate = None
         risk = None
         review_scope: list[str] = []
@@ -1005,8 +1041,10 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "verification_commands": batch["verification_commands"],
             "required_gates": batch["required_gates"],
             "dependencies": batch["dependencies"],
+            "resolved_runtime": args.runtime,
             "resolved_provider_profile": profile_id,
             "resolved_model": model,
+            "resolved_effort": effort,
             "coordinator_approval": approval,
             "candidate_commit": candidate,
             "review_base": risk["base_commit"] if risk else None,
@@ -1630,6 +1668,7 @@ def parser() -> argparse.ArgumentParser:
     _common(dispatch_create)
     dispatch_create.add_argument("--batch", required=True)
     dispatch_create.add_argument("--role", default="developer")
+    dispatch_create.add_argument("--runtime", default="codex", help="named runtime from the role assignment plan")
     dispatch_create.add_argument("--purpose", choices=sorted(DISPATCH_PURPOSES), default="work")
     dispatch_create.add_argument("--candidate-commit")
     dispatch_create.add_argument("--approved-by", required=True)

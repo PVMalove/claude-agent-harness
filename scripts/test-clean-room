@@ -590,13 +590,22 @@ def _run(test_root: Path):
                     "code-review",
                 ],
                 "agent": "codex",
-                "default_model": "project-model",
                 "fallback": [],
                 "known_limitations": ["project-defined limitations"],
             }
         },
         "assignment_plans": {
-            role: {"profiles": ["backend-default"], "zone": "backend"} for role in role_names
+            role: {
+                "zone": "backend",
+                "runtimes": {
+                    "codex": {
+                        "profiles": ["backend-default"],
+                        "model": f"project-{role}-model",
+                        "effort": "high",
+                    }
+                },
+            }
+            for role in role_names
         },
         "backend_zones": {"backend": {"paths": ["services/**"]}},
         "concurrency_budget": 2,
@@ -604,6 +613,10 @@ def _run(test_root: Path):
     }
     orchestration_config.write_text(json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8")
     run_ok(HARNESS + ["health", str(orchestration_project)])
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "config", "user.name", "Clean Room"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-qm", "chore: initialize adapter fixture"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "branch", "feature/issue-900-approved-dispatch"], cwd=orchestration_project, check=True)
 
     # The Orca adapter is an opt-in managed resource. Its public CLI must reject an
     # unapproved brief before it ever invokes the runtime boundary.
@@ -633,8 +646,9 @@ elif command == "task-create":
     print(json.dumps({"ok": True, "result": {"task": {"id": "fake-task"}}}))
 elif command == "worker-start":
     model = args[args.index("--model") + 1]
-    if model == os.environ.get("FAKE_ORCA_FAIL_MODEL"):
-        print(json.dumps({"ok": False, "error": {"code": "model_unavailable"}}))
+    agent = args[args.index("--agent") + 1]
+    if agent == os.environ.get("FAKE_ORCA_FAIL_AGENT"):
+        print(json.dumps({"ok": False, "error": {"code": "agent_unavailable"}}))
         raise SystemExit(1)
     print(json.dumps({"ok": True, "result": {"worker": {"id": "fake-worker"}}}))
 else:
@@ -647,8 +661,7 @@ else:
     adapter_config["provider_profiles"]["backend-default"]["fallback"] = ["backend-fallback"]
     adapter_config["provider_profiles"]["backend-fallback"] = {
         "capabilities": adapter_config["provider_profiles"]["backend-default"]["capabilities"],
-        "agent": "codex",
-        "default_model": "project-fallback-model",
+        "agent": "codex-fallback",
         "fallback": [],
         "known_limitations": ["project-defined limitations"],
     }
@@ -673,7 +686,7 @@ else:
     brief_path.write_text(json.dumps(approved_brief, indent=2) + "\n", encoding="utf-8")
 
     def adapter_run(path, *, active=False, repo=orchestration_project):
-        env = dict(os.environ, FAKE_ORCA_LOG=str(fake_orca_log), FAKE_ORCA_FAIL_MODEL="project-model")
+        env = dict(os.environ, FAKE_ORCA_LOG=str(fake_orca_log), FAKE_ORCA_FAIL_AGENT="codex")
         if active:
             env["FAKE_ORCA_ACTIVE"] = "1"
         return subprocess.run(
@@ -735,9 +748,12 @@ else:
     if first_record["brief"] != approved_brief:
         sys.exit("Orca adapter did not preserve the approved dispatch brief verbatim")
     if first_record["resolved"] != {
-        "profile": "backend-fallback", "agent": "codex", "model": "project-fallback-model"
+        "profile": "backend-fallback",
+        "agent": "codex-fallback",
+        "model": "project-developer-model",
+        "effort": "high",
     }:
-        sys.exit("Orca adapter did not record the project-configured fallback resolution")
+        sys.exit("Orca adapter did not record the role-configured model, effort and fallback resolution")
     if first_record["terminal_outcome"] != "ready":
         sys.exit("Orca adapter did not record the Orca terminal outcome")
     fake_calls = [json.loads(line) for line in fake_orca_log.read_text(encoding="utf-8").splitlines()]
@@ -749,6 +765,13 @@ else:
             sys.exit("Orca adapter did not request an isolated Orca worktree")
         if call[call.index("--base-branch") + 1] != approved_brief["branch"]:
             sys.exit("Orca adapter did not dispatch from the approved issue branch")
+    if worker_calls[0][worker_calls[0].index("--model") + 1] != "project-developer-model":
+        sys.exit("Orca adapter did not pass the developer's configured model")
+    if worker_calls[1][worker_calls[1].index("--model") + 1] != "project-developer-model":
+        sys.exit("Orca adapter did not preserve the role-configured model through fallback")
+    for call in worker_calls:
+        if call[call.index("--effort") + 1] != "high":
+            sys.exit("Orca adapter did not pass the developer's configured effort")
 
     retry_dispatch = adapter_run(brief_path)
     if retry_dispatch.returncode != 0:
@@ -834,8 +857,6 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             env=coordinator_env,
         )
 
-    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=orchestration_project, check=True)
-    subprocess.run(["git", "config", "user.name", "Clean Room"], cwd=orchestration_project, check=True)
     baseline_file = orchestration_project / "README.md"
     baseline_file.write_text("clean-room baseline\n", encoding="utf-8")
     (orchestration_project / "test_qa_baseline.py").write_text(
@@ -843,6 +864,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     )
     subprocess.run(["git", "add", "."], cwd=orchestration_project, check=True)
     subprocess.run(["git", "commit", "-qm", "chore: create baseline"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "branch", "feature/issue-901-coordinator"], cwd=orchestration_project, check=True)
 
     planned = coordinator_run(
         "batch", "create", "--ticket", "#901", "--branch", "feature/issue-901-coordinator",
@@ -1249,7 +1271,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("health did not explain unknown orchestration role")
 
     invalid_profile = json.loads(json.dumps(valid_orchestration))
-    invalid_profile["assignment_plans"]["developer"]["profiles"] = ["missing-profile"]
+    invalid_profile["assignment_plans"]["developer"]["runtimes"]["codex"]["profiles"] = ["missing-profile"]
     orchestration_config.write_text(json.dumps(invalid_profile, indent=2) + "\n", encoding="utf-8")
     output = fail_output(HARNESS + ["health", str(orchestration_project)])
     if "unknown provider profile" not in output:

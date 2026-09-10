@@ -10,8 +10,8 @@
 Каждая роль имеет Markdown manifest и общий `harness/orchestration/roles/_common.md` для handoff,
 completion, commit proof и escalation. YAML frontmatter содержит только `name`, `mode`,
 `required_capabilities` и `risk_triggers`. Project configuration содержит упорядоченный,
-capability-validated provider-profile plan для роли; immutable brief фиксирует разрешённый profile
-и model.
+capability-validated provider-profile plan для роли; immutable brief фиксирует разрешённый profile,
+model и effort.
 
 ## Операционные последствия
 

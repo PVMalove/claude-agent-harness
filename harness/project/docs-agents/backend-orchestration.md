@@ -29,7 +29,8 @@ Coordinator state, immutable briefs/reports и санитизированные 
 роль и adapter не удаляют историю batch.
 
 Manifest определяет режим роли (`write` или `read-only`), capability и risk triggers. Проектный
-конфиг выбирает agent/model, fallback, зону, бюджет параллелизма и команды проверки; он не может
+конфиг выбирает agent/fallback на уровне provider profile, а `model` и `effort` — отдельно для
+каждой роли в её assignment plan, вместе с зоной, бюджетом параллелизма и командами проверки; он не может
 ослабить границы manifest'а. Значения секретов не хранятся ни в конфиге, ни в brief, ни в report.
 
 ## 1. Включение
@@ -73,9 +74,12 @@ python3 harness/bin/harness health /path/to/repository
 назначить всегда: validator требует его, когда в конфиге есть назначения, поскольку это
 обязательный gate для high-risk работы.
 
-Ниже минимальный полный пример. Имена agent и model принадлежат конкретному проекту; `agent`
-нужен только для последующего запуска через Orca, но показан сразу, чтобы один конфиг подходил
-обоим режимам.
+Ниже минимальный полный пример. Имена agent, model и effort принадлежат конкретному проекту.
+`agent` и fallback задаются в provider profile. Assignment plan каждой роли содержит именованные
+runtime-наборы (`codex`, `claude` и т.п.); в каждом обязательны `profiles`, `model` и `effort`.
+Выбранный runtime фиксируется в immutable brief и не меняется при failover profile.
+`agent` нужен только для последующего запуска через Orca, но показан сразу, чтобы один конфиг
+подходил обоим режимам.
 
 ```json
 {
@@ -91,7 +95,6 @@ python3 harness/bin/harness health /path/to/repository
         "code-review"
       ],
       "agent": "codex",
-      "default_model": "project-model",
       "fallback": ["backend-fallback"],
       "known_limitations": ["Проект сам фиксирует доступные runtime limits"]
     },
@@ -105,18 +108,17 @@ python3 harness/bin/harness health /path/to/repository
         "code-review"
       ],
       "agent": "codex",
-      "default_model": "project-fallback-model",
       "fallback": [],
       "known_limitations": ["Использовать только после безопасного отказа primary"]
     }
   },
   "assignment_plans": {
-    "architect": {"profiles": ["backend-primary"], "zone": "payments"},
-    "developer": {"profiles": ["backend-primary"], "zone": "payments"},
-    "database-migrations": {"profiles": ["backend-primary"], "zone": "payments"},
-    "messaging-integration": {"profiles": ["backend-primary"], "zone": "payments"},
-    "qa": {"profiles": ["backend-primary"], "zone": "payments"},
-    "code-review": {"profiles": ["backend-primary"], "zone": "payments"}
+    "architect": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-architect-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-architect-claude-model", "effort": "high"}}},
+    "developer": {"zone": "payments", "write_paths": ["services/payments/**"], "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-developer-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "sonnet", "effort": "xhigh"}}},
+    "database-migrations": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-migration-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "project-migration-claude-model", "effort": "xhigh"}}},
+    "messaging-integration": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-messaging-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-messaging-claude-model", "effort": "high"}}},
+    "qa": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-qa-model", "effort": "medium"}, "claude": {"profiles": ["backend-claude"], "model": "project-qa-claude-model", "effort": "medium"}}},
+    "code-review": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-review-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-review-claude-model", "effort": "high"}}}
   },
   "backend_zones": {
     "payments": {"paths": ["services/payments/**"]}
@@ -126,7 +128,10 @@ python3 harness/bin/harness health /path/to/repository
 }
 ```
 
-Зона — не подсказка, а граница: write-роль изменяет только разрешённые пути своей зоны. Для
+Зона — не подсказка, а граница: write-роль изменяет только разрешённые пути своей зоны. Если роли
+нужен более узкий scope, задайте ей `write_paths`: brief и completion report будут проверяться по
+этому списку, а не по широкому списку зоны. Model должен быть CLI-алиасом или ID без пробелов
+(например, `sonnet`), а не отображаемым названием. Для
 нескольких независимых batch заведите непересекающиеся зоны и увеличьте
 `concurrency_budget` только после явного решения coordinator-а. Сначала прогоните `harness health`:
 он проверит JSON, существование profile/zone, совместимость capability, fallback и режим
@@ -185,7 +190,7 @@ batch в `awaiting-approval` и оставляет dispatch в `reported` до �
 
    ```bash
    python .harness/orchestration/coordinator.py --repo . dispatch create \
-     --batch <batch-id> --role developer --approved-by 'имя утверждающего' \
+    --batch <batch-id> --role developer --runtime codex --approved-by 'имя утверждающего' \
      --approved-at 2026-09-09T12:01:00Z
    python .harness/orchestration/coordinator.py --repo . dispatch send \
      --dispatch <dispatch-id> --adapter .harness/orchestration/orca_adapter.py \
@@ -209,7 +214,7 @@ batch в `awaiting-approval` и оставляет dispatch в `reported` до �
      --approved-at 2026-09-09T12:02:00Z
    ```
 
-Минимальный ручной brief хранит ticket и dispatch ID, роль и её access, выбранный profile/model,
+Минимальный ручной brief хранит ticket и dispatch ID, роль и её access, выбранный profile/model/effort,
 zone и allowed paths, issue-ветку/worktree, DoD, запреты, команды, dependencies, approval. Для
 write-роли completion report обязан включать commit SHA, exact changed files, результаты всех checks,
 risks, blockers и следующее решение coordinator-а. Для read-only роли вместо SHA указывается
@@ -276,7 +281,8 @@ candidate SHA. Только developer publish отправляет этот SHA;
 `orca_adapter.py` — transport-only граница: он переводит **уже одобренный** JSON brief в Orca task и
 isolated worker. Он не выбирает scope, не запускает checks, не принимает report, не планирует
 следующий dispatch и не мержит PR. Перед запуском выполните
-`harness health`, проверьте, что profile выбранной роли содержит непустые `agent` и `default_model`,
+`harness health`, проверьте, что profile выбранной роли содержит непустой `agent`,
+а assignment plan обязательно содержит role-level `model` и `effort`,
 а branch соответствует `branch_pattern` из `.harness/project.json` и не является base или
 `integration/*`.
 
@@ -298,6 +304,9 @@ isolated worker. Он не выбирает scope, не запускает check
   "verification_commands": ["python -m pytest"],
   "required_gates": ["code-review, если найден high-risk trigger"],
   "dependencies": ["none"],
+  "resolved_provider_profile": "backend-primary",
+  "resolved_model": "project-developer-model",
+  "resolved_effort": "xhigh",
   "coordinator_approval": {
     "approved_by": "имя утверждающего",
     "approved_at": "2026-09-09T12:00:00Z"
@@ -315,7 +324,9 @@ python .harness/orchestration/orca_adapter.py dispatch \
   --run <orca-run-id>
 ```
 
-Adapter проверяет approval, роль, zone, ветку, путь, project checks и budget до создания task. Он
+Adapter проверяет approval, роль, zone, существование issue-ветки, путь, CLI-формат model, project checks,
+role-level model/effort и budget до создания task. Он считает только active supervised workers текущего
+Orca Run, поэтому завершённые или чужие сессии не исчерпывают budget. Он
 пишет новую immutable запись в `.harness/orca-dispatches/`. При явной недоступности agent/model он
 может перейти к project-configured fallback; при неопределённом результате не делает fallback,
 чтобы не создать дублирующий dispatch. Исчерпанный `concurrency_budget` также останавливает запуск

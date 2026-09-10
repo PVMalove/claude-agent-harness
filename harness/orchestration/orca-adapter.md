@@ -21,18 +21,21 @@ records the task and supervised worker. A write role
 must repeat exactly the allowed paths of its one configured zone in `write_paths`; a read-only role
 must not receive write paths. The adapter rejects secret-shaped fields before it invokes Orca.
 
-The adapter reads agent, model, and fallback only from `.harness/orchestration.json`. Each provider
-profile therefore declares an `agent` identifier in addition to capabilities, `default_model`,
-fallback, and known limitations. Neither role manifests nor the adapter source names a provider or
-model.
+The adapter reads agent, fallback, model, and effort only from `.harness/orchestration.json`. A model
+must be a runtime CLI alias or identifier without spaces (for example, `sonnet`), not a display name.
+Each
+provider profile therefore declares an `agent` identifier in addition to capabilities, fallback,
+and known limitations; each role assignment declares its model and effort. Neither role manifests
+nor the adapter source names a provider or model.
 
 ## Runtime and records
 
 After validation, the adapter uses Orca's `orchestration task-create --run` followed by supervised
 `orchestration worker-start --worktree new-top-level --setup run`. It names the new isolated worktree
 after the approved issue branch and supplies that branch as its base; it never accepts the project base
-branch or an `integration/*` branch. It checks Orca's active
-worker list before creating a task, so the project `concurrency_budget` remains a dispatch gate.
+branch or an `integration/*` branch. Before creating a task it confirms that the approved issue branch
+exists locally or on `origin`, then checks only active supervised workers attached to the same Orca Run;
+historical or foreign workers cannot consume the project `concurrency_budget`.
 
 Each successful dispatch writes a new JSON record under `.harness/orca-dispatches/` by exclusive
 file creation. The record preserves the original brief, resolved profile/agent/model, Orca task and

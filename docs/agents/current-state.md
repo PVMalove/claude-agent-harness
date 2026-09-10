@@ -91,8 +91,8 @@ PR. Полный операционный маршрут описан в [backen
 Role manifest в `.harness/orchestration/roles/` — переносимый поведенческий контракт роли.
 Минимальный YAML frontmatter фиксирует имя, режим, обязательные capability и risk triggers; общий
 контракт определяет brief, completion report, commit proof и escalation. Проектная
-`.harness/orchestration.json` сопоставляет роли provider profiles, model fallback, зоны, budget и
-команды проверки. Она не может ослабить write boundary, proof или risk gate manifest-а.
+`.harness/orchestration.json` сопоставляет роли provider profiles, зоны, budget и обязательные
+role-level `model`/`effort`. Она не может ослабить write boundary, proof или risk gate manifest-а.
 
 `developer`, `database-migrations` и `messaging-integration` — write-роли. Они изменяют только
 разрешённые пути объявленной зоны, только в issue-ветке и её worktree. `architect`, `qa` и
@@ -103,8 +103,9 @@ Role manifest в `.harness/orchestration/roles/` — переносимый по
 `architect` возвращает decision brief, `qa` — воспроизводимые findings без изменения тестов и
 fixtures. Для API/public contract, schema/data migration, outbox/queues, transactions,
 authorization/security и concurrency/retry `code-review` обязателен и возвращает раздельные
-Standards и Spec reports. Назначение разрешается из manifest-а, project mapping и допустимого
-one-run override; выбранный provider profile обязан удовлетворять capability и ограничениям роли.
+Standards и Spec reports. Назначение разрешается из manifest-а, project mapping с role-level
+`model`/`effort` и допустимого one-run override; выбранный provider profile обязан удовлетворять
+capability и ограничениям роли.
 
 ## 5. Clean-room QA lane
 

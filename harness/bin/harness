@@ -838,7 +838,7 @@ def validate_orchestration_config(repo: Path, problems: list[str]) -> None:
         if not isinstance(profile, dict):
             problems.append(f"orchestration provider profile {profile_id!r} must be an object")
             continue
-        profile_extra = sorted(set(profile) - {"capabilities", "agent", "default_model", "fallback", "known_limitations"})
+        profile_extra = sorted(set(profile) - {"capabilities", "agent", "fallback", "known_limitations"})
         if profile_extra:
             problems.append(
                 f"provider profile {profile_id!r} has unknown field(s): {', '.join(profile_extra)}; "
@@ -851,9 +851,6 @@ def validate_orchestration_config(repo: Path, problems: list[str]) -> None:
         if not _string_list(capabilities) or not capabilities:
             problems.append(f"provider profile {profile_id!r} capabilities must be a non-empty list")
             capabilities = []
-        default_model = profile.get("default_model")
-        if not _non_empty_string(default_model):
-            problems.append(f"provider profile {profile_id!r} default_model must be a non-empty string")
         agent = profile.get("agent")
         if agent is not None and not _non_empty_string(agent):
             problems.append(f"provider profile {profile_id!r} agent must be a non-empty string")
@@ -920,32 +917,59 @@ def validate_orchestration_config(repo: Path, problems: list[str]) -> None:
         if not isinstance(plan, dict):
             problems.append(f"assignment plan for role {role_name!r} must be an object")
             continue
-        plan_extra = sorted(set(plan) - {"profiles", "zone"})
+        plan_extra = sorted(set(plan) - {"zone", "write_paths", "runtimes"})
         if plan_extra:
             problems.append(
                 f"assignment plan for role {role_name!r} cannot override role manifest fields: "
                 f"{', '.join(plan_extra)}"
             )
-        profile_ids = plan.get("profiles")
-        if not _string_list(profile_ids) or not profile_ids:
-            problems.append(f"assignment plan for role {role_name!r} profiles must be a non-empty list")
-            profile_ids = []
         zone_id = plan.get("zone")
         if not _non_empty_string(zone_id):
             problems.append(f"assignment plan for role {role_name!r} zone must be a non-empty string")
         elif zone_id not in zones:
             problems.append(f"unknown backend zone {zone_id!r} for role {role_name!r}")
-
-        required = set(roles[role_name].get("required_capabilities", []))
-        for profile_id in profile_ids:
-            if profile_id not in profiles:
-                problems.append(f"unknown provider profile {profile_id!r} for role {role_name!r}")
-                continue
-            if not required.intersection(profile_capabilities.get(profile_id, set())):
-                problems.append(
-                    f"provider profile {profile_id!r} has incompatible capability for role {role_name!r}; "
-                    f"requires one of {', '.join(sorted(required))}"
+        write_paths = plan.get("write_paths")
+        if write_paths is not None and (not _string_list(write_paths) or not write_paths):
+            problems.append(f"assignment plan for role {role_name!r} write_paths must be a non-empty list when provided")
+        elif write_paths is not None and isinstance(zone_id, str) and isinstance(zones.get(zone_id), dict):
+            zone_paths = zones[zone_id].get("paths")
+            if _string_list(zone_paths) and any(
+                not any(
+                    path == boundary or path.startswith(boundary[:-2] if boundary.endswith("**") else boundary)
+                    for boundary in zone_paths
                 )
+                for path in write_paths
+            ):
+                problems.append(f"assignment plan for role {role_name!r} write_paths must remain inside zone {zone_id!r}")
+        runtime_plans = plan.get("runtimes")
+        if not isinstance(runtime_plans, dict) or not runtime_plans:
+            problems.append(f"assignment plan for role {role_name!r} runtimes must be a non-empty object")
+            runtime_plans = {}
+        required = set(roles[role_name].get("required_capabilities", []))
+        for runtime_name, runtime_plan in runtime_plans.items():
+            if not _non_empty_string(runtime_name) or not isinstance(runtime_plan, dict):
+                problems.append(f"assignment runtime for role {role_name!r} must be a named object")
+                continue
+            extra = sorted(set(runtime_plan) - {"profiles", "model", "effort"})
+            if extra:
+                problems.append(f"assignment runtime {runtime_name!r} for role {role_name!r} has unknown field(s): {', '.join(extra)}")
+            profile_ids = runtime_plan.get("profiles")
+            if not _string_list(profile_ids) or not profile_ids:
+                problems.append(f"assignment runtime {runtime_name!r} for role {role_name!r} profiles must be a non-empty list")
+                profile_ids = []
+            for field in ("model", "effort"):
+                if not _non_empty_string(runtime_plan.get(field)):
+                    problems.append(f"assignment runtime {runtime_name!r} for role {role_name!r} {field} must be a non-empty string")
+            model = runtime_plan.get("model")
+            if _non_empty_string(model) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", model.strip()) is None:
+                problems.append(
+                    f"assignment runtime {runtime_name!r} for role {role_name!r} model must be a CLI model ID or alias without spaces"
+                )
+            for profile_id in profile_ids:
+                if profile_id not in profiles:
+                    problems.append(f"unknown provider profile {profile_id!r} for role {role_name!r}")
+                elif not required.intersection(profile_capabilities.get(profile_id, set())):
+                    problems.append(f"provider profile {profile_id!r} has incompatible capability for role {role_name!r}; requires one of {', '.join(sorted(required))}")
 
     concurrency_budget = data.get("concurrency_budget")
     if isinstance(concurrency_budget, bool) or not isinstance(concurrency_budget, int) or concurrency_budget < 1:
