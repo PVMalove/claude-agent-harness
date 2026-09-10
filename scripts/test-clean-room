@@ -325,6 +325,57 @@ def _run(test_root: Path):
     orchestration_config = orchestration_project / ".harness" / "orchestration.json"
     if not orchestration_config.is_file():
         sys.exit("backend-orchestration config seed missing")
+    public_documentation = {
+        ROOT / "README.md": (
+            "`backend-orchestration`",
+            "человек явно утверждает каждый dispatch",
+            "/to-pull-requests",
+        ),
+        ROOT / "CONTEXT.md": (
+            "`reported`",
+            "FIFO",
+            "санитизирован",
+        ),
+        ROOT / "docs" / "agents" / "backend-orchestration.md": (
+            "`planned → awaiting-approval ↔ active → completed | blocked | failed`",
+            "`reported`",
+            "детерминирован",
+            "Standards и Spec",
+            "обязательный полный QA gate",
+            "transport-only",
+            "санитизирован",
+            "stale",
+            "/to-pull-requests",
+        ),
+        ROOT / "docs" / "agents" / "harness-guide.md": (
+            "строго opt-in маршрут",
+            "candidate commit",
+            "`reported`",
+            "/to-pull-requests",
+        ),
+        ROOT / "docs" / "agents" / "git-workflow.md": (
+            "/to-pull-requests",
+        ),
+    }
+    for path, required_phrases in public_documentation.items():
+        text = path.read_text(encoding="utf-8")
+        if re.search(r"(?<![\w-])/to-pr(?![\w-])", text):
+            sys.exit(f"public documentation retains removed /to-pr route: {path}")
+        for phrase in required_phrases:
+            if phrase.casefold() not in text.casefold():
+                sys.exit(f"public documentation missing hybrid coordinator contract {phrase!r}: {path}")
+    for source_path, required_phrases in public_documentation.items():
+        if source_path == ROOT / "README.md" or source_path == ROOT / "CONTEXT.md":
+            continue
+        installed_path = orchestration_project / "docs" / "agents" / source_path.name
+        if not installed_path.is_file():
+            sys.exit(f"installed project is missing documentation seed: {source_path.name}")
+        installed_text = installed_path.read_text(encoding="utf-8")
+        for phrase in required_phrases:
+            if phrase.casefold() not in installed_text.casefold():
+                sys.exit(f"installed documentation missing hybrid coordinator contract {phrase!r}: {source_path.name}")
+        if re.search(r"(?<![\w-])/to-pr(?![\w-])", installed_text):
+            sys.exit(f"installed documentation retains removed /to-pr route: {source_path.name}")
     expected_role_files = {
         "architect.md",
         "code-review.md",
