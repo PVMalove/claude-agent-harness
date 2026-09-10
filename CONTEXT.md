@@ -21,7 +21,7 @@ _Avoid_: шаблонные артефакты, foundation-файлы.
 заменять или добавлять скиллы.
 _Avoid_: пакет, набор скиллов.
 
-В текущем составе `pvmalove-suite` 10 скиллов переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`.
+В текущем составе `pvmalove-suite` 10 скиллов переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`.
 
 **Vendor-скилл**:
 Скилл из байт-в-байт snapshot закреплённого upstream-источника в `skills/vendor/`, связанный с
@@ -253,3 +253,34 @@ _Avoid_: project override правил роли, runtime policy вместо man
 **Skill discovery roots**:
 `.agents/skills` и `.claude/skills` — runtime-ссылки на `.harness/skills`; для Hermes Agent fallback
 маршрутом служат `AGENTS.md` и `.harness/skills/REGISTRY.md`.
+
+**Implement (default pipeline)**:
+`/implement` по умолчанию — не одна сессия, а coordinator-driven конвейер: `architect` →
+human-approve → `developer` → `code-review` → human-approve → `qa` (с циклом fix↔qa) →
+human-approve → publish. Сама сессия `/implement` выступает coordinator-ом и ведёт `coordinator.py`
+за человека; PR остаётся отдельной явной командой `/to-pull-requests`.
+_Avoid_: `/implement` как одна сессия без гейтов (это `fast-implement`), автоматический PR.
+
+**Fast-implement**:
+Короткий путь без coordinator, architect, qa и approval-гейтов: TDD, тесты, `/code-review`, commit.
+Наследует исходный upstream `mattpocock` `implement` и остаётся выбором для задач, которым не нужен
+gated-конвейер.
+_Avoid_: использование как путь по умолчанию для обычных тикетов.
+
+**Model self-report**:
+Проверка целостности resolved runtime: роль при первом контакте подтверждает фактически активную
+модель, а coordinator сравнивает её с `resolved_model` immutable brief и немедленно останавливает
+dispatch при расхождении.
+_Avoid_: доверие только статической валидации config до отправки без проверки после запуска.
+
+**Dispatch watchdog**:
+Coordinator-owned проверка liveness, останавливающая или эскалирующая dispatch без heartbeat дольше
+заданного порога — обобщение существующего QA-lease-expiry на любой dispatch, а не только на
+clean-room QA lane.
+_Avoid_: полагаться только на самодисциплину воркера слать heartbeat.
+
+**Role transport**:
+Project-owned выбор в assignment plan роли — исполнять её как Orca-dispatched isolated worker или как
+in-process субагент текущей сессии. Оба варианта подчиняются одному brief/report контракту и обязаны
+проходить model self-report.
+_Avoid_: жёсткая привязка роли к одному транспортному механизму.

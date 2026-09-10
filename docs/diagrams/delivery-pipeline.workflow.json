@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Пайплайн доставки: от идеи до merge",
+    "quality_profile": "showcase",
+    "legend": {
+      "entries": {
+        "external": {"label": "Вход"},
+        "frontend": {"label": "Проработка"},
+        "database": {"label": "Источник правды"},
+        "backend": {"label": "Реализация"},
+        "security": {"label": "Гейт человека"},
+        "messagebus": {"label": "Ручной путь"}
+      }
+    },
+    "viewBox": [1180, 660]
+  },
+  "lanes": [
+    {"id": "shape", "label": "Постановка"},
+    {"id": "build", "label": "Реализация"},
+    {"id": "ship", "label": "Публикация и merge"},
+    {"id": "manual", "label": "Ручная ветка (hitl)", "variant": "exception"}
+  ],
+  "phases": [
+    {"id": "clarify", "label": "Снять неопределённость", "fromCol": 0, "toCol": 1},
+    {"id": "decompose", "label": "Спека и тикеты", "fromCol": 2, "toCol": 3, "variant": "emphasis"},
+    {"id": "deliver", "label": "Код и merge", "fromCol": 4, "toCol": 5, "variant": "dashed"}
+  ],
+  "mainPath": ["idea", "grill", "spec", "tickets", "implement", "pr"],
+  "nodes": [
+    {"id": "idea", "lane": "shape", "col": 0, "type": "external", "label": "Идея или issue", "sublabel": "вход в пайплайн", "width": 136},
+    {"id": "grill", "lane": "shape", "col": 1, "type": "frontend", "label": "/grill-with-docs", "sublabel": "CONTEXT.md и ADR", "tag": "вручную", "width": 136},
+    {"id": "spec", "lane": "shape", "col": 2, "type": "database", "label": "/to-spec", "sublabel": "эпик в трекере", "width": 136},
+    {"id": "tickets", "lane": "shape", "col": 3, "type": "database", "label": "/to-tickets", "sublabel": "слайсы, hitl или afk", "width": 136},
+    {"id": "implement", "lane": "build", "col": 4, "type": "backend", "label": "/implement", "sublabel": "конвейер с гейтами", "tag": "afk", "width": 136},
+    {"id": "fast", "lane": "build", "col": 5, "type": "backend", "label": "/fast-implement", "sublabel": "один проход, без гейтов", "width": 136},
+    {"id": "guide", "lane": "manual", "col": 4, "type": "messagebus", "label": "/to-guide", "sublabel": "промпты для AI IDE", "tag": "hitl", "width": 136},
+    {"id": "pr", "lane": "ship", "col": 5, "type": "security", "label": "/to-pull-requests", "sublabel": "PR по шаблону", "tag": "человек", "width": 136}
+  ],
+  "edges": [
+    {"from": "idea", "to": "grill", "label": "серые зоны"},
+    {"from": "grill", "to": "spec", "label": "устоялось", "variant": "emphasis"},
+    {"from": "spec", "to": "tickets", "label": "декомпозиция"},
+    {"from": "tickets", "to": "implement", "label": "тикет afk", "variant": "emphasis"},
+    {"from": "implement", "to": "pr", "label": "принятый SHA", "variant": "emphasis"},
+    {"from": "implement", "to": "fast", "label": "мелкий тикет", "variant": "dashed", "role": "branch"},
+    {"from": "tickets", "to": "guide", "label": "тикет hitl", "variant": "security", "role": "branch"}
+  ],
+  "cards": [
+    {"dot": "cyan", "title": "Каждый шаг вызывает человек", "items": ["Ни один скилл не запускает следующий сам", "Между шагами сессия начинается с чистого листа", "Issue First: без тикета работа не стартует"]},
+    {"dot": "violet", "title": "Развилка на выходе тикетов", "items": ["afk — код пишет агент через /implement", "hitl — /to-guide готовит промпты человеку", "Мелкий afk-тикет может пойти в /fast-implement"]},
+    {"dot": "rose", "title": "Финал всегда ручной", "items": ["PR открывается только по явному подтверждению", "Merge выполняет разработчик, hooks блокируют авто-мердж", "Тикет закрывается после подтверждённого merge"]}
+  ]
+}

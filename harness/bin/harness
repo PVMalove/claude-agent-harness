@@ -332,18 +332,24 @@ def selected_resources(names: list[str]) -> list[Path]:
     return paths
 
 
+def _packageable(path: Path) -> bool:
+    """Skip local build artifacts. Running a packaged script from this source tree leaves bytecode
+    beside it; shipping that into a target project makes every later run report snapshot drift."""
+    return path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+
+
 def package_files(names: list[str]) -> dict[str, bytes]:
     result: dict[str, bytes] = {}
     for source in selected_skills(names):
         for path in sorted(source.rglob("*")):
-            if not path.is_file():
+            if not _packageable(path):
                 continue
             relative = path.relative_to(source)
             target = Path(".harness/skills") / source.name / relative
             result[target.as_posix()] = path.read_bytes()
     for source in selected_resources(names):
         for path in sorted(source.rglob("*")):
-            if not path.is_file():
+            if not _packageable(path):
                 continue
             relative = path.relative_to(source)
             target = Path(".harness") / source.relative_to(PACKAGE) / relative
@@ -702,6 +708,7 @@ ORCHESTRATION_CONFIG_REQUIRED_FIELDS = (
 )
 ORCHESTRATION_CONFIG_ALLOWED_FIELDS = frozenset(ORCHESTRATION_CONFIG_REQUIRED_FIELDS) | {"$schema"}
 ROLE_METADATA_FIELDS = frozenset({"name", "mode", "required_capabilities", "risk_triggers"})
+ROLE_TRANSPORTS = frozenset({"orca", "in-process"})
 CODE_REVIEW_REQUIRED_RISK_TRIGGERS = frozenset(
     {
         "api-public-contract",
@@ -803,7 +810,8 @@ def validate_orchestration_config(repo: Path, problems: list[str]) -> None:
         problems.append(f"missing {ORCHESTRATION_SCHEMA_REL.as_posix()} for backend-orchestration capability")
     path = repo / ORCHESTRATION_CONFIG_REL
     if not path.is_file():
-        problems.append(f"missing {ORCHESTRATION_CONFIG_REL.as_posix()} for backend-orchestration capability")
+        # Zero configuration is a supported default: the coordinator then treats the whole
+        # repository as one zone and takes the role runtime from the invoking session.
         return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -917,11 +925,16 @@ def validate_orchestration_config(repo: Path, problems: list[str]) -> None:
         if not isinstance(plan, dict):
             problems.append(f"assignment plan for role {role_name!r} must be an object")
             continue
-        plan_extra = sorted(set(plan) - {"zone", "write_paths", "runtimes"})
+        plan_extra = sorted(set(plan) - {"zone", "write_paths", "runtimes", "transport"})
         if plan_extra:
             problems.append(
                 f"assignment plan for role {role_name!r} cannot override role manifest fields: "
                 f"{', '.join(plan_extra)}"
+            )
+        if "transport" in plan and plan["transport"] not in ROLE_TRANSPORTS:
+            problems.append(
+                f"assignment plan for role {role_name!r} transport must be one of: "
+                + ", ".join(sorted(ROLE_TRANSPORTS))
             )
         zone_id = plan.get("zone")
         if not _non_empty_string(zone_id):

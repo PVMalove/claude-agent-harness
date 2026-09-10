@@ -46,10 +46,13 @@ inventory-файлами; секреты в них не записываются
 
 ## 3. Backend orchestration и coordinator
 
-`backend-orchestration` включается только явным выбором capability и валидной
-`.harness/orchestration.json`. Без opt-in обычный `/implement` не меняется. Coordinator является
-runtime-neutral локальным CLI: он планирует batch, требует явное человеческое approval для каждого
-dispatch и принимает evidence. Он не является автономным scheduler.
+`backend-orchestration` включается только явным выбором capability; `.harness/orchestration.json`
+опционален — без него zone по умолчанию весь репозиторий, а `model`/`effort` роли приходят из
+вызывающей сессии. Без opt-in `/implement` отправляет на однопроходный `/fast-implement`. Coordinator
+является runtime-neutral локальным CLI: он планирует batch, требует явное человеческое approval для
+каждого dispatch и принимает evidence. Он не является автономным scheduler. Обычная точка входа —
+`/implement <ticket>`: сессия сама выступает coordinator-ом и паузится на гейтах architect,
+developer, code-review, qa, publish.
 
 Batch принадлежит одному тикету, issue-ветке, worktree и backend-зоне. Его lifecycle:
 `planned → awaiting-approval ↔ active → completed | blocked | failed`. Каждый dispatch получает
@@ -78,8 +81,16 @@ python .harness/orchestration/coordinator.py --repo . report submit --file repor
 python .harness/orchestration/coordinator.py --repo . batch decide ...
 ```
 
+`developer`-dispatch не создаётся, пока для того же batch нет принятого `architect`-отчёта. Любой
+отправленный dispatch первым делом подтверждает фактически активную модель
+(`dispatch self-report`): расхождение с `resolved_model` brief переводит его в `blocked` и закрывает
+приём completion report. Пока роль работает, она шлёт `dispatch heartbeat`, а coordinator опрашивает
+`dispatch status --stale-after <sec>` — обобщение QA-lease-expiry на любой dispatch. Транспорт роли
+(`orca` или `in-process`) выбирается в assignment plan и не меняет контракт brief/report.
+
 После candidate commit coordinator детерминированно оценивает риск по DoD, изменённым файлам и
-reported triggers. High-risk candidate проходит независимый двухосевой `code-review`, затем
+reported triggers. Оценка определяет, когда двухосевой `code-review` обязателен; создать его можно
+для любого кандидата, и конвейер `/implement` запускает его всегда. Затем следует
 обязательный clean-room QA для того же SHA. После accepted QA coordinator создаёт publish dispatch;
 только developer publish отправляет этот SHA. PR остаётся отдельным ручным этапом
 `/to-pull-requests`. Optional Orca adapter доставляет только уже одобренный brief: он не выбирает

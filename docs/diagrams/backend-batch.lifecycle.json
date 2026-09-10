@@ -2,34 +2,153 @@
   "schema_version": 1,
   "diagram_type": "lifecycle",
   "meta": {
-    "title": "Backend orchestration: lifecycle batch",
+    "title": "Backend-оркестрация: жизненный цикл batch",
     "quality_profile": "showcase",
-    "viewBox": [1080, 680]
+    "viewBox": [
+      1000,
+      620
+    ]
   },
   "lanes": [
-    {"id": "main", "label": "Batch lifecycle"},
-    {"id": "waiting", "label": "Interruptions"},
-    {"id": "exceptions", "label": "Recovery"}
+    {
+      "id": "main",
+      "label": "Жизненный цикл batch"
+    },
+    {
+      "id": "waiting",
+      "label": "Остановки"
+    },
+    {
+      "id": "exceptions",
+      "label": "Восстановление"
+    }
   ],
   "states": [
-    {"id": "planned", "type": "start", "label": "Planned", "sublabel": "ticket, zone, DoD", "lane": "main", "col": 0, "step": "01"},
-    {"id": "awaiting", "type": "waiting", "label": "Awaiting approval", "sublabel": "batch or next dispatch", "lane": "main", "col": 1, "step": "02"},
-    {"id": "active", "type": "active", "label": "Active", "sublabel": "explicitly approved", "lane": "main", "col": 2, "step": "03"},
-    {"id": "reported", "type": "decision", "label": "Report received", "sublabel": "immutable evidence", "lane": "main", "col": 3, "step": "04"},
-    {"id": "completed", "type": "success", "label": "Completed", "sublabel": "accepted evidence", "lane": "main", "col": 4, "step": "05"},
-    {"id": "blocked", "type": "waiting", "label": "Blocked", "sublabel": "missing input or conflict", "lane": "waiting", "col": 1, "tag": "new decision"},
-    {"id": "failed", "type": "failure", "label": "Failed", "sublabel": "new brief required", "lane": "exceptions", "col": 0, "yOffset": 78, "tag": "new decision"}
+    {
+      "id": "planned",
+      "type": "start",
+      "label": "Planned",
+      "sublabel": "тикет, зона, DoD",
+      "lane": "main",
+      "col": 0,
+      "step": "01"
+    },
+    {
+      "id": "awaiting",
+      "type": "waiting",
+      "label": "Awaiting approval",
+      "sublabel": "ждём approve",
+      "lane": "main",
+      "col": 1,
+      "step": "02"
+    },
+    {
+      "id": "active",
+      "type": "active",
+      "label": "Active",
+      "sublabel": "dispatch идёт",
+      "lane": "main",
+      "col": 2,
+      "step": "03"
+    },
+    {
+      "id": "reported",
+      "type": "decision",
+      "label": "Report received",
+      "sublabel": "есть evidence",
+      "lane": "main",
+      "col": 3,
+      "step": "04"
+    },
+    {
+      "id": "completed",
+      "type": "success",
+      "label": "Completed",
+      "sublabel": "evidence принято",
+      "lane": "main",
+      "col": 4,
+      "step": "05"
+    },
+    {
+      "id": "blocked",
+      "type": "waiting",
+      "label": "Blocked",
+      "sublabel": "конфликт или модель",
+      "lane": "waiting",
+      "col": 1,
+      "tag": "новое решение"
+    },
+    {
+      "id": "failed",
+      "type": "failure",
+      "label": "Failed",
+      "sublabel": "нужен новый brief",
+      "lane": "exceptions",
+      "col": 0,
+      "yOffset": 78,
+      "tag": "новое решение"
+    }
   ],
   "transitions": [
-    {"from": "planned", "to": "awaiting"},
-    {"from": "awaiting", "to": "active", "variant": "emphasis"},
-    {"from": "active", "to": "reported"},
-    {"from": "reported", "to": "completed"},
-    {"from": "reported", "to": "blocked", "variant": "security", "route": "drop"},
-    {"from": "active", "to": "failed", "variant": "security", "fromSide": "left", "toSide": "left", "via": [[320, 157], [320, 385]]}
+    {
+      "from": "planned",
+      "to": "awaiting"
+    },
+    {
+      "from": "awaiting",
+      "to": "active",
+      "variant": "emphasis"
+    },
+    {
+      "from": "active",
+      "to": "reported"
+    },
+    {
+      "from": "reported",
+      "to": "completed"
+    },
+    {
+      "from": "reported",
+      "to": "blocked",
+      "variant": "security",
+      "route": "drop"
+    },
+    {
+      "from": "active",
+      "to": "failed",
+      "variant": "security",
+      "fromSide": "left",
+      "toSide": "left",
+      "via": [
+        [
+          320,
+          157
+        ],
+        [
+          320,
+          385
+        ]
+      ]
+    }
   ],
   "cards": [
-    {"dot": "amber", "title": "Approval boundary", "items": ["No role starts before explicit approval", "Each next dispatch needs a fresh decision"]},
-    {"dot": "emerald", "title": "Evidence boundary", "items": ["Every dispatch produces immutable evidence", "A failed or blocked batch needs a new decision"]}
+    {
+      "dot": "amber",
+      "title": "Граница approve",
+      "items": [
+        "Ни одна роль не стартует без явного approve",
+        "Каждому следующему dispatch нужно новое решение",
+        "Один тикет проходит цикл целиком до следующего"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Граница evidence",
+      "items": [
+        "Каждый dispatch оставляет immutable evidence",
+        "Blocked или failed batch требует нового решения",
+        "Расхождение модели блокирует dispatch сразу"
+      ]
+    }
   ]
 }

@@ -6,6 +6,15 @@
 
 Термины ниже (капабилити, vendor/first-party-скилл, переопределение, дрейф, проектный конфиг) разобраны в [CONTEXT.md](./CONTEXT.md); действующие архитектурные контракты — в [docs/adr/](./docs/adr/); целостный обзор текущей системы — в [docs/agents/current-state.md](./docs/agents/current-state.md); пошаговое использование — в [docs/agents/harness-guide.md](./docs/agents/harness-guide.md); как скиллы находят Codex, Kimi Code, OpenCode и Hermes Agent (не только Claude Code) — в [docs/runtime-discovery.md](./docs/runtime-discovery.md).
 
+## Пайплайн одним взглядом
+
+[![Пайплайн доставки: от идеи до merge](./docs/diagrams/previews/delivery-pipeline.workflow.png)](./docs/diagrams/delivery-pipeline.workflow.html)
+
+Полный маршрут: `/grill-with-docs` снимает неопределённость → `/to-spec` публикует эпик → `/to-tickets`
+режет его на слайсы и помечает каждый `afk` или `hitl` → `afk` идёт в `/implement`, `hitl` — в
+`/to-guide` → PR открывает разработчик через `/to-pull-requests`. Ни один шаг не запускает следующий
+сам. Картинка кликабельна: за ней интерактивная версия с поиском, фокусом и экспортом.
+
 ## Быстрый старт
 
 Предполагаемый интерфейс работает ещё до того, как есть репозиторий, стек или харнесс. После разовой установки глобального слоя (`bin/install-global`, раздел «Установка» ниже) — в любой новой сессии просто скажите агенту:
@@ -30,7 +39,7 @@
 `mattpocock-suite` — закреплённый upstream-набор, `pvmalove-suite` — инженерный workflow, а
 `backend-orchestration` — его явную opt-in надстройку для координированной backend-работы.
 
-`pvmalove-suite` наследует 15 skills без изменений; 10 переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`. `backend-orchestration` выбирается отдельно и разрешает эту зависимость автоматически.
+`pvmalove-suite` наследует 15 skills без изменений; 10 переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`. `backend-orchestration` выбирается отдельно и разрешает эту зависимость автоматически.
 
 Проектный `.harness/project.json` определяет ветки, язык и QA. Работа начинается с тикета,
 проходит в issue-ветке и требует явного подтверждения разработчика перед PR; merge всегда ручной.
@@ -44,8 +53,22 @@
 операционные команды находятся в [руководстве по backend-оркестрации](./docs/agents/backend-orchestration.md)
 и [справочнике харнесса](./docs/agents/harness-guide.md).
 
-Визуальные карты процесса: [lifecycle backend-batch](./docs/diagrams/backend-batch.lifecycle.html)
-и [выбор runtime и dispatch](./docs/diagrams/backend-runtime.workflow.html).
+### Конвейер `/implement`
+
+`/implement <id>` — не одна сессия, а конвейер из пяти ролевых гейтов, которым сессия управляет как
+coordinator: архитектор разбирает текущую архитектуру и предлагает план → **человек утверждает
+план** → разработчик реализует в своей issue-ветке, тестирует, коммитит и пушит → code review
+проверяет кандидатный SHA → **человек утверждает переход к QA** → независимый QA в clean-room
+worktree; найденные дефекты возвращают работу разработчику и QA повторяется → зелёный QA даёт
+итоговый отчёт и публикацию точного принятого SHA → **PR разработчик открывает сам** через
+`/to-pull-requests`. Короткий однопроходный путь без гейтов остался в `/fast-implement`.
+
+[![Конвейер /implement с гейтами](./docs/diagrams/previews/implement-pipeline.workflow.png)](./docs/diagrams/implement-pipeline.workflow.html)
+
+Остальные визуальные карты — [резолв runtime и dispatch](./docs/diagrams/backend-runtime.workflow.html)
+(транспорт `orca` или `in-process`, self-report модели, heartbeat) и
+[жизненный цикл batch](./docs/diagrams/backend-batch.lifecycle.html). Все четыре диаграммы, их
+исходники и порядок обновления — в [docs/diagrams/](./docs/diagrams/README.md).
 
 При выборе `pvmalove-suite` `harness init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект:
 

@@ -5,6 +5,10 @@
 Некоторые backend-задачи требуют изолированных ролей, воспроизводимых handoff и независимого QA,
 тогда как обычный `/implement` должен сохранять стандартный workflow.
 
+> Пересмотрено в [ADR 0014](./0014-coordinator-driven-implement-pipeline.md): стандартный
+> однопроходный workflow теперь живёт в `fast-implement`, а `/implement` стал coordinator-driven
+> конвейером.
+
 ## Действующий контракт
 
 `backend-orchestration` — необязательная capability поверх `pvmalove-suite`. Role manifests и
