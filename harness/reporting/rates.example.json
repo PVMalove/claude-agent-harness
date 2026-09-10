@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "Скопируйте этот файл в .harness/reporting/rates.json и подставьте СВОИ ставки.",
+    "Цены здесь намеренно нулевые: инструмент не знает вашего плана и не должен выдумывать цифры.",
+    "input/output — цена за миллион токенов в валюте currency.",
+    "cache_write_multiplier и cache_read_multiplier — множители к input-ставке для записи и чтения кеша.",
+    "Модель без записи в models не считается: она попадёт в unpriced_models отчёта."
+  ],
+  "currency": "USD",
+  "effective_date": "не заполнено",
+  "source": "не заполнено — укажите, откуда взяты ставки",
+  "models": {
+    "claude-opus-5": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_write_multiplier": 1.25,
+      "cache_read_multiplier": 0.1
+    },
+    "claude-sonnet-5": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_write_multiplier": 1.25,
+      "cache_read_multiplier": 0.1
+    },
+    "gpt-5.6-luna": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_write_multiplier": 1.0,
+      "cache_read_multiplier": 0.1
+    },
+    "gpt-5.6-terra": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_write_multiplier": 1.0,
+      "cache_read_multiplier": 0.1
+    }
+  }
+}

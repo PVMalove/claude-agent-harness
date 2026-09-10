@@ -1,0 +1,5 @@
+interface:
+  display_name: "Delivery stats"
+  short_description: "Report what a finished epic actually cost"
+policy:
+  allow_implicit_invocation: false
