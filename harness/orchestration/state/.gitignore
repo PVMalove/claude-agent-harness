@@ -1,0 +1,3 @@
+# Coordinator state is local evidence, not project source.
+*
+!.gitignore

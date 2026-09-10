@@ -372,9 +372,9 @@ def _run(test_root: Path):
     for required_contract in (
         "## Lifecycle",
         "planned",
-        "approved",
-        "dispatched",
-        "working",
+        "awaiting-approval",
+        "active",
+        "reported",
         "completed",
         "blocked",
         "failed",
@@ -404,9 +404,8 @@ def _run(test_root: Path):
             sys.exit(f"backend-orchestration playbook missing contract: {required_contract}")
     lifecycle_states = [f"`{state}`" for state in (
         "planned",
-        "approved",
-        "dispatched",
-        "working",
+        "awaiting-approval",
+        "active",
         "completed",
         "blocked",
         "failed",
@@ -695,6 +694,152 @@ else:
     ]
     if [call[1] for call in budget_calls] != ["worker-list"]:
         sys.exit("Orca adapter created a task after concurrency-budget rejection")
+
+    # The coordinator is the runtime-neutral public seam: it owns the batch and report
+    # records, and passes only an explicitly approved immutable brief to a transport adapter.
+    coordinator_path = orchestration_root / "coordinator.py"
+    if not coordinator_path.is_file():
+        sys.exit("backend-orchestration coordinator CLI missing")
+
+    state_root = orchestration_project / ".harness" / "orchestration" / "state"
+    fake_adapter = test_root / "fake-adapter.py"
+    fake_adapter_log = test_root / "fake-adapter-log.json"
+    fake_adapter.write_text(
+        """import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+Path(os.environ["FAKE_ADAPTER_LOG"]).write_text(json.dumps(args), encoding="utf-8")
+if "--brief" not in args:
+    raise SystemExit("missing approved brief")
+brief = json.loads(Path(args[args.index("--brief") + 1]).read_text(encoding="utf-8"))
+if not brief.get("coordinator_approval"):
+    raise SystemExit("adapter received an unapproved brief")
+print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
+""",
+        encoding="utf-8",
+    )
+
+    def coordinator_run(*arguments, env=None):
+        coordinator_env = dict(os.environ, FAKE_ADAPTER_LOG=str(fake_adapter_log))
+        if env:
+            coordinator_env.update(env)
+        return subprocess.run(
+            [sys.executable, str(coordinator_path), "--repo", str(orchestration_project), *arguments],
+            capture_output=True,
+            text=True,
+            env=coordinator_env,
+        )
+
+    planned = coordinator_run(
+        "batch", "create", "--ticket", "#901", "--branch", "feature/issue-901-coordinator",
+        "--worktree", "issue-901-coordinator", "--zone", "backend", "--definition-of-done",
+        "implement the requested backend change", "--prohibited-change", "do not merge",
+    )
+    if planned.returncode != 0:
+        sys.exit("coordinator rejected a valid planned batch: " + planned.stderr)
+    batch = json.loads(planned.stdout)
+    if batch["state"] != "planned" or not batch["batch_id"].startswith("batch-"):
+        sys.exit("coordinator did not create a planned batch")
+    batch_id = batch["batch_id"]
+
+    approved_batch = coordinator_run(
+        "batch", "approve", "--batch", batch_id, "--approved-by", "project coordinator",
+        "--approved-at", "2026-09-09T12:00:00Z",
+    )
+    if approved_batch.returncode != 0 or json.loads(approved_batch.stdout)["state"] != "awaiting-approval":
+        sys.exit("coordinator did not move the batch to awaiting-approval")
+
+    dispatch = coordinator_run(
+        "dispatch", "create", "--batch", batch_id, "--role", "developer", "--approved-by",
+        "project coordinator", "--approved-at", "2026-09-09T12:01:00Z",
+    )
+    if dispatch.returncode != 0:
+        sys.exit("coordinator rejected a valid approved dispatch: " + dispatch.stderr)
+    dispatch_record = json.loads(dispatch.stdout)
+    dispatch_id = dispatch_record["dispatch_id"]
+    brief_file = state_root / "dispatches" / f"{dispatch_id}.json"
+    brief_bytes = brief_file.read_bytes()
+    if dispatch_record["state"] != "approved" or dispatch_record["brief"]["role"] != "developer":
+        sys.exit("coordinator did not create an approved developer dispatch")
+
+    if coordinator_run(
+        "dispatch", "send", "--dispatch", dispatch_id, "--adapter", str(fake_adapter),
+        "--adapter-arg=--brief", "--adapter-arg=unapproved.json",
+    ).returncode == 0:
+        sys.exit("coordinator allowed adapter arguments to replace the approved brief")
+    if fake_adapter_log.exists():
+        sys.exit("coordinator invoked the adapter after rejecting an unsafe adapter argument")
+
+    sent = coordinator_run(
+        "dispatch", "send", "--dispatch", dispatch_id, "--adapter", str(fake_adapter),
+    )
+    if sent.returncode != 0:
+        sys.exit("coordinator rejected an approved adapter handoff: " + sent.stderr)
+    adapter_args = json.loads(fake_adapter_log.read_text(encoding="utf-8"))
+    if adapter_args[adapter_args.index("--brief") + 1] != str(brief_file):
+        sys.exit("coordinator did not pass the approved immutable brief to the adapter")
+    if brief_file.read_bytes() != brief_bytes:
+        sys.exit("coordinator changed the immutable dispatch brief")
+    if coordinator_run(
+        "dispatch", "send", "--dispatch", dispatch_id, "--adapter", str(fake_adapter),
+    ).returncode == 0:
+        sys.exit("coordinator reused a dispatched identifier instead of requiring a new approval")
+
+    report_file = test_root / "developer-report.json"
+    report_payload = {
+        "dispatch_id": dispatch_id,
+        "ticket": "#901",
+        "role": "developer",
+        "outcome": "completed",
+        "output": "implemented the requested backend change",
+        "commit_sha": "a" * 40,
+        "changed_files": ["services/payments/app.py"],
+        "checks_run": [{"command": "python -m pytest", "result": "pass", "evidence": "1 passed"}],
+        "risks": "none",
+        "blockers": "none",
+        "next_coordinator_action": "accept",
+    }
+    report_file.write_text(json.dumps(report_payload, indent=2) + "\n", encoding="utf-8")
+    reported = coordinator_run("report", "submit", "--file", str(report_file))
+    if reported.returncode != 0:
+        sys.exit("coordinator rejected a valid completion report: " + reported.stderr)
+    report_result = json.loads(reported.stdout)
+    if report_result["state"] != "reported":
+        sys.exit("coordinator did not leave the dispatch at reported")
+    stored_report = state_root / "reports" / f"{dispatch_id}.json"
+    stored_markdown = state_root / "reports" / f"{dispatch_id}.md"
+    if not stored_report.is_file() or not stored_markdown.is_file():
+        sys.exit("coordinator did not store canonical JSON and Markdown report")
+    if json.loads(stored_report.read_text(encoding="utf-8")) != report_payload:
+        sys.exit("coordinator changed the canonical completion report")
+
+    invalid_report = test_root / "invalid-report.json"
+    invalid_payload = dict(report_payload, role="qa")
+    invalid_report.write_text(json.dumps(invalid_payload), encoding="utf-8")
+    if coordinator_run("report", "submit", "--file", str(invalid_report)).returncode == 0:
+        sys.exit("coordinator accepted a role-incompatible report")
+    if stored_report.read_text(encoding="utf-8") != json.dumps(report_payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n":
+        sys.exit("coordinator changed a report after rejecting an incompatible report")
+
+    secret_report = test_root / "secret-report.json"
+    secret_report.write_text(json.dumps(dict(report_payload, api_token="must-not-pass")), encoding="utf-8")
+    if coordinator_run("report", "submit", "--file", str(secret_report)).returncode == 0:
+        sys.exit("coordinator accepted a secret-shaped report")
+
+    overwritten_report = test_root / "overwritten-report.json"
+    overwritten_report.write_text(json.dumps(report_payload), encoding="utf-8")
+    if coordinator_run("report", "submit", "--file", str(overwritten_report)).returncode == 0:
+        sys.exit("coordinator overwrote an immutable report")
+
+    decision = coordinator_run(
+        "batch", "decide", "--batch", batch_id, "--decision", "accept",
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T12:02:00Z",
+    )
+    if decision.returncode != 0 or json.loads(decision.stdout)["state"] != "awaiting-approval":
+        sys.exit("coordinator did not record the explicit post-report decision")
 
     missing_review_assignment = json.loads(json.dumps(valid_orchestration))
     del missing_review_assignment["assignment_plans"]["code-review"]

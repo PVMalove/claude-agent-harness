@@ -15,8 +15,13 @@
 - `.harness/orchestration/roles/` — переносимые manifest'ы ролей и общий контракт;
 - `.harness/orchestration/playbook.md` — полный lifecycle, handoff и правила параллелизма;
 - `.harness/orchestration/pilot.md` — форма наблюдения за первыми batch;
+- `.harness/orchestration/coordinator.py` — runtime-neutral CLI для batch, approval, dispatch и report;
 - `.harness/orchestration/orca_adapter.py` — необязательная runtime-граница для Orca;
 - `.harness/orchestration.json` — project-owned конфигурация назначений, зон и проверок.
+
+Coordinator state и immutable briefs/reports создаются локально в
+`.harness/orchestration/state/`; содержимое этой директории gitignored и не является исходным
+кодом проекта.
 
 Manifest определяет режим роли (`write` или `read-only`), capability и risk triggers. Проектный
 конфиг выбирает agent/model, fallback, зону, бюджет параллелизма и команды проверки; он не может
@@ -144,19 +149,51 @@ serialized quality-gate lane.
 authorization/security и concurrency/retry completion невозможен, пока coordinator не получил оба
 независимых отчёта `code-review`: Standards и Spec.
 
-## 4. Ручной lifecycle
+## 4. Coordinator CLI и lifecycle
 
-Runtime-neutral режим не имеет команды «запустить всех». Coordinator ведёт записи вручную по
-`planned → approved → dispatched → working → completed | blocked | failed`:
+Runtime-neutral режим не имеет команды «запустить всех». Coordinator CLI ведёт записи по
+`planned → awaiting-approval ↔ active → completed | blocked | failed`; каждый report возвращает
+batch в `awaiting-approval` и оставляет dispatch в `reported` до решения человека:
 
-1. В `planned` связать один ticket, одну issue-ветку и isolated worktree; выбрать зоны, порядок
-   ролей, Definition of Done, запрещённые изменения и exact verification commands.
+1. Создать planned batch и затем отдельно утвердить его:
+
+   ```bash
+   python .harness/orchestration/coordinator.py --repo . batch create \
+     --ticket '#123' --branch feature/issue-123-payment-validation \
+     --worktree issue-123-payment-validation --zone payments \
+     --definition-of-done 'Добавить валидацию платежа' \
+     --prohibited-change 'Не менять migration или публичный API'
+   python .harness/orchestration/coordinator.py --repo . batch approve \
+     --batch <batch-id> --approved-by 'имя утверждающего' \
+     --approved-at 2026-09-09T12:00:00Z
+   ```
 2. Сверить активные batch, пересечения зон, writer и quality-gate lane. При конфликте оставить
    batch `blocked`, а не запускать параллельную запись.
-3. В `approved` человек отдельно утверждает scope, стоимость, назначение, параллелизм и gates.
-4. Создать immutable handoff brief, сохранить точную версию и передать её одной роли.
-5. Принять один completion report с evidence. Перед следующим handoff приложить прошлый report,
-   но создать новый brief для новой роли.
+3. Создать и отдельно утвердить developer dispatch. CLI сохраняет immutable brief до передачи:
+
+   ```bash
+   python .harness/orchestration/coordinator.py --repo . dispatch create \
+     --batch <batch-id> --role developer --approved-by 'имя утверждающего' \
+     --approved-at 2026-09-09T12:01:00Z
+   python .harness/orchestration/coordinator.py --repo . dispatch send \
+     --dispatch <dispatch-id> --adapter .harness/orchestration/orca_adapter.py \
+     --adapter-arg=--run --adapter-arg=<orca-run-id>
+   ```
+4. Принять один schema-validated completion report с evidence. Он сохраняется как canonical JSON
+   и детерминированная Markdown-проекция, после чего dispatch остаётся `reported`, а batch ждёт
+   следующего решения:
+
+   ```bash
+   python .harness/orchestration/coordinator.py --repo . report submit \
+     --file developer-report.json
+   ```
+   До следующего dispatch coordinator должен записать отдельное решение:
+
+   ```bash
+   python .harness/orchestration/coordinator.py --repo . batch decide \
+     --batch <batch-id> --decision accept --approved-by 'имя утверждающего' \
+     --approved-at 2026-09-09T12:02:00Z
+   ```
 
 Минимальный ручной brief хранит ticket и dispatch ID, роль и её access, выбранный profile/model,
 zone и allowed paths, issue-ветку/worktree, DoD, запреты, команды, dependencies, approval. Для
