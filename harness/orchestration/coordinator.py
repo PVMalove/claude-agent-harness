@@ -586,6 +586,44 @@ def _accepted_qa_for_candidate(root: Path, batch: dict[str, Any], candidate: str
     raise CoordinatorError("publish requires accepted green QA evidence for the candidate commit")
 
 
+def _batch_for_ticket_branch(root: Path, ticket: str, branch: str) -> dict[str, Any]:
+    """Find the one immutable batch that owns a ticket's issue branch."""
+    batches_dir = root / "batches"
+    if not batches_dir.is_dir():
+        raise CoordinatorError("no orchestration batches exist for the ticket branch")
+    matches = []
+    for path in sorted(batches_dir.glob("*.json")):
+        batch = _read_object(path, "batch record")
+        if batch.get("ticket") == ticket and batch.get("branch") == branch:
+            _validate_batch_integrity(root, batch)
+            matches.append(batch)
+    if not matches:
+        raise CoordinatorError("no orchestration batch matches the ticket and issue branch")
+    if len(matches) != 1:
+        raise CoordinatorError("multiple orchestration batches match the ticket and issue branch")
+    return matches[0]
+
+
+def qa_evidence(args: argparse.Namespace) -> dict[str, Any]:
+    """Verify accepted green QA evidence for one current issue-branch candidate."""
+    repo = _repo(args)
+    root = _qa_state_root(args, repo)
+    ticket = args.ticket.strip() if _non_empty(args.ticket) else ""
+    branch = args.branch.strip() if _non_empty(args.branch) else ""
+    if not ticket or not branch:
+        raise CoordinatorError("QA evidence requires non-empty ticket and branch")
+    candidate = _candidate_commit(repo, args.candidate_commit)
+    with _state_lock(root):
+        batch = _batch_for_ticket_branch(root, ticket, branch)
+        report = _accepted_qa_for_candidate(root, batch, candidate)
+    return {
+        "ticket": ticket,
+        "branch": branch,
+        "candidate_commit": candidate,
+        "qa_report": report,
+    }
+
+
 def _validate_batch_integrity(root: Path, batch: dict[str, Any]) -> None:
     plan = _read_object(_plan_path(root, batch.get("batch_id")), "immutable batch plan")
     if any(field not in batch for field in PLAN_FIELDS) or any(field not in plan for field in PLAN_FIELDS):
@@ -1623,6 +1661,13 @@ def parser() -> argparse.ArgumentParser:
     qa_status_command = qa_commands.add_parser("status")
     _common(qa_status_command)
     qa_status_command.set_defaults(handler=qa_status)
+
+    qa_evidence_command = qa_commands.add_parser("evidence")
+    _common(qa_evidence_command)
+    qa_evidence_command.add_argument("--ticket", required=True)
+    qa_evidence_command.add_argument("--branch", required=True)
+    qa_evidence_command.add_argument("--candidate-commit", required=True)
+    qa_evidence_command.set_defaults(handler=qa_evidence)
 
     qa_clear = qa_commands.add_parser("clear-stale-lease")
     _common(qa_clear)
