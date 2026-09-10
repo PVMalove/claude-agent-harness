@@ -524,7 +524,7 @@ def _run(test_root: Path):
         },
         "backend_zones": {"backend": {"paths": ["services/**"]}},
         "concurrency_budget": 2,
-        "verification_commands": ["python -m pytest"],
+        "verification_commands": ["python -m pytest -s"],
     }
     orchestration_config.write_text(json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8")
     run_ok(HARNESS + ["health", str(orchestration_project)])
@@ -588,7 +588,7 @@ else:
         "worktree": "isolated-orca-worktree",
         "definition_of_done": ["produce the requested backend change"],
         "prohibited_changes": ["no merge or production operations"],
-        "verification_commands": ["python -m pytest"],
+        "verification_commands": ["python -m pytest -s"],
         "required_gates": ["code review"],
         "dependencies": ["approved project config"],
         "coordinator_approval": {"approved_by": "project coordinator", "approved_at": "2026-09-09T12:00:00Z"},
@@ -762,6 +762,9 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     subprocess.run(["git", "config", "user.name", "Clean Room"], cwd=orchestration_project, check=True)
     baseline_file = orchestration_project / "README.md"
     baseline_file.write_text("clean-room baseline\n", encoding="utf-8")
+    (orchestration_project / "test_qa_baseline.py").write_text(
+        "def test_clean_room_baseline():\n    print('token=visible')\n    assert True\n", encoding="utf-8"
+    )
     subprocess.run(["git", "add", "."], cwd=orchestration_project, check=True)
     subprocess.run(["git", "commit", "-qm", "chore: create baseline"], cwd=orchestration_project, check=True)
 
@@ -841,7 +844,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "implemented the requested backend change",
         "commit_sha": candidate_sha,
         "changed_files": ["services/retry.py"],
-        "checks_run": [{"command": "python -m pytest", "result": "pass", "evidence": "1 passed"}],
+        "checks_run": [{"command": "python -m pytest -s", "result": "pass", "evidence": "1 passed"}],
         "risks": "none",
         "blockers": "none",
         "next_coordinator_action": "accept",
@@ -960,7 +963,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "independent composite review completed",
         "commit_sha": "not applicable — read-only role",
         "changed_files": [],
-        "checks_run": [{"command": "python -m pytest", "result": "pass", "evidence": "review scope inspected"}],
+        "checks_run": [{"command": "python -m pytest -s", "result": "pass", "evidence": "review scope inspected"}],
         "risks": "standards warning requires coordinator decision",
         "blockers": "none",
         "next_coordinator_action": "override-warning or retry",
@@ -991,6 +994,72 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if override.returncode != 0:
         sys.exit("coordinator rejected an explicit warning override: " + override.stderr)
 
+    qa_dispatch = coordinator_run(
+        "dispatch", "create", "--batch", batch_id, "--role", "qa",
+        "--candidate-commit", candidate_sha, "--approved-by", "project coordinator",
+        "--approved-at", "2026-09-09T12:05:30Z",
+    )
+    if qa_dispatch.returncode != 0:
+        sys.exit("coordinator rejected a QA dispatch after accepted review: " + qa_dispatch.stderr)
+    qa_id = json.loads(qa_dispatch.stdout)["dispatch_id"]
+    queue_root = state_root / "qa-lane" / "queue"
+    queue_root.mkdir(parents=True, exist_ok=True)
+    prior_queue = queue_root / "00000000000000000001-dispatch-00000000-0000-0000-0000-000000000000.json"
+    prior_queue.write_text(json.dumps({
+        "dispatch_id": "dispatch-00000000-0000-0000-0000-000000000000",
+        "sequence": 1,
+        "queued_at": "2026-09-09T12:05:20+00:00",
+    }) + "\n", encoding="utf-8")
+    (state_root / "qa-lane" / "sequence.json").write_text('{"next": 2}\n', encoding="utf-8")
+    queued = coordinator_run("qa", "run", "--dispatch", qa_id)
+    if queued.returncode != 0 or json.loads(queued.stdout).get("state") != "queued":
+        sys.exit("QA runner did not leave a later request visibly queued")
+    lane_status = coordinator_run("qa", "status")
+    if lane_status.returncode != 0 or len(json.loads(lane_status.stdout)["queue"]) != 2:
+        sys.exit("QA lane status did not expose FIFO queue entries")
+    lease_path = state_root / "qa-lane" / "lease.json"
+    lease_path.write_text(json.dumps({
+        "dispatch_id": "dispatch-00000000-0000-0000-0000-000000000000",
+        "host": "stale-host",
+        "pid": 99999,
+        "acquired_at": "2026-09-09T12:00:00+00:00",
+        "expires_at": "2026-09-09T12:01:00+00:00",
+    }) + "\n", encoding="utf-8")
+    if coordinator_run("qa", "run", "--dispatch", qa_id).returncode == 0:
+        sys.exit("QA runner automatically force-unlocked a stale lease")
+    recovered = coordinator_run(
+        "qa", "clear-stale-lease", "--expected-host", "stale-host", "--expected-pid", "99999",
+        "--expected-expiry", "2026-09-09T12:01:00+00:00", "--approved-by", "project coordinator",
+        "--approved-at", "2026-09-09T12:05:40Z", "--reason", "owner validated as stale",
+    )
+    if recovered.returncode != 0 or json.loads(recovered.stdout).get("state") != "cleared":
+        sys.exit("coordinator did not require and record stale QA lease recovery")
+    qa_run = coordinator_run("qa", "run", "--dispatch", qa_id, "--lease-seconds", "60")
+    if qa_run.returncode != 0:
+        sys.exit("clean-room QA runner rejected a pinned candidate: " + qa_run.stderr)
+    qa_result = json.loads(qa_run.stdout)
+    if qa_result["state"] != "reported":
+        sys.exit("clean-room QA runner did not produce a canonical report")
+    qa_report = json.loads(Path(qa_result["report"]).read_text(encoding="utf-8"))
+    if qa_report["checks_run"][0]["evidence"].startswith("exit ") is False:
+        sys.exit("QA report did not record the gate exit code")
+    if qa_report["outcome"] != "completed":
+        sys.exit("clean-room QA gate unexpectedly failed: " + json.dumps(qa_report))
+    artifact = Path(qa_result["artifact"])
+    if not artifact.is_file() or hashlib.sha256(artifact.read_bytes()).hexdigest() != qa_result["sha256"]:
+        sys.exit("QA evidence artifact is not immutable and checksum-addressed")
+    artifact_text = artifact.read_text(encoding="utf-8")
+    if not artifact_text.startswith("$ python -m pytest -s\nexit_code=0\n"):
+        sys.exit("QA evidence artifact does not contain the full gate output")
+    if "token=visible" in artifact_text or "token=<redacted>" not in artifact_text:
+        sys.exit("QA evidence artifact was not sanitised")
+    if coordinator_run("dispatch", "send", "--dispatch", qa_id, "--adapter", str(fake_adapter)).returncode == 0:
+        sys.exit("QA runner allowed a second execution of the same dispatch")
+    if coordinator_run(
+        "batch", "decide", "--batch", batch_id, "--decision", "accept",
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T12:05:45Z",
+    ).returncode != 0:
+        sys.exit("coordinator did not accept a successful QA report")
     blocker_dispatch = coordinator_run(
         "dispatch", "create", "--batch", batch_id, "--role", "code-review",
         "--candidate-commit", candidate_sha, "--approved-by", "project coordinator",
@@ -1068,6 +1137,10 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     )
     if retry_risk.returncode != 0 or not json.loads(retry_risk.stdout)["review_required"]:
         sys.exit("coordinator did not re-evaluate the retry candidate before QA: " + retry_risk.stderr + retry_risk.stdout)
+
+    qa_help = coordinator_run("qa", "--help")
+    if qa_help.returncode != 0 or "run" not in qa_help.stdout:
+        sys.exit("coordinator does not expose the clean-room QA runner")
 
     print("risk-aware composite review verification passed")
 

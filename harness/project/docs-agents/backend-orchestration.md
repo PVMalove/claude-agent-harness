@@ -205,6 +205,43 @@ risks, blockers и следующее решение coordinator-а. Для read
 изменились scope, zone, DoD, assignment или proof, текущий dispatch заканчивается и создаётся новый.
 Повтор после `blocked` или `failed` — тоже новый dispatch с новым ID и brief.
 
+### Clean-room QA lane
+
+Одобренный `qa` dispatch выполняется самим coordinator в отдельном temporary Git worktree,
+отсоединённом ровно на `candidate_commit`. Команды берутся буквально из
+`verification_commands` immutable brief; несовпадение HEAD или грязный worktree останавливает
+проверку. Запуск не передают runtime adapter:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . qa run \
+  --dispatch <qa-dispatch-id> --lease-seconds 1800
+```
+
+В репозитории существует одна FIFO-полоса тяжёлых проверок. Если она занята, команда сохраняет
+запрос и возвращает `state: queued` с позицией; повторный вызов для того же dispatch запустит его
+только когда он станет первым. Состояние и текущий owner видны без запуска gate:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . qa status
+```
+
+Lease содержит dispatch ID, host, PID, время взятия и expiry. Истёкшая аренда **не** снимается
+автоматически: coordinator сперва сверяет owner, затем записывает собственное решение с теми же
+host/PID/expiry и только после этого удаляет stale request:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . qa clear-stale-lease \
+  --expected-host <host> --expected-pid <pid> --expected-expiry <ISO-8601> \
+  --approved-by 'имя coordinator-а' --approved-at 2026-09-10T12:00:00Z \
+  --reason 'проверено, что владелец больше не выполняется'
+```
+
+После выполнения создаётся immutable completion report с командами, exit codes и кратким
+санитизированным evidence. Полный санитизированный stdout/stderr сохраняется вне Git в
+`.harness/orchestration/state/qa-artifacts/<sha256>.log`; report ссылается на этот путь и checksum.
+Провал gate остаётся QA finding и требует нового одобренного developer dispatch — runner не правит
+код и не перезапускает проверку самостоятельно.
+
 Готовый запрос управляющей сессии можно сформулировать так:
 
 ```text
