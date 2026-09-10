@@ -331,9 +331,7 @@ post-integration defects, включая источник и отсутству�
 `.harness/orchestration/roles/`. При противоречии между удобством конкретного runtime и этим
 контрактом приоритет у manifest'а, immutable brief и явного approval.
 
-Архитектурные основания маршрута: [ADR 0014](../adr/0014-risk-aware-review-before-qa-gate.md)
-(review перед QA), [0015](../adr/0015-batches-contain-terminal-role-dispatches.md) (два уровня
-batch/dispatch), [0016](../adr/0016-batch-awaits-approval-between-dispatches.md) (approval после
-report), [0018](../adr/0018-pin-clean-room-qa-to-a-commit-in-a-repository-lane.md) (pinned
-clean-room QA), [0019](../adr/0019-use-a-coordinator-cleared-fifo-lease-for-qa.md) (stale lease) и
-[0020](../adr/0020-keep-coordinator-state-outside-the-runtime-adapter.md) (local sanitised state).
+Архитектурный контракт маршрута целиком зафиксирован в
+[ADR 0003](../adr/0003-opt-in-human-governed-orchestration.md): opt-in capability, отдельное
+approval для dispatch, review и QA для одного SHA, локальное санитизированное evidence и adapter
+только для транспорта.

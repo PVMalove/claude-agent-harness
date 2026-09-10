@@ -63,7 +63,7 @@ clean-room QA для того же SHA. Report остаётся `reported` до 
 | | `mattpocock-suite` как есть | Своя capability (по образцу `pvmalove-suite`) |
 |---|---|---|
 | Когда | Апстримный pipeline устраивает без изменений | Нужны свои правки — лейблы, языки, доп. скиллы |
-| Механизм | `--capability mattpocock-suite` напрямую | `extends`/`overrides`/`additions` в `harness/CAPABILITIES.json` (ADR 0001 в `docs/adr/`), первопартийные копии файлов, не диффы (ADR 0002) |
+| Механизм | `--capability mattpocock-suite` напрямую | `extends`/`overrides`/`additions` в `harness/CAPABILITIES.json`, полные first-party файлы и проверяемый snapshot ([ADR 0001](../adr/0001-portable-capability-snapshots.md)) |
 | Апдейт апстрима | `harness update` подтягивает всё как есть | Унаследованное подтягивается тем же `update`; за переопределёнными скиллами следите вручную — `scripts/check-upstream-drift` (см. «Политика репозитория» в README харнесса) показывает, что из них реально поменялось выше по течению |
 
 **`init` — первая установка в проект, где харнесса ещё нет.** Требует, чтобы `<repo>` уже был git-репозиторием; падает с «already exists; use update», если `.harness/harness.lock` уже есть.
@@ -484,7 +484,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 
 | Скилл | Что изменено |
 |---|---|
-| `triage` | Заменяет пять канонических состояний апстрима на namespaced-таксономию `workflow::*` (`specs`/`ready`/`in-progress`/`blocked`) + отдельная ось исполнения `hitl`/`afk`; категорийная пара `bug`/`enhancement` не тронута. `wontfix` → `out-of-scope`. См. ADR 0004 в `docs/adr/`. |
+| `triage` | Использует namespaced-таксономию `workflow::*` (`specs`/`ready`/`in-progress`/`blocked`) и отдельную ось исполнения `hitl`/`afk`; категорийная пара `bug`/`enhancement` не меняется. `wontfix` соответствует `out-of-scope`. См. [ADR 0002](../adr/0002-controlled-project-delivery.md). |
 | `to-spec` | Проставляет `workflow::specs` на публикуемый эпик-issue вместо `ready-for-agent` + `epic::<slug>` (последнего больше нет — см. раздел 8); согласует и создаёт при необходимости `integration/<service-or-team>` от `base_branch`, записывает её в эпик, пишет спеку сначала файлом в `docs/tasks/` и публикует через `gh issue create --body-file`, а не инлайн-heredoc. |
 | `to-tickets` | Линкует дочерние тикеты к эпику как native GitHub sub-issues вместо общей метки `epic::<slug>`; тикету, заблокированному другим ещё не закрытым тикетом той же декомпозиции, ставит `workflow::blocked` вместо `workflow::ready`; не переписывает содержимое родительского issue (кроме списка дочерних номеров). |
 | `implement` | Перед стартом по ссылке на тикет с `workflow::blocked` — проверяет блокеры, снимает состояние либо отказывается стартовать; разрешает integration-ветку из тикета/эпика, создаёт issue-ветку от неё и ставит `workflow::in-progress`, начиная работу. После тестов спрашивает, запускать ли двухосевое `/code-review`; при согласии возвращает его отдельные отчёты в основную сессию, затем ждёт согласия на commit и push. После push предлагает `/to-pull-requests`; самостоятельно его не запускает. |
@@ -532,7 +532,7 @@ AI-агенты неизбежно «глупеют» и начинают гал
 | `task-report::required` | `/to-spec`, `/to-tickets` (по умолчанию) | `/implement` обязан опубликовать отчёт о завершении при закрытии — `triage` эту метку не читает и не выставляет. |
 | `out-of-scope` | `/triage` | Замена апстримного `wontfix` — запрос явно отклонён. |
 
-Группировка тикетов эпика больше не лейбл: дочерний тикет линкуется к эпик-issue как native GitHub sub-issue (`docs/agents/issue-tracker.md#wayfinding-operations`) — тот же механизм, которым `wayfinder` уже пользуется для своей карты. Подробности (цвета, локальный markdown-трекер, история решения — ADR 0004 в `docs/adr/`) — в `docs/agents/triage-labels.md`.
+Дочерний тикет связывается с epic issue как native GitHub sub-issue (`docs/agents/issue-tracker.md#wayfinding-operations`); тот же механизм `wayfinder` использует для своей карты. Подробности о цветах и локальном markdown-трекере — в `docs/agents/triage-labels.md`; правила поставки — в [ADR 0002](../adr/0002-controlled-project-delivery.md).
 
 ---
 

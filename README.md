@@ -2,7 +2,7 @@
 
 Портативный харнесс для coding agents (Claude Code, Codex, Kimi Code, OpenCode и Hermes Agent) — набор скиллов, правил, хуков и документов, который одной командой разворачивается в любой проект и живёт там независимо от этого репозитория.
 
-По умолчанию устанавливается лёгкая доменно-нейтральная capability **project-foundation** из 5 скиллов. Полная upstream-сборка — **mattpocock-suite**, 25 скиллов Matt Pocock (aihero.dev), закреплённых на конкретном коммите. Этот репозиторий добавляет поверх неё вторую capability — **pvmalove-suite** — с личными доработками: эпик- и blocked-by-ticket-лейблы в `to-spec`/`to-tickets`/`implement` поверх канонической triage-таксономии апстрима, подтверждаемое разработчиком двухосевое ревью перед коммитом и push, отдельный ручной `/to-pull-requests`, настраиваемый язык вывода, и конфиг-драйвен `qa-gate`.
+По умолчанию устанавливается лёгкая доменно-нейтральная capability **project-foundation** из 5 скиллов. Полная upstream-сборка — **mattpocock-suite**, 25 скиллов Matt Pocock (aihero.dev), закреплённых на конкретном коммите. **pvmalove-suite** добавляет управляемый инженерный workflow: native связи эпиков и тикетов, namespaced triage-таксономию, двухосевое review, ручной `/to-pull-requests`, настраиваемый язык вывода и конфигурируемый `qa-gate`.
 
 Термины ниже (капабилити, vendor/first-party-скилл, переопределение, дрейф, проектный конфиг) разобраны в [CONTEXT.md](./CONTEXT.md); значимые архитектурные решения и почему они приняты — в [docs/adr/](./docs/adr/); пошаговое использование — в [docs/agents/harness-guide.md](./docs/agents/harness-guide.md); как скиллы находят Codex, Kimi Code, OpenCode и Hermes Agent (не только Claude Code) — в [docs/runtime-discovery.md](./docs/runtime-discovery.md).
 
@@ -142,14 +142,13 @@ python harness\bin\harness list C:\path\to\repository
 - Личные скиллы и надстройки живут в `skills/first-party/pvmalove/` и `harness/project/`, не смешиваются с vendor-деревом.
 - `/to-spec` выбирает для эпика `integration/<service-or-team>` и создаёт её от проектной `base_branch`, если такой ветки ещё нет; `/to-tickets` переносит её в дочерние тикеты, а issue-ветки и PR используют её как базу.
 - Апстримные ревизии закреплены, provenance (`third_party/mattpocock-skills/`) сохраняется.
-- Новые ADR (`docs/adr/`) — по [`docs/adr/template.md`](./docs/adr/template.md): обязательные секции
-  Context/Decision/Alternatives/Rejected/Consequences, язык — как у остального репозитория (сейчас
-  русский). Решения 0001-0005 предшествуют шаблону и его секции не повторяют — не переписывать их
-  задним числом.
+- ADR (`docs/adr/`) фиксирует только действующее труднообратимое решение и создаётся по
+  [`docs/adr/template.md`](./docs/adr/template.md). Номер всегда следующий после наибольшего в
+  каталоге; язык совпадает с языком репозитория.
 - `third_party/mattpocock-skills/UPSTREAM.lock` может отстать от реального апстрима незаметно —
   `scripts/check-upstream-drift` (сеть, читает только) сверяет пин с последним тегом на
   `mattpocock/skills` и раскладывает реальные изменения на «можно тянуть не глядя» (скиллы вне
-  `pvmalove-suite.overrides`) и «сверить руками перед ресинком» (ADR 0002). Гоняется вручную или
+  `pvmalove-suite.overrides`) и «сверить руками перед ресинком» (см. [ADR 0001](./docs/adr/0001-portable-capability-snapshots.md)). Гоняется вручную или
   еженедельно через `.github/workflows/upstream-drift.yml` (`workflow_dispatch` — можно и по
   требованию); падает (exit 1) только когда апстрим реально ушёл вперёд, не блокирует обычные PR.
 - `docs/agents/*.md` и `harness/project/docs-agents/*.md` — одно и то же по смыслу в двух местах
