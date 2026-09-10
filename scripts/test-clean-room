@@ -304,6 +304,11 @@ def _run(test_root: Path):
     orchestration_root = orchestration_project / ".harness" / "orchestration"
     if not (orchestration_root / "orchestration.schema.json").is_file():
         sys.exit("backend-orchestration schema missing")
+    installed_implement = (orchestration_project / ".harness" / "skills" / "implement" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    if "Coordinator route for valid backend orchestration" not in installed_implement:
+        sys.exit("opted-in project implement skill does not expose the coordinator route")
     orchestration_config = orchestration_project / ".harness" / "orchestration.json"
     if not orchestration_config.is_file():
         sys.exit("backend-orchestration config seed missing")
@@ -1055,88 +1060,31 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("QA evidence artifact was not sanitised")
     if coordinator_run("dispatch", "send", "--dispatch", qa_id, "--adapter", str(fake_adapter)).returncode == 0:
         sys.exit("QA runner allowed a second execution of the same dispatch")
-    if coordinator_run(
+    accepted_qa = coordinator_run(
         "batch", "decide", "--batch", batch_id, "--decision", "accept",
         "--approved-by", "project coordinator", "--approved-at", "2026-09-09T12:05:45Z",
-    ).returncode != 0:
+    )
+    if accepted_qa.returncode != 0:
         sys.exit("coordinator did not accept a successful QA report")
-    blocker_dispatch = coordinator_run(
+    if json.loads(accepted_qa.stdout).get("next_action") != "publish":
+        sys.exit("accepted green QA did not prepare a publish-only next action")
+    if coordinator_run(
         "dispatch", "create", "--batch", batch_id, "--role", "code-review",
         "--candidate-commit", candidate_sha, "--approved-by", "project coordinator",
         "--approved-at", "2026-09-09T12:06:00Z",
-    )
-    if blocker_dispatch.returncode != 0:
-        sys.exit("coordinator could not create a second review dispatch: " + blocker_dispatch.stderr)
-    blocker_id = json.loads(blocker_dispatch.stdout)["dispatch_id"]
-    if coordinator_run(
-        "dispatch", "send", "--dispatch", blocker_id, "--adapter", str(fake_adapter),
-        "--checkout", str(orchestration_project),
-    ).returncode != 0:
-        sys.exit("coordinator could not send the second review dispatch")
-    blocker_payload = dict(review_payload)
-    blocker_payload["dispatch_id"] = blocker_id
-    blocker_payload["review"] = dict(review_payload["review"])
-    blocker_payload["review"]["standards"] = {
-        "severity": "blocker",
-        "findings": [{"severity": "blocker", "evidence": "unsafe retry", "summary": "retry is unsafe"}],
-        "risks": "unsafe retry behavior",
-        "blockers": "retry must be changed",
-    }
-    blocker_report_file = test_root / "blocker-review-report.json"
-    blocker_report_file.write_text(json.dumps(blocker_payload, indent=2) + "\n", encoding="utf-8")
-    if coordinator_run("report", "submit", "--file", str(blocker_report_file)).returncode != 0:
-        sys.exit("coordinator rejected a valid blocker review report")
-    if coordinator_run(
-        "batch", "decide", "--batch", batch_id, "--decision", "accept",
-        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T12:07:00Z",
     ).returncode == 0:
-        sys.exit("coordinator accepted a review blocker")
-    retry_decision = coordinator_run(
-        "batch", "decide", "--batch", batch_id, "--decision", "retry",
-        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T12:08:00Z",
-        "--note", "developer must resolve the blocker",
+        sys.exit("coordinator allowed a role other than the prepared publish dispatch after green QA")
+    publish_dispatch = coordinator_run(
+        "dispatch", "create", "--batch", batch_id, "--role", "developer", "--purpose", "publish",
+        "--candidate-commit", candidate_sha, "--approved-by", "project coordinator",
+        "--approved-at", "2026-09-09T12:06:00Z",
     )
-    if retry_decision.returncode != 0:
-        sys.exit("coordinator did not route a review blocker to retry: " + retry_decision.stderr)
-    developer_retry = coordinator_run(
-        "dispatch", "create", "--batch", batch_id, "--role", "developer",
-        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T12:09:00Z",
-    )
-    if developer_retry.returncode != 0 or json.loads(developer_retry.stdout)["brief"]["role"] != "developer":
-        sys.exit("coordinator did not prepare a new developer brief after a blocker")
-    developer_retry_id = json.loads(developer_retry.stdout)["dispatch_id"]
+    if publish_dispatch.returncode != 0 or json.loads(publish_dispatch.stdout)["brief"]["purpose"] != "publish":
+        sys.exit("coordinator did not prepare a publish-only brief for the accepted QA candidate")
     if coordinator_run(
-        "dispatch", "send", "--dispatch", developer_retry_id, "--adapter", str(fake_adapter),
-    ).returncode != 0:
-        sys.exit("coordinator could not send the retry developer dispatch")
-    candidate_file.write_text("def retry():\n    return False\n", encoding="utf-8")
-    subprocess.run(["git", "add", "services/retry.py"], cwd=orchestration_project, check=True)
-    subprocess.run(["git", "commit", "-qm", "fix: address retry review finding"], cwd=orchestration_project, check=True)
-    retry_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=orchestration_project, check=True, capture_output=True, text=True
-    ).stdout.strip()
-    retry_report_payload = dict(report_payload, dispatch_id=developer_retry_id, commit_sha=retry_sha, risk_triggers=[])
-    retry_report_file = test_root / "retry-developer-report.json"
-    retry_report_file.write_text(json.dumps(retry_report_payload, indent=2) + "\n", encoding="utf-8")
-    if coordinator_run("report", "submit", "--file", str(retry_report_file)).returncode != 0:
-        sys.exit("coordinator rejected the retry developer report")
-    if coordinator_run(
-        "batch", "decide", "--batch", batch_id, "--decision", "accept",
-        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T12:10:00Z",
-    ).returncode != 0:
-        sys.exit("coordinator did not accept the retry developer report")
-    qa_without_risk = coordinator_run(
-        "dispatch", "create", "--batch", batch_id, "--role", "qa", "--candidate-commit", retry_sha,
-        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T12:10:00Z",
-    )
-    if qa_without_risk.returncode == 0:
-        sys.exit("coordinator allowed QA before re-evaluating a retry candidate")
-    retry_risk = coordinator_run(
-        "risk", "assess", "--batch", batch_id, "--candidate-commit", retry_sha,
-        "--changed-file", "services/retry.py",
-    )
-    if retry_risk.returncode != 0 or not json.loads(retry_risk.stdout)["review_required"]:
-        sys.exit("coordinator did not re-evaluate the retry candidate before QA: " + retry_risk.stderr + retry_risk.stdout)
+        "dispatch", "send", "--dispatch", json.loads(publish_dispatch.stdout)["dispatch_id"], "--adapter", str(fake_adapter),
+    ).returncode == 0:
+        sys.exit("coordinator allowed a publish-only brief through an unverified runtime adapter")
 
     qa_help = coordinator_run("qa", "--help")
     if qa_help.returncode != 0 or "run" not in qa_help.stdout:

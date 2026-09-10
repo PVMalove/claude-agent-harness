@@ -30,7 +30,8 @@ STATE_REL = Path(".harness/orchestration/state")
 SENSITIVE_KEY = re.compile(r"(?:api[_-]?key|credential|password|secret|token)", re.IGNORECASE)
 ROLE_MODES = {"write", "read-only"}
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
-DECISIONS = {"accept", "override-warning", "retry", "block"}
+DECISIONS = {"accept", "override-warning", "retry", "block", "fail"}
+DISPATCH_PURPOSES = {"work", "publish"}
 REVIEW_SEVERITIES = {"none", "clean", "warning", "blocker"}
 FINDING_SEVERITIES = {"info", "warning", "blocker"}
 QA_LEASE_FIELDS = {"dispatch_id", "host", "pid", "acquired_at", "expires_at"}
@@ -46,7 +47,7 @@ DISPATCH_FIELDS = {
     "dispatch_id", "batch_id", "ticket", "role", "access", "zone", "write_paths", "branch", "worktree",
     "definition_of_done", "prohibited_changes", "verification_commands", "required_gates", "dependencies",
     "resolved_provider_profile", "resolved_model", "coordinator_approval", "candidate_commit", "review_base", "review_scope",
-    "risk_assessment_id", "state", "created_at",
+    "risk_assessment_id", "purpose", "state", "created_at",
 }
 REPORT_FIELDS = {
     "dispatch_id",
@@ -569,6 +570,22 @@ def _latest_developer_candidate(repo: Path, root: Path, batch: dict[str, Any]) -
         raise CoordinatorError("accepted developer report has no resolvable candidate commit") from exc
 
 
+def _accepted_qa_for_candidate(root: Path, batch: dict[str, Any], candidate: str) -> dict[str, Any]:
+    """Return the accepted green QA report pinned to exactly ``candidate``."""
+    for entry in reversed(batch.get("dispatches", [])):
+        if entry.get("role") != "qa" or entry.get("state") != "reported":
+            continue
+        if entry.get("decision", {}).get("decision") != "accept":
+            continue
+        dispatch = _load_dispatch(root, entry.get("dispatch_id"))
+        if dispatch.get("candidate_commit") != candidate:
+            continue
+        report = _pending_report(root, batch, entry)
+        if report.get("outcome") == "completed":
+            return report
+    raise CoordinatorError("publish requires accepted green QA evidence for the candidate commit")
+
+
 def _validate_batch_integrity(root: Path, batch: dict[str, Any]) -> None:
     plan = _read_object(_plan_path(root, batch.get("batch_id")), "immutable batch plan")
     if any(field not in batch for field in PLAN_FIELDS) or any(field not in plan for field in PLAN_FIELDS):
@@ -585,6 +602,8 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
         raise CoordinatorError("dispatch record is not an approved immutable brief")
     if dispatch.get("batch_id") != batch.get("batch_id"):
         raise CoordinatorError("dispatch record does not belong to its batch")
+    if dispatch.get("purpose") not in DISPATCH_PURPOSES:
+        raise CoordinatorError("dispatch record has an invalid purpose")
     entry = next((item for item in batch.get("dispatches", []) if item.get("dispatch_id") == dispatch.get("dispatch_id")), None)
     if not entry or entry.get("brief_sha256") != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest():
         raise CoordinatorError("dispatch record failed immutable brief integrity check")
@@ -604,6 +623,10 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
     candidate = dispatch.get("candidate_commit")
     if dispatch["role"] in {"code-review", "qa"} and not isinstance(candidate, str):
         raise CoordinatorError("review and QA dispatches must pin a candidate commit")
+    if dispatch["purpose"] == "publish":
+        if dispatch["role"] != "developer" or not isinstance(candidate, str):
+            raise CoordinatorError("publish dispatches must be pinned developer briefs")
+        _accepted_qa_for_candidate(root, batch, candidate)
     if candidate is not None:
         resolved = _candidate_commit(repo, candidate)
         if resolved != candidate:
@@ -716,6 +739,10 @@ def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
             batch["risk_reassessment_required"] = False
             batch.pop("risk_reassessment_candidate", None)
             batch.pop("risk_reassessment_triggers", None)
+        # Assessment is evidence, not a launch instruction.  It makes the one allowed next
+        # handoff visible to the coordinator; a later, separately approved dispatch creates the
+        # immutable brief.
+        batch["next_action"] = "code-review" if risk["review_required"] else "qa"
         _replace(_batch_path(root, batch["batch_id"]), batch)
     return risk
 
@@ -831,7 +858,25 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
         if args.decision == "retry":
             batch["required_next_role"] = "developer"
             batch["retry_candidate_required"] = True
-        batch["state"] = "blocked" if args.decision == "block" else "awaiting-approval"
+            batch["next_action"] = "developer-retry"
+        elif args.decision in {"accept", "override-warning"}:
+            if report["role"] == "developer":
+                if dispatch.get("purpose") == "publish":
+                    batch.pop("next_action", None)
+                    batch["state"] = "completed"
+                else:
+                    batch["next_action"] = "risk-assessment"
+            elif report["role"] == "code-review":
+                batch["next_action"] = "qa"
+            elif report["role"] == "qa":
+                batch["next_action"] = "publish"
+        if args.decision == "block":
+            batch["state"] = "blocked"
+        elif args.decision == "fail":
+            batch.pop("next_action", None)
+            batch["state"] = "failed"
+        elif batch.get("state") != "completed":
+            batch["state"] = "awaiting-approval"
         _replace(_batch_path(root, batch["batch_id"]), batch)
     return batch
 
@@ -850,6 +895,19 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             raise CoordinatorError("the previous completion report requires an explicit coordinator decision")
         _check_batch_conflicts(root, config, batch)
         role_name = args.role
+        purpose = args.purpose
+        next_action = batch.get("next_action")
+        required = {
+            None: {("developer", "work")},
+            "code-review": {("code-review", "work")},
+            "qa": {("qa", "work")},
+            "publish": {("developer", "publish")},
+            "developer-retry": {("developer", "work")},
+        }
+        if next_action == "risk-assessment":
+            raise CoordinatorError("risk assessment must prepare the next dispatch before another role starts")
+        if (role_name, purpose) not in required.get(next_action, set()):
+            raise CoordinatorError("dispatch does not match the coordinator-prepared next action")
         role, zone, profile_id, model = _resolve_assignment(repo, config, role_name, batch["zone"])
         candidate = None
         risk = None
@@ -858,6 +916,14 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             candidate = _candidate_commit(repo, args.candidate_commit)
         if role_name in {"code-review", "qa"} and candidate is None:
             raise CoordinatorError(f"{role_name} dispatch requires candidate_commit")
+        if purpose == "publish":
+            if role_name != "developer" or candidate is None:
+                raise CoordinatorError("publish requires a developer role and candidate_commit")
+            if candidate != _latest_developer_candidate(repo, root, batch):
+                raise CoordinatorError("publish must use the latest accepted developer candidate")
+            _accepted_qa_for_candidate(root, batch, candidate)
+        elif purpose != "work":
+            raise CoordinatorError("dispatch purpose is invalid")
         if candidate is not None:
             risk = _risk_for_candidate(root, batch, candidate)
         if role_name in {"code-review", "qa"} and candidate != _latest_developer_candidate(repo, root, batch):
@@ -908,6 +974,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "review_base": risk["base_commit"] if risk else None,
             "review_scope": review_scope,
             "risk_assessment_id": risk["risk_assessment_id"] if risk else None,
+            "purpose": purpose,
         }
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the
@@ -955,8 +1022,11 @@ def _validate_checkout(checkout: Path, candidate: str, base: str | None, scope: 
 def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
-    if _load_dispatch(root, args.dispatch).get("role") == "qa":
+    dispatch_record = _load_dispatch(root, args.dispatch)
+    if dispatch_record.get("role") == "qa":
         raise CoordinatorError("QA dispatches must run through the clean-room QA lane, never a runtime adapter")
+    if dispatch_record.get("purpose") == "publish":
+        raise CoordinatorError("publish-only dispatches must use the verified coordinator publish boundary")
     adapter = Path(args.adapter).resolve()
     if not adapter.is_file():
         raise CoordinatorError(f"runtime adapter does not exist: {adapter}")
@@ -1003,6 +1073,58 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {"dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": _now()})
         _replace(_batch_path(root, batch["batch_id"]), batch)
     return {"dispatch_id": dispatch["dispatch_id"], "state": "dispatched"}
+
+
+def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    """Push one QA-accepted candidate through an approved publish-only brief."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    remote = args.remote.strip() if _non_empty(args.remote) else ""
+    if not remote:
+        raise CoordinatorError("publish remote must be a non-empty string")
+    if remote not in _git(repo, "remote").splitlines():
+        raise CoordinatorError("publish remote is not configured for this repository")
+    with _state_lock(root):
+        dispatch = _load_dispatch(root, args.dispatch)
+        batch = _load_batch(root, dispatch["batch_id"])
+        _validate_batch_integrity(root, batch)
+        _validate_dispatch(repo, _config(repo), root, batch, dispatch)
+        if dispatch["purpose"] != "publish":
+            raise CoordinatorError("only a publish-only dispatch may push a candidate")
+        status = _load_dispatch_status(root, dispatch["dispatch_id"])
+        entry = next((item for item in batch["dispatches"] if item["dispatch_id"] == dispatch["dispatch_id"]), None)
+        if not entry or entry.get("state") != "approved" or status.get("state") != "approved":
+            raise CoordinatorError("publish requires an approved, unsent publish-only dispatch")
+        candidate = dispatch["candidate_commit"]
+        _accepted_qa_for_candidate(root, batch, candidate)
+        result = subprocess.run(
+            ["git", "-C", str(repo), "push", remote, f"{candidate}:refs/heads/{dispatch['branch']}"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        if result.returncode != 0:
+            detail = _sanitise((result.stderr or result.stdout).strip())
+            raise CoordinatorError(f"could not publish the accepted candidate: {detail or 'unknown error'}")
+        published = _git(repo, "ls-remote", "--heads", remote, f"refs/heads/{dispatch['branch']}")
+        if not published or published.split()[0] != candidate:
+            raise CoordinatorError("remote branch does not resolve to the accepted QA candidate")
+        entry["state"] = "dispatched"
+        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
+            "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": _now(),
+        })
+        _replace(_batch_path(root, batch["batch_id"]), batch)
+        changed = _changed_files_between(repo, batch["base_commit"], candidate) if batch.get("base_commit") else _commit_changed_files(repo, candidate)
+        report = {
+            "dispatch_id": dispatch["dispatch_id"], "ticket": dispatch["ticket"], "role": "developer",
+            "outcome": "completed", "output": f"published accepted QA candidate {candidate} to {remote}/{dispatch['branch']}",
+            "commit_sha": candidate, "changed_files": changed,
+            "checks_run": [
+                {"command": command, "result": "pass", "evidence": f"accepted clean-room QA evidence for {candidate}"}
+                for command in dispatch["verification_commands"]
+            ],
+            "risks": "none", "blockers": "none", "next_coordinator_action": "accept publication or inspect remote evidence",
+        }
+        report_path = _persist_report(root, batch, dispatch, report)
+    return {"dispatch_id": dispatch["dispatch_id"], "state": "reported", "report": str(report_path), "candidate_commit": candidate}
 
 
 def _qa_report(dispatch: dict[str, Any], checks: list[dict[str, str]], artifact: Path, checksum: str) -> dict[str, Any]:
@@ -1470,6 +1592,7 @@ def parser() -> argparse.ArgumentParser:
     _common(dispatch_create)
     dispatch_create.add_argument("--batch", required=True)
     dispatch_create.add_argument("--role", default="developer")
+    dispatch_create.add_argument("--purpose", choices=sorted(DISPATCH_PURPOSES), default="work")
     dispatch_create.add_argument("--candidate-commit")
     dispatch_create.add_argument("--approved-by", required=True)
     dispatch_create.add_argument("--approved-at", required=True)
@@ -1482,6 +1605,12 @@ def parser() -> argparse.ArgumentParser:
     dispatch_send.add_argument("--adapter-arg", action="append")
     dispatch_send.add_argument("--checkout")
     dispatch_send.set_defaults(handler=send_dispatch)
+
+    dispatch_publish = dispatch_commands.add_parser("publish")
+    _common(dispatch_publish)
+    dispatch_publish.add_argument("--dispatch", required=True)
+    dispatch_publish.add_argument("--remote", default="origin")
+    dispatch_publish.set_defaults(handler=publish_dispatch)
 
     qa = commands.add_parser("qa")
     qa_commands = qa.add_subparsers(dest="qa_command", required=True)
