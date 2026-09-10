@@ -20,19 +20,22 @@ brief, project configuration, or reports.
 ## Lifecycle
 
 The coordinator records exactly one current state for each batch. A role may report progress or a
-blocker, but it cannot transition its own batch or silently widen its brief.
+blocker, but it cannot transition its own batch or silently widen its brief. The installed
+`coordinator.py` implements the first public slice of this contract and keeps its local state under
+the gitignored `.harness/orchestration/state/` directory.
 
 | State | Coordinator action and entry condition | Allowed next state |
 | --- | --- | --- |
-| `planned` | Ticket, backend zone, role sequence, DoD, prohibitions, and verification commands are drafted. | `approved`, `blocked` |
-| `approved` | A human approves the cost, assignment, scope, parallelism, and required gates. | `dispatched`, `blocked` |
-| `dispatched` | The coordinator records a dispatch ID, resolved assignment, and immutable handoff brief, then sends it to the role. | `working`, `blocked`, `failed` |
-| `working` | The role has acknowledged the brief and is executing only within its declared boundary. | `completed`, `blocked`, `failed` |
+| `planned` | Ticket, backend zone, issue branch/worktree, DoD, prohibitions, and verification commands are drafted. | `awaiting-approval`, `blocked` |
+| `awaiting-approval` | The coordinator is waiting for the next explicit human decision: first the role dispatch, and later acceptance of a report. | `active`, `blocked`, `completed`, `failed` |
+| `active` | An approved dispatch has been handed to the runtime adapter; the role is executing only within its immutable brief. | `awaiting-approval`, `blocked`, `failed` |
 | `completed` | All required role reports, commit proof, verification evidence, and risk gates are accepted. | terminal |
 | `blocked` | An external dependency, missing authority, overlapping zone, or unavailable proof prevents safe continuation. | terminal |
 | `failed` | The dispatch attempted work but could not produce an acceptable result. | terminal |
 
-`completed`, `blocked`, and `failed` are terminal outcomes for that dispatch. A retry is a new
+`reported` is a terminal outcome for one role dispatch but remains pending coordinator decision. The
+batch returns to `awaiting-approval` until the coordinator accepts, blocks, fails, or creates a new
+dispatch. `completed`, `blocked`, and `failed` are terminal outcomes for that dispatch. A retry is a new
 dispatch with a new brief and a new dispatch ID; it is never a transition from `blocked` or
 `failed` back to `working`, and the old brief is never edited.
 

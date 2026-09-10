@@ -161,7 +161,9 @@ def _validate_brief(brief: dict[str, Any], repo: Path, config: dict[str, Any]) -
     return role, plan
 
 
-def _candidate_profiles(config: dict[str, Any], plan: dict[str, Any], role: dict[str, Any]) -> list[str]:
+def _candidate_profiles(
+    config: dict[str, Any], plan: dict[str, Any], role: dict[str, Any], preferred: object = None
+) -> list[str]:
     profiles = config.get("provider_profiles")
     if not isinstance(profiles, dict) or not isinstance(plan.get("profiles"), list):
         raise DispatchError("project orchestration config has no valid provider profiles")
@@ -190,7 +192,8 @@ def _candidate_profiles(config: dict[str, Any], plan: dict[str, Any], role: dict
         for fallback_id in fallback:
             add(fallback_id)
 
-    for profile_id in plan["profiles"]:
+    profile_ids = [preferred] if preferred is not None else plan["profiles"]
+    for profile_id in profile_ids:
         add(profile_id)
     if not candidates:
         raise DispatchError("assignment plan has no provider profiles")
@@ -260,7 +263,7 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
     brief = _read_json(Path(args.brief), "dispatch brief")
     _reject_sensitive_keys(config, "project orchestration config")
     role, plan = _validate_brief(brief, repo, config)
-    candidates = _candidate_profiles(config, plan, role)
+    candidates = _candidate_profiles(config, plan, role, brief.get("resolved_provider_profile"))
     budget = config.get("concurrency_budget")
     if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
         raise DispatchError("project orchestration config has an invalid concurrency_budget")
