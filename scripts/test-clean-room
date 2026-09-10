@@ -1647,6 +1647,29 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if blind_report["volume"]["totals"]["insertions"] != 2:
         sys.exit("delivery-stats lost git volume when session logs were absent")
 
+    # The runtime's transcript directory name is not a published contract and has changed: a project
+    # renamed by that change keeps its old, now-empty directory. Matching the expected name and
+    # stopping there found that leftover and reported "no data" while the real transcripts sat next
+    # to it, so discovery has to require actual transcripts and fall back to the recorded cwd.
+    stale = test_root / "stats-home" / ".claude" / "projects" / re.sub(r"[\\/:]", "-", str(stats_repo))
+    (stale / "memory").mkdir(parents=True)
+    (stale / "memory" / "MEMORY.md").write_text("leftover\n", encoding="utf-8")
+    discovered = subprocess.run(
+        [sys.executable, str(stats_cli), "--repo", str(stats_repo), "--epic", "7", "--tickets", "7",
+         "--home", str(test_root / "stats-home"), "--json"],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    if discovered.returncode != 0:
+        sys.exit("delivery-stats failed while discovering transcripts: " + discovered.stderr)
+    found = json.loads(discovered.stdout)["claude"]
+    if found["status"] != "ok" or found["turns"] != 2:
+        sys.exit(
+            "delivery-stats stopped at the empty directory whose name matched the expected slug: "
+            + json.dumps(found, ensure_ascii=False)
+        )
+    if not any(source.endswith("stats") for source in found["sources"]):
+        sys.exit("delivery-stats did not record which transcript directory it read: " + json.dumps(found["sources"]))
+
     print("delivery-stats verification passed")
 
     in_process_plan = json.loads(json.dumps(valid_orchestration))
