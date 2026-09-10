@@ -2,40 +2,55 @@
   "schema_version": 2,
   "diagram_type": "workflow",
   "meta": {
-    "title": "Backend orchestration: select runtime and dispatch",
+    "title": "Backend-оркестрация: резолв runtime, dispatch и надзор",
     "quality_profile": "showcase",
-    "viewBox": [1080, 652]
+    "legend": {
+      "entries": {
+        "database": {"label": "Конфигурация"},
+        "security": {"label": "Гейт"},
+        "backend": {"label": "Транспорт"},
+        "cloud": {"label": "Исполняющая роль"},
+        "messagebus": {"label": "Запись evidence"},
+        "external": {"label": "Вход"}
+      }
+    },
+    "viewBox": [1240, 690]
   },
   "lanes": [
-    {"id": "human", "label": "Coordinator"},
-    {"id": "config", "label": "Project configuration"},
-    {"id": "runtime", "label": "Runtime adapter"},
-    {"id": "evidence", "label": "Evidence and quality", "variant": "exception"}
+    {"id": "human", "label": "Coordinator и approve человека"},
+    {"id": "config", "label": "Конфигурация проекта"},
+    {"id": "runtime", "label": "Транспорт и роль"},
+    {"id": "evidence", "label": "Evidence и живость", "variant": "exception"}
   ],
   "phases": [
-    {"id": "plan", "label": "Plan and approve", "fromCol": 0, "toCol": 1},
-    {"id": "resolve", "label": "Resolve runtime", "fromCol": 2, "toCol": 3, "variant": "emphasis"},
-    {"id": "execute", "label": "Dispatch and verify", "fromCol": 4, "toCol": 5, "variant": "dashed"}
+    {"id": "plan", "label": "План и approve", "fromCol": 0, "toCol": 1},
+    {"id": "resolve", "label": "Резолв runtime", "fromCol": 2, "toCol": 3, "variant": "emphasis"},
+    {"id": "execute", "label": "Dispatch и надзор", "fromCol": 4, "toCol": 5, "variant": "dashed"}
   ],
-  "mainPath": ["issue", "approval", "assignment", "brief", "adapter", "worker"],
+  "mainPath": ["issue", "approval", "assignment", "brief", "transport", "worker", "selfreport", "report"],
   "nodes": [
-    {"id": "issue", "lane": "human", "col": 0, "type": "external", "label": "Issue", "sublabel": "ticket and DoD", "width": 132},
-    {"id": "approval", "lane": "human", "col": 1, "type": "security", "label": "Approval", "sublabel": "batch and dispatch", "width": 132},
-    {"id": "assignment", "lane": "config", "col": 2, "type": "database", "label": "Assignment", "sublabel": "runtime by role", "width": 132},
-    {"id": "brief", "lane": "config", "col": 3, "type": "database", "label": "Brief", "sublabel": "runtime, model, effort", "width": 132},
-    {"id": "adapter", "lane": "runtime", "col": 4, "type": "backend", "label": "Orca adapter", "sublabel": "validate then transport", "width": 132},
-    {"id": "worker", "lane": "runtime", "col": 5, "type": "cloud", "label": "Worker", "sublabel": "Codex or Claude Code", "width": 132},
-    {"id": "report", "lane": "evidence", "col": 4, "type": "messagebus", "label": "Report", "sublabel": "one evidence record", "width": 132},
-    {"id": "qa", "lane": "evidence", "col": 5, "type": "security", "label": "Risk and QA", "sublabel": "when required", "width": 132}
+    {"id": "issue", "lane": "human", "col": 0, "type": "external", "label": "Тикет", "sublabel": "и его DoD", "width": 136},
+    {"id": "approval", "lane": "human", "col": 1, "type": "security", "label": "Approve", "sublabel": "batch и dispatch", "tag": "человек", "width": 136},
+    {"id": "assignment", "lane": "config", "col": 1, "type": "database", "label": "Назначение", "sublabel": "зона и транспорт", "tag": "опционально", "width": 136},
+    {"id": "brief", "lane": "config", "col": 2, "type": "database", "label": "Immutable brief", "sublabel": "модель и effort", "width": 136},
+    {"id": "transport", "lane": "runtime", "col": 3, "type": "backend", "label": "Транспорт", "sublabel": "orca или in-process", "tag": "по роли", "width": 136},
+    {"id": "worker", "lane": "runtime", "col": 4, "type": "cloud", "label": "Роль", "sublabel": "воркер или субагент", "width": 136},
+    {"id": "selfreport", "lane": "evidence", "col": 4, "type": "security", "label": "Self-report", "sublabel": "до реальной работы", "tag": "блокирует", "width": 136},
+    {"id": "report", "lane": "evidence", "col": 5, "type": "messagebus", "label": "Отчёт", "sublabel": "одна запись", "width": 136}
   ],
   "edges": [
-    {"from": "issue", "to": "approval", "label": "propose batch"},
-    {"from": "approval", "to": "assignment", "label": "approved runtime", "variant": "emphasis"},
-    {"from": "assignment", "to": "brief", "label": "resolve profiles, model, effort"},
-    {"from": "brief", "to": "adapter", "label": "approved dispatch", "variant": "emphasis"},
-    {"from": "adapter", "to": "worker", "label": "worker-start"},
-    {"from": "worker", "to": "report", "label": "completion evidence", "role": "return"},
-    {"from": "report", "to": "qa", "label": "high-risk candidate", "variant": "security"},
-    {"from": "qa", "to": "approval", "label": "accepted result or retry", "role": "return", "variant": "emphasis"}
+    {"from": "issue", "to": "approval", "label": "предложен batch"},
+    {"from": "approval", "to": "assignment", "label": "роль утверждена", "variant": "emphasis"},
+    {"from": "assignment", "to": "brief", "label": "нет конфига: весь репозиторий"},
+    {"from": "brief", "to": "transport", "label": "утверждённый dispatch", "variant": "emphasis"},
+    {"from": "transport", "to": "worker", "label": "тот же brief"},
+    {"from": "worker", "to": "selfreport", "label": "называет модель", "variant": "security"},
+    {"from": "selfreport", "to": "report", "label": "совпало, дальше heartbeat", "variant": "emphasis"},
+    {"from": "report", "to": "approval", "label": "accept, retry или stale", "role": "return", "variant": "emphasis"}
+  ],
+  "cards": [
+    {"dot": "amber", "title": "Конфиг необязателен", "items": ["Без конфига зона — весь репозиторий", "Модель и effort даёт вызывающая сессия", "Такой дефолт всегда идёт in-process"]},
+    {"dot": "violet", "title": "Транспорт выбирает проект", "items": ["orca запускает изолированного воркера", "in-process — субагент текущей сессии", "Оба получают один immutable brief"]},
+    {"dot": "rose", "title": "Живость не предполагается", "items": ["Расхождение модели сразу блокирует dispatch", "Без подтверждённой модели отчёт не принимается", "Молчание дольше порога эскалируется человеку"]}
   ]
 }

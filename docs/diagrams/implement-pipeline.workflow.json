@@ -1,0 +1,59 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "/implement: конвейер с гейтами",
+    "quality_profile": "showcase",
+    "legend": {
+      "entries": {
+        "backend": {"label": "Роль в dispatch"},
+        "security": {"label": "Гейт"},
+        "messagebus": {"label": "Запись evidence"},
+        "cloud": {"label": "Граница публикации"},
+        "external": {"label": "Ручная команда"}
+      }
+    },
+    "viewBox": [1180, 696]
+  },
+  "lanes": [
+    {"id": "human", "label": "Разработчик: гейты"},
+    {"id": "roles", "label": "Роли в dispatch"},
+    {"id": "coordinator", "label": "Сессия coordinator"},
+    {"id": "exceptions", "label": "Находки QA", "variant": "exception"}
+  ],
+  "phases": [
+    {"id": "plan", "label": "План и approve", "fromCol": 0, "toCol": 0},
+    {"id": "build", "label": "Реализация и review", "fromCol": 1, "toCol": 2, "variant": "emphasis"},
+    {"id": "verify", "label": "Проверка и публикация", "fromCol": 3, "toCol": 5, "variant": "dashed"}
+  ],
+  "mainPath": ["architect", "plan_gate", "developer", "review", "qa_gate", "qa", "report", "publish", "open_pr"],
+  "nodes": [
+    {"id": "architect", "lane": "roles", "col": 0, "type": "backend", "label": "Архитектор", "sublabel": "разбор архитектуры", "tag": "read-only", "width": 136},
+    {"id": "plan_gate", "lane": "human", "col": 0, "type": "security", "label": "Approve плана", "sublabel": "до первой строки", "tag": "человек", "width": 136},
+    {"id": "developer", "lane": "roles", "col": 1, "type": "backend", "label": "Разработчик", "sublabel": "тесты вперёд", "tag": "write", "width": 136},
+    {"id": "review", "lane": "roles", "col": 2, "type": "security", "label": "Code review", "sublabel": "Standards и Spec", "tag": "каждый SHA", "width": 136},
+    {"id": "qa_gate", "lane": "human", "col": 2, "type": "security", "label": "Approve QA", "sublabel": "видит готовый диф", "tag": "человек", "width": 136},
+    {"id": "qa", "lane": "roles", "col": 3, "type": "backend", "label": "QA в clean-room", "sublabel": "закреплённый SHA", "tag": "независимо", "width": 136},
+    {"id": "findings", "lane": "exceptions", "col": 3, "type": "messagebus", "label": "Находки QA", "sublabel": "гейт не пройден", "width": 136},
+    {"id": "report", "lane": "coordinator", "col": 4, "type": "messagebus", "label": "Итоговый отчёт", "sublabel": "evidence и риски", "width": 136},
+    {"id": "publish", "lane": "coordinator", "col": 5, "type": "cloud", "label": "Публикация", "sublabel": "пушит принятый SHA", "width": 136},
+    {"id": "open_pr", "lane": "human", "col": 5, "type": "external", "label": "/to-pull-requests", "sublabel": "вызывает человек", "tag": "вручную", "width": 136}
+  ],
+  "edges": [
+    {"from": "architect", "to": "plan_gate", "label": "план на approve"},
+    {"from": "plan_gate", "to": "developer", "label": "курс принят", "variant": "emphasis", "fromSide": "right", "toSide": "top"},
+    {"from": "developer", "to": "review", "label": "candidate SHA"},
+    {"from": "review", "to": "qa_gate", "label": "две оси review"},
+    {"from": "qa_gate", "to": "qa", "label": "approve на QA", "variant": "emphasis", "fromSide": "right", "toSide": "top"},
+    {"from": "qa", "to": "report", "label": "зелёный"},
+    {"from": "report", "to": "publish", "label": "принятый SHA", "variant": "emphasis"},
+    {"from": "publish", "to": "open_pr", "label": "передача человеку"},
+    {"from": "qa", "to": "findings", "label": "найдены дефекты", "variant": "security", "role": "error"},
+    {"from": "findings", "to": "developer", "label": "решение retry", "variant": "dashed", "role": "return"}
+  ],
+  "cards": [
+    {"dot": "amber", "title": "Гейты человека", "items": ["План архитектора утверждается до первой строки кода", "Переход от review к QA — отдельный approve", "Публикация никогда не открывает pull request"]},
+    {"dot": "emerald", "title": "Жёсткий порядок", "items": ["Нет developer без принятого отчёта архитектора", "Review проходит каждый кандидат, не только high-risk", "QA идёт по закреплённому SHA, не по проверкам разработчика"]},
+    {"dot": "cyan", "title": "Живость", "items": ["Каждый dispatch сперва подтверждает активную модель", "Молчащий dispatch эскалируется как блокер", "Один тикет доходит до терминального batch до следующего"]}
+  ]
+}
