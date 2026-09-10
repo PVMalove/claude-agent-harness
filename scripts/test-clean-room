@@ -276,10 +276,16 @@ def _run(test_root: Path):
         sys.exit("pvmalove-suite unexpectedly installed orchestration resources")
     if (pv_project / ".harness" / "orchestration.json").exists():
         sys.exit("pvmalove-suite unexpectedly installed orchestration config")
+    regular_implement = (pv_project / ".harness" / "skills" / "implement" / "SKILL.md").read_text(encoding="utf-8")
+    if "If any condition is absent or invalid, use the existing local route below unchanged." not in regular_implement:
+        sys.exit("non-opted-in project does not retain its existing implement route")
 
     orchestration_project = test_root / "orchestration_project"
     orchestration_project.mkdir(parents=True)
     subprocess.run(["git", "init", "-q"], cwd=orchestration_project, check=True)
+    orchestration_remote = test_root / "orchestration-remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(orchestration_remote)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(orchestration_remote)], cwd=orchestration_project, check=True)
     run_ok(
         HARNESS
         + [
@@ -309,6 +315,13 @@ def _run(test_root: Path):
     )
     if "Coordinator route for valid backend orchestration" not in installed_implement:
         sys.exit("opted-in project implement skill does not expose the coordinator route")
+    installed_pr_step = orchestration_project / ".harness" / "skills" / "to-pull-requests" / "SKILL.md"
+    if not installed_pr_step.is_file():
+        sys.exit("installed project is missing the to-pull-requests PR step")
+    if (orchestration_project / ".harness" / "skills" / "to-pr").exists():
+        sys.exit("installed project retains the removed to-pr PR step")
+    if "qa evidence" not in installed_pr_step.read_text(encoding="utf-8"):
+        sys.exit("installed to-pull-requests step does not validate accepted QA evidence")
     orchestration_config = orchestration_project / ".harness" / "orchestration.json"
     if not orchestration_config.is_file():
         sys.exit("backend-orchestration config seed missing")
@@ -1007,6 +1020,12 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if qa_dispatch.returncode != 0:
         sys.exit("coordinator rejected a QA dispatch after accepted review: " + qa_dispatch.stderr)
     qa_id = json.loads(qa_dispatch.stdout)["dispatch_id"]
+    qa_evidence = (
+        "qa", "evidence", "--ticket", "#901", "--branch", "feature/issue-901-coordinator",
+        "--candidate-commit", candidate_sha,
+    )
+    if coordinator_run(*qa_evidence).returncode == 0:
+        sys.exit("QA evidence validation accepted a candidate without a QA report")
     queue_root = state_root / "qa-lane" / "queue"
     queue_root.mkdir(parents=True, exist_ok=True)
     prior_queue = queue_root / "00000000000000000001-dispatch-00000000-0000-0000-0000-000000000000.json"
@@ -1058,6 +1077,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("QA evidence artifact does not contain the full gate output")
     if "token=visible" in artifact_text or "token=<redacted>" not in artifact_text:
         sys.exit("QA evidence artifact was not sanitised")
+    if coordinator_run(*qa_evidence).returncode == 0:
+        sys.exit("QA evidence validation accepted an unaccepted QA report")
     if coordinator_run("dispatch", "send", "--dispatch", qa_id, "--adapter", str(fake_adapter)).returncode == 0:
         sys.exit("QA runner allowed a second execution of the same dispatch")
     accepted_qa = coordinator_run(
@@ -1068,6 +1089,31 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("coordinator did not accept a successful QA report")
     if json.loads(accepted_qa.stdout).get("next_action") != "publish":
         sys.exit("accepted green QA did not prepare a publish-only next action")
+    accepted_evidence = coordinator_run(*qa_evidence)
+    if accepted_evidence.returncode != 0:
+        sys.exit("QA evidence validation rejected accepted evidence: " + accepted_evidence.stderr)
+    if json.loads(accepted_evidence.stdout).get("candidate_commit") != candidate_sha:
+        sys.exit("QA evidence validation did not return the accepted candidate SHA")
+    state_before_evidence = {
+        path.relative_to(state_root).as_posix(): path.read_bytes() for path in state_root.rglob("*") if path.is_file()
+    }
+    if coordinator_run(*qa_evidence).returncode != 0:
+        sys.exit("QA evidence validation failed when repeated for an accepted candidate")
+    state_after_evidence = {
+        path.relative_to(state_root).as_posix(): path.read_bytes() for path in state_root.rglob("*") if path.is_file()
+    }
+    if state_after_evidence != state_before_evidence:
+        sys.exit("QA evidence validation reran or mutated the quality gate")
+    if coordinator_run("--state-dir", str(test_root / "forged-qa-state"), *qa_evidence).returncode == 0:
+        sys.exit("QA evidence validation accepted a non-repository state directory")
+    baseline_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD^"], cwd=orchestration_project, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    if coordinator_run(
+        "qa", "evidence", "--ticket", "#901", "--branch", "feature/issue-901-coordinator",
+        "--candidate-commit", baseline_sha,
+    ).returncode == 0:
+        sys.exit("QA evidence validation accepted evidence for a mismatched candidate SHA")
     if coordinator_run(
         "dispatch", "create", "--batch", batch_id, "--role", "code-review",
         "--candidate-commit", candidate_sha, "--approved-by", "project coordinator",
@@ -1085,6 +1131,16 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "dispatch", "send", "--dispatch", json.loads(publish_dispatch.stdout)["dispatch_id"], "--adapter", str(fake_adapter),
     ).returncode == 0:
         sys.exit("coordinator allowed a publish-only brief through an unverified runtime adapter")
+    published = coordinator_run("dispatch", "publish", "--dispatch", json.loads(publish_dispatch.stdout)["dispatch_id"])
+    if published.returncode != 0 or json.loads(published.stdout).get("candidate_commit") != candidate_sha:
+        sys.exit("coordinator did not publish the accepted QA candidate: " + published.stderr)
+    remote_candidate = capture(
+        ["git", "ls-remote", "--heads", str(orchestration_remote), "refs/heads/feature/issue-901-coordinator"]
+    ).split()[0]
+    if remote_candidate != candidate_sha:
+        sys.exit("coordinator did not publish the exact accepted QA candidate SHA")
+    if coordinator_run(*qa_evidence).returncode != 0:
+        sys.exit("manual PR evidence validation rejected the published accepted candidate")
 
     qa_help = coordinator_run("qa", "--help")
     if qa_help.returncode != 0 or "run" not in qa_help.stdout:

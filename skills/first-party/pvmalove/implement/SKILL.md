@@ -41,7 +41,7 @@ accepted QA candidate SHA exactly.
 
 ## Execution in Three Phases
 
-A strict pipeline, resolved in order: **Pre-flight** (confirm the ticket is actually startable, and by this agent) → **Coding** (TDD, tests, an explicitly approved review, commit, and push) → **PR & Wrap-up** (offer the separate `/to-pr` command). Only the developer can select `/to-pr`.
+A strict pipeline, resolved in order: **Pre-flight** (confirm the ticket is actually startable, and by this agent) → **Coding** (TDD, tests, an explicitly approved review, commit, and push) → **PR & Wrap-up** (offer the separate `/to-pull-requests` command). Only the developer can select `/to-pull-requests`.
 
 ### Phase 1: Pre-flight
 
@@ -81,4 +81,4 @@ A strict pipeline, resolved in order: **Pre-flight** (confirm the ticket is actu
 
 ### Phase 3: PR & Wrap-up
 
-After a successful push, offer `/to-pr <ticket>` as the next command. Do not invoke it automatically, open a PR, run `qa-gate`, or close the ticket in this skill.
+After a successful push, offer `/to-pull-requests <ticket>` as the next command. Do not invoke it automatically, open a PR, run `qa-gate`, or close the ticket in this skill.

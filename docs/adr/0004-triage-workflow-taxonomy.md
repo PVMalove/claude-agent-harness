@@ -9,7 +9,7 @@
 
 Epic grouping is **not a label**. A ticket decomposed from an epic is linked to it as a native GitHub sub-issue — the same mechanism `/wayfinder` already uses for its map/ticket relationship (`docs/agents/issue-tracker.md#wayfinding-operations`). `/to-spec` applies `workflow::specs` to a freshly published epic issue; `/to-tickets` links each decomposed ticket to it as a sub-issue and applies `workflow::ready` + `hitl`/`afk` (or `workflow::blocked` if the ticket is gated by another still-open ticket from the same decomposition).
 
-`task-report::required` is not part of `triage`'s state machine — it requires a completion report in `/to-pr`'s manual PR/merge workflow. `/to-spec` and `/to-tickets` apply it by default when they create a ticket; `/implement` ends after commit and push, and `/to-pr` publishes the report when it opens the PR.
+`task-report::required` is not part of `triage`'s state machine — it requires a completion report in `/to-pull-requests`' manual PR/merge workflow. `/to-spec` and `/to-tickets` apply it by default when they create a ticket; `/implement` ends after commit and push, and `/to-pull-requests` publishes the report when it opens the PR.
 
 `/to-tickets` sets `workflow::blocked` on a ticket gated by another open ticket in the same decomposition; `/implement` is the one that checks and clears it, at the moment it starts work on that specific ticket — not `triage`, and not a separate sweep pass over the decomposition. `/implement` also sets `workflow::in-progress` once it actually starts working a ticket.
 
