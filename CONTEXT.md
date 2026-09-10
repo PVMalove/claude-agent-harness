@@ -21,7 +21,7 @@ _Avoid_: шаблонные артефакты, foundation-файлы.
 заменять или добавлять скиллы.
 _Avoid_: пакет, набор скиллов.
 
-В текущем составе `pvmalove-suite` 10 скиллов переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`.
+В текущем составе `pvmalove-suite` 10 скиллов переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`.
 
 **Vendor-скилл**:
 Скилл из байт-в-байт snapshot закреплённого upstream-источника в `skills/vendor/`, связанный с

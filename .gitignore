@@ -4,10 +4,10 @@ __pycache__/
 .pytest_cache/
 .harness/
 .idea/
-
 # harness init/adopt/update self-install output (running this tool on its own
 # repo to test it) — keep only the tool's own source: skills/, harness/,
 # global-skills/, scripts/, bin/. Real templates live under harness/project/.
 /.agents/
 /.claude/
 /docs/tasks/
+/docs/reports/
