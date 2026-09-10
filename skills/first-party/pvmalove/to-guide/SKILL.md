@@ -21,7 +21,7 @@ Transform a specification or a tracer-bullet ticket into a developer guide loade
 - Each prompt must be explicit, self-contained, and tell the human's AI IDE *exactly* what to do — the human is going to copy-paste it verbatim, not edit it first.
 - Point the IDE at existing code to imitate: "follow the pattern in `<file>`" beats a description of the pattern.
 - Keep each step small enough to compile and review on its own — the whole point is narrow, verifiable chunks, same discipline as `/to-tickets`'s vertical slices.
-- Ask for the test first in every prompt — this repo requires TDD (`docs/agents/git-workflow.md`) regardless of who writes the code; `/implement` gets this for free via `/tdd`, so say it explicitly here instead of assuming the human's AI IDE defaults to it.
+- Ask for the test first in every prompt — this repo requires TDD (`docs/agents/git-workflow.md`) regardless of who writes the code, and every other route has to say so out loud too (`/fast-implement` via `/tdd`, `/implement` via its batch Definition of Done), so say it explicitly here instead of assuming the human's AI IDE defaults to it.
 
 <guide-template>
 

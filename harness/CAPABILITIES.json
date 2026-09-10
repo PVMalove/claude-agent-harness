@@ -40,7 +40,7 @@
     ]
   },
   "pvmalove-suite": {
-    "description": "Личная сборка поверх mattpocock-suite: 10 first-party переопределений (workflow::*/hitl/afk triage-таксономия вместо канонических ролей апстрима, epic::<slug> заменён на native sub-issues в to-spec/to-tickets, подтверждаемое разработчиком двухосевое review перед commit и push с отдельным ручным to-pull-requests для PR, настраиваемый язык вывода code-review, вопросы grilling через AskUserQuestion и явный переход к to-spec либо возврат на доработку, тикеты wayfinder получают настоящие hitl/afk/workflow::ready→in-progress лейблы вместо одного лишь своего wayfinder:* пространства) и четыре новых скилла (qa-gate, конфиг-драйвен через .harness/project.json; to-guide — hitl-аналог implement, готовит гайд с промптами для ручного кодинга вместо реализации агентом; setup-labels — создаёт/обновляет лейблы на GitHub из таблиц docs/agents/triage-labels.md; to-pull-requests — вручную открывает PR после завершённого implement). Выбирается вместо mattpocock-suite, не вместе с ней — расширяет её через extends/overrides/additions вместо дублирования списка.",
+    "description": "Личная сборка поверх mattpocock-suite: 10 first-party переопределений (workflow::*/hitl/afk triage-таксономия вместо канонических ролей апстрима, epic::<slug> заменён на native sub-issues в to-spec/to-tickets, подтверждаемое разработчиком двухосевое review перед commit и push с отдельным ручным to-pull-requests для PR, настраиваемый язык вывода code-review, вопросы grilling через AskUserQuestion и явный переход к to-spec либо возврат на доработку, тикеты wayfinder получают настоящие hitl/afk/workflow::ready→in-progress лейблы вместо одного лишь своего wayfinder:* пространства) и пять новых скиллов (qa-gate, конфиг-драйвен через .harness/project.json; to-guide — hitl-аналог implement, готовит гайд с промптами для ручного кодинга вместо реализации агентом; setup-labels — создаёт/обновляет лейблы на GitHub из таблиц docs/agents/triage-labels.md; to-pull-requests — вручную открывает PR после завершённого implement; fast-implement — однопроходный путь без coordinator и approval-гейтов, тогда как сам implement стал coordinator-driven конвейером). Выбирается вместо mattpocock-suite, не вместе с ней — расширяет её через extends/overrides/additions вместо дублирования списка.",
     "extends": "mattpocock-suite",
     "overrides": {
       "to-spec": "first-party/pvmalove/to-spec",
@@ -58,7 +58,8 @@
       "first-party/pvmalove/qa-gate",
       "first-party/pvmalove/to-guide",
       "first-party/pvmalove/setup-labels",
-      "first-party/pvmalove/to-pull-requests"
+      "first-party/pvmalove/to-pull-requests",
+      "first-party/pvmalove/fast-implement"
     ]
   },
   "backend-orchestration": {

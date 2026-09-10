@@ -236,8 +236,8 @@ def _run(test_root: Path):
     run_ok(HARNESS + ["health", str(pv_project)])
 
     pv_skill_count = count_skill_files(pv_project / ".harness" / "skills")
-    if pv_skill_count != 29:
-        sys.exit(f"expected 29 skills in a pvmalove-suite project (25 inherited + 4 additions), found {pv_skill_count}")
+    if pv_skill_count != 30:
+        sys.exit(f"expected 30 skills in a pvmalove-suite project (25 inherited + 5 additions), found {pv_skill_count}")
 
     # A failed older update could remove a retired managed skill's SKILL.md but leave
     # its empty top-level directory behind. A forced update must recover instead of
@@ -277,8 +277,13 @@ def _run(test_root: Path):
     if (pv_project / ".harness" / "orchestration.json").exists():
         sys.exit("pvmalove-suite unexpectedly installed orchestration config")
     regular_implement = (pv_project / ".harness" / "skills" / "implement" / "SKILL.md").read_text(encoding="utf-8")
-    if "If any condition is absent or invalid, use the existing local route below unchanged." not in regular_implement:
-        sys.exit("non-opted-in project does not retain its existing implement route")
+    if "run `/fast-implement` instead" not in regular_implement:
+        sys.exit("non-opted-in project is not routed to the single-session fast-implement path")
+    fast_implement = pv_project / ".harness" / "skills" / "fast-implement" / "SKILL.md"
+    if not fast_implement.is_file():
+        sys.exit("pvmalove-suite addition fast-implement missing")
+    if "no coordinator approval gates" not in fast_implement.read_text(encoding="utf-8"):
+        sys.exit("fast-implement does not carry the ungated single-session flow")
 
     orchestration_project = test_root / "orchestration_project"
     orchestration_project.mkdir(parents=True)
@@ -313,8 +318,15 @@ def _run(test_root: Path):
     installed_implement = (orchestration_project / ".harness" / "skills" / "implement" / "SKILL.md").read_text(
         encoding="utf-8"
     )
-    if "Coordinator route for valid backend orchestration" not in installed_implement:
-        sys.exit("opted-in project implement skill does not expose the coordinator route")
+    if "This session **is** the coordinator" not in installed_implement:
+        sys.exit("opted-in project implement skill does not drive the coordinator pipeline")
+    for gate in ("Architect.", "Developer.", "Code review.", "QA.", "Final report, then publish."):
+        if f"**{gate}**" not in installed_implement:
+            sys.exit(f"implement skill is missing the {gate} gate")
+    # A dispatched developer inherits nothing from /tdd; the repo's TDD contract only reaches it
+    # through the batch Definition of Done, so the skill has to keep putting it there.
+    if "write the failing test first" not in installed_implement:
+        sys.exit("implement skill does not carry the repository TDD contract into the batch")
     installed_pr_step = orchestration_project / ".harness" / "skills" / "to-pull-requests" / "SKILL.md"
     if not installed_pr_step.is_file():
         sys.exit("installed project is missing the to-pull-requests PR step")
@@ -885,6 +897,81 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if approved_batch.returncode != 0 or json.loads(approved_batch.stdout)["state"] != "awaiting-approval":
         sys.exit("coordinator did not move the batch to awaiting-approval")
 
+    # The architect gate is a hard ordering rule, not a convention: no developer brief exists for a
+    # batch until an architect report for it has been accepted.
+    premature = coordinator_run(
+        "dispatch", "create", "--batch", batch_id, "--role", "developer", "--approved-by",
+        "project coordinator", "--approved-at", "2026-09-09T12:00:30Z",
+    )
+    if premature.returncode == 0:
+        sys.exit("coordinator created a developer dispatch without an accepted architect report")
+    if "accepted architect report" not in premature.stderr:
+        sys.exit("coordinator did not explain the missing architect report: " + premature.stderr)
+
+    architect = coordinator_run(
+        "dispatch", "create", "--batch", batch_id, "--role", "architect", "--approved-by",
+        "project coordinator", "--approved-at", "2026-09-09T12:00:40Z",
+    )
+    if architect.returncode != 0:
+        sys.exit("coordinator rejected a valid architect dispatch: " + architect.stderr)
+    architect_record = json.loads(architect.stdout)
+    architect_id = architect_record["dispatch_id"]
+    if architect_record["brief"]["resolved_transport"] != "orca":
+        sys.exit("configured assignment plan did not default to the orca transport")
+    architect_sent = coordinator_run("dispatch", "send", "--dispatch", architect_id, "--adapter", str(fake_adapter))
+    if architect_sent.returncode != 0:
+        sys.exit("coordinator rejected the architect handoff: " + architect_sent.stderr)
+
+    architect_report_file = test_root / "architect-report.json"
+    architect_payload = {
+        "dispatch_id": architect_id,
+        "ticket": "#901",
+        "role": "architect",
+        "outcome": "completed",
+        "output": "recorded the boundary decision and acceptance criteria",
+        "commit_sha": "not applicable — read-only role",
+        "changed_files": [],
+        "checks_run": [{"command": "python -m pytest -s", "result": "pass", "evidence": "repository evidence inspected"}],
+        "risks": "none",
+        "blockers": "none",
+        "next_coordinator_action": "accept and dispatch the developer",
+    }
+    architect_report_file.write_text(json.dumps(architect_payload, indent=2) + "\n", encoding="utf-8")
+    if coordinator_run("report", "submit", "--file", str(architect_report_file)).returncode == 0:
+        sys.exit("coordinator accepted a completion report before the role confirmed its model")
+
+    # A dispatch proves it is alive twice over: once by naming the model it is actually running, and
+    # then by heartbeat.  Both are watched by the coordinator, whatever transport carried the brief.
+    stale_status_path = state_root / "dispatch-status" / f"{architect_id}.json"
+    live_status = json.loads(stale_status_path.read_text(encoding="utf-8"))
+    stale_status_path.write_text(
+        json.dumps(dict(live_status, heartbeat_at="2000-01-01T00:00:00+00:00"), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    watchdog = coordinator_run("dispatch", "status", "--batch", batch_id, "--stale-after", "60")
+    if watchdog.returncode != 0:
+        sys.exit("coordinator could not report dispatch liveness: " + watchdog.stderr)
+    if architect_id not in json.loads(watchdog.stdout)["stale"]:
+        sys.exit("dispatch watchdog did not flag a silent dispatch as stale")
+    if coordinator_run("dispatch", "heartbeat", "--dispatch", architect_id).returncode != 0:
+        sys.exit("coordinator rejected a heartbeat from a live dispatch")
+    if json.loads(coordinator_run("dispatch", "status", "--dispatch", architect_id, "--stale-after", "60").stdout)["stale"]:
+        sys.exit("dispatch watchdog kept a heartbeating dispatch stale")
+
+    if coordinator_run(
+        "dispatch", "self-report", "--dispatch", architect_id, "--model", "project-architect-model",
+    ).returncode != 0:
+        sys.exit("coordinator rejected a model self-report matching the immutable brief")
+    if coordinator_run("report", "submit", "--file", str(architect_report_file)).returncode != 0:
+        sys.exit("coordinator rejected a valid architect report")
+    accepted_architect = coordinator_run(
+        "batch", "decide", "--batch", batch_id, "--decision", "accept",
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T12:00:50Z",
+    )
+    if accepted_architect.returncode != 0 or json.loads(accepted_architect.stdout)["next_action"] != "developer":
+        sys.exit("accepted architect report did not prepare the developer dispatch")
+    fake_adapter_log.unlink(missing_ok=True)
+
     dispatch = coordinator_run(
         "dispatch", "create", "--batch", batch_id, "--role", "developer", "--approved-by",
         "project coordinator", "--approved-at", "2026-09-09T12:01:00Z",
@@ -949,6 +1036,10 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "risk_triggers": ["authorization-security"],
     }
     report_file.write_text(json.dumps(report_payload, indent=2) + "\n", encoding="utf-8")
+    if coordinator_run(
+        "dispatch", "self-report", "--dispatch", dispatch_id, "--model", "project-developer-model",
+    ).returncode != 0:
+        sys.exit("coordinator rejected the developer model self-report")
     reported = coordinator_run("report", "submit", "--file", str(report_file))
     if reported.returncode != 0:
         sys.exit("coordinator rejected a valid completion report: " + reported.stderr)
@@ -1073,6 +1164,10 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         },
     }
     review_report_file.write_text(json.dumps(review_payload, indent=2) + "\n", encoding="utf-8")
+    if coordinator_run(
+        "dispatch", "self-report", "--dispatch", review_id, "--model", "project-code-review-model",
+    ).returncode != 0:
+        sys.exit("coordinator rejected the code-review model self-report")
     review_report_result = coordinator_run("report", "submit", "--file", str(review_report_file))
     if review_report_result.returncode != 0:
         sys.exit("coordinator rejected a valid composite review report: " + review_report_result.stderr)
@@ -1227,6 +1322,199 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("coordinator does not expose the clean-room QA runner")
 
     print("risk-aware composite review verification passed")
+
+    # The long pipeline reviews every candidate.  Risk assessment decides when review is *mandatory*,
+    # never when it is permitted, so a low-risk candidate can still be sent to code-review.
+    low_risk_state = test_root / "low-risk-state"
+    subprocess.run(["git", "branch", "feature/issue-904-low-risk"], cwd=orchestration_project, check=True)
+    low_risk_batch = json.loads(coordinator_run(
+        "--state-dir", str(low_risk_state), "batch", "create", "--ticket", "#904",
+        "--branch", "feature/issue-904-low-risk", "--worktree", "issue-904-low-risk",
+        "--zone", "backend", "--definition-of-done", "add the greeting helper",
+        "--prohibited-change", "do not merge",
+    ).stdout)["batch_id"]
+    coordinator_run(
+        "--state-dir", str(low_risk_state), "batch", "approve", "--batch", low_risk_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:00:00Z",
+    )
+
+    def low_risk_role(role_name, model, approved_at, payload_extra):
+        created = coordinator_run(
+            "--state-dir", str(low_risk_state), "dispatch", "create", "--batch", low_risk_batch,
+            "--role", role_name, "--approved-by", "project coordinator", "--approved-at", approved_at,
+        )
+        if created.returncode != 0:
+            sys.exit(f"coordinator rejected the low-risk {role_name} dispatch: " + created.stderr)
+        role_dispatch = json.loads(created.stdout)["dispatch_id"]
+        coordinator_run(
+            "--state-dir", str(low_risk_state), "dispatch", "send", "--dispatch", role_dispatch,
+            "--adapter", str(fake_adapter),
+        )
+        coordinator_run(
+            "--state-dir", str(low_risk_state), "dispatch", "self-report",
+            "--dispatch", role_dispatch, "--model", model,
+        )
+        payload = {
+            "dispatch_id": role_dispatch, "ticket": "#904", "role": role_name, "outcome": "completed",
+            "output": f"{role_name} finished the requested step", "commit_sha": "not applicable — read-only role",
+            "changed_files": [],
+            "checks_run": [{"command": "python -m pytest -s", "result": "pass", "evidence": "1 passed"}],
+            "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+        }
+        payload.update(payload_extra)
+        payload_file = test_root / f"low-risk-{role_name}-report.json"
+        payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        submitted = coordinator_run("--state-dir", str(low_risk_state), "report", "submit", "--file", str(payload_file))
+        if submitted.returncode != 0:
+            sys.exit(f"coordinator rejected the low-risk {role_name} report: " + submitted.stderr)
+        return role_dispatch
+
+    low_risk_role("architect", "project-architect-model", "2026-09-09T15:00:10Z", {})
+    coordinator_run(
+        "--state-dir", str(low_risk_state), "batch", "decide", "--batch", low_risk_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:00:20Z",
+    )
+    greeting_file = orchestration_project / "services" / "greeting.py"
+    greeting_file.write_text('def greet():\n    return "hello"\n', encoding="utf-8")
+    subprocess.run(["git", "add", "services/greeting.py"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "feat: add greeting helper"], cwd=orchestration_project, check=True)
+    low_risk_sha = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
+    low_risk_role("developer", "project-developer-model", "2026-09-09T15:00:30Z", {
+        "commit_sha": low_risk_sha, "changed_files": ["services/greeting.py"],
+    })
+    coordinator_run(
+        "--state-dir", str(low_risk_state), "batch", "decide", "--batch", low_risk_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:00:40Z",
+    )
+    low_risk_assessment = coordinator_run(
+        "--state-dir", str(low_risk_state), "risk", "assess", "--batch", low_risk_batch,
+        "--candidate-commit", low_risk_sha, "--changed-file", "services/greeting.py",
+    )
+    if low_risk_assessment.returncode != 0:
+        sys.exit("coordinator rejected the low-risk assessment: " + low_risk_assessment.stderr)
+    if json.loads(low_risk_assessment.stdout)["review_required"]:
+        sys.exit("clean-room fixture for the low-risk path unexpectedly matched a risk trigger")
+    optional_review = coordinator_run(
+        "--state-dir", str(low_risk_state), "dispatch", "create", "--batch", low_risk_batch,
+        "--role", "code-review", "--candidate-commit", low_risk_sha,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:00:50Z",
+    )
+    if optional_review.returncode != 0:
+        sys.exit("coordinator refused code-review for a low-risk candidate: " + optional_review.stderr)
+
+    print("fixed-sequence review verification passed")
+
+    # A mismatched model self-report is terminal for its batch, so it runs on its own state.
+    mismatch_state = test_root / "mismatch-state"
+    subprocess.run(["git", "branch", "feature/issue-902-model-mismatch"], cwd=orchestration_project, check=True)
+    mismatch_batch = json.loads(coordinator_run(
+        "--state-dir", str(mismatch_state), "batch", "create", "--ticket", "#902",
+        "--branch", "feature/issue-902-model-mismatch", "--worktree", "issue-902-model-mismatch",
+        "--zone", "backend", "--definition-of-done", "implement the requested backend change",
+        "--prohibited-change", "do not merge",
+    ).stdout)["batch_id"]
+    coordinator_run(
+        "--state-dir", str(mismatch_state), "batch", "approve", "--batch", mismatch_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T13:00:00Z",
+    )
+    mismatch_dispatch = json.loads(coordinator_run(
+        "--state-dir", str(mismatch_state), "dispatch", "create", "--batch", mismatch_batch,
+        "--role", "architect", "--approved-by", "project coordinator",
+        "--approved-at", "2026-09-09T13:00:10Z",
+    ).stdout)["dispatch_id"]
+    coordinator_run(
+        "--state-dir", str(mismatch_state), "dispatch", "send", "--dispatch", mismatch_dispatch,
+        "--adapter", str(fake_adapter),
+    )
+    # "Sonnet 5" is the display name that reached the worker in the incident this rule exists for;
+    # the approved brief resolved the CLI alias instead.
+    mismatched = coordinator_run(
+        "--state-dir", str(mismatch_state), "dispatch", "self-report",
+        "--dispatch", mismatch_dispatch, "--model", "Sonnet 5",
+    )
+    if mismatched.returncode == 0:
+        sys.exit("coordinator accepted a model self-report that contradicts the immutable brief")
+    if "project-architect-model" not in mismatched.stderr:
+        sys.exit("coordinator did not name the approved model in the mismatch: " + mismatched.stderr)
+    blocked_status = json.loads(
+        (mismatch_state / "dispatch-status" / f"{mismatch_dispatch}.json").read_text(encoding="utf-8")
+    )
+    if blocked_status["state"] != "blocked" or blocked_status["model_self_report"]["match"] is not False:
+        sys.exit("a mismatched model self-report did not block its dispatch")
+    if json.loads(
+        (mismatch_state / "batches" / f"{mismatch_batch}.json").read_text(encoding="utf-8")
+    )["state"] != "blocked":
+        sys.exit("a mismatched model self-report did not block its batch")
+
+    print("dispatch model self-report and watchdog verification passed")
+
+    # Zero project configuration is a supported default: the whole repository is the zone and the
+    # invoking session supplies the role runtime, so an in-process pipeline needs no assignment plan.
+    zero_config_state = test_root / "zero-config-state"
+    saved_config = orchestration_config.read_text(encoding="utf-8")
+    orchestration_config.unlink()
+    run_ok(HARNESS + ["health", str(orchestration_project)])
+    subprocess.run(["git", "branch", "feature/issue-903-zero-config"], cwd=orchestration_project, check=True)
+    zero_batch = coordinator_run(
+        "--state-dir", str(zero_config_state), "batch", "create", "--ticket", "#903",
+        "--branch", "feature/issue-903-zero-config", "--worktree", "issue-903-zero-config",
+        "--definition-of-done", "implement the requested change", "--prohibited-change", "do not merge",
+    )
+    if zero_batch.returncode != 0:
+        sys.exit("coordinator rejected a batch without project orchestration config: " + zero_batch.stderr)
+    zero_batch_id = json.loads(zero_batch.stdout)["batch_id"]
+    if json.loads(zero_batch.stdout)["zone"] != "repository":
+        sys.exit("zero-config batch did not default to the whole repository")
+    coordinator_run(
+        "--state-dir", str(zero_config_state), "batch", "approve", "--batch", zero_batch_id,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T14:00:00Z",
+    )
+    if coordinator_run(
+        "--state-dir", str(zero_config_state), "dispatch", "create", "--batch", zero_batch_id,
+        "--role", "architect", "--approved-by", "project coordinator",
+        "--approved-at", "2026-09-09T14:00:10Z",
+    ).returncode == 0:
+        sys.exit("zero-config dispatch was created without a session model and effort")
+    zero_dispatch = coordinator_run(
+        "--state-dir", str(zero_config_state), "dispatch", "create", "--batch", zero_batch_id,
+        "--role", "architect", "--model", "session-model", "--effort", "high",
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T14:00:20Z",
+    )
+    if zero_dispatch.returncode != 0:
+        sys.exit("coordinator rejected a zero-config dispatch: " + zero_dispatch.stderr)
+    zero_brief = json.loads(zero_dispatch.stdout)["brief"]
+    if zero_brief["resolved_model"] != "session-model" or zero_brief["resolved_effort"] != "high":
+        sys.exit("zero-config dispatch did not take its runtime from the invoking session")
+    if zero_brief["resolved_transport"] != "in-process":
+        sys.exit("zero-config dispatch did not fall back to the in-process transport")
+    zero_dispatch_id = json.loads(zero_dispatch.stdout)["dispatch_id"]
+    if coordinator_run(
+        "--state-dir", str(zero_config_state), "dispatch", "send", "--dispatch", zero_dispatch_id,
+        "--adapter", str(fake_adapter),
+    ).returncode == 0:
+        sys.exit("an in-process dispatch was handed to a runtime adapter")
+    zero_sent = coordinator_run(
+        "--state-dir", str(zero_config_state), "dispatch", "send", "--dispatch", zero_dispatch_id,
+    )
+    if zero_sent.returncode != 0:
+        sys.exit("coordinator rejected an in-process handoff: " + zero_sent.stderr)
+    if json.loads(zero_sent.stdout)["transport"] != "in-process":
+        sys.exit("in-process handoff did not report its transport to the coordinator session")
+    orchestration_config.write_text(saved_config, encoding="utf-8")
+
+    print("zero-config coordinator defaults verification passed")
+
+    in_process_plan = json.loads(json.dumps(valid_orchestration))
+    in_process_plan["assignment_plans"]["qa"]["transport"] = "in-process"
+    orchestration_config.write_text(json.dumps(in_process_plan, indent=2) + "\n", encoding="utf-8")
+    run_ok(HARNESS + ["health", str(orchestration_project)])
+
+    invalid_transport = json.loads(json.dumps(valid_orchestration))
+    invalid_transport["assignment_plans"]["developer"]["transport"] = "carrier-pigeon"
+    orchestration_config.write_text(json.dumps(invalid_transport, indent=2) + "\n", encoding="utf-8")
+    output = fail_output(HARNESS + ["health", str(orchestration_project)])
+    if "transport must be one of" not in output:
+        sys.exit("health accepted an unknown role transport")
 
     missing_review_assignment = json.loads(json.dumps(valid_orchestration))
     del missing_review_assignment["assignment_plans"]["code-review"]

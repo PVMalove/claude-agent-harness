@@ -1,0 +1,5 @@
+interface:
+  display_name: "Fast implement"
+  short_description: "Build work from a spec or tickets in one ungated session"
+policy:
+  allow_implicit_invocation: false

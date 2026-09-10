@@ -7,10 +7,11 @@ catalog into every session.
 |---|---|---|
 | `ask-matt` | `skills/first-party/pvmalove/ask-matt` | Ask which skill or flow fits your situation. A router over the skills in this repo. |
 | `code-review` | `skills/first-party/pvmalove/code-review` | Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes — Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to "review since X". |
+| `fast-implement` | `skills/first-party/pvmalove/fast-implement` | Implement a piece of work in a single session, without the coordinator pipeline's approval gates. |
 | `grill-me` | `skills/first-party/pvmalove/grill-me` | A relentless interview to sharpen a plan or design. |
 | `grill-with-docs` | `skills/first-party/pvmalove/grill-with-docs` | A relentless interview to sharpen a plan or design, which also creates docs (ADR's and glossary) as we go. |
 | `grilling` | `skills/first-party/pvmalove/grilling` | Grill the user relentlessly about a plan, decision, or idea to stress-test their thinking. Triggered when the user wants to validate a concept or uses 'grill' trigger phrases. |
-| `implement` | `skills/first-party/pvmalove/implement` | Implement a piece of work based on a spec or set of tickets. |
+| `implement` | `skills/first-party/pvmalove/implement` | Implement a piece of work as a gated coordinator pipeline: architect, developer, code review, and independent QA. |
 | `qa-gate` | `skills/first-party/pvmalove/qa-gate` | Run this project's full local quality gate (lint/typecheck/test commands from .harness/project.json) and report pass/fail. Use before opening a PR, or whenever asked to run the full check/test suite. |
 | `setup-labels` | `skills/first-party/pvmalove/setup-labels` | Create or update this repo's GitHub labels (workflow::*, hitl/afk, task-report::required, out-of-scope, wayfinder:*) to match docs/agents/triage-labels.md. Run once per repo before first use of triage, to-spec, to-tickets, implement, to-guide, or wayfinder. |
 | `to-guide` | `skills/first-party/pvmalove/to-guide` | Turn a hitl ticket or spec into a step-by-step manual implementation guide with ready-to-paste prompts for an AI IDE (Cursor, Copilot Chat). For tickets a human will code by hand, not an agent. |

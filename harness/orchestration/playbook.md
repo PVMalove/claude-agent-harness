@@ -45,6 +45,26 @@ chosen action, and author/time. The original brief remains immutable. If the fac
 scope, zone, DoD, assignment, or required proof, the current dispatch is ended and the changed
 work is planned and approved as a new dispatch.
 
+## Role order, liveness, and transport
+
+The architect step is not optional and not implicit: no `developer` dispatch exists for a batch until
+that batch already carries an `architect` completion report the coordinator has accepted. The
+installed `coordinator.py` refuses to create the brief otherwise, so a manual CLI call cannot skip it
+either.
+
+A dispatched role is not assumed to be alive because it was sent. Its first action after receiving
+its brief is a model self-report: it names the model it is actually running, and the coordinator
+compares that against `resolved_model` in the immutable brief. A mismatch blocks the dispatch
+immediately, and its completion report is refused; the recovery is a new dispatch, never an edited
+brief. While it works, the role emits a heartbeat, and the coordinator watches for a silence longer
+than its declared threshold. A stale dispatch is escalated to the human as a blocker; the coordinator
+does not change state on a timeout by itself.
+
+The transport carrying a role — an externally dispatched isolated worker, or an in-process subagent
+of the coordinator session — is a project choice recorded in the assignment plan. It changes nothing
+above: the same immutable brief goes out, the same self-report and heartbeat are required, and the
+same completion report comes back.
+
 ## Immutable handoff brief
 
 The coordinator creates the brief before dispatch and stores the exact version sent to the role.

@@ -1,49 +1,41 @@
 ---
 name: implement
-description: "Implement a piece of work based on a spec or set of tickets."
+description: "Implement a piece of work as a gated coordinator pipeline: architect, developer, code review, and independent QA."
 disable-model-invocation: true
 ---
 
 # Implement
 
-**Objective:** Implement the work described by the user in the spec or tickets.
+**Objective:** Take one ticket through architect → developer → code-review → QA, pausing for the
+developer's explicit approval at every gate, and hand the finished candidate to `/to-pull-requests`.
 
-## Coordinator route for valid backend orchestration
+This session **is** the coordinator. It drives `coordinator.py` — batch, dispatch, report, decide —
+and never edits implementation files itself. Work is done by dispatched roles.
 
-Before the normal local route, determine whether this project has a valid opt-in to
-`backend-orchestration`:
+It is step 5 of the delivery chain — `/grill-with-docs` → `/to-spec` → `/to-tickets` →
+**`/implement <id>`** → `/to-pull-requests` — and it takes exactly one ticket from that
+decomposition.
 
-- `.harness/harness.lock` selects `backend-orchestration`;
-- `.harness/orchestration.json`, `.harness/orchestration/coordinator.py`, the role manifests, and
-  the orchestration schema are present; and
+## Route selection
+
+`/implement` needs the coordinator CLI. Check, in this order:
+
+- `.harness/orchestration/coordinator.py`, the role manifests, and the orchestration schema are
+  present; and
 - `harness health .` succeeds.
 
-If any condition is absent or invalid, use the existing local route below unchanged. Do not repair
-or infer an opt-in from a partial configuration.
+`.harness/orchestration.json` is **optional**. Without it the coordinator defaults the zone to the
+whole repository (`repository`) and takes the role's model and effort from this session, passed as
+`--model`/`--effort` on `dispatch create`. With it, the project owns zones, models, effort, and the
+per-role `transport`.
 
-For a valid opt-in, `/implement <id>` is the coordinator entry point. Resolve the ticket and run
-the same AFK/blocker/issue-branch pre-flight below, but do not edit implementation files or run a
-developer role in this session. Read the project role manifests and playbook, propose one batch
-(ticket, issue branch/worktree, zone, Definition of Done, prohibitions, checks, dependencies, and
-risk gates), and create it with `coordinator.py batch create`.
+If the CLI is absent or `harness health` fails, do not repair or infer an opt-in: stop and tell the
+user to run `/fast-implement` instead, which is the ungated single-session path.
 
-Show the plan and stop for explicit human approval. Only after approval may you run
-`batch approve`, which changes the batch from `planned` to `awaiting-approval`. Every later
-developer, code-review, QA, publish, or retry dispatch likewise requires a new explicit human
-approval before creating its immutable brief. A worker report is evidence only: accept, override,
-retry, block, fail, and any next dispatch remain coordinator decisions.
+Process one ticket to a terminal batch state before starting another. Never track overlapping
+approvals for unrelated tickets.
 
-After an accepted developer report, risk-assess its candidate SHA before preparing review or QA.
-An accepted clean review prepares QA; accepted green QA prepares a publish-only developer brief
-for that same SHA. Do not create a PR, merge, close a ticket, or write to an integration branch.
-Use the coordinator's publish boundary only after its explicit approval; it verifies and pushes the
-accepted QA candidate SHA exactly.
-
-## Execution in Three Phases
-
-A strict pipeline, resolved in order: **Pre-flight** (confirm the ticket is actually startable, and by this agent) → **Coding** (TDD, tests, an explicitly approved review, commit, and push) → **PR & Wrap-up** (offer the separate `/to-pull-requests` command). Only the developer can select `/to-pull-requests`.
-
-### Phase 1: Pre-flight
+## Phase 1: Pre-flight
 
 1. **Resolve the ticket.**
     - **A specific ticket is named** (an issue number, URL, or a `.scratch/<feature>/issues/NN-*.md` path): use it.
@@ -61,24 +53,102 @@ A strict pipeline, resolved in order: **Pre-flight** (confirm the ticket is actu
 3. **Mark it in progress**, once you actually start work:
     - **GitHub/GitLab:** set the `workflow::in-progress` label.
     - **Local tracker:** set the file's `**Workflow:**` line to `workflow::in-progress`.
-4. **Git pre-flight, before editing files:**
+4. **Git pre-flight, before any dispatch:**
     - Resolve the exact integration branch from the ticket's `## Integration Branch` section or,
       for a child ticket that omits it, from its parent epic. An absent value is a blocker; do not
       infer a branch from memory, the current checkout, or a service name.
-    - The current branch must match `branch_pattern` and be an issue branch. If it does not,
-      fetch the integration branch and create `feature/issue-<ID>-<slug>` from it before coding.
-      Never commit or push directly to the project base branch or an `integration/*` branch.
+    - Create the batch's issue branch `feature/issue-<ID>-<slug>` from that integration branch, and
+      its isolated worktree (`docs/agents/worktrees.md`). The batch's branch must match
+      `branch_pattern`; the coordinator refuses a base or `integration/*` branch.
 
-### Phase 2: Coding
+## Phase 2: The batch
 
-1. Use `/tdd` where possible, at pre-agreed seams.
-2. Run typechecking regularly, single test files regularly, and the full test suite once at the end.
-3. Ask the developer: “Провести code review?” Stop for their answer.
-    - **Yes:** run `/code-review`. It launches the Standards and Spec subagents through the coding application's manually configured mechanism, waits for both reports, and returns its separate `## Standards` and `## Spec` report to this primary session. Address any requested changes, then repeat the relevant tests before continuing.
-    - **No:** record that the developer declined review and continue.
-4. Ask the developer for explicit permission to commit and push. Stop for their answer.
-5. After approval, verify that the current branch still matches `branch_pattern` and is neither `base_branch` nor `integration/*`; commit the completed work with a Semantic Commit Message and push it to the current issue branch. Report the commit and push result to the developer.
+Read `.harness/orchestration/roles/` and `.harness/orchestration/playbook.md`. Propose one batch —
+ticket, issue branch/worktree, zone, Definition of Done, prohibitions, checks, dependencies, risk
+gates — and show it to the developer.
 
-### Phase 3: PR & Wrap-up
+The brief is the only channel a dispatched role has, so this repo's own delivery rules must be
+written into the batch rather than assumed. Read `docs/agents/git-workflow.md` and carry its
+implementation contract into the `--definition-of-done` entries verbatim enough to be checkable. In
+particular, when that doc mandates TDD, one Definition-of-Done entry must say so — for example
+`write the failing test first at the seams the architect named, then make it pass` — because a
+dispatched developer inherits nothing from `/tdd`: it is not this session, and `verification_commands`
+only run tests afterwards, they never require that the test came first.
 
-After a successful push, offer `/to-pull-requests <ticket>` as the next command. Do not invoke it automatically, open a PR, run `qa-gate`, or close the ticket in this skill.
+**Gate 0 — the plan.** Stop for explicit approval. Only after it, run `batch create` and then
+`batch approve`.
+
+## Phase 3: The five gates
+
+The sequence below is fixed. Run every step, in this order, for every ticket — a low-risk change
+does not earn a shorter path here; a ticket that does not deserve the ceremony belongs in
+`/fast-implement` instead.
+
+```text
+architect ─► HUMAN approve ─► developer ─► code-review ─► HUMAN approve ─► qa ─┐
+                                  ▲                                            │
+                                  └────── qa findings: developer fixes ◄────────┤
+                                                                                │
+                            final report ─► publish ─► HUMAN runs /to-pull-requests
+```
+
+Every gate is the same shape: propose → **stop for the developer's explicit approval** →
+`dispatch create` → `dispatch send` → watch → `report submit` → `batch decide`. Never create a brief
+before its approval, and never decide on a report for the developer. A worker report is evidence
+only: accept, override, retry, block, and fail remain coordinator decisions.
+
+1. **Architect.** `--role architect`. Read-only: it analyses the architecture as it exists today in
+   this repository and proposes the plan — boundaries, viable options, the selected option,
+   trade-offs, risks, acceptance criteria, and the seams the tests should sit on — with repository
+   evidence for each. **This report is what the human approves before any code is written.** The
+   coordinator enforces the order: `dispatch create --role developer` fails until an architect
+   report for this batch has been accepted, so the step cannot be skipped from the CLI either.
+2. **Developer.** `--role developer`, after the accepted architect report. It implements on the
+   batch's own issue branch in its isolated worktree test-first — the failing test at the architect's
+   seams before the code that satisfies it, when the batch's Definition of Done requires TDD — runs
+   the checks, commits, and pushes that issue branch, never a base or `integration/*` branch. Its
+   commit SHA is the candidate. Its report's `changed_files` is where you see whether tests actually
+   came with the change: an implementation-only diff against a TDD Definition of Done is a
+   `--decision retry`, not an accept. Then run `risk assess` on that SHA.
+3. **Code review.** `--role code-review --candidate-commit <sha>`, pinned to the assessed candidate,
+   read-only, run for every candidate — the risk assessment decides only whether review is
+   *mandatory*, never whether it is allowed. Standards and Spec stay separate evidence. A blocker
+   requires `--decision retry`; a warning requires `--decision override-warning` with a recorded note.
+   **Show the human the reviewed changes and the two axes, and stop for their approval to spend QA.**
+4. **QA.** `--role qa --candidate-commit <sha>` after the accepted review. QA is independent: it runs
+   in the clean-room lane (`qa run`) against the pinned SHA, not through a transport, and not on the
+   developer's own checks. A QA finding is not a defeat: `batch decide --decision retry` sends the
+   work back to the developer with the findings, and the loop re-runs risk assessment, review, and QA
+   on the new candidate once the fix reports. Repeat until QA is green.
+5. **Final report, then publish.** After accepted green QA, give the human the closing report
+   *before* anything is published: ticket, candidate SHA, what each role concluded, accepted QA
+   evidence and its artifact path, residual risks, and what is deliberately left out. Then create the
+   publish dispatch (`--role developer --purpose publish --candidate-commit <sha>`). Never hand a
+   publish brief to `dispatch send`/an adapter; use `dispatch publish`, the coordinator's own
+   verified boundary, which pushes exactly the accepted SHA.
+
+## Phase 4: Watching a dispatch
+
+Between `dispatch send` and the report, this session is the watchdog. Poll:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . dispatch status --batch <batch-id>
+```
+
+- **Model self-report.** Every dispatched role, on any transport, confirms its actually active model
+  as its first action (`dispatch self-report --dispatch <id> --model <model>`). A mismatch against
+  the immutable brief blocks the dispatch immediately, and the coordinator refuses its completion
+  report. Surface it to the developer as a blocker; the fix is a new dispatch, never an edited brief.
+- **Heartbeat.** A role calls `dispatch heartbeat --dispatch <id>` while it works. When `dispatch
+  status` reports `stale` for a dispatch, stop waiting and tell the developer which dispatch went
+  silent and for how long. Do not silently keep waiting: a stalled dispatch spends the usage window
+  and produces nothing.
+
+For an `in-process` transport, `dispatch send` takes no adapter: this session runs the role as a
+subagent against the same immutable brief, in the batch's worktree, and the subagent performs the
+self-report and heartbeat calls itself. For `orca`, pass `--adapter .harness/orchestration/orca_adapter.py`.
+
+## Phase 5: PR & wrap-up
+
+Offer `/to-pull-requests <ticket>` as the next command. Do not invoke it automatically, open or merge
+a PR, write to an integration branch, or close the ticket in this skill.

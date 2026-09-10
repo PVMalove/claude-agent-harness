@@ -106,6 +106,11 @@
           },
           "description": "Optional narrower write boundary for this role. It must remain inside the assigned zone."
         },
+        "transport": {
+          "enum": ["orca", "in-process"],
+          "default": "orca",
+          "description": "How this role is executed: an Orca-dispatched isolated worker, or an in-process subagent of the coordinator session. Both consume the same immutable brief and must pass the model self-report."
+        },
         "runtimes": {
           "type": "object",
           "minProperties": 1,

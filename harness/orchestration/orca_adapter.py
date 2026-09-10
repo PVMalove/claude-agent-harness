@@ -160,6 +160,8 @@ def _validate_brief(brief: dict[str, Any], repo: Path, config: dict[str, Any]) -
         approval.get("approved_at")
     ):
         raise DispatchError("dispatch brief requires coordinator_approval with approved_by and approved_at")
+    if brief.get("resolved_transport", "orca") != "orca":
+        raise DispatchError("dispatch brief selected the in-process transport and must not reach Orca")
 
     for field in (
         "ticket", "role", "zone", "branch", "worktree", "definition_of_done", "prohibited_changes",

@@ -30,7 +30,7 @@
 `mattpocock-suite` — закреплённый upstream-набор, `pvmalove-suite` — инженерный workflow, а
 `backend-orchestration` — его явную opt-in надстройку для координированной backend-работы.
 
-`pvmalove-suite` наследует 15 skills без изменений; 10 переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`. `backend-orchestration` выбирается отдельно и разрешает эту зависимость автоматически.
+`pvmalove-suite` наследует 15 skills без изменений; 10 переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`. `backend-orchestration` выбирается отдельно и разрешает эту зависимость автоматически.
 
 Проектный `.harness/project.json` определяет ветки, язык и QA. Работа начинается с тикета,
 проходит в issue-ветке и требует явного подтверждения разработчика перед PR; merge всегда ручной.

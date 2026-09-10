@@ -32,6 +32,11 @@ ROLE_MODES = {"write", "read-only"}
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
 DECISIONS = {"accept", "override-warning", "retry", "block", "fail"}
 DISPATCH_PURPOSES = {"work", "publish"}
+ROLE_TRANSPORTS = {"orca", "in-process"}
+DEFAULT_ZONE = "repository"
+DEFAULT_PROFILE = "session"
+DEFAULT_STALE_AFTER_SECONDS = 900
+LIVE_DISPATCH_STATES = {"dispatched", "working"}
 REVIEW_SEVERITIES = {"none", "clean", "warning", "blocker"}
 FINDING_SEVERITIES = {"info", "warning", "blocker"}
 QA_LEASE_FIELDS = {"dispatch_id", "host", "pid", "acquired_at", "expires_at"}
@@ -46,7 +51,7 @@ PLAN_FIELDS = (
 DISPATCH_FIELDS = {
     "dispatch_id", "batch_id", "ticket", "role", "access", "zone", "write_paths", "branch", "worktree",
     "definition_of_done", "prohibited_changes", "verification_commands", "required_gates", "dependencies",
-    "resolved_runtime", "resolved_provider_profile", "resolved_model", "resolved_effort", "coordinator_approval", "candidate_commit", "review_base", "review_scope",
+    "resolved_runtime", "resolved_provider_profile", "resolved_model", "resolved_effort", "resolved_transport", "coordinator_approval", "candidate_commit", "review_base", "review_scope",
     "risk_assessment_id", "purpose", "state", "created_at",
 }
 REPORT_FIELDS = {
@@ -188,7 +193,29 @@ def _project(repo: Path) -> dict[str, Any]:
     return _read_object(repo / ".harness/project.json", "project config")
 
 
+def _configured(repo: Path) -> bool:
+    return (repo / ".harness/orchestration.json").is_file()
+
+
+def _default_config(repo: Path) -> dict[str, Any]:
+    """Zero-configuration fallback.  A project that has not authored an orchestration config still
+    gets one working zone — the whole repository — and takes the role runtime from the invoking
+    session, so the gated pipeline is available before any assignment plan exists."""
+    commands = _project(repo).get("qa_gate_commands")
+    if not isinstance(commands, list) or not all(_non_empty(item) for item in commands):
+        commands = []
+    return {
+        "provider_profiles": {},
+        "assignment_plans": {},
+        "backend_zones": {DEFAULT_ZONE: {"paths": ["**"]}},
+        "concurrency_budget": 1,
+        "verification_commands": list(commands),
+    }
+
+
 def _config(repo: Path) -> dict[str, Any]:
+    if not _configured(repo):
+        return _default_config(repo)
     value = _read_object(repo / ".harness/orchestration.json", "project orchestration config")
     _reject_sensitive(value, "project orchestration config")
     return value
@@ -378,9 +405,28 @@ def _paths_within_zone(paths: list[str], zone_paths: list[str]) -> bool:
 
 
 def _resolve_assignment(
-    repo: Path, config: dict[str, Any], role_name: str, zone_name: str, runtime_name: str
-) -> tuple[dict[str, Any], dict[str, Any], str, str, str]:
+    repo: Path,
+    config: dict[str, Any],
+    role_name: str,
+    zone_name: str,
+    runtime_name: str,
+    *,
+    session_model: object = None,
+    session_effort: object = None,
+) -> tuple[dict[str, Any], dict[str, Any], str, str, str, str]:
     role = _role(repo, role_name)
+    if not _configured(repo):
+        if zone_name != DEFAULT_ZONE:
+            raise CoordinatorError(
+                f"without .harness/orchestration.json the only backend zone is {DEFAULT_ZONE!r}"
+            )
+        if not _non_empty(session_model) or not _non_empty(session_effort):
+            raise CoordinatorError(
+                "without .harness/orchestration.json the invoking session must supply --model and --effort"
+            )
+        # No project-owned provider profile exists, so the only honest transport is the invoking
+        # session itself; an Orca worker would have no agent to start.
+        return role, {"paths": ["**"]}, DEFAULT_PROFILE, session_model.strip(), session_effort.strip(), "in-process"
     assignments = config.get("assignment_plans")
     zones = config.get("backend_zones")
     profiles = config.get("provider_profiles")
@@ -389,6 +435,9 @@ def _resolve_assignment(
     plan = assignments.get(role_name)
     if not isinstance(plan, dict) or plan.get("zone") != zone_name:
         raise CoordinatorError(f"role {role_name!r} is not assigned to zone {zone_name!r}")
+    transport = plan.get("transport", "orca")
+    if transport not in ROLE_TRANSPORTS:
+        raise CoordinatorError(f"role {role_name!r} has an invalid transport")
     zone = zones.get(zone_name)
     paths = zone.get("paths") if isinstance(zone, dict) else None
     if not isinstance(paths, list) or not paths or not all(_non_empty(item) for item in paths):
@@ -425,7 +474,7 @@ def _resolve_assignment(
         raise CoordinatorError(f"assignment plan for role {role_name!r} has an invalid effort")
     resolved_zone = dict(zone)
     resolved_zone["paths"] = assigned_paths
-    return role, resolved_zone, profile_id, role_model, role_effort
+    return role, resolved_zone, profile_id, role_model, role_effort, transport
 
 
 def _batch_path(root: Path, batch_id: str) -> Path:
@@ -506,14 +555,26 @@ def _qa_lease(root: Path) -> dict[str, Any] | None:
     return lease
 
 
-def _lease_expired(lease: dict[str, Any]) -> bool:
+def _moment(value: object, label: str) -> datetime:
     try:
-        expiry = datetime.fromisoformat(lease["expires_at"])
-    except ValueError as exc:
-        raise CoordinatorError("QA lease has an unreadable expiry") from exc
-    if expiry.tzinfo is None:
-        raise CoordinatorError("QA lease expiry must include a timezone")
-    return expiry <= datetime.now(timezone.utc)
+        parsed = datetime.fromisoformat(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise CoordinatorError(f"{label} is not a readable timestamp") from exc
+    if parsed.tzinfo is None:
+        raise CoordinatorError(f"{label} must include a timezone")
+    return parsed
+
+
+def _lease_expired(lease: dict[str, Any]) -> bool:
+    return _moment(lease["expires_at"], "QA lease expiry") <= datetime.now(timezone.utc)
+
+
+def _silent_seconds(status: dict[str, Any]) -> int:
+    """Seconds since a dispatch last proved it was alive.  This generalizes the QA lane's
+    lease-expiry check to every dispatch, whatever transport is carrying it."""
+    last = status.get("heartbeat_at") or status.get("updated_at")
+    elapsed = datetime.now(timezone.utc) - _moment(last, "dispatch heartbeat")
+    return max(0, int(elapsed.total_seconds()))
 
 
 def _sanitise(text: str) -> str:
@@ -599,6 +660,16 @@ def _latest_developer_candidate(repo: Path, root: Path, batch: dict[str, Any]) -
         raise CoordinatorError("accepted developer report has no resolvable candidate commit") from exc
 
 
+def _accepted_architect(batch: dict[str, Any]) -> bool:
+    return any(
+        item.get("role") == "architect"
+        and item.get("state") == "reported"
+        and isinstance(item.get("decision"), dict)
+        and item["decision"].get("decision") in {"accept", "override-warning"}
+        for item in batch.get("dispatches", [])
+    )
+
+
 def _accepted_qa_for_candidate(root: Path, batch: dict[str, Any], candidate: str) -> dict[str, Any]:
     """Return the accepted green QA report pinned to exactly ``candidate``."""
     for entry in reversed(batch.get("dispatches", [])):
@@ -678,12 +749,18 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
         if dispatch[field] != batch[field]:
             raise CoordinatorError(f"dispatch record {field} does not match its batch")
     _validate_branch(repo, dispatch["branch"])
-    role, zone, profile_id, model, effort = _resolve_assignment(repo, config, dispatch["role"], batch["zone"], dispatch["resolved_runtime"])
+    # In zero-config mode the brief itself is the only record of the session-supplied runtime, so
+    # it is replayed here; brief_sha256 above already protects it from being edited.
+    role, zone, profile_id, model, effort, transport = _resolve_assignment(
+        repo, config, dispatch["role"], batch["zone"], dispatch["resolved_runtime"],
+        session_model=dispatch["resolved_model"], session_effort=dispatch["resolved_effort"],
+    )
     if (
         dispatch["access"] != role["mode"]
         or dispatch["resolved_provider_profile"] != profile_id
         or dispatch["resolved_model"] != model
         or dispatch["resolved_effort"] != effort
+        or dispatch["resolved_transport"] != transport
     ):
         raise CoordinatorError("dispatch record does not match the role assignment")
     expected_paths = zone["paths"] if role["mode"] == "write" else []
@@ -973,8 +1050,10 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         next_action = batch.get("next_action")
         required = {
             None: {("architect", "work"), ("developer", "work")},
+            "developer": {("developer", "work")},
             "code-review": {("code-review", "work")},
-            "qa": {("qa", "work")},
+            # A low-risk candidate goes straight to QA, but the fixed pipeline may still review it.
+            "qa": {("qa", "work"), ("code-review", "work")},
             "publish": {("developer", "publish")},
             "developer-retry": {("developer", "work")},
         }
@@ -982,7 +1061,16 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             raise CoordinatorError("risk assessment must prepare the next dispatch before another role starts")
         if (role_name, purpose) not in required.get(next_action, set()):
             raise CoordinatorError("dispatch does not match the coordinator-prepared next action")
-        role, zone, profile_id, model, effort = _resolve_assignment(repo, config, role_name, batch["zone"], args.runtime)
+        # The architect step cannot be skipped, whatever the entry point: no coding dispatch exists
+        # for a batch whose architect report has not been accepted.
+        if role_name == "developer" and purpose == "work" and not _accepted_architect(batch):
+            raise CoordinatorError(
+                "a developer dispatch requires an accepted architect report for the same batch"
+            )
+        role, zone, profile_id, model, effort, transport = _resolve_assignment(
+            repo, config, role_name, batch["zone"], args.runtime,
+            session_model=getattr(args, "model", None), session_effort=getattr(args, "effort", None),
+        )
         candidate = None
         risk = None
         review_scope: list[str] = []
@@ -1005,8 +1093,8 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if role_name in {"code-review", "qa"} and risk is None:
             raise CoordinatorError("candidate commit has no coordinator risk assessment")
         if role_name == "code-review":
-            if not risk["review_required"]:
-                raise CoordinatorError("code-review dispatch is not required by the risk assessment")
+            # The risk assessment decides when review is *mandatory*, never when it is permitted:
+            # the fixed pipeline reviews every candidate, high-risk or not.
             review_scope = list(risk["review_scope"])
         if role_name == "qa":
             if batch.get("risk_reassessment_required"):
@@ -1045,6 +1133,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "resolved_provider_profile": profile_id,
             "resolved_model": model,
             "resolved_effort": effort,
+            "resolved_transport": transport,
             "coordinator_approval": approval,
             "candidate_commit": candidate,
             "review_base": risk["base_commit"] if risk else None,
@@ -1103,9 +1192,18 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         raise CoordinatorError("QA dispatches must run through the clean-room QA lane, never a runtime adapter")
     if dispatch_record.get("purpose") == "publish":
         raise CoordinatorError("publish-only dispatches must use the verified coordinator publish boundary")
-    adapter = Path(args.adapter).resolve()
-    if not adapter.is_file():
-        raise CoordinatorError(f"runtime adapter does not exist: {adapter}")
+    transport = dispatch_record.get("resolved_transport")
+    if transport not in ROLE_TRANSPORTS:
+        raise CoordinatorError("dispatch record has an invalid transport")
+    adapter: Path | None = None
+    if transport == "orca":
+        if not args.adapter:
+            raise CoordinatorError("an orca-transport dispatch requires an explicit runtime adapter")
+        adapter = Path(args.adapter).resolve()
+        if not adapter.is_file():
+            raise CoordinatorError(f"runtime adapter does not exist: {adapter}")
+    elif args.adapter or args.adapter_arg:
+        raise CoordinatorError("an in-process dispatch runs inside this session and takes no runtime adapter")
     with _state_lock(root):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
@@ -1124,31 +1222,144 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if not entry or entry.get("state") != "approved":
             raise CoordinatorError("dispatch was already sent or is not registered in its batch")
         brief_path = _dispatch_path(root, dispatch["dispatch_id"])
-        command = [str(adapter)] if adapter.suffix.lower() != ".py" else [sys.executable, str(adapter)]
-        adapter_args = args.adapter_arg or []
-        if any(
-            argument in {"dispatch", "--repo", "--brief"}
-            or argument.startswith("--repo=")
-            or argument.startswith("--brief=")
-            for argument in adapter_args
-        ):
-            raise CoordinatorError("adapter arguments cannot override dispatch, repo or brief")
-        command.append("dispatch")
-        command.extend(adapter_args)
-        command.extend(["--repo", str(repo), "--brief", str(brief_path)])
-        result = subprocess.run(command, capture_output=True, text=True)
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
-            raise CoordinatorError(f"runtime adapter rejected dispatch: {detail}")
+        if adapter is not None:
+            command = [str(adapter)] if adapter.suffix.lower() != ".py" else [sys.executable, str(adapter)]
+            adapter_args = args.adapter_arg or []
+            if any(
+                argument in {"dispatch", "--repo", "--brief"}
+                or argument.startswith("--repo=")
+                or argument.startswith("--brief=")
+                for argument in adapter_args
+            ):
+                raise CoordinatorError("adapter arguments cannot override dispatch, repo or brief")
+            command.append("dispatch")
+            command.extend(adapter_args)
+            command.extend(["--repo", str(repo), "--brief", str(brief_path)])
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout).strip()
+                raise CoordinatorError(f"runtime adapter rejected dispatch: {detail}")
         for entry in batch["dispatches"]:
             if entry["dispatch_id"] == dispatch["dispatch_id"]:
                 entry["state"] = "dispatched"
                 break
         else:
             raise CoordinatorError("dispatch is not registered in its batch")
-        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {"dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": _now()})
+        sent_at = _now()
+        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
+            "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": sent_at,
+            "heartbeat_at": sent_at,
+        })
         _replace(_batch_path(root, batch["batch_id"]), batch)
-    return {"dispatch_id": dispatch["dispatch_id"], "state": "dispatched"}
+    return {
+        "dispatch_id": dispatch["dispatch_id"],
+        "state": "dispatched",
+        "transport": transport,
+        "brief": str(brief_path),
+        "expected_model": dispatch["resolved_model"],
+        "next_role_action": "dispatch self-report",
+    }
+
+
+def _live_status(root: Path, dispatch_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    dispatch = _load_dispatch(root, dispatch_id)
+    status = _load_dispatch_status(root, dispatch_id)
+    if status.get("state") not in LIVE_DISPATCH_STATES:
+        raise CoordinatorError("only a dispatched role can report liveness")
+    return dispatch, status
+
+
+def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    """Compare the model a dispatched role is actually running against its immutable brief.
+
+    A mismatch blocks the dispatch here, at first contact, instead of letting a misconfigured
+    worker spend the coordinator's budget producing nothing."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    reported = args.model.strip() if _non_empty(args.model) else ""
+    if not reported:
+        raise CoordinatorError("a model self-report must name the actually active model")
+    with _state_lock(root):
+        dispatch, status = _live_status(root, args.dispatch)
+        expected = dispatch["resolved_model"]
+        matched = reported == expected
+        moment = _now()
+        status["state"] = "working" if matched else "blocked"
+        status["updated_at"] = moment
+        status["heartbeat_at"] = moment
+        status["model_self_report"] = {
+            "reported_model": reported,
+            "expected_model": expected,
+            "match": matched,
+            "reported_at": moment,
+        }
+        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), status)
+        if not matched:
+            batch = _load_batch(root, dispatch["batch_id"])
+            for entry in batch.get("dispatches", []):
+                if entry["dispatch_id"] == dispatch["dispatch_id"]:
+                    entry["state"] = "blocked"
+            batch["state"] = "blocked"
+            _replace(_batch_path(root, batch["batch_id"]), batch)
+    if not matched:
+        raise CoordinatorError(
+            f"dispatch is running {reported!r} but its approved brief resolved {expected!r}; "
+            "the dispatch is blocked and needs a new coordinator decision"
+        )
+    return {"dispatch_id": dispatch["dispatch_id"], "state": "working", "model": reported}
+
+
+def heartbeat_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    note = args.note.strip() if _non_empty(args.note) else "none"
+    _reject_sensitive({"note": note}, "dispatch heartbeat")
+    with _state_lock(root):
+        dispatch, status = _live_status(root, args.dispatch)
+        moment = _now()
+        status["updated_at"] = moment
+        status["heartbeat_at"] = moment
+        status["heartbeat_note"] = _sanitise(note)[:240]
+        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), status)
+    return {"dispatch_id": dispatch["dispatch_id"], "state": status["state"], "heartbeat_at": moment}
+
+
+def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
+    """Liveness view the coordinator session polls; a stale entry is a blocker to surface, never a
+    reason for the coordinator to change state on its own."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    threshold = args.stale_after
+    if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 1:
+        raise CoordinatorError("stale-after must be a positive number of seconds")
+    with _state_lock(root):
+        entries: list[dict[str, Any]] = []
+        for path in sorted((root / "dispatch-status").glob("dispatch-*.json")):
+            status = _read_object(path, "dispatch status")
+            if args.dispatch and status.get("dispatch_id") != args.dispatch:
+                continue
+            dispatch = _load_dispatch(root, status.get("dispatch_id"))
+            if args.batch and dispatch.get("batch_id") != args.batch:
+                continue
+            live = status.get("state") in LIVE_DISPATCH_STATES
+            silent = _silent_seconds(status) if live else 0
+            entries.append({
+                "dispatch_id": dispatch["dispatch_id"],
+                "batch_id": dispatch["batch_id"],
+                "role": dispatch["role"],
+                "state": status.get("state"),
+                "transport": dispatch.get("resolved_transport"),
+                "resolved_model": dispatch["resolved_model"],
+                "model_self_report": status.get("model_self_report"),
+                "heartbeat_at": status.get("heartbeat_at") or status.get("updated_at"),
+                "silent_seconds": silent,
+                "stale": live and silent >= threshold,
+            })
+    return {
+        "stale_after_seconds": threshold,
+        "stale": [entry["dispatch_id"] for entry in entries if entry["stale"]],
+        "dispatches": entries,
+    }
 
 
 def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
@@ -1240,9 +1451,9 @@ def _persist_report(root: Path, batch: dict[str, Any], dispatch: dict[str, Any],
     entry["report"] = f"reports/{dispatch['dispatch_id']}.json"
     entry["report_sha256"] = hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest()
     batch["state"] = "awaiting-approval"
-    _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
-        "dispatch_id": dispatch["dispatch_id"], "state": "reported", "updated_at": _now(),
-    })
+    closed = _load_dispatch_status(root, dispatch["dispatch_id"])
+    closed.update({"dispatch_id": dispatch["dispatch_id"], "state": "reported", "updated_at": _now()})
+    _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), closed)
     _replace(_batch_path(root, batch["batch_id"]), batch)
     return report_json
 
@@ -1554,8 +1765,11 @@ def submit_report(args: argparse.Namespace) -> dict[str, Any]:
             raise CoordinatorError("QA reports must be produced by the clean-room QA runner")
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
         entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
-        if not entry or entry.get("state") != "dispatched" or status.get("state") != "dispatched":
+        if not entry or entry.get("state") != "dispatched" or status.get("state") not in LIVE_DISPATCH_STATES:
             raise CoordinatorError("completion report requires a dispatched role")
+        self_report = status.get("model_self_report")
+        if not isinstance(self_report, dict) or self_report.get("match") is not True:
+            raise CoordinatorError("a dispatched role must confirm its active model before reporting")
         role = _role(repo, dispatch["role"])
         _validate_report(report, dispatch, role, repo, batch.get("base_commit"))
         retry_candidate: str | None = None
@@ -1628,7 +1842,7 @@ def parser() -> argparse.ArgumentParser:
     create.add_argument("--ticket", required=True)
     create.add_argument("--branch", required=True)
     create.add_argument("--worktree", required=True)
-    create.add_argument("--zone", required=True)
+    create.add_argument("--zone", default=DEFAULT_ZONE, help="backend zone; defaults to the whole repository")
     create.add_argument("--definition-of-done", action="append", required=True)
     create.add_argument("--prohibited-change", action="append", required=True)
     create.add_argument("--required-gate", action="append")
@@ -1671,6 +1885,8 @@ def parser() -> argparse.ArgumentParser:
     dispatch_create.add_argument("--runtime", default="codex", help="named runtime from the role assignment plan")
     dispatch_create.add_argument("--purpose", choices=sorted(DISPATCH_PURPOSES), default="work")
     dispatch_create.add_argument("--candidate-commit")
+    dispatch_create.add_argument("--model", help="session model, used only without .harness/orchestration.json")
+    dispatch_create.add_argument("--effort", help="session effort, used only without .harness/orchestration.json")
     dispatch_create.add_argument("--approved-by", required=True)
     dispatch_create.add_argument("--approved-at", required=True)
     dispatch_create.set_defaults(handler=create_dispatch)
@@ -1678,10 +1894,29 @@ def parser() -> argparse.ArgumentParser:
     dispatch_send = dispatch_commands.add_parser("send")
     _common(dispatch_send)
     dispatch_send.add_argument("--dispatch", required=True)
-    dispatch_send.add_argument("--adapter", required=True)
+    dispatch_send.add_argument("--adapter", help="runtime adapter; required for the orca transport only")
     dispatch_send.add_argument("--adapter-arg", action="append")
     dispatch_send.add_argument("--checkout")
     dispatch_send.set_defaults(handler=send_dispatch)
+
+    dispatch_self_report = dispatch_commands.add_parser("self-report")
+    _common(dispatch_self_report)
+    dispatch_self_report.add_argument("--dispatch", required=True)
+    dispatch_self_report.add_argument("--model", required=True, help="the model the role is actually running")
+    dispatch_self_report.set_defaults(handler=self_report_dispatch)
+
+    dispatch_heartbeat = dispatch_commands.add_parser("heartbeat")
+    _common(dispatch_heartbeat)
+    dispatch_heartbeat.add_argument("--dispatch", required=True)
+    dispatch_heartbeat.add_argument("--note", default="none")
+    dispatch_heartbeat.set_defaults(handler=heartbeat_dispatch)
+
+    dispatch_status_command = dispatch_commands.add_parser("status")
+    _common(dispatch_status_command)
+    dispatch_status_command.add_argument("--dispatch")
+    dispatch_status_command.add_argument("--batch")
+    dispatch_status_command.add_argument("--stale-after", type=int, default=DEFAULT_STALE_AFTER_SECONDS)
+    dispatch_status_command.set_defaults(handler=dispatch_status)
 
     dispatch_publish = dispatch_commands.add_parser("publish")
     _common(dispatch_publish)

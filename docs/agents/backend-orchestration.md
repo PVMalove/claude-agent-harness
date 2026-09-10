@@ -69,6 +69,14 @@ python3 harness/bin/harness health /path/to/repository
 
 ## 2. Настройка `.harness/orchestration.json`
 
+Конфиг **не обязателен**. Без него coordinator работает на дефолтах: единственная зона `repository`
+покрывает весь репозиторий, `verification_commands` берутся из `qa_gate_commands` в
+`.harness/project.json`, `concurrency_budget` равен 1, а `model`/`effort` роли приходят из вызывающей
+сессии (`dispatch create --model <model> --effort <effort>`). Транспорт в этом режиме всегда
+`in-process`: provider profile нет, значит и Orca-агента запускать нечем. `harness health` такой
+проект принимает. Конфиг нужен, когда проекту нужны настоящие зоны, разные модели по ролям,
+Orca-транспорт или бюджет параллелизма больше единицы.
+
 Начальный шаблон намеренно пуст. Заполните provider profile, одну или несколько backend-зон,
 назначение для **каждой** используемой роли и реальные project checks. `code-review` следует
 назначить всегда: validator требует его, когда в конфиге есть назначения, поскольку это
@@ -114,7 +122,7 @@ runtime-наборы (`codex`, `claude` и т.п.); в каждом обязат
   },
   "assignment_plans": {
     "architect": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-architect-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-architect-claude-model", "effort": "high"}}},
-    "developer": {"zone": "payments", "write_paths": ["services/payments/**"], "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-developer-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "sonnet", "effort": "xhigh"}}},
+    "developer": {"zone": "payments", "write_paths": ["services/payments/**"], "transport": "orca", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-developer-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "sonnet", "effort": "xhigh"}}},
     "database-migrations": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-migration-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "project-migration-claude-model", "effort": "xhigh"}}},
     "messaging-integration": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-messaging-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-messaging-claude-model", "effort": "high"}}},
     "qa": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-qa-model", "effort": "medium"}, "claude": {"profiles": ["backend-claude"], "model": "project-qa-claude-model", "effort": "medium"}}},
@@ -127,6 +135,13 @@ runtime-наборы (`codex`, `claude` и т.п.); в каждом обязат
   "verification_commands": ["python -m pytest"]
 }
 ```
+
+`transport` — необязательное поле assignment plan и выбирается для каждой роли отдельно: `orca`
+(по умолчанию) запускает isolated worker через `orca_adapter.py`, `in-process` исполняет роль как
+субагента текущей coordinator-сессии в worktree того же batch. Оба варианта получают один и тот же
+immutable brief, обязаны пройти model self-report и вернуть completion report по общим правилам,
+поэтому логика coordinator-а от транспорта не зависит. `harness health` проверяет допустимость
+значения.
 
 Зона — не подсказка, а граница: write-роль изменяет только разрешённые пути своей зоны. Если роли
 нужен более узкий scope, задайте ей `write_paths`: brief и completion report будут проверяться по
@@ -160,8 +175,9 @@ authorization/security и concurrency/retry completion невозможен, п�
 независимых отчёта `code-review`: Standards и Spec.
 
 После developer dispatch candidate commit получает детерминированную оценку рисков из DoD, changed
-files и developer-reported triggers. Если есть trigger, создаётся один composite read-only
-`code-review` dispatch, но его оси Standards и Spec остаются отдельными evidence. Только после
+files и developer-reported triggers. Оценка решает, когда composite read-only `code-review`
+**обязателен**, но не когда он *разрешён*: review можно создать для любого кандидата, и конвейер
+`/implement` делает это всегда. Оси Standards и Spec остаются отдельными evidence. Только после
 принятого review (если он обязателен) создаётся отдельный QA dispatch: обязательный полный QA gate
 в clean-room нельзя заменить локальной проверкой developer-а. Любой новый candidate commit после
 finding или failed QA снова проходит оценку риска.
@@ -186,7 +202,11 @@ batch в `awaiting-approval` и оставляет dispatch в `reported` до �
    ```
 2. Сверить активные batch, пересечения зон, writer и quality-gate lane. При конфликте оставить
    batch `blocked`, а не запускать параллельную запись.
-3. Создать и отдельно утвердить developer dispatch. CLI сохраняет immutable brief до передачи:
+3. Создать и отдельно утвердить architect dispatch, принять его отчёт, и только потом — developer
+   dispatch. Порядок жёсткий: `dispatch create --role developer` отклоняется, пока для того же batch
+   нет architect-отчёта, принятого через `batch decide --decision accept`. Правило живёт в
+   `coordinator.py`, поэтому действует и для ручного CLI, и для `/implement`. CLI сохраняет immutable
+   brief до передачи:
 
    ```bash
    python .harness/orchestration/coordinator.py --repo . dispatch create \
@@ -196,6 +216,10 @@ batch в `awaiting-approval` и оставляет dispatch в `reported` до �
      --dispatch <dispatch-id> --adapter .harness/orchestration/orca_adapter.py \
      --adapter-arg=--run --adapter-arg=<orca-run-id>
    ```
+
+   Для роли с `transport: "in-process"` adapter не передаётся вовсе: `dispatch send --dispatch <id>`
+   возвращает путь к brief, а роль исполняет субагент текущей сессии. Без `.harness/orchestration.json`
+   к `dispatch create` добавляются `--model` и `--effort` вызывающей сессии.
 4. Принять один schema-validated completion report с evidence. Он сохраняется как canonical JSON
    и детерминированная Markdown-проекция, после чего dispatch остаётся `reported`, а batch ждёт
    следующего решения:
@@ -223,6 +247,35 @@ risks, blockers и следующее решение coordinator-а. Для read
 Новые факты не меняют отправленный brief. Coordinator добавляет отдельное решение с evidence; если
 изменились scope, zone, DoD, assignment или proof, текущий dispatch заканчивается и создаётся новый.
 Повтор после `blocked` или `failed` — тоже новый dispatch с новым ID и brief.
+
+### Model self-report и dispatch watchdog
+
+Отправленный dispatch не считается живым сам по себе. Первым действием после получения brief роль
+подтверждает фактически активную модель:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . dispatch self-report \
+  --dispatch <dispatch-id> --model <фактическая модель>
+```
+
+Совпадение с `resolved_model` immutable brief переводит dispatch в `working`. Расхождение немедленно
+переводит его в `blocked`, помечает batch `blocked` и завершает команду ошибкой; после этого
+`report submit` для такого dispatch не принимается. Починка — новый dispatch с новым brief, а не
+правка отправленного. Completion report вообще не принимается без успешного self-report, поэтому
+подменённая или неверно настроенная модель видна сразу, а не после потраченного окна.
+
+Пока роль работает, она отбивает heartbeat, а coordinator-сессия опрашивает состояние:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . dispatch heartbeat --dispatch <dispatch-id>
+python .harness/orchestration/coordinator.py --repo . dispatch status \
+  --batch <batch-id> --stale-after 900
+```
+
+`dispatch status` показывает для каждого dispatch роль, транспорт, `resolved_model`, результат
+self-report, время последнего heartbeat, `silent_seconds` и признак `stale`. Это обобщение
+QA-lease-expiry на любой dispatch, а не только на clean-room QA lane. Stale — блокер, который
+coordinator выносит человеку: сам он состояние по таймауту не меняет.
 
 ### Clean-room QA lane
 
@@ -267,7 +320,11 @@ candidate SHA. Только developer publish отправляет этот SHA;
 проверяет accepted QA evidence текущего SHA и ведёт обычный ручной PR workflow без повторного
 тяжёлого gate.
 
-Готовый запрос управляющей сессии можно сформулировать так:
+Обычная точка входа — `/implement <ticket>`: эта сессия сама становится coordinator-ом и ведёт
+описанный цикл, останавливаясь на пяти approval-гейтах (architect, developer, code-review, qa,
+publish) и наблюдая за heartbeat каждого dispatch. Один тикет доводится до терминального состояния
+batch до старта следующего. Ручной запуск по этому руководству остаётся полностью валидным — для
+него готовый запрос управляющей сессии можно сформулировать так:
 
 ```text
 Выступи coordinator-ом backend batch для issue #123. Прочитай .harness/orchestration/roles/
@@ -349,4 +406,6 @@ post-integration defects, включая источник и отсутству�
 Архитектурный контракт маршрута целиком зафиксирован в
 [ADR 0003](../adr/0003-opt-in-human-governed-orchestration.md): opt-in capability, отдельное
 approval для dispatch, review и QA для одного SHA, локальное санитизированное evidence и adapter
-только для транспорта.
+только для транспорта. Превращение `/implement` в coordinator-driven конвейер по умолчанию, model
+self-report, dispatch watchdog, per-role transport и zero-config дефолты зафиксированы в
+[ADR 0014](../adr/0014-coordinator-driven-implement-pipeline.md).
