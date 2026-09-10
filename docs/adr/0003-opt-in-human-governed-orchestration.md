@@ -1,34 +1,25 @@
-# Делать multi-role orchestration opt-in и сохранять решения за человеком
+# Opt-in оркестрация backend-работы с человеческим контролем
 
-## Контекст
+## Контекст системы
 
-Некоторым backend-задачам нужны несколько изолированных ролей, повторяемые handoff и независимое
-QA. Остальные проекты не должны получать scheduler или менять обычный `/implement`.
+Некоторые backend-задачи требуют изолированных ролей, воспроизводимых handoff и независимого QA,
+тогда как обычный `/implement` должен сохранять стандартный workflow.
 
-## Решение
+## Действующий контракт
 
-`backend-orchestration` — необязательная capability поверх `pvmalove-suite`. Manifest'ы ролей и
-проектный конфиг задают доступ, зоны записи, назначение и проверки. Runtime-neutral coordinator
-ведёт локальные санитизированные state, immutable brief и report: batch содержит dispatch, а каждый
-dispatch требует отдельного approval. Для candidate SHA coordinator выполняет детерминированную
-оценку риска, при необходимости двухосевое review и затем clean-room QA. Runtime adapter только
-доставляет уже одобренный dispatch; он не принимает отчёты, не планирует следующий шаг и не создаёт
-или не мержит PR.
+`backend-orchestration` — необязательная capability поверх `pvmalove-suite`. Role manifests и
+`.harness/orchestration.json` задают доступ, write zones, назначение и проверки. Runtime-neutral
+coordinator ведёт локальный санитизированный state, immutable briefs и reports. Каждый batch и
+dispatch требуют отдельного явного approval, а completion report требует отдельного решения
+coordinator.
 
-## Альтернативы
+Для candidate SHA coordinator детерминированно оценивает риск, при trigger получает независимые
+Standards и Spec reports и затем запускает обязательный clean-room QA. Runtime adapter доставляет
+только уже одобренный dispatch; он не принимает reports, не планирует следующий шаг и не создаёт
+и не мержит PR.
 
-- Включать orchestration во всех установках харнесса.
-- Доверить runtime adapter планирование и переходы lifecycle.
-- Автоматически публиковать SHA или мержить PR после QA.
+## Операционные последствия
 
-## Почему не они
-
-Обязательная orchestration увеличивает риск и сложность обычных задач. Runtime-специфичный
-scheduler лишает capability переносимости. QA доказывает состояние кода, но не заменяет решение
-владельца о выпуске.
-
-## Последствия
-
-Проект, выбирающий capability, обязан поддерживать валидный `.harness/orchestration.json` и явно
-разрешать каждый dispatch и результат. Evidence остаётся локальным до решения coordinator-а;
-восстановление stale QA lease также выполняется явно.
+Проект с этой capability поддерживает валидную `.harness/orchestration.json` и явно утверждает
+dispatch и решения. Evidence остаётся локальным до решения coordinator; stale QA lease
+восстанавливается только после явной проверки owner.

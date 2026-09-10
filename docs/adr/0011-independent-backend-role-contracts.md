@@ -1,7 +1,20 @@
-# Independent backend role contracts
+# Независимые контракты backend-ролей
 
-`architect` produces a read-only decision brief and `qa` returns reproducible findings without changing tests or fixtures. `code-review` is a high-risk gate with separate Standards and Spec reports. `database-migrations` and `messaging-integration` replace `developer` only at their specialist triggers; mixed work is sequential inside one batch with one active writer.
+## Контекст системы
 
-## Consequences
+Evidence архитектуры, QA и review должно быть независимо от автора изменения, а специализированные
+writer-роли должны применяться только в своих зонах ответственности.
 
-The author of a change cannot supply the sole architecture, QA, or review evidence for it. A role manifest must state the role's output contract and trigger, and the dispatcher must reject simultaneous writers in one batch.
+## Действующий контракт
+
+`architect` выдаёт read-only decision brief. `qa` возвращает воспроизводимые findings, не изменяя
+тесты или fixtures. `code-review` является high-risk gate и выдаёт отдельные Standards и Spec
+reports. `database-migrations` и `messaging-integration` заменяют `developer` только при своих
+specialist triggers; смешанная работа проходит последовательными handoff внутри одного batch с
+одним active writer.
+
+## Операционные последствия
+
+Автор изменения не является единственным источником архитектурного, QA или review evidence.
+Manifest каждой роли фиксирует output contract и risk triggers, а coordinator блокирует
+simultaneous writers и completion без обязательных review reports.

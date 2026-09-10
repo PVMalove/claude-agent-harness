@@ -1,7 +1,20 @@
-# Markdown role manifests with project-bound assignments
+# Markdown role manifests с project-bound assignments
 
-Each role will have one Markdown manifest and share `harness/orchestration/roles/_common.md` for handoff, completion, commit proof, and escalation. A minimal YAML frontmatter exposes only `name`, `mode`, `required_capabilities`, and `risk_triggers`. Project configuration contains an ordered, capability-validated provider-profile plan for each role and records the resolved profile in the immutable brief.
+## Контекст системы
 
-## Consequences
+Поведенческий контракт роли должен быть читаемым, переносимым и отделённым от runtime-specific
+выбора provider и model.
 
-The readable role contract is the source of behavioural authority, while configuration supplies runtime-specific choice. A project cannot weaken a role's write boundary, proof, or risk gate. Shared process rules change in one place rather than drifting among six role files.
+## Действующий контракт
+
+Каждая роль имеет Markdown manifest и общий `harness/orchestration/roles/_common.md` для handoff,
+completion, commit proof и escalation. YAML frontmatter содержит только `name`, `mode`,
+`required_capabilities` и `risk_triggers`. Project configuration содержит упорядоченный,
+capability-validated provider-profile plan для роли; immutable brief фиксирует разрешённый profile
+и model.
+
+## Операционные последствия
+
+Manifest является источником поведенческой authority, а конфигурация задаёт runtime choice.
+Проект не ослабляет write boundary, proof или risk gate роли. Общие процессные правила меняются в
+одном общем контракте.

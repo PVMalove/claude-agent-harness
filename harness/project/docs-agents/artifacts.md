@@ -1,5 +1,8 @@
 ### Artifacts & Scratchpads Management
 
+System-wide architecture and the boundary between source documents and local evidence are described
+in [current-state.md](./current-state.md). This guide defines only task artifacts and scratchpads.
+
 * **Storage Location:** NEVER use system temporary directories (e.g., `AppData/Local/Temp`, `/tmp`) for saving specifications, scratchpads, or intermediate files.
 * **Project Directory:** All intermediate task-related documents MUST be saved locally inside the project repository in the `docs/tasks/` directory (create it if it doesn't exist).
 * **Pre-publish only:** `docs/tasks/` holds drafts and scratchpads *before* a spec or ticket is published to the issue tracker — never treat it as the tracker of record. Once published, the durable record lives with that tracker instead: the issue itself for GitHub/GitLab, or `.scratch/<feature-slug>/spec.md` and `.scratch/<feature-slug>/issues/` for the local markdown tracker (see `docs/agents/issue-tracker.md`) — which doesn't use `docs/tasks/` at all.

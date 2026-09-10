@@ -4,7 +4,7 @@
 
 По умолчанию устанавливается лёгкая доменно-нейтральная capability **project-foundation** из 5 скиллов. Полная upstream-сборка — **mattpocock-suite**, 25 скиллов Matt Pocock (aihero.dev), закреплённых на конкретном коммите. **pvmalove-suite** добавляет управляемый инженерный workflow: native связи эпиков и тикетов, namespaced triage-таксономию, двухосевое review, ручной `/to-pull-requests`, настраиваемый язык вывода и конфигурируемый `qa-gate`.
 
-Термины ниже (капабилити, vendor/first-party-скилл, переопределение, дрейф, проектный конфиг) разобраны в [CONTEXT.md](./CONTEXT.md); значимые архитектурные решения и почему они приняты — в [docs/adr/](./docs/adr/); пошаговое использование — в [docs/agents/harness-guide.md](./docs/agents/harness-guide.md); как скиллы находят Codex, Kimi Code, OpenCode и Hermes Agent (не только Claude Code) — в [docs/runtime-discovery.md](./docs/runtime-discovery.md).
+Термины ниже (капабилити, vendor/first-party-скилл, переопределение, дрейф, проектный конфиг) разобраны в [CONTEXT.md](./CONTEXT.md); действующие архитектурные контракты — в [docs/adr/](./docs/adr/); целостный обзор текущей системы — в [docs/agents/current-state.md](./docs/agents/current-state.md); пошаговое использование — в [docs/agents/harness-guide.md](./docs/agents/harness-guide.md); как скиллы находят Codex, Kimi Code, OpenCode и Hermes Agent (не только Claude Code) — в [docs/runtime-discovery.md](./docs/runtime-discovery.md).
 
 ## Быстрый старт
 
@@ -22,24 +22,31 @@
 
 Всё, что ниже — что происходит под капотом, и как пользоваться харнессом напрямую через CLI, если нужно.
 
-## Архитектура
+## Текущее состояние системы
 
-| Слой | Назначение |
-|---|---|
-| Runtime | Модель, встроенные инструменты, права, сессии — то, что уже умеет Claude Code |
-| Глобальный профиль | Небольшой кросс-проектный контракт безопасности + `start-project`/`integrate-project` (не персонализирован) |
-| Харнесс проекта | Инструкции проекта, выбранные скиллы, ссылки обнаружения и lock-файл |
-| Опциональная надстройка | `pvmalove-suite` — личные скиллы, doc'и, хуки поверх обычного харнесса |
+Харнесс работает как переносимый снимок выбранной capability: runtime предоставляет модель и
+инструменты, глобальный профиль — межпроектный entry contract, а проектный слой — skills,
+инструкции, hooks и проверяемые lock-файлы. `project-foundation` даёт доменно-нейтральную основу,
+`mattpocock-suite` — закреплённый upstream-набор, `pvmalove-suite` — инженерный workflow, а
+`backend-orchestration` — его явную opt-in надстройку для координированной backend-работы.
 
-## Три capability
+`pvmalove-suite` наследует 15 skills без изменений; 10 переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`. `backend-orchestration` выбирается отдельно и разрешает эту зависимость автоматически.
 
-- **`mattpocock-suite`** — чистый снимок апстрима, файлы никогда не редактируются вручную (`skills/vendor/`, закреплено через `third_party/mattpocock-skills/UPSTREAM.lock`).
-- **`pvmalove-suite`** — выбирается **вместо** `mattpocock-suite`, не вместе с ней (CLI откажет с `duplicate skill name`, если указать обе сразу). Расширяет её через `extends`/`overrides`/`additions` в `harness/CAPABILITIES.json`: 15 скиллов наследуются от `mattpocock-suite` без изменений, 10 переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`.
-- **`backend-orchestration`** — необязательная надстройка над `pvmalove-suite`: переносимые role manifest'ы, проектный контракт назначений, двухуровневый lifecycle batch/dispatch и optional Orca adapter. Она не включается сама и не превращает харнесс в автономный scheduler: человек явно утверждает каждый dispatch. После candidate commit coordinator детерминированно оценивает риск, при trigger запрашивает независимые оси review Standards и Spec, затем обязательно запускает clean-room QA; только developer может опубликовать проверенный SHA, а PR остаётся ручным шагом `/to-pull-requests`. Adapter — лишь transport уже одобренного dispatch: он не принимает отчёты, не запускает следующий шаг и не мержит PR. Без валидного opt-in обычный `/implement` не меняется. Настройка, ручной протокол, JSON-пример и запуск через Orca описаны в [руководстве по backend-оркестрации](./docs/agents/backend-orchestration.md).
+Проектный `.harness/project.json` определяет ветки, язык и QA. Работа начинается с тикета,
+проходит в issue-ветке и требует явного подтверждения разработчика перед PR; merge всегда ручной.
+При выбранной `backend-orchestration` coordinator ведёт утверждённые batch и immutable dispatch;
+человек явно утверждает каждый dispatch. Coordinator применяет независимый review и clean-room QA
+к candidate SHA. Runtime adapter доставляет только
+одобренную работу, а публикация SHA и PR остаются за разработчиком.
+
+Полный текущий контракт, роли, lifecycle, FIFO QA lane и локальное state-хранилище описаны в
+[Текущем состоянии Agent Harness](./docs/agents/current-state.md). Пошаговая настройка и
+операционные команды находятся в [руководстве по backend-оркестрации](./docs/agents/backend-orchestration.md)
+и [справочнике харнесса](./docs/agents/harness-guide.md).
 
 При выборе `pvmalove-suite` `harness init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект:
 
-- `docs/agents/{artifacts,backend-orchestration,git-workflow,harness-guide,issue-tracker,triage-labels,worktrees}.md`
+- `docs/agents/{artifacts,backend-orchestration,current-state,git-workflow,harness-guide,issue-tracker,triage-labels,worktrees}.md`
 - `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json`
 - hook для блокировки автоматической атрибуции в commit/PR metadata; CI повторяет эту проверку
 - `.claude/rules/karpathy-guidelines.md`
