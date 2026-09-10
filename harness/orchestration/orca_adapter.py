@@ -50,6 +50,45 @@ def _non_empty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _resolved_commit(repo: Path, value: object) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-fA-F]{7,64}", value.strip()) is None:
+        raise DispatchError("candidate_commit must be a hexadecimal commit SHA")
+    result = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", f"{value.strip()}^{{commit}}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or result.stdout.strip() != value.strip().lower():
+        raise DispatchError("candidate_commit must resolve to its full commit SHA in the target repository")
+    return result.stdout.strip()
+
+
+def _git_output(repo: Path, arguments: list[str]) -> str:
+    result = subprocess.run(["git", "-C", str(repo), *arguments], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise DispatchError("cannot inspect the pinned candidate commit")
+    return result.stdout.strip()
+
+
+def _candidate_files(repo: Path, candidate: str, base: str | None) -> list[str]:
+    if base:
+        output = _git_output(repo, ["diff", "--name-only", "--no-renames", base, candidate])
+    else:
+        output = _git_output(repo, ["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", candidate])
+    return [line.replace("\\", "/") for line in output.splitlines() if line.strip()]
+
+
+def _is_ancestor(repo: Path, base: str, candidate: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", base, candidate],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode not in {0, 1}:
+        raise DispatchError("cannot verify review_base ancestry")
+    return result.returncode == 0
+
+
 def _reject_sensitive_keys(value: Any, location: str) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -158,6 +197,24 @@ def _validate_brief(brief: dict[str, Any], repo: Path, config: dict[str, Any]) -
         raise DispatchError("read-only role cannot receive write paths")
     if role["mode"] == "write" and brief["write_paths"] != zone["paths"]:
         raise DispatchError("write dispatch paths must exactly match its one allowed project zone")
+    candidate = brief.get("candidate_commit")
+    if role_name in {"code-review", "qa"} and candidate is None:
+        raise DispatchError(f"{role_name} dispatch must pin candidate_commit")
+    if candidate is not None:
+        candidate = _resolved_commit(repo, candidate)
+        if candidate != brief["candidate_commit"]:
+            raise DispatchError("dispatch brief candidate_commit must be the full resolved commit SHA")
+    if role_name == "code-review":
+        scope = brief.get("review_scope")
+        if not isinstance(scope, list) or not scope or not all(_non_empty_string(item) for item in scope):
+            raise DispatchError("code-review dispatch must declare its immutable review_scope")
+        base = brief.get("review_base")
+        if base is not None:
+            base = _resolved_commit(repo, base)
+            if not _is_ancestor(repo, base, candidate):
+                raise DispatchError("review_base must be an ancestor of candidate_commit")
+        if _candidate_files(repo, candidate, base) != scope:
+            raise DispatchError("code-review review_scope does not match the pinned candidate diff")
     return role, plan
 
 
@@ -285,6 +342,7 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
         raise DispatchError("Orca task creation returned no task ID")
 
     profiles = config["provider_profiles"]
+    base_ref = brief.get("candidate_commit") or brief["branch"]
     last_error: DispatchError | None = None
     for profile_id in candidates:
         profile = profiles[profile_id]
@@ -293,7 +351,7 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
                 args.orca_bin,
                 [
                     "orchestration", "worker-start", "--run", args.run, "--task", task_id, "--worktree", "new-top-level", "--repo",
-                    f"path:{repo}", "--base-branch", brief["branch"], "--name", brief["branch"], "--display-name",
+                    f"path:{repo}", "--base-branch", base_ref, "--name", brief["branch"], "--display-name",
                     brief["worktree"], "--agent", profile["agent"],
                     "--model", profile["default_model"], "--setup", "run", "--json",
                 ],

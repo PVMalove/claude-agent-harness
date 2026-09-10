@@ -21,7 +21,7 @@ _Avoid_: шаблонные артефакты, foundation-файлы.
 заменять или добавлять скиллы.
 _Avoid_: пакет, набор скиллов.
 
-В текущем составе `pvmalove-suite` 10 скиллов переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pr`.
+В текущем составе `pvmalove-suite` 10 скиллов переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`.
 
 **Vendor-скилл**:
 Скилл из байт-в-байт snapshot закреплённого upstream-источника в `skills/vendor/`, связанный с
@@ -104,8 +104,10 @@ _Avoid_: Orca workflow, scheduler конкретного провайдера.
 _Avoid_: ядро оркестрации, role manifest.
 
 **Dispatch approval**:
-Явное решение человека запустить согласованный batch. После него конфиг может разрешить роль,
-агента и модель; одноразовый override действует только на этот запуск.
+Явное решение человека запустить один согласованный dispatch. Оно нужно отдельно для каждого
+developer, review, QA, publish или retry dispatch: готовый report не даёт права запускать следующий.
+После него конфиг может разрешить роль, агента и модель; одноразовый override действует только на
+этот запуск.
 _Avoid_: автономный запуск, свободный выбор модели воркером.
 
 **Coordinator**:
@@ -167,12 +169,14 @@ _Avoid_: поток уточнений в исходной задаче, сво�
 
 **Completion report**:
 Единственный отчёт роли о завершении: commit SHA для write work, changed files, выполненные проверки и
-их результат, риски и blockers. Новая информация после dispatch требует решения coordinator-а.
+их результат, риски и blockers. После приёма он оставляет dispatch в `reported`: это фактическое
+evidence, а не право двигать batch. Новая информация после dispatch требует решения coordinator-а.
 _Avoid_: сообщение «готово», изменение brief задним числом.
 
 **Quality-gate lane**:
-Сериализованная очередь тяжёлых integration/quality gate; независимые write batch и read-only work
-могут идти параллельно, но лимит активных batch задаётся project config после baseline.
+Сериализованная FIFO-очередь тяжёлых integration/quality gate; независимые write batch и read-only
+work могут идти параллельно, но лимит активных batch задаётся project config после baseline. Lease
+с истёкшим владельцем снимает только coordinator после явной проверки stale owner.
 _Avoid_: конкурентные тяжёлые gate, фиксированный лимит без замера.
 
 **Architecture decision brief**:
@@ -203,9 +207,22 @@ role manifests, config contract, lifecycle, handoff и optional Orca adapter б�
 _Avoid_: неявное включение orchestration, изменение базовой capability.
 
 **Batch lifecycle**:
-Coordinator-owned последовательность `planned → approved → dispatched → working → completed | blocked |
-failed`. Повторная попытка — новый dispatch с новым immutable brief, а не возврат состояния назад.
+Coordinator-owned последовательность `planned → awaiting-approval ↔ active → completed | blocked |
+failed`. Batch хранит ticket, issue-ветку, worktree и историю evidence; он содержит несколько
+последовательных dispatch с отдельными immutable brief и terminal outcome. Повторная попытка — новый
+dispatch с новым immutable brief, а не возврат состояния назад.
 _Avoid_: self-transition воркера, повторное использование старого dispatch.
+
+**Candidate commit**:
+Commit SHA, созданный developer dispatch, к которому привязываются оценка рисков, composite review,
+clean-room QA и publish. Новая версия кода возвращает batch к оценке риска; publish отправляет только
+принятый и проверенный SHA.
+_Avoid_: QA или publish произвольного HEAD, reuse evidence для другого commit.
+
+**Санитизированный QA-артефакт**:
+Полный stdout/stderr clean-room gate, очищенный от secret-shaped значений, сохранённый локально вне
+Git с checksum; canonical JSON report содержит только краткое evidence и ссылку на артефакт.
+_Avoid_: сырые логи в Git, report с секретами, удаление evidence ролью.
 
 **Orca adapter**:
 Необязательная runtime-граница в `backend-orchestration`: после ручного approval переводит валидный

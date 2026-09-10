@@ -276,10 +276,16 @@ def _run(test_root: Path):
         sys.exit("pvmalove-suite unexpectedly installed orchestration resources")
     if (pv_project / ".harness" / "orchestration.json").exists():
         sys.exit("pvmalove-suite unexpectedly installed orchestration config")
+    regular_implement = (pv_project / ".harness" / "skills" / "implement" / "SKILL.md").read_text(encoding="utf-8")
+    if "If any condition is absent or invalid, use the existing local route below unchanged." not in regular_implement:
+        sys.exit("non-opted-in project does not retain its existing implement route")
 
     orchestration_project = test_root / "orchestration_project"
     orchestration_project.mkdir(parents=True)
     subprocess.run(["git", "init", "-q"], cwd=orchestration_project, check=True)
+    orchestration_remote = test_root / "orchestration-remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(orchestration_remote)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(orchestration_remote)], cwd=orchestration_project, check=True)
     run_ok(
         HARNESS
         + [
@@ -304,9 +310,72 @@ def _run(test_root: Path):
     orchestration_root = orchestration_project / ".harness" / "orchestration"
     if not (orchestration_root / "orchestration.schema.json").is_file():
         sys.exit("backend-orchestration schema missing")
+    installed_implement = (orchestration_project / ".harness" / "skills" / "implement" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    if "Coordinator route for valid backend orchestration" not in installed_implement:
+        sys.exit("opted-in project implement skill does not expose the coordinator route")
+    installed_pr_step = orchestration_project / ".harness" / "skills" / "to-pull-requests" / "SKILL.md"
+    if not installed_pr_step.is_file():
+        sys.exit("installed project is missing the to-pull-requests PR step")
+    if (orchestration_project / ".harness" / "skills" / "to-pr").exists():
+        sys.exit("installed project retains the removed to-pr PR step")
+    if "qa evidence" not in installed_pr_step.read_text(encoding="utf-8"):
+        sys.exit("installed to-pull-requests step does not validate accepted QA evidence")
     orchestration_config = orchestration_project / ".harness" / "orchestration.json"
     if not orchestration_config.is_file():
         sys.exit("backend-orchestration config seed missing")
+    public_documentation = {
+        ROOT / "README.md": (
+            "`backend-orchestration`",
+            "человек явно утверждает каждый dispatch",
+            "/to-pull-requests",
+        ),
+        ROOT / "CONTEXT.md": (
+            "`reported`",
+            "FIFO",
+            "санитизирован",
+        ),
+        ROOT / "docs" / "agents" / "backend-orchestration.md": (
+            "`planned → awaiting-approval ↔ active → completed | blocked | failed`",
+            "`reported`",
+            "детерминирован",
+            "Standards и Spec",
+            "обязательный полный QA gate",
+            "transport-only",
+            "санитизирован",
+            "stale",
+            "/to-pull-requests",
+        ),
+        ROOT / "docs" / "agents" / "harness-guide.md": (
+            "строго opt-in маршрут",
+            "candidate commit",
+            "`reported`",
+            "/to-pull-requests",
+        ),
+        ROOT / "docs" / "agents" / "git-workflow.md": (
+            "/to-pull-requests",
+        ),
+    }
+    for path, required_phrases in public_documentation.items():
+        text = path.read_text(encoding="utf-8")
+        if re.search(r"(?<![\w-])/to-pr(?![\w-])", text):
+            sys.exit(f"public documentation retains removed /to-pr route: {path}")
+        for phrase in required_phrases:
+            if phrase.casefold() not in text.casefold():
+                sys.exit(f"public documentation missing hybrid coordinator contract {phrase!r}: {path}")
+    for source_path, required_phrases in public_documentation.items():
+        if source_path == ROOT / "README.md" or source_path == ROOT / "CONTEXT.md":
+            continue
+        installed_path = orchestration_project / "docs" / "agents" / source_path.name
+        if not installed_path.is_file():
+            sys.exit(f"installed project is missing documentation seed: {source_path.name}")
+        installed_text = installed_path.read_text(encoding="utf-8")
+        for phrase in required_phrases:
+            if phrase.casefold() not in installed_text.casefold():
+                sys.exit(f"installed documentation missing hybrid coordinator contract {phrase!r}: {source_path.name}")
+        if re.search(r"(?<![\w-])/to-pr(?![\w-])", installed_text):
+            sys.exit(f"installed documentation retains removed /to-pr route: {source_path.name}")
     expected_role_files = {
         "architect.md",
         "code-review.md",
@@ -524,7 +593,7 @@ def _run(test_root: Path):
         },
         "backend_zones": {"backend": {"paths": ["services/**"]}},
         "concurrency_budget": 2,
-        "verification_commands": ["python -m pytest"],
+        "verification_commands": ["python -m pytest -s"],
     }
     orchestration_config.write_text(json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8")
     run_ok(HARNESS + ["health", str(orchestration_project)])
@@ -588,7 +657,7 @@ else:
         "worktree": "isolated-orca-worktree",
         "definition_of_done": ["produce the requested backend change"],
         "prohibited_changes": ["no merge or production operations"],
-        "verification_commands": ["python -m pytest"],
+        "verification_commands": ["python -m pytest -s"],
         "required_gates": ["code review"],
         "dependencies": ["approved project config"],
         "coordinator_approval": {"approved_by": "project coordinator", "approved_at": "2026-09-09T12:00:00Z"},
@@ -596,7 +665,7 @@ else:
     brief_path = test_root / "approved-dispatch.json"
     brief_path.write_text(json.dumps(approved_brief, indent=2) + "\n", encoding="utf-8")
 
-    def adapter_run(path, *, active=False):
+    def adapter_run(path, *, active=False, repo=orchestration_project):
         env = dict(os.environ, FAKE_ORCA_LOG=str(fake_orca_log), FAKE_ORCA_FAIL_MODEL="project-model")
         if active:
             env["FAKE_ORCA_ACTIVE"] = "1"
@@ -606,7 +675,7 @@ else:
                 str(adapter_path),
                 "dispatch",
                 "--repo",
-                str(orchestration_project),
+                str(repo),
                 "--brief",
                 str(path),
                 "--run",
@@ -701,6 +770,31 @@ else:
     if not coordinator_path.is_file():
         sys.exit("backend-orchestration coordinator CLI missing")
 
+    trigger_probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib.util, sys\n"
+                "from pathlib import Path\n"
+                "spec = importlib.util.spec_from_file_location('coordinator', sys.argv[1])\n"
+                "module = importlib.util.module_from_spec(spec)\n"
+                "spec.loader.exec_module(module)\n"
+                "known = module._risk_triggers(Path(sys.argv[2]))\n"
+                "matched = set(module._matching_triggers('queue consumer changed; transaction boundary changed', known))\n"
+                "required = {'queues', 'transactions'}\n"
+                "if not required <= matched:\n"
+                "    raise SystemExit('singular risk evidence was not matched')\n"
+            ),
+            str(coordinator_path),
+            str(orchestration_project),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if trigger_probe.returncode != 0:
+        sys.exit(trigger_probe.stderr or trigger_probe.stdout or "risk trigger morphology probe failed")
+
     state_root = orchestration_project / ".harness" / "orchestration" / "state"
     fake_adapter = test_root / "fake-adapter.py"
     fake_adapter_log = test_root / "fake-adapter-log.json"
@@ -732,6 +826,16 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             text=True,
             env=coordinator_env,
         )
+
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "config", "user.name", "Clean Room"], cwd=orchestration_project, check=True)
+    baseline_file = orchestration_project / "README.md"
+    baseline_file.write_text("clean-room baseline\n", encoding="utf-8")
+    (orchestration_project / "test_qa_baseline.py").write_text(
+        "def test_clean_room_baseline():\n    print('token=visible')\n    assert True\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "."], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "chore: create baseline"], cwd=orchestration_project, check=True)
 
     planned = coordinator_run(
         "batch", "create", "--ticket", "#901", "--branch", "feature/issue-901-coordinator",
@@ -788,6 +892,18 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     ).returncode == 0:
         sys.exit("coordinator reused a dispatched identifier instead of requiring a new approval")
 
+    candidate_file = orchestration_project / "services" / "retry.py"
+    candidate_file.parent.mkdir(parents=True, exist_ok=True)
+    candidate_file.write_text(
+        "def retry():\n    return True\n\n# queue consumer changed; transaction boundary changed\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "services/retry.py"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "feat: add retry path"], cwd=orchestration_project, check=True)
+    candidate_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=orchestration_project, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
     report_file = test_root / "developer-report.json"
     report_payload = {
         "dispatch_id": dispatch_id,
@@ -795,12 +911,13 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "role": "developer",
         "outcome": "completed",
         "output": "implemented the requested backend change",
-        "commit_sha": "a" * 40,
-        "changed_files": ["services/payments/app.py"],
-        "checks_run": [{"command": "python -m pytest", "result": "pass", "evidence": "1 passed"}],
+        "commit_sha": candidate_sha,
+        "changed_files": ["services/retry.py"],
+        "checks_run": [{"command": "python -m pytest -s", "result": "pass", "evidence": "1 passed"}],
         "risks": "none",
         "blockers": "none",
         "next_coordinator_action": "accept",
+        "risk_triggers": ["authorization-security"],
     }
     report_file.write_text(json.dumps(report_payload, indent=2) + "\n", encoding="utf-8")
     reported = coordinator_run("report", "submit", "--file", str(report_file))
@@ -840,6 +957,247 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     )
     if decision.returncode != 0 or json.loads(decision.stdout)["state"] != "awaiting-approval":
         sys.exit("coordinator did not record the explicit post-report decision")
+
+    risk = coordinator_run(
+        "risk", "assess", "--batch", batch_id, "--candidate-commit", candidate_sha,
+        "--changed-file", "services/retry.py",
+    )
+    if risk.returncode != 0:
+        sys.exit("coordinator rejected a valid risk assessment: " + risk.stderr)
+    risk_result = json.loads(risk.stdout)
+    if not risk_result["review_required"]:
+        sys.exit("coordinator skipped review for a manifest trigger")
+    if set(risk_result["matched_triggers"]) != {
+        "authorization-security", "concurrency-retry", "queues", "retry-dlq", "transactions"
+    }:
+        sys.exit("risk assessment did not record every matching manifest trigger: " + json.dumps(risk_result))
+
+    review_dispatch = coordinator_run(
+        "dispatch", "create", "--batch", batch_id, "--role", "code-review",
+        "--candidate-commit", candidate_sha, "--approved-by", "project coordinator",
+        "--approved-at", "2026-09-09T12:03:00Z",
+    )
+    if review_dispatch.returncode != 0:
+        sys.exit("coordinator rejected a risk-gated review dispatch: " + review_dispatch.stderr)
+    review_record = json.loads(review_dispatch.stdout)
+    review_id = review_record["dispatch_id"]
+    if review_record["brief"]["candidate_commit"] != candidate_sha:
+        sys.exit("review brief was not pinned to the candidate commit")
+    if review_record["brief"]["review_scope"] != ["services/retry.py"]:
+        sys.exit("review brief did not preserve the immutable review scope")
+
+    mismatched_checkout = test_root / "mismatched-checkout"
+    subprocess.run(["git", "clone", "-q", str(orchestration_project), str(mismatched_checkout)], check=True)
+    subprocess.run(["git", "checkout", "-q", "HEAD^"], cwd=mismatched_checkout, check=True)
+    if coordinator_run(
+        "dispatch", "send", "--dispatch", review_id, "--adapter", str(fake_adapter),
+        "--checkout", str(mismatched_checkout),
+    ).returncode == 0:
+        sys.exit("coordinator accepted a review checkout at a mismatched commit")
+    if fake_adapter_log.exists():
+        fake_adapter_log.unlink()
+    subprocess.run(["git", "checkout", "-q", candidate_sha], cwd=mismatched_checkout, check=True)
+
+    mutable_file = orchestration_project / "services" / "unreviewed.tmp"
+    mutable_file.write_text("outside the pinned commit\n", encoding="utf-8")
+    if coordinator_run(
+        "dispatch", "send", "--dispatch", review_id, "--adapter", str(fake_adapter),
+        "--checkout", str(orchestration_project),
+    ).returncode == 0:
+        sys.exit("coordinator accepted a review checkout with mutable files")
+    mutable_file.unlink()
+
+    review_sent = coordinator_run(
+        "dispatch", "send", "--dispatch", review_id, "--adapter", str(fake_adapter),
+        "--checkout", str(orchestration_project),
+    )
+    if review_sent.returncode != 0:
+        sys.exit("coordinator rejected a correctly pinned review checkout: " + review_sent.stderr)
+    runtime_review = adapter_run(
+        state_root / "dispatches" / f"{review_id}.json", repo=mismatched_checkout
+    )
+    if runtime_review.returncode != 0:
+        sys.exit("Orca adapter rejected the coordinator review brief: " + runtime_review.stderr)
+    runtime_calls = [json.loads(line) for line in fake_orca_log.read_text(encoding="utf-8").splitlines()]
+    runtime_worker_calls = [call for call in runtime_calls if call[1] == "worker-start"]
+    if not runtime_worker_calls or runtime_worker_calls[-1][runtime_worker_calls[-1].index("--base-branch") + 1] != candidate_sha:
+        sys.exit("Orca adapter did not pin the runtime worker to candidate_commit")
+
+    review_report_file = test_root / "review-report.json"
+    review_payload = {
+        "dispatch_id": review_id,
+        "ticket": "#901",
+        "role": "code-review",
+        "outcome": "completed",
+        "output": "independent composite review completed",
+        "commit_sha": "not applicable — read-only role",
+        "changed_files": [],
+        "checks_run": [{"command": "python -m pytest -s", "result": "pass", "evidence": "review scope inspected"}],
+        "risks": "standards warning requires coordinator decision",
+        "blockers": "none",
+        "next_coordinator_action": "override-warning or retry",
+        "review": {
+            "candidate_commit": candidate_sha,
+            "scope": ["services/retry.py"],
+            "standards": {"severity": "warning", "findings": [{"severity": "warning", "evidence": "style", "summary": "style warning"}], "risks": "style risk", "blockers": "none"},
+            "spec": {"severity": "clean", "findings": [], "risks": "none", "blockers": "none"},
+        },
+    }
+    review_report_file.write_text(json.dumps(review_payload, indent=2) + "\n", encoding="utf-8")
+    review_report_result = coordinator_run("report", "submit", "--file", str(review_report_file))
+    if review_report_result.returncode != 0:
+        sys.exit("coordinator rejected a valid composite review report: " + review_report_result.stderr)
+    review_markdown = (state_root / "reports" / f"{review_id}.md").read_text(encoding="utf-8")
+    if "Review Standards severity: warning" not in review_markdown or "Review Spec severity: clean" not in review_markdown:
+        sys.exit("Markdown review projection did not preserve both independent axes")
+    if coordinator_run(
+        "batch", "decide", "--batch", batch_id, "--decision", "accept",
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T12:04:00Z",
+    ).returncode == 0:
+        sys.exit("coordinator accepted a review warning without an explicit override")
+    override = coordinator_run(
+        "batch", "decide", "--batch", batch_id, "--decision", "override-warning",
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T12:05:00Z",
+        "--note", "accepted the recorded Standards warning",
+    )
+    if override.returncode != 0:
+        sys.exit("coordinator rejected an explicit warning override: " + override.stderr)
+
+    qa_dispatch = coordinator_run(
+        "dispatch", "create", "--batch", batch_id, "--role", "qa",
+        "--candidate-commit", candidate_sha, "--approved-by", "project coordinator",
+        "--approved-at", "2026-09-09T12:05:30Z",
+    )
+    if qa_dispatch.returncode != 0:
+        sys.exit("coordinator rejected a QA dispatch after accepted review: " + qa_dispatch.stderr)
+    qa_id = json.loads(qa_dispatch.stdout)["dispatch_id"]
+    qa_evidence = (
+        "qa", "evidence", "--ticket", "#901", "--branch", "feature/issue-901-coordinator",
+        "--candidate-commit", candidate_sha,
+    )
+    if coordinator_run(*qa_evidence).returncode == 0:
+        sys.exit("QA evidence validation accepted a candidate without a QA report")
+    queue_root = state_root / "qa-lane" / "queue"
+    queue_root.mkdir(parents=True, exist_ok=True)
+    prior_queue = queue_root / "00000000000000000001-dispatch-00000000-0000-0000-0000-000000000000.json"
+    prior_queue.write_text(json.dumps({
+        "dispatch_id": "dispatch-00000000-0000-0000-0000-000000000000",
+        "sequence": 1,
+        "queued_at": "2026-09-09T12:05:20+00:00",
+    }) + "\n", encoding="utf-8")
+    (state_root / "qa-lane" / "sequence.json").write_text('{"next": 2}\n', encoding="utf-8")
+    queued = coordinator_run("qa", "run", "--dispatch", qa_id)
+    if queued.returncode != 0 or json.loads(queued.stdout).get("state") != "queued":
+        sys.exit("QA runner did not leave a later request visibly queued")
+    lane_status = coordinator_run("qa", "status")
+    if lane_status.returncode != 0 or len(json.loads(lane_status.stdout)["queue"]) != 2:
+        sys.exit("QA lane status did not expose FIFO queue entries")
+    lease_path = state_root / "qa-lane" / "lease.json"
+    lease_path.write_text(json.dumps({
+        "dispatch_id": "dispatch-00000000-0000-0000-0000-000000000000",
+        "host": "stale-host",
+        "pid": 99999,
+        "acquired_at": "2026-09-09T12:00:00+00:00",
+        "expires_at": "2026-09-09T12:01:00+00:00",
+    }) + "\n", encoding="utf-8")
+    if coordinator_run("qa", "run", "--dispatch", qa_id).returncode == 0:
+        sys.exit("QA runner automatically force-unlocked a stale lease")
+    recovered = coordinator_run(
+        "qa", "clear-stale-lease", "--expected-host", "stale-host", "--expected-pid", "99999",
+        "--expected-expiry", "2026-09-09T12:01:00+00:00", "--approved-by", "project coordinator",
+        "--approved-at", "2026-09-09T12:05:40Z", "--reason", "owner validated as stale",
+    )
+    if recovered.returncode != 0 or json.loads(recovered.stdout).get("state") != "cleared":
+        sys.exit("coordinator did not require and record stale QA lease recovery")
+    qa_run = coordinator_run("qa", "run", "--dispatch", qa_id, "--lease-seconds", "60")
+    if qa_run.returncode != 0:
+        sys.exit("clean-room QA runner rejected a pinned candidate: " + qa_run.stderr)
+    qa_result = json.loads(qa_run.stdout)
+    if qa_result["state"] != "reported":
+        sys.exit("clean-room QA runner did not produce a canonical report")
+    qa_report = json.loads(Path(qa_result["report"]).read_text(encoding="utf-8"))
+    if qa_report["checks_run"][0]["evidence"].startswith("exit ") is False:
+        sys.exit("QA report did not record the gate exit code")
+    if qa_report["outcome"] != "completed":
+        sys.exit("clean-room QA gate unexpectedly failed: " + json.dumps(qa_report))
+    artifact = Path(qa_result["artifact"])
+    if not artifact.is_file() or hashlib.sha256(artifact.read_bytes()).hexdigest() != qa_result["sha256"]:
+        sys.exit("QA evidence artifact is not immutable and checksum-addressed")
+    artifact_text = artifact.read_text(encoding="utf-8")
+    if not artifact_text.startswith("$ python -m pytest -s\nexit_code=0\n"):
+        sys.exit("QA evidence artifact does not contain the full gate output")
+    if "token=visible" in artifact_text or "token=<redacted>" not in artifact_text:
+        sys.exit("QA evidence artifact was not sanitised")
+    if coordinator_run(*qa_evidence).returncode == 0:
+        sys.exit("QA evidence validation accepted an unaccepted QA report")
+    if coordinator_run("dispatch", "send", "--dispatch", qa_id, "--adapter", str(fake_adapter)).returncode == 0:
+        sys.exit("QA runner allowed a second execution of the same dispatch")
+    accepted_qa = coordinator_run(
+        "batch", "decide", "--batch", batch_id, "--decision", "accept",
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T12:05:45Z",
+    )
+    if accepted_qa.returncode != 0:
+        sys.exit("coordinator did not accept a successful QA report")
+    if json.loads(accepted_qa.stdout).get("next_action") != "publish":
+        sys.exit("accepted green QA did not prepare a publish-only next action")
+    accepted_evidence = coordinator_run(*qa_evidence)
+    if accepted_evidence.returncode != 0:
+        sys.exit("QA evidence validation rejected accepted evidence: " + accepted_evidence.stderr)
+    if json.loads(accepted_evidence.stdout).get("candidate_commit") != candidate_sha:
+        sys.exit("QA evidence validation did not return the accepted candidate SHA")
+    state_before_evidence = {
+        path.relative_to(state_root).as_posix(): path.read_bytes() for path in state_root.rglob("*") if path.is_file()
+    }
+    if coordinator_run(*qa_evidence).returncode != 0:
+        sys.exit("QA evidence validation failed when repeated for an accepted candidate")
+    state_after_evidence = {
+        path.relative_to(state_root).as_posix(): path.read_bytes() for path in state_root.rglob("*") if path.is_file()
+    }
+    if state_after_evidence != state_before_evidence:
+        sys.exit("QA evidence validation reran or mutated the quality gate")
+    if coordinator_run("--state-dir", str(test_root / "forged-qa-state"), *qa_evidence).returncode == 0:
+        sys.exit("QA evidence validation accepted a non-repository state directory")
+    baseline_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD^"], cwd=orchestration_project, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    if coordinator_run(
+        "qa", "evidence", "--ticket", "#901", "--branch", "feature/issue-901-coordinator",
+        "--candidate-commit", baseline_sha,
+    ).returncode == 0:
+        sys.exit("QA evidence validation accepted evidence for a mismatched candidate SHA")
+    if coordinator_run(
+        "dispatch", "create", "--batch", batch_id, "--role", "code-review",
+        "--candidate-commit", candidate_sha, "--approved-by", "project coordinator",
+        "--approved-at", "2026-09-09T12:06:00Z",
+    ).returncode == 0:
+        sys.exit("coordinator allowed a role other than the prepared publish dispatch after green QA")
+    publish_dispatch = coordinator_run(
+        "dispatch", "create", "--batch", batch_id, "--role", "developer", "--purpose", "publish",
+        "--candidate-commit", candidate_sha, "--approved-by", "project coordinator",
+        "--approved-at", "2026-09-09T12:06:00Z",
+    )
+    if publish_dispatch.returncode != 0 or json.loads(publish_dispatch.stdout)["brief"]["purpose"] != "publish":
+        sys.exit("coordinator did not prepare a publish-only brief for the accepted QA candidate")
+    if coordinator_run(
+        "dispatch", "send", "--dispatch", json.loads(publish_dispatch.stdout)["dispatch_id"], "--adapter", str(fake_adapter),
+    ).returncode == 0:
+        sys.exit("coordinator allowed a publish-only brief through an unverified runtime adapter")
+    published = coordinator_run("dispatch", "publish", "--dispatch", json.loads(publish_dispatch.stdout)["dispatch_id"])
+    if published.returncode != 0 or json.loads(published.stdout).get("candidate_commit") != candidate_sha:
+        sys.exit("coordinator did not publish the accepted QA candidate: " + published.stderr)
+    remote_candidate = capture(
+        ["git", "ls-remote", "--heads", str(orchestration_remote), "refs/heads/feature/issue-901-coordinator"]
+    ).split()[0]
+    if remote_candidate != candidate_sha:
+        sys.exit("coordinator did not publish the exact accepted QA candidate SHA")
+    if coordinator_run(*qa_evidence).returncode != 0:
+        sys.exit("manual PR evidence validation rejected the published accepted candidate")
+
+    qa_help = coordinator_run("qa", "--help")
+    if qa_help.returncode != 0 or "run" not in qa_help.stdout:
+        sys.exit("coordinator does not expose the clean-room QA runner")
+
+    print("risk-aware composite review verification passed")
 
     missing_review_assignment = json.loads(json.dumps(valid_orchestration))
     del missing_review_assignment["assignment_plans"]["code-review"]

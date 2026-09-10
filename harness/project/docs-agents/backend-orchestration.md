@@ -19,9 +19,10 @@
 - `.harness/orchestration/orca_adapter.py` — необязательная runtime-граница для Orca;
 - `.harness/orchestration.json` — project-owned конфигурация назначений, зон и проверок.
 
-Coordinator state и immutable briefs/reports создаются локально в
+Coordinator state, immutable briefs/reports и санитизированные QA-артефакты создаются локально в
 `.harness/orchestration/state/`; содержимое этой директории gitignored и не является исходным
-кодом проекта.
+кодом проекта. Оно остаётся локальным evidence до явного решения coordinator-а о безопасной очистке:
+роль и adapter не удаляют историю batch.
 
 Manifest определяет режим роли (`write` или `read-only`), capability и risk triggers. Проектный
 конфиг выбирает agent/model, fallback, зону, бюджет параллелизма и команды проверки; он не может
@@ -149,6 +150,13 @@ serialized quality-gate lane.
 authorization/security и concurrency/retry completion невозможен, пока coordinator не получил оба
 независимых отчёта `code-review`: Standards и Spec.
 
+После developer dispatch candidate commit получает детерминированную оценку рисков из DoD, changed
+files и developer-reported triggers. Если есть trigger, создаётся один composite read-only
+`code-review` dispatch, но его оси Standards и Spec остаются отдельными evidence. Только после
+принятого review (если он обязателен) создаётся отдельный QA dispatch: обязательный полный QA gate
+в clean-room нельзя заменить локальной проверкой developer-а. Любой новый candidate commit после
+finding или failed QA снова проходит оценку риска.
+
 ## 4. Coordinator CLI и lifecycle
 
 Runtime-neutral режим не имеет команды «запустить всех». Coordinator CLI ведёт записи по
@@ -187,7 +195,9 @@ batch в `awaiting-approval` и оставляет dispatch в `reported` до �
    python .harness/orchestration/coordinator.py --repo . report submit \
      --file developer-report.json
    ```
-   До следующего dispatch coordinator должен записать отдельное решение:
+   До следующего dispatch coordinator должен записать отдельное решение. `reported` — не
+   автоматический переход: человек принимает report, override-ит только warning или требует retry,
+   а новая роль всё равно ждёт собственного approval:
 
    ```bash
    python .harness/orchestration/coordinator.py --repo . batch decide \
@@ -205,6 +215,49 @@ risks, blockers и следующее решение coordinator-а. Для read
 изменились scope, zone, DoD, assignment или proof, текущий dispatch заканчивается и создаётся новый.
 Повтор после `blocked` или `failed` — тоже новый dispatch с новым ID и brief.
 
+### Clean-room QA lane
+
+Одобренный `qa` dispatch выполняется самим coordinator в отдельном temporary Git worktree,
+отсоединённом ровно на `candidate_commit`. Команды берутся буквально из
+`verification_commands` immutable brief; несовпадение HEAD или грязный worktree останавливает
+проверку. Запуск не передают runtime adapter:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . qa run \
+  --dispatch <qa-dispatch-id> --lease-seconds 1800
+```
+
+В репозитории существует одна FIFO-полоса тяжёлых проверок. Если она занята, команда сохраняет
+запрос и возвращает `state: queued` с позицией; повторный вызов для того же dispatch запустит его
+только когда он станет первым. Состояние и текущий owner видны без запуска gate:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . qa status
+```
+
+Lease содержит dispatch ID, host, PID, время взятия и expiry. Истёкшая аренда **не** снимается
+автоматически: coordinator сперва сверяет owner, затем записывает собственное решение с теми же
+host/PID/expiry и только после этого удаляет stale request:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . qa clear-stale-lease \
+  --expected-host <host> --expected-pid <pid> --expected-expiry <ISO-8601> \
+  --approved-by 'имя coordinator-а' --approved-at 2026-09-10T12:00:00Z \
+  --reason 'проверено, что владелец больше не выполняется'
+```
+
+После выполнения создаётся immutable completion report с командами, exit codes и кратким
+санитизированным evidence. Полный санитизированный stdout/stderr сохраняется вне Git в
+`.harness/orchestration/state/qa-artifacts/<sha256>.log`; report ссылается на этот путь и checksum.
+Провал gate остаётся QA finding и требует нового одобренного developer dispatch — runner не правит
+код и не перезапускает проверку самостоятельно.
+
+После accepted QA evidence coordinator создаёт, но не запускает, publish dispatch для того же
+candidate SHA. Только developer publish отправляет этот SHA; ни QA, ни review, ни adapter не создают
+и не мержат PR. После publish человек вручную запускает `/to-pull-requests <ticket>`: этот шаг
+проверяет accepted QA evidence текущего SHA и ведёт обычный ручной PR workflow без повторного
+тяжёлого gate.
+
 Готовый запрос управляющей сессии можно сформулировать так:
 
 ```text
@@ -216,8 +269,9 @@ risks, blockers и следующее решение coordinator-а. Для read
 
 ## 5. Необязательный запуск через Orca
 
-`orca_adapter.py` переводит **уже одобренный** JSON brief в Orca task и isolated worker. Он не
-выбирает scope, не запускает checks, не принимает report и не мержит PR. Перед запуском выполните
+`orca_adapter.py` — transport-only граница: он переводит **уже одобренный** JSON brief в Orca task и
+isolated worker. Он не выбирает scope, не запускает checks, не принимает report, не планирует
+следующий dispatch и не мержит PR. Перед запуском выполните
 `harness health`, проверьте, что profile выбранной роли содержит непустые `agent` и `default_model`,
 а branch соответствует `branch_pattern` из `.harness/project.json` и не является base или
 `integration/*`.
@@ -276,3 +330,8 @@ post-integration defects, включая источник и отсутству�
 Полный нормативный источник — `.harness/orchestration/playbook.md`; role-specific границы — в
 `.harness/orchestration/roles/`. При противоречии между удобством конкретного runtime и этим
 контрактом приоритет у manifest'а, immutable brief и явного approval.
+
+Архитектурный контракт маршрута целиком зафиксирован в
+[ADR 0003](../adr/0003-opt-in-human-governed-orchestration.md): opt-in capability, отдельное
+approval для dispatch, review и QA для одного SHA, локальное санитизированное evidence и adapter
+только для транспорта.
