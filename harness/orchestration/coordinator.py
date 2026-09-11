@@ -1346,6 +1346,9 @@ def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
             entries.append({
                 "dispatch_id": dispatch["dispatch_id"],
                 "batch_id": dispatch["batch_id"],
+                # The coordinator session needs to see whose work a leftover dispatch belongs to
+                # before it proposes a new batch for the same ticket.
+                "ticket": dispatch["ticket"],
                 "role": dispatch["role"],
                 "state": status.get("state"),
                 "transport": dispatch.get("resolved_transport"),

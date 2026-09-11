@@ -18,18 +18,30 @@ decomposition.
 
 ## Route selection
 
-`/implement` needs the coordinator CLI. Check, in this order:
+`/implement` needs the coordinator CLI, which the harness installs into the project itself. Every
+command in this skill is invoked exactly like this — there is no `harness` executable to find, and no
+`coordinator.py` on PATH:
 
-- `.harness/orchestration/coordinator.py`, the role manifests, and the orchestration schema are
-  present; and
-- `harness health .` succeeds.
+```bash
+python .harness/orchestration/coordinator.py --repo . <команда>
+```
+
+Prove the route with one command, which doubles as the inventory of what is already in flight:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . dispatch status
+```
+
+Exit 0 means the CLI runs and its state directory is readable. Do not go looking for a `harness`
+command: the packager CLI lives in the harness repository, not in a harnessed project, so
+`harness health` is not runnable here and its absence says nothing about this route.
 
 `.harness/orchestration.json` is **optional**. Without it the coordinator defaults the zone to the
 whole repository (`repository`) and takes the role's model and effort from this session, passed as
 `--model`/`--effort` on `dispatch create`. With it, the project owns zones, models, effort, and the
 per-role `transport`.
 
-If the CLI is absent or `harness health` fails, do not repair or infer an opt-in: stop and tell the
+If that command is missing or exits non-zero, do not repair or infer an opt-in: stop and tell the
 user to run `/fast-implement` instead, which is the ungated single-session path.
 
 Process one ticket to a terminal batch state before starting another. Never track overlapping
@@ -63,9 +75,21 @@ approvals for unrelated tickets.
 
 ## Phase 2: The batch
 
-Read `.harness/orchestration/roles/` and `.harness/orchestration/playbook.md`. Propose one batch —
-ticket, issue branch/worktree, zone, Definition of Done, prohibitions, checks, dependencies, risk
-gates — and show it to the developer.
+**First look at what already exists for this ticket.** The `dispatch status` output from route
+selection lists every dispatch the coordinator knows, each with its `ticket`, `batch_id`, `state` and
+`stale` flag. If any entry names this ticket, stop before proposing anything and show the developer
+what you found: which batch, which role, what state, and how long it has been silent.
+
+A leftover dispatch from an earlier attempt is the exact situation this pipeline exists to catch, so
+treat it as evidence, not as debris. Never reuse it, never delete it, and never open a second batch
+beside it — the coordinator refuses an overlapping zone anyway, and a silent retry is how the
+original incident burned a usage window. The developer decides what happens: accept, retry, block or
+fail the open report so the old batch reaches a terminal state, or abandon this ticket for now. Only
+once nothing is open for the ticket do you continue.
+
+Then read `.harness/orchestration/roles/` and `.harness/orchestration/playbook.md`. Propose one
+batch — ticket, issue branch/worktree, zone, Definition of Done, prohibitions, checks, dependencies,
+risk gates — and show it to the developer.
 
 The brief is the only channel a dispatched role has, so this repo's own delivery rules must be
 written into the batch rather than assumed. Read `docs/agents/git-workflow.md` and carry its

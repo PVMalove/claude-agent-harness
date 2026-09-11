@@ -327,6 +327,14 @@ def _run(test_root: Path):
     # through the batch Definition of Done, so the skill has to keep putting it there.
     if "write the failing test first" not in installed_implement:
         sys.exit("implement skill does not carry the repository TDD contract into the batch")
+    # The packager CLI is not installed into a harnessed project, so a route precondition that shells
+    # out to `harness health` can never pass there and would send every project to /fast-implement.
+    if re.search(r"(?<![\w-])harness health(?![\w-])", installed_implement.split("`harness health` is not runnable")[0]):
+        sys.exit("implement skill still gates its route on a command absent from a harnessed project")
+    if "coordinator.py --repo . dispatch status" not in installed_implement:
+        sys.exit("implement skill does not state the self-contained route check")
+    if "Never reuse it, never delete it" not in installed_implement:
+        sys.exit("implement skill has no rule for a leftover dispatch on the same ticket")
     installed_pr_step = orchestration_project / ".harness" / "skills" / "to-pull-requests" / "SKILL.md"
     if not installed_pr_step.is_file():
         sys.exit("installed project is missing the to-pull-requests PR step")
@@ -954,8 +962,13 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     watchdog = coordinator_run("dispatch", "status", "--batch", batch_id, "--stale-after", "60")
     if watchdog.returncode != 0:
         sys.exit("coordinator could not report dispatch liveness: " + watchdog.stderr)
-    if architect_id not in json.loads(watchdog.stdout)["stale"]:
+    watchdog_report = json.loads(watchdog.stdout)
+    if architect_id not in watchdog_report["stale"]:
         sys.exit("dispatch watchdog did not flag a silent dispatch as stale")
+    # A coordinator session inspecting leftovers has to see whose ticket each dispatch belongs to
+    # before it proposes a new batch for that ticket.
+    if {entry.get("ticket") for entry in watchdog_report["dispatches"]} != {"#901"}:
+        sys.exit("dispatch status does not name the ticket of each dispatch: " + watchdog.stdout[:200])
     if coordinator_run("dispatch", "heartbeat", "--dispatch", architect_id).returncode != 0:
         sys.exit("coordinator rejected a heartbeat from a live dispatch")
     if json.loads(coordinator_run("dispatch", "status", "--dispatch", architect_id, "--stale-after", "60").stdout)["stale"]:
