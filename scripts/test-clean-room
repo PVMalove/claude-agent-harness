@@ -267,8 +267,65 @@ def _run(test_root: Path):
         shallow=False,
     ):
         sys.exit("pvmalove-suite unexpectedly changed a skill it neither overrides nor adds")
-    if not (pv_project / ".harness" / "skills" / "qa-gate" / "SKILL.md").is_file():
+    qa_gate_skill = pv_project / ".harness" / "skills" / "qa-gate" / "SKILL.md"
+    if not qa_gate_skill.is_file():
         sys.exit("pvmalove-suite addition qa-gate missing")
+    if "test_summary.py" not in qa_gate_skill.read_text(encoding="utf-8"):
+        sys.exit("qa-gate does not route quality commands through the summary wrapper")
+    pytest_summary = pv_project / ".harness" / "skills" / "qa-gate" / "scripts" / "test_summary.py"
+    if pytest_summary.exists():
+        pytest_summary.unlink()
+    run_ok(HARNESS + ["update", str(pv_project), "--force"])
+    if not pytest_summary.is_file():
+        sys.exit("update did not install the qa-gate pytest summary wrapper")
+    passing_summary = subprocess.run(
+        [
+            sys.executable,
+            str(pytest_summary),
+            "--",
+            sys.executable,
+            "-c",
+            "print('3 passed in 0.01s'); print('PASSING_NOISE')",
+        ],
+        cwd=pv_project,
+        capture_output=True,
+        text=True,
+    )
+    if passing_summary.returncode != 0:
+        sys.exit("pytest summary wrapper rejected a passing command")
+    if "PASS" not in passing_summary.stdout or "3 passed" not in passing_summary.stdout:
+        sys.exit("pytest summary wrapper did not report a compact pass result")
+    if "PASSING_NOISE" in passing_summary.stdout:
+        sys.exit("pytest summary wrapper leaked passing command output")
+    failing_summary = subprocess.run(
+        [
+            sys.executable,
+            str(pytest_summary),
+            "--",
+            sys.executable,
+            "-c",
+            (
+                "import sys; print('=== short test summary info ==='); "
+                "print('FAILED tests/test_checkout.py::test_quote - AssertionError: gho_abcdefghijklmnopqrstuvwxyz1234567890'); "
+                "print('1 failed, 2 passed in 0.01s'); sys.exit(1)"
+            ),
+        ],
+        cwd=pv_project,
+        capture_output=True,
+        text=True,
+    )
+    if failing_summary.returncode != 1:
+        sys.exit("pytest summary wrapper did not preserve the failing command exit code")
+    if "tests/test_checkout.py::test_quote" not in failing_summary.stdout:
+        sys.exit("pytest summary wrapper did not retain the failed test node ID")
+    if "AssertionError" in failing_summary.stdout or "gho_abcdefghijklmnopqrstuvwxyz1234567890" in failing_summary.stdout:
+        sys.exit("pytest summary wrapper leaked failure detail into its bounded summary")
+    log_match = re.search(r"^Full log: (.+)$", failing_summary.stdout, flags=re.MULTILINE)
+    if not log_match:
+        sys.exit("pytest summary wrapper did not provide a failure-log path")
+    failure_log = pv_project / log_match.group(1).strip()
+    if not failure_log.is_file() or "gho_abcdefghijklmnopqrstuvwxyz1234567890" in failure_log.read_text(encoding="utf-8"):
+        sys.exit("pytest summary wrapper did not save a sanitized failure log")
 
     # backend-orchestration is opt-in: it extends pvmalove-suite with the portable
     # role contracts, while a regular pvmalove-suite project receives none of them.

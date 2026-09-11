@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "QA и создание PR: маршруты вызовов",
+    "subtitle": "test_summary.py вызывается только через /qa-gate",
+    "quality_profile": "showcase",
+    "viewBox": [1480, 534],
+    "legend": {
+      "entries": {
+        "backend": {"label": "процесс"},
+        "security": {"label": "проверка"},
+        "messagebus": {"label": "QA evidence"},
+        "external": {"label": "человек или CLI"}
+      }
+    }
+  },
+  "lanes": [
+    {"id": "pipeline", "label": "Developer → clean-room QA"},
+    {"id": "pr", "label": "Подготовка и создание PR"},
+    {"id": "fallback", "label": "Fallback: /qa-gate", "variant": "exception"}
+  ],
+  "phases": [
+    {"id": "implement", "label": "Реализация и review", "fromCol": 0, "toCol": 2, "variant": "emphasis"},
+    {"id": "qa", "label": "Независимая QA", "fromCol": 3, "toCol": 4, "variant": "dashed"},
+    {"id": "pr_create", "label": "Ручное открытие PR", "fromCol": 5, "toCol": 5, "variant": "security"}
+  ],
+  "mainPath": ["developer", "developer_checks", "review", "cleanroom_qa", "evidence", "to_pr", "create_pr"],
+  "nodes": [
+    {"id": "developer", "lane": "pipeline", "col": 0, "type": "backend", "label": "Developer", "tag": "issue branch", "width": 150},
+    {"id": "developer_checks", "lane": "pipeline", "col": 1, "type": "security", "label": "raw verification_commands", "tag": "без wrapper", "width": 176},
+    {"id": "review", "lane": "pipeline", "col": 2, "type": "security", "label": "Code review", "tag": "candidate SHA", "width": 150},
+    {"id": "cleanroom_qa", "lane": "pipeline", "col": 3, "type": "backend", "label": "qa run: raw commands", "tag": "без wrapper", "width": 178},
+    {"id": "evidence", "lane": "pipeline", "col": 4, "type": "messagebus", "label": "QA evidence", "tag": "sanitized · accepted SHA", "width": 170},
+    {"id": "to_pr", "lane": "pr", "col": 4, "type": "external", "label": "/to-pull-requests", "tag": "manual", "width": 170},
+    {"id": "create_pr", "lane": "pr", "col": 5, "type": "external", "label": "Подтвердить → gh/glab pr create", "tag": "no auto-merge", "width": 210},
+    {"id": "qa_gate", "lane": "fallback", "col": 4, "type": "security", "label": "/qa-gate", "tag": "если evidence нет", "width": 170},
+    {"id": "test_summary", "lane": "fallback", "col": 5, "type": "backend", "label": "test_summary.py", "tag": "qa_gate_commands → summary", "width": 184}
+  ],
+  "edges": [
+    {"from": "developer", "to": "developer_checks", "label": "проверяет", "role": "main"},
+    {"from": "developer_checks", "to": "review", "label": "candidate SHA", "role": "main"},
+    {"from": "review", "to": "cleanroom_qa", "label": "после review", "role": "main", "variant": "emphasis"},
+    {"from": "cleanroom_qa", "to": "evidence", "label": "формирует", "role": "main"},
+    {"from": "evidence", "to": "to_pr", "label": "accepted", "role": "main"},
+    {"from": "to_pr", "to": "create_pr", "label": "evidence принято", "role": "main", "variant": "emphasis"},
+    {"from": "to_pr", "to": "qa_gate", "label": "нет evidence", "role": "branch", "variant": "dashed"},
+    {"from": "qa_gate", "to": "test_summary", "label": "для команд", "role": "branch"},
+    {"from": "test_summary", "to": "create_pr", "label": "PASS", "role": "return"}
+  ]
+}
