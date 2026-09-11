@@ -1,6 +1,6 @@
 # Диаграммы харнесса
 
-Четыре автономные интерактивные HTML-диаграммы. Рядом с каждой лежит редактируемая спецификация
+Пять автономных интерактивных HTML-диаграмм. Рядом с каждой лежит редактируемая спецификация
 Archify (`*.json`), а в `previews/` — статичное PNG той же диаграммы для Markdown, который не умеет
 рендерить HTML (например, README на GitHub).
 
@@ -10,6 +10,7 @@ Archify (`*.json`), а в `previews/` — статичное PNG той же д�
 | [Конвейер `/implement`](./implement-pipeline.workflow.html) | Пять гейтов одного тикета: архитектор → approve → разработчик → code review → approve → QA (с циклом на исправления) → итоговый отчёт → публикация. |
 | [Резолв runtime и dispatch](./backend-runtime.workflow.html) | Как назначение роли превращается в immutable brief, как выбирается транспорт (`orca` или `in-process`) и как dispatch подтверждает свою модель и живость. |
 | [Жизненный цикл batch](./backend-batch.lifecycle.html) | Состояния batch: `planned → awaiting-approval ↔ active → completed`, плюс выходы `blocked` и `failed`. |
+| [QA и создание PR](./qa-call-path.workflow.html) | Где `test_summary.py` вызывается в `/qa-gate`, какие QA-маршруты обходят обёртку и как явное подтверждение приводит к `gh`/`glab pr create`. |
 
 ## Как обновлять
 
