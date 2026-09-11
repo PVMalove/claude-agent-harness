@@ -195,7 +195,23 @@ def _project(repo: Path) -> dict[str, Any]:
 
 
 def _configured(repo: Path) -> bool:
-    return (repo / ".harness/orchestration.json").is_file()
+    """Whether the project actually states an orchestration configuration.
+
+    `harness init` seeds an intentionally empty template. A present-but-empty file states nothing,
+    yet taking the configured path on it makes every zone unknown and every role unassigned — a
+    freshly initialised project would be unable to start a batch at all, while deleting the file
+    would fix it. An empty template therefore means the same as no file: use the documented defaults.
+    """
+    path = repo / ".harness/orchestration.json"
+    if not path.is_file():
+        return False
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True  # let the real loader report the parse failure
+    if not isinstance(value, dict):
+        return True
+    return bool(value.get("backend_zones")) or bool(value.get("assignment_plans"))
 
 
 def _default_config(repo: Path) -> dict[str, Any]:
@@ -1034,7 +1050,13 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _settled(entry: dict[str, Any]) -> bool:
-    """A dispatch is settled once it reported and the coordinator decided on that report."""
+    """A dispatch is settled once nothing further can happen to it.
+
+    That is either a report the coordinator has decided on, or an abandonment — both are terminal.
+    Anything else, including a dispatch blocked on a model mismatch, is still open.
+    """
+    if entry.get("state") == "abandoned":
+        return True
     return entry.get("state") == "reported" and isinstance(entry.get("decision"), dict)
 
 
@@ -1093,9 +1115,12 @@ def abandon_batch(args: argparse.Namespace) -> dict[str, Any]:
     with _state_lock(root):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
-        if batch.get("state") in TERMINAL_BATCH_STATES:
-            raise CoordinatorError(f"batch is already {batch['state']} and needs no abandonment")
         open_dispatches = [item["dispatch_id"] for item in batch.get("dispatches", []) if not _settled(item)]
+        if batch.get("state") in TERMINAL_BATCH_STATES and not open_dispatches:
+            raise CoordinatorError(f"batch is already {batch['state']} and has nothing open to close")
+        # A terminal batch that still carries an open dispatch is a repair case: its state was moved
+        # without closing what it held, and that dispatch would otherwise be surfaced as live for
+        # ever. Closing the remainder is exactly this command's job.
         moment = _now()
         for entry in batch.get("dispatches", []):
             if _settled(entry):

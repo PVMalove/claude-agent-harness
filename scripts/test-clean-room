@@ -1533,7 +1533,25 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "--state-dir", str(wedge_state), "batch", "abandon", "--batch", wedged_batch,
         "--approved-by", "project coordinator", "--approved-at", "2026-09-09T16:00:40Z", "--reason", "again",
     ).returncode == 0:
-        sys.exit("coordinator abandoned an already terminal batch a second time")
+        sys.exit("coordinator abandoned a fully closed batch a second time")
+    # Repair case: a batch whose state was moved by hand without closing what it held. The open
+    # dispatch would otherwise be surfaced as live for ever.
+    hand_edited = json.loads((wedge_state / "batches" / f"{wedged_batch}.json").read_text(encoding="utf-8"))
+    hand_edited["dispatches"][0]["state"] = "dispatched"
+    (wedge_state / "batches" / f"{wedged_batch}.json").write_text(
+        json.dumps(hand_edited, ensure_ascii=False, indent=2) + chr(10), encoding="utf-8"
+    )
+    repaired = coordinator_run(
+        "--state-dir", str(wedge_state), "batch", "abandon", "--batch", wedged_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T16:00:50Z",
+        "--reason", "closing a dispatch left open by a hand-edited record",
+    )
+    if repaired.returncode != 0:
+        sys.exit("coordinator cannot close a dispatch left open on a terminal batch: " + repaired.stderr)
+    if json.loads(
+        (wedge_state / "batches" / f"{wedged_batch}.json").read_text(encoding="utf-8")
+    )["dispatches"][0]["state"] != "abandoned":
+        sys.exit("repair did not close the dangling dispatch")
     # Closing the old batch is what frees the ticket to be started clean.
     restart = coordinator_run(
         "--state-dir", str(wedge_state), "batch", "create", "--ticket", "#905",
@@ -1550,6 +1568,25 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     # invoking session supplies the role runtime, so an in-process pipeline needs no assignment plan.
     zero_config_state = test_root / "zero-config-state"
     saved_config = orchestration_config.read_text(encoding="utf-8")
+    # `harness init` seeds an intentionally empty template. A present-but-empty file states nothing,
+    # so it has to mean the same as no file: otherwise a freshly initialised project takes the
+    # configured path, finds no zone and no assignment, and cannot start a batch at all — while
+    # deleting the seeded file would fix it.
+    empty_seed = json.loads((ROOT / "harness" / "project" / "orchestration.json.tmpl").read_text(encoding="utf-8"))
+    if empty_seed.get("backend_zones") or empty_seed.get("assignment_plans"):
+        sys.exit("the orchestration seed is no longer empty; this scenario needs rewriting")
+    orchestration_config.write_text(json.dumps(empty_seed, indent=2) + "\n", encoding="utf-8")
+    subprocess.run(["git", "branch", "feature/issue-906-empty-seed"], cwd=orchestration_project, check=True)
+    seeded = coordinator_run(
+        "--state-dir", str(test_root / "empty-seed-state"), "batch", "create", "--ticket", "#906",
+        "--branch", "feature/issue-906-empty-seed", "--worktree", "issue-906-empty-seed",
+        "--definition-of-done", "implement the requested change", "--prohibited-change", "do not merge",
+    )
+    if seeded.returncode != 0:
+        sys.exit("the seeded empty orchestration config blocks a batch instead of falling back: " + seeded.stderr)
+    if json.loads(seeded.stdout)["zone"] != "repository":
+        sys.exit("an empty orchestration config did not fall back to the whole-repository default")
+
     orchestration_config.unlink()
     run_ok(HARNESS + ["health", str(orchestration_project)])
     subprocess.run(["git", "branch", "feature/issue-903-zero-config"], cwd=orchestration_project, check=True)
