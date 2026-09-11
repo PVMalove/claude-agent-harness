@@ -69,9 +69,16 @@ approvals for unrelated tickets.
     - Resolve the exact integration branch from the ticket's `## Integration Branch` section or,
       for a child ticket that omits it, from its parent epic. An absent value is a blocker; do not
       infer a branch from memory, the current checkout, or a service name.
-    - Create the batch's issue branch `feature/issue-<ID>-<slug>` from that integration branch, and
-      its isolated worktree (`docs/agents/worktrees.md`). The batch's branch must match
-      `branch_pattern`; the coordinator refuses a base or `integration/*` branch.
+    - Create the batch's issue branch `feature/issue-<ID>-<slug>` from that integration branch. It
+      must match `branch_pattern`; the coordinator refuses a base or `integration/*` branch.
+    - Create the batch's worktree for that branch with plain `git worktree add`, and **stay in the
+      main checkout**. This session is the coordinator, not a worker: its state lives in
+      `.harness/orchestration/state/` relative to `--repo`, so entering the worktree would fork that
+      state into a second copy and the batch you create there would be invisible from the repository
+      root. You only need the worktree's path — `batch create` takes it as `--worktree`.
+    - Do not use a worktree tool that switches this session into the tree, and do not edit
+      `.claude/settings.local.json` or any other tool configuration to make one behave. Changing a
+      project's configuration is not part of implementing a ticket.
 
 ## Phase 2: The batch
 

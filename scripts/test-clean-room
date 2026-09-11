@@ -335,6 +335,12 @@ def _run(test_root: Path):
         sys.exit("implement skill does not state the self-contained route check")
     if "Never reuse it, never delete it" not in installed_implement:
         sys.exit("implement skill has no rule for a leftover dispatch on the same ticket")
+    # The coordinator's state is resolved from --repo, so a session that switches into the batch's
+    # worktree forks that state into a second copy and loses sight of its own batch.
+    if "stay in the\n      main checkout" not in installed_implement:
+        sys.exit("implement skill does not keep the coordinator out of the batch worktree")
+    if "settings.local.json" not in installed_implement:
+        sys.exit("implement skill does not forbid editing tool configuration to provision a worktree")
     installed_pr_step = orchestration_project / ".harness" / "skills" / "to-pull-requests" / "SKILL.md"
     if not installed_pr_step.is_file():
         sys.exit("installed project is missing the to-pull-requests PR step")
