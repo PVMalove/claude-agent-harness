@@ -83,9 +83,28 @@ what you found: which batch, which role, what state, and how long it has been si
 A leftover dispatch from an earlier attempt is the exact situation this pipeline exists to catch, so
 treat it as evidence, not as debris. Never reuse it, never delete it, and never open a second batch
 beside it — the coordinator refuses an overlapping zone anyway, and a silent retry is how the
-original incident burned a usage window. The developer decides what happens: accept, retry, block or
-fail the open report so the old batch reaches a terminal state, or abandon this ticket for now. Only
-once nothing is open for the ticket do you continue.
+original incident burned a usage window. The developer decides what happens.
+
+Close the old batch through the CLI, never by editing anything under
+`.harness/orchestration/state/`. Those records are the audit trail; hand-editing them destroys the
+one thing this pipeline produces.
+
+- **Its report is in and awaiting a decision** — `batch decide` with `accept`, `override-warning`,
+  `retry`, `block` or `fail`, as usual.
+- **It can no longer report at all** — a worker that died before its model self-report never will,
+  and a batch with no pending report cannot be decided. That is what `batch abandon` is for:
+
+  ```bash
+  python .harness/orchestration/coordinator.py --repo . batch abandon \
+    --batch <batch-id> --approved-by '<кто>' --approved-at <ISO-8601> \
+    --reason '<почему решение больше недостижимо>'
+  ```
+
+  It requires an explicit approval and a reason, marks the batch `failed`, closes every open
+  dispatch, and deletes nothing. `batch list --open` shows what is still unclosed; `--ticket <id>`
+  narrows it to one ticket.
+
+Only once nothing is open for the ticket do you continue.
 
 Then read `.harness/orchestration/roles/` and `.harness/orchestration/playbook.md`. Propose one
 batch — ticket, issue branch/worktree, zone, Definition of Done, prohibitions, checks, dependencies,

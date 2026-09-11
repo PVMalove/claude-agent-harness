@@ -1466,6 +1466,86 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
 
     print("dispatch model self-report and watchdog verification passed")
 
+    # A worker that dies before confirming its model can never report, and a batch with no pending
+    # report can never be decided. Without a sanctioned way out, that batch stays open for good and
+    # the only remaining move is editing the state files by hand.
+    wedge_state = test_root / "wedged-state"
+    subprocess.run(["git", "branch", "feature/issue-905-wedged"], cwd=orchestration_project, check=True)
+    wedged_batch = json.loads(coordinator_run(
+        "--state-dir", str(wedge_state), "batch", "create", "--ticket", "#905",
+        "--branch", "feature/issue-905-wedged", "--worktree", "issue-905-wedged",
+        "--zone", "backend", "--definition-of-done", "implement the requested backend change",
+        "--prohibited-change", "do not merge",
+    ).stdout)["batch_id"]
+    coordinator_run(
+        "--state-dir", str(wedge_state), "batch", "approve", "--batch", wedged_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T16:00:00Z",
+    )
+    wedged_dispatch = json.loads(coordinator_run(
+        "--state-dir", str(wedge_state), "dispatch", "create", "--batch", wedged_batch,
+        "--role", "architect", "--approved-by", "project coordinator",
+        "--approved-at", "2026-09-09T16:00:10Z",
+    ).stdout)["dispatch_id"]
+    coordinator_run(
+        "--state-dir", str(wedge_state), "dispatch", "send", "--dispatch", wedged_dispatch,
+        "--adapter", str(fake_adapter),
+    )
+    for decision in ("fail", "block"):
+        if coordinator_run(
+            "--state-dir", str(wedge_state), "batch", "decide", "--batch", wedged_batch,
+            "--decision", decision, "--approved-by", "project coordinator",
+            "--approved-at", "2026-09-09T16:00:20Z",
+        ).returncode == 0:
+            sys.exit(f"batch decide --decision {decision} unexpectedly settled a batch with no report")
+
+    listed = coordinator_run("--state-dir", str(wedge_state), "batch", "list", "--open")
+    if listed.returncode != 0:
+        sys.exit("coordinator cannot list batches: " + listed.stderr)
+    entry = next((item for item in json.loads(listed.stdout)["batches"] if item["batch_id"] == wedged_batch), None)
+    if entry is None or entry["open_dispatches"] != [wedged_dispatch]:
+        sys.exit("batch list did not surface the stuck dispatch: " + listed.stdout[:200])
+
+    if coordinator_run(
+        "--state-dir", str(wedge_state), "batch", "abandon", "--batch", wedged_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T16:00:30Z", "--reason", "   ",
+    ).returncode == 0:
+        sys.exit("coordinator abandoned a batch without a recorded reason")
+
+    abandoned = coordinator_run(
+        "--state-dir", str(wedge_state), "batch", "abandon", "--batch", wedged_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T16:00:30Z",
+        "--reason", "orca worker died before the model self-report",
+    )
+    if abandoned.returncode != 0:
+        sys.exit("coordinator could not abandon an undecidable batch: " + abandoned.stderr)
+    if json.loads(abandoned.stdout)["abandoned_dispatches"] != [wedged_dispatch]:
+        sys.exit("abandonment did not name the dispatch it closed")
+    record = json.loads((wedge_state / "batches" / f"{wedged_batch}.json").read_text(encoding="utf-8"))
+    if record["state"] != "failed" or record["abandoned"]["reason"] != "orca worker died before the model self-report":
+        sys.exit("abandonment did not record its reason beside the approval: " + json.dumps(record["abandoned"]))
+    if [item["state"] for item in record["dispatches"]] != ["abandoned"]:
+        sys.exit("abandonment left the stuck dispatch open")
+    if json.loads(
+        (wedge_state / "dispatch-status" / f"{wedged_dispatch}.json").read_text(encoding="utf-8")
+    )["state"] != "abandoned":
+        sys.exit("abandonment did not close the dispatch's own status record")
+    if coordinator_run(
+        "--state-dir", str(wedge_state), "batch", "abandon", "--batch", wedged_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T16:00:40Z", "--reason", "again",
+    ).returncode == 0:
+        sys.exit("coordinator abandoned an already terminal batch a second time")
+    # Closing the old batch is what frees the ticket to be started clean.
+    restart = coordinator_run(
+        "--state-dir", str(wedge_state), "batch", "create", "--ticket", "#905",
+        "--branch", "feature/issue-905-wedged", "--worktree", "issue-905-wedged",
+        "--zone", "backend", "--definition-of-done", "implement the requested backend change",
+        "--prohibited-change", "do not merge",
+    )
+    if restart.returncode != 0:
+        sys.exit("an abandoned batch still blocks a fresh one for the same ticket: " + restart.stderr)
+
+    print("stuck-batch abandonment verification passed")
+
     # Zero project configuration is a supported default: the whole repository is the zone and the
     # invoking session supplies the role runtime, so an in-process pipeline needs no assignment plan.
     zero_config_state = test_root / "zero-config-state"
