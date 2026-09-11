@@ -430,7 +430,8 @@ opt-in, а отправить пользователя на `/fast-implement`.
 
 **`.harness/orchestration.json` не обязателен**: без него zone по умолчанию — весь репозиторий
 (`repository`), а `model`/`effort` роли берутся из текущей сессии и передаются в
-`dispatch create --model/--effort`.
+`dispatch create --model/--effort`. Начинайте coordinator и architect с `medium` effort; повышение
+допустимо только после явного решения разработчика для конкретного труднообратимого вопроса.
 
 Ключевые свойства конвейера:
 
@@ -447,7 +448,8 @@ opt-in, а отправить пользователя на `/fast-implement`.
 - **Транспорт — выбор проекта.** `assignment_plans.<role>.transport` = `orca` (isolated worker через
   `orca_adapter.py`) или `in-process` (субагент текущей сессии в worktree того же batch). Оба
   варианта работают с одним и тем же immutable brief и обязаны пройти model self-report. Без конфига
-  транспорт всегда `in-process`.
+  транспорт всегда `in-process`. Для него `dispatch send` лишь фиксирует handoff: следующим действием
+  coordinator немедленно запускает субагента по этому brief, не читая старые dispatch/report/template.
 - **Один тикет за раз.** Batch доводится до терминального состояния до старта следующего — это
   свойство процедуры `/implement`, а не новый lock в `coordinator.py`.
 - **Незакрытое состояние тикета предъявляется человеку.** Перед тем как предлагать batch, сессия

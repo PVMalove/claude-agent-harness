@@ -341,6 +341,24 @@ def _run(test_root: Path):
         sys.exit("implement skill does not keep the coordinator out of the batch worktree")
     if "settings.local.json" not in installed_implement:
         sys.exit("implement skill does not forbid editing tool configuration to provision a worktree")
+    for required_budget_rule in (
+        "Start `/implement` in a new, clean context",
+        "`medium` effort",
+        "immediately launch the role subagent",
+        "must not run the batch's full verification suite",
+    ):
+        if required_budget_rule not in installed_implement:
+            sys.exit(f"implement skill is missing token-budget rule: {required_budget_rule}")
+    installed_architect = (
+        orchestration_project / ".harness" / "orchestration" / "roles" / "architect.md"
+    ).read_text(encoding="utf-8")
+    normalized_architect = " ".join(installed_architect.split())
+    for required_architect_rule in (
+        "single concise architecture decision brief",
+        "must not run the batch's full verification suite",
+    ):
+        if required_architect_rule not in normalized_architect:
+            sys.exit(f"architect role is missing token-budget rule: {required_architect_rule}")
     installed_pr_step = orchestration_project / ".harness" / "skills" / "to-pull-requests" / "SKILL.md"
     if not installed_pr_step.is_file():
         sys.exit("installed project is missing the to-pull-requests PR step")
