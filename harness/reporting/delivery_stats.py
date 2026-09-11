@@ -30,6 +30,8 @@ if sys.version_info < MIN_PYTHON:
 MISSING = "нет данных"
 CLAUDE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 CODEX_FIELDS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens")
+# Pseudo-models the runtime writes for locally generated messages; never billed.
+NON_BILLABLE_MODELS = {"<synthetic>"}
 
 
 class StatsError(Exception):
@@ -439,6 +441,7 @@ def claude_usage(project_dirs: list, numbers: set) -> dict:
     last: Optional[datetime] = None
     quota: Any = None
     turns = 0
+    synthetic = 0
 
     transcripts = [path for directory in project_dirs for path in sorted(directory.glob("*.jsonl"))]
     for transcript in transcripts:
@@ -452,6 +455,12 @@ def claude_usage(project_dirs: list, numbers: set) -> dict:
                 continue
             usage = message.get("usage")
             if not isinstance(usage, dict):
+                continue
+            if message.get("model") in NON_BILLABLE_MODELS or record.get("isApiErrorMessage"):
+                # Locally generated notices ("you've hit your session limit"), not API turns: their
+                # usage is all zeros and no rate card can ever price them. Counting them would add a
+                # pseudo-model to the breakdown and to the unpriced list for no reason.
+                synthetic += 1
                 continue
             turns += 1
             sessions.add(record.get("sessionId") or transcript.stem)
@@ -487,6 +496,7 @@ def claude_usage(project_dirs: list, numbers: set) -> dict:
         "turns": turns,
         "sessions": len(sessions),
         "thinking_tokens": thinking,
+        "non_billable_turns": synthetic,
         "sidechain": sidechain,
         "first_activity": first.isoformat() if first else None,
         "last_activity": last.isoformat() if last else None,
@@ -576,15 +586,41 @@ def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple) -> dic
 # ----------------------------------------------------------------------------------------- cost
 
 
+def _rate(card: object, field: str) -> float:
+    if not isinstance(card, dict):
+        return 0.0
+    try:
+        return float(card.get(field, 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_priced(card: object) -> bool:
+    """A model is priced only when it carries a rate above zero.
+
+    The shipped template lists models at 0.0 so the shape is obvious. Treating those zeros as real
+    prices is what turns an unfilled card into a confident '0.00'.
+    """
+    return _rate(card, "input") > 0 or _rate(card, "output") > 0
+
+
 def load_rates(path: Optional[Path]) -> dict:
     if path is None or not path.is_file():
-        return {"status": MISSING, "reason": "тариф не настроен", "models": {}}
+        return {"status": MISSING, "reason": f"тариф не настроен: нет файла {path}", "models": {}}
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except ValueError as exc:
         raise StatsError(f"rate card is not valid JSON: {path}") from exc
     if not isinstance(value, dict) or not isinstance(value.get("models"), dict):
         raise StatsError("rate card must be an object with a models object")
+    if not any(_is_priced(card) for card in value["models"].values()):
+        # An untouched template is not a rate card: every price is 0.0. Reporting its total as a
+        # real 0.00 would be the tool asserting a number nobody gave it.
+        return {
+            "status": MISSING,
+            "reason": f"тариф не заполнен — все ставки нулевые: {path}",
+            "models": {},
+        }
     value.setdefault("status", "ok")
     return value
 
@@ -602,11 +638,13 @@ def estimate_cost(claude: dict, codex: dict, rates: dict) -> dict:
     def price(model: str, fresh: int, cache_write: int, cache_read: int, output: int) -> None:
         nonlocal total, uncached_total
         card = table.get(model)
-        if not isinstance(card, dict):
+        if not _is_priced(card):
+            # Includes a model left at the template's 0.0: absent from the card and priced at zero
+            # are the same statement — nobody said what this model costs.
             unpriced.append(model)
             return
-        rate_in = float(card.get("input", 0)) / 1_000_000
-        rate_out = float(card.get("output", 0)) / 1_000_000
+        rate_in = _rate(card, "input") / 1_000_000
+        rate_out = _rate(card, "output") / 1_000_000
         write_multiplier = float(card.get("cache_write_multiplier", 1.25))
         read_multiplier = float(card.get("cache_read_multiplier", 0.1))
         cost = (
