@@ -63,7 +63,9 @@ does not change state on a timeout by itself.
 The transport carrying a role — an externally dispatched isolated worker, or an in-process subagent
 of the coordinator session — is a project choice recorded in the assignment plan. It changes nothing
 above: the same immutable brief goes out, the same self-report and heartbeat are required, and the
-same completion report comes back.
+same completion report comes back. For an in-process handoff, `dispatch send` records the brief but
+does not create an independent runtime: the coordinator launches that subagent immediately as its
+next action, before any unrelated discovery.
 
 ## Immutable handoff brief
 

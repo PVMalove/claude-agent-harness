@@ -16,6 +16,16 @@ It is step 5 of the delivery chain — `/grill-with-docs` → `/to-spec` → `/t
 **`/implement <id>`** → `/to-pull-requests` — and it takes exactly one ticket from that
 decomposition.
 
+## Context and effort budget
+
+Start `/implement` in a new, clean context. If this session has completed unrelated exploration or
+another ticket, retain the ticket reference in the tracker and ask the developer to run `/clear`
+before beginning; do not carry old dispatches, reports, or exploratory output into this batch.
+
+Use `medium` effort for the coordinator and architect by default. A project assignment plan may
+declare its own effort; otherwise pass `--effort medium` when creating the architect dispatch. Use a
+higher effort only when the developer explicitly approves it for a named hard-to-reverse decision.
+
 ## Route selection
 
 `/implement` needs the coordinator CLI, which the harness installs into the project itself. Every
@@ -117,6 +127,11 @@ Then read `.harness/orchestration/roles/` and `.harness/orchestration/playbook.m
 batch — ticket, issue branch/worktree, zone, Definition of Done, prohibitions, checks, dependencies,
 risk gates — and show it to the developer.
 
+Keep this Gate 0 proposal compact: derive it from the current ticket, its direct dependencies, the
+role manifests, and the named project contract. Do not inspect old batch state or previous-role
+templates to reconstruct a new brief. State only observable acceptance criteria, the narrowest
+credible zone, explicit prohibitions, and the commands that developer and QA must later run.
+
 The brief is the only channel a dispatched role has, so this repo's own delivery rules must be
 written into the batch rather than assumed. Read `docs/agents/git-workflow.md` and carry its
 implementation contract into the `--definition-of-done` entries verbatim enough to be checkable. In
@@ -152,7 +167,10 @@ only: accept, override, retry, block, and fail remain coordinator decisions.
    trade-offs, risks, acceptance criteria, and the seams the tests should sit on — with repository
    evidence for each. **This report is what the human approves before any code is written.** The
    coordinator enforces the order: `dispatch create --role developer` fails until an architect
-   report for this batch has been accepted, so the step cannot be skipped from the CLI either.
+   report for this batch has been accepted, so the step cannot be skipped from the CLI either. Ask
+   for one concise decision brief; its completion report links to that brief rather than duplicating
+   it. The architect uses targeted evidence only and must not run the batch's full verification suite
+   merely to establish a baseline; developer and independent QA own those checks.
 2. **Developer.** `--role developer`, after the accepted architect report. It implements on the
    batch's own issue branch in its isolated worktree test-first — the failing test at the architect's
    seams before the code that satisfies it, when the batch's Definition of Done requires TDD — runs
@@ -194,9 +212,11 @@ python .harness/orchestration/coordinator.py --repo . dispatch status --batch <b
   silent and for how long. Do not silently keep waiting: a stalled dispatch spends the usage window
   and produces nothing.
 
-For an `in-process` transport, `dispatch send` takes no adapter: this session runs the role as a
-subagent against the same immutable brief, in the batch's worktree, and the subagent performs the
-self-report and heartbeat calls itself. For `orca`, pass `--adapter .harness/orchestration/orca_adapter.py`.
+For an `in-process` transport, `dispatch send` takes no adapter: it records the handoff, then this
+session must immediately launch the role subagent against the same immutable brief in the batch's
+worktree. Launch is the next action after `dispatch send`; do not inspect old templates, reports, or
+configuration before it. The subagent performs the self-report and heartbeat calls itself. For
+`orca`, pass `--adapter .harness/orchestration/orca_adapter.py`.
 
 ## Phase 5: PR & wrap-up
 
