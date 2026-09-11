@@ -30,6 +30,8 @@ if sys.version_info < MIN_PYTHON:
 MISSING = "нет данных"
 CLAUDE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 CODEX_FIELDS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens")
+# Pseudo-models the runtime writes for locally generated messages; never billed.
+NON_BILLABLE_MODELS = {"<synthetic>"}
 
 
 class StatsError(Exception):
@@ -354,31 +356,81 @@ def _ref_exists(repo: Path, ref: str) -> bool:
 # --------------------------------------------------------------------------------- claude usage
 
 
-def claude_project_dir(home: Path, repo: Path) -> Optional[Path]:
-    """Claude Code stores one directory per project, named after the project path."""
+CWD_PROBE_TRANSCRIPTS = 5
+CWD_PROBE_RECORDS = 200
+
+
+def _slug_variants(repo: Path) -> list:
+    """Directory names the runtime may have used for one project path.
+
+    The naming scheme is not a published contract and has changed: it used to replace only path
+    separators, and now also folds characters such as "_" into "-". A project renamed by that change
+    keeps its old directory, so both spellings have to be considered.
+    """
+    text = str(repo)
+    variants = [re.sub(r"[\\/:]", "-", text), re.sub(r"[^A-Za-z0-9-]", "-", text)]
+    seen = []
+    for variant in variants:
+        if variant not in seen:
+            seen.append(variant)
+    return seen
+
+
+def _has_transcripts(directory: Path) -> bool:
+    """Whether a directory holds session data, rather than only leftovers such as memory/."""
+    try:
+        return any(path.is_file() and path.stat().st_size > 0 for path in directory.glob("*.jsonl"))
+    except OSError:
+        return False
+
+
+def _records_repo(directory: Path, repo: Path) -> bool:
+    """Whether this directory's transcripts were recorded in this repository.
+
+    Probes several transcripts, newest first, and several records of each: the working directory is
+    not on every record, so inspecting only the first one misses it almost always.
+    """
+    try:
+        transcripts = sorted(directory.glob("*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
+    except OSError:
+        return False
+    for transcript in transcripts[:CWD_PROBE_TRANSCRIPTS]:
+        for index, record in enumerate(_read_jsonl(transcript)):
+            if index >= CWD_PROBE_RECORDS:
+                break
+            if _same_path(record.get("cwd"), repo):
+                return True
+    return False
+
+
+def claude_project_dirs(home: Path, repo: Path) -> list:
+    """Every transcript directory belonging to this repository.
+
+    A directory qualifies only when it actually contains transcripts: an empty directory left behind
+    by a renaming, whose name still matches the expected slug, must not shadow the real one. More
+    than one directory can qualify at once, and all of them count — otherwise an epic that spans a
+    rename silently loses the half recorded under the older name.
+    """
     root = home / ".claude/projects"
     if not root.is_dir():
-        return None
-    slug = re.sub(r"[\\/:]", "-", str(repo))
-    direct = root / slug
-    if direct.is_dir():
-        return direct
-    # The naming scheme is not a published contract; fall back to matching the recorded cwd.
-    for candidate in sorted(root.iterdir()):
-        if not candidate.is_dir():
+        return []
+    try:
+        candidates = [path for path in sorted(root.iterdir()) if path.is_dir()]
+    except OSError:
+        return []
+    named = {root / slug for slug in _slug_variants(repo)}
+    found = []
+    for candidate in candidates:
+        if not _has_transcripts(candidate):
             continue
-        for transcript in sorted(candidate.glob("*.jsonl"))[:1]:
-            for record in _read_jsonl(transcript):
-                cwd = record.get("cwd")
-                if _same_path(cwd, repo):
-                    return candidate
-                break
-    return None
+        if candidate in named or _records_repo(candidate, repo):
+            found.append(candidate)
+    return found
 
 
-def claude_usage(project_dir: Optional[Path], numbers: set) -> dict:
+def claude_usage(project_dirs: list, numbers: set) -> dict:
     """Token usage of every Claude Code turn recorded on a branch belonging to a ticket in scope."""
-    if project_dir is None:
+    if not project_dirs:
         return {"status": MISSING, "reason": "нет транскриптов Claude Code для этого репозитория"}
     branches_seen: set = set()
     models: dict = {}
@@ -389,8 +441,10 @@ def claude_usage(project_dir: Optional[Path], numbers: set) -> dict:
     last: Optional[datetime] = None
     quota: Any = None
     turns = 0
+    synthetic = 0
 
-    for transcript in sorted(project_dir.glob("*.jsonl")):
+    transcripts = [path for directory in project_dirs for path in sorted(directory.glob("*.jsonl"))]
+    for transcript in transcripts:
         for record in _read_jsonl(transcript):
             branch = record.get("gitBranch")
             if ticket_of_branch(branch) not in numbers:
@@ -401,6 +455,12 @@ def claude_usage(project_dir: Optional[Path], numbers: set) -> dict:
                 continue
             usage = message.get("usage")
             if not isinstance(usage, dict):
+                continue
+            if message.get("model") in NON_BILLABLE_MODELS or record.get("isApiErrorMessage"):
+                # Locally generated notices ("you've hit your session limit"), not API turns: their
+                # usage is all zeros and no rate card can ever price them. Counting them would add a
+                # pseudo-model to the breakdown and to the unpriced list for no reason.
+                synthetic += 1
                 continue
             turns += 1
             sessions.add(record.get("sessionId") or transcript.stem)
@@ -430,11 +490,13 @@ def claude_usage(project_dir: Optional[Path], numbers: set) -> dict:
     return {
         "status": "ok",
         "attribution": "exact",
+        "sources": [str(directory) for directory in project_dirs],
         "branches": sorted(branches_seen),
         "models": models,
         "turns": turns,
         "sessions": len(sessions),
         "thinking_tokens": thinking,
+        "non_billable_turns": synthetic,
         "sidechain": sidechain,
         "first_activity": first.isoformat() if first else None,
         "last_activity": last.isoformat() if last else None,
@@ -524,15 +586,41 @@ def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple) -> dic
 # ----------------------------------------------------------------------------------------- cost
 
 
+def _rate(card: object, field: str) -> float:
+    if not isinstance(card, dict):
+        return 0.0
+    try:
+        return float(card.get(field, 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_priced(card: object) -> bool:
+    """A model is priced only when it carries a rate above zero.
+
+    The shipped template lists models at 0.0 so the shape is obvious. Treating those zeros as real
+    prices is what turns an unfilled card into a confident '0.00'.
+    """
+    return _rate(card, "input") > 0 or _rate(card, "output") > 0
+
+
 def load_rates(path: Optional[Path]) -> dict:
     if path is None or not path.is_file():
-        return {"status": MISSING, "reason": "тариф не настроен", "models": {}}
+        return {"status": MISSING, "reason": f"тариф не настроен: нет файла {path}", "models": {}}
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except ValueError as exc:
         raise StatsError(f"rate card is not valid JSON: {path}") from exc
     if not isinstance(value, dict) or not isinstance(value.get("models"), dict):
         raise StatsError("rate card must be an object with a models object")
+    if not any(_is_priced(card) for card in value["models"].values()):
+        # An untouched template is not a rate card: every price is 0.0. Reporting its total as a
+        # real 0.00 would be the tool asserting a number nobody gave it.
+        return {
+            "status": MISSING,
+            "reason": f"тариф не заполнен — все ставки нулевые: {path}",
+            "models": {},
+        }
     value.setdefault("status", "ok")
     return value
 
@@ -550,11 +638,13 @@ def estimate_cost(claude: dict, codex: dict, rates: dict) -> dict:
     def price(model: str, fresh: int, cache_write: int, cache_read: int, output: int) -> None:
         nonlocal total, uncached_total
         card = table.get(model)
-        if not isinstance(card, dict):
+        if not _is_priced(card):
+            # Includes a model left at the template's 0.0: absent from the card and priced at zero
+            # are the same statement — nobody said what this model costs.
             unpriced.append(model)
             return
-        rate_in = float(card.get("input", 0)) / 1_000_000
-        rate_out = float(card.get("output", 0)) / 1_000_000
+        rate_in = _rate(card, "input") / 1_000_000
+        rate_out = _rate(card, "output") / 1_000_000
         write_multiplier = float(card.get("cache_write_multiplier", 1.25))
         read_multiplier = float(card.get("cache_read_multiplier", 0.1))
         cost = (
@@ -638,8 +728,11 @@ def build_report(args: argparse.Namespace) -> dict:
     numbers = scope["numbers"]
 
     home = Path(args.home).expanduser() if args.home else Path.home()
-    project_dir = Path(args.claude_projects) if args.claude_projects else claude_project_dir(home, repo)
-    claude = claude_usage(project_dir, numbers)
+    if args.claude_projects:
+        project_dirs = [Path(item) for item in args.claude_projects]
+    else:
+        project_dirs = claude_project_dirs(home, repo)
+    claude = claude_usage(project_dirs, numbers)
     window = (_moment(claude.get("first_activity")), _moment(claude.get("last_activity")))
     codex_root = Path(args.codex_sessions) if args.codex_sessions else home / ".codex/sessions"
     codex = codex_usage(codex_root, repo, window)
@@ -775,7 +868,11 @@ def main() -> int:
     )
     parser.add_argument("--rates", help="rate card JSON; defaults to .harness/reporting/rates.json")
     parser.add_argument("--home", help="home directory holding agent session logs")
-    parser.add_argument("--claude-projects", help="explicit Claude Code project transcript directory")
+    parser.add_argument(
+        "--claude-projects",
+        action="append",
+        help="explicit transcript directory; repeatable when a project has more than one",
+    )
     parser.add_argument("--codex-sessions", help="explicit Codex sessions directory")
     parser.add_argument("--html", help="write a standalone HTML dashboard to this path")
     parser.add_argument("--json", action="store_true", help="print the full report as JSON")

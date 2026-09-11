@@ -4,7 +4,8 @@
     "Цены здесь намеренно нулевые: инструмент не знает вашего плана и не должен выдумывать цифры.",
     "input/output — цена за миллион токенов в валюте currency.",
     "cache_write_multiplier и cache_read_multiplier — множители к input-ставке для записи и чтения кеша.",
-    "Модель без записи в models не считается: она попадёт в unpriced_models отчёта."
+    "Модель без записи в models не считается: она попадёт в unpriced_models отчёта.",
+    "Ставка 0.0 = «не задано»: такая модель попадёт в unpriced_models, а не посчитается бесплатной."
   ],
   "currency": "USD",
   "effective_date": "не заполнено",
@@ -23,6 +24,12 @@
       "cache_read_multiplier": 0.1
     },
     "gpt-5.6-luna": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_write_multiplier": 1.0,
+      "cache_read_multiplier": 0.1
+    },
+    "gpt-5.6-sol": {
       "input": 0.0,
       "output": 0.0,
       "cache_write_multiplier": 1.0,

@@ -1554,6 +1554,13 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             json.dumps({"type": "assistant", "gitBranch": "feature/issue-999-other", "sessionId": "s2",
                         "timestamp": "2026-01-01T10:30:00.000Z",
                         "message": {"model": "model-a", "usage": {"input_tokens": 777, "output_tokens": 777}}}),
+            # A locally generated notice, not an API turn: no rate card can ever price it.
+            json.dumps({"type": "assistant", "gitBranch": "feature/issue-7-widget", "sessionId": "s1",
+                        "timestamp": "2026-01-01T10:45:00.000Z", "isApiErrorMessage": True,
+                        "message": {"model": "<synthetic>",
+                                    "usage": {"input_tokens": 0, "output_tokens": 0,
+                                              "cache_creation_input_tokens": 0,
+                                              "cache_read_input_tokens": 0}}}),
             "{ truncated json",
         ]) + "\n", encoding="utf-8")
 
@@ -1599,6 +1606,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("delivery-stats mis-summed Claude usage: " + json.dumps(models))
     if report["claude"]["turns"] != 2:
         sys.exit("delivery-stats counted turns from another ticket's branch or a truncated record")
+    if report["claude"]["non_billable_turns"] != 1:
+        sys.exit("delivery-stats did not separate the locally generated, never-billed turn")
     if report["cache"]["cache_read"] != 10000 or report["cache"]["fresh"] != 150:
         sys.exit("delivery-stats mis-split the cache buckets: " + json.dumps(report["cache"]))
     if report["cost"]["status"] != "нет данных":
@@ -1611,11 +1620,26 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if codex["models"]["codex-model"]["output_tokens"] != 60:
         sys.exit("delivery-stats double-counted a repeated Codex ordinal or read another repository")
 
+    # An untouched template is all zeros. Reporting its total as a real 0.00 would assert a number
+    # nobody supplied, so the whole section has to read as missing and name the file to fill in.
+    template = test_root / "stats-rates-template.json"
+    template.write_text(
+        (ROOT / "harness" / "reporting" / "rates.example.json").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    blank = stats_run("--rates", str(template))
+    if blank.returncode != 0:
+        sys.exit("delivery-stats failed on an unfilled rate card: " + blank.stderr)
+    blank_cost = json.loads(blank.stdout)["cost"]
+    if blank_cost["status"] != "нет данных" or "stats-rates-template.json" not in blank_cost.get("reason", ""):
+        sys.exit("delivery-stats treated an unfilled rate card as real prices: " + json.dumps(blank_cost, ensure_ascii=False))
+
     rates_file = test_root / "stats-rates.json"
     rates_file.write_text(json.dumps({
         "currency": "USD", "effective_date": "2026-01-01", "source": "clean-room fixture",
         "models": {"model-a": {"input": 1.0, "output": 10.0,
-                               "cache_write_multiplier": 2.0, "cache_read_multiplier": 0.5}},
+                               "cache_write_multiplier": 2.0, "cache_read_multiplier": 0.5},
+                   # Present but left at zero: "not stated", never "free".
+                   "model-b": {"input": 0.0, "output": 0.0}},
     }) + "\n", encoding="utf-8")
     priced = stats_run("--rates", str(rates_file), "--html", str(test_root / "stats.html"))
     if priced.returncode != 0:
@@ -1646,6 +1670,29 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("delivery-stats zeroed missing runtime data instead of marking it absent")
     if blind_report["volume"]["totals"]["insertions"] != 2:
         sys.exit("delivery-stats lost git volume when session logs were absent")
+
+    # The runtime's transcript directory name is not a published contract and has changed: a project
+    # renamed by that change keeps its old, now-empty directory. Matching the expected name and
+    # stopping there found that leftover and reported "no data" while the real transcripts sat next
+    # to it, so discovery has to require actual transcripts and fall back to the recorded cwd.
+    stale = test_root / "stats-home" / ".claude" / "projects" / re.sub(r"[\\/:]", "-", str(stats_repo))
+    (stale / "memory").mkdir(parents=True)
+    (stale / "memory" / "MEMORY.md").write_text("leftover\n", encoding="utf-8")
+    discovered = subprocess.run(
+        [sys.executable, str(stats_cli), "--repo", str(stats_repo), "--epic", "7", "--tickets", "7",
+         "--home", str(test_root / "stats-home"), "--json"],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    if discovered.returncode != 0:
+        sys.exit("delivery-stats failed while discovering transcripts: " + discovered.stderr)
+    found = json.loads(discovered.stdout)["claude"]
+    if found["status"] != "ok" or found["turns"] != 2:
+        sys.exit(
+            "delivery-stats stopped at the empty directory whose name matched the expected slug: "
+            + json.dumps(found, ensure_ascii=False)
+        )
+    if not any(source.endswith("stats") for source in found["sources"]):
+        sys.exit("delivery-stats did not record which transcript directory it read: " + json.dumps(found["sources"]))
 
     print("delivery-stats verification passed")
 
