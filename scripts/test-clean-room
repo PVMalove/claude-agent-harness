@@ -327,6 +327,14 @@ def _run(test_root: Path):
     # through the batch Definition of Done, so the skill has to keep putting it there.
     if "write the failing test first" not in installed_implement:
         sys.exit("implement skill does not carry the repository TDD contract into the batch")
+    # The packager CLI is not installed into a harnessed project, so a route precondition that shells
+    # out to `harness health` can never pass there and would send every project to /fast-implement.
+    if re.search(r"(?<![\w-])harness health(?![\w-])", installed_implement.split("`harness health` is not runnable")[0]):
+        sys.exit("implement skill still gates its route on a command absent from a harnessed project")
+    if "coordinator.py --repo . dispatch status" not in installed_implement:
+        sys.exit("implement skill does not state the self-contained route check")
+    if "Never reuse it, never delete it" not in installed_implement:
+        sys.exit("implement skill has no rule for a leftover dispatch on the same ticket")
     installed_pr_step = orchestration_project / ".harness" / "skills" / "to-pull-requests" / "SKILL.md"
     if not installed_pr_step.is_file():
         sys.exit("installed project is missing the to-pull-requests PR step")
@@ -954,8 +962,13 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     watchdog = coordinator_run("dispatch", "status", "--batch", batch_id, "--stale-after", "60")
     if watchdog.returncode != 0:
         sys.exit("coordinator could not report dispatch liveness: " + watchdog.stderr)
-    if architect_id not in json.loads(watchdog.stdout)["stale"]:
+    watchdog_report = json.loads(watchdog.stdout)
+    if architect_id not in watchdog_report["stale"]:
         sys.exit("dispatch watchdog did not flag a silent dispatch as stale")
+    # A coordinator session inspecting leftovers has to see whose ticket each dispatch belongs to
+    # before it proposes a new batch for that ticket.
+    if {entry.get("ticket") for entry in watchdog_report["dispatches"]} != {"#901"}:
+        sys.exit("dispatch status does not name the ticket of each dispatch: " + watchdog.stdout[:200])
     if coordinator_run("dispatch", "heartbeat", "--dispatch", architect_id).returncode != 0:
         sys.exit("coordinator rejected a heartbeat from a live dispatch")
     if json.loads(coordinator_run("dispatch", "status", "--dispatch", architect_id, "--stale-after", "60").stdout)["stale"]:
@@ -1453,10 +1466,127 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
 
     print("dispatch model self-report and watchdog verification passed")
 
+    # A worker that dies before confirming its model can never report, and a batch with no pending
+    # report can never be decided. Without a sanctioned way out, that batch stays open for good and
+    # the only remaining move is editing the state files by hand.
+    wedge_state = test_root / "wedged-state"
+    subprocess.run(["git", "branch", "feature/issue-905-wedged"], cwd=orchestration_project, check=True)
+    wedged_batch = json.loads(coordinator_run(
+        "--state-dir", str(wedge_state), "batch", "create", "--ticket", "#905",
+        "--branch", "feature/issue-905-wedged", "--worktree", "issue-905-wedged",
+        "--zone", "backend", "--definition-of-done", "implement the requested backend change",
+        "--prohibited-change", "do not merge",
+    ).stdout)["batch_id"]
+    coordinator_run(
+        "--state-dir", str(wedge_state), "batch", "approve", "--batch", wedged_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T16:00:00Z",
+    )
+    wedged_dispatch = json.loads(coordinator_run(
+        "--state-dir", str(wedge_state), "dispatch", "create", "--batch", wedged_batch,
+        "--role", "architect", "--approved-by", "project coordinator",
+        "--approved-at", "2026-09-09T16:00:10Z",
+    ).stdout)["dispatch_id"]
+    coordinator_run(
+        "--state-dir", str(wedge_state), "dispatch", "send", "--dispatch", wedged_dispatch,
+        "--adapter", str(fake_adapter),
+    )
+    for decision in ("fail", "block"):
+        if coordinator_run(
+            "--state-dir", str(wedge_state), "batch", "decide", "--batch", wedged_batch,
+            "--decision", decision, "--approved-by", "project coordinator",
+            "--approved-at", "2026-09-09T16:00:20Z",
+        ).returncode == 0:
+            sys.exit(f"batch decide --decision {decision} unexpectedly settled a batch with no report")
+
+    listed = coordinator_run("--state-dir", str(wedge_state), "batch", "list", "--open")
+    if listed.returncode != 0:
+        sys.exit("coordinator cannot list batches: " + listed.stderr)
+    entry = next((item for item in json.loads(listed.stdout)["batches"] if item["batch_id"] == wedged_batch), None)
+    if entry is None or entry["open_dispatches"] != [wedged_dispatch]:
+        sys.exit("batch list did not surface the stuck dispatch: " + listed.stdout[:200])
+
+    if coordinator_run(
+        "--state-dir", str(wedge_state), "batch", "abandon", "--batch", wedged_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T16:00:30Z", "--reason", "   ",
+    ).returncode == 0:
+        sys.exit("coordinator abandoned a batch without a recorded reason")
+
+    abandoned = coordinator_run(
+        "--state-dir", str(wedge_state), "batch", "abandon", "--batch", wedged_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T16:00:30Z",
+        "--reason", "orca worker died before the model self-report",
+    )
+    if abandoned.returncode != 0:
+        sys.exit("coordinator could not abandon an undecidable batch: " + abandoned.stderr)
+    if json.loads(abandoned.stdout)["abandoned_dispatches"] != [wedged_dispatch]:
+        sys.exit("abandonment did not name the dispatch it closed")
+    record = json.loads((wedge_state / "batches" / f"{wedged_batch}.json").read_text(encoding="utf-8"))
+    if record["state"] != "failed" or record["abandoned"]["reason"] != "orca worker died before the model self-report":
+        sys.exit("abandonment did not record its reason beside the approval: " + json.dumps(record["abandoned"]))
+    if [item["state"] for item in record["dispatches"]] != ["abandoned"]:
+        sys.exit("abandonment left the stuck dispatch open")
+    if json.loads(
+        (wedge_state / "dispatch-status" / f"{wedged_dispatch}.json").read_text(encoding="utf-8")
+    )["state"] != "abandoned":
+        sys.exit("abandonment did not close the dispatch's own status record")
+    if coordinator_run(
+        "--state-dir", str(wedge_state), "batch", "abandon", "--batch", wedged_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T16:00:40Z", "--reason", "again",
+    ).returncode == 0:
+        sys.exit("coordinator abandoned a fully closed batch a second time")
+    # Repair case: a batch whose state was moved by hand without closing what it held. The open
+    # dispatch would otherwise be surfaced as live for ever.
+    hand_edited = json.loads((wedge_state / "batches" / f"{wedged_batch}.json").read_text(encoding="utf-8"))
+    hand_edited["dispatches"][0]["state"] = "dispatched"
+    (wedge_state / "batches" / f"{wedged_batch}.json").write_text(
+        json.dumps(hand_edited, ensure_ascii=False, indent=2) + chr(10), encoding="utf-8"
+    )
+    repaired = coordinator_run(
+        "--state-dir", str(wedge_state), "batch", "abandon", "--batch", wedged_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T16:00:50Z",
+        "--reason", "closing a dispatch left open by a hand-edited record",
+    )
+    if repaired.returncode != 0:
+        sys.exit("coordinator cannot close a dispatch left open on a terminal batch: " + repaired.stderr)
+    if json.loads(
+        (wedge_state / "batches" / f"{wedged_batch}.json").read_text(encoding="utf-8")
+    )["dispatches"][0]["state"] != "abandoned":
+        sys.exit("repair did not close the dangling dispatch")
+    # Closing the old batch is what frees the ticket to be started clean.
+    restart = coordinator_run(
+        "--state-dir", str(wedge_state), "batch", "create", "--ticket", "#905",
+        "--branch", "feature/issue-905-wedged", "--worktree", "issue-905-wedged",
+        "--zone", "backend", "--definition-of-done", "implement the requested backend change",
+        "--prohibited-change", "do not merge",
+    )
+    if restart.returncode != 0:
+        sys.exit("an abandoned batch still blocks a fresh one for the same ticket: " + restart.stderr)
+
+    print("stuck-batch abandonment verification passed")
+
     # Zero project configuration is a supported default: the whole repository is the zone and the
     # invoking session supplies the role runtime, so an in-process pipeline needs no assignment plan.
     zero_config_state = test_root / "zero-config-state"
     saved_config = orchestration_config.read_text(encoding="utf-8")
+    # `harness init` seeds an intentionally empty template. A present-but-empty file states nothing,
+    # so it has to mean the same as no file: otherwise a freshly initialised project takes the
+    # configured path, finds no zone and no assignment, and cannot start a batch at all — while
+    # deleting the seeded file would fix it.
+    empty_seed = json.loads((ROOT / "harness" / "project" / "orchestration.json.tmpl").read_text(encoding="utf-8"))
+    if empty_seed.get("backend_zones") or empty_seed.get("assignment_plans"):
+        sys.exit("the orchestration seed is no longer empty; this scenario needs rewriting")
+    orchestration_config.write_text(json.dumps(empty_seed, indent=2) + "\n", encoding="utf-8")
+    subprocess.run(["git", "branch", "feature/issue-906-empty-seed"], cwd=orchestration_project, check=True)
+    seeded = coordinator_run(
+        "--state-dir", str(test_root / "empty-seed-state"), "batch", "create", "--ticket", "#906",
+        "--branch", "feature/issue-906-empty-seed", "--worktree", "issue-906-empty-seed",
+        "--definition-of-done", "implement the requested change", "--prohibited-change", "do not merge",
+    )
+    if seeded.returncode != 0:
+        sys.exit("the seeded empty orchestration config blocks a batch instead of falling back: " + seeded.stderr)
+    if json.loads(seeded.stdout)["zone"] != "repository":
+        sys.exit("an empty orchestration config did not fall back to the whole-repository default")
+
     orchestration_config.unlink()
     run_ok(HARNESS + ["health", str(orchestration_project)])
     subprocess.run(["git", "branch", "feature/issue-903-zero-config"], cwd=orchestration_project, check=True)

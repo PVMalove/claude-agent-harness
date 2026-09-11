@@ -248,6 +248,35 @@ risks, blockers и следующее решение coordinator-а. Для read
 изменились scope, zone, DoD, assignment или proof, текущий dispatch заканчивается и создаётся новый.
 Повтор после `blocked` или `failed` — тоже новый dispatch с новым ID и brief.
 
+### Инвентарь и закрытие тупикового batch
+
+Посмотреть, что вообще заведено и что не закрыто:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch list --open
+python .harness/orchestration/coordinator.py --repo . batch list --ticket '#123'
+```
+
+Обычный путь к терминальному состоянию — `batch decide`. Но он требует ровно один отчёт, ожидающий
+решения, а отчёт требует живой dispatch с подтверждённой моделью. Воркер, умерший до self-report, не
+отчитается никогда — и такой batch не закрыть ни `fail`, ни `block`. Для этого случая есть отдельная
+команда:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch abandon \
+  --batch <batch-id> --approved-by 'имя утверждающего' --approved-at 2026-09-11T06:00:00Z \
+  --reason 'воркер умер до model self-report, решение недостижимо'
+```
+
+Она требует явного approval и непустой причины, переводит batch в `failed`, помечает все незакрытые
+dispatch как `abandoned` и записывает решение рядом с остальными. **Она ничего не удаляет**: immutable
+brief, отчёты и QA-артефакты остаются на месте. Повторно применить её к уже терминальному batch
+нельзя.
+
+Править файлы в `.harness/orchestration/state/` руками не следует ни при каких обстоятельствах: эти
+записи и есть доказательство, ради которого существует весь маршрут. Если штатной команды для вашего
+случая нет — это дефект инструмента, а не повод открыть редактор.
+
 ### Model self-report и dispatch watchdog
 
 Отправленный dispatch не считается живым сам по себе. Первым действием после получения brief роль

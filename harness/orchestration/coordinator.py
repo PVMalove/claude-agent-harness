@@ -31,6 +31,7 @@ SENSITIVE_KEY = re.compile(r"(?:api[_-]?key|credential|password|secret|token)", 
 ROLE_MODES = {"write", "read-only"}
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
 DECISIONS = {"accept", "override-warning", "retry", "block", "fail"}
+TERMINAL_BATCH_STATES = {"completed", "failed", "blocked"}
 DISPATCH_PURPOSES = {"work", "publish"}
 ROLE_TRANSPORTS = {"orca", "in-process"}
 DEFAULT_ZONE = "repository"
@@ -194,7 +195,23 @@ def _project(repo: Path) -> dict[str, Any]:
 
 
 def _configured(repo: Path) -> bool:
-    return (repo / ".harness/orchestration.json").is_file()
+    """Whether the project actually states an orchestration configuration.
+
+    `harness init` seeds an intentionally empty template. A present-but-empty file states nothing,
+    yet taking the configured path on it makes every zone unknown and every role unassigned — a
+    freshly initialised project would be unable to start a batch at all, while deleting the file
+    would fix it. An empty template therefore means the same as no file: use the documented defaults.
+    """
+    path = repo / ".harness/orchestration.json"
+    if not path.is_file():
+        return False
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True  # let the real loader report the parse failure
+    if not isinstance(value, dict):
+        return True
+    return bool(value.get("backend_zones")) or bool(value.get("assignment_plans"))
 
 
 def _default_config(repo: Path) -> dict[str, Any]:
@@ -1032,6 +1049,113 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
     return batch
 
 
+def _settled(entry: dict[str, Any]) -> bool:
+    """A dispatch is settled once nothing further can happen to it.
+
+    That is either a report the coordinator has decided on, or an abandonment — both are terminal.
+    Anything else, including a dispatch blocked on a model mismatch, is still open.
+    """
+    if entry.get("state") == "abandoned":
+        return True
+    return entry.get("state") == "reported" and isinstance(entry.get("decision"), dict)
+
+
+def list_batches(args: argparse.Namespace) -> dict[str, Any]:
+    """Inventory of every batch the coordinator holds, with what is still open in each.
+
+    Without this there is no way to find the leftovers of an earlier attempt short of reading the
+    state directory by hand, which is exactly how hand-edited state starts.
+    """
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    with _state_lock(root):
+        batches = []
+        for path in sorted((root / "batches").glob("batch-*.json")):
+            batch = _read_object(path, "batch record")
+            dispatches = batch.get("dispatches", [])
+            open_dispatches = [item["dispatch_id"] for item in dispatches if not _settled(item)]
+            state = batch.get("state")
+            if args.ticket and batch.get("ticket") != args.ticket:
+                continue
+            if args.state and state != args.state:
+                continue
+            if args.open and state in TERMINAL_BATCH_STATES:
+                continue
+            batches.append({
+                "batch_id": batch.get("batch_id"),
+                "ticket": batch.get("ticket"),
+                "branch": batch.get("branch"),
+                "zone": batch.get("zone"),
+                "state": state,
+                "created_at": batch.get("created_at"),
+                "terminal": state in TERMINAL_BATCH_STATES,
+                "dispatches": len(dispatches),
+                "open_dispatches": open_dispatches,
+                "next_action": batch.get("next_action"),
+            })
+    return {"batches": batches}
+
+
+def abandon_batch(args: argparse.Namespace) -> dict[str, Any]:
+    """Close a batch that can no longer reach a decision, with a recorded reason.
+
+    A dispatch whose worker died before confirming its model can never report, and a batch with no
+    pending report can never be decided — so an interrupted attempt would otherwise stay open for
+    good, and the only way out was editing the state files by hand. This is that way out, kept inside
+    the audit trail: nothing is deleted, the open dispatches are named, and the reason is stored
+    beside the approval.
+    """
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    approval = _approval(args)
+    reason = args.reason.strip() if _non_empty(args.reason) else ""
+    if not reason:
+        raise CoordinatorError("abandoning a batch requires a recorded reason")
+    _reject_sensitive({"reason": reason}, "abandon reason")
+    with _state_lock(root):
+        batch = _load_batch(root, args.batch)
+        _validate_batch_integrity(root, batch)
+        open_dispatches = [item["dispatch_id"] for item in batch.get("dispatches", []) if not _settled(item)]
+        if batch.get("state") in TERMINAL_BATCH_STATES and not open_dispatches:
+            raise CoordinatorError(f"batch is already {batch['state']} and has nothing open to close")
+        # A terminal batch that still carries an open dispatch is a repair case: its state was moved
+        # without closing what it held, and that dispatch would otherwise be surfaced as live for
+        # ever. Closing the remainder is exactly this command's job.
+        moment = _now()
+        for entry in batch.get("dispatches", []):
+            if _settled(entry):
+                continue
+            entry["state"] = "abandoned"
+            status_path = _dispatch_status_path(root, entry["dispatch_id"])
+            if status_path.exists():
+                status = _load_dispatch_status(root, entry["dispatch_id"])
+                status.update({"state": "abandoned", "updated_at": moment})
+                _replace(status_path, status)
+        batch["state"] = "failed"
+        batch.pop("next_action", None)
+        batch.pop("required_next_role", None)
+        batch["abandoned"] = {
+            "approved_by": approval["approved_by"],
+            "approved_at": approval["approved_at"],
+            "abandoned_at": moment,
+            "reason": reason,
+            "open_dispatches": open_dispatches,
+        }
+        batch.setdefault("coordinator_decisions", []).append({
+            "decision": "abandon",
+            "approved_by": approval["approved_by"],
+            "approved_at": approval["approved_at"],
+            "note": reason,
+        })
+        _replace(_batch_path(root, batch["batch_id"]), batch)
+    return {
+        "batch_id": batch["batch_id"],
+        "ticket": batch["ticket"],
+        "state": "failed",
+        "abandoned_dispatches": open_dispatches,
+    }
+
+
 def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -1346,6 +1470,9 @@ def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
             entries.append({
                 "dispatch_id": dispatch["dispatch_id"],
                 "batch_id": dispatch["batch_id"],
+                # The coordinator session needs to see whose work a leftover dispatch belongs to
+                # before it proposes a new batch for the same ticket.
+                "ticket": dispatch["ticket"],
                 "role": dispatch["role"],
                 "state": status.get("state"),
                 "transport": dispatch.get("resolved_transport"),
@@ -1855,6 +1982,21 @@ def parser() -> argparse.ArgumentParser:
     approve.add_argument("--approved-by", required=True)
     approve.add_argument("--approved-at", required=True)
     approve.set_defaults(handler=approve_batch)
+
+    batch_list = batch_commands.add_parser("list")
+    _common(batch_list)
+    batch_list.add_argument("--ticket", help="only batches of this ticket")
+    batch_list.add_argument("--state", help="only batches in this state")
+    batch_list.add_argument("--open", action="store_true", help="hide batches already in a terminal state")
+    batch_list.set_defaults(handler=list_batches)
+
+    batch_abandon = batch_commands.add_parser("abandon")
+    _common(batch_abandon)
+    batch_abandon.add_argument("--batch", required=True)
+    batch_abandon.add_argument("--approved-by", required=True)
+    batch_abandon.add_argument("--approved-at", required=True)
+    batch_abandon.add_argument("--reason", required=True, help="why this batch can no longer be decided")
+    batch_abandon.set_defaults(handler=abandon_batch)
 
     decide = batch_commands.add_parser("decide")
     _common(decide)
