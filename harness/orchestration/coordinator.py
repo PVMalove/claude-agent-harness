@@ -25,10 +25,14 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+MODULE_ROOT = Path(__file__).resolve().parent
+if str(MODULE_ROOT) not in sys.path:
+    sys.path.insert(0, str(MODULE_ROOT))
+from contract import ContractError, load_role_manifest, resolve_assignment, validate_brief_policy
+
 
 STATE_REL = Path(".harness/orchestration/state")
 SENSITIVE_KEY = re.compile(r"(?:api[_-]?key|credential|password|secret|token)", re.IGNORECASE)
-ROLE_MODES = {"write", "read-only"}
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
 DECISIONS = {"accept", "override-warning", "retry", "block", "fail"}
 TERMINAL_BATCH_STATES = {"completed", "failed", "blocked"}
@@ -361,36 +365,10 @@ def _trigger_patterns(trigger: str) -> tuple[str, ...]:
 
 
 def _role(repo: Path, name: str) -> dict[str, Any]:
-    path = repo / ".harness/orchestration/roles" / f"{name}.md"
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise CoordinatorError(f"role manifest {name!r} cannot be read") from exc
-    match = re.match(r"\A---\r?\n(?P<body>.*?)\r?\n---(?:\r?\n|$)", text, re.DOTALL)
-    if not match:
-        raise CoordinatorError(f"role manifest {name!r} has no valid frontmatter")
-    metadata: dict[str, Any] = {}
-    current: Optional[str] = None
-    for line in match.group("body").splitlines():
-        if not line.strip():
-            continue
-        item = re.fullmatch(r"\s+-\s+(.+?)\s*", line)
-        if item:
-            if current is None:
-                raise CoordinatorError(f"role manifest {name!r} has an orphan list item")
-            metadata.setdefault(current, []).append(item.group(1))
-            continue
-        field = re.fullmatch(r"([a-z_]+):\s*(.*?)\s*", line)
-        if not field:
-            raise CoordinatorError(f"role manifest {name!r} has invalid frontmatter")
-        key, value = field.groups()
-        current = key if not value else None
-        metadata[key] = [] if not value else value
-    if metadata.get("name") != name or metadata.get("mode") not in ROLE_MODES:
-        raise CoordinatorError(f"role manifest {name!r} has invalid name or mode")
-    if not isinstance(metadata.get("required_capabilities"), list):
-        raise CoordinatorError(f"role manifest {name!r} has no required capabilities")
-    return metadata
+        return load_role_manifest(repo / ".harness/orchestration/roles" / f"{name}.md")
+    except ContractError as exc:
+        raise CoordinatorError(str(exc)) from exc
 
 
 def _validate_branch(repo: Path, branch: str) -> None:
@@ -427,14 +405,6 @@ def _developer_verification_commands(config: dict[str, Any]) -> list[str]:
     return _strings(commands, "developer_verification_commands", allow_empty=True)
 
 
-def _paths_within_zone(paths: list[str], zone_paths: list[str]) -> bool:
-    def inside(path: str, boundary: str) -> bool:
-        prefix = boundary[:-2] if boundary.endswith("**") else boundary
-        return path == boundary or path.startswith(prefix)
-
-    return all(any(inside(path, boundary) for boundary in zone_paths) for path in paths)
-
-
 def _resolve_assignment(
     repo: Path,
     config: dict[str, Any],
@@ -458,56 +428,14 @@ def _resolve_assignment(
         # No project-owned provider profile exists, so the only honest transport is the invoking
         # session itself; an Orca worker would have no agent to start.
         return role, {"paths": ["**"]}, DEFAULT_PROFILE, session_model.strip(), session_effort.strip(), "in-process"
-    assignments = config.get("assignment_plans")
-    zones = config.get("backend_zones")
-    profiles = config.get("provider_profiles")
-    if not isinstance(assignments, dict) or not isinstance(zones, dict) or not isinstance(profiles, dict):
-        raise CoordinatorError("project orchestration config has invalid assignments, zones or profiles")
-    plan = assignments.get(role_name)
-    if not isinstance(plan, dict) or plan.get("zone") != zone_name:
-        raise CoordinatorError(f"role {role_name!r} is not assigned to zone {zone_name!r}")
-    # An omitted transport must not surprise a coordinator session by launching an external
-    # worker.  Orca remains available, but a project selects it explicitly per role.
-    transport = plan.get("transport", "in-process")
-    if transport not in ROLE_TRANSPORTS:
-        raise CoordinatorError(f"role {role_name!r} has an invalid transport")
-    zone = zones.get(zone_name)
-    paths = zone.get("paths") if isinstance(zone, dict) else None
-    if not isinstance(paths, list) or not paths or not all(_non_empty(item) for item in paths):
-        raise CoordinatorError(f"backend zone {zone_name!r} is invalid")
-    assigned_paths = plan.get("write_paths", paths)
-    if not isinstance(assigned_paths, list) or not assigned_paths or not all(_non_empty(item) for item in assigned_paths):
-        raise CoordinatorError(f"role {role_name!r} has invalid write_paths")
-    if not _paths_within_zone(assigned_paths, paths):
-        raise CoordinatorError(f"role {role_name!r} write_paths must remain inside backend zone {zone_name!r}")
-    if role.get("mode") == "read-only":
-        assigned_paths = []
-    runtime_plans = plan.get("runtimes")
-    if not isinstance(runtime_plans, dict):
-        raise CoordinatorError(f"role {role_name!r} has no runtime assignments")
-    runtime_plan = runtime_plans.get(runtime_name)
-    if not isinstance(runtime_plan, dict):
-        raise CoordinatorError(f"role {role_name!r} is not assigned to runtime {runtime_name!r}")
-    profile_ids = runtime_plan.get("profiles")
-    if not isinstance(profile_ids, list) or not profile_ids or not _non_empty(profile_ids[0]):
-        raise CoordinatorError(f"role {role_name!r} has no provider profile")
-    profile_id = profile_ids[0]
-    profile = profiles.get(profile_id)
-    required = set(role.get("required_capabilities", []))
-    capabilities = profile.get("capabilities") if isinstance(profile, dict) else None
-    if not isinstance(profile, dict):
-        raise CoordinatorError(f"provider profile {profile_id!r} is invalid")
-    if not isinstance(capabilities, list) or not required.intersection(capabilities):
-        raise CoordinatorError(f"provider profile {profile_id!r} is incompatible with role {role_name!r}")
-    role_model = runtime_plan.get("model")
-    role_effort = runtime_plan.get("effort")
-    if not _non_empty(role_model):
-        raise CoordinatorError(f"assignment plan for role {role_name!r} has an invalid model")
-    if not _non_empty(role_effort):
-        raise CoordinatorError(f"assignment plan for role {role_name!r} has an invalid effort")
-    resolved_zone = dict(zone)
-    resolved_zone["paths"] = assigned_paths
-    return role, resolved_zone, profile_id, role_model, role_effort, transport
+    try:
+        assignment = resolve_assignment(config, role, role_name, zone_name, runtime_name)
+    except ContractError as exc:
+        raise CoordinatorError(str(exc)) from exc
+    return (
+        assignment["role"], assignment["zone"], assignment["profile_id"], assignment["model"],
+        assignment["effort"], assignment["transport"],
+    )
 
 
 def _batch_path(root: Path, batch_id: str) -> Path:
@@ -811,27 +739,35 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
     )
     if dispatch["verification_commands"] != expected_commands:
         raise CoordinatorError("dispatch record verification_commands do not match its batch and role")
-    _validate_branch(repo, dispatch["branch"])
-    # In zero-config mode the brief itself is the only record of the session-supplied runtime, so
-    # it is replayed here; brief_sha256 above already protects it from being edited.
-    role, zone, profile_id, model, effort, transport = _resolve_assignment(
-        repo, config, dispatch["role"], batch["zone"], dispatch["resolved_runtime"],
-        session_model=dispatch["resolved_model"], session_effort=dispatch["resolved_effort"],
-    )
-    if (
-        dispatch["access"] != role["mode"]
-        or dispatch["resolved_provider_profile"] != profile_id
-        or dispatch["resolved_model"] != model
-        or dispatch["resolved_effort"] != effort
-        or dispatch["resolved_transport"] != transport
-    ):
-        raise CoordinatorError("dispatch record does not match the role assignment")
-    expected_paths = zone["paths"] if role["mode"] == "write" else []
-    if dispatch["write_paths"] != expected_paths:
-        raise CoordinatorError("dispatch record write paths do not match the role boundary")
-    approval = dispatch.get("coordinator_approval")
-    if not isinstance(approval, dict) or set(approval) != {"approved_by", "approved_at"} or not all(_non_empty(value) for value in approval.values()):
-        raise CoordinatorError("dispatch record has invalid coordinator approval")
+    if _configured(repo):
+        try:
+            validate_brief_policy(
+                dispatch,
+                _project(repo),
+                config,
+                repo / ".harness/orchestration/roles",
+            )
+        except ContractError as exc:
+            raise CoordinatorError(str(exc)) from exc
+    else:
+        _validate_branch(repo, dispatch["branch"])
+        # In zero-config mode the brief itself is the only record of the session-supplied runtime,
+        # so it is replayed here; brief_sha256 above already protects it from being edited.
+        role, zone, profile_id, model, effort, transport = _resolve_assignment(
+            repo, config, dispatch["role"], batch["zone"], dispatch["resolved_runtime"],
+            session_model=dispatch["resolved_model"], session_effort=dispatch["resolved_effort"],
+        )
+        if (
+            dispatch["access"] != role["mode"]
+            or dispatch["resolved_provider_profile"] != profile_id
+            or dispatch["resolved_model"] != model
+            or dispatch["resolved_effort"] != effort
+            or dispatch["resolved_transport"] != transport
+        ):
+            raise CoordinatorError("dispatch record does not match the role assignment")
+        expected_paths = zone["paths"] if role["mode"] == "write" else []
+        if dispatch["write_paths"] != expected_paths:
+            raise CoordinatorError("dispatch record write paths do not match the role boundary")
     candidate = dispatch.get("candidate_commit")
     if dispatch["role"] in {"code-review", "qa"} and not isinstance(candidate, str):
         raise CoordinatorError("review and QA dispatches must pin a candidate commit")

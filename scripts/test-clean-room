@@ -745,6 +745,9 @@ def _run(test_root: Path):
     adapter_path = orchestration_root / "orca_adapter.py"
     if not adapter_path.is_file():
         sys.exit("backend-orchestration Orca adapter missing")
+    contract_path = orchestration_root / "contract.py"
+    if not contract_path.is_file():
+        sys.exit("backend-orchestration shared contract module missing")
 
     fake_orca = test_root / "fake-orca.py"
     fake_orca_log = test_root / "fake-orca-log.jsonl"
@@ -804,6 +807,41 @@ else:
         "dependencies": ["approved project config"],
         "coordinator_approval": {"approved_by": "project coordinator", "approved_at": "2026-09-09T12:00:00Z"},
     }
+
+    # The portable policy contract is the shared public seam.  Model, zone and capability
+    # mistakes must be rejected before a coordinator or runtime adapter can interpret them.
+    contract_probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import copy, importlib.util, json, sys\n"
+                "from pathlib import Path\n"
+                "spec = importlib.util.spec_from_file_location('contract', sys.argv[1])\n"
+                "contract = importlib.util.module_from_spec(spec)\n"
+                "sys.modules[spec.name] = contract\n"
+                "spec.loader.exec_module(contract)\n"
+                "config = json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))\n"
+                "role = contract.load_role_manifest(Path(sys.argv[3]))\n"
+                "for mutate in (\n"
+                "  lambda value: value['assignment_plans']['developer']['runtimes']['codex'].__setitem__('model', 'invalid model'),\n"
+                "  lambda value: value['assignment_plans']['developer'].__setitem__('zone', 'missing-zone'),\n"
+                "  lambda value: value['provider_profiles']['backend-default'].__setitem__('capabilities', ['independent-verification']),\n"
+                "):\n"
+                "  invalid = copy.deepcopy(config); mutate(invalid)\n"
+                "  try: contract.resolve_assignment(invalid, role, 'developer', 'backend', 'codex')\n"
+                "  except contract.ContractError: pass\n"
+                "  else: raise SystemExit('contract accepted invalid assignment policy')\n"
+            ),
+            str(contract_path),
+            str(orchestration_config),
+            str(orchestration_root / "roles" / "developer.md"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if contract_probe.returncode != 0:
+        sys.exit(contract_probe.stderr or contract_probe.stdout or "shared contract policy probe failed")
     brief_path = test_root / "approved-dispatch.json"
     brief_path.write_text(json.dumps(approved_brief, indent=2) + "\n", encoding="utf-8")
 
