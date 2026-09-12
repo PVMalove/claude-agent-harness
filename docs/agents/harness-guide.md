@@ -604,6 +604,11 @@ Claude Code, сессии Codex, историю git и трекер, — пиш�
 python .harness/reporting/delivery_stats.py --repo . --epic 81 --html docs/reports/epic-81.html
 ```
 
+Для сопоставимых завершённых эпиков можно сохранить versioned baseline через
+`--save-baseline docs/reports/epic-81.baseline.json`, а в следующем отчёте передать его с
+`--baseline <файл>`. Dashboard и JSON тогда показывают provider totals обеих сторон вместе с
+`exact`/`estimated` attribution; разница не вычисляется, если telemetry хотя бы одной стороны нет.
+
 - **Область** берётся от эпика: `gh` отдаёт sub-issues, из их номеров выводятся ветки
   `feature/issue-<ID>-*`. Матчинг идёт по номеру тикета в имени ветки, а не по существующим ref'ам,
   поэтому отчёт работает и после того, как слитые ветки удалены. Объём кода при этом берётся из PR

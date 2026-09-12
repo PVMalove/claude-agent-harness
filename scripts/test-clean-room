@@ -1865,7 +1865,9 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     # delivery-stats reads local session logs and git history and must never invent a figure: a
     # missing rate card, a missing runtime log and an unattributable Codex session each have to come
     # back as "no data" rather than as zero.
-    stats_cli = ROOT / "harness" / "reporting" / "delivery_stats.py"
+    # Run the resource from an actually installed pvmalove-suite harness, not the source tree.
+    # This keeps delivery-stats coverage on the installed-harness seam it promises to users.
+    stats_cli = pv_project / ".harness" / "reporting" / "delivery_stats.py"
     if not stats_cli.is_file():
         sys.exit("delivery-stats CLI missing")
     stats_repo = test_root / "stats_project"
@@ -1940,11 +1942,11 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                                 "info": {"last_token_usage": {"input_tokens": 5000, "output_tokens": 5000}}}}) + "\n",
         encoding="utf-8")
 
-    def stats_run(*arguments):
+    def stats_run(*arguments, claude_projects=claude_dir):
         return subprocess.run(
             [sys.executable, str(stats_cli), "--repo", str(stats_repo), "--epic", "7",
              "--tickets", "7", "--home", str(test_root / "stats-home"),
-             "--claude-projects", str(claude_dir), "--json", *arguments],
+             "--claude-projects", str(claude_projects), "--json", *arguments],
             capture_output=True, text=True, encoding="utf-8",
         )
 
@@ -1973,11 +1975,63 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if codex["models"]["codex-model"]["output_tokens"] != 60:
         sys.exit("delivery-stats double-counted a repeated Codex ordinal or read another repository")
 
+    # A saved report is a portable baseline for a later, comparable epic.  Comparison must retain
+    # the provenance of both sides: exact Claude branch attribution, estimated Codex window
+    # attribution, and missing telemetry must never become a numeric zero or a computed delta.
+    baseline_path = test_root / "delivery-stats-baseline.json"
+    saved = stats_run("--save-baseline", str(baseline_path))
+    if saved.returncode != 0:
+        sys.exit("delivery-stats could not save a baseline: " + saved.stderr)
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    if baseline.get("schema_version") != 1:
+        sys.exit("delivery-stats saved baseline without a versioned contract")
+    compared = stats_run("--baseline", str(baseline_path))
+    if compared.returncode != 0:
+        sys.exit("delivery-stats could not compare a saved baseline: " + compared.stderr)
+    comparison = json.loads(compared.stdout).get("comparison")
+    if not isinstance(comparison, dict):
+        sys.exit("delivery-stats did not add comparison data to the current report")
+    if comparison["baseline"]["providers"]["claude"]["attribution"] != "exact":
+        sys.exit("delivery-stats lost exact attribution on the baseline")
+    if comparison["current"]["providers"]["codex"]["attribution"] != "estimated":
+        sys.exit("delivery-stats lost estimated attribution on the current report")
+    missing_baseline = json.loads(json.dumps(baseline))
+    missing_baseline["providers"]["codex"] = {"status": "нет данных", "reason": "fixture missing telemetry"}
+    missing_path = test_root / "delivery-stats-missing-baseline.json"
+    missing_path.write_text(json.dumps(missing_baseline), encoding="utf-8")
+    missing_compared = stats_run("--baseline", str(missing_path))
+    if missing_compared.returncode != 0:
+        sys.exit("delivery-stats failed while comparing missing telemetry: " + missing_compared.stderr)
+    missing_comparison = json.loads(missing_compared.stdout)["comparison"]
+    if missing_comparison["baseline"]["providers"]["codex"]["status"] != "нет данных":
+        sys.exit("delivery-stats invented telemetry for a missing baseline provider")
+    if missing_comparison["delta"]["providers"]["codex"] != "нет данных":
+        sys.exit("delivery-stats calculated a delta from missing telemetry")
+
+    incomplete_dir = test_root / "stats-home" / ".claude" / "projects" / "incomplete"
+    incomplete_dir.mkdir()
+    (incomplete_dir / "incomplete.jsonl").write_text(
+        json.dumps({
+            "type": "assistant", "gitBranch": "feature/issue-7-widget", "sessionId": "incomplete",
+            "timestamp": "2026-01-01T12:00:00.000Z", "cwd": str(stats_repo),
+            "message": {"model": "model-a", "usage": {"input_tokens": 100}},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    incomplete_path = test_root / "delivery-stats-incomplete-baseline.json"
+    incomplete = stats_run("--save-baseline", str(incomplete_path), claude_projects=incomplete_dir)
+    if incomplete.returncode != 0:
+        sys.exit("delivery-stats failed while recording incomplete provider telemetry: " + incomplete.stderr)
+    incomplete_baseline = json.loads(incomplete_path.read_text(encoding="utf-8"))
+    if incomplete_baseline["providers"]["claude"]["status"] != "нет данных":
+        sys.exit("delivery-stats converted incomplete Claude telemetry into a numeric baseline")
+    shutil.rmtree(incomplete_dir)
+
     # An untouched template is all zeros. Reporting its total as a real 0.00 would assert a number
     # nobody supplied, so the whole section has to read as missing and name the file to fill in.
     template = test_root / "stats-rates-template.json"
     template.write_text(
-        (ROOT / "harness" / "reporting" / "rates.example.json").read_text(encoding="utf-8"), encoding="utf-8"
+        (stats_cli.parent / "rates.example.json").read_text(encoding="utf-8"), encoding="utf-8"
     )
     blank = stats_run("--rates", str(template))
     if blank.returncode != 0:
@@ -1994,7 +2048,9 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                    # Present but left at zero: "not stated", never "free".
                    "model-b": {"input": 0.0, "output": 0.0}},
     }) + "\n", encoding="utf-8")
-    priced = stats_run("--rates", str(rates_file), "--html", str(test_root / "stats.html"))
+    priced = stats_run(
+        "--rates", str(rates_file), "--baseline", str(baseline_path), "--html", str(test_root / "stats.html")
+    )
     if priced.returncode != 0:
         sys.exit("delivery-stats failed with a rate card: " + priced.stderr)
     cost = json.loads(priced.stdout)["cost"]
@@ -2008,6 +2064,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("delivery-stats dashboard is not self-contained")
     if "оценка" not in dashboard:
         sys.exit("delivery-stats dashboard does not label the estimated Codex figure")
+    if "Сравнение baseline" not in dashboard or "exact" not in dashboard or "estimated" not in dashboard:
+        sys.exit("delivery-stats dashboard does not render comparison attribution for both sides")
 
     empty_home = test_root / "stats-empty-home"
     empty_home.mkdir()
