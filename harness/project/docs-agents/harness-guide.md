@@ -8,6 +8,10 @@ state находится в [current-state.md](./current-state.md). Этот г�
 
 Разбивает разработку с AI-агентами на строгие фазы — от устранения неопределённости через спецификацию и тикетирование до TDD-реализации вертикальных слайсов и автоматического ревью (три сквозных примера — раздел 14) — плюс метки триажа (раздел 8), проектные надстройки `qa-gate`/`pr-composer` (раздел 6) и детерминированные hooks (раздел 9) поверх апстрима.
 
+![Навигация по Agent Harness: установка, работа, проверка](../diagrams/previews/harness-guide-navigation.workflow.png)
+
+Редактируемая спецификация и интерактивная версия схемы: [Archify JSON](../diagrams/harness-guide-navigation.workflow.json) и [HTML](../diagrams/harness-guide-navigation.workflow.html).
+
 ---
 
 ## 0. Установка и подключение

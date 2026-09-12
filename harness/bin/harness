@@ -1143,7 +1143,7 @@ def scaffold_pvmalove_extras(
     through getattr with a fallback rather than assuming they're present."""
     written: list[str] = []
     differing: list[Path] = []
-    force_seed = getattr(args, "force_seed_files", False)
+    force_seed = getattr(args, "force_seed_files", False) or getattr(args, "force", False)
 
     for doc in sorted((PROJECT_TEMPLATE_DIR / "docs-agents").glob("*.md")):
         result = _copy_if_absent(doc, repo / "docs/agents" / doc.name, force=force_seed, differing=differing)
@@ -1174,19 +1174,20 @@ def scaffold_pvmalove_extras(
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(template_text, encoding="utf-8", newline="\n")
         written.append(str(settings))
-        record_integration(
-            repo,
-            identifier="pvmalove-suite-hooks",
-            kind="hook",
-            runtimes=["claude"],
-            config=Path(".claude/settings.local.json"),
-            secret_refs=[],
-            verify=(
-                "Open a fresh Claude Code session and confirm a guarded action "
-                "(e.g. a direct commit to the base branch) is blocked by the wired hooks."
-            ),
-        )
-        written.append(str(repo / INTEGRATIONS_REL))
+        
+    record_integration(
+        repo,
+        identifier="pvmalove-suite-hooks",
+        kind="hook",
+        runtimes=["claude"],
+        config=Path(".claude/settings.local.json"),
+        secret_refs=[],
+        verify=(
+            "Open a fresh Claude Code session and confirm a guarded action "
+            "(e.g. a direct commit to the base branch) is blocked by the wired hooks."
+        ),
+    )
+    written.append(str(repo / INTEGRATIONS_REL))
 
     project_json = repo / ".harness/project.json"
     if not project_json.exists():
