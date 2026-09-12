@@ -706,7 +706,9 @@ ORCHESTRATION_CONFIG_REQUIRED_FIELDS = (
     "concurrency_budget",
     "verification_commands",
 )
-ORCHESTRATION_CONFIG_ALLOWED_FIELDS = frozenset(ORCHESTRATION_CONFIG_REQUIRED_FIELDS) | {"$schema"}
+ORCHESTRATION_CONFIG_ALLOWED_FIELDS = frozenset(ORCHESTRATION_CONFIG_REQUIRED_FIELDS) | {
+    "$schema", "developer_verification_commands",
+}
 ROLE_METADATA_FIELDS = frozenset({"name", "mode", "required_capabilities", "risk_triggers"})
 ROLE_TRANSPORTS = frozenset({"orca", "in-process"})
 CODE_REVIEW_REQUIRED_RISK_TRIGGERS = frozenset(
@@ -990,6 +992,9 @@ def validate_orchestration_config(repo: Path, problems: list[str]) -> None:
     commands = data.get("verification_commands")
     if not _string_list(commands):
         problems.append("orchestration verification_commands must be a list of strings")
+    developer_commands = data.get("developer_verification_commands")
+    if developer_commands is not None and not _string_list(developer_commands):
+        problems.append("orchestration developer_verification_commands must be a list of strings when provided")
 
 
 def record_integration(
@@ -1355,7 +1360,8 @@ def cmd_update(args: argparse.Namespace) -> int:
     selected = selected_capabilities(args.capability or lock.get("capabilities"))
     result = snapshot_diff(repo, selected)
     blocked = result.get("local_changed", []) + result.get("conflict", [])
-    if blocked and not args.force:
+    force_managed = args.force or args.force_managed_files
+    if blocked and not force_managed:
         print_diff(result)
         print("\n[ВНИМАНИЕ] Обнаружены изменённые стандартные скиллы (дрейф):")
         for b in blocked:
@@ -1364,7 +1370,8 @@ def cmd_update(args: argparse.Namespace) -> int:
         print(f"  git diff {' '.join(blocked)}")
         print("\nВыберите действие:")
         print("  ЗАМЕНИТЬ (сбросить ваши правки до версии из апстрима):")
-        print("    harness update --force")
+        print("    harness update --force-managed-files")
+        print("    (или --force, если также нужно перезаписать seed-файлы)")
         print("  ОСТАВИТЬ (сохранить ваши правки):")
         print("    (обновление прервано, ваши файлы не тронуты)")
         fail("update aborted due to local skill changes (drift).")
@@ -1376,8 +1383,8 @@ def cmd_update(args: argparse.Namespace) -> int:
         if path.is_file():
             path.unlink()
 
-    written = write_snapshot(repo, selected, force=args.force)
-    ensure_links(repo, replace=args.force, fix_hint="re-run with --force")
+    written = write_snapshot(repo, selected, force=force_managed)
+    ensure_links(repo, replace=force_managed, fix_hint="re-run with --force or --force-managed-files")
     if PVMALOVE_CAPABILITY in selected or BACKEND_ORCHESTRATION_CAPABILITY in selected:
         written.extend(
             scaffold_pvmalove_extras(
@@ -1547,6 +1554,11 @@ def parser() -> argparse.ArgumentParser:
     update.add_argument("repo")
     update.add_argument("--capability", action="append")
     update.add_argument("--force", action="store_true")
+    update.add_argument(
+        "--force-managed-files",
+        action="store_true",
+        help="overwrite only managed snapshot files; preserve project-owned seed files",
+    )
     update.add_argument("--force-seed-files", action="store_true", help="overwrite seed files even if present")
     _add_pvmalove_args(update)
     update.set_defaults(func=cmd_update)

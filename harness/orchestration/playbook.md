@@ -61,11 +61,18 @@ than its declared threshold. A stale dispatch is escalated to the human as a blo
 does not change state on a timeout by itself.
 
 The transport carrying a role — an externally dispatched isolated worker, or an in-process subagent
-of the coordinator session — is a project choice recorded in the assignment plan. It changes nothing
+of the coordinator session — is a project choice recorded in the assignment plan. An omitted
+transport resolves to `in-process`; `orca` must be selected explicitly before an external worker can
+start. It changes nothing
 above: the same immutable brief goes out, the same self-report and heartbeat are required, and the
 same completion report comes back. For an in-process handoff, `dispatch send` records the brief but
 does not create an independent runtime: the coordinator launches that subagent immediately as its
 next action, before any unrelated discovery.
+
+An `approved` dispatch that has not yet been sent may be cancelled with recorded approval and reason.
+The brief remains immutable evidence, its batch returns to `awaiting-approval`, and the coordinator
+creates a new approved brief only after the corrected assignment is reviewed. `batch abandon` is for
+a dispatch that cannot report, not for an unsent configuration mistake.
 
 ## Immutable handoff brief
 
@@ -82,7 +89,9 @@ It must contain, at minimum:
   are never write targets;
 - `Definition of Done`: observable acceptance criteria and the expected role output;
 - `prohibited changes`: paths, operations, or decisions outside the declared scope;
-- `verification commands`: exact project commands and any mandatory risk-review gate;
+- `verification commands`: exact project commands and any mandatory risk-review gate. A developer
+  work dispatch may use focused developer commands; clean-room QA always uses the full verification
+  commands;
 - `dependencies and assumptions`: known blockers, required inputs, and their owner;
 - `coordinator approval`: approving person, timestamp, and the approved concurrency decision.
 

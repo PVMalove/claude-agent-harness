@@ -49,6 +49,14 @@
         "minLength": 1
       },
       "description": "Project commands a coordinator requires as orchestration proof."
+    },
+    "developer_verification_commands": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Optional focused commands for a developer work dispatch. When omitted, verification_commands remains the backward-compatible developer and clean-room QA list."
     }
   },
   "definitions": {
@@ -108,8 +116,8 @@
         },
         "transport": {
           "enum": ["orca", "in-process"],
-          "default": "orca",
-          "description": "How this role is executed: an Orca-dispatched isolated worker, or an in-process subagent of the coordinator session. Both consume the same immutable brief and must pass the model self-report."
+          "default": "in-process",
+          "description": "How this role is executed: an explicitly selected Orca-dispatched isolated worker, or an in-process subagent of the coordinator session. Both consume the same immutable brief and must pass the model self-report."
         },
         "runtimes": {
           "type": "object",

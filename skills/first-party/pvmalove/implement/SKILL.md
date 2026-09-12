@@ -42,6 +42,10 @@ Prove the route with one command, which doubles as the inventory of what is alre
 python .harness/orchestration/coordinator.py --repo . dispatch status
 ```
 
+This is the only CLI discovery command: use the command forms in this skill verbatim rather than
+probing `--help` or composing flags from a nearby subcommand. In particular, planning approval is
+only `batch approve`; `batch create` receives no approval flags.
+
 Exit 0 means the CLI runs and its state directory is readable. Do not go looking for a `harness`
 command: the packager CLI lives in the harness repository, not in a harnessed project, so
 `harness health` is not runnable here and its absence says nothing about this route.
@@ -108,6 +112,9 @@ one thing this pipeline produces.
 
 - **Its report is in and awaiting a decision** — `batch decide` with `accept`, `override-warning`,
   `retry`, `block` or `fail`, as usual.
+- **Its dispatch is still `approved` and has not been sent** — preserve the batch and cancel only
+  that draft dispatch via `dispatch cancel`, with explicit approval and reason. Then correct the
+  project assignment and create a newly approved brief. This has spent no worker tokens.
 - **It can no longer report at all** — a worker that died before its model self-report never will,
   and a batch with no pending report cannot be decided. That is what `batch abandon` is for:
 
@@ -143,6 +150,10 @@ only run tests afterwards, they never require that the test came first.
 **Gate 0 — the plan.** Stop for explicit approval. Only after it, run `batch create` and then
 `batch approve`.
 
+Read the created JSON as UTF-8. If a Git Bash console displays Russian text incorrectly, treat that
+as a display symptom until a UTF-8 JSON read proves otherwise; never abandon or delete a batch from
+console rendering alone.
+
 ## Phase 3: The five gates
 
 The sequence below is fixed. Run every step, in this order, for every ticket — a low-risk change
@@ -177,7 +188,10 @@ only: accept, override, retry, block, and fail remain coordinator decisions.
    the checks, commits, and pushes that issue branch, never a base or `integration/*` branch. Its
    commit SHA is the candidate. Its report's `changed_files` is where you see whether tests actually
    came with the change: an implementation-only diff against a TDD Definition of Done is a
-   `--decision retry`, not an accept. Then run `risk assess` on that SHA.
+   `--decision retry`, not an accept. Then run `risk assess` on that SHA. When the project declares
+   `developer_verification_commands`, it is the developer's focused loop; reserve the full
+   `verification_commands` for independent clean-room QA. With no focused list, the legacy full
+   list remains mandatory for developer too.
 3. **Code review.** `--role code-review --candidate-commit <sha>`, pinned to the assessed candidate,
    read-only, run for every candidate — the risk assessment decides only whether review is
    *mandatory*, never whether it is allowed. Standards and Spec stay separate evidence. A blocker

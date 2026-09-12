@@ -47,7 +47,7 @@ SENSITIVE_OUTPUT = re.compile(
 )
 PLAN_FIELDS = (
     "batch_id", "created_at", "base_commit", "ticket", "branch", "worktree", "zone", "definition_of_done",
-    "prohibited_changes", "verification_commands", "required_gates", "dependencies",
+    "prohibited_changes", "developer_verification_commands", "verification_commands", "required_gates", "dependencies",
 )
 DISPATCH_FIELDS = {
     "dispatch_id", "batch_id", "ticket", "role", "access", "zone", "write_paths", "branch", "worktree",
@@ -226,6 +226,7 @@ def _default_config(repo: Path) -> dict[str, Any]:
         "assignment_plans": {},
         "backend_zones": {DEFAULT_ZONE: {"paths": ["**"]}},
         "concurrency_budget": 1,
+        "developer_verification_commands": list(commands),
         "verification_commands": list(commands),
     }
 
@@ -413,6 +414,19 @@ def _verification_commands(config: dict[str, Any]) -> list[str]:
     return _strings(commands, "verification_commands", allow_empty=True)
 
 
+def _developer_verification_commands(config: dict[str, Any]) -> list[str]:
+    """Focused developer proof, with the historical full-QA list as a safe fallback.
+
+    Older project configs have one verification list.  Keeping that as the fallback preserves their
+    existing approval contract, while a project can opt into a narrow developer loop without
+    weakening the clean-room QA commands stored separately in ``verification_commands``.
+    """
+    commands = config.get("developer_verification_commands")
+    if commands is None:
+        return _verification_commands(config)
+    return _strings(commands, "developer_verification_commands", allow_empty=True)
+
+
 def _paths_within_zone(paths: list[str], zone_paths: list[str]) -> bool:
     def inside(path: str, boundary: str) -> bool:
         prefix = boundary[:-2] if boundary.endswith("**") else boundary
@@ -452,7 +466,9 @@ def _resolve_assignment(
     plan = assignments.get(role_name)
     if not isinstance(plan, dict) or plan.get("zone") != zone_name:
         raise CoordinatorError(f"role {role_name!r} is not assigned to zone {zone_name!r}")
-    transport = plan.get("transport", "orca")
+    # An omitted transport must not surprise a coordinator session by launching an external
+    # worker.  Orca remains available, but a project selects it explicitly per role.
+    transport = plan.get("transport", "in-process")
     if transport not in ROLE_TRANSPORTS:
         raise CoordinatorError(f"role {role_name!r} has an invalid transport")
     zone = zones.get(zone_name)
@@ -703,8 +719,15 @@ def _accepted_qa_for_candidate(root: Path, batch: dict[str, Any], candidate: str
     raise CoordinatorError("publish requires accepted green QA evidence for the candidate commit")
 
 
-def _batch_for_ticket_branch(root: Path, ticket: str, branch: str) -> dict[str, Any]:
-    """Find the one immutable batch that owns a ticket's issue branch."""
+def _batch_for_ticket_branch(
+    root: Path, ticket: str, branch: str, candidate: str, requested_batch: object = None,
+) -> dict[str, Any]:
+    """Find the batch whose accepted QA proof is pinned to this candidate.
+
+    A coordinator can retain abandoned planning attempts for the same ticket and issue branch.
+    Those records are audit evidence, not competing QA proof, so a current SHA selects the batch
+    rather than making PR preparation depend on deleting its history.
+    """
     batches_dir = root / "batches"
     if not batches_dir.is_dir():
         raise CoordinatorError("no orchestration batches exist for the ticket branch")
@@ -716,9 +739,24 @@ def _batch_for_ticket_branch(root: Path, ticket: str, branch: str) -> dict[str, 
             matches.append(batch)
     if not matches:
         raise CoordinatorError("no orchestration batch matches the ticket and issue branch")
-    if len(matches) != 1:
-        raise CoordinatorError("multiple orchestration batches match the ticket and issue branch")
-    return matches[0]
+    if requested_batch is not None:
+        batch_id = _safe_id(requested_batch, "batch")
+        selected = next((batch for batch in matches if batch.get("batch_id") == batch_id), None)
+        if selected is None:
+            raise CoordinatorError("requested batch does not match the ticket and issue branch")
+        return selected
+    candidates = []
+    for batch in matches:
+        try:
+            _accepted_qa_for_candidate(root, batch, candidate)
+        except CoordinatorError:
+            continue
+        candidates.append(batch)
+    if len(candidates) != 1:
+        if not candidates:
+            raise CoordinatorError("no batch has accepted green QA evidence for the candidate commit")
+        raise CoordinatorError("multiple batches have accepted green QA evidence for the candidate commit; pass --batch")
+    return candidates[0]
 
 
 def qa_evidence(args: argparse.Namespace) -> dict[str, Any]:
@@ -731,9 +769,10 @@ def qa_evidence(args: argparse.Namespace) -> dict[str, Any]:
         raise CoordinatorError("QA evidence requires non-empty ticket and branch")
     candidate = _candidate_commit(repo, args.candidate_commit)
     with _state_lock(root):
-        batch = _batch_for_ticket_branch(root, ticket, branch)
+        batch = _batch_for_ticket_branch(root, ticket, branch, candidate, getattr(args, "batch", None))
         report = _accepted_qa_for_candidate(root, batch, candidate)
     return {
+        "batch_id": batch["batch_id"],
         "ticket": ticket,
         "branch": branch,
         "candidate_commit": candidate,
@@ -762,9 +801,16 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
     entry = next((item for item in batch.get("dispatches", []) if item.get("dispatch_id") == dispatch.get("dispatch_id")), None)
     if not entry or entry.get("brief_sha256") != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest():
         raise CoordinatorError("dispatch record failed immutable brief integrity check")
-    for field in ("ticket", "branch", "worktree", "zone", "definition_of_done", "prohibited_changes", "verification_commands", "required_gates", "dependencies"):
+    for field in ("ticket", "branch", "worktree", "zone", "definition_of_done", "prohibited_changes", "required_gates", "dependencies"):
         if dispatch[field] != batch[field]:
             raise CoordinatorError(f"dispatch record {field} does not match its batch")
+    expected_commands = (
+        batch["developer_verification_commands"]
+        if dispatch["role"] == "developer" and dispatch["purpose"] == "work"
+        else batch["verification_commands"]
+    )
+    if dispatch["verification_commands"] != expected_commands:
+        raise CoordinatorError("dispatch record verification_commands do not match its batch and role")
     _validate_branch(repo, dispatch["branch"])
     # In zero-config mode the brief itself is the only record of the session-supplied runtime, so
     # it is replayed here; brief_sha256 above already protects it from being edited.
@@ -938,6 +984,7 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
         "zone": zone.strip(),
         "definition_of_done": dod,
         "prohibited_changes": prohibited,
+        "developer_verification_commands": _developer_verification_commands(config),
         "verification_commands": _verification_commands(config),
         "required_gates": _strings(getattr(args, "required_gate", None) or ["none"], "required_gates"),
         "dependencies": _strings(getattr(args, "dependency", None) or ["none"], "dependencies"),
@@ -1055,7 +1102,7 @@ def _settled(entry: dict[str, Any]) -> bool:
     That is either a report the coordinator has decided on, or an abandonment — both are terminal.
     Anything else, including a dispatch blocked on a model mismatch, is still open.
     """
-    if entry.get("state") == "abandoned":
+    if entry.get("state") in {"abandoned", "cancelled"}:
         return True
     return entry.get("state") == "reported" and isinstance(entry.get("decision"), dict)
 
@@ -1156,6 +1203,47 @@ def abandon_batch(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def cancel_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    """Cancel one approved brief before it reaches any runtime.
+
+    This is deliberately narrower than batch abandonment: the immutable brief remains available
+    for audit, but a discovered assignment/transport mistake can be corrected without failing the
+    otherwise valid batch or consuming a worker slot.
+    """
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    approval = _approval(args)
+    reason = args.reason.strip() if _non_empty(args.reason) else ""
+    if not reason:
+        raise CoordinatorError("cancelling a dispatch requires a recorded reason")
+    _reject_sensitive({"reason": reason}, "dispatch cancellation reason")
+    with _state_lock(root):
+        dispatch = _load_dispatch(root, args.dispatch)
+        batch = _load_batch(root, dispatch["batch_id"])
+        _validate_batch_integrity(root, batch)
+        entry = next((item for item in batch.get("dispatches", []) if item.get("dispatch_id") == dispatch["dispatch_id"]), None)
+        if not entry or entry.get("brief_sha256") != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest():
+            raise CoordinatorError("dispatch record failed immutable brief integrity check")
+        if entry.get("state") != "approved":
+            raise CoordinatorError("only an approved, unsent dispatch may be cancelled")
+        status = _load_dispatch_status(root, dispatch["dispatch_id"])
+        if status.get("state") != "approved":
+            raise CoordinatorError("only an approved, unsent dispatch may be cancelled")
+        moment = _now()
+        entry["state"] = "cancelled"
+        entry["cancellation"] = {**approval, "cancelled_at": moment, "reason": reason}
+        batch["state"] = "awaiting-approval"
+        batch.setdefault("coordinator_decisions", []).append({
+            "dispatch_id": dispatch["dispatch_id"], "decision": "cancel", **approval, "note": reason,
+        })
+        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
+            "dispatch_id": dispatch["dispatch_id"], "state": "cancelled", "updated_at": moment,
+            "cancellation": entry["cancellation"],
+        })
+        _replace(_batch_path(root, batch["batch_id"]), batch)
+    return {"dispatch_id": dispatch["dispatch_id"], "batch_id": batch["batch_id"], "state": "cancelled"}
+
+
 def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -1238,6 +1326,11 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             raise CoordinatorError(f"the coordinator requires a new {required_role} dispatch before this role")
         approval = _approval(args)
         dispatch_id = f"dispatch-{uuid.uuid4()}"
+        dispatch_commands = (
+            batch["developer_verification_commands"]
+            if role_name == "developer" and purpose == "work"
+            else batch["verification_commands"]
+        )
         brief: dict[str, Any] = {
             "dispatch_id": dispatch_id,
             "batch_id": batch["batch_id"],
@@ -1250,7 +1343,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "worktree": batch["worktree"],
             "definition_of_done": batch["definition_of_done"],
             "prohibited_changes": batch["prohibited_changes"],
-            "verification_commands": batch["verification_commands"],
+            "verification_commands": dispatch_commands,
             "required_gates": batch["required_gates"],
             "dependencies": batch["dependencies"],
             "resolved_runtime": args.runtime,
@@ -2041,6 +2134,14 @@ def parser() -> argparse.ArgumentParser:
     dispatch_send.add_argument("--checkout")
     dispatch_send.set_defaults(handler=send_dispatch)
 
+    dispatch_cancel = dispatch_commands.add_parser("cancel")
+    _common(dispatch_cancel)
+    dispatch_cancel.add_argument("--dispatch", required=True)
+    dispatch_cancel.add_argument("--approved-by", required=True)
+    dispatch_cancel.add_argument("--approved-at", required=True)
+    dispatch_cancel.add_argument("--reason", required=True, help="why this approved brief must not reach a runtime")
+    dispatch_cancel.set_defaults(handler=cancel_dispatch)
+
     dispatch_self_report = dispatch_commands.add_parser("self-report")
     _common(dispatch_self_report)
     dispatch_self_report.add_argument("--dispatch", required=True)
@@ -2080,6 +2181,7 @@ def parser() -> argparse.ArgumentParser:
 
     qa_evidence_command = qa_commands.add_parser("evidence")
     _common(qa_evidence_command)
+    qa_evidence_command.add_argument("--batch", help="optional batch ID when multiple batches accepted the same candidate")
     qa_evidence_command.add_argument("--ticket", required=True)
     qa_evidence_command.add_argument("--branch", required=True)
     qa_evidence_command.add_argument("--candidate-commit", required=True)
@@ -2105,6 +2207,14 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    # Git Bash on Windows can inherit a legacy Windows code page while displaying UTF-8.  Emit
+    # UTF-8 independently of that inherited setting so JSON evidence is never merely *shown* as
+    # corrupted and mistaken for a damaged state record.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, OSError):
+            pass
     args = parser().parse_args()
     try:
         output = args.handler(args)

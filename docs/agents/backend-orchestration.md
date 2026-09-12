@@ -59,8 +59,9 @@ python3 harness/bin/harness diff /path/to/repository
 python3 harness/bin/harness update /path/to/repository --capability backend-orchestration
 ```
 
-`update` не перезаписывает изменённые managed files без `--force`. Seed-документы тоже сохраняются;
-`--force-seed-files` перезаписывает их только после проверки локальных изменений. После любого
+`update` не перезаписывает изменённые managed files без явного флага. `--force-managed-files`
+обновляет только managed snapshot и сохраняет seed-документы; `--force-seed-files` перезаписывает
+только seed, а `--force` объединяет оба действия. После любого
 включения или изменения конфигурации выполните:
 
 ```bash
@@ -136,19 +137,25 @@ runtime-наборы (`codex`, `claude` и т.п.); в каждом обязат
     "payments": {"paths": ["services/payments/**"]}
   },
   "concurrency_budget": 1,
+  "developer_verification_commands": ["python -m pytest tests/unit"],
   "verification_commands": ["python -m pytest"]
 }
 ```
 
-`transport` — необязательное поле assignment plan и выбирается для каждой роли отдельно: `orca`
-(по умолчанию) запускает isolated worker через `orca_adapter.py`, `in-process` исполняет роль как
+`transport` — необязательное поле assignment plan и выбирается для каждой роли отдельно: `in-process`
+(по умолчанию) исполняет роль как
 субагента текущей coordinator-сессии в worktree того же batch. Оба варианта получают один и тот же
 immutable brief, обязаны пройти model self-report и вернуть completion report по общим правилам,
 поэтому логика coordinator-а от транспорта не зависит. `harness health` проверяет допустимость
-значения. Для `in-process` `dispatch send` только фиксирует handoff: следующим действием coordinator
+значения. Для изолированного worker укажите `"transport": "orca"` явно. Для `in-process` `dispatch send` только фиксирует handoff: следующим действием coordinator
 немедленно запускает субагента по уже immutable brief, до любого поиска старых report/template или
 конфигурации. Architect собирает лишь targeted evidence для решения; полный набор
-`verification_commands` выполняют developer и clean-room QA, а не read-only baseline.
+`verification_commands` выполняет clean-room QA, а developer получает
+`developer_verification_commands`. Это необязательное поле: без него сохраняется совместимый
+режим, в котором developer получает полный список. Задавайте в нём быстрые task-scoped проверки,
+а в `verification_commands` — независимый полный gate. Code-review получает полный список, но
+запускает каждую команду через `test_summary.py`: в report остаются исходная команда и bounded
+summary, а санитизированный полный лог доступен только для упавшей проверки.
 
 Зона — не подсказка, а граница: write-роль изменяет только разрешённые пути своей зоны. Если роли
 нужен более узкий scope, задайте ей `write_paths`: brief и completion report будут проверяться по
@@ -282,6 +289,16 @@ dispatch как `abandoned` и записывает решение рядом с
 brief, отчёты и QA-артефакты остаются на месте. Повторно применить её к уже терминальному batch
 нельзя.
 
+Если ошибка найдена **до** передачи brief runtime-у, не abandon batch. Отмените только этот
+неотправленный dispatch: immutable brief останется в audit trail, а batch вернётся в
+`awaiting-approval` и сможет получить исправленный dispatch.
+
+```bash
+python .harness/orchestration/coordinator.py --repo . dispatch cancel \
+  --dispatch <dispatch-id> --approved-by 'имя утверждающего' \
+  --approved-at 2026-09-11T06:00:00Z --reason 'исправить назначение до запуска worker'
+```
+
 Править файлы в `.harness/orchestration/state/` руками не следует ни при каких обстоятельствах: эти
 записи и есть доказательство, ради которого существует весь маршрут. Если штатной команды для вашего
 случая нет — это дефект инструмента, а не повод открыть редактор.
@@ -381,8 +398,10 @@ isolated worker. Он не выбирает scope, не запускает check
 а branch соответствует `branch_pattern` из `.harness/project.json` и не является base или
 `integration/*`.
 
-Пример brief для write-роли. `verification_commands` должен буквально совпадать с массивом в
-`.harness/orchestration.json`; `write_paths` — буквально с путями выбранной зоны. Не добавляйте
+Пример brief для write-роли. Для developer work-dispatch `verification_commands` должен буквально
+совпадать с `developer_verification_commands` (либо с `verification_commands`, если focused-список
+не задан); для остальных ролей — с `verification_commands`. `write_paths` — буквально с путями
+выбранной зоны. Не добавляйте
 поля или значения, похожие на секреты.
 
 ```json

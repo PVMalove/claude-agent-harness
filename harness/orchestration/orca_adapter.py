@@ -184,8 +184,13 @@ def _validate_brief(brief: dict[str, Any], repo: Path, config: dict[str, Any]) -
     for field in ("verification_commands", "required_gates", "dependencies"):
         if not isinstance(brief[field], list) or not all(_non_empty_string(item) for item in brief[field]):
             raise DispatchError(f"dispatch brief {field} must be a list of strings")
-    if brief["verification_commands"] != config.get("verification_commands"):
-        raise DispatchError("dispatch brief verification_commands must exactly match project configuration")
+    expected_commands = config.get("verification_commands")
+    if brief.get("role") == "developer" and brief.get("purpose") == "work":
+        # The developer's focused loop is intentionally distinct from the full clean-room QA
+        # suite.  Old configs omit this field and retain the full list as their safe fallback.
+        expected_commands = config.get("developer_verification_commands", expected_commands)
+    if brief["verification_commands"] != expected_commands:
+        raise DispatchError("dispatch brief verification_commands must exactly match its project role configuration")
 
     role_name = brief["role"]
     role = _role_metadata(repo / ".harness" / "orchestration" / "roles" / f"{role_name}.md")

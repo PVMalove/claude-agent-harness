@@ -206,5 +206,6 @@ python harness\bin\harness list C:\path\to\repository
 - `docs/agents/*.md` и `harness/project/docs-agents/*.md` — одно и то же по смыслу в двух местах
   (вторая копия — то, что `pvmalove-suite` реально разворачивает в целевые проекты); `scripts/verify`
   сверяет обе копии по содержимому (без учёта BOM/CRLF) и не даст молча разойтись.
-- `harness update` по умолчанию не перезаписывает изменённые managed skills и seed-файлы; для
-  managed skills используется `--force`, для seed-файлов — отдельный `--force-seed-files`.
+- `harness update` по умолчанию не перезаписывает изменённые managed files и seed-файлы.
+  `--force-managed-files` обновляет только managed snapshot, `--force-seed-files` — только seed,
+  а `--force` объединяет оба действия и может перезаписать project-owned конфигурацию.

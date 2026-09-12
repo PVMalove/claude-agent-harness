@@ -426,6 +426,23 @@ def _run(test_root: Path):
     orchestration_config = orchestration_project / ".harness" / "orchestration.json"
     if not orchestration_config.is_file():
         sys.exit("backend-orchestration config seed missing")
+    # Project-owned orchestration settings must survive a forced refresh of the
+    # managed snapshot. `--force` intentionally replaces both groups, but a
+    # snapshot-only repair must not turn a configured project back into the empty seed.
+    original_orchestration_config = orchestration_config.read_text(encoding="utf-8")
+    project_owned_config = original_orchestration_config.replace(
+        '"concurrency_budget": 1', '"concurrency_budget": 3'
+    )
+    orchestration_config.write_text(project_owned_config, encoding="utf-8")
+    coordinator_path = orchestration_project / ".harness" / "orchestration" / "coordinator.py"
+    with coordinator_path.open("a", encoding="utf-8") as handle:
+        handle.write("\n# local drift for force-managed-files regression\n")
+    run_ok(HARNESS + ["update", str(orchestration_project), "--force-managed-files"], quiet=True)
+    if orchestration_config.read_text(encoding="utf-8") != project_owned_config:
+        sys.exit("force-managed-files overwrote project-owned orchestration config")
+    if "local drift for force-managed-files regression" in coordinator_path.read_text(encoding="utf-8"):
+        sys.exit("force-managed-files did not restore the managed coordinator snapshot")
+    orchestration_config.write_text(original_orchestration_config, encoding="utf-8")
     public_documentation = {
         ROOT / "README.md": (
             "`backend-orchestration`",
@@ -655,6 +672,8 @@ def _run(test_root: Path):
         "must not change production code or integrate",
         "reviewed branch",
         "must not mark a high-risk batch complete until both the Standards and Spec reports",
+        "test_summary.py",
+        "original approved command",
     ):
         if required_contract not in code_review_role:
             sys.exit(f"code-review role contract missing: {required_contract}")
@@ -698,6 +717,7 @@ def _run(test_root: Path):
         "assignment_plans": {
             role: {
                 "zone": "backend",
+                "transport": "orca",
                 "runtimes": {
                     "codex": {
                         "profiles": ["backend-default"],
@@ -710,6 +730,7 @@ def _run(test_root: Path):
         },
         "backend_zones": {"backend": {"paths": ["services/**"]}},
         "concurrency_budget": 2,
+        "developer_verification_commands": ["python developer_check.py"],
         "verification_commands": ["python qa_baseline.py"],
     }
     orchestration_config.write_text(json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8")
@@ -966,9 +987,72 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     (orchestration_project / "qa_baseline.py").write_text(
         'print("token=visible")\n', encoding="utf-8"
     )
+    (orchestration_project / "developer_check.py").write_text(
+        'print("focused developer check")\n', encoding="utf-8"
+    )
     subprocess.run(["git", "add", "."], cwd=orchestration_project, check=True)
     subprocess.run(["git", "commit", "-qm", "chore: create baseline"], cwd=orchestration_project, check=True)
     subprocess.run(["git", "branch", "feature/issue-901-coordinator"], cwd=orchestration_project, check=True)
+
+    # An assignment plan must never silently launch an external runtime.  A role without an
+    # explicit transport stays in the coordinator session, and an approved-but-unsent brief can
+    # be cancelled without abandoning its whole batch or losing the audit trail.
+    implicit_transport_state = test_root / "implicit-transport-state"
+    active_orchestration_config = orchestration_config.read_text(encoding="utf-8")
+    implicit_transport = json.loads(json.dumps(valid_orchestration))
+    del implicit_transport["assignment_plans"]["architect"]["transport"]
+    orchestration_config.write_text(json.dumps(implicit_transport, indent=2) + "\n", encoding="utf-8")
+    subprocess.run(["git", "branch", "feature/issue-907-implicit-transport"], cwd=orchestration_project, check=True)
+    implicit_batch = json.loads(coordinator_run(
+        "--state-dir", str(implicit_transport_state), "batch", "create", "--ticket", "#907",
+        "--branch", "feature/issue-907-implicit-transport", "--worktree", "issue-907-implicit-transport",
+        "--zone", "backend", "--definition-of-done", "confirm the dispatch transport",
+        "--prohibited-change", "do not merge",
+    ).stdout)["batch_id"]
+    coordinator_run(
+        "--state-dir", str(implicit_transport_state), "batch", "approve", "--batch", implicit_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T11:59:00Z",
+    )
+    implicit_dispatch = coordinator_run(
+        "--state-dir", str(implicit_transport_state), "dispatch", "create", "--batch", implicit_batch,
+        "--role", "architect", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T11:59:10Z",
+    )
+    if implicit_dispatch.returncode != 0:
+        sys.exit("coordinator rejected the implicit in-process transport: " + implicit_dispatch.stderr)
+    implicit_dispatch_id = json.loads(implicit_dispatch.stdout)["dispatch_id"]
+    if json.loads(implicit_dispatch.stdout)["brief"]["resolved_transport"] != "in-process":
+        sys.exit("an omitted role transport did not resolve to in-process")
+    # The corrected assignment can already be on disk; cancellation must still be possible because
+    # it audits the immutable brief rather than validating it as a newly executable dispatch.
+    orchestration_config.write_text(active_orchestration_config, encoding="utf-8")
+    cancelled = coordinator_run(
+        "--state-dir", str(implicit_transport_state), "dispatch", "cancel", "--dispatch", implicit_dispatch_id,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T11:59:20Z",
+        "--reason", "correct the runtime before any worker starts",
+    )
+    if cancelled.returncode != 0 or json.loads(cancelled.stdout)["state"] != "cancelled":
+        sys.exit("coordinator could not cancel an approved but unsent dispatch: " + cancelled.stderr)
+    cancelled_batch = json.loads(
+        (implicit_transport_state / "batches" / f"{implicit_batch}.json").read_text(encoding="utf-8")
+    )
+    if cancelled_batch["state"] != "awaiting-approval" or cancelled_batch["dispatches"][0]["state"] != "cancelled":
+        sys.exit("dispatch cancellation did not preserve an awaiting-approval batch audit trail")
+
+    # A Windows Python configured with a legacy output encoding must still emit valid UTF-8 JSON;
+    # otherwise a Git Bash display artifact looks like corrupted Russian batch evidence.
+    unicode_state = test_root / "unicode-output-state"
+    unicode_env = dict(os.environ, PYTHONIOENCODING="cp1251")
+    unicode_result = subprocess.run(
+        [sys.executable, str(coordinator_path), "--repo", str(orchestration_project), "--state-dir", str(unicode_state),
+         "batch", "create", "--ticket", "#908", "--branch", "feature/issue-908-unicode-output",
+         "--worktree", "issue-908-unicode-output", "--zone", "backend", "--definition-of-done", "Проверить кодировку",
+         "--prohibited-change", "Не менять данные"],
+        capture_output=True, env=unicode_env,
+    )
+    if unicode_result.returncode != 0:
+        sys.exit("coordinator rejected the Unicode output fixture: " + unicode_result.stderr.decode("utf-8", errors="replace"))
+    if json.loads(unicode_result.stdout.decode("utf-8"))["definition_of_done"] != ["Проверить кодировку"]:
+        sys.exit("coordinator stdout is not UTF-8 when Python inherits a legacy output encoding")
 
     planned = coordinator_run(
         "batch", "create", "--ticket", "#901", "--branch", "feature/issue-901-coordinator",
@@ -1128,7 +1212,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "implemented the requested backend change",
         "commit_sha": candidate_sha,
         "changed_files": ["services/retry.py"],
-        "checks_run": [{"command": "python qa_baseline.py", "result": "pass", "evidence": "1 passed"}],
+        "checks_run": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
         "risks": "none",
         "blockers": "none",
         "next_coordinator_action": "accept",
@@ -1368,6 +1452,26 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("QA evidence validation rejected accepted evidence: " + accepted_evidence.stderr)
     if json.loads(accepted_evidence.stdout).get("candidate_commit") != candidate_sha:
         sys.exit("QA evidence validation did not return the accepted candidate SHA")
+    # Historical abandoned plans can share the ticket and branch after a coordinator correction.
+    # They carry no QA report for this candidate and must not make PR evidence ambiguous.
+    for history_index in range(2):
+        historical = coordinator_run(
+            "batch", "create", "--ticket", "#901", "--branch", "feature/issue-901-coordinator",
+            "--worktree", f"issue-901-history-{history_index}", "--zone", "backend",
+            "--definition-of-done", "superseded planning attempt", "--prohibited-change", "do not merge",
+        )
+        if historical.returncode != 0:
+            sys.exit("clean-room fixture could not create a historical batch: " + historical.stderr)
+        historical_id = json.loads(historical.stdout)["batch_id"]
+        abandoned_history = coordinator_run(
+            "batch", "abandon", "--batch", historical_id, "--approved-by", "project coordinator",
+            "--approved-at", f"2026-09-09T12:05:{46 + history_index:02d}Z",
+            "--reason", "superseded before any dispatch",
+        )
+        if abandoned_history.returncode != 0:
+            sys.exit("clean-room fixture could not abandon historical batch: " + abandoned_history.stderr)
+    if coordinator_run(*qa_evidence).returncode != 0:
+        sys.exit("QA evidence became ambiguous because of abandoned historical batches")
     state_before_evidence = {
         path.relative_to(state_root).as_posix(): path.read_bytes() for path in state_root.rglob("*") if path.is_file()
     }
@@ -1457,7 +1561,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "dispatch_id": role_dispatch, "ticket": "#904", "role": role_name, "outcome": "completed",
             "output": f"{role_name} finished the requested step", "commit_sha": "not applicable — read-only role",
             "changed_files": [],
-            "checks_run": [{"command": "python qa_baseline.py", "result": "pass", "evidence": "1 passed"}],
+            "checks_run": [{"command": "python developer_check.py" if role_name == "developer" else "python qa_baseline.py", "result": "pass", "evidence": "1 passed"}],
             "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
         }
         payload.update(payload_extra)
@@ -2020,6 +2124,14 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         raw_payload=json.dumps({"tool_input": {"file_path": str(scratch_pr_body)}}),
     ).returncode != 0:
         sys.exit("block-scratch-outside-docs-tasks.sh rejected a PR body in repository scratch")
+    windows_scratch_pr_body = r"C:\repo\.claude\tmp\pr-body-1-test.md"
+    if run_hook(
+        scratch_hook,
+        pv_project,
+        "",
+        raw_payload=json.dumps({"tool_input": {"file_path": windows_scratch_pr_body}}),
+    ).returncode != 0:
+        sys.exit("block-scratch-outside-docs-tasks.sh rejected an escaped Windows scratch path")
     docs_pr_body = pv_project / "docs" / "tasks" / "pr-body-1-test.md"
     if run_hook(
         scratch_hook,

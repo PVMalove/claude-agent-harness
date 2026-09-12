@@ -45,7 +45,7 @@ cd claude-agent-harness
 |---|---|---|
 | Пишет на диск | Нет — только отчёт | Да |
 | Код выхода | `0` чисто, `1` — есть дрейф | `0` при успехе, иначе падает |
-| Локальные правки managed-файлов | Показывает как `local_changed`/`conflict`, не трогает | Без `--force` отказывается и показывает то же самое; с `--force` — перезаписывает |
+| Локальные правки managed-файлов | Показывает как `local_changed`/`conflict`, не трогает | Без флага отказывается; `--force-managed-files` перезаписывает snapshot, `--force` — snapshot и seed |
 | Когда | Быстрая проверка перед чем угодно | Когда решили реально подтянуть новую версию capability |
 
 | | `project-foundation` | `pvmalove-suite` |
@@ -125,10 +125,10 @@ python3 harness/bin/harness diff /path/to/repository [--json]
 **`update` — подтянуть новую версию харнесса поверх существующей установки** (апстрим сдвинулся, или изменились первопартийные скиллы):
 
 ```bash
-python3 harness/bin/harness update /path/to/repository --capability pvmalove-suite [--force] [--force-seed-files]
+python3 harness/bin/harness update /path/to/repository --capability pvmalove-suite [--force-managed-files] [--force-seed-files] [--force]
 ```
 
-Без `--force` отказывается перезаписывать локально изменённые managed skills — сначала покажет их (как `diff`) и остановится. `--force` перезаписывает managed snapshot, включая удаление файлов, которых больше нет в текущей версии выбранной capability. Seed-файлы (`docs/agents/`, hooks, rules, agents и `.harness/project.json`) по умолчанию сохраняются; `--force-seed-files` явно разрешает их перезапись и возможную потерю локальных изменений. `.harness/overlays/project-local.lock` и `.harness/integrations.json` `update` не проверяет и не трогает — это отдельная от capability-снимка подсистема.
+Без флага `update` отказывается перезаписывать локально изменённые managed files — сначала покажет их (как `diff`) и остановится. `--force-managed-files` перезаписывает только managed snapshot, включая удаление файлов, которых больше нет в текущей версии выбранной capability. Seed-файлы (`docs/agents/`, hooks, rules, agents, `.harness/project.json` и `.harness/orchestration.json`) сохраняются; `--force-seed-files` перезаписывает только их, а `--force` объединяет оба действия и может потерять project-owned настройки. `.harness/overlays/project-local.lock` и `.harness/integrations.json` `update` не проверяет и не трогает — это отдельная от capability-снимка подсистема.
 
 **`registry` — перегенерировать `.harness/skills/REGISTRY.md` вручную** (без пересборки самого снимка скиллов):
 
@@ -208,7 +208,7 @@ python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claud
 | `project harness already exists; use 'harness update <repo>'` | `init` на репозитории, где `.harness/harness.lock` уже есть | Запустить показанную команду `harness update` вместо `init`. |
 | `project harness is missing; use 'harness init <repo>'` | `update` на репозитории без `.harness/harness.lock` | Запустить показанную команду `harness init` вместо `update`. |
 | `selected skill names already exist; inspect them or use --replace-conflicts` | `adopt` — под именами выбранной capability уже лежат свои скиллы | Проверить перечисленные конфликты; если замена ожидаема — повторить с `--replace-conflicts` (конфликтующие каталоги заменяются без backup). |
-| `local skill changes would be overwritten; review them or use --force` | `update` — на диске есть локальные правки managed-файлов | Изучить напечатанный diff; если перезапись осознанная — повторить с `--force`. |
+| `local skill changes would be overwritten; review them or use --force` | `update` — на диске есть локальные правки managed-файлов | Изучить напечатанный diff; для snapshot повторить с `--force-managed-files`, для snapshot и seed — с `--force`. |
 | `discovery path already exists and is not managed: <path> (...)` | `.agents/skills`/`.claude/skills` — что-то постороннее на месте discovery-symlink'а | Подсказка в скобках зависит от команды: `init` — убрать вручную или использовать `adopt`; `adopt` — `--replace-conflicts`; `update` — `--force`. |
 | `.harness/project.json has unknown field(s): <name>` | В конфиг добавлено поле, которого нет в строгом контракте | Удалить поле либо реализовать его одновременно в `project.schema.json`, шаблоне, валидаторе и потребителе; для существующего контракта допустимы только `language`, `base_branch`, `branch_pattern`, `qa_gate_commands` и `$schema`. |
 | `install-global`: `[CONFLICT] ... (re-run with --replace-conflicts ...)` | На месте профиля/симлинка глобального слоя уже что-то другое | Повторить с `--replace-conflicts` — сначала бэкапит в `~/.agent-harness-backups/<timestamp>/...`. |
@@ -451,8 +451,8 @@ opt-in, а отправить пользователя на `/fast-implement`.
   разработчику, а не повод молча ждать.
 - **Транспорт — выбор проекта.** `assignment_plans.<role>.transport` = `orca` (isolated worker через
   `orca_adapter.py`) или `in-process` (субагент текущей сессии в worktree того же batch). Оба
-  варианта работают с одним и тем же immutable brief и обязаны пройти model self-report. Без конфига
-  транспорт всегда `in-process`. Для него `dispatch send` лишь фиксирует handoff: следующим действием
+  варианта работают с одним и тем же immutable brief и обязаны пройти model self-report. Без поля
+  transport — включая configured project — выбирается `in-process`; `orca` указывают явно. Для него `dispatch send` лишь фиксирует handoff: следующим действием
   coordinator немедленно запускает субагента по этому brief, не читая старые dispatch/report/template.
 - **Один тикет за раз.** Batch доводится до терминального состояния до старта следующего — это
   свойство процедуры `/implement`, а не новый lock в `coordinator.py`.
@@ -466,6 +466,8 @@ opt-in, а отправить пользователя на `/fast-implement`.
   причины, переводит batch в `failed`, закрывает все открытые dispatch и **ничего не удаляет**.
   Инвентарь — `batch list --open` (и `--ticket <id>` для одного тикета). Править
   `.harness/orchestration/state/` руками нельзя: это и есть аудиторский след.
+- **Неверный brief до запуска отменяется локально.** `dispatch cancel` требует approval и причины,
+  оставляет immutable brief в audit trail и возвращает batch в `awaiting-approval`; это не `batch abandon`.
 - **Последовательность фиксированная.** Длинный путь всегда проходит architect, developer,
   code-review и qa целиком. Risk assessment решает, когда review *обязателен*, но не когда он
   *разрешён*: low-risk кандидат тоже проходит review. Меньше шагов — это `/fast-implement`, а не

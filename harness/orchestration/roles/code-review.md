@@ -31,3 +31,13 @@ The completion report records the fixed diff and originating requirement as evid
 separate Standards and Spec findings with severity, residual risks, and blockers. The two reports
 remain independent rather than being collapsed into one score. The completion report records no
 production changes and no integration action for this read-only role.
+
+For every approved verification command, run the installed bounded wrapper:
+
+```bash
+python .harness/skills/qa-gate/scripts/test_summary.py -- bash -lc '<approved command>'
+```
+
+Keep the original approved command (not the wrapper invocation) in `checks_run`; use the wrapper's
+bounded summary as its evidence. A failing summary gives the sanitised local log path for the
+specific diagnostic; do not paste raw passing output into the review report.
