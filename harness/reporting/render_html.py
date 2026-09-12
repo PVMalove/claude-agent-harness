@@ -176,6 +176,52 @@ def _models_panel(title: str, usage: dict, input_of, css: str) -> str:
     )
 
 
+def _comparison_panel(comparison: object) -> str:
+    if not isinstance(comparison, dict):
+        return ""
+    baseline = comparison.get("baseline")
+    current = comparison.get("current")
+    deltas = comparison.get("delta", {}).get("providers", {})
+    if not isinstance(baseline, dict) or not isinstance(current, dict) or not isinstance(deltas, dict):
+        return ""
+    rows = []
+    for provider, label in (("claude", "Claude"), ("codex", "Codex")):
+        before = baseline.get("providers", {}).get(provider, {})
+        after = current.get("providers", {}).get(provider, {})
+        delta = deltas.get(provider, MISSING)
+
+        def shown(value: object) -> str:
+            if not isinstance(value, dict) or value.get("status") != "ok":
+                reason = value.get("reason", MISSING) if isinstance(value, dict) else MISSING
+                return f'<span class="missing">{_esc(reason)}</span>'
+            attribution = value.get("attribution", MISSING)
+            tag = "est" if attribution == "estimated" else ""
+            return (
+                f'{_thousands(value.get("total_tokens"))} '
+                f'<span class="tag {tag}">{_esc(attribution)}</span>'
+            )
+
+        if isinstance(delta, dict):
+            total = int(delta.get("total_tokens", 0))
+            delta_text = f"{total:+,}".replace(",", " ")
+        else:
+            delta_text = f'<span class="missing">{_esc(MISSING)}</span>'
+        rows.append(
+            f"<tr><td>{label}</td><td class='num'>{shown(before)}</td>"
+            f"<td class='num'>{shown(after)}</td><td class='num'>{delta_text}</td></tr>"
+        )
+    baseline_epic = baseline.get("epic", {}).get("number", "?")
+    current_epic = current.get("epic", {}).get("number", "?")
+    return _panel(
+        f"Сравнение baseline #{_esc(baseline_epic)} → эпик #{_esc(current_epic)}",
+        "<div class='scroll'><table><thead><tr><th>provider</th><th class='num'>baseline</th>"
+        "<th class='num'>текущий</th><th class='num'>разница</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>"
+        "<p class='note'>Attribution показан для каждой стороны. Разница вычисляется только при telemetry "
+        "в обеих сторонах.</p>",
+    )
+
+
 def _cache_panel(cache: Any) -> str:
     if not isinstance(cache, dict):
         return _panel("Из чего состоял вход Claude", f'<p class="missing">{_esc(MISSING)}</p>')
@@ -296,6 +342,7 @@ def _tickets_panel(report: dict) -> str:
 def build_html(report: dict) -> str:
     totals = report["volume"]["totals"]
     claude, codex = report["claude"], report["codex"]
+    comparison_panel = _comparison_panel(report.get("comparison"))
     sessions = 0
     for source in (claude, codex):
         if source.get("status") == "ok":
@@ -322,6 +369,7 @@ def build_html(report: dict) -> str:
         _models_panel("Claude · по моделям", claude, _claude_input, ""),
         _models_panel("Codex · по моделям", codex, lambda b: int(b["input_tokens"]), "b"),
         "</div>",
+        f'<div class="grid">{comparison_panel}</div>' if comparison_panel else "",
         '<div class="grid">',
         _cache_panel(report["cache"]),
         "</div>",
