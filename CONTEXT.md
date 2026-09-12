@@ -213,6 +213,21 @@ failed`. Batch хранит ticket, issue-ветку, worktree и историю
 dispatch с новым immutable brief, а не возврат состояния назад.
 _Avoid_: self-transition воркера, повторное использование старого dispatch.
 
+**Lifecycle ledger**:
+Версионируемый модуль ядра оркестрации, который хранит state batch/dispatch и применяет их
+переходы, approvals, immutable records и audit как один контракт.
+_Avoid_: набор CLI handlers, совместимость старых записей на лету.
+
+**Execution policy**:
+Явный набор правил запуска quality gate: checkout, изоляция, команды и форма evidence. Он выбирается
+вызывающим модулем и не владеет очередью или решением coordinator-а.
+_Avoid_: скрытый режим запуска, policy очереди.
+
+**Gate-runner**:
+Модуль, исполняющий команды quality gate по execution policy и возвращающий checks и
+санитизированный QA-артефакт; `qa-gate` и clean-room QA используют его через разные adapter-ы.
+_Avoid_: `qa-gate` как реализация clean-room QA, coordinator как runner.
+
 **Candidate commit**:
 Commit SHA, созданный developer dispatch, к которому привязываются оценка рисков, composite review,
 clean-room QA и publish. Новая версия кода возвращает batch к оценке риска; publish отправляет только
