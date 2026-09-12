@@ -5,6 +5,7 @@ in [current-state.md](./current-state.md). This guide defines only task artifact
 
 * **Storage Location:** NEVER use system temporary directories (e.g., `AppData/Local/Temp`, `/tmp`) for saving specifications, scratchpads, or intermediate files.
 * **Project Directory:** All intermediate task-related documents MUST be saved locally inside the project repository in the `docs/tasks/` directory (create it if it doesn't exist).
+* **PR bodies:** A PR body or comment is one-shot publication metadata, not a task artifact. Save it only under `.claude/tmp/` (for example, `.claude/tmp/pr-body-<issue>-<slug>.md`), never in `docs/tasks/`; delete it after the `gh`/`glab` command succeeds and keep it when the command fails so it can be retried.
 * **Pre-publish only:** `docs/tasks/` holds drafts and scratchpads *before* a spec or ticket is published to the issue tracker — never treat it as the tracker of record. Once published, the durable record lives with that tracker instead: the issue itself for GitHub/GitLab, or `.scratch/<feature-slug>/spec.md` and `.scratch/<feature-slug>/issues/` for the local markdown tracker (see `docs/agents/issue-tracker.md`) — which doesn't use `docs/tasks/` at all.
 * **Naming Convention:** Every specification or scratchpad MUST include the tracker issue ID (if it exists) and a descriptive name — this names both the file and the folder that contains it (see below). If the ID isn't known yet, use a descriptive slug and rename both once it's generated.
   * *Example:* `issue-45-search-pagination`.

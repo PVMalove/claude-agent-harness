@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Архитектура переносимого Agent Harness",
+    "viewBox": [1440, 900],
+    "repository": {
+      "url": "https://github.com/PVMalove/claude-agent-harness.git",
+      "revision": "284aee165da61aeaf00f48975e88c415d33a5fff"
+    },
+    "quality_profile": "showcase"
+  },
+  "components": [
+    { "id": "owner", "type": "external", "label": "Владелец проекта", "pos": [40, 390], "size": [180, 80], "sources": [{ "path": "README.md", "line": 82, "label": "Установка" }] },
+    { "id": "cli", "type": "backend", "label": "harness CLI", "pos": [290, 390], "size": [220, 80], "sources": [{ "path": "harness/bin/harness", "label": "CLI" }] },
+    { "id": "capabilities", "type": "database", "label": "CAPABILITIES.json", "pos": [560, 210], "size": [210, 80], "sources": [{ "path": "harness/CAPABILITIES.json", "label": "Каталог" }] },
+    { "id": "sources", "type": "backend", "label": "Пакеты skills", "pos": [560, 560], "size": [210, 80], "sources": [{ "path": "skills/REGISTRY.md", "label": "Реестр скиллов" }] },
+    { "id": "snapshot", "type": "database", "label": ".harness/skills", "pos": [860, 390], "size": [220, 80], "sources": [{ "path": "docs/runtime-discovery.md", "line": 1, "label": "Discovery" }] },
+    { "id": "native", "type": "backend", "label": "Нативные skill-roots", "pos": [1140, 240], "size": [240, 80], "sources": [{ "path": "docs/runtime-discovery.md", "line": 11, "label": "Runtime roots" }] },
+    { "id": "hermes", "type": "backend", "label": "Hermes fallback", "pos": [1140, 560], "size": [240, 80], "sources": [{ "path": "docs/runtime-discovery.md", "line": 17, "label": "Fallback" }] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Исходный репозиторий harness", "wraps": ["cli", "capabilities", "sources"], "pad": 36 },
+    { "kind": "region", "label": "Целевой проект", "wraps": ["snapshot", "native", "hermes"], "pad": 36 }
+  ],
+  "connections": [
+    { "from": "owner", "to": "cli", "label": "init / adopt / update", "variant": "emphasis", "labelDy": 64 },
+    { "from": "cli", "to": "capabilities", "label": "разрешает capability", "fromSide": "right", "toSide": "left" },
+    { "from": "cli", "to": "sources", "label": "выбирает пакеты", "fromSide": "right", "toSide": "left" },
+    { "from": "capabilities", "to": "snapshot", "label": "состав snapshot", "variant": "emphasis" },
+    { "from": "sources", "to": "snapshot", "label": "копирует SKILL.md", "variant": "emphasis" },
+    { "from": "snapshot", "to": "native", "label": "относительные links", "variant": "dashed" },
+    { "from": "snapshot", "to": "hermes", "label": "compact registry", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Один источник", "items": ["Capability описывает состав", "Пакеты остаются первоисточником"] },
+    { "dot": "emerald", "title": "Один snapshot", "items": ["Проект хранит .harness/skills", "Совместимые рантаймы читают те же файлы"] },
+    { "dot": "violet", "title": "Discovery", "items": ["Нативные roots для четырёх рантаймов", "Hermes использует REGISTRY fallback"] }
+  ]
+}

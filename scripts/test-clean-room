@@ -2008,6 +2008,34 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     metadata_hook = pv_project / ".claude" / "hooks" / "block-public-attribution.sh"
     if not metadata_hook.is_file():
         sys.exit("pvmalove-suite init did not scaffold block-public-attribution.sh")
+    scratch_hook = pv_project / ".claude" / "hooks" / "block-scratch-outside-docs-tasks.sh"
+    if not scratch_hook.is_file():
+        sys.exit("pvmalove-suite init did not scaffold block-scratch-outside-docs-tasks.sh")
+
+    scratch_pr_body = pv_project / ".claude" / "tmp" / "pr-body-1-test.md"
+    if run_hook(
+        scratch_hook,
+        pv_project,
+        "",
+        raw_payload=json.dumps({"tool_input": {"file_path": str(scratch_pr_body)}}),
+    ).returncode != 0:
+        sys.exit("block-scratch-outside-docs-tasks.sh rejected a PR body in repository scratch")
+    docs_pr_body = pv_project / "docs" / "tasks" / "pr-body-1-test.md"
+    if run_hook(
+        scratch_hook,
+        pv_project,
+        "",
+        raw_payload=json.dumps({"tool_input": {"file_path": str(docs_pr_body)}}),
+    ).returncode == 0:
+        sys.exit("block-scratch-outside-docs-tasks.sh allowed a PR body in docs/tasks")
+    root_pr_body = pv_project / "pr-body-1-test.md"
+    if run_hook(
+        scratch_hook,
+        pv_project,
+        "",
+        raw_payload=json.dumps({"tool_input": {"file_path": str(root_pr_body)}}),
+    ).returncode == 0:
+        sys.exit("block-scratch-outside-docs-tasks.sh allowed a PR body outside repository scratch")
 
     if run_hook(metadata_hook, pv_project, 'git commit -m "feat: document runtime behavior"').returncode != 0:
         sys.exit("block-public-attribution.sh rejected a project-only commit message")

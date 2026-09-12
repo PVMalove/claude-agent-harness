@@ -15,6 +15,13 @@
 `/to-guide` → PR открывает разработчик через `/to-pull-requests`. Ни один шаг не запускает следующий
 сам. Картинка кликабельна: за ней интерактивная версия с поиском, фокусом и экспортом.
 
+[![Архитектура переносимого Agent Harness](./docs/diagrams/previews/harness-topology.architecture.png)](./docs/diagrams/harness-topology.architecture.html)
+
+Architecture-схема показывает границу между исходным harness и целевым проектом: capability
+разрешается CLI из `CAPABILITIES.json` и пакетов skills, материализуется в единый
+`.harness/skills` snapshot, затем становится доступной через нативные skill-roots либо fallback
+`AGENTS.md` + `REGISTRY.md` для Hermes Agent.
+
 ## Быстрый старт
 
 Предполагаемый интерфейс работает ещё до того, как есть репозиторий, стек или харнесс. После разовой установки глобального слоя (`bin/install-global`, раздел «Установка» ниже) — в любой новой сессии просто скажите агенту:
@@ -65,10 +72,22 @@ worktree; найденные дефекты возвращают работу р
 
 [![Конвейер /implement с гейтами](./docs/diagrams/previews/implement-pipeline.workflow.png)](./docs/diagrams/implement-pipeline.workflow.html)
 
+[![Последовательность gated dispatch в /implement](./docs/diagrams/previews/implement-dispatch.sequence.png)](./docs/diagrams/implement-dispatch.sequence.html)
+
+Sequence-схема дополняет workflow: она фиксирует участников, два человеческих approval-gate,
+передачу immutable brief, candidate SHA, независимые отчёты review/QA и публикацию только принятого SHA.
+
+[![Поток capability от каталога к runtime](./docs/diagrams/previews/capability-delivery.dataflow.png)](./docs/diagrams/capability-delivery.dataflow.html)
+
+Data Flow показывает происхождение и потребителей данных: каталог capability, vendor snapshot и
+first-party overrides → `harness init/update` → `.harness/skills` → native runtime discovery или
+Hermes fallback. Схема не содержит секретов и не описывает их значения.
+
 Остальные визуальные карты — [резолв runtime и dispatch](./docs/diagrams/backend-runtime.workflow.html)
-(транспорт `orca` или `in-process`, self-report модели, heartbeat) и
-[жизненный цикл batch](./docs/diagrams/backend-batch.lifecycle.html). Все четыре диаграммы, их
-исходники и порядок обновления — в [docs/diagrams/](./docs/diagrams/README.md).
+(транспорт `orca` или `in-process`, self-report модели, heartbeat),
+[жизненный цикл batch](./docs/diagrams/backend-batch.lifecycle.html) и
+[QA/создание PR](./docs/diagrams/qa-call-path.workflow.html). Все девять диаграмм, их исходники и
+порядок обновления — в [docs/diagrams/](./docs/diagrams/README.md).
 
 При выборе `pvmalove-suite` `harness init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект:
 

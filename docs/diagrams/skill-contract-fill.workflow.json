@@ -1,0 +1,40 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Контракт навыка: вход → работа → передача результата",
+    "quality_profile": "showcase",
+    "viewBox": [1440, 900]
+  },
+  "lanes": [
+    { "id": "received", "label": "Input / State" },
+    { "id": "checked", "label": "Вход: готовность" },
+    { "id": "analysed", "label": "Process: анализ" },
+    { "id": "executed", "label": "Process: исполнение" },
+    { "id": "proved", "label": "Output: доказательства" },
+    { "id": "reported", "label": "Output / Next State" }
+  ],
+  "phases": [
+    { "id": "input", "label": "Вход", "fromCol": 0, "toCol": 1 },
+    { "id": "process", "label": "Внутренняя работа", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "output", "label": "Выход и переход", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["brief", "ready", "analyse", "execute", "evidence", "report", "next"],
+  "nodes": [
+    { "id": "brief", "lane": "received", "col": 0, "type": "external", "label": "Входной brief", "width": 360, "height": 32 },
+    { "id": "ready", "lane": "checked", "col": 1, "type": "security", "label": "Проверить готовность", "width": 360, "height": 32 },
+    { "id": "analyse", "lane": "analysed", "col": 2, "type": "backend", "label": "Разобрать запрос", "width": 360, "height": 32 },
+    { "id": "execute", "lane": "executed", "col": 3, "type": "backend", "label": "Выполнить работу", "width": 360, "height": 32 },
+    { "id": "evidence", "lane": "proved", "col": 4, "type": "database", "label": "Зафиксировать доказательства", "width": 360, "height": 32 },
+    { "id": "report", "lane": "reported", "col": 4, "type": "messagebus", "label": "Подготовить отчёт", "width": 360, "height": 32 },
+    { "id": "next", "lane": "reported", "col": 5, "type": "cloud", "label": "Следующее состояние", "width": 360, "height": 32 }
+  ],
+  "edges": [
+    { "id": "brief-ready", "from": "brief", "to": "ready", "role": "main" },
+    { "id": "ready-analyse", "from": "ready", "to": "analyse", "role": "main", "variant": "emphasis" },
+    { "id": "analyse-execute", "from": "analyse", "to": "execute", "role": "main" },
+    { "id": "execute-evidence", "from": "execute", "to": "evidence", "role": "main" },
+    { "id": "evidence-report", "from": "evidence", "to": "report", "role": "main" },
+    { "id": "report-next", "from": "report", "to": "next", "role": "main", "variant": "emphasis" }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Последовательность gated dispatch в /implement",
+    "viewBox": [1440, 900],
+    "column_fit": "spread",
+    "quality_profile": "showcase"
+  },
+  "participants": [
+    { "id": "human", "type": "external", "label": "Разработчик" },
+    { "id": "session", "type": "backend", "label": "/implement" },
+    { "id": "cli", "type": "backend", "label": "coordinator.py" },
+    { "id": "architect", "type": "backend", "label": "Architect" },
+    { "id": "writer", "type": "backend", "label": "Developer" },
+    { "id": "review", "type": "backend", "label": "Code Review" },
+    { "id": "qa", "type": "backend", "label": "QA" },
+    { "id": "remote", "type": "cloud", "label": "Git remote" }
+  ],
+  "segments": [
+    { "from": 150, "to": 310, "label": "План и архитектура" },
+    { "from": 330, "to": 570, "label": "Реализация и review" },
+    { "from": 590, "to": 810, "label": "Независимый QA и публикация" }
+  ],
+  "messages": [
+    { "from": "human", "to": "session", "y": 180, "label": "ticket + approve plan", "variant": "emphasis" },
+    { "from": "session", "to": "cli", "y": 220, "label": "batch create + approve", "variant": "emphasis" },
+    { "from": "cli", "to": "architect", "y": 260, "label": "immutable brief", "variant": "default" },
+    { "from": "architect", "to": "cli", "y": 300, "label": "decision report", "variant": "return" },
+    { "from": "session", "to": "human", "y": 340, "label": "approve architecture", "variant": "return" },
+    { "from": "cli", "to": "writer", "y": 390, "label": "approved developer brief", "variant": "emphasis" },
+    { "from": "writer", "to": "remote", "y": 430, "label": "push candidate SHA", "variant": "default" },
+    { "from": "writer", "to": "cli", "y": 470, "label": "commit + checks report", "variant": "return" },
+    { "from": "cli", "to": "review", "y": 510, "label": "pinned candidate SHA", "variant": "emphasis" },
+    { "from": "review", "to": "cli", "y": 550, "label": "Standards + Spec reports", "variant": "return" },
+    { "from": "session", "to": "human", "y": 612, "label": "approve QA", "variant": "return" },
+    { "from": "cli", "to": "qa", "y": 640, "label": "QA on pinned SHA", "variant": "emphasis" },
+    { "from": "qa", "to": "cli", "y": 680, "label": "green evidence / finding", "variant": "return" },
+    { "from": "cli", "to": "remote", "y": 730, "label": "publish accepted SHA", "variant": "emphasis" },
+    { "from": "session", "to": "human", "y": 780, "label": "final report → /to-pull-requests", "variant": "return" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Неподвижный brief", "items": ["Каждая роль получает отдельный dispatch", "Изменение scope требует нового dispatch"] },
+    { "dot": "amber", "title": "Человеческие gates", "items": ["Approve перед планом", "Approve перед расходом QA"] },
+    { "dot": "emerald", "title": "Pinned evidence", "items": ["Review и QA работают с candidate SHA", "Публикуется только принятый SHA"] }
+  ]
+}

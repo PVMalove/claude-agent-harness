@@ -1,0 +1,37 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Agent Harness: установка, работа, проверка",
+    "quality_profile": "showcase",
+    "viewBox": [1440, 900]
+  },
+  "lanes": [
+    { "id": "entry", "label": "Вход" },
+    { "id": "setup", "label": "Настройка" },
+    { "id": "delivery", "label": "Рабочий поток" },
+    { "id": "control", "label": "Контроль качества" },
+    { "id": "outcome", "label": "Результат" }
+  ],
+  "phases": [
+    { "id": "input", "label": "Input / State", "fromCol": 0, "toCol": 1 },
+    { "id": "process", "label": "Process", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "output", "label": "Output / Next State", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["project", "capability", "install", "workflow", "qa", "pr"],
+  "nodes": [
+    { "id": "project", "lane": "entry", "col": 0, "type": "external", "label": "Целевой проект", "width": 190, "height": 58 },
+    { "id": "capability", "lane": "entry", "col": 1, "type": "security", "label": "Выбрать capability", "width": 190, "height": 58 },
+    { "id": "install", "lane": "setup", "col": 2, "type": "backend", "label": "harness init / adopt", "width": 190, "height": 58 },
+    { "id": "workflow", "lane": "delivery", "col": 3, "type": "backend", "label": "Skills и issue-ветка", "width": 190, "height": 58 },
+    { "id": "qa", "lane": "control", "col": 4, "type": "database", "label": "QA и доказательства", "width": 190, "height": 58 },
+    { "id": "pr", "lane": "outcome", "col": 5, "type": "cloud", "label": "PR — решение человека", "width": 190, "height": 58 }
+  ],
+  "edges": [
+    { "id": "project-capability", "from": "project", "to": "capability", "role": "main" },
+    { "id": "capability-install", "from": "capability", "to": "install", "role": "main", "variant": "emphasis" },
+    { "id": "install-workflow", "from": "install", "to": "workflow", "role": "main" },
+    { "id": "workflow-qa", "from": "workflow", "to": "qa", "role": "main" },
+    { "id": "qa-pr", "from": "qa", "to": "pr", "role": "main", "variant": "emphasis" }
+  ]
+}

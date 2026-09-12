@@ -1,6 +1,6 @@
 # Диаграммы харнесса
 
-Пять автономных интерактивных HTML-диаграмм. Рядом с каждой лежит редактируемая спецификация
+Девять автономных интерактивных HTML-диаграмм. Рядом с каждой лежит редактируемая спецификация
 Archify (`*.json`), а в `previews/` — статичное PNG той же диаграммы для Markdown, который не умеет
 рендерить HTML (например, README на GitHub).
 
@@ -11,6 +11,10 @@ Archify (`*.json`), а в `previews/` — статичное PNG той же д�
 | [Резолв runtime и dispatch](./backend-runtime.workflow.html) | Как назначение роли превращается в immutable brief, как выбирается транспорт (`orca` или `in-process`) и как dispatch подтверждает свою модель и живость. |
 | [Жизненный цикл batch](./backend-batch.lifecycle.html) | Состояния batch: `planned → awaiting-approval ↔ active → completed`, плюс выходы `blocked` и `failed`. |
 | [QA и создание PR](./qa-call-path.workflow.html) | Где `test_summary.py` вызывается в `/qa-gate`, какие QA-маршруты обходят обёртку и как явное подтверждение приводит к `gh`/`glab pr create`. |
+| [Контракт скила](./skill-contract-fill.workflow.html) | Нормализованный поток статической документации: входной brief → работа в границах роли → доказательства, отчёт и следующее состояние. |
+| [Архитектура переносимого harness](./harness-topology.architecture.html) | **Architecture:** границы исходного harness и целевого проекта, capability-каталог, CLI, единый snapshot и runtime discovery. |
+| [Gated dispatch `/implement`](./implement-dispatch.sequence.html) | **Sequence:** участники и порядок взаимодействий: brief, approvals, candidate SHA, review, clean-room QA и публикация. |
+| [Поток capability](./capability-delivery.dataflow.html) | **Data Flow:** происхождение capability и skills от каталога/vendor/overrides до snapshot и runtime consumers. |
 
 ## Как обновлять
 
@@ -23,7 +27,8 @@ node bin/archify.mjs deliver  <type> <spec>.json <output>.html --quality showcas
 node bin/archify.mjs visual-check <output>.html --json
 ```
 
-`<type>` — `workflow` для трёх первых спецификаций и `lifecycle` для четвёртой. `deliver` обязан
+`<type>` — `workflow`, `architecture`, `sequence`, `dataflow` или `lifecycle`, в зависимости от
+смысла схемы. `deliver` обязан
 завершиться нулевым кодом, `visual-check` — дать `containment: pass`. PNG в `previews/` — это светлый
 снимок `visual-check` при 1440×900; после перегенерации HTML его нужно обновить, иначе README покажет
 устаревшую картинку.

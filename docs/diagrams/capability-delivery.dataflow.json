@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Поток capability от каталога к runtime",
+    "viewBox": [1440, 900],
+    "quality_profile": "showcase"
+  },
+  "stages": [
+    { "label": "Источники" },
+    { "label": "Выбор" },
+    { "label": "Снимок проекта" },
+    { "label": "Обнаружение" },
+    { "label": "Потребители" }
+  ],
+  "nodes": [
+    { "id": "catalog", "type": "database", "label": "CAPABILITIES.json", "stage": 0, "row": 0 },
+    { "id": "vendor", "type": "database", "label": "Vendor snapshot", "stage": 0, "row": 2 },
+    { "id": "firstparty", "type": "database", "label": "First-party skills", "stage": 0, "row": 4 },
+    { "id": "resolver", "type": "backend", "label": "harness init/update", "stage": 1, "row": 2, "width": 170 },
+    { "id": "snapshot", "type": "database", "label": ".harness/skills", "stage": 2, "row": 2 },
+    { "id": "roots", "type": "backend", "label": "Relative roots", "stage": 3, "row": 1 },
+    { "id": "registry", "type": "database", "label": "REGISTRY.md", "stage": 3, "row": 3 },
+    { "id": "native", "type": "external", "label": "Native runtimes", "stage": 4, "row": 1, "width": 198 },
+    { "id": "hermes", "type": "external", "label": "Hermes Agent", "stage": 4, "row": 3 }
+  ],
+  "flows": [
+    { "from": "catalog", "to": "resolver", "label": "capability definition", "classification": "source of truth", "variant": "emphasis" },
+    { "from": "vendor", "to": "resolver", "label": "pinned packages", "classification": "provenance", "variant": "default", "labelAt": [88, 428] },
+    { "from": "firstparty", "to": "resolver", "label": "overrides + additions", "classification": "project policy", "variant": "emphasis" },
+    { "from": "resolver", "to": "snapshot", "label": "resolved SKILL.md", "classification": "managed files", "variant": "emphasis", "labelDy": 53 },
+    { "from": "snapshot", "to": "roots", "label": "relative links", "classification": "same snapshot", "variant": "default" },
+    { "from": "snapshot", "to": "registry", "label": "compact metadata", "classification": "fallback", "variant": "dashed" },
+    { "from": "roots", "to": "native", "label": "select and open skill", "classification": "native discovery", "variant": "emphasis", "labelDy": 53 },
+    { "from": "registry", "to": "hermes", "label": "lookup then open", "classification": "progressive disclosure", "variant": "dashed", "labelDy": 53 }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Provenance", "items": ["Catalog chooses a coherent capability", "Vendor and first-party packages remain distinct"] },
+    { "dot": "emerald", "title": "Один snapshot", "items": ["CLI materializes .harness/skills", "Links avoid copying skill bodies per runtime"] },
+    { "dot": "violet", "title": "Потребление", "items": ["Четыре runtimes discover natively", "Hermes routes through compact registry"] }
+  ]
+}
