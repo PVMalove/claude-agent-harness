@@ -377,35 +377,21 @@ def _run(test_root: Path):
     )
     if "This session **is** the coordinator" not in installed_implement:
         sys.exit("opted-in project implement skill does not drive the coordinator pipeline")
-    for gate in ("Architect.", "Developer.", "Code review.", "QA.", "Final report, then publish."):
-        if f"**{gate}**" not in installed_implement:
-            sys.exit(f"implement skill is missing the {gate} gate")
-    # A dispatched developer inherits nothing from /tdd; the repo's TDD contract only reaches it
-    # through the batch Definition of Done, so the skill has to keep putting it there.
-    if "write the failing test first" not in installed_implement:
-        sys.exit("implement skill does not carry the repository TDD contract into the batch")
-    # The packager CLI is not installed into a harnessed project, so a route precondition that shells
-    # out to `harness health` can never pass there and would send every project to /fast-implement.
-    if re.search(r"(?<![\w-])harness health(?![\w-])", installed_implement.split("`harness health` is not runnable")[0]):
-        sys.exit("implement skill still gates its route on a command absent from a harnessed project")
+    for required_contract in (
+        "architect → developer → code-review → qa → publish",
+        "explicit approval",
+        "model self-report",
+        "watchdog",
+        "module-owned guidance",
+        ".harness/orchestration/playbook.md",
+        ".harness/orchestration/roles/",
+    ):
+        if required_contract.casefold() not in installed_implement.casefold():
+            sys.exit(f"implement skill is missing coordinator contract: {required_contract}")
+    if "## Phase 1:" in installed_implement or "## Phase 5:" in installed_implement:
+        sys.exit("implement skill duplicates module-owned orchestration procedure")
     if "coordinator.py --repo . dispatch status" not in installed_implement:
         sys.exit("implement skill does not state the self-contained route check")
-    if "Never reuse it, never delete it" not in installed_implement:
-        sys.exit("implement skill has no rule for a leftover dispatch on the same ticket")
-    # The coordinator's state is resolved from --repo, so a session that switches into the batch's
-    # worktree forks that state into a second copy and loses sight of its own batch.
-    if "stay in the\n      main checkout" not in installed_implement:
-        sys.exit("implement skill does not keep the coordinator out of the batch worktree")
-    if "settings.local.json" not in installed_implement:
-        sys.exit("implement skill does not forbid editing tool configuration to provision a worktree")
-    for required_budget_rule in (
-        "Start `/implement` in a new, clean context",
-        "`medium` effort",
-        "immediately launch the role subagent",
-        "must not run the batch's full verification suite",
-    ):
-        if required_budget_rule not in installed_implement:
-            sys.exit(f"implement skill is missing token-budget rule: {required_budget_rule}")
     installed_architect = (
         orchestration_project / ".harness" / "orchestration" / "roles" / "architect.md"
     ).read_text(encoding="utf-8")
@@ -501,6 +487,14 @@ def _run(test_root: Path):
                 sys.exit(f"installed documentation missing hybrid coordinator contract {phrase!r}: {source_path.name}")
         if re.search(r"(?<![\w-])/to-pr(?![\w-])", installed_text):
             sys.exit(f"installed documentation retains removed /to-pr route: {source_path.name}")
+    source_orchestration_guide = (
+        ROOT / "harness" / "project" / "docs-agents" / "backend-orchestration.md"
+    ).read_text(encoding="utf-8")
+    installed_orchestration_guide = (
+        orchestration_project / "docs" / "agents" / "backend-orchestration.md"
+    ).read_text(encoding="utf-8")
+    if installed_orchestration_guide != source_orchestration_guide:
+        sys.exit("installed backend-orchestration guidance differs from its source template")
     expected_role_files = {
         "architect.md",
         "code-review.md",
@@ -531,6 +525,13 @@ def _run(test_root: Path):
         sys.exit("backend-orchestration pilot guide missing")
     pilot = pilot_path.read_text(encoding="utf-8")
     normalized_pilot = " ".join(pilot.split())
+    for token_evidence_rule in (
+        "provider- or runtime-observed input and output tokens",
+        "a role's self-report is never token telemetry",
+        "missing-data note",
+    ):
+        if token_evidence_rule not in normalized_pilot:
+            sys.exit(f"installed pilot guide is missing token-evidence rule: {token_evidence_rule}")
     for required_pilot_contract in (
         "## Purpose",
         "## Before the first run",
