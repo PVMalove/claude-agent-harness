@@ -51,8 +51,9 @@ FINDING_SEVERITIES = {"info", "warning", "blocker"}
 QA_LEASE_FIELDS = {"dispatch_id", "host", "pid", "acquired_at", "expires_at"}
 QA_QUEUE_FIELDS = {"dispatch_id", "sequence", "queued_at"}
 PLAN_FIELDS = (
-    "batch_id", "created_at", "base_commit", "ticket", "branch", "worktree", "zone", "definition_of_done",
-    "prohibited_changes", "developer_verification_commands", "verification_commands", "required_gates", "dependencies",
+    "batch_id", "created_at", "base_commit", "integration_ref", "branch_start_commit", "ticket", "branch",
+    "worktree", "zone", "definition_of_done", "prohibited_changes", "developer_verification_commands",
+    "verification_commands", "required_gates", "dependencies",
 )
 DISPATCH_FIELDS = {
     "dispatch_id", "batch_id", "ticket", "role", "access", "zone", "write_paths", "branch", "worktree",
@@ -310,6 +311,55 @@ def _head_commit(repo: Path) -> str | None:
         encoding="utf-8",
     )
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _fetch_ref_tip(repo: Path, ref: str) -> str:
+    """The current commit an integration ref points to on origin, fetched fresh — never a locally
+    cached remote-tracking branch, which is exactly the staleness this gate exists to catch."""
+    try:
+        _git(repo, "fetch", "origin", ref)
+    except CoordinatorError as exc:
+        raise CoordinatorError(f"could not fetch origin {ref!r}: {exc}") from exc
+    return _git(repo, "rev-parse", "--verify", "FETCH_HEAD")
+
+
+def _required_base_branch(repo: Path) -> str:
+    """Unlike `_validate_branch`'s own silent `"master"` default, the base-commit gate has nothing
+    safe to fetch when the project config omits `base_branch` — fail loudly instead of pinning
+    against a branch the project never named."""
+    base = _project(repo).get("base_branch")
+    if not _non_empty(base):
+        raise CoordinatorError("project config has no usable base_branch for the integration ref fallback")
+    return base
+
+
+def _integration_ref(repo: Path, batch: dict[str, Any]) -> str:
+    ref = batch.get("integration_ref")
+    if _non_empty(ref):
+        return ref
+    return _required_base_branch(repo)
+
+
+def _enforce_base_freshness(repo: Path, root: Path, batch: dict[str, Any]) -> None:
+    """Mandatory re-check, immediately before a review or publish dispatch: the batch's pinned
+    integration base must still be the integration ref's current tip. A stale base is cleared only
+    by a new developer dispatch (a rebase), never by the coordinator moving this field directly."""
+    recorded = batch.get("integration_base_commit")
+    if not isinstance(recorded, str) or not recorded:
+        raise CoordinatorError("batch has no recorded integration base commit to check freshness against")
+    ref = _integration_ref(repo, batch)
+    current = _fetch_ref_tip(repo, ref)
+    if current == recorded:
+        return
+    batch["next_action"] = "developer"
+    batch["required_next_role"] = "developer"
+    batch["retry_candidate_required"] = True
+    batch["base_rebase_required"] = True
+    _replace(_batch_path(root, batch["batch_id"]), batch)
+    raise CoordinatorError(
+        f"batch base is stale: origin/{ref} has moved from {recorded} to {current}; "
+        "only a new developer rebase dispatch can clear this block"
+    )
 
 
 def _candidate_commit(repo: Path, value: object) -> str:
@@ -992,6 +1042,7 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     branch = getattr(args, "branch", None)
     worktree = getattr(args, "worktree", None)
     zone = getattr(args, "zone", None)
+    integration_ref = getattr(args, "integration_ref", None)
     dod = _strings(getattr(args, "definition_of_done", None), "definition_of_done")
     prohibited = _strings(getattr(args, "prohibited_change", None), "prohibited_changes")
     if not _non_empty(ticket) or not _non_empty(worktree) or not _non_empty(zone):
@@ -999,10 +1050,17 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     _validate_branch(repo, branch)
     if not isinstance(config.get("backend_zones"), dict) or zone not in config["backend_zones"]:
         raise CoordinatorError(f"unknown backend zone {zone!r}")
+    # Nullable for epic-less tasks: falls back to the project's base_branch, the same field
+    # `_validate_branch` falls back to, rather than inventing a second convention.
+    fetch_ref = integration_ref.strip() if _non_empty(integration_ref) else _required_base_branch(repo)
+    pinned_base = _fetch_ref_tip(repo, fetch_ref)
     record = {
         "batch_id": f"batch-{uuid.uuid4()}",
         "created_at": _now(),
-        "base_commit": _head_commit(repo),
+        "base_commit": pinned_base,
+        "integration_ref": integration_ref.strip() if _non_empty(integration_ref) else None,
+        "integration_base_commit": pinned_base,
+        "branch_start_commit": _head_commit(repo),
         "state": "planned",
         "ticket": ticket.strip(),
         "branch": branch.strip(),
@@ -1104,6 +1162,10 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
             batch["next_action"] = "developer-retry"
         elif args.decision in {"accept", "override-warning"}:
             if report["role"] == "developer":
+                if batch.get("base_rebase_required"):
+                    ref = _integration_ref(repo, batch)
+                    batch["integration_base_commit"] = _fetch_ref_tip(repo, ref)
+                    batch["base_rebase_required"] = False
                 if dispatch.get("purpose") == "publish":
                     batch.pop("next_action", None)
                     batch["state"] = "completed"
@@ -1389,6 +1451,9 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             _accepted_qa_for_candidate(root, batch, candidate)
         elif purpose != "work":
             raise CoordinatorError("dispatch purpose is invalid")
+        is_review_work = role_name == "code-review" and purpose == "work"
+        if is_review_work or purpose == "publish":
+            _enforce_base_freshness(repo, root, batch)
         if candidate is not None:
             risk = _risk_for_candidate(root, batch, candidate)
         if role_name in {"code-review", "qa"} and candidate != _latest_developer_candidate(repo, root, batch):
@@ -2182,6 +2247,11 @@ def parser() -> argparse.ArgumentParser:
     create.add_argument("--branch", required=True)
     create.add_argument("--worktree", required=True)
     create.add_argument("--zone", default=DEFAULT_ZONE, help="backend zone; defaults to the whole repository")
+    create.add_argument(
+        "--integration-ref",
+        help="branch on origin this batch's base is fetched and pinned against; "
+        "falls back to the project's base_branch for epic-less tasks",
+    )
     create.add_argument("--definition-of-done", action="append", required=True)
     create.add_argument("--prohibited-change", action="append", required=True)
     create.add_argument("--required-gate", action="append")
