@@ -230,6 +230,14 @@ batch в `awaiting-approval` и оставляет dispatch в `reported` до �
      --batch <batch-id> --approved-by 'имя утверждающего' \
      --approved-at 2026-09-09T12:00:00Z
    ```
+
+   `batch create` сначала выполняет `git fetch origin <ref>` — `--integration-ref`, если он передан,
+   иначе `base_branch` проекта (для epic-less задач) — и фиксирует полученную вершину как
+   `base_commit`/`integration_base_commit`; необновлённый локальный HEAD никогда не используется как
+   замена. Перед созданием `code-review`- или `publish`-dispatch coordinator обязательно повторяет
+   эту сверку: если `origin/<ref>` с тех пор сдвинулся, dispatch отклоняется, next_action переходит в
+   `developer`, а снять блокировку может только новый developer dispatch (rebase) — его commit
+   автоматически становится новым `candidate_commit` и заново проходит risk assessment.
 2. Сверить активные batch, пересечения зон, writer и quality-gate lane. При конфликте оставить
    batch `blocked`, а не запускать параллельную запись.
 3. Создать и отдельно утвердить architect dispatch, принять его отчёт, и только потом — developer
@@ -348,6 +356,71 @@ self-report, время последнего heartbeat, `silent_seconds` и пр
 QA-lease-expiry на любой dispatch, а не только на clean-room QA lane. Stale — блокер, который
 coordinator выносит человеку: сам он состояние по таймауту не меняет.
 
+### Checkpoint и новая worker session
+
+Write-роль (developer, database-migrations, messaging-integration) может растянуть один dispatch на
+несколько worker session, если весь TDD-цикл в одну сессию раздувает её контекст. Read-only роль
+(architect, qa, code-review) — не может: попытка checkpoint для неё отклоняется сразу.
+
+Вместо completion report текущая worker session фиксирует неитоговый checkpoint — отдельную,
+hashed ledger-запись, которую нельзя перепутать с отчётом:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . dispatch checkpoint \
+  --file checkpoint.json
+```
+
+`checkpoint.json` обязан содержать ровно: `dispatch_id`, `commit_sha`, `changed_files`,
+`remaining_definition_of_done` (подмножество DoD approved dispatch), `passing_checks` (в формате
+`checks_run` completion report, команды — из approved `verification_commands`), `risks`, `blockers`
+и `context_package_id` — ссылку на последний зарегистрированный для batch Context Package, либо
+литеральный `not applicable — no context package registered`, если для batch его пока нет. Никаких
+чужих полей: ни сырой истории чата, ни логов прежних неудачных попыток. `checkpoint` требует уже
+подтверждённого self-report, переводит dispatch-status в `checkpointed` и не трогает outcome enum
+(`completed`/`blocked`/`failed`) — этот enum остаётся только у completion report.
+
+Новая worker session для того же dispatch ID стартует командой `dispatch resume`. Авторизация
+зависит от того, почему закончилась прежняя сессия:
+
+```bash
+# runtime adapter сообщил rate-limit termination — авторизация автоматическая
+python .harness/orchestration/coordinator.py --repo . dispatch resume --dispatch <dispatch-id> \
+  --termination-reason rate_limit
+
+# планируемый trigger (context limit / N TDD-циклов / большой failure log / законченный vertical
+# slice) — требуется явное coordinator decision
+python .harness/orchestration/coordinator.py --repo . dispatch resume --dispatch <dispatch-id> \
+  --trigger context-limit --measured-value 162000 --file continuation-facts.json \
+  --approved-by "project coordinator" --approved-at 2026-09-14T18:00:00Z
+```
+
+`--termination-reason`, распознанный как rate limit (`rate_limit`/`rate-limit`/`429`), авторизует
+новую сессию автоматически — новое решение человека/coordinator-а не требуется. Любая другая
+причина, включая отсутствующую или нераспознанную, трактуется как planned trigger — safe default
+в сторону approval, а не от него:
+
+- `--trigger` обязателен и должен быть одним из `context-limit`, `tdd-cycles`, `failure-log`,
+  `vertical-slice`.
+- для `context-limit`/`tdd-cycles`/`failure-log` `--measured-value` обязан быть не меньше
+  соответствующего порога `adaptive_continuation_policy` (`context_limit`/
+  `tdd_cycle_count`/`failure_log_bytes`) из `.harness/orchestration.json` — без явной конфигурации
+  используются задокументированные значения по умолчанию (150000 / 3 / 20000), а не зашитые
+  внутри порознь для каждого места.
+- `--file` обязан содержать JSON с `dispatch_id`, `remaining_definition_of_done`, `risks` и
+  `dependencies`, буквально совпадающими с последним checkpoint (первые два поля) и с dispatch
+  (`dependencies`); `blockers` в сравнение не входит — их формулировка может измениться между
+  сессиями без реального дрейфа scope/DoD/risks/dependencies. Расхождение — сигнал, что они реально
+  изменились: coordinator обязан закрыть текущий dispatch и открыть новый через обычный approval,
+  а не резюмировать этот.
+- авторизация записывается тем же `coordinator_decisions`, что accept/retry/block/fail/abandon/
+  cancel — новый тип записи не вводится.
+
+`resume` принимает только `checkpointed` dispatch, возвращает его в `dispatched` и отбрасывает
+предыдущий model self-report. Это значит, что новая сессия обязана заново пройти `dispatch
+self-report` и `dispatch heartbeat` — ровно так же, как при первом contact, — прежде чем следующий
+checkpoint или completion report будет принят. Круг замыкается тем же dispatch ID: checkpoint →
+`dispatch resume` → новая self-report/heartbeat → в итоге один completion report.
+
 ### Clean-room QA lane
 
 Одобренный `qa` dispatch выполняется самим coordinator в отдельном temporary Git worktree,
@@ -403,6 +476,25 @@ batch до старта следующего. Ручной запуск по э�
 непересекающуюся zone, последовательность ролей, immutable brief и требуемые risk gates;
 не меняй protected или integration branch.
 ```
+
+### Advisory tool call
+
+`.harness/orchestration/advisory.py` — дешёвый non-role CLI для чисто утилитарных подзадач:
+ранжирование файлов по keyword, сводка лога и грубая риск-подсказка. Он выполняется вне
+brief/report/self-report/heartbeat контракта: не является dispatch, не пишет ledger-запись и не
+импортирует `ledger.py`/`contract.py`/`coordinator.py`. Вывод эфемерен — печатается в stdout и
+пересчитывается заново при каждом вызове, нигде не сохраняется как ground truth для другого
+dispatch:
+
+```bash
+python .harness/orchestration/advisory.py rank-files --keyword payments -- services/payments/handler.py README.md
+python .harness/orchestration/advisory.py summarize-log --file qa-output.log
+python .harness/orchestration/advisory.py classify-risk --text "data migration for payments" --known-trigger data-migration
+```
+
+Его вывод — не авторизация. Coordinator/contract validation path не принимает advisory-вывод как
+основание создать dispatch, понизить риск, принять QA или изменить scope: единственный авторитетный
+источник риска остаётся `coordinator.py risk assess`.
 
 ## 5. Необязательный запуск через Orca
 

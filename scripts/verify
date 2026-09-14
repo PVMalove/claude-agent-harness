@@ -198,6 +198,35 @@ def check_vendor_pin():
             sys.exit(f"vendor checksum mismatch: {relative}")
 
 
+ALWAYS_SENT_INSTRUCTION_FILES = (
+    [ROOT / "CLAUDE.md", ROOT / "AGENTS.md", ROOT / "harness" / "orchestration" / "playbook.md"]
+    + sorted((ROOT / "harness" / "orchestration" / "roles").glob("*.md"))
+)
+_TIMESTAMP_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:?\d{2})?\b")
+_DISPATCH_ID_RE = re.compile(r"\b(?:batch|dispatch)-[0-9a-fA-F][0-9a-fA-F-]{5,}\b", re.IGNORECASE)
+_HEX_TOKEN_RE = re.compile(r"\b[0-9a-fA-F]{7,40}\b")
+
+
+def check_no_dispatch_specific_data_in_always_sent_files():
+    """The instruction files sent with every dispatch (system instructions, role manifests, the
+    playbook) must stay a stable, cacheable prefix. Per-dispatch data (commit SHA, timestamp,
+    batch/dispatch ID) belongs only in the immutable brief, never here."""
+    problems = []
+    for path in ALWAYS_SENT_INSTRUCTION_FILES:
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if _TIMESTAMP_RE.search(line):
+                problems.append(f"{path}:{lineno}: looks like a timestamp: {line.strip()}")
+            if _DISPATCH_ID_RE.search(line):
+                problems.append(f"{path}:{lineno}: looks like a batch/dispatch identifier: {line.strip()}")
+            for token in _HEX_TOKEN_RE.findall(line):
+                if any(ch.isdigit() for ch in token):
+                    problems.append(f"{path}:{lineno}: looks like a commit SHA ({token}): {line.strip()}")
+    if problems:
+        sys.exit(
+            "always-sent instruction files must stay free of dispatch-specific data:\n" + "\n".join(problems)
+        )
+
+
 def main():
     run_ok(
         [sys.executable, "-m", "json.tool", str(ROOT / "harness" / "CAPABILITIES.json")],
@@ -236,7 +265,9 @@ def main():
     check_pvmalove_additions_docs_sync()
     check_pvmalove_suite_summary_sync()
     check_vendor_pin()
+    check_no_dispatch_specific_data_in_always_sent_files()
 
+    run_ok([sys.executable, "-m", "unittest", "discover", "-s", str(ROOT / "tests")])
     run_ok([sys.executable, str(ROOT / "scripts" / "test-clean-room")])
 
     print("agent-harness verification passed")

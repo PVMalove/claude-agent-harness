@@ -1018,6 +1018,15 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             env=coordinator_env,
         )
 
+    def sync_origin_base(ref: str = "main") -> None:
+        """Push local HEAD to origin's tracked ref so `batch create`'s mandatory fetch sees a
+        current, matching tip - mirroring a freshly forked issue branch in real usage. `-f` because
+        the dedicated stale-base scenario deliberately diverges origin from this checkout's history."""
+        subprocess.run(
+            ["git", "push", "-q", "-f", "origin", f"HEAD:refs/heads/{ref}"],
+            cwd=orchestration_project, check=True,
+        )
+
     def lifecycle_records(state: Path) -> Path:
         """Resolve the public ledger selector instead of reaching into a layout generation."""
         pointer = state / "ledger.json"
@@ -1065,8 +1074,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if migrated.returncode != 0:
         sys.exit("ledger rejected a valid legacy state: " + migrated.stderr)
     migrated_record = json.loads(migrated.stdout)
-    if migrated_record["version"] != 1 or not migrated_record["generation"].startswith("generation-"):
-        sys.exit("ledger migration did not select a versioned generation")
+    if migrated_record["version"] != 3 or not migrated_record["generation"].startswith("generation-"):
+        sys.exit("ledger migration did not select the current versioned generation")
     ledger_status = coordinator_run("--state-dir", str(legacy_ledger_state), "ledger", "status")
     if ledger_status.returncode != 0 or json.loads(ledger_status.stdout)["generation"] != migrated_record["generation"]:
         sys.exit("ledger status did not expose the selected generation")
@@ -1078,6 +1087,93 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     reset = coordinator_run("--state-dir", str(legacy_ledger_state), "ledger", "reset", "--confirm", "RESET")
     if reset.returncode != 0 or json.loads(reset.stdout)["generation"] == migrated_record["generation"]:
         sys.exit("ledger reset did not atomically select a fresh generation")
+
+    # A ledger schema change (Issue #138 added context-packages, Issue #139 added checkpoints) is
+    # itself a migration: a generation an older harness version already selected is a valid, but
+    # stale, migration source -- readable only by an explicit `ledger migrate`, never implicitly
+    # upgraded.
+    def write_audit_record(generation_dir, audit_id, action, details):
+        record = {"audit_id": audit_id, "at": "2026-09-09T15:24:00+00:00", "action": action, "details": details}
+        canonical = json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        record["record_sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        (generation_dir / "audit" / f"{audit_id}.json").write_text(
+            json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    stale_schema_state = test_root / "stale-schema-ledger-state"
+    stale_schema_generation = stale_schema_state / "generations" / "generation-legacy01"
+    v1_record_directories = (
+        "batches", "plans", "dispatches", "dispatch-status", "risk-assessments", "reports",
+        "qa-lane", "qa-artifacts", "audit",
+    )
+    for directory in v1_record_directories:
+        (stale_schema_generation / directory).mkdir(parents=True)
+    stale_schema_batch_id = "batch-00000000-0000-0000-0000-000000000456"
+    stale_schema_plan = {**legacy_plan, "batch_id": stale_schema_batch_id, "branch": "feature/issue-138-stale-schema"}
+    stale_schema_batch = {
+        **stale_schema_plan, "state": "planned", "dispatches": [], "risk_assessments": [],
+        "risk_escalations": [], "risk_reassessment_required": False,
+    }
+    (stale_schema_generation / "batches" / f"{stale_schema_batch_id}.json").write_text(
+        json.dumps(stale_schema_batch, indent=2) + "\n", encoding="utf-8"
+    )
+    (stale_schema_generation / "plans" / f"{stale_schema_batch_id}.json").write_text(
+        json.dumps(stale_schema_plan, indent=2) + "\n", encoding="utf-8"
+    )
+    write_audit_record(stale_schema_generation, "audit-legacy01", "generation-created", {"purpose": "initialize"})
+    stale_pointer = {"version": 1, "generation": "generation-legacy01", "selected_at": "2026-09-09T15:24:00+00:00"}
+    (stale_schema_state / "ledger.json").write_text(json.dumps(stale_pointer, indent=2) + "\n", encoding="utf-8")
+
+    blocked_status = coordinator_run("--state-dir", str(stale_schema_state), "ledger", "status")
+    if blocked_status.returncode != 0 or not json.loads(blocked_status.stdout).get("stale_schema"):
+        sys.exit("ledger status did not report a stale-schema generation: " + blocked_status.stdout)
+    blocked_list = coordinator_run("--state-dir", str(stale_schema_state), "batch", "list")
+    if blocked_list.returncode == 0:
+        sys.exit("coordinator used a stale-schema generation instead of requiring an explicit ledger migrate")
+
+    schema_migrated = coordinator_run("--state-dir", str(stale_schema_state), "ledger", "migrate")
+    if schema_migrated.returncode != 0:
+        sys.exit("ledger rejected a valid schema upgrade: " + schema_migrated.stderr)
+    schema_migrated_record = json.loads(schema_migrated.stdout)
+    if schema_migrated_record["version"] != 3 or schema_migrated_record["generation"] == "generation-legacy01":
+        sys.exit("ledger schema upgrade did not select a new current-schema generation")
+    upgraded_batch_path = (
+        stale_schema_state / "generations" / schema_migrated_record["generation"]
+        / "batches" / f"{stale_schema_batch_id}.json"
+    )
+    if not upgraded_batch_path.is_file() or json.loads(upgraded_batch_path.read_text(encoding="utf-8")) != stale_schema_batch:
+        sys.exit("ledger schema upgrade did not preserve the older-schema batch record as evidence")
+    for new_directory in ("context-packages", "checkpoints"):
+        if not (stale_schema_state / "generations" / schema_migrated_record["generation"] / new_directory).is_dir():
+            sys.exit(f"ledger schema upgrade did not create the new {new_directory} record directory")
+    already_current = coordinator_run("--state-dir", str(stale_schema_state), "ledger", "migrate")
+    if already_current.returncode != 0 or json.loads(already_current.stdout)["migrated"]:
+        sys.exit("ledger migrate was not idempotent once the current schema was already selected")
+
+    # A generation selected by the immediately prior schema version (Issue #138's context-packages,
+    # lacking only the checkpoints directory Issue #139 added) is the same stale-but-valid source,
+    # one version closer to current.
+    stale_v2_state = test_root / "stale-v2-ledger-state"
+    stale_v2_generation = stale_v2_state / "generations" / "generation-legacy02"
+    v2_record_directories = (
+        "batches", "plans", "dispatches", "dispatch-status", "risk-assessments", "context-packages",
+        "reports", "qa-lane", "qa-artifacts", "audit",
+    )
+    for directory in v2_record_directories:
+        (stale_v2_generation / directory).mkdir(parents=True)
+    write_audit_record(stale_v2_generation, "audit-legacy02", "generation-created", {"purpose": "initialize"})
+    v2_pointer = {"version": 2, "generation": "generation-legacy02", "selected_at": "2026-09-14T15:24:00+00:00"}
+    (stale_v2_state / "ledger.json").write_text(json.dumps(v2_pointer, indent=2) + "\n", encoding="utf-8")
+    v2_migrated = coordinator_run("--state-dir", str(stale_v2_state), "ledger", "migrate")
+    if v2_migrated.returncode != 0:
+        sys.exit("ledger rejected a valid v2-to-v3 schema upgrade: " + v2_migrated.stderr)
+    v2_migrated_record = json.loads(v2_migrated.stdout)
+    if v2_migrated_record["version"] != 3 or v2_migrated_record["generation"] == "generation-legacy02":
+        sys.exit("ledger v2-to-v3 upgrade did not select a new current-schema generation")
+    if not (stale_v2_state / "generations" / v2_migrated_record["generation"] / "checkpoints").is_dir():
+        sys.exit("ledger v2-to-v3 upgrade did not create the new checkpoints record directory")
+
+    print("ledger schema-upgrade migration verification passed")
 
     damaged_ledger_state = test_root / "damaged-ledger-state"
     (damaged_ledger_state / "batches").mkdir(parents=True)
@@ -1128,11 +1224,12 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     del implicit_transport["assignment_plans"]["architect"]["transport"]
     orchestration_config.write_text(json.dumps(implicit_transport, indent=2) + "\n", encoding="utf-8")
     subprocess.run(["git", "branch", "feature/issue-907-implicit-transport"], cwd=orchestration_project, check=True)
+    sync_origin_base("integration/test-907")
     implicit_batch = json.loads(coordinator_run(
         "--state-dir", str(implicit_transport_state), "batch", "create", "--ticket", "#907",
         "--branch", "feature/issue-907-implicit-transport", "--worktree", "issue-907-implicit-transport",
         "--zone", "backend", "--definition-of-done", "confirm the dispatch transport",
-        "--prohibited-change", "do not merge",
+        "--prohibited-change", "do not merge", "--integration-ref", "integration/test-907",
     ).stdout)["batch_id"]
     coordinator_run(
         "--state-dir", str(implicit_transport_state), "batch", "approve", "--batch", implicit_batch,
@@ -1167,11 +1264,12 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     # otherwise a Git Bash display artifact looks like corrupted Russian batch evidence.
     unicode_state = test_root / "unicode-output-state"
     unicode_env = dict(os.environ, PYTHONIOENCODING="cp1251")
+    sync_origin_base("integration/test-908")
     unicode_result = subprocess.run(
         [sys.executable, str(coordinator_path), "--repo", str(orchestration_project), "--state-dir", str(unicode_state),
          "batch", "create", "--ticket", "#908", "--branch", "feature/issue-908-unicode-output",
          "--worktree", "issue-908-unicode-output", "--zone", "backend", "--definition-of-done", "Проверить кодировку",
-         "--prohibited-change", "Не менять данные"],
+         "--prohibited-change", "Не менять данные", "--integration-ref", "integration/test-908"],
         capture_output=True, env=unicode_env,
     )
     if unicode_result.returncode != 0:
@@ -1179,10 +1277,12 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if json.loads(unicode_result.stdout.decode("utf-8"))["definition_of_done"] != ["Проверить кодировку"]:
         sys.exit("coordinator stdout is not UTF-8 when Python inherits a legacy output encoding")
 
+    sync_origin_base("integration/test-901")
     planned = coordinator_run(
         "batch", "create", "--ticket", "#901", "--branch", "feature/issue-901-coordinator",
         "--worktree", "issue-901-coordinator", "--zone", "backend", "--definition-of-done",
         "implement the requested backend change", "--prohibited-change", "do not merge",
+        "--integration-ref", "integration/test-901",
     )
     if planned.returncode != 0:
         sys.exit("coordinator rejected a valid planned batch: " + planned.stderr)
@@ -1582,6 +1682,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("QA evidence validation did not return the accepted candidate SHA")
     # Historical abandoned plans can share the ticket and branch after a coordinator correction.
     # They carry no QA report for this candidate and must not make PR evidence ambiguous.
+    sync_origin_base()
     for history_index in range(2):
         historical = coordinator_run(
             "batch", "create", "--ticket", "#901", "--branch", "feature/issue-901-coordinator",
@@ -1654,10 +1755,365 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
 
     print("risk-aware composite review verification passed")
 
+    # Delta-review eligibility is a pure function of two commits and a prior review's severities:
+    # a test-only fix diff that matches no risk trigger is eligible; anything else falls back to a
+    # full independent review.  Probed directly, mirroring the shared contract policy probe above.
+    probe_repo = test_root / "delta-probe-repo"
+    probe_repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=probe_repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=probe_repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Clean Room"], cwd=probe_repo, check=True)
+    (probe_repo / "app.py").write_text("print('base')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=probe_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "chore: baseline"], cwd=probe_repo, check=True)
+    (probe_repo / "services").mkdir()
+    (probe_repo / "services" / "handler.py").write_text("def handle():\n    return 'ok'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=probe_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "feat: add handler"], cwd=probe_repo, check=True)
+    probe_prior_sha = capture(["git", "-C", str(probe_repo), "rev-parse", "HEAD"]).strip()
+
+    subprocess.run(["git", "checkout", "-q", "-b", "eligible"], cwd=probe_repo, check=True)
+    (probe_repo / "tests").mkdir(exist_ok=True)
+    (probe_repo / "tests" / "test_handler.py").write_text("def test_handle():\n    assert True\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=probe_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "test: cover handler edge case"], cwd=probe_repo, check=True)
+    probe_eligible_sha = capture(["git", "-C", str(probe_repo), "rev-parse", "HEAD"]).strip()
+
+    subprocess.run(["git", "checkout", "-q", "-b", "nontest", probe_prior_sha], cwd=probe_repo, check=True)
+    (probe_repo / "services" / "handler.py").write_text("def handle():\n    return 'fixed'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=probe_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "fix: adjust handler return value"], cwd=probe_repo, check=True)
+    probe_nontest_sha = capture(["git", "-C", str(probe_repo), "rev-parse", "HEAD"]).strip()
+
+    subprocess.run(["git", "checkout", "-q", "-b", "trigger", probe_prior_sha], cwd=probe_repo, check=True)
+    (probe_repo / "tests").mkdir(exist_ok=True)
+    (probe_repo / "tests" / "test_handler_retry.py").write_text("def test_retry():\n    assert True\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=probe_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "test: cover concurrency-retry timing"], cwd=probe_repo, check=True)
+    probe_trigger_sha = capture(["git", "-C", str(probe_repo), "rev-parse", "HEAD"]).strip()
+
+    known_triggers = [
+        "api-public-contract", "schema-change", "data-migration", "outbox", "queues",
+        "message-schema-routing", "transactions", "authorization-security", "concurrency-retry", "retry-dlq",
+    ]
+    delta_probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib.util, sys, json\n"
+                "from pathlib import Path\n"
+                "spec = importlib.util.spec_from_file_location('coordinator', sys.argv[1])\n"
+                "coordinator = importlib.util.module_from_spec(spec)\n"
+                "sys.modules[spec.name] = coordinator\n"
+                "spec.loader.exec_module(coordinator)\n"
+                "repo = Path(sys.argv[2])\n"
+                "known = json.loads(sys.argv[3])\n"
+                "prior_sha, eligible_sha, nontest_sha, trigger_sha = sys.argv[4:8]\n"
+                "def severities(standards, spec_value):\n"
+                "    return {'candidate_commit': 'x', 'scope': [],\n"
+                "            'standards': {'severity': standards, 'findings': [], 'risks': 'r', 'blockers': 'b'},\n"
+                "            'spec': {'severity': spec_value, 'findings': [], 'risks': 'r', 'blockers': 'b'}}\n"
+                "prior = {'candidate_commit': prior_sha}\n"
+                "axis = coordinator._delta_review_eligibility(\n"
+                "    repo, {}, known, prior, {'review': severities('warning', 'clean')}, eligible_sha,\n"
+                ")\n"
+                "if axis != 'standards': raise SystemExit(f'unexpected delta-review axis: {axis}')\n"
+                "for bad_sha, label in ((nontest_sha, 'non-test'), (trigger_sha, 'risk-trigger')):\n"
+                "    try:\n"
+                "        coordinator._delta_review_eligibility(\n"
+                "            repo, {}, known, prior, {'review': severities('warning', 'clean')}, bad_sha,\n"
+                "        )\n"
+                "    except coordinator.CoordinatorError:\n"
+                "        pass\n"
+                "    else:\n"
+                "        raise SystemExit(f'accepted an ineligible {label} delta-review')\n"
+                "try:\n"
+                "    coordinator._delta_review_eligibility(\n"
+                "        repo, {}, known, prior, {'review': severities('blocker', 'clean')}, eligible_sha,\n"
+                "    )\n"
+                "except coordinator.CoordinatorError:\n"
+                "    pass\n"
+                "else:\n"
+                "    raise SystemExit('accepted a delta-review after a review blocker')\n"
+                "try:\n"
+                "    coordinator._delta_review_eligibility(\n"
+                "        repo, {}, known, prior, {'review': severities('warning', 'warning')}, eligible_sha,\n"
+                "    )\n"
+                "except coordinator.CoordinatorError:\n"
+                "    pass\n"
+                "else:\n"
+                "    raise SystemExit('accepted a delta-review with two Warning axes')\n"
+            ),
+            str(coordinator_path),
+            str(probe_repo),
+            json.dumps(known_triggers),
+            probe_prior_sha,
+            probe_eligible_sha,
+            probe_nontest_sha,
+            probe_trigger_sha,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if delta_probe.returncode != 0:
+        sys.exit("delta-review eligibility probe failed: " + (delta_probe.stderr or delta_probe.stdout))
+
+    print("delta-review eligibility probe passed")
+
+    # A test-only fix closing a review's single Warning finding gets a cheaper follow-up review:
+    # the Standards/Spec axis that was Clean is inherited without re-analysis, only the axis that
+    # was Warning is re-checked, and the follow-up is always a new independent dispatch.
+    delta_state = test_root / "delta-review-state"
+    subprocess.run(["git", "branch", "feature/issue-906-delta-review"], cwd=orchestration_project, check=True)
+    sync_origin_base()
+    delta_batch_created = json.loads(coordinator_run(
+        "--state-dir", str(delta_state), "batch", "create", "--ticket", "#906",
+        "--branch", "feature/issue-906-delta-review", "--worktree", "issue-906-delta-review",
+        "--zone", "backend", "--definition-of-done", "add the summary formatter with a passing test",
+        "--prohibited-change", "do not merge",
+    ).stdout)
+    delta_batch = delta_batch_created["batch_id"]
+    delta_base_sha = delta_batch_created["base_commit"]
+    coordinator_run(
+        "--state-dir", str(delta_state), "batch", "approve", "--batch", delta_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T17:00:00Z",
+    )
+
+    def delta_role(role_name, model, approved_at, payload_extra):
+        created = coordinator_run(
+            "--state-dir", str(delta_state), "dispatch", "create", "--batch", delta_batch,
+            "--role", role_name, "--approved-by", "project coordinator", "--approved-at", approved_at,
+        )
+        if created.returncode != 0:
+            sys.exit(f"coordinator rejected the delta-review {role_name} dispatch: " + created.stderr)
+        role_dispatch = json.loads(created.stdout)["dispatch_id"]
+        coordinator_run(
+            "--state-dir", str(delta_state), "dispatch", "send", "--dispatch", role_dispatch,
+            "--adapter", str(fake_adapter),
+        )
+        coordinator_run(
+            "--state-dir", str(delta_state), "dispatch", "self-report",
+            "--dispatch", role_dispatch, "--model", model,
+        )
+        payload = {
+            "dispatch_id": role_dispatch, "ticket": "#906", "role": role_name, "outcome": "completed",
+            "output": f"{role_name} finished the requested step", "commit_sha": "not applicable — read-only role",
+            "changed_files": [],
+            "checks_run": [{
+                "command": "python developer_check.py" if role_name == "developer" else "python qa_baseline.py",
+                "result": "pass", "evidence": "1 passed",
+            }],
+            "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+        }
+        payload.update(payload_extra)
+        payload_file = test_root / f"delta-{role_name}-{role_dispatch}-report.json"
+        payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        submitted = coordinator_run("--state-dir", str(delta_state), "report", "submit", "--file", str(payload_file))
+        if submitted.returncode != 0:
+            sys.exit(f"coordinator rejected the delta-review {role_name} report: " + submitted.stderr)
+        return role_dispatch
+
+    delta_architect_id = delta_role("architect", "project-architect-model", "2026-09-09T17:00:10Z", {})
+    coordinator_run(
+        "--state-dir", str(delta_state), "batch", "decide", "--batch", delta_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T17:00:20Z",
+    )
+
+    formatter_file = orchestration_project / "services" / "delta_formatter.py"
+    formatter_file.write_text('def format_summary():\n    return "summary"\n', encoding="utf-8")
+    subprocess.run(["git", "add", "services/delta_formatter.py"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "feat: add summary formatter helper"], cwd=orchestration_project, check=True)
+    delta_first_sha = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
+    delta_role("developer", "project-developer-model", "2026-09-09T17:00:30Z", {
+        "commit_sha": delta_first_sha, "changed_files": ["services/delta_formatter.py"],
+    })
+    coordinator_run(
+        "--state-dir", str(delta_state), "batch", "decide", "--batch", delta_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T17:00:40Z",
+    )
+    first_delta_risk = coordinator_run(
+        "--state-dir", str(delta_state), "risk", "assess", "--batch", delta_batch,
+        "--candidate-commit", delta_first_sha, "--changed-file", "services/delta_formatter.py",
+    )
+    if first_delta_risk.returncode != 0:
+        sys.exit("coordinator rejected the first delta-review-fixture risk assessment: " + first_delta_risk.stderr)
+
+    first_review_dispatch = coordinator_run(
+        "--state-dir", str(delta_state), "dispatch", "create", "--batch", delta_batch,
+        "--role", "code-review", "--candidate-commit", delta_first_sha,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T17:00:50Z",
+    )
+    if first_review_dispatch.returncode != 0:
+        sys.exit("coordinator rejected the first delta-review-fixture code-review dispatch: " + first_review_dispatch.stderr)
+    first_review_id = json.loads(first_review_dispatch.stdout)["dispatch_id"]
+    first_review_sent = coordinator_run(
+        "--state-dir", str(delta_state), "dispatch", "send", "--dispatch", first_review_id,
+        "--adapter", str(fake_adapter), "--checkout", str(orchestration_project),
+    )
+    if first_review_sent.returncode != 0:
+        sys.exit("coordinator rejected the first delta-review-fixture checkout: " + first_review_sent.stderr)
+    coordinator_run(
+        "--state-dir", str(delta_state), "dispatch", "self-report",
+        "--dispatch", first_review_id, "--model", "project-code-review-model",
+    )
+    first_review_payload = {
+        "dispatch_id": first_review_id, "ticket": "#906", "role": "code-review", "outcome": "completed",
+        "output": "independent composite review completed", "commit_sha": "not applicable — read-only role",
+        "changed_files": [],
+        "checks_run": [{"command": "python qa_baseline.py", "result": "pass", "evidence": "review scope inspected"}],
+        "risks": "standards warning requires coordinator decision", "blockers": "none",
+        "next_coordinator_action": "override-warning or retry",
+        "review": {
+            "candidate_commit": delta_first_sha, "scope": ["services/delta_formatter.py"],
+            "standards": {
+                "severity": "warning",
+                "findings": [{"severity": "warning", "evidence": "missing docstring", "summary": "style warning"}],
+                "risks": "style risk", "blockers": "none",
+            },
+            "spec": {"severity": "clean", "findings": [], "risks": "none", "blockers": "none"},
+        },
+    }
+    first_review_file = test_root / f"delta-first-review-{first_review_id}.json"
+    first_review_file.write_text(json.dumps(first_review_payload, indent=2) + "\n", encoding="utf-8")
+    first_review_submit = coordinator_run(
+        "--state-dir", str(delta_state), "report", "submit", "--file", str(first_review_file),
+    )
+    if first_review_submit.returncode != 0:
+        sys.exit(
+            "coordinator rejected the first delta-review-fixture composite review report: "
+            + first_review_submit.stderr
+        )
+    if coordinator_run(
+        "--state-dir", str(delta_state), "batch", "decide", "--batch", delta_batch,
+        "--decision", "retry", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T17:01:00Z",
+    ).returncode != 0:
+        sys.exit("coordinator rejected a retry decision on a delta-review-fixture warning")
+
+    test_file = orchestration_project / "services" / "tests" / "test_delta_formatter.py"
+    test_file.parent.mkdir(parents=True, exist_ok=True)
+    test_file.write_text(
+        "def test_format_summary():\n    assert True  # tighten flaky assertion timing\n", encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "services/tests/test_delta_formatter.py"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "test: cover summary formatter edge case"], cwd=orchestration_project, check=True)
+    delta_second_sha = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
+    delta_role("developer", "project-developer-model", "2026-09-09T17:01:10Z", {
+        "commit_sha": delta_second_sha, "changed_files": ["services/delta_formatter.py", "services/tests/test_delta_formatter.py"],
+    })
+    coordinator_run(
+        "--state-dir", str(delta_state), "batch", "decide", "--batch", delta_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T17:01:20Z",
+    )
+    second_delta_risk = coordinator_run(
+        "--state-dir", str(delta_state), "risk", "assess", "--batch", delta_batch,
+        "--candidate-commit", delta_second_sha,
+        "--changed-file", "services/delta_formatter.py", "--changed-file", "services/tests/test_delta_formatter.py",
+    )
+    if second_delta_risk.returncode != 0:
+        sys.exit("coordinator rejected the delta-review fix candidate's risk assessment: " + second_delta_risk.stderr)
+
+    wrong_role_delta = coordinator_run(
+        "--state-dir", str(delta_state), "dispatch", "create", "--batch", delta_batch,
+        "--role", "code-review", "--candidate-commit", delta_second_sha,
+        "--delta-review-of", delta_architect_id,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T17:01:25Z",
+    )
+    if wrong_role_delta.returncode == 0:
+        sys.exit("coordinator accepted delta-review-of referencing a non-review dispatch")
+    if "code-review dispatch" not in wrong_role_delta.stderr:
+        sys.exit("coordinator did not explain the delta-review-of role mismatch: " + wrong_role_delta.stderr)
+
+    second_review_dispatch = coordinator_run(
+        "--state-dir", str(delta_state), "dispatch", "create", "--batch", delta_batch,
+        "--role", "code-review", "--candidate-commit", delta_second_sha,
+        "--delta-review-of", first_review_id,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T17:01:30Z",
+    )
+    if second_review_dispatch.returncode != 0:
+        sys.exit("coordinator rejected an eligible delta-review dispatch: " + second_review_dispatch.stderr)
+    second_review_record = json.loads(second_review_dispatch.stdout)
+    second_review_id = second_review_record["dispatch_id"]
+    if second_review_id == first_review_id:
+        sys.exit("delta-review reused the prior review's dispatch ID instead of a new independent dispatch")
+    if second_review_record["brief"]["delta_review_of"] != first_review_id:
+        sys.exit("delta-review brief did not reference the prior review as evidence")
+    if second_review_record["brief"]["delta_review_axis"] != "standards":
+        sys.exit("delta-review brief did not target the prior Warning axis")
+
+    second_review_sent = coordinator_run(
+        "--state-dir", str(delta_state), "dispatch", "send", "--dispatch", second_review_id,
+        "--adapter", str(fake_adapter), "--checkout", str(orchestration_project),
+    )
+    if second_review_sent.returncode != 0:
+        sys.exit("coordinator rejected the delta-review checkout: " + second_review_sent.stderr)
+    coordinator_run(
+        "--state-dir", str(delta_state), "dispatch", "self-report",
+        "--dispatch", second_review_id, "--model", "project-code-review-model",
+    )
+    second_review_payload = {
+        "dispatch_id": second_review_id, "ticket": "#906", "role": "code-review", "outcome": "completed",
+        "output": "delta-review completed", "commit_sha": "not applicable — read-only role",
+        "changed_files": [],
+        "checks_run": [{"command": "python qa_baseline.py", "result": "pass", "evidence": "fix diff inspected"}],
+        "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+        "review": {
+            "candidate_commit": delta_second_sha, "scope": ["services/delta_formatter.py", "services/tests/test_delta_formatter.py"],
+            "standards": {"severity": "clean", "findings": [], "risks": "docstring warning resolved", "blockers": "none"},
+            "spec": {
+                "severity": "clean", "findings": [], "risks": "inherited from the prior review", "blockers": "none",
+                "inherited_from": first_review_id,
+            },
+        },
+    }
+    # A delta-review report must not re-derive the inherited axis: prove this on the *live* dispatch
+    # before the well-formed report below settles it, or the rejection would happen for the wrong
+    # reason (an already-reported dispatch is never live, whatever the content).
+    re_derived = json.loads(json.dumps(second_review_payload))
+    re_derived["review"]["spec"] = {
+        "severity": "warning",
+        "findings": [{"severity": "warning", "summary": "reflagged", "evidence": "re-checked"}],
+        "risks": "re-checked", "blockers": "none", "inherited_from": first_review_id,
+    }
+    re_derived_file = test_root / f"delta-second-review-{second_review_id}-rederived.json"
+    re_derived_file.write_text(json.dumps(re_derived, indent=2) + "\n", encoding="utf-8")
+    re_derived_submit = coordinator_run(
+        "--state-dir", str(delta_state), "report", "submit", "--file", str(re_derived_file),
+    )
+    if re_derived_submit.returncode == 0:
+        sys.exit("coordinator accepted a delta-review report that re-derived the inherited axis")
+    if "inherit" not in re_derived_submit.stderr:
+        sys.exit("coordinator did not explain the inherited-axis rejection: " + re_derived_submit.stderr)
+
+    second_review_file = test_root / f"delta-second-review-{second_review_id}.json"
+    second_review_file.write_text(json.dumps(second_review_payload, indent=2) + "\n", encoding="utf-8")
+    second_review_submit = coordinator_run(
+        "--state-dir", str(delta_state), "report", "submit", "--file", str(second_review_file),
+    )
+    if second_review_submit.returncode != 0:
+        sys.exit("coordinator rejected a well-formed delta-review report: " + second_review_submit.stderr)
+    second_review_markdown = (
+        lifecycle_records(delta_state) / "reports" / f"{second_review_id}.md"
+    ).read_text(encoding="utf-8")
+    if f"Review Spec inherited from: {first_review_id}" not in second_review_markdown:
+        sys.exit("delta-review markdown projection did not reference the prior review as evidence")
+
+    delta_decision = coordinator_run(
+        "--state-dir", str(delta_state), "batch", "decide", "--batch", delta_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T17:01:40Z",
+    )
+    if delta_decision.returncode != 0:
+        sys.exit("coordinator rejected acceptance of a resolved delta-review: " + delta_decision.stderr)
+    if json.loads(delta_decision.stdout).get("next_action") != "qa":
+        sys.exit("accepted delta-review did not advance the batch to QA")
+
+    print("delta-review verification passed")
+
     # The long pipeline reviews every candidate.  Risk assessment decides when review is *mandatory*,
     # never when it is permitted, so a low-risk candidate can still be sent to code-review.
     low_risk_state = test_root / "low-risk-state"
     subprocess.run(["git", "branch", "feature/issue-904-low-risk"], cwd=orchestration_project, check=True)
+    sync_origin_base()
     low_risk_batch = json.loads(coordinator_run(
         "--state-dir", str(low_risk_state), "batch", "create", "--ticket", "#904",
         "--branch", "feature/issue-904-low-risk", "--worktree", "issue-904-low-risk",
@@ -1735,9 +2191,778 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
 
     print("fixed-sequence review verification passed")
 
+    # Context Package: ledger integration and shadow-mode freshness gate (Issue #138).  The
+    # coordinator registers a built package as its own immutable, hashed ledger record -- the same
+    # ownership pattern as a risk assessment -- and checks its freshness before every new dispatch
+    # brief.  A stale package is only ever recorded on the batch; it never blocks dispatch creation.
+    ctxpkg_state = test_root / "context-package-state"
+    subprocess.run(["git", "branch", "feature/issue-138-context-package"], cwd=orchestration_project, check=True)
+    sync_origin_base()
+    ctxpkg_batch = json.loads(coordinator_run(
+        "--state-dir", str(ctxpkg_state), "batch", "create", "--ticket", "#138",
+        "--branch", "feature/issue-138-context-package", "--worktree", "issue-138-context-package",
+        "--zone", "backend", "--definition-of-done", "register a context package",
+        "--prohibited-change", "do not merge",
+    ).stdout)["batch_id"]
+    coordinator_run(
+        "--state-dir", str(ctxpkg_state), "batch", "approve", "--batch", ctxpkg_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:20:00Z",
+    )
+
+    def ctxpkg_role(role_name, model, approved_at, payload_extra):
+        created = coordinator_run(
+            "--state-dir", str(ctxpkg_state), "dispatch", "create", "--batch", ctxpkg_batch,
+            "--role", role_name, "--approved-by", "project coordinator", "--approved-at", approved_at,
+        )
+        if created.returncode != 0:
+            sys.exit(f"coordinator rejected the context-package {role_name} dispatch: " + created.stderr)
+        role_dispatch = json.loads(created.stdout)["dispatch_id"]
+        coordinator_run(
+            "--state-dir", str(ctxpkg_state), "dispatch", "send", "--dispatch", role_dispatch,
+            "--adapter", str(fake_adapter),
+        )
+        coordinator_run(
+            "--state-dir", str(ctxpkg_state), "dispatch", "self-report",
+            "--dispatch", role_dispatch, "--model", model,
+        )
+        payload = {
+            "dispatch_id": role_dispatch, "ticket": "#138", "role": role_name, "outcome": "completed",
+            "output": f"{role_name} finished the requested step", "commit_sha": "not applicable — read-only role",
+            "changed_files": [],
+            "checks_run": [{"command": "python developer_check.py" if role_name == "developer" else "python qa_baseline.py", "result": "pass", "evidence": "1 passed"}],
+            "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+        }
+        payload.update(payload_extra)
+        payload_file = test_root / f"context-package-{role_name}-{role_dispatch}.json"
+        payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        submitted = coordinator_run("--state-dir", str(ctxpkg_state), "report", "submit", "--file", str(payload_file))
+        if submitted.returncode != 0:
+            sys.exit(f"coordinator rejected the context-package {role_name} report: " + submitted.stderr)
+        return role_dispatch
+
+    ctxpkg_role("architect", "project-architect-model", "2026-09-09T15:20:10Z", {})
+    coordinator_run(
+        "--state-dir", str(ctxpkg_state), "batch", "decide", "--batch", ctxpkg_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:20:20Z",
+    )
+
+    ctxpkg_file = orchestration_project / "services" / "context_package_demo.py"
+    ctxpkg_file.write_text('def demo():\n    return "context-package"\n', encoding="utf-8")
+    subprocess.run(["git", "add", "services/context_package_demo.py"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "feat: add context package demo"], cwd=orchestration_project, check=True)
+    ctxpkg_first_sha = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
+    ctxpkg_role("developer", "project-developer-model", "2026-09-09T15:20:30Z", {
+        "commit_sha": ctxpkg_first_sha, "changed_files": ["services/context_package_demo.py"],
+    })
+    coordinator_run(
+        "--state-dir", str(ctxpkg_state), "batch", "decide", "--batch", ctxpkg_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:20:40Z",
+    )
+    first_ctxpkg_risk = coordinator_run(
+        "--state-dir", str(ctxpkg_state), "risk", "assess", "--batch", ctxpkg_batch,
+        "--candidate-commit", ctxpkg_first_sha, "--changed-file", "services/context_package_demo.py",
+    )
+    if first_ctxpkg_risk.returncode != 0:
+        sys.exit("coordinator rejected the context-package fixture's first risk assessment: " + first_ctxpkg_risk.stderr)
+
+    ctxpkg_batch_before = json.loads(
+        (lifecycle_records(ctxpkg_state) / "batches" / f"{ctxpkg_batch}.json").read_text(encoding="utf-8")
+    )
+    ctxpkg_register = coordinator_run(
+        "--state-dir", str(ctxpkg_state), "context-package", "register", "--batch", ctxpkg_batch,
+        "--candidate-commit", ctxpkg_first_sha, "--min-starting-files", "1",
+    )
+    if ctxpkg_register.returncode != 0:
+        sys.exit("coordinator rejected a valid context package registration: " + ctxpkg_register.stderr)
+    ctxpkg_record = json.loads(ctxpkg_register.stdout)
+    if ctxpkg_record["base_commit"] != ctxpkg_batch_before["base_commit"] or ctxpkg_record["candidate_commit"] != ctxpkg_first_sha:
+        sys.exit("context package did not pin the batch base and the accepted developer candidate")
+    if "services/context_package_demo.py" not in ctxpkg_record["file_hashes"]:
+        sys.exit("context package did not include the changed file among its file hashes")
+    ctxpkg_record_path = lifecycle_records(ctxpkg_state) / "context-packages" / f"{ctxpkg_record['context_package_id']}.json"
+    if not ctxpkg_record_path.is_file():
+        sys.exit("context package was not persisted as its own immutable ledger record")
+    ctxpkg_batch_after = json.loads(
+        (lifecycle_records(ctxpkg_state) / "batches" / f"{ctxpkg_batch}.json").read_text(encoding="utf-8")
+    )
+    ctxpkg_pointer = next(
+        (
+            item for item in ctxpkg_batch_after.get("context_packages", [])
+            if item["context_package_id"] == ctxpkg_record["context_package_id"]
+        ),
+        None,
+    )
+    ctxpkg_expected_sha256 = hashlib.sha256(
+        (json.dumps(ctxpkg_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    ).hexdigest()
+    if ctxpkg_pointer is None or ctxpkg_pointer["record_sha256"] != ctxpkg_expected_sha256:
+        sys.exit("batch did not record an immutable hashed pointer to the context package")
+
+    first_ctxpkg_review = coordinator_run(
+        "--state-dir", str(ctxpkg_state), "dispatch", "create", "--batch", ctxpkg_batch,
+        "--role", "code-review", "--candidate-commit", ctxpkg_first_sha,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:20:50Z",
+    )
+    if first_ctxpkg_review.returncode != 0:
+        sys.exit("coordinator rejected the context-package fixture's first review dispatch: " + first_ctxpkg_review.stderr)
+    first_ctxpkg_review_record = json.loads(first_ctxpkg_review.stdout)
+    if first_ctxpkg_review_record.get("context_package_freshness", {}).get("status") != "fresh":
+        sys.exit(
+            "coordinator did not record a fresh context package before a matching dispatch: "
+            + json.dumps(first_ctxpkg_review_record)
+        )
+    first_ctxpkg_review_id = first_ctxpkg_review_record["dispatch_id"]
+    if coordinator_run(
+        "--state-dir", str(ctxpkg_state), "dispatch", "send", "--dispatch", first_ctxpkg_review_id,
+        "--adapter", str(fake_adapter), "--checkout", str(orchestration_project),
+    ).returncode != 0:
+        sys.exit("coordinator rejected the context-package fixture's first review checkout")
+    coordinator_run(
+        "--state-dir", str(ctxpkg_state), "dispatch", "self-report",
+        "--dispatch", first_ctxpkg_review_id, "--model", "project-code-review-model",
+    )
+    first_ctxpkg_review_payload = {
+        "dispatch_id": first_ctxpkg_review_id, "ticket": "#138", "role": "code-review", "outcome": "completed",
+        "output": "independent composite review completed", "commit_sha": "not applicable — read-only role",
+        "changed_files": [],
+        "checks_run": [{"command": "python qa_baseline.py", "result": "pass", "evidence": "review scope inspected"}],
+        "risks": "standards warning requires coordinator decision", "blockers": "none",
+        "next_coordinator_action": "override-warning or retry",
+        "review": {
+            "candidate_commit": ctxpkg_first_sha, "scope": ["services/context_package_demo.py"],
+            "standards": {
+                "severity": "warning",
+                "findings": [{"severity": "warning", "evidence": "missing docstring", "summary": "style warning"}],
+                "risks": "style risk", "blockers": "none",
+            },
+            "spec": {"severity": "clean", "findings": [], "risks": "none", "blockers": "none"},
+        },
+    }
+    first_ctxpkg_review_file = test_root / f"context-package-first-review-{first_ctxpkg_review_id}.json"
+    first_ctxpkg_review_file.write_text(json.dumps(first_ctxpkg_review_payload, indent=2) + "\n", encoding="utf-8")
+    if coordinator_run(
+        "--state-dir", str(ctxpkg_state), "report", "submit", "--file", str(first_ctxpkg_review_file),
+    ).returncode != 0:
+        sys.exit("coordinator rejected the context-package fixture's first review report")
+    if coordinator_run(
+        "--state-dir", str(ctxpkg_state), "batch", "decide", "--batch", ctxpkg_batch,
+        "--decision", "retry", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:21:00Z",
+    ).returncode != 0:
+        sys.exit("coordinator rejected a retry decision on the context-package fixture's review warning")
+
+    ctxpkg_second_file = orchestration_project / "services" / "context_package_demo_v2.py"
+    ctxpkg_second_file.write_text('def demo_v2():\n    return "context-package-v2"\n', encoding="utf-8")
+    subprocess.run(["git", "add", "services/context_package_demo_v2.py"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "feat: add second context package demo"], cwd=orchestration_project, check=True)
+    ctxpkg_second_sha = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
+    ctxpkg_role("developer", "project-developer-model", "2026-09-09T15:21:10Z", {
+        "commit_sha": ctxpkg_second_sha,
+        "changed_files": ["services/context_package_demo.py", "services/context_package_demo_v2.py"],
+    })
+    coordinator_run(
+        "--state-dir", str(ctxpkg_state), "batch", "decide", "--batch", ctxpkg_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:21:20Z",
+    )
+    second_ctxpkg_risk = coordinator_run(
+        "--state-dir", str(ctxpkg_state), "risk", "assess", "--batch", ctxpkg_batch,
+        "--candidate-commit", ctxpkg_second_sha,
+        "--changed-file", "services/context_package_demo.py", "--changed-file", "services/context_package_demo_v2.py",
+    )
+    if second_ctxpkg_risk.returncode != 0:
+        sys.exit("coordinator rejected the context-package fixture's second risk assessment: " + second_ctxpkg_risk.stderr)
+
+    # The Context Package registered for the first candidate is never re-registered here; the
+    # coordinator must now record it stale against the new accepted developer candidate -- and
+    # must still create the dispatch, since shadow mode never blocks on staleness.
+    second_ctxpkg_review = coordinator_run(
+        "--state-dir", str(ctxpkg_state), "dispatch", "create", "--batch", ctxpkg_batch,
+        "--role", "code-review", "--candidate-commit", ctxpkg_second_sha,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:21:30Z",
+    )
+    if second_ctxpkg_review.returncode != 0:
+        sys.exit(
+            "coordinator blocked a dispatch on a stale context package instead of only recording it: "
+            + second_ctxpkg_review.stderr
+        )
+    second_ctxpkg_review_record = json.loads(second_ctxpkg_review.stdout)
+    second_ctxpkg_freshness = second_ctxpkg_review_record.get("context_package_freshness")
+    if not second_ctxpkg_freshness or second_ctxpkg_freshness.get("status") != "stale":
+        sys.exit(
+            "coordinator did not record a stale context package before a mismatched dispatch: "
+            + json.dumps(second_ctxpkg_review_record)
+        )
+    if second_ctxpkg_freshness.get("registered_candidate_commit") != ctxpkg_first_sha:
+        sys.exit("stale context package evidence did not reference the originally registered candidate")
+    if second_ctxpkg_freshness.get("current_candidate_commit") != ctxpkg_second_sha:
+        sys.exit("stale context package evidence did not reference the current accepted developer candidate")
+    ctxpkg_final_batch = json.loads(
+        (lifecycle_records(ctxpkg_state) / "batches" / f"{ctxpkg_batch}.json").read_text(encoding="utf-8")
+    )
+    if not any(
+        entry.get("status") == "stale" for entry in ctxpkg_final_batch.get("context_package_freshness_checks", [])
+    ):
+        sys.exit("batch did not persist the stale context package freshness evidence")
+
+    print("context package ledger integration and freshness-gate verification passed")
+
+    # Checkpoint and worker session (Issue #139): a write role may end its worker session with a
+    # non-terminal checkpoint and resume the same dispatch ID under a fresh worker session; a
+    # read-only role may never checkpoint at all, and a checkpoint is never a completion report.
+    checkpoint_state = test_root / "checkpoint-state"
+    subprocess.run(["git", "branch", "feature/issue-139-checkpoint"], cwd=orchestration_project, check=True)
+    sync_origin_base()
+    checkpoint_batch = json.loads(coordinator_run(
+        "--state-dir", str(checkpoint_state), "batch", "create", "--ticket", "#139",
+        "--branch", "feature/issue-139-checkpoint", "--worktree", "issue-139-checkpoint",
+        "--zone", "backend", "--definition-of-done", "implement checkpoint step one",
+        "--definition-of-done", "implement checkpoint step two", "--prohibited-change", "do not merge",
+    ).stdout)["batch_id"]
+    coordinator_run(
+        "--state-dir", str(checkpoint_state), "batch", "approve", "--batch", checkpoint_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:00:00Z",
+    )
+
+    def checkpoint_report(role_name, dispatch_id, approved_action, extra):
+        payload = {
+            "dispatch_id": dispatch_id, "ticket": "#139", "role": role_name, "outcome": "completed",
+            "output": f"{role_name} finished the requested step", "commit_sha": "not applicable — read-only role",
+            "changed_files": [],
+            "checks_run": [{
+                "command": "python developer_check.py" if role_name == "developer" else "python qa_baseline.py",
+                "result": "pass", "evidence": "1 passed",
+            }],
+            "risks": "none", "blockers": "none", "next_coordinator_action": approved_action,
+        }
+        payload.update(extra)
+        payload_file = test_root / f"checkpoint-{role_name}-{dispatch_id}.json"
+        payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        submitted = coordinator_run("--state-dir", str(checkpoint_state), "report", "submit", "--file", str(payload_file))
+        if submitted.returncode != 0:
+            sys.exit(f"coordinator rejected the checkpoint fixture's {role_name} report: " + submitted.stderr)
+
+    checkpoint_architect = json.loads(coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "create", "--batch", checkpoint_batch,
+        "--role", "architect", "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:00:10Z",
+    ).stdout)["dispatch_id"]
+    coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "send", "--dispatch", checkpoint_architect,
+        "--adapter", str(fake_adapter),
+    )
+    coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "self-report",
+        "--dispatch", checkpoint_architect, "--model", "project-architect-model",
+    )
+
+    read_only_probe_file = test_root / "checkpoint-read-only-probe.json"
+    read_only_probe_file.write_text(json.dumps({
+        "dispatch_id": checkpoint_architect, "commit_sha": "0" * 40, "changed_files": [],
+        "remaining_definition_of_done": [], "passing_checks": [], "risks": "none", "blockers": "none",
+        "context_package_id": "not applicable — no context package registered",
+    }, indent=2) + "\n", encoding="utf-8")
+    read_only_probe = coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "checkpoint", "--file", str(read_only_probe_file),
+    )
+    if read_only_probe.returncode == 0:
+        sys.exit("coordinator accepted a checkpoint for a read-only role")
+
+    checkpoint_report("architect", checkpoint_architect, "accept", {})
+    coordinator_run(
+        "--state-dir", str(checkpoint_state), "batch", "decide", "--batch", checkpoint_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:00:20Z",
+    )
+
+    checkpoint_dev = coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "create", "--batch", checkpoint_batch,
+        "--role", "developer", "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:00:30Z",
+    )
+    if checkpoint_dev.returncode != 0:
+        sys.exit("coordinator rejected the checkpoint fixture's developer dispatch: " + checkpoint_dev.stderr)
+    checkpoint_dev_id = json.loads(checkpoint_dev.stdout)["dispatch_id"]
+    coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "send", "--dispatch", checkpoint_dev_id,
+        "--adapter", str(fake_adapter),
+    )
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "self-report",
+        "--dispatch", checkpoint_dev_id, "--model", "project-developer-model",
+    ).returncode != 0:
+        sys.exit("coordinator rejected the checkpoint fixture's developer model self-report")
+
+    checkpoint_file_one = orchestration_project / "services" / "checkpoint_demo.py"
+    checkpoint_file_one.write_text('def demo():\n    return "session one"\n', encoding="utf-8")
+    subprocess.run(["git", "add", "services/checkpoint_demo.py"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "feat: checkpoint demo session one"], cwd=orchestration_project, check=True)
+    checkpoint_first_sha = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
+
+    bad_context_package_file = test_root / "checkpoint-bad-context-package.json"
+    bad_context_package_file.write_text(json.dumps({
+        "dispatch_id": checkpoint_dev_id, "commit_sha": checkpoint_first_sha,
+        "changed_files": ["services/checkpoint_demo.py"],
+        "remaining_definition_of_done": ["implement checkpoint step two"],
+        "passing_checks": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
+        "risks": "none yet", "blockers": "none", "context_package_id": "context-package-does-not-exist",
+    }, indent=2) + "\n", encoding="utf-8")
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "checkpoint", "--file", str(bad_context_package_file),
+    ).returncode == 0:
+        sys.exit("coordinator accepted a checkpoint referencing a nonexistent context package")
+
+    checkpoint_one_file = test_root / "checkpoint-session-one.json"
+    checkpoint_one_file.write_text(json.dumps({
+        "dispatch_id": checkpoint_dev_id, "commit_sha": checkpoint_first_sha,
+        "changed_files": ["services/checkpoint_demo.py"],
+        "remaining_definition_of_done": ["implement checkpoint step two"],
+        "passing_checks": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
+        "risks": "none yet", "blockers": "none",
+        "context_package_id": "not applicable — no context package registered",
+    }, indent=2) + "\n", encoding="utf-8")
+    checkpoint_one_result = coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "checkpoint", "--file", str(checkpoint_one_file),
+    )
+    if checkpoint_one_result.returncode != 0:
+        sys.exit("coordinator rejected a valid checkpoint: " + checkpoint_one_result.stderr)
+    checkpoint_one_record = json.loads(checkpoint_one_result.stdout)
+    checkpoint_record_path = (
+        lifecycle_records(checkpoint_state) / "checkpoints" / f"{checkpoint_one_record['checkpoint_id']}.json"
+    )
+    if not checkpoint_record_path.is_file():
+        sys.exit("checkpoint was not persisted as its own immutable ledger record")
+    persisted_checkpoint = json.loads(checkpoint_record_path.read_text(encoding="utf-8"))
+    if set(persisted_checkpoint) != {
+        "checkpoint_id", "dispatch_id", "batch_id", "commit_sha", "changed_files",
+        "remaining_definition_of_done", "passing_checks", "risks", "blockers", "context_package_id",
+        "created_at",
+    }:
+        sys.exit("checkpoint record captured more or less than commit SHA, changed files, remaining DoD, "
+                  "passing checks, risks/blockers and a Context Package reference")
+
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "self-report",
+        "--dispatch", checkpoint_dev_id, "--model", "project-developer-model",
+    ).returncode == 0:
+        sys.exit("coordinator accepted a self-report against a checkpointed dispatch")
+
+    # Continuation authorization (Issue #140): a recognized rate-limit termination reason
+    # authorizes resume automatically; anything else is a planned trigger requiring the same
+    # coordinator decision accept/retry/block/fail already use.
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+    ).returncode == 0:
+        sys.exit("coordinator resumed a checkpointed dispatch with no termination reason and no trigger")
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+        "--termination-reason", "worker-crashed",
+    ).returncode == 0:
+        sys.exit("coordinator resumed a checkpointed dispatch on an unrecognized termination reason without a trigger")
+
+    checkpoint_resume = coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+        "--termination-reason", "rate_limit",
+    )
+    if checkpoint_resume.returncode != 0:
+        sys.exit("coordinator rejected a rate-limit resume of a checkpointed dispatch: " + checkpoint_resume.stderr)
+    if json.loads(checkpoint_resume.stdout)["dispatch_id"] != checkpoint_dev_id:
+        sys.exit("resuming a checkpoint did not keep the same dispatch ID")
+    if json.loads(checkpoint_resume.stdout)["authorization"] != "continue-automatic":
+        sys.exit("a rate-limit resume was not authorized automatically")
+    checkpoint_after_rate_limit_resume = json.loads(
+        (lifecycle_records(checkpoint_state) / "batches" / f"{checkpoint_batch}.json").read_text(encoding="utf-8")
+    )
+    if not any(
+        entry.get("dispatch_id") == checkpoint_dev_id and entry.get("decision") == "continue-automatic"
+        for entry in checkpoint_after_rate_limit_resume.get("coordinator_decisions", [])
+    ):
+        sys.exit("rate-limit resume did not record a continue-automatic coordinator decision")
+
+    checkpoint_file_two = orchestration_project / "services" / "checkpoint_demo_v2.py"
+    checkpoint_file_two.write_text('def demo_v2():\n    return "session two"\n', encoding="utf-8")
+    subprocess.run(["git", "add", "services/checkpoint_demo_v2.py"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "feat: checkpoint demo session two"], cwd=orchestration_project, check=True)
+    checkpoint_second_sha = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
+
+    early_final_report_file = test_root / "checkpoint-early-final-report.json"
+    early_final_report_file.write_text(json.dumps({
+        "dispatch_id": checkpoint_dev_id, "ticket": "#139", "role": "developer", "outcome": "completed",
+        "output": "both checkpoint sessions complete", "commit_sha": checkpoint_second_sha,
+        "changed_files": ["services/checkpoint_demo.py", "services/checkpoint_demo_v2.py"],
+        "checks_run": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
+        "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+    }, indent=2) + "\n", encoding="utf-8")
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "report", "submit", "--file", str(early_final_report_file),
+    ).returncode == 0:
+        sys.exit("coordinator accepted a completion report before the resumed session's fresh self-report")
+
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "self-report",
+        "--dispatch", checkpoint_dev_id, "--model", "project-developer-model",
+    ).returncode != 0:
+        sys.exit("coordinator rejected the resumed worker session's fresh model self-report")
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "heartbeat", "--dispatch", checkpoint_dev_id,
+    ).returncode != 0:
+        sys.exit("coordinator rejected the resumed worker session's heartbeat")
+
+    checkpoint_two_file = test_root / "checkpoint-session-two.json"
+    checkpoint_two_file.write_text(json.dumps({
+        "dispatch_id": checkpoint_dev_id, "commit_sha": checkpoint_second_sha,
+        "changed_files": ["services/checkpoint_demo.py", "services/checkpoint_demo_v2.py"],
+        "remaining_definition_of_done": [],
+        "passing_checks": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
+        "risks": "none", "blockers": "none",
+        "context_package_id": "not applicable — no context package registered",
+    }, indent=2) + "\n", encoding="utf-8")
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "checkpoint", "--file", str(checkpoint_two_file),
+    ).returncode != 0:
+        sys.exit("coordinator rejected the checkpoint fixture's session-two checkpoint")
+
+    # Planned trigger (no recognized termination reason): safe default toward approval, reused
+    # coordinator_decisions record type, threshold and drift checks all enforced. `blockers` is
+    # deliberately absent from the continuation facts -- only scope/DoD, risks and dependencies
+    # gate drift, matching the issue's acceptance criteria.
+    facts_unchanged = {
+        "dispatch_id": checkpoint_dev_id, "remaining_definition_of_done": [], "risks": "none",
+        "dependencies": ["none"],
+    }
+    facts_unchanged_file = test_root / "continuation-facts-unchanged.json"
+    facts_unchanged_file.write_text(json.dumps(facts_unchanged, indent=2) + "\n", encoding="utf-8")
+    facts_risks_drifted_file = test_root / "continuation-facts-risks-drifted.json"
+    facts_risks_drifted_file.write_text(json.dumps(
+        {**facts_unchanged, "risks": "scope grew since the checkpoint"}, indent=2,
+    ) + "\n", encoding="utf-8")
+    facts_dependencies_drifted_file = test_root / "continuation-facts-dependencies-drifted.json"
+    facts_dependencies_drifted_file.write_text(json.dumps(
+        {**facts_unchanged, "dependencies": ["#999"]}, indent=2,
+    ) + "\n", encoding="utf-8")
+
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+        "--trigger", "context-limit", "--measured-value", "1000",
+        "--file", str(facts_unchanged_file),
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:01:00Z",
+    ).returncode == 0:
+        sys.exit("coordinator resumed a planned-trigger continuation below its configured threshold")
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+        "--trigger", "tdd-cycles", "--measured-value", "1",
+        "--file", str(facts_unchanged_file),
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:01:00Z",
+    ).returncode == 0:
+        sys.exit("coordinator resumed a tdd-cycles planned trigger below its configured threshold")
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+        "--trigger", "failure-log", "--measured-value", "100",
+        "--file", str(facts_unchanged_file),
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:01:00Z",
+    ).returncode == 0:
+        sys.exit("coordinator resumed a failure-log planned trigger below its configured threshold")
+
+    risks_drifted_resume = coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+        "--trigger", "context-limit", "--measured-value", "200000",
+        "--file", str(facts_risks_drifted_file),
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:01:00Z",
+    )
+    if risks_drifted_resume.returncode == 0:
+        sys.exit("coordinator resumed a planned-trigger continuation whose recorded risks drifted from the checkpoint")
+    if "close" not in risks_drifted_resume.stderr.lower() or "new one" not in risks_drifted_resume.stderr.lower():
+        sys.exit("drifted continuation risks did not point the coordinator at closing and reopening the dispatch")
+
+    dependencies_drifted_resume = coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+        "--trigger", "vertical-slice",
+        "--file", str(facts_dependencies_drifted_file),
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:01:00Z",
+    )
+    if dependencies_drifted_resume.returncode == 0:
+        sys.exit("coordinator resumed a vertical-slice continuation whose recorded dependencies drifted from the dispatch")
+    if "close" not in dependencies_drifted_resume.stderr.lower() or "new one" not in dependencies_drifted_resume.stderr.lower():
+        sys.exit("drifted continuation dependencies did not point the coordinator at closing and reopening the dispatch")
+
+    # AC5: adaptive-policy thresholds come from project configuration, not a hard-coded value --
+    # a project-configured low threshold authorizes exactly the measured value the default (150000)
+    # rejected above.
+    original_orchestration_config_text = orchestration_config.read_text(encoding="utf-8")
+    low_threshold_config = json.loads(original_orchestration_config_text)
+    low_threshold_config["adaptive_continuation_policy"] = {"context_limit": 500}
+    orchestration_config.write_text(json.dumps(low_threshold_config, indent=2) + "\n", encoding="utf-8")
+    try:
+        planned_resume = coordinator_run(
+            "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+            "--trigger", "context-limit", "--measured-value", "500", "--file", str(facts_unchanged_file),
+            "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:01:00Z",
+        )
+    finally:
+        orchestration_config.write_text(original_orchestration_config_text, encoding="utf-8")
+    if planned_resume.returncode != 0:
+        sys.exit(
+            "coordinator rejected a planned-trigger continuation meeting the project-configured "
+            "adaptive_continuation_policy threshold: " + planned_resume.stderr
+        )
+    if json.loads(planned_resume.stdout)["authorization"] != "continue":
+        sys.exit("a planned-trigger resume was not authorized through a coordinator decision")
+    checkpoint_after_planned_resume = json.loads(
+        (lifecycle_records(checkpoint_state) / "batches" / f"{checkpoint_batch}.json").read_text(encoding="utf-8")
+    )
+    if not any(
+        entry.get("dispatch_id") == checkpoint_dev_id and entry.get("decision") == "continue"
+        and entry.get("approved_by") == "project coordinator"
+        for entry in checkpoint_after_planned_resume.get("coordinator_decisions", [])
+    ):
+        sys.exit("planned-trigger resume did not record a continue coordinator decision")
+
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "self-report",
+        "--dispatch", checkpoint_dev_id, "--model", "project-developer-model",
+    ).returncode != 0:
+        sys.exit("coordinator rejected the second resumed worker session's fresh model self-report")
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "heartbeat", "--dispatch", checkpoint_dev_id,
+    ).returncode != 0:
+        sys.exit("coordinator rejected the second resumed worker session's heartbeat")
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "report", "submit", "--file", str(early_final_report_file),
+    ).returncode != 0:
+        sys.exit("coordinator rejected the single completion report closing the resumed dispatch")
+
+    checkpoint_final_batch = json.loads(
+        (lifecycle_records(checkpoint_state) / "batches" / f"{checkpoint_batch}.json").read_text(encoding="utf-8")
+    )
+    checkpoint_final_entry = next(
+        item for item in checkpoint_final_batch["dispatches"] if item["dispatch_id"] == checkpoint_dev_id
+    )
+    if checkpoint_final_entry["state"] != "reported":
+        sys.exit("checkpoint/resume round-trip did not end in exactly one completion report on the same dispatch")
+
+    print("checkpoint and worker session verification passed")
+
+    # Base-commit gate: `batch create` pins base_commit to a freshly fetched integration ref tip
+    # (never a raw local HEAD), and a mandatory freshness re-check blocks code-review/publish
+    # dispatch creation once that ref has moved — cleared only by a new developer (rebase)
+    # dispatch, whose resulting commit is a new candidate that must be risk-assessed again.
+    stale_state = test_root / "stale-base-state"
+    sync_origin_base()
+    subprocess.run(["git", "branch", "feature/issue-134-stale-base"], cwd=orchestration_project, check=True)
+    pre_batch_head = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
+    stale_batch = json.loads(coordinator_run(
+        "--state-dir", str(stale_state), "batch", "create", "--ticket", "#134",
+        "--branch", "feature/issue-134-stale-base", "--worktree", "issue-134-stale-base",
+        "--zone", "backend", "--definition-of-done", "protect the base commit",
+        "--prohibited-change", "do not merge",
+    ).stdout)["batch_id"]
+    stale_batch_record = json.loads(
+        (lifecycle_records(stale_state) / "batches" / f"{stale_batch}.json").read_text(encoding="utf-8")
+    )
+    if stale_batch_record["base_commit"] != pre_batch_head or stale_batch_record["integration_base_commit"] != pre_batch_head:
+        sys.exit("batch create did not pin base_commit to the fetched integration ref tip")
+    if stale_batch_record["integration_ref"] is not None:
+        sys.exit("batch create recorded an integration_ref without one being requested")
+    if stale_batch_record["branch_start_commit"] != pre_batch_head:
+        sys.exit("batch create did not record branch_start_commit as the local HEAD")
+    coordinator_run(
+        "--state-dir", str(stale_state), "batch", "approve", "--batch", stale_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T18:00:00Z",
+    )
+
+    def stale_role(role_name, model, approved_at, payload_extra):
+        created = coordinator_run(
+            "--state-dir", str(stale_state), "dispatch", "create", "--batch", stale_batch,
+            "--role", role_name, "--approved-by", "project coordinator", "--approved-at", approved_at,
+        )
+        if created.returncode != 0:
+            sys.exit(f"coordinator rejected the stale-base {role_name} dispatch: " + created.stderr)
+        role_dispatch = json.loads(created.stdout)["dispatch_id"]
+        coordinator_run(
+            "--state-dir", str(stale_state), "dispatch", "send", "--dispatch", role_dispatch,
+            "--adapter", str(fake_adapter),
+        )
+        coordinator_run(
+            "--state-dir", str(stale_state), "dispatch", "self-report",
+            "--dispatch", role_dispatch, "--model", model,
+        )
+        payload = {
+            "dispatch_id": role_dispatch, "ticket": "#134", "role": role_name, "outcome": "completed",
+            "output": f"{role_name} finished the requested step", "commit_sha": "not applicable — read-only role",
+            "changed_files": [],
+            "checks_run": [{
+                "command": "python developer_check.py" if role_name == "developer" else "python qa_baseline.py",
+                "result": "pass", "evidence": "1 passed",
+            }],
+            "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+        }
+        payload.update(payload_extra)
+        payload_file = test_root / f"stale-base-{role_name}-report.json"
+        payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        submitted = coordinator_run("--state-dir", str(stale_state), "report", "submit", "--file", str(payload_file))
+        if submitted.returncode != 0:
+            sys.exit(f"coordinator rejected the stale-base {role_name} report: " + submitted.stderr)
+        return role_dispatch
+
+    stale_role("architect", "project-architect-model", "2026-09-09T18:00:10Z", {})
+    coordinator_run(
+        "--state-dir", str(stale_state), "batch", "decide", "--batch", stale_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T18:00:20Z",
+    )
+    stale_feature_file = orchestration_project / "services" / "stale_base.py"
+    stale_feature_file.parent.mkdir(parents=True, exist_ok=True)
+    stale_feature_file.write_text('def marker():\n    return "first"\n', encoding="utf-8")
+    subprocess.run(["git", "add", "services/stale_base.py"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "feat: add stale-base marker"], cwd=orchestration_project, check=True)
+    stale_sha = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
+    stale_role("developer", "project-developer-model", "2026-09-09T18:00:30Z", {
+        "commit_sha": stale_sha, "changed_files": ["services/stale_base.py"],
+    })
+    coordinator_run(
+        "--state-dir", str(stale_state), "batch", "decide", "--batch", stale_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T18:00:40Z",
+    )
+    stale_assessment = coordinator_run(
+        "--state-dir", str(stale_state), "risk", "assess", "--batch", stale_batch,
+        "--candidate-commit", stale_sha, "--changed-file", "services/stale_base.py",
+    )
+    if stale_assessment.returncode != 0:
+        sys.exit("coordinator rejected the stale-base risk assessment: " + stale_assessment.stderr)
+
+    # Simulate someone else's PR landing on the integration ref after this batch's base was
+    # pinned: push an unrelated commit straight to origin main from a separate clone, without
+    # touching this checkout's own history.
+    drift_worktree = test_root / "stale-base-drift"
+    # The bare remote's own HEAD symref points at a branch ("master") nothing has ever pushed, so
+    # an unqualified clone can't check anything out - name "main" explicitly.
+    subprocess.run(
+        ["git", "clone", "-q", "--branch", "main", str(orchestration_remote), str(drift_worktree)], check=True,
+    )
+    (drift_worktree / "UPSTREAM.md").write_text("someone else's merge\n", encoding="utf-8")
+    subprocess.run(["git", "add", "UPSTREAM.md"], cwd=drift_worktree, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=upstream@example.com", "-c", "user.name=Upstream",
+         "commit", "-qm", "chore: unrelated upstream change"],
+        cwd=drift_worktree, check=True,
+    )
+    subprocess.run(["git", "push", "-q", "origin", "HEAD:main"], cwd=drift_worktree, check=True)
+    drifted_sha = capture(["git", "-C", str(drift_worktree), "rev-parse", "HEAD"]).strip()
+
+    blocked_review = coordinator_run(
+        "--state-dir", str(stale_state), "dispatch", "create", "--batch", stale_batch,
+        "--role", "code-review", "--candidate-commit", stale_sha,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T18:00:50Z",
+    )
+    if blocked_review.returncode == 0:
+        sys.exit("coordinator created a code-review dispatch against a stale integration base")
+    if "stale" not in blocked_review.stderr:
+        sys.exit("coordinator did not explain the stale-base block: " + blocked_review.stderr)
+    blocked_batch_record = json.loads(
+        (lifecycle_records(stale_state) / "batches" / f"{stale_batch}.json").read_text(encoding="utf-8")
+    )
+    if blocked_batch_record["next_action"] != "developer" or blocked_batch_record.get("required_next_role") != "developer":
+        sys.exit("a stale base did not force a new developer dispatch as the only next action")
+    if blocked_batch_record["integration_base_commit"] == drifted_sha:
+        sys.exit("the coordinator repinned the base directly instead of requiring a developer rebase")
+
+    # The block is cleared only by a developer dispatch — never a coordinator/human git operation.
+    still_blocked_publish = coordinator_run(
+        "--state-dir", str(stale_state), "dispatch", "create", "--batch", stale_batch,
+        "--role", "developer", "--purpose", "publish", "--candidate-commit", stale_sha,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T18:00:55Z",
+    )
+    if still_blocked_publish.returncode == 0:
+        sys.exit("coordinator allowed a publish dispatch while a developer rebase was required")
+
+    rebase_created = coordinator_run(
+        "--state-dir", str(stale_state), "dispatch", "create", "--batch", stale_batch,
+        "--role", "developer", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T18:01:00Z",
+    )
+    if rebase_created.returncode != 0:
+        sys.exit("coordinator refused the developer rebase dispatch after a stale-base block: " + rebase_created.stderr)
+    rebase_dispatch = json.loads(rebase_created.stdout)["dispatch_id"]
+    coordinator_run(
+        "--state-dir", str(stale_state), "dispatch", "send", "--dispatch", rebase_dispatch, "--adapter", str(fake_adapter),
+    )
+    coordinator_run(
+        "--state-dir", str(stale_state), "dispatch", "self-report",
+        "--dispatch", rebase_dispatch, "--model", "project-developer-model",
+    )
+    # The "Candidate commit" rule already in force: resubmitting the same, already-assessed
+    # candidate as the rebase's result must not be accepted as resolving the staleness.
+    same_sha_payload = {
+        "dispatch_id": rebase_dispatch, "ticket": "#134", "role": "developer", "outcome": "completed",
+        "output": "attempted rebase without producing a new commit", "commit_sha": stale_sha,
+        "changed_files": ["services/stale_base.py"],
+        "checks_run": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
+        "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+    }
+    same_sha_file = test_root / "stale-base-rebase-same-sha-report.json"
+    same_sha_file.write_text(json.dumps(same_sha_payload, indent=2) + "\n", encoding="utf-8")
+    same_sha_submit = coordinator_run("--state-dir", str(stale_state), "report", "submit", "--file", str(same_sha_file))
+    if same_sha_submit.returncode == 0:
+        sys.exit("coordinator accepted a rebase report that reused the already-assessed stale candidate")
+
+    stale_feature_file.write_text('def marker():\n    return "rebased"\n', encoding="utf-8")
+    subprocess.run(["git", "add", "services/stale_base.py"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "feat: rebase onto the moved integration ref"], cwd=orchestration_project, check=True)
+    rebased_sha = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
+    rebase_payload = {
+        "dispatch_id": rebase_dispatch, "ticket": "#134", "role": "developer", "outcome": "completed",
+        "output": "rebased onto the current integration tip", "commit_sha": rebased_sha,
+        "changed_files": ["services/stale_base.py"],
+        "checks_run": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
+        "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+    }
+    rebase_file = test_root / "stale-base-rebase-report.json"
+    rebase_file.write_text(json.dumps(rebase_payload, indent=2) + "\n", encoding="utf-8")
+    rebase_submit = coordinator_run("--state-dir", str(stale_state), "report", "submit", "--file", str(rebase_file))
+    if rebase_submit.returncode != 0:
+        sys.exit("coordinator rejected the rebase developer report: " + rebase_submit.stderr)
+    rebase_accept = coordinator_run(
+        "--state-dir", str(stale_state), "batch", "decide", "--batch", stale_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T18:01:10Z",
+    )
+    if rebase_accept.returncode != 0:
+        sys.exit("coordinator rejected acceptance of the rebase developer report: " + rebase_accept.stderr)
+    if json.loads(rebase_accept.stdout).get("next_action") != "risk-assessment":
+        sys.exit("accepting the rebase developer report did not require a fresh risk assessment")
+    refreshed_batch_record = json.loads(
+        (lifecycle_records(stale_state) / "batches" / f"{stale_batch}.json").read_text(encoding="utf-8")
+    )
+    if refreshed_batch_record["integration_base_commit"] != drifted_sha:
+        sys.exit("accepting the rebase did not repin integration_base_commit to the moved integration tip")
+    if refreshed_batch_record.get("base_rebase_required"):
+        sys.exit("accepting the rebase did not clear the base_rebase_required flag")
+    if refreshed_batch_record["base_commit"] != stale_batch_record["base_commit"]:
+        sys.exit("a rebase mutated the batch's immutable base_commit")
+
+    # The rebase's commit is a brand-new candidate: code-review must still be refused until it is
+    # risk-assessed again, per the existing rule that any new candidate needs its own assessment.
+    premature_rebase_review = coordinator_run(
+        "--state-dir", str(stale_state), "dispatch", "create", "--batch", stale_batch,
+        "--role", "code-review", "--candidate-commit", rebased_sha,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T18:01:20Z",
+    )
+    if premature_rebase_review.returncode == 0:
+        sys.exit("coordinator allowed code-review before the rebased candidate was risk-assessed")
+    rebase_assessment = coordinator_run(
+        "--state-dir", str(stale_state), "risk", "assess", "--batch", stale_batch,
+        "--candidate-commit", rebased_sha, "--changed-file", "services/stale_base.py",
+    )
+    if rebase_assessment.returncode != 0:
+        sys.exit("coordinator rejected risk assessment for the rebased candidate: " + rebase_assessment.stderr)
+
+    # The base is fresh again — review now proceeds like an ordinary, never-stale batch.
+    cleared_review = coordinator_run(
+        "--state-dir", str(stale_state), "dispatch", "create", "--batch", stale_batch,
+        "--role", "code-review", "--candidate-commit", rebased_sha,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T18:01:30Z",
+    )
+    if cleared_review.returncode != 0:
+        sys.exit("coordinator refused code-review after the stale base was cleared by a rebase: " + cleared_review.stderr)
+
+    print("base-commit gate verification passed")
+
     # A mismatched model self-report is terminal for its batch, so it runs on its own state.
     mismatch_state = test_root / "mismatch-state"
     subprocess.run(["git", "branch", "feature/issue-902-model-mismatch"], cwd=orchestration_project, check=True)
+    sync_origin_base()
     mismatch_batch = json.loads(coordinator_run(
         "--state-dir", str(mismatch_state), "batch", "create", "--ticket", "#902",
         "--branch", "feature/issue-902-model-mismatch", "--worktree", "issue-902-model-mismatch",
@@ -1784,6 +3009,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     # the only remaining move is editing the state files by hand.
     wedge_state = test_root / "wedged-state"
     subprocess.run(["git", "branch", "feature/issue-905-wedged"], cwd=orchestration_project, check=True)
+    sync_origin_base()
     wedged_batch = json.loads(coordinator_run(
         "--state-dir", str(wedge_state), "batch", "create", "--ticket", "#905",
         "--branch", "feature/issue-905-wedged", "--worktree", "issue-905-wedged",
@@ -1866,6 +3092,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     )["dispatches"][0]["state"] != "abandoned":
         sys.exit("repair did not close the dangling dispatch")
     # Closing the old batch is what frees the ticket to be started clean.
+    sync_origin_base()
     restart = coordinator_run(
         "--state-dir", str(wedge_state), "batch", "create", "--ticket", "#905",
         "--branch", "feature/issue-905-wedged", "--worktree", "issue-905-wedged",
@@ -1890,6 +3117,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("the orchestration seed is no longer empty; this scenario needs rewriting")
     orchestration_config.write_text(json.dumps(empty_seed, indent=2) + "\n", encoding="utf-8")
     subprocess.run(["git", "branch", "feature/issue-906-empty-seed"], cwd=orchestration_project, check=True)
+    sync_origin_base()
     seeded = coordinator_run(
         "--state-dir", str(test_root / "empty-seed-state"), "batch", "create", "--ticket", "#906",
         "--branch", "feature/issue-906-empty-seed", "--worktree", "issue-906-empty-seed",
@@ -1903,6 +3131,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     orchestration_config.unlink()
     run_ok(HARNESS + ["health", str(orchestration_project)])
     subprocess.run(["git", "branch", "feature/issue-903-zero-config"], cwd=orchestration_project, check=True)
+    sync_origin_base()
     zero_batch = coordinator_run(
         "--state-dir", str(zero_config_state), "batch", "create", "--ticket", "#903",
         "--branch", "feature/issue-903-zero-config", "--worktree", "issue-903-zero-config",
@@ -2085,6 +3314,19 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("delivery-stats lost exact attribution on the baseline")
     if comparison["current"]["providers"]["codex"]["attribution"] != "estimated":
         sys.exit("delivery-stats lost estimated attribution on the current report")
+
+    # Cache read/write tokens (Issue #141) ride along in the same versioned baseline snapshot as
+    # every other provider figure, so they must appear in both the saved baseline and its delta.
+    claude_baseline_cache = baseline["providers"]["claude"]
+    if claude_baseline_cache["cache_write_tokens"] != 500 or claude_baseline_cache["cache_read_tokens"] != 10000:
+        sys.exit("delivery-stats did not save cache read/write tokens in the baseline: " + json.dumps(claude_baseline_cache))
+    codex_baseline_cache = baseline["providers"]["codex"]
+    if codex_baseline_cache["cache_write_tokens"] != 0 or codex_baseline_cache["cache_read_tokens"] != 800:
+        sys.exit("delivery-stats did not save Codex cache read/write tokens in the baseline: " + json.dumps(codex_baseline_cache))
+    claude_cache_delta = comparison["delta"]["providers"]["claude"]
+    if claude_cache_delta["cache_write_tokens"] != 0 or claude_cache_delta["cache_read_tokens"] != 0:
+        sys.exit("delivery-stats did not compute a cache-token delta between two identical reports: " + json.dumps(claude_cache_delta))
+
     missing_baseline = json.loads(json.dumps(baseline))
     missing_baseline["providers"]["codex"] = {"status": "нет данных", "reason": "fixture missing telemetry"}
     missing_path = test_root / "delivery-stats-missing-baseline.json"
@@ -2196,6 +3438,129 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("delivery-stats did not record which transcript directory it read: " + json.dumps(found["sources"]))
 
     print("delivery-stats verification passed")
+
+    # Orchestration-derived baseline metrics (Issue #141): worker sessions per dispatch with each
+    # restart's coordinator-recorded reason, QA failure rate, and code-review scope excess -- all
+    # read from the coordinator's own ledger records, never a role's self-report, and reported as
+    # missing rather than zero when the ledger is absent.
+    # `report` here is still the very first ticket-7 fixture read (`unpriced`, captured before
+    # `stats_repo` ever gained a `.harness/orchestration` directory below), so this is a genuine
+    # no-ledger case, not the synthetic ledger this same block adds to stats_repo further down.
+    ledgerless_report = report
+    if ledgerless_report["orchestration"].get("status") != "нет данных":
+        sys.exit("delivery-stats invented orchestration metrics with no ledger present: " + json.dumps(ledgerless_report["orchestration"], ensure_ascii=False))
+
+    # orchestration_project's fixture batches are all recorded against one shared checkout (their
+    # "branch" is a coordinator-record label, never actually checked out), so its git history alone
+    # never shows ticket-scoped diff volume. Feed one minimal turn per ticket so delivery-stats' own
+    # "no evidence at all" guard does not mask the orchestration-ledger read this is testing.
+    orch_claude_dir = test_root / "orch-claude-sessions"
+    orch_claude_dir.mkdir()
+
+    def orch_turn(branch):
+        return json.dumps({
+            "type": "assistant", "gitBranch": branch, "sessionId": "orch-fixture",
+            "timestamp": "2026-09-14T16:00:00.000Z", "cwd": str(orchestration_project),
+            "message": {"model": "orch-fixture-model", "usage": {
+                "input_tokens": 10, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 10}},
+        })
+    (orch_claude_dir / "orch-fixture.jsonl").write_text(
+        "\n".join([
+            orch_turn("feature/issue-901-coordinator"),
+            orch_turn("feature/issue-139-checkpoint"),
+        ]) + "\n", encoding="utf-8",
+    )
+
+    ticket_901_stats = subprocess.run(
+        [sys.executable, str(stats_cli), "--repo", str(orchestration_project), "--epic", "901",
+         "--tickets", "901", "--home", str(test_root / "stats-empty-home"),
+         "--claude-projects", str(orch_claude_dir), "--json"],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    if ticket_901_stats.returncode != 0:
+        sys.exit("delivery-stats failed reading the orchestration ledger: " + ticket_901_stats.stderr)
+    orch_901 = json.loads(ticket_901_stats.stdout)["orchestration"]
+    if orch_901.get("status") != "ok":
+        sys.exit("delivery-stats did not find the orchestration ledger: " + json.dumps(orch_901, ensure_ascii=False))
+    ticket_901_metrics = orch_901["tickets"]["901"]
+    sessions_by_dispatch = {s["dispatch_id"]: s for s in ticket_901_metrics["worker_sessions"]}
+    if sessions_by_dispatch[qa_id]["sessions"] != 1 or sessions_by_dispatch[qa_id]["restarts"]:
+        sys.exit("delivery-stats invented a worker-session restart for a single-session dispatch: " + json.dumps(sessions_by_dispatch[qa_id]))
+    if ticket_901_metrics["qa_failure_rate"] != 0.0:
+        sys.exit("delivery-stats mis-scored QA failure rate on an accepted QA dispatch: " + json.dumps(ticket_901_metrics))
+    accepted_scope = ticket_901_metrics["review_scope"]
+    if not isinstance(accepted_scope, list) or accepted_scope[0]["files_out_of_scope"] != 0 or accepted_scope[0]["share"] != 0.0:
+        sys.exit("delivery-stats mis-scored review scope excess for an in-zone diff: " + json.dumps(accepted_scope))
+
+    # A checkpointed/resumed dispatch spans more than one worker session, and each restart's reason
+    # is the coordinator's own recorded decision note, not an invented label.
+    checkpoint_stats = subprocess.run(
+        [sys.executable, str(stats_cli), "--repo", str(orchestration_project), "--epic", "139",
+         "--tickets", "139", "--home", str(test_root / "stats-empty-home"),
+         "--claude-projects", str(orch_claude_dir),
+         "--orchestration-state-dir", str(checkpoint_state), "--json"],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    if checkpoint_stats.returncode != 0:
+        sys.exit("delivery-stats failed reading the checkpoint ledger: " + checkpoint_stats.stderr)
+    checkpoint_metrics = json.loads(checkpoint_stats.stdout)["orchestration"]["tickets"]["139"]
+    dev_session = next(s for s in checkpoint_metrics["worker_sessions"] if s["dispatch_id"] == checkpoint_dev_id)
+    if dev_session["sessions"] != 3:
+        sys.exit("delivery-stats did not count every checkpoint/resume worker session: " + json.dumps(dev_session))
+    if [restart["decision"] for restart in dev_session["restarts"]] != ["continue-automatic", "continue"]:
+        sys.exit("delivery-stats lost the coordinator's own restart decisions: " + json.dumps(dev_session))
+    if "termination_reason=rate_limit" not in dev_session["restarts"][0]["reason"]:
+        sys.exit("delivery-stats did not surface the rate-limit restart reason: " + json.dumps(dev_session))
+    if "context-limit" not in dev_session["restarts"][1]["reason"]:
+        sys.exit("delivery-stats did not surface the planned-trigger restart reason: " + json.dumps(dev_session))
+
+    # A code-review diff can, in principle, span more than the write role's declared zone, and a
+    # batch can carry more than one QA outcome; delivery-stats must score both from the raw ledger
+    # records rather than only ever reporting the all-clean case the coordinator's own enforcement
+    # normally guarantees. Written directly as ledger records (bypassing the coordinator CLI, which
+    # would refuse an out-of-zone developer commit by construction) to exercise that arithmetic.
+    synthetic_state = stats_repo / ".harness" / "orchestration" / "state"
+    (synthetic_state / "batches").mkdir(parents=True)
+    (synthetic_state / "dispatches").mkdir()
+    (synthetic_state / "batches" / "batch-950-synthetic.json").write_text(json.dumps({
+        "batch_id": "batch-950-synthetic",
+        "branch": "feature/issue-950-synthetic",
+        "dispatches": [
+            {"dispatch_id": "dispatch-950-developer", "role": "developer", "state": "reported"},
+            {"dispatch_id": "dispatch-950-review", "role": "code-review", "state": "reported"},
+            {"dispatch_id": "dispatch-950-qa-one", "role": "qa", "state": "reported", "decision": {"decision": "block"}},
+            {"dispatch_id": "dispatch-950-qa-two", "role": "qa", "state": "reported", "decision": {"decision": "accept"}},
+        ],
+        "coordinator_decisions": [
+            {"dispatch_id": "dispatch-950-developer", "decision": "continue-automatic",
+             "note": "termination_reason=rate_limit", "approved_at": "2026-01-01T00:00:00+00:00"},
+        ],
+    }), encoding="utf-8")
+    (synthetic_state / "dispatches" / "dispatch-950-developer.json").write_text(
+        json.dumps({"write_paths": ["services/**"]}), encoding="utf-8")
+    (synthetic_state / "dispatches" / "dispatch-950-review.json").write_text(
+        json.dumps({"review_scope": ["services/a.py", "docs/out.md"]}), encoding="utf-8")
+    synthetic_stats = subprocess.run(
+        [sys.executable, str(stats_cli), "--repo", str(stats_repo), "--epic", "7", "--tickets", "7,950",
+         "--home", str(test_root / "stats-home"), "--claude-projects", str(claude_dir), "--json"],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    if synthetic_stats.returncode != 0:
+        sys.exit("delivery-stats failed reading a synthetic ledger record: " + synthetic_stats.stderr)
+    synthetic_metrics = json.loads(synthetic_stats.stdout)["orchestration"]["tickets"]["950"]
+    if synthetic_metrics["qa_failure_rate"] != 0.5:
+        sys.exit("delivery-stats mis-scored a mixed QA outcome: " + json.dumps(synthetic_metrics))
+    synthetic_scope = synthetic_metrics["review_scope"][0]
+    if synthetic_scope["files_out_of_scope"] != 1 or synthetic_scope["out_of_scope_files"] != ["docs/out.md"] or synthetic_scope["share"] != 0.5:
+        sys.exit("delivery-stats did not score a review diff file outside the declared zone: " + json.dumps(synthetic_scope))
+    synthetic_dev_session = next(
+        s for s in synthetic_metrics["worker_sessions"] if s["dispatch_id"] == "dispatch-950-developer"
+    )
+    if synthetic_dev_session["sessions"] != 2:
+        sys.exit("delivery-stats miscounted a synthetic ledger's worker sessions: " + json.dumps(synthetic_dev_session))
+
+    print("orchestration baseline metrics verification passed")
 
     in_process_plan = json.loads(json.dumps(valid_orchestration))
     in_process_plan["assignment_plans"]["qa"]["transport"] = "in-process"

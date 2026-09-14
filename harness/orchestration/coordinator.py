@@ -18,6 +18,7 @@ import subprocess
 import sys
 import uuid
 from contextlib import contextmanager
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -30,7 +31,11 @@ if str(MODULE_ROOT) not in sys.path:
 GATE_RUNNER_ROOT = MODULE_ROOT.parent / "gate_runner"
 if str(GATE_RUNNER_ROOT) not in sys.path:
     sys.path.insert(0, str(GATE_RUNNER_ROOT))
+CONTEXT_BUILDER_ROOT = MODULE_ROOT.parent / "context_builder"
+if str(CONTEXT_BUILDER_ROOT) not in sys.path:
+    sys.path.insert(0, str(CONTEXT_BUILDER_ROOT))
 from contract import ContractError, load_role_manifest, resolve_assignment, validate_brief_policy
+from context_builder import ContextPackageError, build_context_package
 from gate_runner import CleanRoomPolicy, GateRunnerError, concise_evidence, run_gate, sanitise
 from ledger import LedgerError, LifecycleLedger
 
@@ -51,15 +56,17 @@ FINDING_SEVERITIES = {"info", "warning", "blocker"}
 QA_LEASE_FIELDS = {"dispatch_id", "host", "pid", "acquired_at", "expires_at"}
 QA_QUEUE_FIELDS = {"dispatch_id", "sequence", "queued_at"}
 PLAN_FIELDS = (
-    "batch_id", "created_at", "base_commit", "ticket", "branch", "worktree", "zone", "definition_of_done",
-    "prohibited_changes", "developer_verification_commands", "verification_commands", "required_gates", "dependencies",
+    "batch_id", "created_at", "base_commit", "integration_ref", "branch_start_commit", "ticket", "branch",
+    "worktree", "zone", "definition_of_done", "prohibited_changes", "developer_verification_commands",
+    "verification_commands", "required_gates", "dependencies",
 )
 DISPATCH_FIELDS = {
     "dispatch_id", "batch_id", "ticket", "role", "access", "zone", "write_paths", "branch", "worktree",
     "definition_of_done", "prohibited_changes", "verification_commands", "required_gates", "dependencies",
     "resolved_runtime", "resolved_provider_profile", "resolved_model", "resolved_effort", "resolved_transport", "coordinator_approval", "candidate_commit", "review_base", "review_scope",
-    "risk_assessment_id", "purpose", "state", "created_at",
+    "risk_assessment_id", "purpose", "state", "created_at", "delta_review_of", "delta_review_axis",
 }
+DEFAULT_TEST_PATH_PATTERNS = ("tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py")
 REPORT_FIELDS = {
     "dispatch_id",
     "ticket",
@@ -78,6 +85,31 @@ RISK_ASSESSMENT_FIELDS = {
     "risk_assessment_id", "batch_id", "candidate_commit", "base_commit", "changed_files", "matched_triggers",
     "developer_triggers", "review_required", "review_scope", "created_at",
 }
+CONTEXT_PACKAGE_FIELDS = {
+    "context_package_id", "batch_id", "base_commit", "candidate_commit", "diff", "starting_files",
+    "symbol_graph", "related_tests", "precedent_cards", "file_hashes", "size_bytes", "created_at",
+}
+CHECKPOINT_NO_CONTEXT_PACKAGE = "not applicable — no context package registered"
+CHECKPOINT_INPUT_FIELDS = {
+    "dispatch_id", "commit_sha", "changed_files", "remaining_definition_of_done", "passing_checks",
+    "risks", "blockers", "context_package_id",
+}
+CHECKPOINT_FIELDS = CHECKPOINT_INPUT_FIELDS | {"checkpoint_id", "batch_id", "created_at"}
+# Fixed runtime-adapter termination vocabulary, not a project policy value -- a rate-limit signal
+# always authorizes a continuation automatically, whatever project a batch belongs to.
+RATE_LIMIT_TERMINATION_REASONS = {"rate_limit", "rate-limit", "429"}
+PLANNED_TRIGGER_KINDS = {"context-limit", "tdd-cycles", "failure-log", "vertical-slice"}
+PLANNED_TRIGGER_THRESHOLD_KEY = {
+    "context-limit": "context_limit",
+    "tdd-cycles": "tdd_cycle_count",
+    "failure-log": "failure_log_bytes",
+}
+DEFAULT_ADAPTIVE_CONTINUATION_POLICY = {
+    "context_limit": 150_000,
+    "tdd_cycle_count": 3,
+    "failure_log_bytes": 20_000,
+}
+CONTINUATION_FACTS_FIELDS = {"dispatch_id", "remaining_definition_of_done", "risks", "dependencies"}
 
 
 class CoordinatorError(Exception):
@@ -198,7 +230,7 @@ def _delete(path: Path, *, reason: str) -> None:
 
 
 def _safe_id(value: object, label: str) -> str:
-    if not isinstance(value, str) or re.fullmatch(r"(?:batch|dispatch|risk)-[0-9a-f-]+", value) is None:
+    if not isinstance(value, str) or re.fullmatch(r"(?:batch|dispatch|risk|context-package|checkpoint)-[0-9a-f-]+", value) is None:
         raise CoordinatorError(f"{label} is not a valid coordinator ID")
     return value
 
@@ -291,6 +323,21 @@ def _config(repo: Path) -> dict[str, Any]:
     return value
 
 
+def _adaptive_continuation_policy(config: dict[str, Any]) -> dict[str, int]:
+    """Adaptive-policy thresholds for a planned-trigger continuation. Project-configurable per
+    AC5; an absent or partially-specified `adaptive_continuation_policy` falls back to the
+    documented defaults field by field, the same tolerance `_default_config` gives every other
+    zero-configuration project."""
+    policy = config.get("adaptive_continuation_policy")
+    resolved = dict(DEFAULT_ADAPTIVE_CONTINUATION_POLICY)
+    if isinstance(policy, dict):
+        for key in resolved:
+            value = policy.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+                resolved[key] = value
+    return resolved
+
+
 def _git(repo: Path, *arguments: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo), *arguments], capture_output=True, text=True, encoding="utf-8"
@@ -309,6 +356,55 @@ def _head_commit(repo: Path) -> str | None:
         encoding="utf-8",
     )
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _fetch_ref_tip(repo: Path, ref: str) -> str:
+    """The current commit an integration ref points to on origin, fetched fresh — never a locally
+    cached remote-tracking branch, which is exactly the staleness this gate exists to catch."""
+    try:
+        _git(repo, "fetch", "origin", ref)
+    except CoordinatorError as exc:
+        raise CoordinatorError(f"could not fetch origin {ref!r}: {exc}") from exc
+    return _git(repo, "rev-parse", "--verify", "FETCH_HEAD")
+
+
+def _required_base_branch(repo: Path) -> str:
+    """Unlike `_validate_branch`'s own silent `"master"` default, the base-commit gate has nothing
+    safe to fetch when the project config omits `base_branch` — fail loudly instead of pinning
+    against a branch the project never named."""
+    base = _project(repo).get("base_branch")
+    if not _non_empty(base):
+        raise CoordinatorError("project config has no usable base_branch for the integration ref fallback")
+    return base
+
+
+def _integration_ref(repo: Path, batch: dict[str, Any]) -> str:
+    ref = batch.get("integration_ref")
+    if _non_empty(ref):
+        return ref
+    return _required_base_branch(repo)
+
+
+def _enforce_base_freshness(repo: Path, root: Path, batch: dict[str, Any]) -> None:
+    """Mandatory re-check, immediately before a review or publish dispatch: the batch's pinned
+    integration base must still be the integration ref's current tip. A stale base is cleared only
+    by a new developer dispatch (a rebase), never by the coordinator moving this field directly."""
+    recorded = batch.get("integration_base_commit")
+    if not isinstance(recorded, str) or not recorded:
+        raise CoordinatorError("batch has no recorded integration base commit to check freshness against")
+    ref = _integration_ref(repo, batch)
+    current = _fetch_ref_tip(repo, ref)
+    if current == recorded:
+        return
+    batch["next_action"] = "developer"
+    batch["required_next_role"] = "developer"
+    batch["retry_candidate_required"] = True
+    batch["base_rebase_required"] = True
+    _replace(_batch_path(root, batch["batch_id"]), batch)
+    raise CoordinatorError(
+        f"batch base is stale: origin/{ref} has moved from {recorded} to {current}; "
+        "only a new developer rebase dispatch can clear this block"
+    )
 
 
 def _candidate_commit(repo: Path, value: object) -> str:
@@ -412,6 +508,17 @@ def _trigger_patterns(trigger: str) -> tuple[str, ...]:
     return tuple(patterns)
 
 
+def _test_path_patterns(config: dict[str, Any]) -> list[str]:
+    patterns = config.get("test_path_patterns")
+    if isinstance(patterns, list) and patterns and all(_non_empty(item) for item in patterns):
+        return list(patterns)
+    return list(DEFAULT_TEST_PATH_PATTERNS)
+
+
+def _is_test_path(path: str, patterns: list[str]) -> bool:
+    return any(fnmatchcase(path, pattern) for pattern in patterns)
+
+
 def _role(repo: Path, name: str) -> dict[str, Any]:
     try:
         return load_role_manifest(repo / ".harness/orchestration/roles" / f"{name}.md")
@@ -500,6 +607,14 @@ def _dispatch_status_path(root: Path, dispatch_id: str) -> Path:
 
 def _risk_path(root: Path, risk_id: str) -> Path:
     return _records_root(root) / "risk-assessments" / f"{_safe_id(risk_id, 'risk assessment')}.json"
+
+
+def _context_package_path(root: Path, package_id: str) -> Path:
+    return _records_root(root) / "context-packages" / f"{_safe_id(package_id, 'context package')}.json"
+
+
+def _checkpoint_path(root: Path, checkpoint_id: str) -> Path:
+    return _records_root(root) / "checkpoints" / f"{_safe_id(checkpoint_id, 'checkpoint')}.json"
 
 
 def _plan_path(root: Path, batch_id: str) -> Path:
@@ -648,6 +763,78 @@ def _risk_for_candidate(root: Path, batch: dict[str, Any], candidate: str) -> di
     risk = _load_risk(root, matches[-1].get("risk_assessment_id"))
     _validate_risk(root, batch, risk)
     return risk
+
+
+def _load_checkpoint(root: Path, checkpoint_id: str) -> dict[str, Any]:
+    return _read_object(_checkpoint_path(root, checkpoint_id), "checkpoint")
+
+
+def _latest_checkpoint_for_dispatch(root: Path, batch: dict[str, Any], dispatch_id: str) -> dict[str, Any]:
+    entries = [item for item in batch.get("checkpoints", []) if item.get("dispatch_id") == dispatch_id]
+    if not entries:
+        raise CoordinatorError("dispatch has no recorded checkpoint to resume from")
+    checkpoint = _load_checkpoint(root, entries[-1]["checkpoint_id"])
+    expected = hashlib.sha256(_canonical(checkpoint).encode("utf-8")).hexdigest()
+    if entries[-1].get("record_sha256") != expected:
+        raise CoordinatorError("checkpoint failed immutable record integrity check")
+    return checkpoint
+
+
+def _load_context_package(root: Path, package_id: str) -> dict[str, Any]:
+    return _read_object(_context_package_path(root, package_id), "context package")
+
+
+def _validate_context_package(root: Path, batch: dict[str, Any], package: dict[str, Any]) -> None:
+    _reject_sensitive(package, "context package")
+    if set(package) != CONTEXT_PACKAGE_FIELDS:
+        raise CoordinatorError("context package schema mismatch")
+    if package["batch_id"] != batch["batch_id"]:
+        raise CoordinatorError("context package does not belong to its batch")
+    entry = next(
+        (
+            item for item in batch.get("context_packages", [])
+            if item.get("context_package_id") == package["context_package_id"]
+        ),
+        None,
+    )
+    expected = hashlib.sha256(_canonical(package).encode("utf-8")).hexdigest()
+    if not entry or entry.get("record_sha256") != expected:
+        raise CoordinatorError("context package failed immutable record integrity check")
+
+
+def _latest_context_package(root: Path, batch: dict[str, Any]) -> dict[str, Any] | None:
+    entries = batch.get("context_packages", [])
+    if not entries:
+        return None
+    package = _load_context_package(root, entries[-1]["context_package_id"])
+    _validate_context_package(root, batch, package)
+    return package
+
+
+def _context_package_freshness(repo: Path, root: Path, batch: dict[str, Any]) -> dict[str, Any] | None:
+    """Shadow-mode evidence only: records whether the batch's latest registered Context Package
+    still matches current repository state (its base and the latest accepted developer candidate).
+    Never blocks dispatch creation -- roles are not yet restricted to the package."""
+    package = _latest_context_package(root, batch)
+    if package is None:
+        return None
+    current_base = batch.get("integration_base_commit") or batch.get("base_commit")
+    try:
+        current_candidate = _latest_developer_candidate(repo, root, batch)
+    except CoordinatorError:
+        current_candidate = None
+    fresh = package["base_commit"] == current_base and (
+        current_candidate is None or package["candidate_commit"] == current_candidate
+    )
+    return {
+        "context_package_id": package["context_package_id"],
+        "status": "fresh" if fresh else "stale",
+        "checked_at": _now(),
+        "registered_base_commit": package["base_commit"],
+        "current_base_commit": current_base,
+        "registered_candidate_commit": package["candidate_commit"],
+        "current_candidate_commit": current_candidate,
+    }
 
 
 def _latest_developer_candidate(repo: Path, root: Path, batch: dict[str, Any]) -> str:
@@ -973,6 +1160,64 @@ def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
     return risk
 
 
+def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
+    """Build one Context Package for the batch's accepted developer candidate and register it as a
+    new immutable, versioned, hashed ledger record -- the same ownership pattern as a risk
+    assessment. Read-only over the repository; writes no coordinator or batch state beyond the
+    package itself and its pointer entry."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    candidate = _candidate_commit(repo, args.candidate_commit)
+    with _state_lock(root):
+        batch = _load_batch(root, args.batch)
+        _validate_batch_integrity(root, batch)
+        if batch.get("state") != "awaiting-approval":
+            raise CoordinatorError("a context package requires a batch awaiting coordinator approval")
+        base = batch.get("base_commit")
+        if args.base_commit:
+            requested_base = _candidate_commit(repo, args.base_commit)
+            if requested_base != base:
+                raise CoordinatorError("context package base must match the batch-captured base commit")
+        if candidate != _latest_developer_candidate(repo, root, batch):
+            raise CoordinatorError("candidate commit does not match the accepted developer report")
+        try:
+            built = build_context_package(
+                repo, base, candidate,
+                symbol_graph_depth=args.symbol_graph_depth,
+                min_starting_files=args.min_starting_files,
+                max_starting_files=args.max_starting_files,
+                max_package_size_bytes=args.max_package_size_bytes,
+            )
+        except ContextPackageError as exc:
+            raise CoordinatorError(str(exc)) from exc
+        package = {
+            "context_package_id": f"context-package-{uuid.uuid4()}",
+            "batch_id": batch["batch_id"],
+            "base_commit": built.base_commit,
+            "candidate_commit": built.candidate_commit,
+            "diff": built.diff,
+            "starting_files": [asdict(item) for item in built.starting_files],
+            "symbol_graph": built.symbol_graph,
+            "related_tests": built.related_tests,
+            "precedent_cards": [asdict(item) for item in built.precedent_cards],
+            "file_hashes": built.file_hashes,
+            "size_bytes": built.size_bytes,
+            "created_at": _now(),
+        }
+        _reject_sensitive(package, "context package")
+        _write_exclusive(_context_package_path(root, package["context_package_id"]), package)
+        batch.setdefault("context_packages", []).append(
+            {
+                "context_package_id": package["context_package_id"],
+                "base_commit": package["base_commit"],
+                "candidate_commit": package["candidate_commit"],
+                "record_sha256": hashlib.sha256(_canonical(package).encode("utf-8")).hexdigest(),
+            }
+        )
+        _replace(_batch_path(root, batch["batch_id"]), batch)
+    return package
+
+
 def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     config = _config(repo)
@@ -980,6 +1225,7 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     branch = getattr(args, "branch", None)
     worktree = getattr(args, "worktree", None)
     zone = getattr(args, "zone", None)
+    integration_ref = getattr(args, "integration_ref", None)
     dod = _strings(getattr(args, "definition_of_done", None), "definition_of_done")
     prohibited = _strings(getattr(args, "prohibited_change", None), "prohibited_changes")
     if not _non_empty(ticket) or not _non_empty(worktree) or not _non_empty(zone):
@@ -987,10 +1233,17 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     _validate_branch(repo, branch)
     if not isinstance(config.get("backend_zones"), dict) or zone not in config["backend_zones"]:
         raise CoordinatorError(f"unknown backend zone {zone!r}")
+    # Nullable for epic-less tasks: falls back to the project's base_branch, the same field
+    # `_validate_branch` falls back to, rather than inventing a second convention.
+    fetch_ref = integration_ref.strip() if _non_empty(integration_ref) else _required_base_branch(repo)
+    pinned_base = _fetch_ref_tip(repo, fetch_ref)
     record = {
         "batch_id": f"batch-{uuid.uuid4()}",
         "created_at": _now(),
-        "base_commit": _head_commit(repo),
+        "base_commit": pinned_base,
+        "integration_ref": integration_ref.strip() if _non_empty(integration_ref) else None,
+        "integration_base_commit": pinned_base,
+        "branch_start_commit": _head_commit(repo),
         "state": "planned",
         "ticket": ticket.strip(),
         "branch": branch.strip(),
@@ -1092,6 +1345,10 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
             batch["next_action"] = "developer-retry"
         elif args.decision in {"accept", "override-warning"}:
             if report["role"] == "developer":
+                if batch.get("base_rebase_required"):
+                    ref = _integration_ref(repo, batch)
+                    batch["integration_base_commit"] = _fetch_ref_tip(repo, ref)
+                    batch["base_rebase_required"] = False
                 if dispatch.get("purpose") == "publish":
                     batch.pop("next_action", None)
                     batch["state"] = "completed"
@@ -1262,6 +1519,64 @@ def cancel_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     return {"dispatch_id": dispatch["dispatch_id"], "batch_id": batch["batch_id"], "state": "cancelled"}
 
 
+def _prior_review_entry(batch: dict[str, Any], dispatch_id: str) -> dict[str, Any]:
+    entry = next(
+        (item for item in batch.get("dispatches", []) if item.get("dispatch_id") == dispatch_id), None,
+    )
+    if entry is None or entry.get("role") != "code-review":
+        raise CoordinatorError("delta-review-of must reference a code-review dispatch in this batch")
+    if entry.get("state") != "reported" or entry.get("decision", {}).get("decision") != "retry":
+        raise CoordinatorError("delta-review-of must reference a retried code-review dispatch")
+    return entry
+
+
+def _delta_review_eligibility(
+    repo: Path,
+    config: dict[str, Any],
+    known: list[str],
+    prior_dispatch: dict[str, Any],
+    prior_report: dict[str, Any],
+    candidate: str,
+) -> str:
+    """Whether ``candidate`` may be delta-reviewed against ``prior_dispatch``'s review.
+
+    Eligible only for a test-only fix closing the prior review's single Warning finding: the prior
+    review must show exactly one Warning axis and no Blocker, and the diff since the prior reviewed
+    candidate must touch only test files and match none of the code-review role's risk triggers.
+    Returns the axis name that must be re-evaluated; anything else raises so the caller falls back
+    to a full independent review.
+    """
+    severities = _review_severity(prior_report["review"])
+    if "blocker" in severities.values():
+        raise CoordinatorError("delta-review is not permitted after a review blocker")
+    warning_axes = [axis for axis, value in severities.items() if value == "warning"]
+    if len(warning_axes) != 1 or any(value not in {"warning", "clean"} for value in severities.values()):
+        raise CoordinatorError("delta-review requires exactly one prior Warning axis and one prior Clean axis")
+    prior_candidate = prior_dispatch.get("candidate_commit")
+    if (
+        not isinstance(prior_candidate, str)
+        or prior_candidate == candidate
+        or not _git_is_ancestor(repo, prior_candidate, candidate)
+    ):
+        raise CoordinatorError("delta-review requires a new candidate descended from the prior reviewed candidate")
+    delta_files = _changed_files_between(repo, prior_candidate, candidate)
+    if not delta_files:
+        raise CoordinatorError("delta-review requires a non-empty fix diff since the prior reviewed candidate")
+    patterns = _test_path_patterns(config)
+    non_test = sorted(path for path in delta_files if not _is_test_path(path, patterns))
+    if non_test:
+        raise CoordinatorError(
+            "delta-review is rejected because the fix diff touches non-test file(s): " + ", ".join(non_test)
+        )
+    evidence = _commit_evidence(repo, prior_candidate, candidate)
+    matched = _matching_triggers(evidence, known)
+    if matched:
+        raise CoordinatorError(
+            "delta-review is rejected because the fix diff matches risk trigger(s): " + ", ".join(sorted(matched))
+        )
+    return warning_axes[0]
+
+
 def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -1275,6 +1590,11 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if pending_report:
             raise CoordinatorError("the previous completion report requires an explicit coordinator decision")
         _check_batch_conflicts(root, config, batch)
+        # Shadow-mode freshness gate (Issue #138): evidence only, recorded on the batch before
+        # every new dispatch brief. A stale package never blocks dispatch creation here.
+        context_package_freshness = _context_package_freshness(repo, root, batch)
+        if context_package_freshness is not None:
+            batch.setdefault("context_package_freshness_checks", []).append(context_package_freshness)
         role_name = args.role
         purpose = args.purpose
         next_action = batch.get("next_action")
@@ -1304,6 +1624,9 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         candidate = None
         risk = None
         review_scope: list[str] = []
+        delta_review_of: str | None = None
+        delta_review_axis: str | None = None
+        requested_delta_review_of = getattr(args, "delta_review_of", None)
         if args.candidate_commit is not None:
             candidate = _candidate_commit(repo, args.candidate_commit)
         if role_name in {"code-review", "qa"} and candidate is None:
@@ -1316,6 +1639,9 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             _accepted_qa_for_candidate(root, batch, candidate)
         elif purpose != "work":
             raise CoordinatorError("dispatch purpose is invalid")
+        is_review_work = role_name == "code-review" and purpose == "work"
+        if is_review_work or purpose == "publish":
+            _enforce_base_freshness(repo, root, batch)
         if candidate is not None:
             risk = _risk_for_candidate(root, batch, candidate)
         if role_name in {"code-review", "qa"} and candidate != _latest_developer_candidate(repo, root, batch):
@@ -1326,6 +1652,18 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             # The risk assessment decides when review is *mandatory*, never when it is permitted:
             # the fixed pipeline reviews every candidate, high-risk or not.
             review_scope = list(risk["review_scope"])
+            if requested_delta_review_of is not None:
+                prior_entry = _prior_review_entry(batch, requested_delta_review_of)
+                prior_dispatch = _load_dispatch(root, requested_delta_review_of)
+                if prior_dispatch.get("batch_id") != batch["batch_id"]:
+                    raise CoordinatorError("delta-review-of must reference a dispatch in this batch")
+                prior_report = _pending_report(root, batch, prior_entry)
+                delta_review_axis = _delta_review_eligibility(
+                    repo, config, _risk_triggers(repo), prior_dispatch, prior_report, candidate,
+                )
+                delta_review_of = requested_delta_review_of
+        elif requested_delta_review_of is not None:
+            raise CoordinatorError("--delta-review-of is only valid for a code-review dispatch")
         if role_name == "qa":
             if batch.get("risk_reassessment_required"):
                 raise CoordinatorError("QA is blocked until the candidate is risk-assessed again")
@@ -1375,6 +1713,8 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "review_scope": review_scope,
             "risk_assessment_id": risk["risk_assessment_id"] if risk else None,
             "purpose": purpose,
+            "delta_review_of": delta_review_of,
+            "delta_review_axis": delta_review_axis,
         }
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the
@@ -1394,7 +1734,10 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             batch.pop("required_next_role", None)
         batch["state"] = "active"
         _replace(_batch_path(root, batch["batch_id"]), batch)
-    return {"dispatch_id": dispatch_id, "batch_id": batch["batch_id"], "state": "approved", "brief": brief}
+    return {
+        "dispatch_id": dispatch_id, "batch_id": batch["batch_id"], "state": "approved", "brief": brief,
+        "context_package_freshness": context_package_freshness,
+    }
 
 
 def _validate_checkout(checkout: Path, candidate: str, base: str | None, scope: list[str]) -> None:
@@ -1557,6 +1900,231 @@ def heartbeat_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         status["heartbeat_note"] = _sanitise(note)[:240]
         _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), status)
     return {"dispatch_id": dispatch["dispatch_id"], "state": status["state"], "heartbeat_at": moment}
+
+
+def _validate_checkpoint(
+    checkpoint: dict[str, Any], dispatch: dict[str, Any], role: dict[str, Any], repo: Path,
+    base_commit: str | None, root: Path, batch: dict[str, Any],
+) -> None:
+    _reject_sensitive(checkpoint, "checkpoint")
+    if set(checkpoint) != CHECKPOINT_INPUT_FIELDS:
+        raise CoordinatorError("checkpoint schema mismatch")
+    if checkpoint["dispatch_id"] != dispatch["dispatch_id"]:
+        raise CoordinatorError("checkpoint dispatch_id does not match the dispatched role")
+    if role["mode"] != "write":
+        raise CoordinatorError(
+            "a checkpoint is only valid for a write role; a read-only role cannot span multiple worker sessions"
+        )
+    for field in ("risks", "blockers"):
+        if not _non_empty(checkpoint[field]):
+            raise CoordinatorError(f"checkpoint {field} must be a non-empty string")
+    commit_sha = checkpoint["commit_sha"]
+    if not isinstance(commit_sha, str) or re.fullmatch(r"[0-9a-fA-F]{7,64}", commit_sha) is None:
+        raise CoordinatorError("checkpoint requires a commit_sha")
+    changed_files = _strings(checkpoint["changed_files"], "checkpoint changed_files", allow_empty=True)
+    paths = dispatch["write_paths"]
+    for changed_file in changed_files:
+        normalized = changed_file.replace("\\", "/")
+        if normalized.startswith("/") or ".." in Path(normalized).parts or not any(
+            fnmatchcase(normalized, pattern) for pattern in paths
+        ):
+            raise CoordinatorError("checkpoint changed_files must remain inside the approved zone")
+    resolved = _candidate_commit(repo, commit_sha)
+    actual_files = _changed_files_between(repo, base_commit, resolved) if base_commit else _commit_changed_files(repo, resolved)
+    if actual_files != changed_files:
+        raise CoordinatorError("checkpoint changed_files must exactly match commit_sha")
+    remaining = _strings(
+        checkpoint["remaining_definition_of_done"], "checkpoint remaining_definition_of_done", allow_empty=True
+    )
+    if not set(remaining) <= set(dispatch["definition_of_done"]):
+        raise CoordinatorError("checkpoint remaining_definition_of_done must be drawn from the dispatch definition_of_done")
+    passing_checks = checkpoint["passing_checks"]
+    if not isinstance(passing_checks, list):
+        raise CoordinatorError("checkpoint passing_checks must be a list")
+    for check in passing_checks:
+        if not isinstance(check, dict) or set(check) != {"command", "result", "evidence"}:
+            raise CoordinatorError("checkpoint passing_checks has an invalid entry")
+        if not all(_non_empty(check[field]) for field in ("command", "result", "evidence")):
+            raise CoordinatorError("checkpoint passing_checks entries must contain text evidence")
+        if check["command"] not in dispatch["verification_commands"]:
+            raise CoordinatorError("checkpoint passing_checks must reference an approved verification command")
+    package = _latest_context_package(root, batch)
+    if package is None:
+        if checkpoint["context_package_id"] != CHECKPOINT_NO_CONTEXT_PACKAGE:
+            raise CoordinatorError(
+                "checkpoint context_package_id must be the no-package sentinel; "
+                "the batch has no registered context package"
+            )
+    elif checkpoint["context_package_id"] != package["context_package_id"]:
+        raise CoordinatorError("checkpoint context_package_id must reference the batch's latest registered context package")
+
+
+def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    """Record a non-terminal checkpoint for an in-flight write-role dispatch so its worker session
+    can end here and a fresh session can resume the same dispatch later.
+
+    A checkpoint is deliberately not a completion report: it never touches the outcome enum or the
+    reporting path, and it is rejected outright for a read-only role, which may never span more
+    than one worker session."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    checkpoint = _read_object(Path(args.file).resolve(), "checkpoint")
+    with _state_lock(root):
+        dispatch, status = _live_status(root, checkpoint.get("dispatch_id"))
+        batch = _load_batch(root, dispatch["batch_id"])
+        _validate_batch_integrity(root, batch)
+        config = _config(repo)
+        _validate_dispatch(repo, config, root, batch, dispatch)
+        role = _role(repo, dispatch["role"])
+        entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
+        if not entry or entry.get("state") != "dispatched":
+            raise CoordinatorError("a checkpoint requires a dispatched role")
+        self_report = status.get("model_self_report")
+        if not isinstance(self_report, dict) or self_report.get("match") is not True:
+            raise CoordinatorError("a dispatched role must confirm its active model before checkpointing")
+        _validate_checkpoint(checkpoint, dispatch, role, repo, batch.get("base_commit"), root, batch)
+        record = {
+            "checkpoint_id": f"checkpoint-{uuid.uuid4()}",
+            "batch_id": batch["batch_id"],
+            "created_at": _now(),
+            **checkpoint,
+        }
+        _write_exclusive(_checkpoint_path(root, record["checkpoint_id"]), record)
+        entry["state"] = "checkpointed"
+        # Batch-level pointer, the same ownership pattern as risk_assessments/context_packages;
+        # dispatch_id is carried alongside since a checkpoint is dispatch-scoped, not batch-scoped.
+        batch.setdefault("checkpoints", []).append({
+            "checkpoint_id": record["checkpoint_id"],
+            "dispatch_id": dispatch["dispatch_id"],
+            "record_sha256": hashlib.sha256(_canonical(record).encode("utf-8")).hexdigest(),
+        })
+        _replace(_batch_path(root, batch["batch_id"]), batch)
+        moment = _now()
+        status.update({"state": "checkpointed", "updated_at": moment})
+        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), status)
+    return {"dispatch_id": dispatch["dispatch_id"], "state": "checkpointed", "checkpoint_id": record["checkpoint_id"]}
+
+
+def _authorize_rate_limit_continuation(termination_reason: str) -> dict[str, Any]:
+    return {
+        "decision": "continue-automatic",
+        "approved_by": "runtime-adapter",
+        "approved_at": _now(),
+        "note": f"termination_reason={termination_reason}",
+    }
+
+
+def _authorize_planned_continuation(
+    config: dict[str, Any], dispatch: dict[str, Any], checkpoint: dict[str, Any], args: argparse.Namespace,
+) -> dict[str, Any]:
+    """A planned trigger (context limit, N TDD cycles, a large failure log, or a completed
+    vertical slice) is a safe-default-toward-approval path: it always requires the same explicit
+    coordinator decision an accept/retry/block/fail already does, reusing that record type rather
+    than inventing a new one."""
+    trigger = args.trigger.strip() if _non_empty(args.trigger) else ""
+    if trigger not in PLANNED_TRIGGER_KINDS:
+        raise CoordinatorError(
+            "a continuation without a recognized rate-limit termination reason is a planned trigger and "
+            f"requires --trigger to be one of {sorted(PLANNED_TRIGGER_KINDS)}"
+        )
+    threshold_key = PLANNED_TRIGGER_THRESHOLD_KEY.get(trigger)
+    if threshold_key is not None:
+        threshold = _adaptive_continuation_policy(config)[threshold_key]
+        measured = args.measured_value
+        if isinstance(measured, bool) or not isinstance(measured, int) or measured < threshold:
+            raise CoordinatorError(
+                f"planned trigger {trigger!r} requires --measured-value at least the configured "
+                f"threshold ({threshold})"
+            )
+    _check_continuation_facts_unchanged(dispatch, checkpoint, args)
+    approval = _approval(args)
+    return {
+        "decision": "continue",
+        "approved_by": approval["approved_by"],
+        "approved_at": approval["approved_at"],
+        "note": args.note.strip() if _non_empty(args.note) else f"planned trigger: {trigger}",
+    }
+
+
+def _check_continuation_facts_unchanged(
+    dispatch: dict[str, Any], checkpoint: dict[str, Any], args: argparse.Namespace,
+) -> None:
+    """Reject a continuation whose recorded facts show scope, Definition of Done, risks, or
+    dependencies changed since the checkpoint (Issue #140's continuation-authorization contract).
+    The coordinator must restate those facts explicitly -- a mismatch means real drift, not
+    something the coordinator can wave through, so it must close the dispatch and open a new one
+    through ordinary approval instead. Blockers are deliberately not compared here: unlike the
+    other four, their wording can legitimately evolve session to session without the underlying
+    scope, DoD, risks or dependencies having changed at all."""
+    if not _non_empty(getattr(args, "file", None)):
+        raise CoordinatorError(
+            "a planned-trigger continuation requires --file restating the current remaining "
+            "Definition of Done, risks and dependencies"
+        )
+    facts = _read_object(Path(args.file).resolve(), "continuation facts")
+    _reject_sensitive(facts, "continuation facts")
+    if set(facts) != CONTINUATION_FACTS_FIELDS:
+        raise CoordinatorError("continuation facts schema mismatch")
+    if facts["dispatch_id"] != dispatch["dispatch_id"]:
+        raise CoordinatorError("continuation facts dispatch_id does not match the dispatched role")
+    unchanged = (
+        facts["remaining_definition_of_done"] == checkpoint["remaining_definition_of_done"]
+        and facts["risks"] == checkpoint["risks"]
+        and facts["dependencies"] == dispatch["dependencies"]
+    )
+    if not unchanged:
+        raise CoordinatorError(
+            "continuation facts differ from the checkpointed scope, Definition of Done, risks, blockers "
+            "or dependencies; close this dispatch and open a new one through ordinary approval instead "
+            "of resuming it"
+        )
+
+
+def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    """Start a new worker session for a checkpointed dispatch, under the same dispatch ID.
+
+    The resumed session is put through the exact same liveness contract as a first session: its
+    prior model self-report is discarded, so `dispatch self-report` and `dispatch heartbeat` are
+    both mandatory again before any further checkpoint or completion report.
+
+    Continuation authorization (Issue #140): a runtime adapter reporting a recognized rate-limit
+    termination reason authorizes the new session automatically, without a new human/coordinator
+    decision. Anything else -- no reason, or one this coordinator does not recognize -- is treated
+    as a planned trigger and requires the existing coordinator-decision approval, with its recorded
+    facts checked against the checkpoint for drift."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    termination_reason = args.termination_reason.strip().lower() if _non_empty(args.termination_reason) else ""
+    with _state_lock(root):
+        dispatch = _load_dispatch(root, args.dispatch)
+        batch = _load_batch(root, dispatch["batch_id"])
+        _validate_batch_integrity(root, batch)
+        config = _config(repo)
+        _validate_dispatch(repo, config, root, batch, dispatch)
+        status = _load_dispatch_status(root, dispatch["dispatch_id"])
+        entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
+        if not entry or entry.get("state") != "checkpointed" or status.get("state") != "checkpointed":
+            raise CoordinatorError("only a checkpointed dispatch may start a new worker session")
+        if termination_reason in RATE_LIMIT_TERMINATION_REASONS:
+            authorization = _authorize_rate_limit_continuation(termination_reason)
+        else:
+            checkpoint = _latest_checkpoint_for_dispatch(root, batch, dispatch["dispatch_id"])
+            authorization = _authorize_planned_continuation(config, dispatch, checkpoint, args)
+        entry["state"] = "dispatched"
+        batch.setdefault("coordinator_decisions", []).append({
+            "dispatch_id": dispatch["dispatch_id"], **authorization,
+        })
+        _replace(_batch_path(root, batch["batch_id"]), batch)
+        moment = _now()
+        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
+            "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": moment,
+            "heartbeat_at": moment,
+        })
+    return {
+        "dispatch_id": dispatch["dispatch_id"], "state": "dispatched",
+        "authorization": authorization["decision"],
+        "next_role_action": "dispatch self-report",
+    }
 
 
 def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
@@ -1832,10 +2400,28 @@ def _validate_review(review: object, dispatch: dict[str, Any]) -> None:
         raise CoordinatorError("composite review must contain independent standards and spec evidence")
     if review["candidate_commit"] != dispatch["candidate_commit"] or review["scope"] != dispatch["review_scope"]:
         raise CoordinatorError("composite review evidence does not match the approved review brief")
+    delta_review_of = dispatch.get("delta_review_of")
+    delta_review_axis = dispatch.get("delta_review_axis")
     for axis in ("standards", "spec"):
         evidence = review[axis]
-        if not isinstance(evidence, dict) or set(evidence) != {"severity", "findings", "risks", "blockers"}:
+        inherited = delta_review_of is not None and axis != delta_review_axis
+        expected_keys = (
+            {"severity", "findings", "risks", "blockers", "inherited_from"}
+            if inherited
+            else {"severity", "findings", "risks", "blockers"}
+        )
+        if not isinstance(evidence, dict) or set(evidence) != expected_keys:
             raise CoordinatorError(f"composite review {axis} evidence has an invalid schema")
+        if inherited:
+            if evidence["severity"] != "clean" or evidence["findings"] != []:
+                raise CoordinatorError(
+                    f"composite review {axis} must inherit the prior Clean verdict without re-analysis"
+                )
+            if evidence["inherited_from"] != delta_review_of:
+                raise CoordinatorError(f"composite review {axis} must reference the prior review as evidence")
+            if not _non_empty(evidence["risks"]) or not _non_empty(evidence["blockers"]):
+                raise CoordinatorError(f"composite review {axis} must state risks and blockers")
+            continue
         if evidence["severity"] not in REVIEW_SEVERITIES:
             raise CoordinatorError(f"composite review {axis} severity is invalid")
         if not isinstance(evidence["findings"], list):
@@ -1961,6 +2547,8 @@ def _report_markdown(report: dict[str, Any]) -> str:
                     f"- Review {axis.title()} blockers: {evidence['blockers']}",
                 ]
             )
+            if "inherited_from" in evidence:
+                lines.append(f"- Review {axis.title()} inherited from: {evidence['inherited_from']}")
             for finding in evidence["findings"]:
                 lines.append(f"  - [{finding['severity']}] {finding['summary']}: {finding['evidence']}")
     lines.append("")
@@ -2075,6 +2663,11 @@ def parser() -> argparse.ArgumentParser:
     create.add_argument("--branch", required=True)
     create.add_argument("--worktree", required=True)
     create.add_argument("--zone", default=DEFAULT_ZONE, help="backend zone; defaults to the whole repository")
+    create.add_argument(
+        "--integration-ref",
+        help="branch on origin this batch's base is fetched and pinned against; "
+        "falls back to the project's base_branch for epic-less tasks",
+    )
     create.add_argument("--definition-of-done", action="append", required=True)
     create.add_argument("--prohibited-change", action="append", required=True)
     create.add_argument("--required-gate", action="append")
@@ -2123,6 +2716,19 @@ def parser() -> argparse.ArgumentParser:
     assess.add_argument("--developer-trigger", action="append")
     assess.set_defaults(handler=assess_risk)
 
+    context_package = commands.add_parser("context-package")
+    context_package_commands = context_package.add_subparsers(dest="context_package_command", required=True)
+    context_package_register = context_package_commands.add_parser("register")
+    _common(context_package_register)
+    context_package_register.add_argument("--batch", required=True)
+    context_package_register.add_argument("--candidate-commit", required=True)
+    context_package_register.add_argument("--base-commit", help="optional immutable diff base; defaults to the batch base")
+    context_package_register.add_argument("--symbol-graph-depth", type=int, default=2)
+    context_package_register.add_argument("--min-starting-files", type=int, default=5)
+    context_package_register.add_argument("--max-starting-files", type=int, default=10)
+    context_package_register.add_argument("--max-package-size-bytes", type=int, default=512_000)
+    context_package_register.set_defaults(handler=register_context_package)
+
     dispatch = commands.add_parser("dispatch")
     dispatch_commands = dispatch.add_subparsers(dest="dispatch_command", required=True)
     dispatch_create = dispatch_commands.add_parser("create", aliases=["approve"])
@@ -2132,6 +2738,10 @@ def parser() -> argparse.ArgumentParser:
     dispatch_create.add_argument("--runtime", default="codex", help="named runtime from the role assignment plan")
     dispatch_create.add_argument("--purpose", choices=sorted(DISPATCH_PURPOSES), default="work")
     dispatch_create.add_argument("--candidate-commit")
+    dispatch_create.add_argument(
+        "--delta-review-of",
+        help="prior retried code-review dispatch id this test-only fix delta-reviews; code-review role only",
+    )
     dispatch_create.add_argument("--model", help="session model, used only without .harness/orchestration.json")
     dispatch_create.add_argument("--effort", help="session effort, used only without .harness/orchestration.json")
     dispatch_create.add_argument("--approved-by", required=True)
@@ -2165,6 +2775,37 @@ def parser() -> argparse.ArgumentParser:
     dispatch_heartbeat.add_argument("--dispatch", required=True)
     dispatch_heartbeat.add_argument("--note", default="none")
     dispatch_heartbeat.set_defaults(handler=heartbeat_dispatch)
+
+    dispatch_checkpoint = dispatch_commands.add_parser("checkpoint")
+    _common(dispatch_checkpoint)
+    dispatch_checkpoint.add_argument("--file", required=True)
+    dispatch_checkpoint.set_defaults(handler=checkpoint_dispatch)
+
+    dispatch_resume = dispatch_commands.add_parser("resume")
+    _common(dispatch_resume)
+    dispatch_resume.add_argument("--dispatch", required=True)
+    dispatch_resume.add_argument(
+        "--termination-reason", default="",
+        help="runtime adapter termination reason; a recognized rate limit (rate_limit/rate-limit/429) "
+             "authorizes the new worker session automatically",
+    )
+    dispatch_resume.add_argument(
+        "--trigger", choices=sorted(PLANNED_TRIGGER_KINDS),
+        help="planned-trigger kind; required unless --termination-reason is a recognized rate limit",
+    )
+    dispatch_resume.add_argument(
+        "--measured-value", type=int,
+        help="measured value for a context-limit/tdd-cycles/failure-log planned trigger, "
+             "checked against the project's adaptive_continuation_policy threshold",
+    )
+    dispatch_resume.add_argument(
+        "--file", help="continuation facts JSON restating remaining DoD/risks/blockers/dependencies; "
+                        "required for a planned-trigger continuation",
+    )
+    dispatch_resume.add_argument("--approved-by")
+    dispatch_resume.add_argument("--approved-at")
+    dispatch_resume.add_argument("--note")
+    dispatch_resume.set_defaults(handler=resume_dispatch)
 
     dispatch_status_command = dispatch_commands.add_parser("status")
     _common(dispatch_status_command)

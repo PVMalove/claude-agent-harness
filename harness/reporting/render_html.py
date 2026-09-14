@@ -210,6 +210,18 @@ def _comparison_panel(comparison: object) -> str:
             f"<tr><td>{label}</td><td class='num'>{shown(before)}</td>"
             f"<td class='num'>{shown(after)}</td><td class='num'>{delta_text}</td></tr>"
         )
+
+        def cache_delta_text(value: object) -> str:
+            if not isinstance(value, int):
+                return f'<span class="missing">{_esc(MISSING)}</span>'
+            return f"{value:+,}".replace(",", " ")
+
+        if isinstance(delta, dict) and ("cache_write_tokens" in delta or "cache_read_tokens" in delta):
+            rows.append(
+                f"<tr><td colspan='3'>{label} · кеш (запись / чтение)</td>"
+                f"<td class='num'>{cache_delta_text(delta.get('cache_write_tokens'))} / "
+                f"{cache_delta_text(delta.get('cache_read_tokens'))}</td></tr>"
+            )
     baseline_epic = baseline.get("epic", {}).get("number", "?")
     current_epic = current.get("epic", {}).get("number", "?")
     return _panel(
@@ -339,6 +351,36 @@ def _tickets_panel(report: dict) -> str:
     )
 
 
+def _orchestration_panel(orchestration: Any) -> str:
+    if not isinstance(orchestration, dict) or orchestration.get("status") != "ok":
+        reason = orchestration.get("reason", MISSING) if isinstance(orchestration, dict) else MISSING
+        return _panel("Оркестрация", f'<p class="missing">{_esc(reason)}</p>')
+    rows = []
+    for number, ticket in sorted(orchestration["tickets"].items()):
+        for session in ticket["worker_sessions"]:
+            restarts = "; ".join(f"{r['decision']}: {r['reason']}" for r in session["restarts"]) or "—"
+            rows.append(
+                f"<tr><td>#{_esc(number)}</td><td>{_esc(session['role'])}</td>"
+                f"<td class='num'>{_thousands(session['sessions'])}</td><td>{_esc(restarts)}</td></tr>"
+            )
+        rate = ticket["qa_failure_rate"]
+        rate_text = f"{_decimal(rate * 100, 1)} %" if isinstance(rate, float) else _esc(rate)
+        rows.append(f"<tr><td>#{_esc(number)}</td><td colspan='2'>QA failure rate</td><td>{rate_text}</td></tr>")
+        scope = ticket["review_scope"]
+        if isinstance(scope, list):
+            for entry in scope:
+                rows.append(
+                    f"<tr><td>#{_esc(number)}</td><td colspan='2'>review scope excess ({_esc(entry['dispatch_id'])})</td>"
+                    f"<td>{entry['files_out_of_scope']}/{entry['files_total']} ({_decimal(entry['share'] * 100, 1)} %)</td></tr>"
+                )
+    return _panel(
+        "Оркестрация",
+        "<div class='scroll'><table><thead><tr><th>тикет</th><th>роль</th>"
+        "<th class='num'>сессий</th><th>детали</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>",
+    )
+
+
 def build_html(report: dict) -> str:
     totals = report["volume"]["totals"]
     claude, codex = report["claude"], report["codex"]
@@ -379,6 +421,9 @@ def build_html(report: dict) -> str:
         "</div>",
         '<div class="grid">',
         _tickets_panel(report),
+        "</div>",
+        '<div class="grid">',
+        _orchestration_panel(report.get("orchestration")),
         "</div>",
         f'<footer>Сессий учтено: {sessions}. Claude приписан к эпику точно — по ветке каждой записи. '
         "Codex приписан оценочно — по репозиторию и временному окну, потому что в его логах ветки нет. "

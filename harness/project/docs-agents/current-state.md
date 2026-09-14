@@ -88,6 +88,21 @@ python .harness/orchestration/coordinator.py --repo . batch decide ...
 `dispatch status --stale-after <sec>` — обобщение QA-lease-expiry на любой dispatch. Транспорт роли
 (`orca` или `in-process`) выбирается в assignment plan и не меняет контракт brief/report.
 
+Write-роль может растянуть один dispatch на несколько worker session: `dispatch checkpoint`
+записывает неитоговую hashed ledger-запись (commit SHA, changed files, оставшийся DoD, проходящие
+проверки, остаточные risks/blockers, ссылка на Context Package) и переводит dispatch-status в
+`checkpointed`, не трогая outcome enum completion report. `dispatch resume` стартует новую worker
+session под тем же dispatch ID и заново требует self-report и heartbeat — read-only роль checkpoint
+не проходит.
+
+Авторизация `dispatch resume` (Issue #140) зависит от причины окончания прежней сессии: recognized
+rate-limit termination reason авторизует новую сессию автоматически; любая другая (включая
+отсутствующую) — planned trigger, который требует то же coordinator decision, что accept/retry/
+block/fail (без нового типа записи), и, для измеримых trigger, `--measured-value` не ниже порога
+project-owned `adaptive_continuation_policy`. Восстановленные факты (remaining DoD/risks из
+checkpoint, dependencies из dispatch), расходящиеся с текущими, блокируют resume — dispatch
+закрывается и открывается заново через обычный approval; blockers в это сравнение не входят.
+
 После candidate commit coordinator детерминированно оценивает риск по DoD, изменённым файлам и
 reported triggers. Оценка определяет, когда двухосевой `code-review` обязателен; создать его можно
 для любого кандидата, и конвейер `/implement` запускает его всегда. Затем следует

@@ -299,3 +299,50 @@ Project-owned выбор в assignment plan роли — исполнять её
 in-process субагент текущей сессии. Оба варианта подчиняются одному brief/report контракту и обязаны
 проходить model self-report.
 _Avoid_: жёсткая привязка роли к одному транспортному механизму.
+
+**Advisory output** (`harness/orchestration/advisory.py`):
+Эфемерный, неавторитетный результат дешёвого non-role tool call — ранжирование файлов, сводка лога
+или грубая риск-подсказка. Выполняется вне brief/report/self-report/heartbeat контракта, не создаёт
+dispatch и не пишет ledger-запись; пересчитывается заново при каждом вызове и нигде не хранится как
+ground truth. Coordinator/contract validation path не принимает его как основание создать dispatch,
+понизить риск, принять QA или изменить scope — эти решения остаются за ролью и человеком.
+_Avoid_: risk assessment (`coordinator.py risk assess` — ledger-owned и authoritative), Context
+Package, completion report.
+
+**Discovery Context**:
+Собранный агентом и выверенный человеком (explicit opt-in) список релевантных путей файлов, передаваемый от Эпика к тикетам для исключения слепого поиска при разработке.
+_Avoid_: Relevant Files, стартовый контекст.
+
+**Context Package**:
+Итоговый бандл для Разработчика, собранный `context_builder.py` из `Discovery Context` путём разворачивания локальных импортов на 1 уровень вглубь с извлечением только их сигнатур.
+_Avoid_: контекст разработчика, пакет контекста.
+
+**Checkpoint**:
+Неитоговая ledger-запись write-роли (`coordinator.py dispatch checkpoint`), фиксирующая ровно
+commit SHA, changed files, оставшийся Definition of Done, проходящие проверки, остаточные
+risks/blockers и ссылку на Context Package — без raw chat history и логов прежних попыток.
+Переводит dispatch-status в `checkpointed`; никогда не путается с completion report и не меняет
+outcome enum (`completed`/`blocked`/`failed`). Доступен только write-роли — read-only роль
+(architect, qa, code-review) не может растянуть себя на несколько worker session.
+_Avoid_: completion report, промежуточный commit без ledger-записи.
+
+**Worker session**:
+Один живой контакт роли с dispatch между `dispatch send`/`dispatch resume` и следующим
+`dispatch checkpoint` или completion report. Каждая worker session — своя, независимая
+model self-report и heartbeat; `dispatch resume` для checkpointed dispatch стартует новую worker
+session под тем же dispatch ID и требует их заново, как при первом контакте.
+_Avoid_: worker session как синоним dispatch (один dispatch может пройти несколько worker session).
+
+**Continuation authorization**:
+Правило, авторизующее `dispatch resume` checkpointed dispatch под новую worker session. Recognized
+rate-limit termination reason (`rate_limit`/`rate-limit`/`429`) от runtime adapter авторизует
+автоматически, без нового решения человека/coordinator-а. Любая другая причина — planned trigger
+(`context-limit`/`tdd-cycles`/`failure-log`/`vertical-slice`), safe default в сторону approval:
+требует то же coordinator decision, что accept/retry/block/fail (новый тип записи не вводится), и
+для измеримых trigger — `--measured-value` не ниже порога project-owned
+`adaptive_continuation_policy`. Расхождение восстановленных фактов (remaining DoD/risks из
+checkpoint, dependencies из dispatch) с текущими — блокер: dispatch закрывается, новый открывается
+через обычный approval, а не резюмируется. Blockers в это сравнение не входят — их формулировка
+может естественно меняться между сессиями без реального дрейфа scope/DoD/risks/dependencies.
+_Avoid_: automatic continuation как безусловное поведение (только для recognized rate limit),
+planned trigger без coordinator decision.
