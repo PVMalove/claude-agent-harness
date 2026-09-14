@@ -21,7 +21,9 @@ ROLE_FIELDS = frozenset({"name", "mode", "required_capabilities", "risk_triggers
 CONFIG_REQUIRED_FIELDS = (
     "provider_profiles", "assignment_plans", "backend_zones", "concurrency_budget", "verification_commands",
 )
-CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {"$schema", "developer_verification_commands"}
+CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
+    "$schema", "developer_verification_commands", "test_path_patterns",
+}
 CODE_REVIEW_REQUIRED_RISK_TRIGGERS = frozenset(
     {
         "api-public-contract", "schema-change", "data-migration", "outbox", "queues",

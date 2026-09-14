@@ -1,9 +1,10 @@
 """Versioned, append-audited persistence for the orchestration lifecycle.
 
 The coordinator is deliberately only a CLI adapter.  This module selects the active record
-generation, records immutable writes and transitions, and performs the one explicit migration
-from the pre-ledger directory layout.  A pointer is the only mutable selector: a replacement
-generation is validated and moved into place before that pointer is atomically switched.
+generation, records immutable writes and transitions, and performs the explicit migration from
+the pre-ledger directory layout or from an older-schema generation.  A pointer is the only mutable
+selector: a replacement generation is validated and moved into place before that pointer is
+atomically switched.
 """
 
 from __future__ import annotations
@@ -18,12 +19,13 @@ from pathlib import Path
 from typing import Any
 
 
-LEDGER_VERSION = 1
+LEDGER_VERSION = 3
+SUPPORTED_LEDGER_VERSIONS = (1, 2, 3)
 POINTER_NAME = "ledger.json"
 GENERATIONS = "generations"
 RECORD_DIRECTORIES = (
-    "batches", "plans", "dispatches", "dispatch-status", "risk-assessments", "reports",
-    "qa-lane", "qa-artifacts", "audit",
+    "batches", "plans", "dispatches", "dispatch-status", "risk-assessments", "context-packages",
+    "checkpoints", "reports", "qa-lane", "qa-artifacts", "audit",
 )
 
 
@@ -69,7 +71,7 @@ class LifecycleLedger:
         pointer = _read(self.pointer_path, "ledger pointer")
         if set(pointer) != {"version", "generation", "selected_at"}:
             raise LedgerError("ledger pointer has an invalid schema")
-        if pointer["version"] != LEDGER_VERSION or not isinstance(pointer["generation"], str):
+        if pointer["version"] not in SUPPORTED_LEDGER_VERSIONS or not isinstance(pointer["generation"], str):
             raise LedgerError("ledger pointer has an unsupported version or generation")
         if not pointer["generation"].startswith("generation-") or not isinstance(pointer["selected_at"], str):
             raise LedgerError("ledger pointer has an invalid generation")
@@ -82,6 +84,8 @@ class LifecycleLedger:
             if self._legacy_records_present():
                 raise LedgerError("legacy lifecycle state requires an explicit ledger migrate")
             return self.root
+        if pointer["version"] != LEDGER_VERSION:
+            raise LedgerError("ledger generation requires an explicit ledger migrate to the current schema version")
         generation = self.root / GENERATIONS / pointer["generation"]
         # A coordinator operation may create an immutable dispatch and its status record in two
         # writes under one state lock.  Validate the container and audit here; validate the full
@@ -93,6 +97,8 @@ class LifecycleLedger:
         """Create the first empty generation; never reinterpret legacy records implicitly."""
         pointer = self.pointer()
         if pointer is not None:
+            if pointer["version"] != LEDGER_VERSION:
+                raise LedgerError("ledger generation requires an explicit ledger migrate to the current schema version")
             return pointer
         if self._legacy_records_present():
             raise LedgerError("legacy lifecycle state requires an explicit ledger migrate")
@@ -103,6 +109,11 @@ class LifecycleLedger:
         pointer = self.pointer()
         if pointer is None:
             return {"version": 0, "generation": None, "legacy": self._legacy_records_present()}
+        if pointer["version"] != LEDGER_VERSION:
+            return {
+                "version": pointer["version"], "generation": pointer["generation"], "legacy": False,
+                "stale_schema": True,
+            }
         root = self.records_root()
         return {
             "version": pointer["version"],
@@ -112,23 +123,38 @@ class LifecycleLedger:
         }
 
     def migrate(self) -> dict[str, Any]:
+        """Explicitly select a current-schema generation, from legacy (pre-ledger) state or from an
+        older-schema generation already selected by an earlier harness version.  Either source is
+        validated tolerantly (its own, possibly incomplete, set of record directories); the new
+        generation it is copied into is always validated against the complete current schema before
+        its pointer is switched."""
         pointer = self.pointer()
-        if pointer is not None:
+        if pointer is not None and pointer["version"] == LEDGER_VERSION:
             return {"version": pointer["version"], "generation": pointer["generation"], "migrated": False}
-        self._validate_legacy()
-        generation = self._new_generation("migration")
+        if pointer is None and not self._legacy_records_present():
+            return {"version": 0, "generation": None, "migrated": False}
+        if pointer is None:
+            source_root = self.root
+            purpose = "migration"
+            audit_details: dict[str, Any] = {}
+        else:
+            source_root = self.root / GENERATIONS / pointer["generation"]
+            purpose = "schema-upgrade"
+            audit_details = {"previous_generation": pointer["generation"], "previous_version": pointer["version"]}
+        self._validate_legacy(source_root)
+        generation = self._new_generation(purpose)
         for directory in RECORD_DIRECTORIES:
-            source = self.root / directory
+            source = source_root / directory
             if source.exists():
                 shutil.copytree(source, generation / directory, dirs_exist_ok=True)
         self._validate_generation(generation)
         imported = {
-            path.relative_to(self.root).as_posix(): _digest(path)
+            path.relative_to(source_root).as_posix(): _digest(path)
             for directory in RECORD_DIRECTORIES
-            for path in sorted((self.root / directory).rglob("*"))
+            for path in sorted((source_root / directory).rglob("*"))
             if path.is_file()
         }
-        self._append_audit(generation, "migration", {"legacy_records": imported})
+        self._append_audit(generation, purpose, {**audit_details, "legacy_records": imported})
         self._validate_generation(generation)
         pointer = self._select(generation)
         return {"version": pointer["version"], "generation": pointer["generation"], "migrated": True}
@@ -292,9 +318,11 @@ class LifecycleLedger:
         path = generation / "audit" / f"{audit['audit_id']}.json"
         path.write_text(_canonical(audit), encoding="utf-8", newline="\n")
 
-    def _validate_legacy(self) -> None:
+    def _validate_legacy(self, root: Path) -> None:
+        """Tolerantly validate a migration source: legacy (pre-ledger) state, or an older-schema
+        generation that predates a record directory this schema version introduced."""
         for directory in RECORD_DIRECTORIES:
-            source = self.root / directory
+            source = root / directory
             if not source.exists():
                 continue
             if not source.is_dir():
@@ -302,8 +330,8 @@ class LifecycleLedger:
             self._validate_json_records(
                 source, "legacy lifecycle record", allow_non_json=directory in {"qa-artifacts", "reports"}
             )
-        self._validate_batch_plans(self.root)
-        self._validate_record_graph(self.root)
+        self._validate_batch_plans(root)
+        self._validate_record_graph(root)
 
     def _validate_generation(self, generation: Path, *, complete: bool = True) -> None:
         if not generation.is_dir():
