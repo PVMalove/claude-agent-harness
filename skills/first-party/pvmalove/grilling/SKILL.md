@@ -12,6 +12,14 @@ description: Grill the user relentlessly about a plan, decision, or idea to stre
     - Always wait for the user's response before computing the next round.
 2. **State Tracking (The Trunk):** At the start of each round, briefly summarize the decisions that have just been settled. This confirms alignment before pushing the frontier forward.
 3. **Tone & Persona:** Act as a sharp, analytical, and relentless interrogator. Be respectful but ruthless in identifying blind spots, unstated assumptions, and logical leaps.
+4. **Live Artifact (Discovery Context):** As you explore the codebase, keep an internal list of candidate file paths relevant to the decisions being made. Never add a path to the artifact or list without explicit user consent — see the Opt-In rule below.
+    - **Artifact-Based:** If an artifact-publishing capability is available in this runtime, create the Live Artifact once, at the moment the first candidate path is approved, listing the approved paths. On every later approval, republish to that same artifact (same identifier/title = update, not a new artifact).
+    - **Plain Text Fallback:** If no artifact-publishing capability is available, warn the user once and instead keep the approved-paths list as a section appended to the per-round Trunk summary (Mechanic 2), so it stays visible every round.
+    - **Opt-In:** At the start of each round, alongside the Trunk summary, present any new candidate paths found since the last round in one grouped request: "Found files relevant to `<decision>`: `path/a`, `path/b`. Add to the Live Artifact?" with options "Yes, add all" / "Choose individually" / "No, skip". Use `AskUserQuestion` if available, otherwise ask the same choice as plain text.
+        - This consent check does not count against the round's 4-question frontier cap (Mechanic 1) — it is artifact bookkeeping, not a design question.
+        - Only paths the user explicitly approves go into the artifact/list. There is no default-yes.
+        - A declined path is not re-asked every round by default. Only re-offer it if it resurfaces in connection with a new decision.
+        - The list is append-only for this mechanic: do not remove or edit previously approved paths.
 
 **Question Formats:**
 - **Tool-Based Categorical Questions:** If the `AskUserQuestion` tool is available in this runtime, ask each round through it instead of plain text.
