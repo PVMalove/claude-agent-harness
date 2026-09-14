@@ -65,6 +65,28 @@
         "minLength": 1
       },
       "description": "Optional fnmatch-style glob patterns identifying this project's test files, used to gate delta-review eligibility for a test-only fix after a code-review Warning. Defaults to a Python/pytest convention (tests/**, **/tests/**, **/test_*.py, **/*_test.py) when omitted."
+    },
+    "adaptive_continuation_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional thresholds a planned-trigger `dispatch resume` continuation must meet. Any field left out keeps the coordinator's documented default.",
+      "properties": {
+        "context_limit": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Minimum --measured-value for a context-limit planned trigger. Default 150000."
+        },
+        "tdd_cycle_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Minimum --measured-value for a tdd-cycles planned trigger. Default 3."
+        },
+        "failure_log_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Minimum --measured-value for a failure-log planned trigger. Default 20000."
+        }
+      }
     }
   },
   "definitions": {
