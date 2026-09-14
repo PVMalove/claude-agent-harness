@@ -19,13 +19,13 @@ from pathlib import Path
 from typing import Any
 
 
-LEDGER_VERSION = 2
-SUPPORTED_LEDGER_VERSIONS = (1, 2)
+LEDGER_VERSION = 3
+SUPPORTED_LEDGER_VERSIONS = (1, 2, 3)
 POINTER_NAME = "ledger.json"
 GENERATIONS = "generations"
 RECORD_DIRECTORIES = (
     "batches", "plans", "dispatches", "dispatch-status", "risk-assessments", "context-packages",
-    "reports", "qa-lane", "qa-artifacts", "audit",
+    "checkpoints", "reports", "qa-lane", "qa-artifacts", "audit",
 )
 
 

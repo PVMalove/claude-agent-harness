@@ -356,6 +356,42 @@ self-report, время последнего heartbeat, `silent_seconds` и пр
 QA-lease-expiry на любой dispatch, а не только на clean-room QA lane. Stale — блокер, который
 coordinator выносит человеку: сам он состояние по таймауту не меняет.
 
+### Checkpoint и новая worker session
+
+Write-роль (developer, database-migrations, messaging-integration) может растянуть один dispatch на
+несколько worker session, если весь TDD-цикл в одну сессию раздувает её контекст. Read-only роль
+(architect, qa, code-review) — не может: попытка checkpoint для неё отклоняется сразу.
+
+Вместо completion report текущая worker session фиксирует неитоговый checkpoint — отдельную,
+hashed ledger-запись, которую нельзя перепутать с отчётом:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . dispatch checkpoint \
+  --file checkpoint.json
+```
+
+`checkpoint.json` обязан содержать ровно: `dispatch_id`, `commit_sha`, `changed_files`,
+`remaining_definition_of_done` (подмножество DoD approved dispatch), `passing_checks` (в формате
+`checks_run` completion report, команды — из approved `verification_commands`), `risks`, `blockers`
+и `context_package_id` — ссылку на последний зарегистрированный для batch Context Package, либо
+литеральный `not applicable — no context package registered`, если для batch его пока нет. Никаких
+чужих полей: ни сырой истории чата, ни логов прежних неудачных попыток. `checkpoint` требует уже
+подтверждённого self-report, переводит dispatch-status в `checkpointed` и не трогает outcome enum
+(`completed`/`blocked`/`failed`) — этот enum остаётся только у completion report.
+
+Новая worker session для того же dispatch ID стартует явной командой coordinator-а — пока без
+автоматической политики:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . dispatch resume --dispatch <dispatch-id>
+```
+
+`resume` принимает только `checkpointed` dispatch, возвращает его в `dispatched` и отбрасывает
+предыдущий model self-report. Это значит, что новая сессия обязана заново пройти `dispatch
+self-report` и `dispatch heartbeat` — ровно так же, как при первом contact, — прежде чем следующий
+checkpoint или completion report будет принят. Круг замыкается тем же dispatch ID: checkpoint →
+`dispatch resume` → новая self-report/heartbeat → в итоге один completion report.
+
 ### Clean-room QA lane
 
 Одобренный `qa` dispatch выполняется самим coordinator в отдельном temporary Git worktree,
