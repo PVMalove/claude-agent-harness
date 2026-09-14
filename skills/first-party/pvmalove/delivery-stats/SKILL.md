@@ -25,6 +25,17 @@ python .harness/reporting/delivery_stats.py --repo . --epic <номер> \
 Add `--json` when the developer wants the raw numbers rather than the summary. `--rates <file>`
 overrides the rate card; `--base <ref>` overrides the diff base.
 
+Save a versioned baseline after a completed, comparable epic, then pass it when reporting the next
+one. The comparison appears in both the terminal/JSON report and the HTML dashboard:
+
+```bash
+python .harness/reporting/delivery_stats.py --repo . --epic <baseline-epic> \
+  --save-baseline docs/reports/epic-<baseline-epic>.baseline.json
+python .harness/reporting/delivery_stats.py --repo . --epic <current-epic> \
+  --baseline docs/reports/epic-<baseline-epic>.baseline.json \
+  --html docs/reports/epic-<current-epic>.html
+```
+
 ## Procedure
 
 1. **Resolve the epic.** The developer names it. If they name a child ticket instead, run it on that
@@ -36,10 +47,13 @@ overrides the rate card; `--base <ref>` overrides the diff base.
    `.harness/reporting/rates.example.json`, tell the developer to fill in their own rates, and report
    everything else meanwhile — do not invent a number, and do not quote a price you did not read from
    that file.
-3. **Run the tool** and write the dashboard under `docs/reports/`.
-4. **Report the summary** in this session: tickets closed, code volume, tokens by model, cache split,
+3. **Save or compare a baseline when useful.** Save only a completed epic that is comparable to the
+   one being assessed. The comparison preserves `exact` or `estimated` attribution for each provider
+   on both sides; a delta appears only when telemetry exists for both sides.
+4. **Run the tool** and write the dashboard under `docs/reports/`.
+5. **Report the summary** in this session: tickets closed, code volume, tokens by model, cache split,
    cost if priced, and the path to the HTML.
-5. **Carry the caveats through, do not smooth them over.** They are the point of the report:
+6. **Carry the caveats through, do not smooth them over.** They are the point of the report:
     - Claude Code work is attributed **exactly** — every transcript record carries its branch.
     - Codex work is attributed **approximately** — its logs carry no branch, only a working directory
       and a timestamp, so its totals cover this repository inside the epic's activity window and can
@@ -49,7 +63,7 @@ overrides the rate card; `--base <ref>` overrides the diff base.
     - An ADR counts as added only when the commit that first added the file belongs to one of the
       epic's pull requests, so a squash-merged pull request undercounts. Mention it only if the
       developer asks why a number looks low.
-6. **Offer to attach it.** The dashboard is a local file; posting it to the epic is the developer's
+7. **Offer to attach it.** The dashboard is a local file; posting it to the epic is the developer's
    call, not an automatic step.
 
 ## Boundaries

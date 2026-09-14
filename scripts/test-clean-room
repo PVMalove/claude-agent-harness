@@ -745,6 +745,9 @@ def _run(test_root: Path):
     adapter_path = orchestration_root / "orca_adapter.py"
     if not adapter_path.is_file():
         sys.exit("backend-orchestration Orca adapter missing")
+    contract_path = orchestration_root / "contract.py"
+    if not contract_path.is_file():
+        sys.exit("backend-orchestration shared contract module missing")
 
     fake_orca = test_root / "fake-orca.py"
     fake_orca_log = test_root / "fake-orca-log.jsonl"
@@ -804,6 +807,41 @@ else:
         "dependencies": ["approved project config"],
         "coordinator_approval": {"approved_by": "project coordinator", "approved_at": "2026-09-09T12:00:00Z"},
     }
+
+    # The portable policy contract is the shared public seam.  Model, zone and capability
+    # mistakes must be rejected before a coordinator or runtime adapter can interpret them.
+    contract_probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import copy, importlib.util, json, sys\n"
+                "from pathlib import Path\n"
+                "spec = importlib.util.spec_from_file_location('contract', sys.argv[1])\n"
+                "contract = importlib.util.module_from_spec(spec)\n"
+                "sys.modules[spec.name] = contract\n"
+                "spec.loader.exec_module(contract)\n"
+                "config = json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))\n"
+                "role = contract.load_role_manifest(Path(sys.argv[3]))\n"
+                "for mutate in (\n"
+                "  lambda value: value['assignment_plans']['developer']['runtimes']['codex'].__setitem__('model', 'invalid model'),\n"
+                "  lambda value: value['assignment_plans']['developer'].__setitem__('zone', 'missing-zone'),\n"
+                "  lambda value: value['provider_profiles']['backend-default'].__setitem__('capabilities', ['independent-verification']),\n"
+                "):\n"
+                "  invalid = copy.deepcopy(config); mutate(invalid)\n"
+                "  try: contract.resolve_assignment(invalid, role, 'developer', 'backend', 'codex')\n"
+                "  except contract.ContractError: pass\n"
+                "  else: raise SystemExit('contract accepted invalid assignment policy')\n"
+            ),
+            str(contract_path),
+            str(orchestration_config),
+            str(orchestration_root / "roles" / "developer.md"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if contract_probe.returncode != 0:
+        sys.exit(contract_probe.stderr or contract_probe.stdout or "shared contract policy probe failed")
     brief_path = test_root / "approved-dispatch.json"
     brief_path.write_text(json.dumps(approved_brief, indent=2) + "\n", encoding="utf-8")
 
@@ -979,6 +1017,92 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             env=coordinator_env,
         )
 
+    def lifecycle_records(state: Path) -> Path:
+        """Resolve the public ledger selector instead of reaching into a layout generation."""
+        pointer = state / "ledger.json"
+        if not pointer.is_file():
+            return state
+        return state / "generations" / json.loads(pointer.read_text(encoding="utf-8"))["generation"]
+
+    # State created before the versioned ledger existed remains a supported migration input.  The
+    # public CLI must validate a complete replacement generation before atomically selecting it,
+    # leave damaged input untouched, and never reset a live batch without an explicit confirmation.
+    legacy_ledger_state = test_root / "legacy-ledger-state"
+    legacy_batch_id = "batch-00000000-0000-0000-0000-000000000123"
+    legacy_plan = {
+        "batch_id": legacy_batch_id,
+        "created_at": "2026-09-14T10:00:00+00:00",
+        "base_commit": None,
+        "ticket": "#ledger",
+        "branch": "feature/issue-123-versioned-ledger",
+        "worktree": "issue-123-versioned-ledger",
+        "zone": "backend",
+        "definition_of_done": ["migrate the lifecycle state"],
+        "prohibited_changes": ["do not merge"],
+        "developer_verification_commands": ["echo test"],
+        "verification_commands": ["echo test"],
+        "required_gates": ["none"],
+        "dependencies": ["none"],
+    }
+    legacy_batch = {
+        **legacy_plan,
+        "state": "planned",
+        "dispatches": [],
+        "risk_assessments": [],
+        "risk_escalations": [],
+        "risk_reassessment_required": False,
+    }
+    (legacy_ledger_state / "batches").mkdir(parents=True)
+    (legacy_ledger_state / "plans").mkdir(parents=True)
+    (legacy_ledger_state / "batches" / f"{legacy_batch_id}.json").write_text(
+        json.dumps(legacy_batch, indent=2) + "\n", encoding="utf-8"
+    )
+    (legacy_ledger_state / "plans" / f"{legacy_batch_id}.json").write_text(
+        json.dumps(legacy_plan, indent=2) + "\n", encoding="utf-8"
+    )
+    migrated = coordinator_run("--state-dir", str(legacy_ledger_state), "ledger", "migrate")
+    if migrated.returncode != 0:
+        sys.exit("ledger rejected a valid legacy state: " + migrated.stderr)
+    migrated_record = json.loads(migrated.stdout)
+    if migrated_record["version"] != 1 or not migrated_record["generation"].startswith("generation-"):
+        sys.exit("ledger migration did not select a versioned generation")
+    ledger_status = coordinator_run("--state-dir", str(legacy_ledger_state), "ledger", "status")
+    if ledger_status.returncode != 0 or json.loads(ledger_status.stdout)["generation"] != migrated_record["generation"]:
+        sys.exit("ledger status did not expose the selected generation")
+    migrated_batch = legacy_ledger_state / "generations" / migrated_record["generation"] / "batches" / f"{legacy_batch_id}.json"
+    if not migrated_batch.is_file() or migrated_batch.read_bytes() != (legacy_ledger_state / "batches" / f"{legacy_batch_id}.json").read_bytes():
+        sys.exit("ledger migration did not preserve the immutable legacy batch record")
+    if coordinator_run("--state-dir", str(legacy_ledger_state), "ledger", "reset").returncode == 0:
+        sys.exit("ledger reset did not require explicit confirmation")
+    reset = coordinator_run("--state-dir", str(legacy_ledger_state), "ledger", "reset", "--confirm", "RESET")
+    if reset.returncode != 0 or json.loads(reset.stdout)["generation"] == migrated_record["generation"]:
+        sys.exit("ledger reset did not atomically select a fresh generation")
+
+    damaged_ledger_state = test_root / "damaged-ledger-state"
+    (damaged_ledger_state / "batches").mkdir(parents=True)
+    (damaged_ledger_state / "batches" / "batch-damaged.json").write_text("{ not JSON", encoding="utf-8")
+    damaged = coordinator_run("--state-dir", str(damaged_ledger_state), "ledger", "migrate")
+    if damaged.returncode == 0 or (damaged_ledger_state / "ledger.json").exists():
+        sys.exit("ledger migration accepted damaged state or switched it into service")
+
+    incomplete_ledger_state = test_root / "incomplete-ledger-state"
+    (incomplete_ledger_state / "batches").mkdir(parents=True)
+    (incomplete_ledger_state / "plans").mkdir(parents=True)
+    incomplete_batch = dict(legacy_batch)
+    incomplete_batch["dispatches"] = [{
+        "dispatch_id": "dispatch-00000000-0000-0000-0000-000000000123",
+        "role": "architect", "state": "approved", "brief_sha256": "missing-evidence",
+    }]
+    (incomplete_ledger_state / "batches" / f"{legacy_batch_id}.json").write_text(
+        json.dumps(incomplete_batch, indent=2) + "\n", encoding="utf-8"
+    )
+    (incomplete_ledger_state / "plans" / f"{legacy_batch_id}.json").write_text(
+        json.dumps(legacy_plan, indent=2) + "\n", encoding="utf-8"
+    )
+    incomplete = coordinator_run("--state-dir", str(incomplete_ledger_state), "ledger", "migrate")
+    if incomplete.returncode == 0 or (incomplete_ledger_state / "ledger.json").exists():
+        sys.exit("ledger migration accepted incomplete dispatch evidence")
+
     baseline_file = orchestration_project / "README.md"
     baseline_file.write_text("clean-room baseline\n", encoding="utf-8")
     # The QA lane runs this project's own verification command verbatim. Keep that command
@@ -1033,7 +1157,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if cancelled.returncode != 0 or json.loads(cancelled.stdout)["state"] != "cancelled":
         sys.exit("coordinator could not cancel an approved but unsent dispatch: " + cancelled.stderr)
     cancelled_batch = json.loads(
-        (implicit_transport_state / "batches" / f"{implicit_batch}.json").read_text(encoding="utf-8")
+        (lifecycle_records(implicit_transport_state) / "batches" / f"{implicit_batch}.json").read_text(encoding="utf-8")
     )
     if cancelled_batch["state"] != "awaiting-approval" or cancelled_batch["dispatches"][0]["state"] != "cancelled":
         sys.exit("dispatch cancellation did not preserve an awaiting-approval batch audit trail")
@@ -1071,7 +1195,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "--approved-at", "2026-09-09T12:00:00Z",
     )
     if approved_batch.returncode != 0 or json.loads(approved_batch.stdout)["state"] != "awaiting-approval":
-        sys.exit("coordinator did not move the batch to awaiting-approval")
+        sys.exit("coordinator did not move the batch to awaiting-approval: " + approved_batch.stderr + approved_batch.stdout)
 
     # The architect gate is a hard ordering rule, not a convention: no developer brief exists for a
     # batch until an architect report for it has been accepted.
@@ -1097,6 +1221,9 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     architect_sent = coordinator_run("dispatch", "send", "--dispatch", architect_id, "--adapter", str(fake_adapter))
     if architect_sent.returncode != 0:
         sys.exit("coordinator rejected the architect handoff: " + architect_sent.stderr)
+    active_reset = coordinator_run("ledger", "reset", "--confirm", "RESET")
+    if active_reset.returncode == 0 or "active" not in active_reset.stderr:
+        sys.exit("ledger reset did not reject an active batch")
 
     architect_report_file = test_root / "architect-report.json"
     architect_payload = {
@@ -1118,7 +1245,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
 
     # A dispatch proves it is alive twice over: once by naming the model it is actually running, and
     # then by heartbeat.  Both are watched by the coordinator, whatever transport carried the brief.
-    stale_status_path = state_root / "dispatch-status" / f"{architect_id}.json"
+    stale_status_path = lifecycle_records(state_root) / "dispatch-status" / f"{architect_id}.json"
     live_status = json.loads(stale_status_path.read_text(encoding="utf-8"))
     stale_status_path.write_text(
         json.dumps(dict(live_status, heartbeat_at="2000-01-01T00:00:00+00:00"), indent=2) + "\n",
@@ -1150,7 +1277,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "--approved-by", "project coordinator", "--approved-at", "2026-09-09T12:00:50Z",
     )
     if accepted_architect.returncode != 0 or json.loads(accepted_architect.stdout)["next_action"] != "developer":
-        sys.exit("accepted architect report did not prepare the developer dispatch")
+        sys.exit("accepted architect report did not prepare the developer dispatch: " + accepted_architect.stderr + accepted_architect.stdout)
     fake_adapter_log.unlink(missing_ok=True)
 
     dispatch = coordinator_run(
@@ -1161,7 +1288,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("coordinator rejected a valid approved dispatch: " + dispatch.stderr)
     dispatch_record = json.loads(dispatch.stdout)
     dispatch_id = dispatch_record["dispatch_id"]
-    brief_file = state_root / "dispatches" / f"{dispatch_id}.json"
+    brief_file = lifecycle_records(state_root) / "dispatches" / f"{dispatch_id}.json"
     brief_bytes = brief_file.read_bytes()
     if dispatch_record["state"] != "approved" or dispatch_record["brief"]["role"] != "developer":
         sys.exit("coordinator did not create an approved developer dispatch")
@@ -1229,8 +1356,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     report_result = json.loads(reported.stdout)
     if report_result["state"] != "reported":
         sys.exit("coordinator did not leave the dispatch at reported")
-    stored_report = state_root / "reports" / f"{dispatch_id}.json"
-    stored_markdown = state_root / "reports" / f"{dispatch_id}.md"
+    stored_report = lifecycle_records(state_root) / "reports" / f"{dispatch_id}.json"
+    stored_markdown = lifecycle_records(state_root) / "reports" / f"{dispatch_id}.md"
     if not stored_report.is_file() or not stored_markdown.is_file():
         sys.exit("coordinator did not store canonical JSON and Markdown report")
     if json.loads(stored_report.read_text(encoding="utf-8")) != report_payload:
@@ -1317,7 +1444,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if review_sent.returncode != 0:
         sys.exit("coordinator rejected a correctly pinned review checkout: " + review_sent.stderr)
     runtime_review = adapter_run(
-        state_root / "dispatches" / f"{review_id}.json", repo=mismatched_checkout
+        lifecycle_records(state_root) / "dispatches" / f"{review_id}.json", repo=mismatched_checkout
     )
     if runtime_review.returncode != 0:
         sys.exit("Orca adapter rejected the coordinator review brief: " + runtime_review.stderr)
@@ -1354,7 +1481,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     review_report_result = coordinator_run("report", "submit", "--file", str(review_report_file))
     if review_report_result.returncode != 0:
         sys.exit("coordinator rejected a valid composite review report: " + review_report_result.stderr)
-    review_markdown = (state_root / "reports" / f"{review_id}.md").read_text(encoding="utf-8")
+    review_markdown = (lifecycle_records(state_root) / "reports" / f"{review_id}.md").read_text(encoding="utf-8")
     if "Review Standards severity: warning" not in review_markdown or "Review Spec severity: clean" not in review_markdown:
         sys.exit("Markdown review projection did not preserve both independent axes")
     if coordinator_run(
@@ -1384,7 +1511,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     )
     if coordinator_run(*qa_evidence).returncode == 0:
         sys.exit("QA evidence validation accepted a candidate without a QA report")
-    queue_root = state_root / "qa-lane" / "queue"
+    queue_root = lifecycle_records(state_root) / "qa-lane" / "queue"
     queue_root.mkdir(parents=True, exist_ok=True)
     prior_queue = queue_root / "00000000000000000001-dispatch-00000000-0000-0000-0000-000000000000.json"
     prior_queue.write_text(json.dumps({
@@ -1392,14 +1519,14 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "sequence": 1,
         "queued_at": "2026-09-09T12:05:20+00:00",
     }) + "\n", encoding="utf-8")
-    (state_root / "qa-lane" / "sequence.json").write_text('{"next": 2}\n', encoding="utf-8")
+    (lifecycle_records(state_root) / "qa-lane" / "sequence.json").write_text('{"next": 2}\n', encoding="utf-8")
     queued = coordinator_run("qa", "run", "--dispatch", qa_id)
     if queued.returncode != 0 or json.loads(queued.stdout).get("state") != "queued":
         sys.exit("QA runner did not leave a later request visibly queued")
     lane_status = coordinator_run("qa", "status")
     if lane_status.returncode != 0 or len(json.loads(lane_status.stdout)["queue"]) != 2:
         sys.exit("QA lane status did not expose FIFO queue entries")
-    lease_path = state_root / "qa-lane" / "lease.json"
+    lease_path = lifecycle_records(state_root) / "qa-lane" / "lease.json"
     lease_path.write_text(json.dumps({
         "dispatch_id": "dispatch-00000000-0000-0000-0000-000000000000",
         "host": "stale-host",
@@ -1640,12 +1767,12 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if "project-architect-model" not in mismatched.stderr:
         sys.exit("coordinator did not name the approved model in the mismatch: " + mismatched.stderr)
     blocked_status = json.loads(
-        (mismatch_state / "dispatch-status" / f"{mismatch_dispatch}.json").read_text(encoding="utf-8")
+        (lifecycle_records(mismatch_state) / "dispatch-status" / f"{mismatch_dispatch}.json").read_text(encoding="utf-8")
     )
     if blocked_status["state"] != "blocked" or blocked_status["model_self_report"]["match"] is not False:
         sys.exit("a mismatched model self-report did not block its dispatch")
     if json.loads(
-        (mismatch_state / "batches" / f"{mismatch_batch}.json").read_text(encoding="utf-8")
+        (lifecycle_records(mismatch_state) / "batches" / f"{mismatch_batch}.json").read_text(encoding="utf-8")
     )["state"] != "blocked":
         sys.exit("a mismatched model self-report did not block its batch")
 
@@ -1705,13 +1832,13 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("coordinator could not abandon an undecidable batch: " + abandoned.stderr)
     if json.loads(abandoned.stdout)["abandoned_dispatches"] != [wedged_dispatch]:
         sys.exit("abandonment did not name the dispatch it closed")
-    record = json.loads((wedge_state / "batches" / f"{wedged_batch}.json").read_text(encoding="utf-8"))
+    record = json.loads((lifecycle_records(wedge_state) / "batches" / f"{wedged_batch}.json").read_text(encoding="utf-8"))
     if record["state"] != "failed" or record["abandoned"]["reason"] != "orca worker died before the model self-report":
         sys.exit("abandonment did not record its reason beside the approval: " + json.dumps(record["abandoned"]))
     if [item["state"] for item in record["dispatches"]] != ["abandoned"]:
         sys.exit("abandonment left the stuck dispatch open")
     if json.loads(
-        (wedge_state / "dispatch-status" / f"{wedged_dispatch}.json").read_text(encoding="utf-8")
+        (lifecycle_records(wedge_state) / "dispatch-status" / f"{wedged_dispatch}.json").read_text(encoding="utf-8")
     )["state"] != "abandoned":
         sys.exit("abandonment did not close the dispatch's own status record")
     if coordinator_run(
@@ -1721,9 +1848,9 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("coordinator abandoned a fully closed batch a second time")
     # Repair case: a batch whose state was moved by hand without closing what it held. The open
     # dispatch would otherwise be surfaced as live for ever.
-    hand_edited = json.loads((wedge_state / "batches" / f"{wedged_batch}.json").read_text(encoding="utf-8"))
+    hand_edited = json.loads((lifecycle_records(wedge_state) / "batches" / f"{wedged_batch}.json").read_text(encoding="utf-8"))
     hand_edited["dispatches"][0]["state"] = "dispatched"
-    (wedge_state / "batches" / f"{wedged_batch}.json").write_text(
+    (lifecycle_records(wedge_state) / "batches" / f"{wedged_batch}.json").write_text(
         json.dumps(hand_edited, ensure_ascii=False, indent=2) + chr(10), encoding="utf-8"
     )
     repaired = coordinator_run(
@@ -1734,7 +1861,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if repaired.returncode != 0:
         sys.exit("coordinator cannot close a dispatch left open on a terminal batch: " + repaired.stderr)
     if json.loads(
-        (wedge_state / "batches" / f"{wedged_batch}.json").read_text(encoding="utf-8")
+        (lifecycle_records(wedge_state) / "batches" / f"{wedged_batch}.json").read_text(encoding="utf-8")
     )["dispatches"][0]["state"] != "abandoned":
         sys.exit("repair did not close the dangling dispatch")
     # Closing the old batch is what frees the ticket to be started clean.
@@ -1827,7 +1954,9 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     # delivery-stats reads local session logs and git history and must never invent a figure: a
     # missing rate card, a missing runtime log and an unattributable Codex session each have to come
     # back as "no data" rather than as zero.
-    stats_cli = ROOT / "harness" / "reporting" / "delivery_stats.py"
+    # Run the resource from an actually installed pvmalove-suite harness, not the source tree.
+    # This keeps delivery-stats coverage on the installed-harness seam it promises to users.
+    stats_cli = pv_project / ".harness" / "reporting" / "delivery_stats.py"
     if not stats_cli.is_file():
         sys.exit("delivery-stats CLI missing")
     stats_repo = test_root / "stats_project"
@@ -1902,11 +2031,11 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                                 "info": {"last_token_usage": {"input_tokens": 5000, "output_tokens": 5000}}}}) + "\n",
         encoding="utf-8")
 
-    def stats_run(*arguments):
+    def stats_run(*arguments, claude_projects=claude_dir):
         return subprocess.run(
             [sys.executable, str(stats_cli), "--repo", str(stats_repo), "--epic", "7",
              "--tickets", "7", "--home", str(test_root / "stats-home"),
-             "--claude-projects", str(claude_dir), "--json", *arguments],
+             "--claude-projects", str(claude_projects), "--json", *arguments],
             capture_output=True, text=True, encoding="utf-8",
         )
 
@@ -1935,11 +2064,63 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if codex["models"]["codex-model"]["output_tokens"] != 60:
         sys.exit("delivery-stats double-counted a repeated Codex ordinal or read another repository")
 
+    # A saved report is a portable baseline for a later, comparable epic.  Comparison must retain
+    # the provenance of both sides: exact Claude branch attribution, estimated Codex window
+    # attribution, and missing telemetry must never become a numeric zero or a computed delta.
+    baseline_path = test_root / "delivery-stats-baseline.json"
+    saved = stats_run("--save-baseline", str(baseline_path))
+    if saved.returncode != 0:
+        sys.exit("delivery-stats could not save a baseline: " + saved.stderr)
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    if baseline.get("schema_version") != 1:
+        sys.exit("delivery-stats saved baseline without a versioned contract")
+    compared = stats_run("--baseline", str(baseline_path))
+    if compared.returncode != 0:
+        sys.exit("delivery-stats could not compare a saved baseline: " + compared.stderr)
+    comparison = json.loads(compared.stdout).get("comparison")
+    if not isinstance(comparison, dict):
+        sys.exit("delivery-stats did not add comparison data to the current report")
+    if comparison["baseline"]["providers"]["claude"]["attribution"] != "exact":
+        sys.exit("delivery-stats lost exact attribution on the baseline")
+    if comparison["current"]["providers"]["codex"]["attribution"] != "estimated":
+        sys.exit("delivery-stats lost estimated attribution on the current report")
+    missing_baseline = json.loads(json.dumps(baseline))
+    missing_baseline["providers"]["codex"] = {"status": "нет данных", "reason": "fixture missing telemetry"}
+    missing_path = test_root / "delivery-stats-missing-baseline.json"
+    missing_path.write_text(json.dumps(missing_baseline), encoding="utf-8")
+    missing_compared = stats_run("--baseline", str(missing_path))
+    if missing_compared.returncode != 0:
+        sys.exit("delivery-stats failed while comparing missing telemetry: " + missing_compared.stderr)
+    missing_comparison = json.loads(missing_compared.stdout)["comparison"]
+    if missing_comparison["baseline"]["providers"]["codex"]["status"] != "нет данных":
+        sys.exit("delivery-stats invented telemetry for a missing baseline provider")
+    if missing_comparison["delta"]["providers"]["codex"] != "нет данных":
+        sys.exit("delivery-stats calculated a delta from missing telemetry")
+
+    incomplete_dir = test_root / "stats-home" / ".claude" / "projects" / "incomplete"
+    incomplete_dir.mkdir()
+    (incomplete_dir / "incomplete.jsonl").write_text(
+        json.dumps({
+            "type": "assistant", "gitBranch": "feature/issue-7-widget", "sessionId": "incomplete",
+            "timestamp": "2026-01-01T12:00:00.000Z", "cwd": str(stats_repo),
+            "message": {"model": "model-a", "usage": {"input_tokens": 100}},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    incomplete_path = test_root / "delivery-stats-incomplete-baseline.json"
+    incomplete = stats_run("--save-baseline", str(incomplete_path), claude_projects=incomplete_dir)
+    if incomplete.returncode != 0:
+        sys.exit("delivery-stats failed while recording incomplete provider telemetry: " + incomplete.stderr)
+    incomplete_baseline = json.loads(incomplete_path.read_text(encoding="utf-8"))
+    if incomplete_baseline["providers"]["claude"]["status"] != "нет данных":
+        sys.exit("delivery-stats converted incomplete Claude telemetry into a numeric baseline")
+    shutil.rmtree(incomplete_dir)
+
     # An untouched template is all zeros. Reporting its total as a real 0.00 would assert a number
     # nobody supplied, so the whole section has to read as missing and name the file to fill in.
     template = test_root / "stats-rates-template.json"
     template.write_text(
-        (ROOT / "harness" / "reporting" / "rates.example.json").read_text(encoding="utf-8"), encoding="utf-8"
+        (stats_cli.parent / "rates.example.json").read_text(encoding="utf-8"), encoding="utf-8"
     )
     blank = stats_run("--rates", str(template))
     if blank.returncode != 0:
@@ -1956,7 +2137,9 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                    # Present but left at zero: "not stated", never "free".
                    "model-b": {"input": 0.0, "output": 0.0}},
     }) + "\n", encoding="utf-8")
-    priced = stats_run("--rates", str(rates_file), "--html", str(test_root / "stats.html"))
+    priced = stats_run(
+        "--rates", str(rates_file), "--baseline", str(baseline_path), "--html", str(test_root / "stats.html")
+    )
     if priced.returncode != 0:
         sys.exit("delivery-stats failed with a rate card: " + priced.stderr)
     cost = json.loads(priced.stdout)["cost"]
@@ -1970,6 +2153,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("delivery-stats dashboard is not self-contained")
     if "оценка" not in dashboard:
         sys.exit("delivery-stats dashboard does not label the estimated Codex figure")
+    if "Сравнение baseline" not in dashboard or "exact" not in dashboard or "estimated" not in dashboard:
+        sys.exit("delivery-stats dashboard does not render comparison attribution for both sides")
 
     empty_home = test_root / "stats-empty-home"
     empty_home.mkdir()

@@ -28,6 +28,7 @@ if sys.version_info < MIN_PYTHON:
     raise SystemExit(1)
 
 MISSING = "нет данных"
+BASELINE_SCHEMA_VERSION = 1
 CLAUDE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 CODEX_FIELDS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens")
 # Pseudo-models the runtime writes for locally generated messages; never billed.
@@ -442,6 +443,7 @@ def claude_usage(project_dirs: list, numbers: set) -> dict:
     quota: Any = None
     turns = 0
     synthetic = 0
+    incomplete_telemetry = False
 
     transcripts = [path for directory in project_dirs for path in sorted(directory.glob("*.jsonl"))]
     for transcript in transcripts:
@@ -454,13 +456,17 @@ def claude_usage(project_dirs: list, numbers: set) -> dict:
             if record.get("type") != "assistant" or not isinstance(message, dict):
                 continue
             usage = message.get("usage")
-            if not isinstance(usage, dict):
-                continue
             if message.get("model") in NON_BILLABLE_MODELS or record.get("isApiErrorMessage"):
                 # Locally generated notices ("you've hit your session limit"), not API turns: their
                 # usage is all zeros and no rate card can ever price them. Counting them would add a
                 # pseudo-model to the breakdown and to the unpriced list for no reason.
                 synthetic += 1
+                continue
+            if not isinstance(usage, dict) or any(
+                not isinstance(usage.get(field), int) or isinstance(usage.get(field), bool)
+                for field in CLAUDE_FIELDS
+            ):
+                incomplete_telemetry = True
                 continue
             turns += 1
             sessions.add(record.get("sessionId") or transcript.stem)
@@ -485,6 +491,8 @@ def claude_usage(project_dirs: list, numbers: set) -> dict:
             if isinstance(limits, dict) and limits:
                 quota = limits
 
+    if incomplete_telemetry:
+        return {"status": MISSING, "reason": "неполная telemetry Claude Code на ветках этих тикетов"}
     if not turns:
         return {"status": MISSING, "reason": "нет ходов Claude Code на ветках этих тикетов"}
     return {
@@ -522,12 +530,14 @@ def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple) -> dic
     sessions: set = set()
     rate_limits: Any = None
     turns = 0
+    incomplete_telemetry = False
 
     for transcript in sorted(sessions_root.rglob("rollout-*.jsonl")):
         current_model = "unknown"
         in_repo = False
         counted: set = set()
         pending: list = []
+        transcript_incomplete = False
         for record in _read_jsonl(transcript):
             payload = record.get("payload")
             payload = payload if isinstance(payload, dict) else {}
@@ -549,13 +559,22 @@ def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple) -> dic
             info = payload.get("info")
             info = info if isinstance(info, dict) else {}
             delta = info.get("last_token_usage")
-            if not isinstance(delta, dict):
+            if not isinstance(delta, dict) or any(
+                not isinstance(delta.get(field), int) or isinstance(delta.get(field), bool)
+                for field in CODEX_FIELDS
+            ):
+                transcript_incomplete = True
                 continue
             pending.append((current_model, delta))
             limits = record.get("rate_limits") or payload.get("rate_limits")
             if isinstance(limits, dict) and limits:
                 rate_limits = limits
-        if not in_repo or not pending:
+        if not in_repo:
+            continue
+        if transcript_incomplete:
+            incomplete_telemetry = True
+            continue
+        if not pending:
             continue
         sessions.add(transcript.stem)
         for model, delta in pending:
@@ -566,6 +585,8 @@ def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple) -> dic
                 bucket[field] += _int(delta.get(field))
             bucket["reasoning_output_tokens"] += _int(delta.get("reasoning_output_tokens"))
 
+    if incomplete_telemetry:
+        return {"status": MISSING, "reason": "неполная telemetry Codex по этому репозиторию внутри окна"}
     if not turns:
         return {"status": MISSING, "reason": "нет ходов Codex по этому репозиторию внутри окна"}
     return {
@@ -714,6 +735,105 @@ def cache_split(claude: dict) -> Any:
     }
 
 
+def _provider_snapshot(usage: dict, input_fields: tuple[str, ...]) -> dict:
+    """The comparable provider telemetry from one report, without filling absent data with zero."""
+    if usage.get("status") != "ok":
+        return {"status": MISSING, "reason": usage.get("reason", MISSING)}
+    models = usage.get("models")
+    if not isinstance(models, dict):
+        return {"status": MISSING, "reason": "в отчёте нет telemetry по моделям"}
+    fields = (*input_fields, "output_tokens")
+    if not models or any(
+        not isinstance(bucket, dict)
+        or any(not isinstance(bucket.get(field), int) or isinstance(bucket.get(field), bool) for field in fields)
+        for bucket in models.values()
+    ):
+        return {"status": MISSING, "reason": "в отчёте неполная telemetry по моделям"}
+    input_tokens = sum(sum(_int(bucket.get(field)) for field in input_fields) for bucket in models.values())
+    output_tokens = sum(_int(bucket.get("output_tokens")) for bucket in models.values())
+    return {
+        "status": "ok",
+        "attribution": usage.get("attribution", MISSING),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
+
+
+def baseline_snapshot(report: dict) -> dict:
+    """Make the small, versioned baseline contract that later reports can compare."""
+    epic = report["epic"]
+    return {
+        "schema_version": BASELINE_SCHEMA_VERSION,
+        "generated_at": report["generated_at"],
+        "repository": report["repository"],
+        "epic": {"number": epic.get("number"), "title": epic.get("title", MISSING)},
+        "providers": {
+            "claude": _provider_snapshot(report["claude"], CLAUDE_FIELDS[:3]),
+            "codex": _provider_snapshot(report["codex"], ("input_tokens",)),
+        },
+    }
+
+
+def load_baseline(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise StatsError(f"не прочитать baseline: {path}: {exc}") from exc
+    except ValueError as exc:
+        raise StatsError(f"baseline не является JSON: {path}") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != BASELINE_SCHEMA_VERSION:
+        raise StatsError(f"baseline имеет неподдерживаемый формат: {path}")
+    if not isinstance(value.get("providers"), dict) or not isinstance(value.get("epic"), dict):
+        raise StatsError(f"baseline не содержит providers и epic: {path}")
+    for provider in ("claude", "codex"):
+        telemetry = value["providers"].get(provider)
+        if not isinstance(telemetry, dict):
+            raise StatsError(f"baseline не содержит telemetry {provider}: {path}")
+        if telemetry.get("status") == "ok" and any(
+            not isinstance(telemetry.get(field), int) or isinstance(telemetry.get(field), bool)
+            for field in ("input_tokens", "output_tokens", "total_tokens")
+        ):
+            raise StatsError(f"baseline содержит неполную telemetry {provider}: {path}")
+    return value
+
+
+def save_baseline(snapshot: dict, path: Path) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise StatsError(f"не сохранить baseline: {path}: {exc}") from exc
+
+
+def _provider_delta(baseline: object, current: object) -> Any:
+    if not isinstance(baseline, dict) or not isinstance(current, dict):
+        return MISSING
+    if baseline.get("status") != "ok" or current.get("status") != "ok":
+        return MISSING
+    return {
+        field: _int(current.get(field)) - _int(baseline.get(field))
+        for field in ("input_tokens", "output_tokens", "total_tokens")
+    }
+
+
+def compare_baseline(baseline: dict, current: dict) -> dict:
+    """Compare only source-backed telemetry and preserve each side's attribution evidence."""
+    providers = ("claude", "codex")
+    return {
+        "baseline": baseline,
+        "current": current,
+        "delta": {
+            "providers": {
+                provider: _provider_delta(
+                    baseline.get("providers", {}).get(provider), current.get("providers", {}).get(provider)
+                )
+                for provider in providers
+            }
+        },
+    }
+
+
 def build_report(args: argparse.Namespace) -> dict:
     repo = Path(args.repo).resolve()
     if not (repo / ".git").exists():
@@ -827,6 +947,30 @@ def render_terminal(report: dict) -> str:
     else:
         lines.append(f"  Codex: {codex.get('reason', MISSING)}")
 
+    comparison = report.get("comparison")
+    if isinstance(comparison, dict):
+        baseline = comparison.get("baseline", {})
+        current = comparison.get("current", {})
+        deltas = comparison.get("delta", {}).get("providers", {})
+        lines.append(
+            f"Сравнение: baseline эпика #{baseline.get('epic', {}).get('number', '?')} "
+            f"→ текущий эпик #{current.get('epic', {}).get('number', '?')}"
+        )
+        for provider, label in (("claude", "Claude"), ("codex", "Codex")):
+            before = baseline.get("providers", {}).get(provider, {})
+            after = current.get("providers", {}).get(provider, {})
+            delta = deltas.get(provider, MISSING)
+            if isinstance(before, dict) and before.get("status") == "ok":
+                before_text = f"{_compact(before.get('total_tokens'))} ({before.get('attribution', MISSING)})"
+            else:
+                before_text = MISSING
+            if isinstance(after, dict) and after.get("status") == "ok":
+                after_text = f"{_compact(after.get('total_tokens'))} ({after.get('attribution', MISSING)})"
+            else:
+                after_text = MISSING
+            delta_text = _compact(delta.get("total_tokens")) if isinstance(delta, dict) else MISSING
+            lines.append(f"  {label}: {before_text} → {after_text}; разница {delta_text}")
+
     cache = report["cache"]
     if isinstance(cache, dict):
         lines.append(
@@ -874,12 +1018,19 @@ def main() -> int:
         help="explicit transcript directory; repeatable when a project has more than one",
     )
     parser.add_argument("--codex-sessions", help="explicit Codex sessions directory")
+    parser.add_argument("--baseline", help="versioned baseline JSON saved by --save-baseline")
+    parser.add_argument("--save-baseline", help="write this report's comparable baseline JSON to a path")
     parser.add_argument("--html", help="write a standalone HTML dashboard to this path")
     parser.add_argument("--json", action="store_true", help="print the full report as JSON")
     args = parser.parse_args()
 
     try:
         report = build_report(args)
+        current_baseline = baseline_snapshot(report)
+        if args.baseline:
+            report["comparison"] = compare_baseline(load_baseline(Path(args.baseline)), current_baseline)
+        if args.save_baseline:
+            save_baseline(current_baseline, Path(args.save_baseline))
         if args.html:
             from render_html import write_dashboard  # local module, shipped beside this CLI
 

@@ -19,6 +19,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+MODULE_ROOT = Path(__file__).resolve().parent
+if str(MODULE_ROOT) not in sys.path:
+    sys.path.insert(0, str(MODULE_ROOT))
+from contract import ContractError, validate_brief_policy
+
 
 SENSITIVE_KEY = re.compile(r"(?:api[_-]?key|credential|password|secret|token)", re.IGNORECASE)
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
@@ -62,14 +67,6 @@ def _issue_branch_exists(repo: Path, branch: str) -> None:
         if result.returncode == 0:
             return
     raise DispatchError("approved issue branch does not exist locally or on origin")
-
-
-def _paths_within_zone(paths: list[str], zone_paths: list[str]) -> bool:
-    def inside(path: str, boundary: str) -> bool:
-        prefix = boundary[:-2] if boundary.endswith("**") else boundary
-        return path == boundary or path.startswith(prefix)
-
-    return all(any(inside(path, boundary) for boundary in zone_paths) for path in paths)
 
 
 def _resolved_commit(repo: Path, value: object) -> str:
@@ -124,121 +121,20 @@ def _reject_sensitive_keys(value: Any, location: str) -> None:
             _reject_sensitive_keys(child, f"{location}[{index}]")
 
 
-def _role_metadata(path: Path) -> dict[str, Any]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise DispatchError(f"role manifest {path.name!r} cannot be read") from exc
-    match = re.match(r"\A---\r?\n(?P<body>.*?)\r?\n---(?:\r?\n|$)", text, re.DOTALL)
-    if not match:
-        raise DispatchError(f"role manifest {path.name!r} has no valid frontmatter")
-
-    metadata: dict[str, Any] = {}
-    current_list: str | None = None
-    for line in match.group("body").splitlines():
-        if not line.strip():
-            continue
-        item = re.fullmatch(r"\s+-\s+(.+?)\s*", line)
-        if item:
-            if current_list is None:
-                raise DispatchError(f"role manifest {path.name!r} has an orphan list item")
-            metadata.setdefault(current_list, []).append(item.group(1))
-            continue
-        field = re.fullmatch(r"([a-z_]+):\s*(.*?)\s*", line)
-        if not field:
-            raise DispatchError(f"role manifest {path.name!r} has invalid frontmatter")
-        key, value = field.groups()
-        current_list = key if not value else None
-        metadata[key] = [] if not value else value
-    return metadata
-
-
 def _validate_brief(brief: dict[str, Any], repo: Path, config: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    _reject_sensitive_keys(brief, "dispatch brief")
-    approval = brief.get("coordinator_approval")
-    if not isinstance(approval, dict) or not _non_empty_string(approval.get("approved_by")) or not _non_empty_string(
-        approval.get("approved_at")
-    ):
-        raise DispatchError("dispatch brief requires coordinator_approval with approved_by and approved_at")
-    if brief.get("resolved_transport", "orca") != "orca":
-        raise DispatchError("dispatch brief selected the in-process transport and must not reach Orca")
-
-    for field in (
-        "ticket", "role", "zone", "branch", "worktree", "definition_of_done", "prohibited_changes",
-        "verification_commands", "required_gates", "dependencies",
-    ):
-        if field not in brief:
-            raise DispatchError(f"dispatch brief is missing {field!r}")
-    if not _non_empty_string(brief["ticket"]) or not _non_empty_string(brief["role"]):
-        raise DispatchError("dispatch brief ticket and role must be non-empty strings")
-    if not _non_empty_string(brief["zone"]) or not _non_empty_string(brief["branch"]):
-        raise DispatchError("dispatch brief zone and branch must be non-empty strings")
-    if not _non_empty_string(brief["worktree"]):
-        raise DispatchError("dispatch brief worktree must be a non-empty string")
-    if not isinstance(brief["definition_of_done"], list) or not all(_non_empty_string(item) for item in brief["definition_of_done"]):
-        raise DispatchError("dispatch brief definition_of_done must be a non-empty list of strings")
-    if not isinstance(brief["prohibited_changes"], list) or not all(
-        _non_empty_string(item) for item in brief["prohibited_changes"]
-    ):
-        raise DispatchError("dispatch brief prohibited_changes must be a non-empty list of strings")
-    for field in ("verification_commands", "required_gates", "dependencies"):
-        if not isinstance(brief[field], list) or not all(_non_empty_string(item) for item in brief[field]):
-            raise DispatchError(f"dispatch brief {field} must be a list of strings")
-    expected_commands = config.get("verification_commands")
-    if brief.get("role") == "developer" and brief.get("purpose") == "work":
-        # The developer's focused loop is intentionally distinct from the full clean-room QA
-        # suite.  Old configs omit this field and retain the full list as their safe fallback.
-        expected_commands = config.get("developer_verification_commands", expected_commands)
-    if brief["verification_commands"] != expected_commands:
-        raise DispatchError("dispatch brief verification_commands must exactly match its project role configuration")
-
-    role_name = brief["role"]
-    role = _role_metadata(repo / ".harness" / "orchestration" / "roles" / f"{role_name}.md")
-    if role.get("name") != role_name or role.get("mode") not in {"write", "read-only"}:
-        raise DispatchError(f"dispatch brief references invalid role {role_name!r}")
-    if brief.get("access") != role["mode"]:
-        raise DispatchError(f"dispatch brief access must be {role['mode']!r} for role {role_name!r}")
-
-    project = _read_json(repo / ".harness" / "project.json", "project config")
-    branch = brief["branch"]
-    branch_pattern = project.get("branch_pattern", r"^feature/issue-[0-9]+-.+")
-    base_branch = project.get("base_branch", "master")
     try:
-        is_issue_branch = isinstance(branch_pattern, str) and re.fullmatch(branch_pattern, branch) is not None
-    except re.error as exc:
-        raise DispatchError("project config has an invalid branch_pattern") from exc
-    if branch.startswith("integration/") or branch == base_branch or not is_issue_branch:
-        raise DispatchError("dispatch brief branch must be an issue branch and never a protected or integration branch")
+        role, assignment = validate_brief_policy(
+            brief,
+            _read_json(repo / ".harness" / "project.json", "project config"),
+            config,
+            repo / ".harness" / "orchestration" / "roles",
+            expected_transport="orca",
+        )
+    except ContractError as exc:
+        raise DispatchError(str(exc)) from exc
 
-    assignments = config.get("assignment_plans")
-    zones = config.get("backend_zones")
-    if not isinstance(assignments, dict) or not isinstance(zones, dict):
-        raise DispatchError("project orchestration config has no valid assignment plans or backend zones")
-    plan = assignments.get(role_name)
-    if not isinstance(plan, dict) or plan.get("zone") != brief["zone"]:
-        raise DispatchError(f"dispatch brief zone does not match the project assignment for role {role_name!r}")
-    runtime_name = brief.get("resolved_runtime", "codex")
-    runtime_plans = plan.get("runtimes")
-    if not _non_empty_string(runtime_name) or not isinstance(runtime_plans, dict):
-        raise DispatchError("dispatch brief runtime does not match a project runtime assignment")
-    plan = runtime_plans.get(runtime_name)
-    if not isinstance(plan, dict):
-        raise DispatchError(f"dispatch brief runtime {runtime_name!r} is not assigned to role {role_name!r}")
-    zone = zones.get(brief["zone"])
-    if not isinstance(zone, dict) or not isinstance(zone.get("paths"), list) or not zone["paths"]:
-        raise DispatchError(f"dispatch brief references invalid zone {brief['zone']!r}")
-    assigned_paths = assignments[role_name].get("write_paths", zone["paths"])
-    if role["mode"] == "write" and (not isinstance(assigned_paths, list) or not assigned_paths):
-        raise DispatchError("write role assignment must declare valid write_paths")
-    if role["mode"] == "write" and not _paths_within_zone(assigned_paths, zone["paths"]):
-        raise DispatchError("write role assignment paths must remain inside its backend zone")
-    if role["mode"] == "write" and not isinstance(brief.get("write_paths"), list):
-        raise DispatchError("write dispatch must declare its one allowed zone paths")
-    if role["mode"] == "read-only" and brief.get("write_paths"):
-        raise DispatchError("read-only role cannot receive write paths")
-    if role["mode"] == "write" and brief["write_paths"] != assigned_paths:
-        raise DispatchError("write dispatch paths must exactly match its role assignment")
     candidate = brief.get("candidate_commit")
+    role_name = brief["role"]
     if role_name in {"code-review", "qa"} and candidate is None:
         raise DispatchError(f"{role_name} dispatch must pin candidate_commit")
     if candidate is not None:
@@ -256,7 +152,8 @@ def _validate_brief(brief: dict[str, Any], repo: Path, config: dict[str, Any]) -
                 raise DispatchError("review_base must be an ancestor of candidate_commit")
         if _candidate_files(repo, candidate, base) != scope:
             raise DispatchError("code-review review_scope does not match the pinned candidate diff")
-    return role, plan
+    return role, assignment["runtime_plan"]
+
 
 
 def _candidate_profiles(
