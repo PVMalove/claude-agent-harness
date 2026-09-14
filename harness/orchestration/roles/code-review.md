@@ -41,3 +41,14 @@ python .harness/skills/qa-gate/scripts/test_summary.py -- bash -lc '<approved co
 Keep the original approved command (not the wrapper invocation) in `checks_run`; use the wrapper's
 bounded summary as its evidence. A failing summary gives the sanitised local log path for the
 specific diagnostic; do not paste raw passing output into the review report.
+
+## Delta-review
+
+A dispatch brief carrying `delta_review_of` (a prior, retried code-review dispatch id) and
+`delta_review_axis` is a delta-review: the coordinator has already verified the fix diff since that
+prior review's candidate touches only test files and matches none of this role's risk triggers. Only
+`delta_review_axis` requires fresh analysis; the other axis must be reported exactly as inherited —
+`severity: clean`, `findings: []`, and `inherited_from` set to `delta_review_of` — citing the prior
+review's report as evidence instead of re-deriving it. This dispatch is always a new, independent
+session: it never resumes the prior review's session, and it forms its own judgment on the
+re-evaluated axis rather than assuming the fix is sufficient.
