@@ -412,6 +412,25 @@ batch до старта следующего. Ручной запуск по э�
 не меняй protected или integration branch.
 ```
 
+### Advisory tool call
+
+`.harness/orchestration/advisory.py` — дешёвый non-role CLI для чисто утилитарных подзадач:
+ранжирование файлов по keyword, сводка лога и грубая риск-подсказка. Он выполняется вне
+brief/report/self-report/heartbeat контракта: не является dispatch, не пишет ledger-запись и не
+импортирует `ledger.py`/`contract.py`/`coordinator.py`. Вывод эфемерен — печатается в stdout и
+пересчитывается заново при каждом вызове, нигде не сохраняется как ground truth для другого
+dispatch:
+
+```bash
+python .harness/orchestration/advisory.py rank-files --keyword payments -- services/payments/handler.py README.md
+python .harness/orchestration/advisory.py summarize-log --file qa-output.log
+python .harness/orchestration/advisory.py classify-risk --text "data migration for payments" --known-trigger data-migration
+```
+
+Его вывод — не авторизация. Coordinator/contract validation path не принимает advisory-вывод как
+основание создать dispatch, понизить риск, принять QA или изменить scope: единственный авторитетный
+источник риска остаётся `coordinator.py risk assess`.
+
 ## 5. Необязательный запуск через Orca
 
 `orca_adapter.py` — transport-only граница: он переводит **уже одобренный** JSON brief в Orca task и
