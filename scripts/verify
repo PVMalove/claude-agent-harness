@@ -224,6 +224,8 @@ def main():
     grep_contains(start_project, "until the owner confirms")
     grep_contains(start_project, "Prove each layer separately")
     grep_contains(integrate_project, "Audit is read-only")
+    grep_contains(ROOT / "docs" / "skills" / "implement.md", "module-owned guidance")
+    grep_contains(ROOT / "docs" / "skills" / "pilot.md", "самоотчёт роли не является token telemetry")
 
     run_ok([sys.executable, str(ROOT / "scripts" / "build-registry")])
     run_ok(["git", "-C", str(ROOT), "diff", "--exit-code", "--", "skills/REGISTRY.md"])
