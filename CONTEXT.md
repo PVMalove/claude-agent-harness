@@ -299,3 +299,12 @@ Project-owned выбор в assignment plan роли — исполнять её
 in-process субагент текущей сессии. Оба варианта подчиняются одному brief/report контракту и обязаны
 проходить model self-report.
 _Avoid_: жёсткая привязка роли к одному транспортному механизму.
+
+**Advisory output** (`harness/orchestration/advisory.py`):
+Эфемерный, неавторитетный результат дешёвого non-role tool call — ранжирование файлов, сводка лога
+или грубая риск-подсказка. Выполняется вне brief/report/self-report/heartbeat контракта, не создаёт
+dispatch и не пишет ledger-запись; пересчитывается заново при каждом вызове и нигде не хранится как
+ground truth. Coordinator/contract validation path не принимает его как основание создать dispatch,
+понизить риск, принять QA или изменить scope — эти решения остаются за ролью и человеком.
+_Avoid_: risk assessment (`coordinator.py risk assess` — ledger-owned и authoritative), Context
+Package, completion report.
