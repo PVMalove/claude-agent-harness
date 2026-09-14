@@ -26,6 +26,7 @@ from typing import Any, Iterator, Optional
 MODULE_ROOT = Path(__file__).resolve().parent
 if str(MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_ROOT))
+
 GATE_RUNNER_ROOT = MODULE_ROOT.parent / "gate_runner"
 if str(GATE_RUNNER_ROOT) not in sys.path:
     sys.path.insert(0, str(GATE_RUNNER_ROOT))
