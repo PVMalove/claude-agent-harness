@@ -89,6 +89,12 @@ CONTEXT_PACKAGE_FIELDS = {
     "context_package_id", "batch_id", "base_commit", "candidate_commit", "diff", "starting_files",
     "symbol_graph", "related_tests", "precedent_cards", "file_hashes", "size_bytes", "created_at",
 }
+CHECKPOINT_NO_CONTEXT_PACKAGE = "not applicable — no context package registered"
+CHECKPOINT_INPUT_FIELDS = {
+    "dispatch_id", "commit_sha", "changed_files", "remaining_definition_of_done", "passing_checks",
+    "risks", "blockers", "context_package_id",
+}
+CHECKPOINT_FIELDS = CHECKPOINT_INPUT_FIELDS | {"checkpoint_id", "batch_id", "created_at"}
 
 
 class CoordinatorError(Exception):
@@ -209,7 +215,7 @@ def _delete(path: Path, *, reason: str) -> None:
 
 
 def _safe_id(value: object, label: str) -> str:
-    if not isinstance(value, str) or re.fullmatch(r"(?:batch|dispatch|risk|context-package)-[0-9a-f-]+", value) is None:
+    if not isinstance(value, str) or re.fullmatch(r"(?:batch|dispatch|risk|context-package|checkpoint)-[0-9a-f-]+", value) is None:
         raise CoordinatorError(f"{label} is not a valid coordinator ID")
     return value
 
@@ -575,6 +581,10 @@ def _risk_path(root: Path, risk_id: str) -> Path:
 
 def _context_package_path(root: Path, package_id: str) -> Path:
     return _records_root(root) / "context-packages" / f"{_safe_id(package_id, 'context package')}.json"
+
+
+def _checkpoint_path(root: Path, checkpoint_id: str) -> Path:
+    return _records_root(root) / "checkpoints" / f"{_safe_id(checkpoint_id, 'checkpoint')}.json"
 
 
 def _plan_path(root: Path, batch_id: str) -> Path:
@@ -1847,6 +1857,140 @@ def heartbeat_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     return {"dispatch_id": dispatch["dispatch_id"], "state": status["state"], "heartbeat_at": moment}
 
 
+def _validate_checkpoint(
+    checkpoint: dict[str, Any], dispatch: dict[str, Any], role: dict[str, Any], repo: Path,
+    base_commit: str | None, root: Path, batch: dict[str, Any],
+) -> None:
+    _reject_sensitive(checkpoint, "checkpoint")
+    if set(checkpoint) != CHECKPOINT_INPUT_FIELDS:
+        raise CoordinatorError("checkpoint schema mismatch")
+    if checkpoint["dispatch_id"] != dispatch["dispatch_id"]:
+        raise CoordinatorError("checkpoint dispatch_id does not match the dispatched role")
+    if role["mode"] != "write":
+        raise CoordinatorError(
+            "a checkpoint is only valid for a write role; a read-only role cannot span multiple worker sessions"
+        )
+    for field in ("risks", "blockers"):
+        if not _non_empty(checkpoint[field]):
+            raise CoordinatorError(f"checkpoint {field} must be a non-empty string")
+    commit_sha = checkpoint["commit_sha"]
+    if not isinstance(commit_sha, str) or re.fullmatch(r"[0-9a-fA-F]{7,64}", commit_sha) is None:
+        raise CoordinatorError("checkpoint requires a commit_sha")
+    changed_files = _strings(checkpoint["changed_files"], "checkpoint changed_files", allow_empty=True)
+    paths = dispatch["write_paths"]
+    for changed_file in changed_files:
+        normalized = changed_file.replace("\\", "/")
+        if normalized.startswith("/") or ".." in Path(normalized).parts or not any(
+            fnmatchcase(normalized, pattern) for pattern in paths
+        ):
+            raise CoordinatorError("checkpoint changed_files must remain inside the approved zone")
+    resolved = _candidate_commit(repo, commit_sha)
+    actual_files = _changed_files_between(repo, base_commit, resolved) if base_commit else _commit_changed_files(repo, resolved)
+    if actual_files != changed_files:
+        raise CoordinatorError("checkpoint changed_files must exactly match commit_sha")
+    remaining = _strings(
+        checkpoint["remaining_definition_of_done"], "checkpoint remaining_definition_of_done", allow_empty=True
+    )
+    if not set(remaining) <= set(dispatch["definition_of_done"]):
+        raise CoordinatorError("checkpoint remaining_definition_of_done must be drawn from the dispatch definition_of_done")
+    passing_checks = checkpoint["passing_checks"]
+    if not isinstance(passing_checks, list):
+        raise CoordinatorError("checkpoint passing_checks must be a list")
+    for check in passing_checks:
+        if not isinstance(check, dict) or set(check) != {"command", "result", "evidence"}:
+            raise CoordinatorError("checkpoint passing_checks has an invalid entry")
+        if not all(_non_empty(check[field]) for field in ("command", "result", "evidence")):
+            raise CoordinatorError("checkpoint passing_checks entries must contain text evidence")
+        if check["command"] not in dispatch["verification_commands"]:
+            raise CoordinatorError("checkpoint passing_checks must reference an approved verification command")
+    package = _latest_context_package(root, batch)
+    if package is None:
+        if checkpoint["context_package_id"] != CHECKPOINT_NO_CONTEXT_PACKAGE:
+            raise CoordinatorError(
+                "checkpoint context_package_id must be the no-package sentinel; "
+                "the batch has no registered context package"
+            )
+    elif checkpoint["context_package_id"] != package["context_package_id"]:
+        raise CoordinatorError("checkpoint context_package_id must reference the batch's latest registered context package")
+
+
+def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    """Record a non-terminal checkpoint for an in-flight write-role dispatch so its worker session
+    can end here and a fresh session can resume the same dispatch later.
+
+    A checkpoint is deliberately not a completion report: it never touches the outcome enum or the
+    reporting path, and it is rejected outright for a read-only role, which may never span more
+    than one worker session."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    checkpoint = _read_object(Path(args.file).resolve(), "checkpoint")
+    with _state_lock(root):
+        dispatch, status = _live_status(root, checkpoint.get("dispatch_id"))
+        batch = _load_batch(root, dispatch["batch_id"])
+        _validate_batch_integrity(root, batch)
+        config = _config(repo)
+        _validate_dispatch(repo, config, root, batch, dispatch)
+        role = _role(repo, dispatch["role"])
+        entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
+        if not entry or entry.get("state") != "dispatched":
+            raise CoordinatorError("a checkpoint requires a dispatched role")
+        self_report = status.get("model_self_report")
+        if not isinstance(self_report, dict) or self_report.get("match") is not True:
+            raise CoordinatorError("a dispatched role must confirm its active model before checkpointing")
+        _validate_checkpoint(checkpoint, dispatch, role, repo, batch.get("base_commit"), root, batch)
+        record = {
+            "checkpoint_id": f"checkpoint-{uuid.uuid4()}",
+            "batch_id": batch["batch_id"],
+            "created_at": _now(),
+            **checkpoint,
+        }
+        _write_exclusive(_checkpoint_path(root, record["checkpoint_id"]), record)
+        entry["state"] = "checkpointed"
+        # Batch-level pointer, the same ownership pattern as risk_assessments/context_packages;
+        # dispatch_id is carried alongside since a checkpoint is dispatch-scoped, not batch-scoped.
+        batch.setdefault("checkpoints", []).append({
+            "checkpoint_id": record["checkpoint_id"],
+            "dispatch_id": dispatch["dispatch_id"],
+            "record_sha256": hashlib.sha256(_canonical(record).encode("utf-8")).hexdigest(),
+        })
+        _replace(_batch_path(root, batch["batch_id"]), batch)
+        moment = _now()
+        status.update({"state": "checkpointed", "updated_at": moment})
+        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), status)
+    return {"dispatch_id": dispatch["dispatch_id"], "state": "checkpointed", "checkpoint_id": record["checkpoint_id"]}
+
+
+def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    """Start a new worker session for a checkpointed dispatch, under the same dispatch ID.
+
+    The resumed session is put through the exact same liveness contract as a first session: its
+    prior model self-report is discarded, so `dispatch self-report` and `dispatch heartbeat` are
+    both mandatory again before any further checkpoint or completion report."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    with _state_lock(root):
+        dispatch = _load_dispatch(root, args.dispatch)
+        batch = _load_batch(root, dispatch["batch_id"])
+        _validate_batch_integrity(root, batch)
+        config = _config(repo)
+        _validate_dispatch(repo, config, root, batch, dispatch)
+        status = _load_dispatch_status(root, dispatch["dispatch_id"])
+        entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
+        if not entry or entry.get("state") != "checkpointed" or status.get("state") != "checkpointed":
+            raise CoordinatorError("only a checkpointed dispatch may start a new worker session")
+        entry["state"] = "dispatched"
+        _replace(_batch_path(root, batch["batch_id"]), batch)
+        moment = _now()
+        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
+            "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": moment,
+            "heartbeat_at": moment,
+        })
+    return {
+        "dispatch_id": dispatch["dispatch_id"], "state": "dispatched",
+        "next_role_action": "dispatch self-report",
+    }
+
+
 def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
     """Liveness view the coordinator session polls; a stale entry is a blocker to surface, never a
     reason for the coordinator to change state on its own."""
@@ -2495,6 +2639,16 @@ def parser() -> argparse.ArgumentParser:
     dispatch_heartbeat.add_argument("--dispatch", required=True)
     dispatch_heartbeat.add_argument("--note", default="none")
     dispatch_heartbeat.set_defaults(handler=heartbeat_dispatch)
+
+    dispatch_checkpoint = dispatch_commands.add_parser("checkpoint")
+    _common(dispatch_checkpoint)
+    dispatch_checkpoint.add_argument("--file", required=True)
+    dispatch_checkpoint.set_defaults(handler=checkpoint_dispatch)
+
+    dispatch_resume = dispatch_commands.add_parser("resume")
+    _common(dispatch_resume)
+    dispatch_resume.add_argument("--dispatch", required=True)
+    dispatch_resume.set_defaults(handler=resume_dispatch)
 
     dispatch_status_command = dispatch_commands.add_parser("status")
     _common(dispatch_status_command)
