@@ -12,7 +12,7 @@ catalog into every session.
 | `grill-me` | `skills/first-party/pvmalove/grill-me` | A relentless interview to sharpen a plan or design. |
 | `grill-with-docs` | `skills/first-party/pvmalove/grill-with-docs` | A relentless interview to sharpen a plan or design, which also creates docs (ADR's and glossary) as we go. |
 | `grilling` | `skills/first-party/pvmalove/grilling` | Grill the user relentlessly about a plan, decision, or idea to stress-test their thinking. Triggered when the user wants to validate a concept or uses 'grill' trigger phrases. |
-| `implement` | `skills/first-party/pvmalove/implement` | Implement a piece of work as a gated coordinator pipeline: architect, developer, code review, and independent QA. |
+| `implement` | `skills/first-party/pvmalove/implement` | Coordinate one backend ticket through the approved architect, developer, review, QA, and publish handoffs. |
 | `qa-gate` | `skills/first-party/pvmalove/qa-gate` | Run this project's full local quality gate (lint/typecheck/test commands from .harness/project.json) and report pass/fail. Use before opening a PR, or whenever asked to run the full check/test suite. |
 | `setup-labels` | `skills/first-party/pvmalove/setup-labels` | Create or update this repo's GitHub labels (workflow::*, hitl/afk, task-report::required, out-of-scope, wayfinder:*) to match docs/agents/triage-labels.md. Run once per repo before first use of triage, to-spec, to-tickets, implement, to-guide, or wayfinder. |
 | `to-guide` | `skills/first-party/pvmalove/to-guide` | Turn a hitl ticket or spec into a step-by-step manual implementation guide with ready-to-paste prompts for an AI IDE (Cursor, Copilot Chat). For tickets a human will code by hand, not an agent. |

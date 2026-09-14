@@ -26,8 +26,8 @@ observation period.
 For every closed ticket in the period, apply the same rules:
 
 - count every role start as a start, and count a retry as a new dispatch start;
-- attribute reported input and output tokens to the dispatch that produced them; mark token data as
-  missing when the execution environment does not report it;
+- attribute provider- or runtime-observed input and output tokens to the dispatch that produced
+  them; a role's self-report is never token telemetry, and unavailable data is marked missing;
 - record the quality gate's elapsed run time separately from any queue or waiting time;
 - link each post-integration defect to its batch, and apply the declared observation window and
   severity rule consistently;
@@ -39,7 +39,8 @@ For every closed ticket in the period, apply the same rules:
 Capture the following before closing the batch record:
 
 - batch and ticket IDs, roles started, dispatch IDs, and whether any dispatch was a retry;
-- token counts for each dispatch when available, with the source and missing-data note;
+- token counts for each dispatch only when provider or runtime telemetry is available, with its
+  source and missing-data note;
 - the quality-gate start and result timestamps, plus queue time when it is available;
 - the integration timestamp and any linked defect IDs observed during the declared window.
 
@@ -61,7 +62,7 @@ included.
 | Measurement | Required observation | Source / missing-data note |
 | --- | --- | --- |
 | Agent starts per closed ticket | Starts and retries for each closed ticket | Batch records and dispatch IDs |
-| Tokens per batch | Reported input and output tokens for every dispatch | Completion reports or execution records |
+| Tokens per batch | Provider- or runtime-observed input and output tokens for every dispatch | Telemetry or execution records; otherwise a missing-data note |
 | Quality-gate wall time | Gate start to result, with queue time separate | Quality-gate timestamps |
 | Post-integration defects | Linked defects in the declared window under the severity rule | Issue tracker and defect records |
 

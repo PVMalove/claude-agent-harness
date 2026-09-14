@@ -13,11 +13,9 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -28,7 +26,12 @@ from typing import Any, Iterator, Optional
 MODULE_ROOT = Path(__file__).resolve().parent
 if str(MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_ROOT))
+
+GATE_RUNNER_ROOT = MODULE_ROOT.parent / "gate_runner"
+if str(GATE_RUNNER_ROOT) not in sys.path:
+    sys.path.insert(0, str(GATE_RUNNER_ROOT))
 from contract import ContractError, load_role_manifest, resolve_assignment, validate_brief_policy
+from gate_runner import CleanRoomPolicy, GateRunnerError, concise_evidence, run_gate, sanitise
 from ledger import LedgerError, LifecycleLedger
 
 
@@ -47,9 +50,6 @@ REVIEW_SEVERITIES = {"none", "clean", "warning", "blocker"}
 FINDING_SEVERITIES = {"info", "warning", "blocker"}
 QA_LEASE_FIELDS = {"dispatch_id", "host", "pid", "acquired_at", "expires_at"}
 QA_QUEUE_FIELDS = {"dispatch_id", "sequence", "queued_at"}
-SENSITIVE_OUTPUT = re.compile(
-    r"(?i)\b(api[_-]?key|credential|password|secret|token)\b(\s*(?:[:=]|is)\s*)([^\s]+)"
-)
 PLAN_FIELDS = (
     "batch_id", "created_at", "base_commit", "ticket", "branch", "worktree", "zone", "definition_of_done",
     "prohibited_changes", "developer_verification_commands", "verification_commands", "required_gates", "dependencies",
@@ -587,14 +587,11 @@ def _silent_seconds(status: dict[str, Any]) -> int:
 
 
 def _sanitise(text: str) -> str:
-    return SENSITIVE_OUTPUT.sub(lambda match: f"{match.group(1)}{match.group(2)}<redacted>", text)
+    return sanitise(text)
 
 
 def _concise_evidence(text: str) -> str:
-    lines = [line.strip() for line in _sanitise(text).splitlines() if line.strip()]
-    if not lines:
-        return "no output"
-    return lines[0][:240]
+    return concise_evidence(text)
 
 
 def _load_batch(root: Path, batch_id: str) -> dict[str, Any]:
@@ -1755,37 +1752,17 @@ def run_qa(args: argparse.Namespace) -> dict[str, Any]:
         })
         _replace(_batch_path(root, batch["batch_id"]), batch)
 
-    worktree_root = Path(tempfile.mkdtemp(prefix="agent-harness-qa-"))
-    checkout = worktree_root / "checkout"
-    outputs: list[str] = []
-    checks: list[dict[str, str]] = []
     try:
-        result = subprocess.run(
-            ["git", "-C", str(repo), "worktree", "add", "--detach", str(checkout), dispatch["candidate_commit"]],
-            capture_output=True, text=True, encoding="utf-8",
+        gate = run_gate(
+            dispatch["verification_commands"],
+            CleanRoomPolicy(repo, dispatch["candidate_commit"]),
+            stop_on_failure=False,
         )
-        if result.returncode != 0:
-            detail = _sanitise((result.stderr or result.stdout).strip())
-            raise CoordinatorError(f"could not create clean QA worktree: {detail or 'unknown error'}")
-        if _git(checkout, "rev-parse", "--verify", "HEAD^{commit}") != dispatch["candidate_commit"]:
-            raise CoordinatorError("clean QA worktree HEAD does not match the pinned candidate commit")
-        if _git(checkout, "status", "--porcelain", "--untracked-files=all"):
-            raise CoordinatorError("clean QA worktree contains mutable files")
-        for command in dispatch["verification_commands"]:
-            result = subprocess.run(command, cwd=checkout, shell=True, capture_output=True, text=True, encoding="utf-8")
-            combined = _sanitise((result.stdout or "") + ("\n" if result.stdout and result.stderr else "") + (result.stderr or ""))
-            outputs.append(f"$ {_sanitise(command)}\nexit_code={result.returncode}\n{combined}\n")
-            checks.append({
-                "command": command,
-                "result": "pass" if result.returncode == 0 else "fail",
-                "evidence": f"exit {result.returncode}; {_concise_evidence(combined)}",
-            })
-    finally:
-        if checkout.exists():
-            subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(checkout)], capture_output=True, text=True)
-        shutil.rmtree(worktree_root, ignore_errors=True)
+    except GateRunnerError as exc:
+        raise CoordinatorError(str(exc)) from exc
 
-    artifact_text = "\n".join(outputs)
+    artifact_text = gate.artifact
+    checks = gate.checks
     checksum = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
     artifact = _qa_artifact_path(root, checksum)
     try:

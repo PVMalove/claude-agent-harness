@@ -12,6 +12,22 @@
 Используйте её, когда у задачи есть независимые backend-границы или обязательная независимая
 проверка. Для обычной одной задачи достаточно стандартного pipeline `pvmalove-suite`.
 
+## Владение правилами
+
+`/implement` — короткий контракт coordinator-а: он сохраняет порядок handoff
+`architect → developer → code-review → qa → publish`, явный approval перед каждым dispatch,
+model self-report и watchdog. Он не является второй копией процедуры.
+
+Полные правила принадлежат устанавливаемым модулям: `playbook.md` — lifecycle, authority,
+immutable brief, evidence, параллелизм и метрики; `roles/` — границы и доказательство каждой роли;
+`coordinator.py` — проверяемые переходы и audit; `orca_adapter.py` — только transport. При
+противоречии приоритет у этих module-owned guidance и immutable records, а не у runtime adapter-а
+или краткого skill.
+
+Токены — только наблюдаемая provider- или runtime-telemetry с источником и missing-data note.
+Role self-report, completion report и оценка coordinator-а не являются token telemetry и не могут
+заполнять отсутствующее значение.
+
 ## Что устанавливается
 
 При выборе capability в проект копируются:

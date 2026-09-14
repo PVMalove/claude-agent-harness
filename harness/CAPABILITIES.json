@@ -63,7 +63,8 @@
       "first-party/pvmalove/delivery-stats"
     ],
     "resources": [
-      "reporting"
+      "reporting",
+      "gate_runner"
     ]
   },
   "backend-orchestration": {

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import re
 import subprocess
@@ -16,14 +17,7 @@ from pathlib import Path
 COUNT_RE = re.compile(r"(?P<count>\d+)\s+(?P<kind>passed|failed|errors?|skipped|xfailed|xpassed)\b")
 DURATION_RE = re.compile(r"\bin\s+(?P<duration>[0-9.]+s)\b")
 FAILURE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(?P<nodeid>.+?)(?:\s+-\s+.*)?$")
-SECRET_PATTERNS = (
-    (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"), "<REDACTED_GITHUB_TOKEN>"),
-    (
-        re.compile(r"(?i)(\b(?:api[_-]?key|credential|token|password|secret)\s*(?:[:=]|is)\s*)\S+"),
-        r"\1<REDACTED>",
-    ),
-    (re.compile(r"(?i)(\bauthorization\s*:\s*(?:bearer\s+)?)\S+"), r"\1<REDACTED>"),
-)
+_GATE_RUNNER = None
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -44,9 +38,27 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def redact(line: str) -> str:
-    for pattern, replacement in SECRET_PATTERNS:
-        line = pattern.sub(replacement, line)
-    return line
+    return _gate_runner().sanitise(line)
+
+
+def _gate_runner():
+    """Load the managed shared runner without assuming a Python package install."""
+    global _GATE_RUNNER
+    if _GATE_RUNNER is not None:
+        return _GATE_RUNNER
+    for parent in Path(__file__).resolve().parents:
+        for relative in (Path(".harness/gate_runner/gate_runner.py"), Path("harness/gate_runner/gate_runner.py")):
+            path = parent / relative
+            if path.is_file():
+                spec = importlib.util.spec_from_file_location("agent_harness_gate_runner", path)
+                if spec is None or spec.loader is None:
+                    break
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[spec.name] = module
+                spec.loader.exec_module(module)
+                _GATE_RUNNER = module
+                return _GATE_RUNNER
+    raise RuntimeError("shared gate-runner is missing; run harness update")
 
 
 def render_counts(counts: dict[str, int]) -> str | None:
@@ -63,18 +75,9 @@ def summarize(command: list[str], log_dir: Path, max_failures: int) -> int:
         mode="w", encoding="utf-8", errors="replace", delete=False, dir=log_dir, prefix=".test-run-", suffix=".tmp"
     ) as capture:
         temporary_log = Path(capture.name)
-        started = time.monotonic()
         try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-            )
-        except OSError as error:
+            result = _gate_runner().run_gate([command], _gate_runner().LocalPolicy(Path.cwd()), stop_on_failure=True)
+        except (OSError, RuntimeError) as error:
             temporary_log.unlink(missing_ok=True)
             print("=== TEST SUMMARY ===")
             print(f"Status: ERROR (could not start command: {error})")
@@ -84,8 +87,7 @@ def summarize(command: list[str], log_dir: Path, max_failures: int) -> int:
         pytest_duration: str | None = None
         failure_count = 0
         failures: list[str] = []
-        assert process.stdout is not None
-        for line in process.stdout:
+        for line in result.artifact.splitlines(keepends=True):
             sanitized = redact(line)
             capture.write(sanitized)
             found = {match.group("kind"): int(match.group("count")) for match in COUNT_RE.finditer(sanitized)}
@@ -99,8 +101,11 @@ def summarize(command: list[str], log_dir: Path, max_failures: int) -> int:
                 failure_count += 1
                 if len(failures) < max_failures:
                     failures.append(failure_match.group("nodeid"))
-        exit_code = process.wait()
-        elapsed = time.monotonic() - started
+        exit_code = 0 if result.passed else next(
+            int(check["evidence"].split(";", 1)[0].removeprefix("exit "))
+            for check in result.checks if check["result"] == "fail"
+        )
+        elapsed = result.duration_seconds
 
     print("=== TEST SUMMARY ===")
     if exit_code == 0:

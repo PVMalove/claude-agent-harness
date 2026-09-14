@@ -203,8 +203,9 @@ notes, and the same counting rules across the period.
 
 - `agent starts per closed ticket`: role starts recorded for closed tickets during the period,
   with retries counted as new dispatch starts;
-- `tokens per batch`: reported input and output tokens attributed to every dispatch in a batch,
-  with unavailable runtime data marked as missing rather than estimated;
+- `tokens per batch`: provider- or runtime-observed input and output tokens attributed to every
+  dispatch in a batch; a role self-report or completion report is not token telemetry, and
+  unavailable data is marked as missing rather than estimated;
 - `quality-gate wall time`: elapsed time from the serialized quality gate's start to its result,
   with queue time recorded separately when available;
 - `post-integration defects`: defects linked to a batch after integration, using a project-declared
