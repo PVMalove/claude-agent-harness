@@ -230,6 +230,14 @@ batch в `awaiting-approval` и оставляет dispatch в `reported` до �
      --batch <batch-id> --approved-by 'имя утверждающего' \
      --approved-at 2026-09-09T12:00:00Z
    ```
+
+   `batch create` сначала выполняет `git fetch origin <ref>` — `--integration-ref`, если он передан,
+   иначе `base_branch` проекта (для epic-less задач) — и фиксирует полученную вершину как
+   `base_commit`/`integration_base_commit`; необновлённый локальный HEAD никогда не используется как
+   замена. Перед созданием `code-review`- или `publish`-dispatch coordinator обязательно повторяет
+   эту сверку: если `origin/<ref>` с тех пор сдвинулся, dispatch отклоняется, next_action переходит в
+   `developer`, а снять блокировку может только новый developer dispatch (rebase) — его commit
+   автоматически становится новым `candidate_commit` и заново проходит risk assessment.
 2. Сверить активные batch, пересечения зон, writer и quality-gate lane. При конфликте оставить
    batch `blocked`, а не запускать параллельную запись.
 3. Создать и отдельно утвердить architect dispatch, принять его отчёт, и только потом — developer
