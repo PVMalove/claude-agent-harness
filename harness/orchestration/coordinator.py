@@ -18,6 +18,7 @@ import subprocess
 import sys
 import uuid
 from contextlib import contextmanager
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -30,7 +31,11 @@ if str(MODULE_ROOT) not in sys.path:
 GATE_RUNNER_ROOT = MODULE_ROOT.parent / "gate_runner"
 if str(GATE_RUNNER_ROOT) not in sys.path:
     sys.path.insert(0, str(GATE_RUNNER_ROOT))
+CONTEXT_BUILDER_ROOT = MODULE_ROOT.parent / "context_builder"
+if str(CONTEXT_BUILDER_ROOT) not in sys.path:
+    sys.path.insert(0, str(CONTEXT_BUILDER_ROOT))
 from contract import ContractError, load_role_manifest, resolve_assignment, validate_brief_policy
+from context_builder import ContextPackageError, build_context_package
 from gate_runner import CleanRoomPolicy, GateRunnerError, concise_evidence, run_gate, sanitise
 from ledger import LedgerError, LifecycleLedger
 
@@ -79,6 +84,10 @@ REPORT_OPTIONAL_FIELDS = {"risk_triggers", "review"}
 RISK_ASSESSMENT_FIELDS = {
     "risk_assessment_id", "batch_id", "candidate_commit", "base_commit", "changed_files", "matched_triggers",
     "developer_triggers", "review_required", "review_scope", "created_at",
+}
+CONTEXT_PACKAGE_FIELDS = {
+    "context_package_id", "batch_id", "base_commit", "candidate_commit", "diff", "starting_files",
+    "symbol_graph", "related_tests", "precedent_cards", "file_hashes", "size_bytes", "created_at",
 }
 
 
@@ -200,7 +209,7 @@ def _delete(path: Path, *, reason: str) -> None:
 
 
 def _safe_id(value: object, label: str) -> str:
-    if not isinstance(value, str) or re.fullmatch(r"(?:batch|dispatch|risk)-[0-9a-f-]+", value) is None:
+    if not isinstance(value, str) or re.fullmatch(r"(?:batch|dispatch|risk|context-package)-[0-9a-f-]+", value) is None:
         raise CoordinatorError(f"{label} is not a valid coordinator ID")
     return value
 
@@ -564,6 +573,10 @@ def _risk_path(root: Path, risk_id: str) -> Path:
     return _records_root(root) / "risk-assessments" / f"{_safe_id(risk_id, 'risk assessment')}.json"
 
 
+def _context_package_path(root: Path, package_id: str) -> Path:
+    return _records_root(root) / "context-packages" / f"{_safe_id(package_id, 'context package')}.json"
+
+
 def _plan_path(root: Path, batch_id: str) -> Path:
     return _records_root(root) / "plans" / f"{_safe_id(batch_id, 'batch')}.json"
 
@@ -710,6 +723,63 @@ def _risk_for_candidate(root: Path, batch: dict[str, Any], candidate: str) -> di
     risk = _load_risk(root, matches[-1].get("risk_assessment_id"))
     _validate_risk(root, batch, risk)
     return risk
+
+
+def _load_context_package(root: Path, package_id: str) -> dict[str, Any]:
+    return _read_object(_context_package_path(root, package_id), "context package")
+
+
+def _validate_context_package(root: Path, batch: dict[str, Any], package: dict[str, Any]) -> None:
+    _reject_sensitive(package, "context package")
+    if set(package) != CONTEXT_PACKAGE_FIELDS:
+        raise CoordinatorError("context package schema mismatch")
+    if package["batch_id"] != batch["batch_id"]:
+        raise CoordinatorError("context package does not belong to its batch")
+    entry = next(
+        (
+            item for item in batch.get("context_packages", [])
+            if item.get("context_package_id") == package["context_package_id"]
+        ),
+        None,
+    )
+    expected = hashlib.sha256(_canonical(package).encode("utf-8")).hexdigest()
+    if not entry or entry.get("record_sha256") != expected:
+        raise CoordinatorError("context package failed immutable record integrity check")
+
+
+def _latest_context_package(root: Path, batch: dict[str, Any]) -> dict[str, Any] | None:
+    entries = batch.get("context_packages", [])
+    if not entries:
+        return None
+    package = _load_context_package(root, entries[-1]["context_package_id"])
+    _validate_context_package(root, batch, package)
+    return package
+
+
+def _context_package_freshness(repo: Path, root: Path, batch: dict[str, Any]) -> dict[str, Any] | None:
+    """Shadow-mode evidence only: records whether the batch's latest registered Context Package
+    still matches current repository state (its base and the latest accepted developer candidate).
+    Never blocks dispatch creation -- roles are not yet restricted to the package."""
+    package = _latest_context_package(root, batch)
+    if package is None:
+        return None
+    current_base = batch.get("integration_base_commit") or batch.get("base_commit")
+    try:
+        current_candidate = _latest_developer_candidate(repo, root, batch)
+    except CoordinatorError:
+        current_candidate = None
+    fresh = package["base_commit"] == current_base and (
+        current_candidate is None or package["candidate_commit"] == current_candidate
+    )
+    return {
+        "context_package_id": package["context_package_id"],
+        "status": "fresh" if fresh else "stale",
+        "checked_at": _now(),
+        "registered_base_commit": package["base_commit"],
+        "current_base_commit": current_base,
+        "registered_candidate_commit": package["candidate_commit"],
+        "current_candidate_commit": current_candidate,
+    }
 
 
 def _latest_developer_candidate(repo: Path, root: Path, batch: dict[str, Any]) -> str:
@@ -1033,6 +1103,64 @@ def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
         batch["next_action"] = "code-review" if risk["review_required"] else "qa"
         _replace(_batch_path(root, batch["batch_id"]), batch)
     return risk
+
+
+def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
+    """Build one Context Package for the batch's accepted developer candidate and register it as a
+    new immutable, versioned, hashed ledger record -- the same ownership pattern as a risk
+    assessment. Read-only over the repository; writes no coordinator or batch state beyond the
+    package itself and its pointer entry."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    candidate = _candidate_commit(repo, args.candidate_commit)
+    with _state_lock(root):
+        batch = _load_batch(root, args.batch)
+        _validate_batch_integrity(root, batch)
+        if batch.get("state") != "awaiting-approval":
+            raise CoordinatorError("a context package requires a batch awaiting coordinator approval")
+        base = batch.get("base_commit")
+        if args.base_commit:
+            requested_base = _candidate_commit(repo, args.base_commit)
+            if requested_base != base:
+                raise CoordinatorError("context package base must match the batch-captured base commit")
+        if candidate != _latest_developer_candidate(repo, root, batch):
+            raise CoordinatorError("candidate commit does not match the accepted developer report")
+        try:
+            built = build_context_package(
+                repo, base, candidate,
+                symbol_graph_depth=args.symbol_graph_depth,
+                min_starting_files=args.min_starting_files,
+                max_starting_files=args.max_starting_files,
+                max_package_size_bytes=args.max_package_size_bytes,
+            )
+        except ContextPackageError as exc:
+            raise CoordinatorError(str(exc)) from exc
+        package = {
+            "context_package_id": f"context-package-{uuid.uuid4()}",
+            "batch_id": batch["batch_id"],
+            "base_commit": built.base_commit,
+            "candidate_commit": built.candidate_commit,
+            "diff": built.diff,
+            "starting_files": [asdict(item) for item in built.starting_files],
+            "symbol_graph": built.symbol_graph,
+            "related_tests": built.related_tests,
+            "precedent_cards": [asdict(item) for item in built.precedent_cards],
+            "file_hashes": built.file_hashes,
+            "size_bytes": built.size_bytes,
+            "created_at": _now(),
+        }
+        _reject_sensitive(package, "context package")
+        _write_exclusive(_context_package_path(root, package["context_package_id"]), package)
+        batch.setdefault("context_packages", []).append(
+            {
+                "context_package_id": package["context_package_id"],
+                "base_commit": package["base_commit"],
+                "candidate_commit": package["candidate_commit"],
+                "record_sha256": hashlib.sha256(_canonical(package).encode("utf-8")).hexdigest(),
+            }
+        )
+        _replace(_batch_path(root, batch["batch_id"]), batch)
+    return package
 
 
 def create_batch(args: argparse.Namespace) -> dict[str, Any]:
@@ -1407,6 +1535,11 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if pending_report:
             raise CoordinatorError("the previous completion report requires an explicit coordinator decision")
         _check_batch_conflicts(root, config, batch)
+        # Shadow-mode freshness gate (Issue #138): evidence only, recorded on the batch before
+        # every new dispatch brief. A stale package never blocks dispatch creation here.
+        context_package_freshness = _context_package_freshness(repo, root, batch)
+        if context_package_freshness is not None:
+            batch.setdefault("context_package_freshness_checks", []).append(context_package_freshness)
         role_name = args.role
         purpose = args.purpose
         next_action = batch.get("next_action")
@@ -1546,7 +1679,10 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             batch.pop("required_next_role", None)
         batch["state"] = "active"
         _replace(_batch_path(root, batch["batch_id"]), batch)
-    return {"dispatch_id": dispatch_id, "batch_id": batch["batch_id"], "state": "approved", "brief": brief}
+    return {
+        "dispatch_id": dispatch_id, "batch_id": batch["batch_id"], "state": "approved", "brief": brief,
+        "context_package_freshness": context_package_freshness,
+    }
 
 
 def _validate_checkout(checkout: Path, candidate: str, base: str | None, scope: list[str]) -> None:
@@ -2299,6 +2435,19 @@ def parser() -> argparse.ArgumentParser:
     assess.add_argument("--changed-file", action="append", required=True)
     assess.add_argument("--developer-trigger", action="append")
     assess.set_defaults(handler=assess_risk)
+
+    context_package = commands.add_parser("context-package")
+    context_package_commands = context_package.add_subparsers(dest="context_package_command", required=True)
+    context_package_register = context_package_commands.add_parser("register")
+    _common(context_package_register)
+    context_package_register.add_argument("--batch", required=True)
+    context_package_register.add_argument("--candidate-commit", required=True)
+    context_package_register.add_argument("--base-commit", help="optional immutable diff base; defaults to the batch base")
+    context_package_register.add_argument("--symbol-graph-depth", type=int, default=2)
+    context_package_register.add_argument("--min-starting-files", type=int, default=5)
+    context_package_register.add_argument("--max-starting-files", type=int, default=10)
+    context_package_register.add_argument("--max-package-size-bytes", type=int, default=512_000)
+    context_package_register.set_defaults(handler=register_context_package)
 
     dispatch = commands.add_parser("dispatch")
     dispatch_commands = dispatch.add_subparsers(dest="dispatch_command", required=True)

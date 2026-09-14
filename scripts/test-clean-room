@@ -1074,8 +1074,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if migrated.returncode != 0:
         sys.exit("ledger rejected a valid legacy state: " + migrated.stderr)
     migrated_record = json.loads(migrated.stdout)
-    if migrated_record["version"] != 1 or not migrated_record["generation"].startswith("generation-"):
-        sys.exit("ledger migration did not select a versioned generation")
+    if migrated_record["version"] != 2 or not migrated_record["generation"].startswith("generation-"):
+        sys.exit("ledger migration did not select the current versioned generation")
     ledger_status = coordinator_run("--state-dir", str(legacy_ledger_state), "ledger", "status")
     if ledger_status.returncode != 0 or json.loads(ledger_status.stdout)["generation"] != migrated_record["generation"]:
         sys.exit("ledger status did not expose the selected generation")
@@ -1087,6 +1087,71 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     reset = coordinator_run("--state-dir", str(legacy_ledger_state), "ledger", "reset", "--confirm", "RESET")
     if reset.returncode != 0 or json.loads(reset.stdout)["generation"] == migrated_record["generation"]:
         sys.exit("ledger reset did not atomically select a fresh generation")
+
+    # A ledger schema change (Issue #138 added the context-packages record directory) is itself a
+    # migration: a generation an older harness version already selected is a valid, but stale,
+    # migration source -- readable only by an explicit `ledger migrate`, never implicitly upgraded.
+    def write_audit_record(generation_dir, audit_id, action, details):
+        record = {"audit_id": audit_id, "at": "2026-09-09T15:24:00+00:00", "action": action, "details": details}
+        canonical = json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        record["record_sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        (generation_dir / "audit" / f"{audit_id}.json").write_text(
+            json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    stale_schema_state = test_root / "stale-schema-ledger-state"
+    stale_schema_generation = stale_schema_state / "generations" / "generation-legacy01"
+    v1_record_directories = (
+        "batches", "plans", "dispatches", "dispatch-status", "risk-assessments", "reports",
+        "qa-lane", "qa-artifacts", "audit",
+    )
+    for directory in v1_record_directories:
+        (stale_schema_generation / directory).mkdir(parents=True)
+    stale_schema_batch_id = "batch-00000000-0000-0000-0000-000000000456"
+    stale_schema_plan = {**legacy_plan, "batch_id": stale_schema_batch_id, "branch": "feature/issue-138-stale-schema"}
+    stale_schema_batch = {
+        **stale_schema_plan, "state": "planned", "dispatches": [], "risk_assessments": [],
+        "risk_escalations": [], "risk_reassessment_required": False,
+    }
+    (stale_schema_generation / "batches" / f"{stale_schema_batch_id}.json").write_text(
+        json.dumps(stale_schema_batch, indent=2) + "\n", encoding="utf-8"
+    )
+    (stale_schema_generation / "plans" / f"{stale_schema_batch_id}.json").write_text(
+        json.dumps(stale_schema_plan, indent=2) + "\n", encoding="utf-8"
+    )
+    write_audit_record(stale_schema_generation, "audit-legacy01", "generation-created", {"purpose": "initialize"})
+    stale_pointer = {"version": 1, "generation": "generation-legacy01", "selected_at": "2026-09-09T15:24:00+00:00"}
+    (stale_schema_state / "ledger.json").write_text(json.dumps(stale_pointer, indent=2) + "\n", encoding="utf-8")
+
+    blocked_status = coordinator_run("--state-dir", str(stale_schema_state), "ledger", "status")
+    if blocked_status.returncode != 0 or not json.loads(blocked_status.stdout).get("stale_schema"):
+        sys.exit("ledger status did not report a stale-schema generation: " + blocked_status.stdout)
+    blocked_list = coordinator_run("--state-dir", str(stale_schema_state), "batch", "list")
+    if blocked_list.returncode == 0:
+        sys.exit("coordinator used a stale-schema generation instead of requiring an explicit ledger migrate")
+
+    schema_migrated = coordinator_run("--state-dir", str(stale_schema_state), "ledger", "migrate")
+    if schema_migrated.returncode != 0:
+        sys.exit("ledger rejected a valid schema upgrade: " + schema_migrated.stderr)
+    schema_migrated_record = json.loads(schema_migrated.stdout)
+    if schema_migrated_record["version"] != 2 or schema_migrated_record["generation"] == "generation-legacy01":
+        sys.exit("ledger schema upgrade did not select a new current-schema generation")
+    upgraded_batch_path = (
+        stale_schema_state / "generations" / schema_migrated_record["generation"]
+        / "batches" / f"{stale_schema_batch_id}.json"
+    )
+    if not upgraded_batch_path.is_file() or json.loads(upgraded_batch_path.read_text(encoding="utf-8")) != stale_schema_batch:
+        sys.exit("ledger schema upgrade did not preserve the older-schema batch record as evidence")
+    upgraded_context_packages_dir = (
+        stale_schema_state / "generations" / schema_migrated_record["generation"] / "context-packages"
+    )
+    if not upgraded_context_packages_dir.is_dir():
+        sys.exit("ledger schema upgrade did not create the new context-packages record directory")
+    already_current = coordinator_run("--state-dir", str(stale_schema_state), "ledger", "migrate")
+    if already_current.returncode != 0 or json.loads(already_current.stdout)["migrated"]:
+        sys.exit("ledger migrate was not idempotent once the current schema was already selected")
+
+    print("ledger schema-upgrade migration verification passed")
 
     damaged_ledger_state = test_root / "damaged-ledger-state"
     (damaged_ledger_state / "batches").mkdir(parents=True)
@@ -2103,6 +2168,220 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("coordinator refused code-review for a low-risk candidate: " + optional_review.stderr)
 
     print("fixed-sequence review verification passed")
+
+    # Context Package: ledger integration and shadow-mode freshness gate (Issue #138).  The
+    # coordinator registers a built package as its own immutable, hashed ledger record -- the same
+    # ownership pattern as a risk assessment -- and checks its freshness before every new dispatch
+    # brief.  A stale package is only ever recorded on the batch; it never blocks dispatch creation.
+    ctxpkg_state = test_root / "context-package-state"
+    subprocess.run(["git", "branch", "feature/issue-138-context-package"], cwd=orchestration_project, check=True)
+    sync_origin_base()
+    ctxpkg_batch = json.loads(coordinator_run(
+        "--state-dir", str(ctxpkg_state), "batch", "create", "--ticket", "#138",
+        "--branch", "feature/issue-138-context-package", "--worktree", "issue-138-context-package",
+        "--zone", "backend", "--definition-of-done", "register a context package",
+        "--prohibited-change", "do not merge",
+    ).stdout)["batch_id"]
+    coordinator_run(
+        "--state-dir", str(ctxpkg_state), "batch", "approve", "--batch", ctxpkg_batch,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:20:00Z",
+    )
+
+    def ctxpkg_role(role_name, model, approved_at, payload_extra):
+        created = coordinator_run(
+            "--state-dir", str(ctxpkg_state), "dispatch", "create", "--batch", ctxpkg_batch,
+            "--role", role_name, "--approved-by", "project coordinator", "--approved-at", approved_at,
+        )
+        if created.returncode != 0:
+            sys.exit(f"coordinator rejected the context-package {role_name} dispatch: " + created.stderr)
+        role_dispatch = json.loads(created.stdout)["dispatch_id"]
+        coordinator_run(
+            "--state-dir", str(ctxpkg_state), "dispatch", "send", "--dispatch", role_dispatch,
+            "--adapter", str(fake_adapter),
+        )
+        coordinator_run(
+            "--state-dir", str(ctxpkg_state), "dispatch", "self-report",
+            "--dispatch", role_dispatch, "--model", model,
+        )
+        payload = {
+            "dispatch_id": role_dispatch, "ticket": "#138", "role": role_name, "outcome": "completed",
+            "output": f"{role_name} finished the requested step", "commit_sha": "not applicable — read-only role",
+            "changed_files": [],
+            "checks_run": [{"command": "python developer_check.py" if role_name == "developer" else "python qa_baseline.py", "result": "pass", "evidence": "1 passed"}],
+            "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+        }
+        payload.update(payload_extra)
+        payload_file = test_root / f"context-package-{role_name}-{role_dispatch}.json"
+        payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        submitted = coordinator_run("--state-dir", str(ctxpkg_state), "report", "submit", "--file", str(payload_file))
+        if submitted.returncode != 0:
+            sys.exit(f"coordinator rejected the context-package {role_name} report: " + submitted.stderr)
+        return role_dispatch
+
+    ctxpkg_role("architect", "project-architect-model", "2026-09-09T15:20:10Z", {})
+    coordinator_run(
+        "--state-dir", str(ctxpkg_state), "batch", "decide", "--batch", ctxpkg_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:20:20Z",
+    )
+
+    ctxpkg_file = orchestration_project / "services" / "context_package_demo.py"
+    ctxpkg_file.write_text('def demo():\n    return "context-package"\n', encoding="utf-8")
+    subprocess.run(["git", "add", "services/context_package_demo.py"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "feat: add context package demo"], cwd=orchestration_project, check=True)
+    ctxpkg_first_sha = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
+    ctxpkg_role("developer", "project-developer-model", "2026-09-09T15:20:30Z", {
+        "commit_sha": ctxpkg_first_sha, "changed_files": ["services/context_package_demo.py"],
+    })
+    coordinator_run(
+        "--state-dir", str(ctxpkg_state), "batch", "decide", "--batch", ctxpkg_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:20:40Z",
+    )
+    first_ctxpkg_risk = coordinator_run(
+        "--state-dir", str(ctxpkg_state), "risk", "assess", "--batch", ctxpkg_batch,
+        "--candidate-commit", ctxpkg_first_sha, "--changed-file", "services/context_package_demo.py",
+    )
+    if first_ctxpkg_risk.returncode != 0:
+        sys.exit("coordinator rejected the context-package fixture's first risk assessment: " + first_ctxpkg_risk.stderr)
+
+    ctxpkg_batch_before = json.loads(
+        (lifecycle_records(ctxpkg_state) / "batches" / f"{ctxpkg_batch}.json").read_text(encoding="utf-8")
+    )
+    ctxpkg_register = coordinator_run(
+        "--state-dir", str(ctxpkg_state), "context-package", "register", "--batch", ctxpkg_batch,
+        "--candidate-commit", ctxpkg_first_sha, "--min-starting-files", "1",
+    )
+    if ctxpkg_register.returncode != 0:
+        sys.exit("coordinator rejected a valid context package registration: " + ctxpkg_register.stderr)
+    ctxpkg_record = json.loads(ctxpkg_register.stdout)
+    if ctxpkg_record["base_commit"] != ctxpkg_batch_before["base_commit"] or ctxpkg_record["candidate_commit"] != ctxpkg_first_sha:
+        sys.exit("context package did not pin the batch base and the accepted developer candidate")
+    if "services/context_package_demo.py" not in ctxpkg_record["file_hashes"]:
+        sys.exit("context package did not include the changed file among its file hashes")
+    ctxpkg_record_path = lifecycle_records(ctxpkg_state) / "context-packages" / f"{ctxpkg_record['context_package_id']}.json"
+    if not ctxpkg_record_path.is_file():
+        sys.exit("context package was not persisted as its own immutable ledger record")
+    ctxpkg_batch_after = json.loads(
+        (lifecycle_records(ctxpkg_state) / "batches" / f"{ctxpkg_batch}.json").read_text(encoding="utf-8")
+    )
+    ctxpkg_pointer = next(
+        (
+            item for item in ctxpkg_batch_after.get("context_packages", [])
+            if item["context_package_id"] == ctxpkg_record["context_package_id"]
+        ),
+        None,
+    )
+    ctxpkg_expected_sha256 = hashlib.sha256(
+        (json.dumps(ctxpkg_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    ).hexdigest()
+    if ctxpkg_pointer is None or ctxpkg_pointer["record_sha256"] != ctxpkg_expected_sha256:
+        sys.exit("batch did not record an immutable hashed pointer to the context package")
+
+    first_ctxpkg_review = coordinator_run(
+        "--state-dir", str(ctxpkg_state), "dispatch", "create", "--batch", ctxpkg_batch,
+        "--role", "code-review", "--candidate-commit", ctxpkg_first_sha,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:20:50Z",
+    )
+    if first_ctxpkg_review.returncode != 0:
+        sys.exit("coordinator rejected the context-package fixture's first review dispatch: " + first_ctxpkg_review.stderr)
+    first_ctxpkg_review_record = json.loads(first_ctxpkg_review.stdout)
+    if first_ctxpkg_review_record.get("context_package_freshness", {}).get("status") != "fresh":
+        sys.exit(
+            "coordinator did not record a fresh context package before a matching dispatch: "
+            + json.dumps(first_ctxpkg_review_record)
+        )
+    first_ctxpkg_review_id = first_ctxpkg_review_record["dispatch_id"]
+    if coordinator_run(
+        "--state-dir", str(ctxpkg_state), "dispatch", "send", "--dispatch", first_ctxpkg_review_id,
+        "--adapter", str(fake_adapter), "--checkout", str(orchestration_project),
+    ).returncode != 0:
+        sys.exit("coordinator rejected the context-package fixture's first review checkout")
+    coordinator_run(
+        "--state-dir", str(ctxpkg_state), "dispatch", "self-report",
+        "--dispatch", first_ctxpkg_review_id, "--model", "project-code-review-model",
+    )
+    first_ctxpkg_review_payload = {
+        "dispatch_id": first_ctxpkg_review_id, "ticket": "#138", "role": "code-review", "outcome": "completed",
+        "output": "independent composite review completed", "commit_sha": "not applicable — read-only role",
+        "changed_files": [],
+        "checks_run": [{"command": "python qa_baseline.py", "result": "pass", "evidence": "review scope inspected"}],
+        "risks": "standards warning requires coordinator decision", "blockers": "none",
+        "next_coordinator_action": "override-warning or retry",
+        "review": {
+            "candidate_commit": ctxpkg_first_sha, "scope": ["services/context_package_demo.py"],
+            "standards": {
+                "severity": "warning",
+                "findings": [{"severity": "warning", "evidence": "missing docstring", "summary": "style warning"}],
+                "risks": "style risk", "blockers": "none",
+            },
+            "spec": {"severity": "clean", "findings": [], "risks": "none", "blockers": "none"},
+        },
+    }
+    first_ctxpkg_review_file = test_root / f"context-package-first-review-{first_ctxpkg_review_id}.json"
+    first_ctxpkg_review_file.write_text(json.dumps(first_ctxpkg_review_payload, indent=2) + "\n", encoding="utf-8")
+    if coordinator_run(
+        "--state-dir", str(ctxpkg_state), "report", "submit", "--file", str(first_ctxpkg_review_file),
+    ).returncode != 0:
+        sys.exit("coordinator rejected the context-package fixture's first review report")
+    if coordinator_run(
+        "--state-dir", str(ctxpkg_state), "batch", "decide", "--batch", ctxpkg_batch,
+        "--decision", "retry", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:21:00Z",
+    ).returncode != 0:
+        sys.exit("coordinator rejected a retry decision on the context-package fixture's review warning")
+
+    ctxpkg_second_file = orchestration_project / "services" / "context_package_demo_v2.py"
+    ctxpkg_second_file.write_text('def demo_v2():\n    return "context-package-v2"\n', encoding="utf-8")
+    subprocess.run(["git", "add", "services/context_package_demo_v2.py"], cwd=orchestration_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "feat: add second context package demo"], cwd=orchestration_project, check=True)
+    ctxpkg_second_sha = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
+    ctxpkg_role("developer", "project-developer-model", "2026-09-09T15:21:10Z", {
+        "commit_sha": ctxpkg_second_sha,
+        "changed_files": ["services/context_package_demo.py", "services/context_package_demo_v2.py"],
+    })
+    coordinator_run(
+        "--state-dir", str(ctxpkg_state), "batch", "decide", "--batch", ctxpkg_batch,
+        "--decision", "accept", "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:21:20Z",
+    )
+    second_ctxpkg_risk = coordinator_run(
+        "--state-dir", str(ctxpkg_state), "risk", "assess", "--batch", ctxpkg_batch,
+        "--candidate-commit", ctxpkg_second_sha,
+        "--changed-file", "services/context_package_demo.py", "--changed-file", "services/context_package_demo_v2.py",
+    )
+    if second_ctxpkg_risk.returncode != 0:
+        sys.exit("coordinator rejected the context-package fixture's second risk assessment: " + second_ctxpkg_risk.stderr)
+
+    # The Context Package registered for the first candidate is never re-registered here; the
+    # coordinator must now record it stale against the new accepted developer candidate -- and
+    # must still create the dispatch, since shadow mode never blocks on staleness.
+    second_ctxpkg_review = coordinator_run(
+        "--state-dir", str(ctxpkg_state), "dispatch", "create", "--batch", ctxpkg_batch,
+        "--role", "code-review", "--candidate-commit", ctxpkg_second_sha,
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-09T15:21:30Z",
+    )
+    if second_ctxpkg_review.returncode != 0:
+        sys.exit(
+            "coordinator blocked a dispatch on a stale context package instead of only recording it: "
+            + second_ctxpkg_review.stderr
+        )
+    second_ctxpkg_review_record = json.loads(second_ctxpkg_review.stdout)
+    second_ctxpkg_freshness = second_ctxpkg_review_record.get("context_package_freshness")
+    if not second_ctxpkg_freshness or second_ctxpkg_freshness.get("status") != "stale":
+        sys.exit(
+            "coordinator did not record a stale context package before a mismatched dispatch: "
+            + json.dumps(second_ctxpkg_review_record)
+        )
+    if second_ctxpkg_freshness.get("registered_candidate_commit") != ctxpkg_first_sha:
+        sys.exit("stale context package evidence did not reference the originally registered candidate")
+    if second_ctxpkg_freshness.get("current_candidate_commit") != ctxpkg_second_sha:
+        sys.exit("stale context package evidence did not reference the current accepted developer candidate")
+    ctxpkg_final_batch = json.loads(
+        (lifecycle_records(ctxpkg_state) / "batches" / f"{ctxpkg_batch}.json").read_text(encoding="utf-8")
+    )
+    if not any(
+        entry.get("status") == "stale" for entry in ctxpkg_final_batch.get("context_package_freshness_checks", [])
+    ):
+        sys.exit("batch did not persist the stale context package freshness evidence")
+
+    print("context package ledger integration and freshness-gate verification passed")
 
     # Base-commit gate: `batch create` pins base_commit to a freshly fetched integration ref tip
     # (never a raw local HEAD), and a mandatory freshness re-check blocks code-review/publish
