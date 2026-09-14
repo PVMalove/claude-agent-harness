@@ -332,3 +332,17 @@ _Avoid_: completion report, промежуточный commit без ledger-за
 model self-report и heartbeat; `dispatch resume` для checkpointed dispatch стартует новую worker
 session под тем же dispatch ID и требует их заново, как при первом контакте.
 _Avoid_: worker session как синоним dispatch (один dispatch может пройти несколько worker session).
+
+**Continuation authorization**:
+Правило, авторизующее `dispatch resume` checkpointed dispatch под новую worker session. Recognized
+rate-limit termination reason (`rate_limit`/`rate-limit`/`429`) от runtime adapter авторизует
+автоматически, без нового решения человека/coordinator-а. Любая другая причина — planned trigger
+(`context-limit`/`tdd-cycles`/`failure-log`/`vertical-slice`), safe default в сторону approval:
+требует то же coordinator decision, что accept/retry/block/fail (новый тип записи не вводится), и
+для измеримых trigger — `--measured-value` не ниже порога project-owned
+`adaptive_continuation_policy`. Расхождение восстановленных фактов (remaining DoD/risks из
+checkpoint, dependencies из dispatch) с текущими — блокер: dispatch закрывается, новый открывается
+через обычный approval, а не резюмируется. Blockers в это сравнение не входят — их формулировка
+может естественно меняться между сессиями без реального дрейфа scope/DoD/risks/dependencies.
+_Avoid_: automatic continuation как безусловное поведение (только для recognized rate limit),
+planned trigger без coordinator decision.

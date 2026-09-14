@@ -379,12 +379,41 @@ python .harness/orchestration/coordinator.py --repo . dispatch checkpoint \
 подтверждённого self-report, переводит dispatch-status в `checkpointed` и не трогает outcome enum
 (`completed`/`blocked`/`failed`) — этот enum остаётся только у completion report.
 
-Новая worker session для того же dispatch ID стартует явной командой coordinator-а — пока без
-автоматической политики:
+Новая worker session для того же dispatch ID стартует командой `dispatch resume`. Авторизация
+зависит от того, почему закончилась прежняя сессия:
 
 ```bash
-python .harness/orchestration/coordinator.py --repo . dispatch resume --dispatch <dispatch-id>
+# runtime adapter сообщил rate-limit termination — авторизация автоматическая
+python .harness/orchestration/coordinator.py --repo . dispatch resume --dispatch <dispatch-id> \
+  --termination-reason rate_limit
+
+# планируемый trigger (context limit / N TDD-циклов / большой failure log / законченный vertical
+# slice) — требуется явное coordinator decision
+python .harness/orchestration/coordinator.py --repo . dispatch resume --dispatch <dispatch-id> \
+  --trigger context-limit --measured-value 162000 --file continuation-facts.json \
+  --approved-by "project coordinator" --approved-at 2026-09-14T18:00:00Z
 ```
+
+`--termination-reason`, распознанный как rate limit (`rate_limit`/`rate-limit`/`429`), авторизует
+новую сессию автоматически — новое решение человека/coordinator-а не требуется. Любая другая
+причина, включая отсутствующую или нераспознанную, трактуется как planned trigger — safe default
+в сторону approval, а не от него:
+
+- `--trigger` обязателен и должен быть одним из `context-limit`, `tdd-cycles`, `failure-log`,
+  `vertical-slice`.
+- для `context-limit`/`tdd-cycles`/`failure-log` `--measured-value` обязан быть не меньше
+  соответствующего порога `adaptive_continuation_policy` (`context_limit`/
+  `tdd_cycle_count`/`failure_log_bytes`) из `.harness/orchestration.json` — без явной конфигурации
+  используются задокументированные значения по умолчанию (150000 / 3 / 20000), а не зашитые
+  внутри порознь для каждого места.
+- `--file` обязан содержать JSON с `dispatch_id`, `remaining_definition_of_done`, `risks` и
+  `dependencies`, буквально совпадающими с последним checkpoint (первые два поля) и с dispatch
+  (`dependencies`); `blockers` в сравнение не входит — их формулировка может измениться между
+  сессиями без реального дрейфа scope/DoD/risks/dependencies. Расхождение — сигнал, что они реально
+  изменились: coordinator обязан закрыть текущий dispatch и открыть новый через обычный approval,
+  а не резюмировать этот.
+- авторизация записывается тем же `coordinator_decisions`, что accept/retry/block/fail/abandon/
+  cancel — новый тип записи не вводится.
 
 `resume` принимает только `checkpointed` dispatch, возвращает его в `dispatched` и отбрасывает
 предыдущий model self-report. Это значит, что новая сессия обязана заново пройти `dispatch

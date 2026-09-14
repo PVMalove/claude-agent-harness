@@ -95,6 +95,21 @@ CHECKPOINT_INPUT_FIELDS = {
     "risks", "blockers", "context_package_id",
 }
 CHECKPOINT_FIELDS = CHECKPOINT_INPUT_FIELDS | {"checkpoint_id", "batch_id", "created_at"}
+# Fixed runtime-adapter termination vocabulary, not a project policy value -- a rate-limit signal
+# always authorizes a continuation automatically, whatever project a batch belongs to.
+RATE_LIMIT_TERMINATION_REASONS = {"rate_limit", "rate-limit", "429"}
+PLANNED_TRIGGER_KINDS = {"context-limit", "tdd-cycles", "failure-log", "vertical-slice"}
+PLANNED_TRIGGER_THRESHOLD_KEY = {
+    "context-limit": "context_limit",
+    "tdd-cycles": "tdd_cycle_count",
+    "failure-log": "failure_log_bytes",
+}
+DEFAULT_ADAPTIVE_CONTINUATION_POLICY = {
+    "context_limit": 150_000,
+    "tdd_cycle_count": 3,
+    "failure_log_bytes": 20_000,
+}
+CONTINUATION_FACTS_FIELDS = {"dispatch_id", "remaining_definition_of_done", "risks", "dependencies"}
 
 
 class CoordinatorError(Exception):
@@ -306,6 +321,21 @@ def _config(repo: Path) -> dict[str, Any]:
     value = _read_object(repo / ".harness/orchestration.json", "project orchestration config")
     _reject_sensitive(value, "project orchestration config")
     return value
+
+
+def _adaptive_continuation_policy(config: dict[str, Any]) -> dict[str, int]:
+    """Adaptive-policy thresholds for a planned-trigger continuation. Project-configurable per
+    AC5; an absent or partially-specified `adaptive_continuation_policy` falls back to the
+    documented defaults field by field, the same tolerance `_default_config` gives every other
+    zero-configuration project."""
+    policy = config.get("adaptive_continuation_policy")
+    resolved = dict(DEFAULT_ADAPTIVE_CONTINUATION_POLICY)
+    if isinstance(policy, dict):
+        for key in resolved:
+            value = policy.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+                resolved[key] = value
+    return resolved
 
 
 def _git(repo: Path, *arguments: str) -> str:
@@ -733,6 +763,21 @@ def _risk_for_candidate(root: Path, batch: dict[str, Any], candidate: str) -> di
     risk = _load_risk(root, matches[-1].get("risk_assessment_id"))
     _validate_risk(root, batch, risk)
     return risk
+
+
+def _load_checkpoint(root: Path, checkpoint_id: str) -> dict[str, Any]:
+    return _read_object(_checkpoint_path(root, checkpoint_id), "checkpoint")
+
+
+def _latest_checkpoint_for_dispatch(root: Path, batch: dict[str, Any], dispatch_id: str) -> dict[str, Any]:
+    entries = [item for item in batch.get("checkpoints", []) if item.get("dispatch_id") == dispatch_id]
+    if not entries:
+        raise CoordinatorError("dispatch has no recorded checkpoint to resume from")
+    checkpoint = _load_checkpoint(root, entries[-1]["checkpoint_id"])
+    expected = hashlib.sha256(_canonical(checkpoint).encode("utf-8")).hexdigest()
+    if entries[-1].get("record_sha256") != expected:
+        raise CoordinatorError("checkpoint failed immutable record integrity check")
+    return checkpoint
 
 
 def _load_context_package(root: Path, package_id: str) -> dict[str, Any]:
@@ -1960,14 +2005,96 @@ def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     return {"dispatch_id": dispatch["dispatch_id"], "state": "checkpointed", "checkpoint_id": record["checkpoint_id"]}
 
 
+def _authorize_rate_limit_continuation(termination_reason: str) -> dict[str, Any]:
+    return {
+        "decision": "continue-automatic",
+        "approved_by": "runtime-adapter",
+        "approved_at": _now(),
+        "note": f"termination_reason={termination_reason}",
+    }
+
+
+def _authorize_planned_continuation(
+    config: dict[str, Any], dispatch: dict[str, Any], checkpoint: dict[str, Any], args: argparse.Namespace,
+) -> dict[str, Any]:
+    """A planned trigger (context limit, N TDD cycles, a large failure log, or a completed
+    vertical slice) is a safe-default-toward-approval path: it always requires the same explicit
+    coordinator decision an accept/retry/block/fail already does, reusing that record type rather
+    than inventing a new one."""
+    trigger = args.trigger.strip() if _non_empty(args.trigger) else ""
+    if trigger not in PLANNED_TRIGGER_KINDS:
+        raise CoordinatorError(
+            "a continuation without a recognized rate-limit termination reason is a planned trigger and "
+            f"requires --trigger to be one of {sorted(PLANNED_TRIGGER_KINDS)}"
+        )
+    threshold_key = PLANNED_TRIGGER_THRESHOLD_KEY.get(trigger)
+    if threshold_key is not None:
+        threshold = _adaptive_continuation_policy(config)[threshold_key]
+        measured = args.measured_value
+        if isinstance(measured, bool) or not isinstance(measured, int) or measured < threshold:
+            raise CoordinatorError(
+                f"planned trigger {trigger!r} requires --measured-value at least the configured "
+                f"threshold ({threshold})"
+            )
+    _check_continuation_facts_unchanged(dispatch, checkpoint, args)
+    approval = _approval(args)
+    return {
+        "decision": "continue",
+        "approved_by": approval["approved_by"],
+        "approved_at": approval["approved_at"],
+        "note": args.note.strip() if _non_empty(args.note) else f"planned trigger: {trigger}",
+    }
+
+
+def _check_continuation_facts_unchanged(
+    dispatch: dict[str, Any], checkpoint: dict[str, Any], args: argparse.Namespace,
+) -> None:
+    """Reject a continuation whose recorded facts show scope, Definition of Done, risks, or
+    dependencies changed since the checkpoint (Issue #140's continuation-authorization contract).
+    The coordinator must restate those facts explicitly -- a mismatch means real drift, not
+    something the coordinator can wave through, so it must close the dispatch and open a new one
+    through ordinary approval instead. Blockers are deliberately not compared here: unlike the
+    other four, their wording can legitimately evolve session to session without the underlying
+    scope, DoD, risks or dependencies having changed at all."""
+    if not _non_empty(getattr(args, "file", None)):
+        raise CoordinatorError(
+            "a planned-trigger continuation requires --file restating the current remaining "
+            "Definition of Done, risks and dependencies"
+        )
+    facts = _read_object(Path(args.file).resolve(), "continuation facts")
+    _reject_sensitive(facts, "continuation facts")
+    if set(facts) != CONTINUATION_FACTS_FIELDS:
+        raise CoordinatorError("continuation facts schema mismatch")
+    if facts["dispatch_id"] != dispatch["dispatch_id"]:
+        raise CoordinatorError("continuation facts dispatch_id does not match the dispatched role")
+    unchanged = (
+        facts["remaining_definition_of_done"] == checkpoint["remaining_definition_of_done"]
+        and facts["risks"] == checkpoint["risks"]
+        and facts["dependencies"] == dispatch["dependencies"]
+    )
+    if not unchanged:
+        raise CoordinatorError(
+            "continuation facts differ from the checkpointed scope, Definition of Done, risks, blockers "
+            "or dependencies; close this dispatch and open a new one through ordinary approval instead "
+            "of resuming it"
+        )
+
+
 def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     """Start a new worker session for a checkpointed dispatch, under the same dispatch ID.
 
     The resumed session is put through the exact same liveness contract as a first session: its
     prior model self-report is discarded, so `dispatch self-report` and `dispatch heartbeat` are
-    both mandatory again before any further checkpoint or completion report."""
+    both mandatory again before any further checkpoint or completion report.
+
+    Continuation authorization (Issue #140): a runtime adapter reporting a recognized rate-limit
+    termination reason authorizes the new session automatically, without a new human/coordinator
+    decision. Anything else -- no reason, or one this coordinator does not recognize -- is treated
+    as a planned trigger and requires the existing coordinator-decision approval, with its recorded
+    facts checked against the checkpoint for drift."""
     repo = _repo(args)
     root = _state_root(args, repo)
+    termination_reason = args.termination_reason.strip().lower() if _non_empty(args.termination_reason) else ""
     with _state_lock(root):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
@@ -1978,7 +2105,15 @@ def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
         if not entry or entry.get("state") != "checkpointed" or status.get("state") != "checkpointed":
             raise CoordinatorError("only a checkpointed dispatch may start a new worker session")
+        if termination_reason in RATE_LIMIT_TERMINATION_REASONS:
+            authorization = _authorize_rate_limit_continuation(termination_reason)
+        else:
+            checkpoint = _latest_checkpoint_for_dispatch(root, batch, dispatch["dispatch_id"])
+            authorization = _authorize_planned_continuation(config, dispatch, checkpoint, args)
         entry["state"] = "dispatched"
+        batch.setdefault("coordinator_decisions", []).append({
+            "dispatch_id": dispatch["dispatch_id"], **authorization,
+        })
         _replace(_batch_path(root, batch["batch_id"]), batch)
         moment = _now()
         _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
@@ -1987,6 +2122,7 @@ def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         })
     return {
         "dispatch_id": dispatch["dispatch_id"], "state": "dispatched",
+        "authorization": authorization["decision"],
         "next_role_action": "dispatch self-report",
     }
 
@@ -2648,6 +2784,27 @@ def parser() -> argparse.ArgumentParser:
     dispatch_resume = dispatch_commands.add_parser("resume")
     _common(dispatch_resume)
     dispatch_resume.add_argument("--dispatch", required=True)
+    dispatch_resume.add_argument(
+        "--termination-reason", default="",
+        help="runtime adapter termination reason; a recognized rate limit (rate_limit/rate-limit/429) "
+             "authorizes the new worker session automatically",
+    )
+    dispatch_resume.add_argument(
+        "--trigger", choices=sorted(PLANNED_TRIGGER_KINDS),
+        help="planned-trigger kind; required unless --termination-reason is a recognized rate limit",
+    )
+    dispatch_resume.add_argument(
+        "--measured-value", type=int,
+        help="measured value for a context-limit/tdd-cycles/failure-log planned trigger, "
+             "checked against the project's adaptive_continuation_policy threshold",
+    )
+    dispatch_resume.add_argument(
+        "--file", help="continuation facts JSON restating remaining DoD/risks/blockers/dependencies; "
+                        "required for a planned-trigger continuation",
+    )
+    dispatch_resume.add_argument("--approved-by")
+    dispatch_resume.add_argument("--approved-at")
+    dispatch_resume.add_argument("--note")
     dispatch_resume.set_defaults(handler=resume_dispatch)
 
     dispatch_status_command = dispatch_commands.add_parser("status")

@@ -2542,13 +2542,37 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     ).returncode == 0:
         sys.exit("coordinator accepted a self-report against a checkpointed dispatch")
 
+    # Continuation authorization (Issue #140): a recognized rate-limit termination reason
+    # authorizes resume automatically; anything else is a planned trigger requiring the same
+    # coordinator decision accept/retry/block/fail already use.
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+    ).returncode == 0:
+        sys.exit("coordinator resumed a checkpointed dispatch with no termination reason and no trigger")
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+        "--termination-reason", "worker-crashed",
+    ).returncode == 0:
+        sys.exit("coordinator resumed a checkpointed dispatch on an unrecognized termination reason without a trigger")
+
     checkpoint_resume = coordinator_run(
         "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+        "--termination-reason", "rate_limit",
     )
     if checkpoint_resume.returncode != 0:
-        sys.exit("coordinator rejected resuming a checkpointed dispatch: " + checkpoint_resume.stderr)
+        sys.exit("coordinator rejected a rate-limit resume of a checkpointed dispatch: " + checkpoint_resume.stderr)
     if json.loads(checkpoint_resume.stdout)["dispatch_id"] != checkpoint_dev_id:
         sys.exit("resuming a checkpoint did not keep the same dispatch ID")
+    if json.loads(checkpoint_resume.stdout)["authorization"] != "continue-automatic":
+        sys.exit("a rate-limit resume was not authorized automatically")
+    checkpoint_after_rate_limit_resume = json.loads(
+        (lifecycle_records(checkpoint_state) / "batches" / f"{checkpoint_batch}.json").read_text(encoding="utf-8")
+    )
+    if not any(
+        entry.get("dispatch_id") == checkpoint_dev_id and entry.get("decision") == "continue-automatic"
+        for entry in checkpoint_after_rate_limit_resume.get("coordinator_decisions", [])
+    ):
+        sys.exit("rate-limit resume did not record a continue-automatic coordinator decision")
 
     checkpoint_file_two = orchestration_project / "services" / "checkpoint_demo_v2.py"
     checkpoint_file_two.write_text('def demo_v2():\n    return "session two"\n', encoding="utf-8")
@@ -2578,6 +2602,125 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "--state-dir", str(checkpoint_state), "dispatch", "heartbeat", "--dispatch", checkpoint_dev_id,
     ).returncode != 0:
         sys.exit("coordinator rejected the resumed worker session's heartbeat")
+
+    checkpoint_two_file = test_root / "checkpoint-session-two.json"
+    checkpoint_two_file.write_text(json.dumps({
+        "dispatch_id": checkpoint_dev_id, "commit_sha": checkpoint_second_sha,
+        "changed_files": ["services/checkpoint_demo.py", "services/checkpoint_demo_v2.py"],
+        "remaining_definition_of_done": [],
+        "passing_checks": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
+        "risks": "none", "blockers": "none",
+        "context_package_id": "not applicable — no context package registered",
+    }, indent=2) + "\n", encoding="utf-8")
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "checkpoint", "--file", str(checkpoint_two_file),
+    ).returncode != 0:
+        sys.exit("coordinator rejected the checkpoint fixture's session-two checkpoint")
+
+    # Planned trigger (no recognized termination reason): safe default toward approval, reused
+    # coordinator_decisions record type, threshold and drift checks all enforced. `blockers` is
+    # deliberately absent from the continuation facts -- only scope/DoD, risks and dependencies
+    # gate drift, matching the issue's acceptance criteria.
+    facts_unchanged = {
+        "dispatch_id": checkpoint_dev_id, "remaining_definition_of_done": [], "risks": "none",
+        "dependencies": ["none"],
+    }
+    facts_unchanged_file = test_root / "continuation-facts-unchanged.json"
+    facts_unchanged_file.write_text(json.dumps(facts_unchanged, indent=2) + "\n", encoding="utf-8")
+    facts_risks_drifted_file = test_root / "continuation-facts-risks-drifted.json"
+    facts_risks_drifted_file.write_text(json.dumps(
+        {**facts_unchanged, "risks": "scope grew since the checkpoint"}, indent=2,
+    ) + "\n", encoding="utf-8")
+    facts_dependencies_drifted_file = test_root / "continuation-facts-dependencies-drifted.json"
+    facts_dependencies_drifted_file.write_text(json.dumps(
+        {**facts_unchanged, "dependencies": ["#999"]}, indent=2,
+    ) + "\n", encoding="utf-8")
+
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+        "--trigger", "context-limit", "--measured-value", "1000",
+        "--file", str(facts_unchanged_file),
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:01:00Z",
+    ).returncode == 0:
+        sys.exit("coordinator resumed a planned-trigger continuation below its configured threshold")
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+        "--trigger", "tdd-cycles", "--measured-value", "1",
+        "--file", str(facts_unchanged_file),
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:01:00Z",
+    ).returncode == 0:
+        sys.exit("coordinator resumed a tdd-cycles planned trigger below its configured threshold")
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+        "--trigger", "failure-log", "--measured-value", "100",
+        "--file", str(facts_unchanged_file),
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:01:00Z",
+    ).returncode == 0:
+        sys.exit("coordinator resumed a failure-log planned trigger below its configured threshold")
+
+    risks_drifted_resume = coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+        "--trigger", "context-limit", "--measured-value", "200000",
+        "--file", str(facts_risks_drifted_file),
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:01:00Z",
+    )
+    if risks_drifted_resume.returncode == 0:
+        sys.exit("coordinator resumed a planned-trigger continuation whose recorded risks drifted from the checkpoint")
+    if "close" not in risks_drifted_resume.stderr.lower() or "new one" not in risks_drifted_resume.stderr.lower():
+        sys.exit("drifted continuation risks did not point the coordinator at closing and reopening the dispatch")
+
+    dependencies_drifted_resume = coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+        "--trigger", "vertical-slice",
+        "--file", str(facts_dependencies_drifted_file),
+        "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:01:00Z",
+    )
+    if dependencies_drifted_resume.returncode == 0:
+        sys.exit("coordinator resumed a vertical-slice continuation whose recorded dependencies drifted from the dispatch")
+    if "close" not in dependencies_drifted_resume.stderr.lower() or "new one" not in dependencies_drifted_resume.stderr.lower():
+        sys.exit("drifted continuation dependencies did not point the coordinator at closing and reopening the dispatch")
+
+    # AC5: adaptive-policy thresholds come from project configuration, not a hard-coded value --
+    # a project-configured low threshold authorizes exactly the measured value the default (150000)
+    # rejected above.
+    original_orchestration_config_text = orchestration_config.read_text(encoding="utf-8")
+    low_threshold_config = json.loads(original_orchestration_config_text)
+    low_threshold_config["adaptive_continuation_policy"] = {"context_limit": 500}
+    orchestration_config.write_text(json.dumps(low_threshold_config, indent=2) + "\n", encoding="utf-8")
+    try:
+        planned_resume = coordinator_run(
+            "--state-dir", str(checkpoint_state), "dispatch", "resume", "--dispatch", checkpoint_dev_id,
+            "--trigger", "context-limit", "--measured-value", "500", "--file", str(facts_unchanged_file),
+            "--approved-by", "project coordinator", "--approved-at", "2026-09-14T16:01:00Z",
+        )
+    finally:
+        orchestration_config.write_text(original_orchestration_config_text, encoding="utf-8")
+    if planned_resume.returncode != 0:
+        sys.exit(
+            "coordinator rejected a planned-trigger continuation meeting the project-configured "
+            "adaptive_continuation_policy threshold: " + planned_resume.stderr
+        )
+    if json.loads(planned_resume.stdout)["authorization"] != "continue":
+        sys.exit("a planned-trigger resume was not authorized through a coordinator decision")
+    checkpoint_after_planned_resume = json.loads(
+        (lifecycle_records(checkpoint_state) / "batches" / f"{checkpoint_batch}.json").read_text(encoding="utf-8")
+    )
+    if not any(
+        entry.get("dispatch_id") == checkpoint_dev_id and entry.get("decision") == "continue"
+        and entry.get("approved_by") == "project coordinator"
+        for entry in checkpoint_after_planned_resume.get("coordinator_decisions", [])
+    ):
+        sys.exit("planned-trigger resume did not record a continue coordinator decision")
+
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "self-report",
+        "--dispatch", checkpoint_dev_id, "--model", "project-developer-model",
+    ).returncode != 0:
+        sys.exit("coordinator rejected the second resumed worker session's fresh model self-report")
+    if coordinator_run(
+        "--state-dir", str(checkpoint_state), "dispatch", "heartbeat", "--dispatch", checkpoint_dev_id,
+    ).returncode != 0:
+        sys.exit("coordinator rejected the second resumed worker session's heartbeat")
     if coordinator_run(
         "--state-dir", str(checkpoint_state), "report", "submit", "--file", str(early_final_report_file),
     ).returncode != 0:
