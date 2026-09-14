@@ -57,6 +57,14 @@
         "minLength": 1
       },
       "description": "Optional focused commands for a developer work dispatch. When omitted, verification_commands remains the backward-compatible developer and clean-room QA list."
+    },
+    "test_path_patterns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Optional fnmatch-style glob patterns identifying this project's test files, used to gate delta-review eligibility for a test-only fix after a code-review Warning. Defaults to a Python/pytest convention (tests/**, **/tests/**, **/test_*.py, **/*_test.py) when omitted."
     }
   },
   "definitions": {

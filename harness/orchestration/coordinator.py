@@ -58,8 +58,9 @@ DISPATCH_FIELDS = {
     "dispatch_id", "batch_id", "ticket", "role", "access", "zone", "write_paths", "branch", "worktree",
     "definition_of_done", "prohibited_changes", "verification_commands", "required_gates", "dependencies",
     "resolved_runtime", "resolved_provider_profile", "resolved_model", "resolved_effort", "resolved_transport", "coordinator_approval", "candidate_commit", "review_base", "review_scope",
-    "risk_assessment_id", "purpose", "state", "created_at",
+    "risk_assessment_id", "purpose", "state", "created_at", "delta_review_of", "delta_review_axis",
 }
+DEFAULT_TEST_PATH_PATTERNS = ("tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py")
 REPORT_FIELDS = {
     "dispatch_id",
     "ticket",
@@ -410,6 +411,17 @@ def _trigger_patterns(trigger: str) -> tuple[str, ...]:
     if "retry" in joined:
         patterns.extend((r"\bdlq\b", r"dead[- ]letter"))
     return tuple(patterns)
+
+
+def _test_path_patterns(config: dict[str, Any]) -> list[str]:
+    patterns = config.get("test_path_patterns")
+    if isinstance(patterns, list) and patterns and all(_non_empty(item) for item in patterns):
+        return list(patterns)
+    return list(DEFAULT_TEST_PATH_PATTERNS)
+
+
+def _is_test_path(path: str, patterns: list[str]) -> bool:
+    return any(fnmatchcase(path, pattern) for pattern in patterns)
 
 
 def _role(repo: Path, name: str) -> dict[str, Any]:
@@ -1262,6 +1274,64 @@ def cancel_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     return {"dispatch_id": dispatch["dispatch_id"], "batch_id": batch["batch_id"], "state": "cancelled"}
 
 
+def _prior_review_entry(batch: dict[str, Any], dispatch_id: str) -> dict[str, Any]:
+    entry = next(
+        (item for item in batch.get("dispatches", []) if item.get("dispatch_id") == dispatch_id), None,
+    )
+    if entry is None or entry.get("role") != "code-review":
+        raise CoordinatorError("delta-review-of must reference a code-review dispatch in this batch")
+    if entry.get("state") != "reported" or entry.get("decision", {}).get("decision") != "retry":
+        raise CoordinatorError("delta-review-of must reference a retried code-review dispatch")
+    return entry
+
+
+def _delta_review_eligibility(
+    repo: Path,
+    config: dict[str, Any],
+    known: list[str],
+    prior_dispatch: dict[str, Any],
+    prior_report: dict[str, Any],
+    candidate: str,
+) -> str:
+    """Whether ``candidate`` may be delta-reviewed against ``prior_dispatch``'s review.
+
+    Eligible only for a test-only fix closing the prior review's single Warning finding: the prior
+    review must show exactly one Warning axis and no Blocker, and the diff since the prior reviewed
+    candidate must touch only test files and match none of the code-review role's risk triggers.
+    Returns the axis name that must be re-evaluated; anything else raises so the caller falls back
+    to a full independent review.
+    """
+    severities = _review_severity(prior_report["review"])
+    if "blocker" in severities.values():
+        raise CoordinatorError("delta-review is not permitted after a review blocker")
+    warning_axes = [axis for axis, value in severities.items() if value == "warning"]
+    if len(warning_axes) != 1 or any(value not in {"warning", "clean"} for value in severities.values()):
+        raise CoordinatorError("delta-review requires exactly one prior Warning axis and one prior Clean axis")
+    prior_candidate = prior_dispatch.get("candidate_commit")
+    if (
+        not isinstance(prior_candidate, str)
+        or prior_candidate == candidate
+        or not _git_is_ancestor(repo, prior_candidate, candidate)
+    ):
+        raise CoordinatorError("delta-review requires a new candidate descended from the prior reviewed candidate")
+    delta_files = _changed_files_between(repo, prior_candidate, candidate)
+    if not delta_files:
+        raise CoordinatorError("delta-review requires a non-empty fix diff since the prior reviewed candidate")
+    patterns = _test_path_patterns(config)
+    non_test = sorted(path for path in delta_files if not _is_test_path(path, patterns))
+    if non_test:
+        raise CoordinatorError(
+            "delta-review is rejected because the fix diff touches non-test file(s): " + ", ".join(non_test)
+        )
+    evidence = _commit_evidence(repo, prior_candidate, candidate)
+    matched = _matching_triggers(evidence, known)
+    if matched:
+        raise CoordinatorError(
+            "delta-review is rejected because the fix diff matches risk trigger(s): " + ", ".join(sorted(matched))
+        )
+    return warning_axes[0]
+
+
 def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -1304,6 +1374,9 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         candidate = None
         risk = None
         review_scope: list[str] = []
+        delta_review_of: str | None = None
+        delta_review_axis: str | None = None
+        requested_delta_review_of = getattr(args, "delta_review_of", None)
         if args.candidate_commit is not None:
             candidate = _candidate_commit(repo, args.candidate_commit)
         if role_name in {"code-review", "qa"} and candidate is None:
@@ -1326,6 +1399,18 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             # The risk assessment decides when review is *mandatory*, never when it is permitted:
             # the fixed pipeline reviews every candidate, high-risk or not.
             review_scope = list(risk["review_scope"])
+            if requested_delta_review_of is not None:
+                prior_entry = _prior_review_entry(batch, requested_delta_review_of)
+                prior_dispatch = _load_dispatch(root, requested_delta_review_of)
+                if prior_dispatch.get("batch_id") != batch["batch_id"]:
+                    raise CoordinatorError("delta-review-of must reference a dispatch in this batch")
+                prior_report = _pending_report(root, batch, prior_entry)
+                delta_review_axis = _delta_review_eligibility(
+                    repo, config, _risk_triggers(repo), prior_dispatch, prior_report, candidate,
+                )
+                delta_review_of = requested_delta_review_of
+        elif requested_delta_review_of is not None:
+            raise CoordinatorError("--delta-review-of is only valid for a code-review dispatch")
         if role_name == "qa":
             if batch.get("risk_reassessment_required"):
                 raise CoordinatorError("QA is blocked until the candidate is risk-assessed again")
@@ -1375,6 +1460,8 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "review_scope": review_scope,
             "risk_assessment_id": risk["risk_assessment_id"] if risk else None,
             "purpose": purpose,
+            "delta_review_of": delta_review_of,
+            "delta_review_axis": delta_review_axis,
         }
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the
@@ -1832,10 +1919,28 @@ def _validate_review(review: object, dispatch: dict[str, Any]) -> None:
         raise CoordinatorError("composite review must contain independent standards and spec evidence")
     if review["candidate_commit"] != dispatch["candidate_commit"] or review["scope"] != dispatch["review_scope"]:
         raise CoordinatorError("composite review evidence does not match the approved review brief")
+    delta_review_of = dispatch.get("delta_review_of")
+    delta_review_axis = dispatch.get("delta_review_axis")
     for axis in ("standards", "spec"):
         evidence = review[axis]
-        if not isinstance(evidence, dict) or set(evidence) != {"severity", "findings", "risks", "blockers"}:
+        inherited = delta_review_of is not None and axis != delta_review_axis
+        expected_keys = (
+            {"severity", "findings", "risks", "blockers", "inherited_from"}
+            if inherited
+            else {"severity", "findings", "risks", "blockers"}
+        )
+        if not isinstance(evidence, dict) or set(evidence) != expected_keys:
             raise CoordinatorError(f"composite review {axis} evidence has an invalid schema")
+        if inherited:
+            if evidence["severity"] != "clean" or evidence["findings"] != []:
+                raise CoordinatorError(
+                    f"composite review {axis} must inherit the prior Clean verdict without re-analysis"
+                )
+            if evidence["inherited_from"] != delta_review_of:
+                raise CoordinatorError(f"composite review {axis} must reference the prior review as evidence")
+            if not _non_empty(evidence["risks"]) or not _non_empty(evidence["blockers"]):
+                raise CoordinatorError(f"composite review {axis} must state risks and blockers")
+            continue
         if evidence["severity"] not in REVIEW_SEVERITIES:
             raise CoordinatorError(f"composite review {axis} severity is invalid")
         if not isinstance(evidence["findings"], list):
@@ -1961,6 +2066,8 @@ def _report_markdown(report: dict[str, Any]) -> str:
                     f"- Review {axis.title()} blockers: {evidence['blockers']}",
                 ]
             )
+            if "inherited_from" in evidence:
+                lines.append(f"- Review {axis.title()} inherited from: {evidence['inherited_from']}")
             for finding in evidence["findings"]:
                 lines.append(f"  - [{finding['severity']}] {finding['summary']}: {finding['evidence']}")
     lines.append("")
@@ -2132,6 +2239,10 @@ def parser() -> argparse.ArgumentParser:
     dispatch_create.add_argument("--runtime", default="codex", help="named runtime from the role assignment plan")
     dispatch_create.add_argument("--purpose", choices=sorted(DISPATCH_PURPOSES), default="work")
     dispatch_create.add_argument("--candidate-commit")
+    dispatch_create.add_argument(
+        "--delta-review-of",
+        help="prior retried code-review dispatch id this test-only fix delta-reviews; code-review role only",
+    )
     dispatch_create.add_argument("--model", help="session model, used only without .harness/orchestration.json")
     dispatch_create.add_argument("--effort", help="session effort, used only without .harness/orchestration.json")
     dispatch_create.add_argument("--approved-by", required=True)
