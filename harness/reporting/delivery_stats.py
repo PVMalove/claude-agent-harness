@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 from datetime import datetime, timezone
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
@@ -33,6 +34,11 @@ CLAUDE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_inpu
 CODEX_FIELDS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens")
 # Pseudo-models the runtime writes for locally generated messages; never billed.
 NON_BILLABLE_MODELS = {"<synthetic>"}
+# Matches coordinator.py's own default STATE_REL: the backend-orchestration ledger this project's
+# coordinator writes, read here only for structural metrics -- never re-validated as strictly as the
+# coordinator itself does, since a missing or unreadable record must degrade to "missing", not abort.
+ORCHESTRATION_STATE_REL = Path(".harness/orchestration/state")
+CONTINUATION_DECISIONS = {"continue", "continue-automatic"}
 
 
 class StatsError(Exception):
@@ -604,6 +610,144 @@ def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple) -> dic
     }
 
 
+# --------------------------------------------------------------------------- orchestration ledger
+
+
+def _ledger_records_root(repo: Path, state_dir: Optional[Path]) -> Optional[Path]:
+    """Resolve the ledger's selected generation the same way the coordinator's public pointer file
+    says to, without re-running the coordinator's own cross-record validation: a report has to
+    degrade a single bad record to missing, never abort on it."""
+    root = state_dir if state_dir is not None else repo / ORCHESTRATION_STATE_REL
+    pointer_path = root / "ledger.json"
+    if not pointer_path.is_file():
+        return root if root.is_dir() else None
+    try:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    generation = pointer.get("generation") if isinstance(pointer, dict) else None
+    if not isinstance(generation, str):
+        return None
+    candidate = root / "generations" / generation
+    return candidate if candidate.is_dir() else None
+
+
+def _read_ledger_record(path: Path) -> Optional[dict]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _dispatch_record(root: Path, dispatch_id: object) -> Optional[dict]:
+    if not isinstance(dispatch_id, str):
+        return None
+    return _read_ledger_record(root / "dispatches" / f"{dispatch_id}.json")
+
+
+def _developer_write_paths(root: Path, batch: dict) -> Optional[list]:
+    """The declared zone a code-review diff is checked against: the most recent developer
+    dispatch's own recorded write_paths (retries share the same zone, so the latest is enough)."""
+    for entry in reversed(batch.get("dispatches", [])):
+        if not isinstance(entry, dict) or entry.get("role") != "developer":
+            continue
+        dispatch = _dispatch_record(root, entry.get("dispatch_id"))
+        paths = dispatch.get("write_paths") if dispatch else None
+        if isinstance(paths, list) and paths:
+            return paths
+    return None
+
+
+def _empty_ticket_orchestration() -> dict:
+    return {"batches": [], "worker_sessions": [], "qa_decided": 0, "qa_failed": 0, "review_scope": []}
+
+
+def _accumulate_batch_orchestration(root: Path, batch: dict, bucket: dict) -> None:
+    bucket["batches"].append(batch.get("batch_id"))
+    restarts_by_dispatch: dict[str, list] = {}
+    for decision in batch.get("coordinator_decisions", []):
+        if not isinstance(decision, dict) or decision.get("decision") not in CONTINUATION_DECISIONS:
+            continue
+        dispatch_id = decision.get("dispatch_id")
+        if not isinstance(dispatch_id, str):
+            continue
+        restarts_by_dispatch.setdefault(dispatch_id, []).append({
+            "decision": decision.get("decision"),
+            "reason": decision.get("note") or MISSING,
+            "approved_at": decision.get("approved_at", MISSING),
+        })
+    developer_paths = _developer_write_paths(root, batch)
+    for entry in batch.get("dispatches", []):
+        if not isinstance(entry, dict) or not isinstance(entry.get("dispatch_id"), str):
+            continue
+        dispatch_id = entry["dispatch_id"]
+        restarts = restarts_by_dispatch.get(dispatch_id, [])
+        bucket["worker_sessions"].append({
+            "dispatch_id": dispatch_id,
+            "role": entry.get("role", MISSING),
+            "sessions": 1 + len(restarts),
+            "restarts": restarts,
+        })
+        role = entry.get("role")
+        decision = entry.get("decision")
+        if role == "qa" and isinstance(decision, dict):
+            bucket["qa_decided"] += 1
+            if decision.get("decision") != "accept":
+                bucket["qa_failed"] += 1
+        if role == "code-review" and developer_paths is not None:
+            dispatch = _dispatch_record(root, dispatch_id)
+            scope = dispatch.get("review_scope") if dispatch else None
+            if isinstance(scope, list) and scope:
+                out_of_scope = [
+                    path for path in scope
+                    if not any(fnmatchcase(str(path).replace("\\", "/"), pattern) for pattern in developer_paths)
+                ]
+                bucket["review_scope"].append({
+                    "dispatch_id": dispatch_id,
+                    "files_total": len(scope),
+                    "files_out_of_scope": len(out_of_scope),
+                    "out_of_scope_files": out_of_scope,
+                    "share": round(len(out_of_scope) / len(scope), 4),
+                })
+
+
+def _finalize_ticket_orchestration(bucket: dict) -> dict:
+    bucket["qa_failure_rate"] = (
+        round(bucket["qa_failed"] / bucket["qa_decided"], 4) if bucket["qa_decided"] else MISSING
+    )
+    if not bucket["review_scope"]:
+        bucket["review_scope"] = MISSING
+    return bucket
+
+
+def orchestration_metrics(repo: Path, numbers: set, state_dir: Optional[Path] = None) -> dict:
+    """Structural metrics from the backend-orchestration ledger, per ticket in scope: worker
+    sessions a dispatch spanned with each session's coordinator-recorded compaction/restart reason,
+    the share of a code-review diff outside the developer's declared write-path zone, and QA failure
+    rate. Every figure here comes from the coordinator's own hash-linked records, never a role's
+    free-text self-report; an absent or unreadable ledger reports the whole metric as missing."""
+    root = _ledger_records_root(repo, state_dir)
+    if root is None:
+        return {"status": MISSING, "reason": "оркестрационный ledger недоступен для этого репозитория"}
+    batches_dir = root / "batches"
+    if not batches_dir.is_dir():
+        return {"status": MISSING, "reason": "в ledger нет записей batches"}
+    tickets: dict[str, Any] = {}
+    for path in sorted(batches_dir.glob("batch-*.json")):
+        batch = _read_ledger_record(path)
+        if batch is None:
+            continue
+        ticket_number = ticket_of_branch(batch.get("branch"))
+        if ticket_number not in numbers:
+            continue
+        bucket = tickets.setdefault(str(ticket_number), _empty_ticket_orchestration())
+        _accumulate_batch_orchestration(root, batch, bucket)
+    if not tickets:
+        return {"status": MISSING, "reason": "в ledger нет batch-записей для тикетов этой области"}
+    return {"status": "ok", "tickets": {number: _finalize_ticket_orchestration(bucket) for number, bucket in tickets.items()}}
+
+
 # ----------------------------------------------------------------------------------------- cost
 
 
@@ -735,7 +879,24 @@ def cache_split(claude: dict) -> Any:
     }
 
 
-def _provider_snapshot(usage: dict, input_fields: tuple[str, ...]) -> dict:
+def _cache_tokens(models: dict, write_field: str, read_field: str) -> Optional[dict]:
+    """Cache write/read tokens by the same rule as the input total: only when every model bucket
+    carries both fields, never a partial sum presented as complete."""
+    if not models or any(
+        not isinstance(bucket, dict)
+        or any(not isinstance(bucket.get(field), int) or isinstance(bucket.get(field), bool) for field in (write_field, read_field))
+        for bucket in models.values()
+    ):
+        return None
+    return {
+        "cache_write_tokens": sum(_int(bucket.get(write_field)) for bucket in models.values()),
+        "cache_read_tokens": sum(_int(bucket.get(read_field)) for bucket in models.values()),
+    }
+
+
+def _provider_snapshot(
+    usage: dict, input_fields: tuple[str, ...], *, cache_fields: Optional[tuple[str, str]] = None
+) -> dict:
     """The comparable provider telemetry from one report, without filling absent data with zero."""
     if usage.get("status") != "ok":
         return {"status": MISSING, "reason": usage.get("reason", MISSING)}
@@ -751,13 +912,18 @@ def _provider_snapshot(usage: dict, input_fields: tuple[str, ...]) -> dict:
         return {"status": MISSING, "reason": "в отчёте неполная telemetry по моделям"}
     input_tokens = sum(sum(_int(bucket.get(field)) for field in input_fields) for bucket in models.values())
     output_tokens = sum(_int(bucket.get("output_tokens")) for bucket in models.values())
-    return {
+    snapshot = {
         "status": "ok",
         "attribution": usage.get("attribution", MISSING),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": input_tokens + output_tokens,
     }
+    if cache_fields is not None:
+        cache = _cache_tokens(models, *cache_fields)
+        snapshot["cache_write_tokens"] = cache["cache_write_tokens"] if cache else MISSING
+        snapshot["cache_read_tokens"] = cache["cache_read_tokens"] if cache else MISSING
+    return snapshot
 
 
 def baseline_snapshot(report: dict) -> dict:
@@ -769,8 +935,14 @@ def baseline_snapshot(report: dict) -> dict:
         "repository": report["repository"],
         "epic": {"number": epic.get("number"), "title": epic.get("title", MISSING)},
         "providers": {
-            "claude": _provider_snapshot(report["claude"], CLAUDE_FIELDS[:3]),
-            "codex": _provider_snapshot(report["codex"], ("input_tokens",)),
+            "claude": _provider_snapshot(
+                report["claude"], CLAUDE_FIELDS[:3],
+                cache_fields=("cache_creation_input_tokens", "cache_read_input_tokens"),
+            ),
+            "codex": _provider_snapshot(
+                report["codex"], ("input_tokens",),
+                cache_fields=("cache_write_input_tokens", "cached_input_tokens"),
+            ),
         },
     }
 
@@ -806,15 +978,27 @@ def save_baseline(snapshot: dict, path: Path) -> None:
         raise StatsError(f"не сохранить baseline: {path}: {exc}") from exc
 
 
+def _cache_delta_field(baseline: dict, current: dict, field: str) -> Any:
+    """A cache-token delta only when both sides actually carry that field -- one or both of them
+    may predate this metric or come from a provider report with incomplete cache telemetry."""
+    before, after = baseline.get(field), current.get(field)
+    if not isinstance(before, int) or isinstance(before, bool) or not isinstance(after, int) or isinstance(after, bool):
+        return MISSING
+    return after - before
+
+
 def _provider_delta(baseline: object, current: object) -> Any:
     if not isinstance(baseline, dict) or not isinstance(current, dict):
         return MISSING
     if baseline.get("status") != "ok" or current.get("status") != "ok":
         return MISSING
-    return {
+    delta = {
         field: _int(current.get(field)) - _int(baseline.get(field))
         for field in ("input_tokens", "output_tokens", "total_tokens")
     }
+    for field in ("cache_write_tokens", "cache_read_tokens"):
+        delta[field] = _cache_delta_field(baseline, current, field)
+    return delta
 
 
 def compare_baseline(baseline: dict, current: dict) -> dict:
@@ -872,6 +1056,7 @@ def build_report(args: argparse.Namespace) -> dict:
         ticket["branches"] = sorted(
             {entry["branch"] for entry in volume["entries"] if entry.get("ticket") == ticket["number"]}
         )
+    orchestration_state = Path(args.orchestration_state_dir) if args.orchestration_state_dir else None
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "repository": repo.name,
@@ -885,6 +1070,7 @@ def build_report(args: argparse.Namespace) -> dict:
         "cost": cost,
         "volume": volume,
         "adr_added": len(volume["adr_added"]),
+        "orchestration": orchestration_metrics(repo, numbers, orchestration_state),
     }
 
 
@@ -970,6 +1156,13 @@ def render_terminal(report: dict) -> str:
                 after_text = MISSING
             delta_text = _compact(delta.get("total_tokens")) if isinstance(delta, dict) else MISSING
             lines.append(f"  {label}: {before_text} → {after_text}; разница {delta_text}")
+            cache_write_delta = delta.get("cache_write_tokens") if isinstance(delta, dict) else MISSING
+            cache_read_delta = delta.get("cache_read_tokens") if isinstance(delta, dict) else MISSING
+            if isinstance(cache_write_delta, int) or isinstance(cache_read_delta, int):
+                lines.append(
+                    f"    кеш: запись {_compact(cache_write_delta) if isinstance(cache_write_delta, int) else MISSING}, "
+                    f"чтение {_compact(cache_read_delta) if isinstance(cache_read_delta, int) else MISSING}"
+                )
 
     cache = report["cache"]
     if isinstance(cache, dict):
@@ -990,6 +1183,28 @@ def render_terminal(report: dict) -> str:
             lines.append(f"  Без ставок в тарифе: {', '.join(cost['unpriced_models'])}")
     else:
         lines.append(f"Стоимость: {cost.get('reason', MISSING)}")
+
+    orchestration = report["orchestration"]
+    if orchestration.get("status") == "ok":
+        for number, ticket in sorted(orchestration["tickets"].items()):
+            lines.append(f"Оркестрация тикета #{number}:")
+            for session in ticket["worker_sessions"]:
+                lines.append(f"  {session['role']} {session['dispatch_id']}: сессий {session['sessions']}")
+                for restart in session["restarts"]:
+                    lines.append(f"    рестарт ({restart['decision']}): {restart['reason']}")
+            rate = ticket["qa_failure_rate"]
+            lines.append(f"  QA failure rate: {_ru(rate * 100, 1) + '%' if isinstance(rate, float) else rate}")
+            scope = ticket["review_scope"]
+            if isinstance(scope, list):
+                for entry in scope:
+                    lines.append(
+                        f"  Review {entry['dispatch_id']}: вне зоны {entry['files_out_of_scope']}"
+                        f" из {entry['files_total']} файлов ({_ru(entry['share'] * 100, 1)}%)"
+                    )
+            else:
+                lines.append(f"  Review diff scope excess: {scope}")
+    else:
+        lines.append(f"Оркестрация: {orchestration.get('reason', MISSING)}")
     return "\n".join(lines)
 
 
@@ -1011,6 +1226,10 @@ def main() -> int:
         help="offline mode: comma-separated issue numbers instead of asking the tracker for sub-issues",
     )
     parser.add_argument("--rates", help="rate card JSON; defaults to .harness/reporting/rates.json")
+    parser.add_argument(
+        "--orchestration-state-dir",
+        help="backend-orchestration ledger state directory; defaults to .harness/orchestration/state under --repo",
+    )
     parser.add_argument("--home", help="home directory holding agent session logs")
     parser.add_argument(
         "--claude-projects",

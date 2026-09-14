@@ -210,6 +210,16 @@ notes, and the same counting rules across the period.
   with queue time recorded separately when available;
 - `post-integration defects`: defects linked to a batch after integration, using a project-declared
   observation window and severity rule.
+- `cache read/write tokens`: provider-observed cache write and cache read token counts attributed to
+  every dispatch in a batch, using the same attribution and missing-data rule as `tokens per batch`;
+- `worker sessions per dispatch`: one plus every ledger-recorded checkpoint/resume continuation for a
+  dispatch, with each session's coordinator-recorded compaction or restart reason (a recognized
+  rate-limit termination, or a planned trigger such as a context limit, TDD-cycle count, or
+  failure-log size); a role's own account of why it restarted is not this reason;
+- `review diff scope excess`: the share of a code-review dispatch's diff files that fall outside the
+  write role's declared zone, read from the immutable dispatch and risk-assessment records;
+- `QA failure rate`: the share of a batch's decided QA dispatches whose coordinator decision was not
+  `accept`, from the coordinator's recorded decision rather than a QA role's own outcome claim.
 
 The baseline is evidence for later targets, not a hidden limit. It must not prescribe a provider,
 model, Orca behavior, or hard-coded concurrency or token number.
