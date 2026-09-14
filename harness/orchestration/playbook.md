@@ -39,6 +39,19 @@ dispatch. `completed`, `blocked`, and `failed` are terminal outcomes for that di
 dispatch with a new brief and a new dispatch ID; it is never a transition from `blocked` or
 `failed` back to `working`, and the old brief is never edited.
 
+## Versioned lifecycle ledger
+
+`coordinator.py` is the lifecycle ledger's CLI adapter. The selected state generation is named by
+an atomic `ledger.json` pointer; immutable records and every transition append checksummed audit
+records inside that generation. Normal execution never parses an old layout opportunistically.
+
+For state created before the ledger, run `coordinator.py --repo . ledger migrate`. It copies the
+legacy records into a complete candidate generation, validates JSON, batch-plan consistency and
+audit checksums, then switches the pointer only after that validation succeeds. The legacy files
+remain untouched as migration evidence. `ledger reset --confirm RESET` selects a fresh generation
+only after the literal confirmation, and refuses while any batch is `active`; prior generations
+remain immutable audit history.
+
 When a new fact appears after dispatch, the coordinator appends a new coordinator decision before
 acting on it. The decision records the dispatch ID, fact and evidence, impact on scope or risk,
 chosen action, and author/time. The original brief remains immutable. If the fact changes the

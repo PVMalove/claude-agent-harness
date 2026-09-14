@@ -29,6 +29,7 @@ MODULE_ROOT = Path(__file__).resolve().parent
 if str(MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_ROOT))
 from contract import ContractError, load_role_manifest, resolve_assignment, validate_brief_policy
+from ledger import LedgerError, LifecycleLedger
 
 
 STATE_REL = Path(".harness/orchestration/state")
@@ -125,6 +126,13 @@ def _canonical(value: dict[str, Any]) -> str:
 
 
 def _write_exclusive(path: Path, value: dict[str, Any]) -> None:
+    ledger = _ledger_for_path(path)
+    if ledger is not None:
+        try:
+            ledger.write_immutable(path, value)
+        except LedgerError as exc:
+            raise CoordinatorError(str(exc)) from exc
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with path.open("x", encoding="utf-8", newline="\n") as stream:
@@ -134,6 +142,13 @@ def _write_exclusive(path: Path, value: dict[str, Any]) -> None:
 
 
 def _write_text_exclusive(path: Path, value: str) -> None:
+    ledger = _ledger_for_path(path)
+    if ledger is not None:
+        try:
+            ledger.write_artifact(path, value)
+        except LedgerError as exc:
+            raise CoordinatorError(str(exc)) from exc
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with path.open("x", encoding="utf-8", newline="\n") as stream:
@@ -144,6 +159,13 @@ def _write_text_exclusive(path: Path, value: str) -> None:
 
 
 def _replace(path: Path, value: dict[str, Any]) -> None:
+    ledger = _ledger_for_path(path)
+    if ledger is not None:
+        try:
+            ledger.replace(path, value)
+        except LedgerError as exc:
+            raise CoordinatorError(str(exc)) from exc
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
@@ -154,6 +176,25 @@ def _replace(path: Path, value: dict[str, Any]) -> None:
             temporary.unlink()
         except FileNotFoundError:
             pass
+
+def _ledger_for_path(path: Path) -> LifecycleLedger | None:
+    """Find the selected ledger that owns a coordinator record path."""
+    for parent in (path.parent, *path.parents):
+        if not (parent / "ledger.json").is_file():
+            continue
+        return LifecycleLedger(parent)
+    return None
+
+
+def _delete(path: Path, *, reason: str) -> None:
+    ledger = _ledger_for_path(path)
+    if ledger is not None:
+        try:
+            ledger.delete(path, reason=reason)
+        except LedgerError as exc:
+            raise CoordinatorError(str(exc)) from exc
+        return
+    path.unlink()
 
 
 def _safe_id(value: object, label: str) -> str:
@@ -169,6 +210,13 @@ def _repo(args: argparse.Namespace) -> Path:
 def _state_root(args: argparse.Namespace, repo: Path) -> Path:
     supplied = getattr(args, "state_dir", None)
     return (Path(supplied).resolve() if supplied else repo / STATE_REL).resolve()
+
+
+def _records_root(root: Path) -> Path:
+    try:
+        return LifecycleLedger(root).records_root()
+    except LedgerError as exc:
+        raise CoordinatorError(str(exc)) from exc
 
 
 def _qa_state_root(args: argparse.Namespace, repo: Path) -> Path:
@@ -439,39 +487,39 @@ def _resolve_assignment(
 
 
 def _batch_path(root: Path, batch_id: str) -> Path:
-    return root / "batches" / f"{_safe_id(batch_id, 'batch')}.json"
+    return _records_root(root) / "batches" / f"{_safe_id(batch_id, 'batch')}.json"
 
 
 def _dispatch_path(root: Path, dispatch_id: str) -> Path:
-    return root / "dispatches" / f"{_safe_id(dispatch_id, 'dispatch')}.json"
+    return _records_root(root) / "dispatches" / f"{_safe_id(dispatch_id, 'dispatch')}.json"
 
 
 def _dispatch_status_path(root: Path, dispatch_id: str) -> Path:
-    return root / "dispatch-status" / f"{_safe_id(dispatch_id, 'dispatch')}.json"
+    return _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch_id, 'dispatch')}.json"
 
 
 def _risk_path(root: Path, risk_id: str) -> Path:
-    return root / "risk-assessments" / f"{_safe_id(risk_id, 'risk assessment')}.json"
+    return _records_root(root) / "risk-assessments" / f"{_safe_id(risk_id, 'risk assessment')}.json"
 
 
 def _plan_path(root: Path, batch_id: str) -> Path:
-    return root / "plans" / f"{_safe_id(batch_id, 'batch')}.json"
+    return _records_root(root) / "plans" / f"{_safe_id(batch_id, 'batch')}.json"
 
 
 def _qa_lane_path(root: Path) -> Path:
-    return root / "qa-lane" / "lease.json"
+    return _records_root(root) / "qa-lane" / "lease.json"
 
 
 def _qa_queue_root(root: Path) -> Path:
-    return root / "qa-lane" / "queue"
+    return _records_root(root) / "qa-lane" / "queue"
 
 
 def _qa_queue_counter_path(root: Path) -> Path:
-    return root / "qa-lane" / "sequence.json"
+    return _records_root(root) / "qa-lane" / "sequence.json"
 
 
 def _qa_artifact_path(root: Path, checksum: str) -> Path:
-    return root / "qa-artifacts" / f"{checksum}.log"
+    return _records_root(root) / "qa-artifacts" / f"{checksum}.log"
 
 
 def _qa_queue_entries(root: Path) -> list[tuple[Path, dict[str, Any]]]:
@@ -656,7 +704,7 @@ def _batch_for_ticket_branch(
     Those records are audit evidence, not competing QA proof, so a current SHA selects the batch
     rather than making PR preparation depend on deleting its history.
     """
-    batches_dir = root / "batches"
+    batches_dir = _records_root(root) / "batches"
     if not batches_dir.is_dir():
         raise CoordinatorError("no orchestration batches exist for the ticket branch")
     matches = []
@@ -706,6 +754,39 @@ def qa_evidence(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_commit": candidate,
         "qa_report": report,
     }
+
+
+def ledger_status(args: argparse.Namespace) -> dict[str, Any]:
+    """Report the selected lifecycle-ledger generation without changing it."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    with _state_lock(root):
+        try:
+            return LifecycleLedger(root).status()
+        except LedgerError as exc:
+            raise CoordinatorError(str(exc)) from exc
+
+
+def migrate_ledger(args: argparse.Namespace) -> dict[str, Any]:
+    """Explicitly validate legacy state and atomically select its versioned replacement."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    with _state_lock(root):
+        try:
+            return LifecycleLedger(root).migrate()
+        except LedgerError as exc:
+            raise CoordinatorError(str(exc)) from exc
+
+
+def reset_ledger(args: argparse.Namespace) -> dict[str, Any]:
+    """Select an empty generation only after an explicit confirmation and no active batch."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    with _state_lock(root):
+        try:
+            return LifecycleLedger(root).reset(args.confirm)
+        except LedgerError as exc:
+            raise CoordinatorError(str(exc)) from exc
 
 
 def _validate_batch_integrity(root: Path, batch: dict[str, Any]) -> None:
@@ -795,7 +876,7 @@ def _check_batch_conflicts(root: Path, config: dict[str, Any], batch: dict[str, 
     if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
         raise CoordinatorError("project orchestration config has an invalid concurrency_budget")
     active = 0
-    for path in sorted((root / "batches").glob("batch-*.json")):
+    for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
         other = _read_object(path, "batch record")
         if other.get("batch_id") == batch.get("batch_id") or other.get("state") not in {"active", "awaiting-approval"}:
             continue
@@ -932,6 +1013,10 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     _reject_sensitive(record, "batch")
     root = _state_root(args, repo)
     with _state_lock(root):
+        try:
+            LifecycleLedger(root).ensure()
+        except LedgerError as exc:
+            raise CoordinatorError(str(exc)) from exc
         _write_exclusive(_plan_path(root, record["batch_id"]), {field: record[field] for field in PLAN_FIELDS})
         _write_exclusive(_batch_path(root, record["batch_id"]), record)
     return record
@@ -955,7 +1040,7 @@ def _pending_report(root: Path, batch: dict[str, Any], entry: dict[str, Any]) ->
     report_path = entry.get("report")
     if not isinstance(report_path, str):
         raise CoordinatorError("reported dispatch has no completion report")
-    report = _read_object(root / report_path, "completion report")
+    report = _read_object(_records_root(root) / report_path, "completion report")
     expected = entry.get("report_sha256")
     actual = hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest()
     if not isinstance(expected, str) or expected != actual:
@@ -1053,7 +1138,7 @@ def list_batches(args: argparse.Namespace) -> dict[str, Any]:
     root = _state_root(args, repo)
     with _state_lock(root):
         batches = []
-        for path in sorted((root / "batches").glob("batch-*.json")):
+        for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
             batch = _read_object(path, "batch record")
             dispatches = batch.get("dispatches", [])
             open_dispatches = [item["dispatch_id"] for item in dispatches if not _settled(item)]
@@ -1487,7 +1572,7 @@ def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
         raise CoordinatorError("stale-after must be a positive number of seconds")
     with _state_lock(root):
         entries: list[dict[str, Any]] = []
-        for path in sorted((root / "dispatch-status").glob("dispatch-*.json")):
+        for path in sorted((_records_root(root) / "dispatch-status").glob("dispatch-*.json")):
             status = _read_object(path, "dispatch status")
             if args.dispatch and status.get("dispatch_id") != args.dispatch:
                 continue
@@ -1591,8 +1676,8 @@ def _qa_report(dispatch: dict[str, Any], checks: list[dict[str, str]], artifact:
 
 
 def _persist_report(root: Path, batch: dict[str, Any], dispatch: dict[str, Any], report: dict[str, Any]) -> Path:
-    report_json = root / "reports" / f"{dispatch['dispatch_id']}.json"
-    report_md = root / "reports" / f"{dispatch['dispatch_id']}.md"
+    report_json = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.json"
+    report_md = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.md"
     if report_json.exists() or report_md.exists():
         raise CoordinatorError("refusing to overwrite immutable completion report")
     _write_exclusive(report_json, report)
@@ -1711,11 +1796,12 @@ def run_qa(args: argparse.Namespace) -> dict[str, Any]:
     with _state_lock(root):
         report_path = _record_qa_report(root, repo, dispatch, report)
         _qa_queue_entries(root)  # validate before removing the completed request
-        queue_path.unlink(missing_ok=True)
+        if queue_path.exists():
+            _delete(queue_path, reason="complete QA queue entry")
         lease_path = _qa_lane_path(root)
         current = _qa_lease(root)
         if current and current["dispatch_id"] == dispatch["dispatch_id"]:
-            lease_path.unlink()
+            _delete(lease_path, reason="complete QA lease")
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",
@@ -1756,11 +1842,11 @@ def clear_qa_lease(args: argparse.Namespace) -> dict[str, Any]:
             "cleared_dispatch_id": lease["dispatch_id"], "lease": lease, "approval": approval,
             "reason": args.reason.strip(), "cleared_at": _now(),
         }
-        _write_exclusive(root / "qa-lane" / "recoveries" / f"{uuid.uuid4()}.json", recovery)
+        _write_exclusive(_records_root(root) / "qa-lane" / "recoveries" / f"{uuid.uuid4()}.json", recovery)
         owner = next(((path, entry) for path, entry in queue if entry["dispatch_id"] == lease["dispatch_id"]), None)
         if owner is not None:
-            owner[0].unlink()
-        _qa_lane_path(root).unlink()
+            _delete(owner[0], reason="clear stale QA lease queue entry")
+        _delete(_qa_lane_path(root), reason="clear stale QA lease")
     return {"state": "cleared", "dispatch_id": lease["dispatch_id"]}
 
 
@@ -1990,6 +2076,19 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--repo", default=".", help="target project root")
     root.add_argument("--state-dir", help="coordinator state directory")
     commands = root.add_subparsers(dest="command", required=True)
+
+    ledger = commands.add_parser("ledger", help="inspect or explicitly maintain versioned lifecycle state")
+    ledger_commands = ledger.add_subparsers(dest="ledger_command", required=True)
+    ledger_status_command = ledger_commands.add_parser("status")
+    _common(ledger_status_command)
+    ledger_status_command.set_defaults(handler=ledger_status)
+    ledger_migrate = ledger_commands.add_parser("migrate")
+    _common(ledger_migrate)
+    ledger_migrate.set_defaults(handler=migrate_ledger)
+    ledger_reset = ledger_commands.add_parser("reset")
+    _common(ledger_reset)
+    ledger_reset.add_argument("--confirm", required=True, help="literal RESET acknowledgement")
+    ledger_reset.set_defaults(handler=reset_ledger)
 
     batch = commands.add_parser("batch")
     batch_commands = batch.add_subparsers(dest="batch_command", required=True)
