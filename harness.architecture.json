@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Agent Harness Topology",
+    "subtitle": "Portable Agent Harness Architecture",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    { "id": "capabilities", "type": "backend", "label": "CAPABILITIES.json", "pos": [50, 150], "size": [160, 60] },
+    { "id": "vendor_skills", "type": "backend", "label": "Vendor Skills", "pos": [50, 250], "size": [160, 60] },
+    { "id": "first_party_skills", "type": "backend", "label": "First-Party Skills", "pos": [50, 350], "size": [160, 60] },
+    
+    { "id": "harness_cli", "type": "backend", "label": "Harness CLI", "sublabel": "bin/harness", "pos": [300, 250], "size": [140, 60], "tag": "init/update/adopt" },
+    
+    { "id": "project_skills", "type": "database", "label": ".harness/skills/", "pos": [550, 250], "size": [160, 60] },
+    { "id": "project_json", "type": "database", "label": "project.json", "pos": [550, 150], "size": [160, 60] },
+    { "id": "harness_lock", "type": "database", "label": "harness.lock", "pos": [550, 350], "size": [160, 60] },
+    
+    { "id": "claude_code", "type": "frontend", "label": "Claude Code", "pos": [850, 200], "size": [140, 60] },
+    { "id": "hermes_agent", "type": "frontend", "label": "Hermes Agent", "pos": [850, 300], "size": [140, 60] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Agent Harness Source", "wraps": ["capabilities", "vendor_skills", "first_party_skills"] },
+    { "kind": "region", "label": "Target Project", "wraps": ["harness_cli", "project_skills", "project_json", "harness_lock"] },
+    { "kind": "security-group", "label": "Runtimes", "wraps": ["claude_code", "hermes_agent"] }
+  ],
+  "connections": [
+    { "id": "c1", "from": "capabilities", "to": "harness_cli", "label": "read", "labelAt": [230, 180] },
+    { "id": "c2", "from": "vendor_skills", "to": "harness_cli", "label": "read", "labelAt": [230, 280] },
+    { "id": "c3", "from": "first_party_skills", "to": "harness_cli", "label": "read", "labelAt": [230, 380] },
+    { "id": "c4", "from": "harness_cli", "to": "project_skills", "label": "seed", "variant": "emphasis", "labelAt": [520, 280] },
+    { "id": "c5", "from": "harness_cli", "to": "project_json", "label": "validate", "labelAt": [520, 180] },
+    { "id": "c6", "from": "harness_cli", "to": "harness_lock", "label": "verify/lock", "labelAt": [520, 380] },
+    { "id": "c7", "from": "project_skills", "to": "claude_code", "label": "discovery", "labelDy": -20 },
+    { "id": "c8", "from": "project_skills", "to": "hermes_agent", "label": "fallback (REGISTRY)", "labelDy": 20 }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Source", "items": ["Agent Harness provides portable skills and configs."] },
+    { "dot": "emerald", "title": "Delivery", "items": ["Harness CLI writes to the target project's .harness directory."] },
+    { "dot": "rose", "title": "Consumption", "items": ["Agents discover the installed skills automatically."] }
+  ]
+}

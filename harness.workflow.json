@@ -1,0 +1,42 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Agent Harness Delivery Pipeline",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    { "id": "ideation", "label": "Ideation & Epic" },
+    { "id": "planning", "label": "Planning" },
+    { "id": "execution", "label": "Execution (afk)" },
+    { "id": "execution_hitl", "label": "Execution (hitl)" },
+    { "id": "delivery", "label": "Delivery" }
+  ],
+  "phases": [
+    { "id": "define", "label": "Define", "fromCol": 0, "toCol": 1 },
+    { "id": "implement", "label": "Implement", "fromCol": 2, "toCol": 3 },
+    { "id": "merge", "label": "Merge", "fromCol": 4, "toCol": 4 }
+  ],
+  "mainPath": ["grill_with_docs", "to_spec", "to_tickets", "implement", "to_pull_requests", "merge"],
+  "nodes": [
+    { "id": "grill_with_docs", "lane": "ideation", "col": 0, "type": "frontend", "label": "/grill-with-docs", "sublabel": "resolve ambiguity", "width": 120 },
+    { "id": "to_spec", "lane": "ideation", "col": 1, "type": "frontend", "label": "/to-spec", "sublabel": "publish epic" },
+    { "id": "to_tickets", "lane": "planning", "col": 2, "type": "backend", "label": "/to-tickets", "sublabel": "slice to tickets" },
+    { "id": "implement", "lane": "execution", "col": 3, "type": "backend", "label": "/implement", "sublabel": "afk slice" },
+    { "id": "to_guide", "lane": "execution_hitl", "col": 3, "type": "cloud", "label": "/to-guide", "sublabel": "hitl slice" },
+    { "id": "to_pull_requests", "lane": "delivery", "col": 4, "type": "security", "label": "/to-pull-requests", "sublabel": "open PR", "width": 120 },
+    { "id": "merge", "lane": "delivery", "col": 5, "type": "database", "label": "Merge", "sublabel": "developer merges" }
+  ],
+  "edges": [
+    { "from": "grill_with_docs", "to": "to_spec" },
+    { "from": "to_spec", "to": "to_tickets", "label": "epic branch" },
+    { "from": "to_tickets", "to": "implement", "label": "afk" },
+    { "from": "to_tickets", "to": "to_guide", "label": "hitl" },
+    { "from": "implement", "to": "to_pull_requests" },
+    { "from": "to_guide", "to": "to_pull_requests" },
+    { "from": "to_pull_requests", "to": "merge" }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "Pipeline", "items": ["Agent workflow from idea to merged code."] }
+  ]
+}
