@@ -10,6 +10,7 @@ decides how (or whether) to persist the result.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -96,16 +97,21 @@ def _changed_files(repository: Path, base_commit: str, candidate_commit: str) ->
 
 
 def _module_name(path: str) -> str | None:
-    if not path.endswith(".py"):
+    if "." not in path.rsplit("/", 1)[-1]:
         return None
-    stem = path[: -len(".py")]
-    if stem.endswith("/__init__"):
+    stem = path.rsplit(".", 1)[0]
+    if path.endswith(".py") and stem.endswith("/__init__"):
         stem = stem[: -len("/__init__")]
     return stem.replace("/", ".")
 
 
 def _build_import_graph(repository: Path, commit: str, files: list[str]) -> dict[str, set[str]]:
-    module_to_path = {name: path for path in files if (name := _module_name(path))}
+    module_to_path: dict[str, str] = {}
+    for path in files:
+        name = _module_name(path)
+        if name and (name not in module_to_path or path.endswith(".py")):
+            # Keep real Python modules authoritative when a resource shares their module-like name.
+            module_to_path[name] = path
     graph: dict[str, set[str]] = {path: set() for path in files}
     for path in files:
         if not path.endswith(".py"):
@@ -156,6 +162,57 @@ def _bounded_symbol_graph(
         path: {"imports": sorted(graph.get(path, ())), "imported_by": sorted(imported_by.get(path, ()))}
         for path in sorted(visited)
     }
+
+
+def _fallback_excerpt(text: str) -> list[str]:
+    """Return the deterministic bounded context for a file we cannot analyse."""
+    return text.splitlines()[:30]
+
+
+def _signature_for(node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef, lines: list[str]) -> str:
+    """Extract a definition header selected by the AST, excluding its body."""
+    body = node.body
+    end_line = body[0].lineno - 1 if body else node.end_lineno
+    header = "\n".join(lines[node.lineno - 1 : end_line]).strip()
+    if header:
+        return header
+
+    # A one-line suite puts the first body node on the header line.  The final colon is the
+    # definition delimiter even when parameters have annotations or defaults.
+    line = lines[node.lineno - 1]
+    return line[node.col_offset : line.rfind(":") + 1].strip()
+
+
+def _extract_python_signatures(text: str) -> list[str]:
+    """Return the module and top-level definition signatures from valid Python source."""
+    tree = ast.parse(text)
+    lines = text.splitlines()
+    signatures = ["module"]
+    for node in tree.body:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            signatures.append(_signature_for(node, lines))
+    return signatures
+
+
+def _dependency_context(
+    import_graph: dict[str, set[str]], seeds: list[str], files: dict[str, str]
+) -> dict[str, list[str]]:
+    """Build context for direct local dependencies only; never traverse a dependency's imports."""
+    seed_paths = set(seeds)
+    direct_dependencies = sorted(
+        {target for seed in seed_paths for target in import_graph.get(seed, set()) if target not in seed_paths}
+    )
+    context: dict[str, list[str]] = {}
+    for path in direct_dependencies:
+        text = files.get(path, "")
+        if path.endswith(".py"):
+            try:
+                context[path] = _extract_python_signatures(text)
+                continue
+            except (SyntaxError, ValueError):
+                pass
+        context[path] = _fallback_excerpt(text)
+    return context
 
 
 def _select_starting_files(
@@ -285,6 +342,17 @@ def build_context_package(
     starting_paths = [item.path for item in starting_files]
 
     symbol_graph = _bounded_symbol_graph(import_graph, starting_paths, symbol_graph_depth)
+    changed_paths = {path for path, _ in changed}
+    dependency_paths = sorted(
+        {target for path in changed_paths for target in import_graph.get(path, set()) if target not in changed_paths}
+    )
+    dependency_files = {path: _read_file(repository, candidate_commit, path) for path in dependency_paths}
+    direct_context = _dependency_context(import_graph, sorted(changed_paths), dependency_files)
+    for path, context in direct_context.items():
+        symbol_graph.setdefault(
+            path,
+            {"imports": sorted(import_graph.get(path, ())), "imported_by": sorted(imported_by.get(path, ()))},
+        )["context"] = context
 
     related_tests = _related_tests(import_graph, files, set(starting_paths))
 
