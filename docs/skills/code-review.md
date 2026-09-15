@@ -40,6 +40,13 @@ Issue tracker должен быть предоставлен. Если `docs/age
 
 Перед продолжением убедитесь, что фиксированная точка разрешается (`git rev-parse <fixed-point>`) и diff не пуст. Некорректная ссылка или пустой diff должны завершиться здесь, а не внутри двух параллельных подагентов.
 
+В coordinator-конвейере review получает candidate SHA и Context Package как evidence. Перед review
+и publish coordinator заново проверяет, что `base_commit` совпадает с актуальным
+`origin/<integration_ref>`; при drift нужен новый developer/rebase dispatch и новый risk assessment.
+После Warning допустим delta-review только для нового кандидата, чей diff затрагивает исключительно
+тестовые файлы и не совпадает с risk triggers: он запускается новым независимым dispatch, повторно
+проверяет только Warning-ось и наследует Standards=Clean.
+
 ### 2. Найдите источник спецификации
 
 Ищите исходную спецификацию в таком порядке:

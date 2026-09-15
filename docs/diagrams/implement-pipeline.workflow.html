@@ -5121,20 +5121,20 @@
         <text data-detail="fine" x="116" y="268" class="t-backend" font-size="7" text-anchor="middle">read-only</text>
         </g>
 
-        <g id="node-developer" data-node-id="developer" data-node-label="Разработчик" tabindex="0" role="button" aria-label="Focus Разработчик, тесты вперёд, Роли в dispatch › Реализация и review" aria-pressed="false" data-node-kind="backend" data-node-sublabel="тесты вперёд" data-node-tag="write" data-node-context="Роли в dispatch › Реализация и review">
-          <title>Разработчик · тесты вперёд · Роли в dispatch › Реализация и review · write</title>
+        <g id="node-developer" data-node-id="developer" data-node-label="Разработчик" tabindex="0" role="button" aria-label="Focus Разработчик, Context Package + TDD, Роли в dispatch › Реализация и review" aria-pressed="false" data-node-kind="backend" data-node-sublabel="Context Package + TDD" data-node-tag="write" data-node-context="Роли в dispatch › Реализация и review">
+          <title>Разработчик · Context Package + TDD · Роли в dispatch › Реализация и review · write</title>
           <rect x="192" y="212" width="136" height="68" rx="6" class="c-mask"/>
           <rect x="192" y="212" width="136" height="68" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(198 218) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="260" y="233" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Разработчик</text>
-          <text data-detail="context" x="260" y="250" class="t-muted" font-size="8" text-anchor="middle">тесты вперёд</text>
+          <text data-detail="context" x="260" y="250" class="t-muted" font-size="8" text-anchor="middle">Context Package + TDD</text>
         <text data-detail="fine" x="260" y="268" class="t-backend" font-size="7" text-anchor="middle">write</text>
         </g>
 
-        <g id="node-review" data-node-id="review" data-node-label="Code review" tabindex="0" role="button" aria-label="Focus Code review, Standards и Spec, Роли в dispatch › Реализация и review" aria-pressed="false" data-node-kind="security" data-node-sublabel="Standards и Spec" data-node-tag="каждый SHA" data-node-context="Роли в dispatch › Реализация и review">
-          <title>Code review · Standards и Spec · Роли в dispatch › Реализация и review · каждый SHA</title>
+        <g id="node-review" data-node-id="review" data-node-label="Code review" tabindex="0" role="button" aria-label="Focus Code review, base freshness + 2 оси, Роли в dispatch › Реализация и review" aria-pressed="false" data-node-kind="security" data-node-sublabel="base freshness + 2 оси" data-node-tag="каждый SHA" data-node-context="Роли в dispatch › Реализация и review">
+          <title>Code review · base freshness + 2 оси · Роли в dispatch › Реализация и review · каждый SHA</title>
           <rect x="408.4" y="212" width="136" height="68" rx="6" class="c-mask"/>
           <rect x="408.4" y="212" width="136" height="68" rx="6" class="c-security" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(414.4 218) scale(0.6875)">
@@ -5142,7 +5142,7 @@
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="476.4" y="233" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Code review</text>
-          <text data-detail="context" x="476.4" y="250" class="t-muted" font-size="8" text-anchor="middle">Standards и Spec</text>
+          <text data-detail="context" x="476.4" y="250" class="t-muted" font-size="8" text-anchor="middle">base freshness + 2 оси</text>
         <text data-detail="fine" x="476.4" y="268" class="t-security" font-size="7" text-anchor="middle">каждый SHA</text>
         </g>
 
@@ -5476,12 +5476,12 @@
       <div class="card">
         <div class="card-header">
           <div class="card-dot cyan"></div>
-          <h3>Живость</h3>
+          <h3>Живость и контекст</h3>
         </div>
         <ul>
           <li>&bull; Каждый dispatch сперва подтверждает активную модель</li>
-          <li>&bull; Молчащий dispatch эскалируется как блокер</li>
-          <li>&bull; Один тикет доходит до терминального batch до следующего</li>
+          <li>&bull; Context Package переиспользуется внутри batch</li>
+          <li>&bull; Write-role продолжает checkpoint; read-only роли завершаются</li>
         </ul>
       </div>
     </div>

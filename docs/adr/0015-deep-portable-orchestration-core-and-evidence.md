@@ -42,3 +42,6 @@ gate — gate-runner contract tests; изменение поведения ро�
 установленный harness: короткий skill сохраняет observable coordinator contract, а установленное
 project guidance совпадает с source template. Pilot и delivery reports помечают отсутствие telemetry
 как missing data вместо invented token value.
+
+Связанные последующие решения: [ADR 0016 — Context Package, checkpoint/continuation и
+base-commit gate](./0016-context-package-checkpoint-continuation-and-base-commit-gate.md).

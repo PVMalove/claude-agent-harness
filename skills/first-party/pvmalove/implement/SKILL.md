@@ -38,6 +38,18 @@ heartbeats while it works. Between send and report, poll the dispatch watchdog. 
 dispatch is a blocker for the developer; recover with a newly approved dispatch, never by editing a
 brief or state record.
 
+Before the first dispatch, the coordinator may register the deterministic, ledger-owned Context
+Package built from pinned commits. Reuse its exact diff, bounded dependency context, tests, and
+precedent cards inside the batch; it is evidence, not a replacement for the immutable brief or
+human approval. A write-role may save a non-terminal checkpoint and resume the same dispatch in a
+new worker session after a fresh self-report and heartbeat. Read-only roles cannot checkpoint or
+resume, and planned-trigger resumes still require an existing coordinator decision.
+
+The coordinator fetches the integration base and rechecks the base-commit gate before review and
+publish. A stale base requires a new developer/rebase dispatch. After a Warning, delta-review is
+allowed only for a new candidate whose diff is test-only; it is always a separate independent
+review dispatch.
+
 For an in-process transport, send records the immutable handoff and the coordinator immediately
 launches the role subagent in the declared worktree. An external adapter is transport-only and must
 preserve the same handoff, liveness, approval, and report contract.

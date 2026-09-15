@@ -19,6 +19,12 @@
 
 ## Связанные документы
 
+- Discovery Context начинается в `/grilling` через opt-in `Live Artifact`, проходит через
+  `Relevant Files` и ticket-specific filtered Repo Map, а backend batch использует LLM-free
+  `Context Package`, checkpoint/continuation для write-роли и base-commit gate. Операционные
+  правила собраны в [backend-orchestration](../agents/backend-orchestration.md), актуальное
+  состояние — в [current-state](../agents/current-state.md), решение записано в
+  [ADR 0016](../adr/0016-context-package-checkpoint-continuation-and-base-commit-gate.md).
 - Внутренние агенты: [`docs/agents/`](../agents/)
 - Политики-хуки: [`docs/hooks/`](../hooks/)
 - Редактируемая Archify-спецификация: [`docs/diagrams/skill-contract-fill.workflow.json`](../diagrams/skill-contract-fill.workflow.json)

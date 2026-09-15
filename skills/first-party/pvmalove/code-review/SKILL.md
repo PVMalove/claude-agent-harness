@@ -29,6 +29,12 @@ Capture the diff command once: `git diff <fixed-point>...HEAD` (three-dot, so th
 
 Before going further, confirm the fixed point resolves (`git rev-parse <fixed-point>`) and the diff is non-empty. A bad ref or empty diff should fail here — not inside two parallel sub-agents.
 
+For the gated `/implement` route, review also consumes the coordinator's pinned Context Package
+and candidate SHA. The coordinator must verify the integration base freshness before review and
+publish; stale base is handled by a new developer/rebase dispatch. A post-Warning delta-review is
+permitted only for a new candidate with a test-only diff and remains an independent review
+dispatch, never an in-place replacement of the original evidence.
+
 ### 2. Identify the spec source
 
 Look for the originating spec, in this order:

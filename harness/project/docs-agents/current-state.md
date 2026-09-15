@@ -88,6 +88,21 @@ python .harness/orchestration/coordinator.py --repo . batch decide ...
 `dispatch status --stale-after <sec>` — обобщение QA-lease-expiry на любой dispatch. Транспорт роли
 (`orca` или `in-process`) выбирается в assignment plan и не меняет контракт brief/report.
 
+### Discovery Context и Context Package
+
+До реализации curated-контекст проходит отдельный Discovery Pipeline: `/grilling` собирает
+`Live Artifact` только из явно одобренных пользователем путей; `/to-spec` сохраняет их в эпике под
+`## Relevant Files (Discovery Context)`; `/to-tickets` распределяет пути по дочерним тикетам и
+строит filtered Repo Map. Cheap advisory может предложить только дополнительные exact paths из
+этой карты и не получает полномочий менять scope, risk, QA или dispatch.
+
+`context_builder.py` — детерминированный LLM-free sibling coordinator-а. Он работает с pinned
+`base_commit`/`candidate_commit`, формирует exact diff, 5–10 стартовых файлов с причинами, bounded
+граф символов/зависимостей, связанные тесты, карточки ADR/precedent, размер и SHA-256 каждого файла.
+Локальные импорты разворачиваются на один уровень; для неподдержанных форматов сохраняются первые
+30 строк. Coordinator регистрирует immutable hash-проверяемый Context Package в ledger и в shadow
+режиме фиксирует его `fresh`/`stale` перед каждым новым dispatch.
+
 Write-роль может растянуть один dispatch на несколько worker session: `dispatch checkpoint`
 записывает неитоговую hashed ledger-запись (commit SHA, changed files, оставшийся DoD, проходящие
 проверки, остаточные risks/blockers, ссылка на Context Package) и переводит dispatch-status в

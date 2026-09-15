@@ -45,8 +45,12 @@
 Зафиксируйте следующее до закрытия записи batch:
 
 - ID batch и тикета, запущенные роли, ID dispatch и наличие повторного dispatch;
+- число worker sessions на dispatch, включая coordinator-recorded причину compaction/restart;
 - число токенов каждого dispatch только при наличии provider- или runtime-telemetry, с её источником и заметкой об отсутствии данных;
+- cache read/write tokens, если они наблюдаются runtime/provider;
 - метки времени старта и результата quality gate, а также время очереди, когда оно доступно;
+- долю файлов review diff вне объявленного task scope;
+- решения QA и вычисленную QA failure rate;
 - метку времени интеграции и все связанные ID дефектов, наблюдённые в объявленном окне.
 
 ## Измерение quality gate
@@ -63,6 +67,10 @@
 | --- | --- | --- |
 | Старты агента на закрытый тикет | Старты и повторы для каждого закрытого тикета | Записи batch и ID dispatch |
 | Токены на batch | Наблюдаемые provider- или runtime входные и выходные токены для каждого dispatch | Telemetry или записи выполнения; иначе заметка об отсутствии данных |
+| Cache read/write tokens | Наблюдаемые токены чтения/записи кэша по dispatch | Provider/runtime telemetry; иначе заметка об отсутствии данных |
+| Worker sessions на dispatch | Первый запуск плюс checkpoint/resume и причина каждого restart | Ledger и coordinator decision; self-report роли не подходит |
+| Review diff scope excess | Доля файлов review diff вне task scope | Immutable dispatch и risk records |
+| QA failure rate | Доля QA dispatch, чьё coordinator decision не `accept` | Coordinator decisions |
 | Wall time quality gate | От старта gate до результата, с отдельной очередью | Метки времени quality gate |
 | Дефекты после интеграции | Связанные дефекты в объявленном окне по правилу серьёзности | Трекер задач и записи дефектов |
 

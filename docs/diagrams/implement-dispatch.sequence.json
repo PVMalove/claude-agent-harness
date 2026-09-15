@@ -24,14 +24,14 @@
   ],
   "messages": [
     { "from": "human", "to": "session", "y": 180, "label": "ticket + approve plan", "variant": "emphasis" },
-    { "from": "session", "to": "cli", "y": 220, "label": "batch create + approve", "variant": "emphasis" },
-    { "from": "cli", "to": "architect", "y": 260, "label": "immutable brief", "variant": "default" },
+    { "from": "session", "to": "cli", "y": 220, "label": "batch create + fetch origin", "variant": "emphasis" },
+    { "from": "cli", "to": "architect", "y": 260, "label": "fresh Context Package + brief", "variant": "default" },
     { "from": "architect", "to": "cli", "y": 300, "label": "decision report", "variant": "return" },
     { "from": "session", "to": "human", "y": 340, "label": "approve architecture", "variant": "return" },
-    { "from": "cli", "to": "writer", "y": 390, "label": "approved developer brief", "variant": "emphasis" },
+    { "from": "cli", "to": "writer", "y": 390, "label": "approved package + brief", "variant": "emphasis" },
     { "from": "writer", "to": "remote", "y": 430, "label": "push candidate SHA", "variant": "default" },
     { "from": "writer", "to": "cli", "y": 470, "label": "commit + checks report", "variant": "return" },
-    { "from": "cli", "to": "review", "y": 510, "label": "pinned candidate SHA", "variant": "emphasis" },
+    { "from": "cli", "to": "review", "y": 510, "label": "pinned SHA + base gate", "variant": "emphasis" },
     { "from": "review", "to": "cli", "y": 550, "label": "Standards + Spec reports", "variant": "return" },
     { "from": "session", "to": "human", "y": 612, "label": "approve QA", "variant": "return" },
     { "from": "cli", "to": "qa", "y": 640, "label": "QA on pinned SHA", "variant": "emphasis" },
@@ -40,8 +40,8 @@
     { "from": "session", "to": "human", "y": 780, "label": "final report → /to-pull-requests", "variant": "return" }
   ],
   "cards": [
-    { "dot": "cyan", "title": "Неподвижный brief", "items": ["Каждая роль получает отдельный dispatch", "Изменение scope требует нового dispatch"] },
+    { "dot": "cyan", "title": "Неподвижный brief", "items": ["Каждая роль получает отдельный dispatch", "Package переиспользуется внутри batch; scope — новый dispatch"] },
     { "dot": "amber", "title": "Человеческие gates", "items": ["Approve перед планом", "Approve перед расходом QA"] },
-    { "dot": "emerald", "title": "Pinned evidence", "items": ["Review и QA работают с candidate SHA", "Публикуется только принятый SHA"] }
+    { "dot": "emerald", "title": "Pinned evidence", "items": ["Review и QA работают с candidate SHA", "Base gate перед review/publish; публикуется принятый SHA"] }
   ]
 }

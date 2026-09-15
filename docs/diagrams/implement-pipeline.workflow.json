@@ -30,8 +30,8 @@
   "nodes": [
     {"id": "architect", "lane": "roles", "col": 0, "type": "backend", "label": "Архитектор", "sublabel": "разбор архитектуры", "tag": "read-only", "width": 136},
     {"id": "plan_gate", "lane": "human", "col": 0, "type": "security", "label": "Approve плана", "sublabel": "до первой строки", "tag": "человек", "width": 136},
-    {"id": "developer", "lane": "roles", "col": 1, "type": "backend", "label": "Разработчик", "sublabel": "тесты вперёд", "tag": "write", "width": 136},
-    {"id": "review", "lane": "roles", "col": 2, "type": "security", "label": "Code review", "sublabel": "Standards и Spec", "tag": "каждый SHA", "width": 136},
+    {"id": "developer", "lane": "roles", "col": 1, "type": "backend", "label": "Разработчик", "sublabel": "Context Package + TDD", "tag": "write", "width": 136},
+    {"id": "review", "lane": "roles", "col": 2, "type": "security", "label": "Code review", "sublabel": "base freshness + 2 оси", "tag": "каждый SHA", "width": 136},
     {"id": "qa_gate", "lane": "human", "col": 2, "type": "security", "label": "Approve QA", "sublabel": "видит готовый диф", "tag": "человек", "width": 136},
     {"id": "qa", "lane": "roles", "col": 3, "type": "backend", "label": "QA в clean-room", "sublabel": "закреплённый SHA", "tag": "независимо", "width": 136},
     {"id": "findings", "lane": "exceptions", "col": 3, "type": "messagebus", "label": "Находки QA", "sublabel": "гейт не пройден", "width": 136},
@@ -54,6 +54,6 @@
   "cards": [
     {"dot": "amber", "title": "Гейты человека", "items": ["План архитектора утверждается до первой строки кода", "Переход от review к QA — отдельный approve", "Публикация никогда не открывает pull request"]},
     {"dot": "emerald", "title": "Жёсткий порядок", "items": ["Нет developer без принятого отчёта архитектора", "Review проходит каждый кандидат, не только high-risk", "QA идёт по закреплённому SHA, не по проверкам разработчика"]},
-    {"dot": "cyan", "title": "Живость", "items": ["Каждый dispatch сперва подтверждает активную модель", "Молчащий dispatch эскалируется как блокер", "Один тикет доходит до терминального batch до следующего"]}
+    {"dot": "cyan", "title": "Живость и контекст", "items": ["Каждый dispatch сперва подтверждает активную модель", "Context Package переиспользуется внутри batch", "Write-role продолжает checkpoint; read-only роли завершаются"]}
   ]
 }

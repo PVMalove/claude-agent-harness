@@ -1,64 +1,93 @@
-# Архитектура и техническое устройство Agent Harness
+# Архитектура Agent Harness
 
-Этот документ предоставляет всесторонний обзор архитектуры, бизнес-логики и потоков данных проекта `claude-agent-harness`. Он предназначен для новых разработчиков и контрибьюторов, чтобы быстро погрузиться в устройство системы.
+Agent Harness — переносимый runtime-native snapshot skills, правил, hooks и project-owned
+конфигурации. Исходный репозиторий поставляет capability, а целевой проект получает независимый
+`.harness`-слой: во время работы исходный клон харнесса не нужен.
 
-## 1. Технологический стек и архитектура
+## Слои и ownership
 
-**Технологический стек:**
-- **Язык программирования:** Python (3.9+ для глобального CLI `bin/install-global` и скриптов `scripts/test-clean-room`, 3.14+ для разработки проекта согласно `pyproject.toml`).
-- **Среда выполнения (Runtimes):** Проект поддерживает интеграцию с Claude Code, Codex, Kimi Code, OpenCode и Hermes Agent.
-- **Тестирование:** `pytest` (как видно из наличия `.pytest_cache` и директории `tests/`).
-- **Зависимости:** Стандартная библиотека Python (`hashlib`, `argparse`, `json`, `subprocess`). Внешних рантайм-зависимостей минимум для обеспечения максимальной портативности CLI.
+| Слой | Источник истины | Ответственность |
+| --- | --- | --- |
+| Capability catalog | `harness/CAPABILITIES.json` | Разрешение состава snapshot и зависимостей capability. |
+| Skill packages | `skills/vendor/`, `skills/first-party/` | Инструкции, переводы и overrides; vendor snapshot вручную не редактируется. |
+| Project snapshot | `.harness/skills/`, `harness.lock`, `REGISTRY.md` | Независимая поставка в целевой репозиторий, drift/provenance. |
+| Project contract | `.harness/project.json` | Язык, base branch, branch pattern и QA-команды. |
+| Orchestration core | `contract.py`, `ledger.py`, `coordinator.py` | Policy, approvals, immutable records, lifecycle, audit и dispatch. |
+| Evidence execution | `gate_runner.py`, `delivery_stats.py` | Проверки, санитизированное evidence и source-backed telemetry. |
+| Runtime boundary | `orca_adapter.py` или `in-process` | Только доставка уже approved brief; не меняет scope и state. |
 
-**Архитектурные подходы:**
-- **Portable Agent Orchestration:** Харнесс спроектирован как переносимый инструмент. Логика не завязана на один репозиторий; CLI инжектирует (seeds) навыки и конфигурации в целевые проекты, которые затем живут независимо.
-- **Role-Based Execution:** Разделение ответственности агентов на строго определённые роли (`Developer`, `Architect`, `QA`, `Code-Review`). Каждая роль имеет свои границы (write vs read-only).
-- **Clean-room Separation:** Изоляция проверок (например, QA) в чистых git worktrees для предотвращения побочных эффектов.
+## Сквозная модель поставки
 
-## 2. Бизнес-логика и структура проекта
+`harness init/adopt/update` разрешает capability из каталога, копирует пакеты и фиксирует lock.
+Рантайм находит один и тот же snapshot через native skill roots; для Hermes Agent используется
+`.harness/skills/REGISTRY.md`. Project-owned overlays и runtime integrations проходят отдельную
+проверку provenance и inventory. Секреты не входят ни в lock, ни в brief, ни в reports.
 
-### Доменная модель
-- **Capability:** Именованный набор навыков (skills), например `project-foundation`, `mattpocock-suite`, `pvmalove-suite`. Определяет, какие скиллы получит проект.
-- **Skill:** Единица знаний/инструкций для агента (включает `SKILL.md`). Бывают *Vendor* (закреплённые снимки сторонних авторов) и *First-party* (наши собственные или переопределения).
-- **Project Harness:** Установленный в целевой проект набор скиллов (`.harness/skills`), блокировок (`harness.lock`) и конфигураций (`project.json`).
-- **Batch Boundary:** Группа работы, привязанная к одному тикету и ветке, гарантирующая изолированную передачу контекста (Handoff brief) между ролями.
+## Discovery Pipeline
 
-### Физическая структура
-- `bin/`: Инструменты глобальной установки (`install-global`).
-- `harness/`: 
-  - `bin/harness` — основной CLI-инструмент для управления харнессом в целевом проекте.
-  - `orchestration/`, `project/`, `gate_runner/` — ядро выполнения и валидации.
-  - `CAPABILITIES.json` — реестр всех доступных capability.
-- `skills/`:
-  - `vendor/` — точные слепки сторонних навыков.
-  - `first-party/pvmalove/` — кастомные навыки проекта.
-- `global/` и `global-skills/`: Шаблоны глобальных профилей для агентов.
-- `scripts/`: Скрипты инвентаризации, генерации реестра и clean-room тестирования.
-- `docs/`: ADR (архитектурные решения), диаграммы и инструкции.
+Кодовый и проектный контекст передаётся между сессиями через проверяемые артефакты:
 
-## 3. Взаимодействие компонентов и диаграммы
+1. `/grilling` предлагает кандидатные пути и записывает в `Live Artifact` только явно одобренные
+   пользователем файлы.
+2. `/to-spec` сохраняет список в эпике в `## Relevant Files (Discovery Context)`.
+3. `/to-tickets` назначает пути tracer-bullet тикетам, строит path-only filtered Repo Map и один раз
+   вызывает cheap advisory. Advisory может только добавить exact dependency из карты.
+4. `context_builder.py` читает pinned `base_commit`/`candidate_commit` без LLM и строит immutable
+   Context Package: exact diff, 5–10 стартовых файлов с причинами, bounded graph, связанные тесты,
+   ADR/precedent cards, размер и SHA-256. Локальные импорты раскрываются на один уровень; для
+   неподдержанных форматов используются первые 30 строк.
+5. Coordinator регистрирует package в ledger и перед каждым новым dispatch записывает его freshness
+   в shadow-режиме. Stale package surfaced coordinator-у, но пока не блокирует dispatch.
 
-Для визуализации ключевых процессов и архитектуры были выбраны и сгенерированы наиболее подходящие типы диаграмм с помощью навыка **Archify**. Ниже представлены ссылки на интерактивные HTML-артефакты:
+![Discovery Pipeline](./docs/diagrams/previews/discovery-pipeline.workflow.png)
 
-### [Architecture: Agent Harness Topology](harness.architecture.html)
-Демонстрирует, как исходный Agent Harness переносит навыки в целевой проект, и как они обнаруживаются конечными рантаймами (Claude Code, Hermes Agent).
-- **Scope:** Транспортировка и обнаружение навыков
-- **Core components:** `CAPABILITIES.json`, CLI, `.harness/skills`, Runtimes
-- **Primary path:** Навыки загружаются через CLI и сохраняются в целевой проект
+[Открыть интерактивную Discovery Pipeline-схему](./docs/diagrams/discovery-pipeline.workflow.html)
 
-*(Открой файл `harness.architecture.html` в браузере для интерактивного просмотра)*
+## Backend orchestration
 
-### [Workflow: Agent Harness Delivery Pipeline](harness.workflow.html)
-Пайплайн доставки ценности от идеи до Merge Request'а с участием агентов (afk) и человека (hitl).
-- **Participants:** Ideation, Planning, Execution, Delivery
-- **Order:** `/grill-with-docs` -> `/to-spec` -> `/to-tickets` -> `/implement` -> `/to-pull-requests` -> Merge
-- **Branches:** После создания тикетов путь разделяется на автономную работу (`/implement`) и работу с участием человека (`/to-guide`).
+`backend-orchestration` — opt-in capability поверх `pvmalove-suite`. Coordinator владеет batch,
+approval, scope changes, QA lane и принятием reports. Role manifest владеет режимом роли, write zone,
+proof и risk triggers; `.harness/orchestration.json` только разрешает project-owned provider/model,
+transport, zone, budget и команды проверки.
 
-*(Открой файл `harness.workflow.html` в браузере для интерактивного просмотра)*
+Обычный `/implement` проходит `architect → developer → code-review → qa → publish`, с отдельным
+approval каждого handoff. Каждая роль получает immutable brief, подтверждает model self-report и
+передаёт heartbeat. Review и QA работают с pinned candidate SHA; PR остаётся отдельным ручным шагом
+`/to-pull-requests`, merge не автоматизируется.
 
-## 4. Тестирование (краткий обзор)
+Batch lifecycle: `planned → awaiting-approval ↔ active → completed | blocked | failed`. Completion
+report оставляет dispatch в `reported` до coordinator decision. Только write-роли могут записать
+non-terminal checkpoint и продолжить тот же dispatch под новым worker session ID; новая сессия снова
+проходит self-report и heartbeat и не получает старый chat/traceback. Rate-limit resume разрешён
+автоматически, planned trigger требует существующего coordinator decision. Read-only роли не
+растягиваются через checkpoint.
 
-- **Интеграционные и модульные тесты:** В проекте используется `pytest`. Файлы тестов располагаются в директории `tests/` (например, `test_context_builder.py`, `test_gate_runner.py`). Они проверяют логику формирования контекста, прохождение гейтов и валидацию манифестов.
-- **Quality Gate (qa-gate):** Целевые проекты, в которые установлен харнесс, проверяются с помощью `qa-gate`. Команды для проверок (например, `make test`, `make check`) задаются в конфигурации проекта (`.harness/project.json` в поле `qa-gate-command`).
-- **Clean-room QA:** В рамках QA-роли тестирование запускается в отдельном чистом Git worktree. Это гарантирует, что локальные непроиндексированные изменения (dirty state) не повлияют на результаты проверки.
-- **Верификация целостности (health / drift):** Встроенные в CLI команды `harness health` и `harness diff` действуют как проверки целостности. Они обнаруживают дрейф между локально установленными навыками и ожидаемыми состояниями из `harness.lock`.
+`batch create` сначала выполняет `git fetch origin <integration_ref>` и фиксирует актуальную вершину.
+Перед review/publish base-commit gate повторяется; drift устраняется новым developer/rebase dispatch,
+после чего candidate заново проходит risk assessment. Delta-review после Warning разрешён только для
+test-only diff и всегда является новым независимым review dispatch.
+
+![Backend batch lifecycle](./docs/diagrams/previews/backend-batch.lifecycle.png)
+
+[Открыть интерактивную lifecycle-схему](./docs/diagrams/backend-batch.lifecycle.html)
+
+## Диаграммы и проверка
+
+Канонические исходники и интерактивные артефакты находятся в [docs/diagrams/](./docs/diagrams/README.md):
+
+- [полный pipeline](./docs/diagrams/delivery-pipeline.workflow.html);
+- [Discovery Pipeline](./docs/diagrams/discovery-pipeline.workflow.html);
+- [архитектура harness](./docs/diagrams/harness-topology.architecture.html);
+- [implement с гейтами](./docs/diagrams/implement-pipeline.workflow.html) и [sequence](./docs/diagrams/implement-dispatch.sequence.html);
+- [runtime/dispatch](./docs/diagrams/backend-runtime.workflow.html), [QA/PR](./docs/diagrams/qa-call-path.workflow.html);
+- [capability dataflow](./docs/diagrams/capability-delivery.dataflow.html), [skill contract](./docs/diagrams/skill-contract-fill.workflow.html).
+
+Правится только `*.json`; после изменения запускаются `validate`, `deliver` и `visual-check`. Код
+проверяется `scripts/test-clean-room`, unit-тестами и командами из `.harness/project.json`. Для
+telemetry `delivery-stats` сохраняет cache read/write tokens, worker sessions/restart reasons,
+review diff scope excess и QA failure rate только при наличии наблюдаемого источника; отсутствующие
+значения остаются `нет данных`.
+
+Подробные правила находятся в [current-state.md](./docs/agents/current-state.md),
+[backend-orchestration.md](./docs/agents/backend-orchestration.md), [harness-guide.md](./docs/agents/harness-guide.md)
+и [ADR 0016](./docs/adr/0016-context-package-checkpoint-continuation-and-base-commit-gate.md).

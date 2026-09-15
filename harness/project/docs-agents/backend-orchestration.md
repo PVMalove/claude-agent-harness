@@ -182,6 +182,37 @@ summary, а санитизированный полный лог доступе�
 он проверит JSON, существование profile/zone, совместимость capability, fallback и режим
 `code-review`.
 
+### Discovery Context и Context Package
+
+Discovery Pipeline переносит проверенный контекст от проектирования к dispatch. `/grilling` ведёт
+`Live Artifact` с кандидатными путями, но добавляет путь только после явного согласия пользователя.
+`/to-spec` сохраняет утверждённый список в эпике под `## Relevant Files (Discovery Context)`, а
+`/to-tickets` назначает каждый путь подходящему tracer-bullet тикету и строит path-only filtered Repo
+Map. Один cheap advisory-вызов может добавить только точные зависимости из этого Repo Map; его
+вывод не является evidence или authority.
+
+Перед первым dispatch coordinator может зарегистрировать детерминированный Context Package в
+ledger:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . context-package register \
+  --batch <batch-id> --candidate-commit <candidate-sha> \
+  --symbol-graph-depth 1 --min-starting-files 5 --max-starting-files 10 \
+  --max-package-size-bytes 200000
+```
+
+`context_builder.py` не вызывает LLM и работает по pinned base/candidate commits. Package содержит
+точный diff, 5–10 стартовых файлов с причинами, bounded symbol/dependency graph, связанные тесты,
+краткие карточки ADR/precedent, SHA-256 каждого включённого файла и размер. Для Python AST извлекает
+сигнатуры прямых локальных зависимостей; текущий Discovery-контракт ограничивает разворачивание
+одним уровнем. Неподдержанный формат получает первые 30 строк как deterministic fallback. При
+превышении лимита сборка завершается ошибкой, а не молча обрезает пакет.
+
+Запись package immutable, versioned и hash-проверяема. Перед каждым новым dispatch coordinator
+сверяет её base/hash с текущим состоянием и сохраняет результат `fresh` или `stale`; в текущей
+shadow-фазе stale только surfaced coordinator-у и ещё не блокирует создание dispatch. Package не
+заменяет immutable brief и не отменяет обязательные self-report, heartbeat, review или QA.
+
 ## 3. Выбрать роли и спланировать batch
 
 В базовом наборе есть три write-роли и три read-only роли.

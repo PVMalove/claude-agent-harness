@@ -55,6 +55,17 @@ blocker; recovery создаёт новый approved dispatch, а не реда�
 запускает role subagent в указанном worktree. External adapter является только transport и сохраняет
 тот же handoff, liveness, approval и report contract.
 
+Перед первым dispatch coordinator может зарегистрировать immutable Context Package, собранный
+`context_builder.py` без LLM из pinned `base_commit`/`candidate_commit`. Он содержит exact diff,
+5–10 стартовых файлов с причинами, bounded graph, связанные тесты, карточки ADR/precedent и SHA-256
+включённых файлов. Прямые локальные импорты разворачиваются на один уровень; неизвестные форматы
+получают первые 30 строк. Перед каждым dispatch freshness package проверяется в shadow-режиме.
+
+Write-роли могут записать checkpoint и продолжить тот же dispatch в новой worker session; checkpoint
+не является completion report и переносит только SHA, changed files, остаточный DoD, проверки, риски,
+blockers и ссылку на package. Read-only роли не могут checkpoint/resume. Rate-limit resume разрешён
+автоматически, остальные planned triggers требуют coordinator decision.
+
 ## Авторитетные guidance
 
 Это короткий coordinator contract, а не вторая orchestration-процедура. Полные правила —

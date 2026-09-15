@@ -15,6 +15,14 @@
 `/to-guide` → PR открывает разработчик через `/to-pull-requests`. Ни один шаг не запускает следующий
 сам. Картинка кликабельна: за ней интерактивная версия с поиском, фокусом и экспортом.
 
+[![Discovery Pipeline: от решения к Context Package](./docs/diagrams/previews/discovery-pipeline.workflow.png)](./docs/diagrams/discovery-pipeline.workflow.html)
+
+Discovery Pipeline сохраняет согласованный контекст между сессиями: `/grilling` ведёт `Live Artifact`
+только после explicit opt-in пользователя → `/to-spec` переносит пути в `Relevant Files` →
+`/to-tickets` назначает их тикетам и проверяет filtered Repo Map одним cheap advisory-вызовом →
+`context_builder.py` собирает deterministic Context Package. Advisory может только добавить exact
+dependencies и не имеет полномочий изменять scope или запускать dispatch.
+
 [![Архитектура переносимого Agent Harness](./docs/diagrams/previews/harness-topology.architecture.png)](./docs/diagrams/harness-topology.architecture.html)
 
 Architecture-схема показывает границу между исходным harness и целевым проектом: capability
@@ -51,8 +59,11 @@ Architecture-схема показывает границу между исхо�
 Проектный `.harness/project.json` определяет ветки, язык и QA. Работа начинается с тикета,
 проходит в issue-ветке и требует явного подтверждения разработчика перед PR; merge всегда ручной.
 При выбранной `backend-orchestration` coordinator ведёт утверждённые batch и immutable dispatch;
-человек явно утверждает каждый dispatch. Coordinator применяет независимый review и clean-room QA
-к candidate SHA. Runtime adapter доставляет только
+человек явно утверждает каждый dispatch. Context Package строится без LLM из pinned commits,
+проверяется на freshness в shadow-режиме и переиспользуется ролями одного batch; write-роли могут
+продолжить тот же dispatch из checkpoint, а read-only роли — нет. Base-commit gate сверяет
+`origin/<integration_ref>` перед review/publish, delta-review ограничен test-only diff. Coordinator
+применяет независимый review и clean-room QA к candidate SHA. Runtime adapter доставляет только
 одобренную работу, а публикация SHA и PR остаются за разработчиком.
 
 Полный текущий контракт, роли, lifecycle, FIFO QA lane и локальное state-хранилище описаны в
@@ -75,7 +86,8 @@ worktree; найденные дефекты возвращают работу р
 [![Последовательность gated dispatch в /implement](./docs/diagrams/previews/implement-dispatch.sequence.png)](./docs/diagrams/implement-dispatch.sequence.html)
 
 Sequence-схема дополняет workflow: она фиксирует участников, два человеческих approval-gate,
-передачу immutable brief, candidate SHA, независимые отчёты review/QA и публикацию только принятого SHA.
+передачу Context Package и immutable brief, candidate SHA, base-commit gate, независимые отчёты
+review/QA и публикацию только принятого SHA.
 
 [![Поток capability от каталога к runtime](./docs/diagrams/previews/capability-delivery.dataflow.png)](./docs/diagrams/capability-delivery.dataflow.html)
 
@@ -86,7 +98,9 @@ Hermes fallback. Схема не содержит секретов и не оп�
 Остальные визуальные карты — [резолв runtime и dispatch](./docs/diagrams/backend-runtime.workflow.html)
 (транспорт `orca` или `in-process`, self-report модели, heartbeat),
 [жизненный цикл batch](./docs/diagrams/backend-batch.lifecycle.html) и
-[QA/создание PR](./docs/diagrams/qa-call-path.workflow.html). Все девять диаграмм, их исходники и
+[QA/создание PR](./docs/diagrams/qa-call-path.workflow.html), [полный harness workflow](./docs/diagrams/harness-guide-navigation.workflow.html),
+[контракт скила](./docs/diagrams/skill-contract-fill.workflow.html) и [поток capability](./docs/diagrams/capability-delivery.dataflow.html).
+Все 11 диаграмм, их исходники и
 порядок обновления — в [docs/diagrams/](./docs/diagrams/README.md).
 
 При выборе `pvmalove-suite` `harness init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект:
