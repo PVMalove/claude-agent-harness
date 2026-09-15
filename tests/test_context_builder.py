@@ -14,7 +14,6 @@ MODULE_ROOT = Path(__file__).resolve().parents[1] / "harness" / "context_builder
 sys.path.insert(0, str(MODULE_ROOT))
 from context_builder import (  # noqa: E402
     ContextPackageError,
-    _dependency_context,
     build_context_package,
 )
 
@@ -156,16 +155,30 @@ class ContextBuilderTests(ContextBuilderFixture):
         )
         self.assertNotIn("context", package.symbol_graph["pkg/second_hop.py"])
 
-    def test_uses_first_thirty_lines_for_non_python_and_unparseable_direct_dependencies(self) -> None:
-        unsupported = "\n".join(f"line {index}" for index in range(35))
-        context = _dependency_context(
-            {"seed.py": {"broken.py", "notes.txt"}},
-            ["seed.py"],
-            {"broken.py": "def incomplete(:\n", "notes.txt": unsupported},
+    def test_uses_first_thirty_lines_for_a_non_python_direct_dependency_from_the_public_builder(self) -> None:
+        _write(self.repo, "pkg/notes.txt", "\n".join(f"line {index}" for index in range(35)))
+        _run("add", ".", cwd=self.repo)
+        _run("commit", "-qm", "test: add text dependency", cwd=self.repo)
+        base_with_notes = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        _write(
+            self.repo,
+            "pkg/base.py",
+            "from pkg import dependency, notes\n\n\ndef helper():\n    return dependency.compose(2)\n",
         )
+        _run("add", ".", cwd=self.repo)
+        _run("commit", "-qm", "test: import text dependency", cwd=self.repo)
+        candidate_with_notes = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
 
-        self.assertEqual(context["broken.py"], ["def incomplete(:"])
-        self.assertEqual(context["notes.txt"], [f"line {index}" for index in range(30)])
+        package = build_context_package(self.repo, base_with_notes, candidate_with_notes, min_starting_files=1)
+
+        self.assertEqual(
+            package.symbol_graph["pkg/notes.txt"]["context"],
+            [f"line {index}" for index in range(30)],
+        )
 
     def test_makes_no_model_call_and_stays_pure_python_over_git_plumbing(self) -> None:
         module_source = (MODULE_ROOT / "context_builder.py").read_text(encoding="utf-8")

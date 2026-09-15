@@ -97,16 +97,21 @@ def _changed_files(repository: Path, base_commit: str, candidate_commit: str) ->
 
 
 def _module_name(path: str) -> str | None:
-    if not path.endswith(".py"):
+    if "." not in path.rsplit("/", 1)[-1]:
         return None
-    stem = path[: -len(".py")]
-    if stem.endswith("/__init__"):
+    stem = path.rsplit(".", 1)[0]
+    if path.endswith(".py") and stem.endswith("/__init__"):
         stem = stem[: -len("/__init__")]
     return stem.replace("/", ".")
 
 
 def _build_import_graph(repository: Path, commit: str, files: list[str]) -> dict[str, set[str]]:
-    module_to_path = {name: path for path in files if (name := _module_name(path))}
+    module_to_path: dict[str, str] = {}
+    for path in files:
+        name = _module_name(path)
+        if name and (name not in module_to_path or path.endswith(".py")):
+            # Keep real Python modules authoritative when a resource shares their module-like name.
+            module_to_path[name] = path
     graph: dict[str, set[str]] = {path: set() for path in files}
     for path in files:
         if not path.endswith(".py"):
