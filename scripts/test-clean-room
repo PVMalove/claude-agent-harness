@@ -254,6 +254,18 @@ def _run(test_root: Path):
         shallow=False,
     ):
         sys.exit("pvmalove-suite override did not install the first-party to-spec")
+    to_tickets_source = ROOT / "skills" / "first-party" / "pvmalove" / "to-tickets" / "SKILL.md"
+    to_tickets_installed = pv_project / ".harness" / "skills" / "to-tickets" / "SKILL.md"
+    if not filecmp.cmp(to_tickets_source, to_tickets_installed, shallow=False):
+        sys.exit("pvmalove-suite override did not install the first-party to-tickets")
+    to_tickets_text = to_tickets_installed.read_text(encoding="utf-8")
+    for required_text in (
+        "enumerate every path under those directories",
+        "one cheap-model advisory call",
+        "stop and report blocker",
+    ):
+        if required_text not in to_tickets_text:
+            sys.exit(f"to-tickets discovery contract is missing: {required_text}")
     for name in ("grill-me", "grill-with-docs"):
         if not filecmp.cmp(
             ROOT / "skills" / "first-party" / "pvmalove" / name / "SKILL.md",

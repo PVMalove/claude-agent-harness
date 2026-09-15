@@ -26,6 +26,7 @@ You must execute this skill in two distinct phases to ensure the user agrees wit
 ### Phase 2: Drafting & Publishing (After User Approval)
 1. **Draft the File:** Write the spec using the `<spec-template>` below, in its own folder under `docs/tasks/`.
     - *Naming convention:* If the issue ID is known, use it. If not, use a descriptive slug (e.g., `docs/tasks/add-user-auth/add-user-auth.md`) and rename both the folder and file later once the ID is generated — see `docs/agents/artifacts.md` for the full convention, including the epic-folder grouping.
+    - Take the final Discovery Context file list from the session's `Live Artifact`; if artifact publishing is unavailable, take the approved-paths list from the final Trunk summary instead. Append it in the template's final `## Relevant Files (Discovery Context)` section. Preserve every path and any supplied context; do not rediscover or replace that list while drafting.
 2. **Publish to Tracker:** Publish the issue using the CLI: `gh issue create --body-file <path>`.
     - **CRITICAL:** Do NOT use an inline `--body` heredoc. Spec bodies contain characters (nested quotes, backticks, etc.) that break heredoc quoting. Always use `--body-file`.
 3. **Apply Labels:** This published issue acts as the feature's **epic**. Apply the following labels (see `docs/agents/triage-labels.md` for the full taxonomy):
@@ -82,6 +83,9 @@ A strict list of things that will NOT be done. This is your insurance policy aga
 
 ## Further Notes
 Any remaining context or constraints.
+
+## Relevant Files (Discovery Context)
+The final Discovery Context file list captured in the session's `Live Artifact`, or in the final Trunk summary when artifact publishing is unavailable, including each path and any supplied context.
 
 </spec-template>
 <!--
