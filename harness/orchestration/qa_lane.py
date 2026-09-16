@@ -63,7 +63,13 @@ def _enqueue(root: Path, dispatch_id: str, ops: Any) -> tuple[Path, dict[str, An
     entry = {"dispatch_id": dispatch_id, "sequence": counter["next"], "queued_at": ops._now()}
     path = _queue_root(root, ops) / f"{entry['sequence']:020d}-{dispatch_id}.json"
     ops._write_exclusive(path, entry)
-    ops._replace(counter_path, {"next": counter["next"] + 1})
+    next_counter = {"next": counter["next"] + 1}
+    if counter_path.exists():
+        ops._replace(counter_path, next_counter)
+    else:
+        # The first queue entry in a fresh ledger has no mutable counter yet.  Seed it as an
+        # immutable record; subsequent enqueues may use the ledger transition primitive.
+        ops._write_exclusive(counter_path, next_counter)
     return path, entry
 
 
