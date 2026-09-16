@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import re
-import socket
 import subprocess
 import sys
 import time
@@ -40,8 +39,10 @@ from contract import (
 )
 from context_builder import ContextPackageError, build_context_package
 from dispatch_preflight import PreflightError, prepare as prepare_dispatch
-from gate_runner import CleanRoomPolicy, GateRunnerError, concise_evidence, run_gate, sanitise
+from gate_runner import concise_evidence, sanitise
 from ledger import LedgerError, LifecycleLedger
+from coordinator_cli import build_parser
+import qa_lane
 
 
 STATE_REL = Path(".harness/orchestration/state")
@@ -262,12 +263,6 @@ def _records_root(root: Path) -> Path:
         return LifecycleLedger(root).records_root()
     except LedgerError as exc:
         raise CoordinatorError(str(exc)) from exc
-
-
-def _qa_state_root(args: argparse.Namespace, repo: Path) -> Path:
-    if getattr(args, "state_dir", None):
-        raise CoordinatorError("QA lane is repository-scoped and does not support --state-dir")
-    return repo / STATE_REL
 
 
 @contextmanager
@@ -639,64 +634,6 @@ def _plan_path(root: Path, batch_id: str) -> Path:
     return _records_root(root) / "plans" / f"{_safe_id(batch_id, 'batch')}.json"
 
 
-def _qa_lane_path(root: Path) -> Path:
-    return _records_root(root) / "qa-lane" / "lease.json"
-
-
-def _qa_queue_root(root: Path) -> Path:
-    return _records_root(root) / "qa-lane" / "queue"
-
-
-def _qa_queue_counter_path(root: Path) -> Path:
-    return _records_root(root) / "qa-lane" / "sequence.json"
-
-
-def _qa_artifact_path(root: Path, checksum: str) -> Path:
-    return _records_root(root) / "qa-artifacts" / f"{checksum}.log"
-
-
-def _qa_queue_entries(root: Path) -> list[tuple[Path, dict[str, Any]]]:
-    entries: list[tuple[Path, dict[str, Any]]] = []
-    for path in _qa_queue_root(root).glob("*.json"):
-        entry = _read_object(path, "QA queue entry")
-        if set(entry) != QA_QUEUE_FIELDS or not isinstance(entry["sequence"], int) or entry["sequence"] < 1:
-            raise CoordinatorError("QA queue entry has an invalid schema")
-        _safe_id(entry["dispatch_id"], "QA queue dispatch")
-        if not _non_empty(entry["queued_at"]):
-            raise CoordinatorError("QA queue entry has an invalid queued_at value")
-        entries.append((path, entry))
-    return sorted(entries, key=lambda item: item[1]["sequence"])
-
-
-def _qa_enqueue(root: Path, dispatch_id: str) -> tuple[Path, dict[str, Any]]:
-    for path, entry in _qa_queue_entries(root):
-        if entry["dispatch_id"] == dispatch_id:
-            return path, entry
-    counter_path = _qa_queue_counter_path(root)
-    counter = _read_object(counter_path, "QA queue sequence") if counter_path.exists() else {"next": 1}
-    if set(counter) != {"next"} or not isinstance(counter["next"], int) or counter["next"] < 1:
-        raise CoordinatorError("QA queue sequence is invalid")
-    entry = {"dispatch_id": dispatch_id, "sequence": counter["next"], "queued_at": _now()}
-    path = _qa_queue_root(root) / f"{entry['sequence']:020d}-{dispatch_id}.json"
-    _write_exclusive(path, entry)
-    _replace(counter_path, {"next": counter["next"] + 1})
-    return path, entry
-
-
-def _qa_lease(root: Path) -> dict[str, Any] | None:
-    path = _qa_lane_path(root)
-    if not path.exists():
-        return None
-    lease = _read_object(path, "QA lease")
-    if set(lease) != QA_LEASE_FIELDS or not _non_empty(lease.get("host")) or not isinstance(lease.get("pid"), int):
-        raise CoordinatorError("QA lease has an invalid schema")
-    _safe_id(lease.get("dispatch_id"), "QA lease dispatch")
-    for field in ("acquired_at", "expires_at"):
-        if not _non_empty(lease.get(field)):
-            raise CoordinatorError(f"QA lease has an invalid {field}")
-    return lease
-
-
 def _moment(value: object, label: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value)  # type: ignore[arg-type]
@@ -938,24 +875,7 @@ def _batch_for_ticket_branch(
 
 
 def qa_evidence(args: argparse.Namespace) -> dict[str, Any]:
-    """Verify accepted green QA evidence for one current issue-branch candidate."""
-    repo = _repo(args)
-    root = _qa_state_root(args, repo)
-    ticket = args.ticket.strip() if _non_empty(args.ticket) else ""
-    branch = args.branch.strip() if _non_empty(args.branch) else ""
-    if not ticket or not branch:
-        raise CoordinatorError("QA evidence requires non-empty ticket and branch")
-    candidate = _candidate_commit(repo, args.candidate_commit)
-    with _state_lock(root):
-        batch = _batch_for_ticket_branch(root, ticket, branch, candidate, getattr(args, "batch", None))
-        report = _accepted_qa_for_candidate(root, batch, candidate)
-    return {
-        "batch_id": batch["batch_id"],
-        "ticket": ticket,
-        "branch": branch,
-        "candidate_commit": candidate,
-        "qa_report": report,
-    }
+    return qa_lane.qa_evidence(args, sys.modules[__name__])
 
 
 def ledger_status(args: argparse.Namespace) -> dict[str, Any]:
@@ -2523,27 +2443,8 @@ def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     return {"dispatch_id": dispatch["dispatch_id"], "state": "reported", "report": str(report_path), "candidate_commit": candidate}
 
 
-def _qa_report(dispatch: dict[str, Any], checks: list[dict[str, str]], artifact: Path, checksum: str) -> dict[str, Any]:
-    failed = any(check["result"] == "fail" for check in checks)
-    return {
-        "dispatch_id": dispatch["dispatch_id"],
-        "ticket": dispatch["ticket"],
-        "role": "qa",
-        "outcome": "failed" if failed else "completed",
-        "output": (
-            f"QA gate {'failed' if failed else 'passed'}; full sanitised output: "
-            f"{artifact.as_posix()} (sha256:{checksum})"
-        ),
-        "commit_sha": "not applicable — read-only role",
-        "changed_files": [],
-        "checks_run": checks,
-        "risks": "QA gate failed; inspect immutable evidence" if failed else "none",
-        "blockers": "new approved developer retry required" if failed else "none",
-        "next_coordinator_action": "create a new approved developer retry" if failed else "accept or continue",
-    }
-
-
 def _persist_report(root: Path, batch: dict[str, Any], dispatch: dict[str, Any], report: dict[str, Any]) -> Path:
+    """Persist a role report and advance its batch atomically under the coordinator lock."""
     report_json = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.json"
     report_md = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.md"
     if report_json.exists() or report_md.exists():
@@ -2567,135 +2468,17 @@ def _persist_report(root: Path, batch: dict[str, Any], dispatch: dict[str, Any],
     return report_json
 
 
-def _record_qa_report(root: Path, repo: Path, dispatch: dict[str, Any], report: dict[str, Any]) -> Path:
-    batch = _load_batch(root, dispatch["batch_id"])
-    _validate_batch_integrity(root, batch)
-    _validate_dispatch(repo, _config(repo), root, batch, dispatch)
-    status = _load_dispatch_status(root, dispatch["dispatch_id"])
-    entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
-    if not entry or entry.get("state") != "dispatched" or status.get("state") != "working":
-        raise CoordinatorError("QA report requires a running QA dispatch")
-    _validate_report(report, dispatch, _role(repo, "qa"), repo, batch.get("base_commit"))
-    return _persist_report(root, batch, dispatch, report)
-
-
 def run_qa(args: argparse.Namespace) -> dict[str, Any]:
-    repo = _repo(args)
-    root = _qa_state_root(args, repo)
-    lease_seconds = args.lease_seconds
-    if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or lease_seconds < 1:
-        raise CoordinatorError("QA lease-seconds must be a positive integer")
-    with _state_lock(root):
-        dispatch = _load_dispatch(root, args.dispatch)
-        batch = _load_batch(root, dispatch["batch_id"])
-        _validate_batch_integrity(root, batch)
-        _validate_dispatch(repo, _config(repo), root, batch, dispatch)
-        if dispatch["role"] != "qa":
-            raise CoordinatorError("clean-room QA runner accepts only QA dispatches")
-        if not dispatch["verification_commands"]:
-            raise CoordinatorError("clean-room QA runner requires configured verification_commands")
-        status = _load_dispatch_status(root, dispatch["dispatch_id"])
-        entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
-        if not entry or entry.get("state") != "approved" or status.get("state") != "approved":
-            raise CoordinatorError("QA runner requires an approved, unsent dispatch")
-        queue_path, queue_entry = _qa_enqueue(root, dispatch["dispatch_id"])
-        queue = _qa_queue_entries(root)
-        position = next(index for index, (_, item) in enumerate(queue, start=1) if item["dispatch_id"] == dispatch["dispatch_id"])
-        lease = _qa_lease(root)
-        if lease is not None:
-            if _lease_expired(lease):
-                raise CoordinatorError("QA lease is stale; a coordinator must clear it explicitly before another gate runs")
-            return {"dispatch_id": dispatch["dispatch_id"], "state": "queued", "position": position}
-        if position != 1:
-            return {"dispatch_id": dispatch["dispatch_id"], "state": "queued", "position": position}
-        acquired = _now()
-        lease = {
-            "dispatch_id": dispatch["dispatch_id"],
-            "host": socket.gethostname(),
-            "pid": os.getpid(),
-            "acquired_at": acquired,
-            "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat(),
-        }
-        _write_exclusive(_qa_lane_path(root), lease)
-        entry["state"] = "dispatched"
-        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
-            "dispatch_id": dispatch["dispatch_id"], "state": "working", "updated_at": _now(),
-        })
-        _replace(_batch_path(root, batch["batch_id"]), batch)
-
-    try:
-        gate = run_gate(
-            dispatch["verification_commands"],
-            CleanRoomPolicy(repo, dispatch["candidate_commit"]),
-            stop_on_failure=False,
-        )
-    except GateRunnerError as exc:
-        raise CoordinatorError(str(exc)) from exc
-
-    artifact_text = gate.artifact
-    checks = gate.checks
-    checksum = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
-    artifact = _qa_artifact_path(root, checksum)
-    try:
-        _write_text_exclusive(artifact, artifact_text)
-    except CoordinatorError as exc:
-        raise CoordinatorError("could not persist immutable QA evidence") from exc
-    report = _qa_report(dispatch, checks, artifact, checksum)
-    with _state_lock(root):
-        report_path = _record_qa_report(root, repo, dispatch, report)
-        _qa_queue_entries(root)  # validate before removing the completed request
-        if queue_path.exists():
-            _delete(queue_path, reason="complete QA queue entry")
-        lease_path = _qa_lane_path(root)
-        current = _qa_lease(root)
-        if current and current["dispatch_id"] == dispatch["dispatch_id"]:
-            _delete(lease_path, reason="complete QA lease")
-    return {
-        "dispatch_id": dispatch["dispatch_id"],
-        "state": "reported",
-        "report": str(report_path),
-        "artifact": str(artifact),
-        "sha256": checksum,
-    }
+    """Run the repository-scoped QA lane without coupling it to CLI wiring."""
+    return qa_lane.run(args, sys.modules[__name__])
 
 
 def qa_status(args: argparse.Namespace) -> dict[str, Any]:
-    repo = _repo(args)
-    root = _qa_state_root(args, repo)
-    with _state_lock(root):
-        queue = _qa_queue_entries(root)
-        lease = _qa_lease(root)
-        return {
-            "lease": lease,
-            "lease_stale": _lease_expired(lease) if lease else False,
-            "queue": [entry for _, entry in queue],
-        }
+    return qa_lane.status(args, sys.modules[__name__])
 
 
 def clear_qa_lease(args: argparse.Namespace) -> dict[str, Any]:
-    repo = _repo(args)
-    root = _qa_state_root(args, repo)
-    with _state_lock(root):
-        lease = _qa_lease(root)
-        if lease is None:
-            raise CoordinatorError("there is no QA lease to clear")
-        if not _lease_expired(lease):
-            raise CoordinatorError("a live QA lease cannot be force-unlocked")
-        expected = {"host": args.expected_host, "pid": args.expected_pid, "expires_at": args.expected_expiry}
-        if any(lease[field] != value for field, value in expected.items()):
-            raise CoordinatorError("QA lease changed; coordinator must validate the current owner again")
-        approval = _approval(args)
-        queue = _qa_queue_entries(root)
-        recovery = {
-            "cleared_dispatch_id": lease["dispatch_id"], "lease": lease, "approval": approval,
-            "reason": args.reason.strip(), "cleared_at": _now(),
-        }
-        _write_exclusive(_records_root(root) / "qa-lane" / "recoveries" / f"{uuid.uuid4()}.json", recovery)
-        owner = next(((path, entry) for path, entry in queue if entry["dispatch_id"] == lease["dispatch_id"]), None)
-        if owner is not None:
-            _delete(owner[0], reason="clear stale QA lease queue entry")
-        _delete(_qa_lane_path(root), reason="clear stale QA lease")
-    return {"state": "cleared", "dispatch_id": lease["dispatch_id"]}
+    return qa_lane.clear_stale_lease(args, sys.modules[__name__])
 
 
 def _validate_review(review: object, dispatch: dict[str, Any]) -> None:
@@ -2938,272 +2721,8 @@ def submit_report(args: argparse.Namespace) -> dict[str, Any]:
     return {"dispatch_id": dispatch["dispatch_id"], "state": "reported", "report": str(report_json)}
 
 
-def _common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--repo", default=argparse.SUPPRESS, help="target project root")
-    parser.add_argument("--state-dir", default=argparse.SUPPRESS, help="coordinator state directory")
-
-
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(description="Coordinate approved backend role dispatches.")
-    root.add_argument("--repo", default=".", help="target project root")
-    root.add_argument("--state-dir", help="coordinator state directory")
-    commands = root.add_subparsers(dest="command", required=True)
-
-    ledger = commands.add_parser("ledger", help="inspect or explicitly maintain versioned lifecycle state")
-    ledger_commands = ledger.add_subparsers(dest="ledger_command", required=True)
-    ledger_status_command = ledger_commands.add_parser("status", help="Report the selected lifecycle-ledger generation")
-    _common(ledger_status_command)
-    ledger_status_command.set_defaults(handler=ledger_status)
-    ledger_migrate = ledger_commands.add_parser("migrate", help="Validate and migrate legacy state to current schema")
-    _common(ledger_migrate)
-    ledger_migrate.set_defaults(handler=migrate_ledger)
-    ledger_reset = ledger_commands.add_parser("reset", help="Select an empty generation (requires --confirm RESET)")
-    _common(ledger_reset)
-    ledger_reset.add_argument("--confirm", required=True, help="literal RESET acknowledgement")
-    ledger_reset.set_defaults(handler=reset_ledger)
-    ledger_clean = ledger_commands.add_parser("clean", help="Safely remove orphaned dispatch evidence to fix migration errors")
-    _common(ledger_clean)
-    ledger_clean.set_defaults(handler=clean_ledger)
-
-    batch = commands.add_parser("batch")
-    batch_commands = batch.add_subparsers(dest="batch_command", required=True)
-    create = batch_commands.add_parser("create", aliases=["plan"])
-    _common(create)
-    create.add_argument("--ticket", required=True)
-    create.add_argument("--branch", required=True)
-    create.add_argument("--worktree", required=True)
-    create.add_argument("--zone", default=DEFAULT_ZONE, help="backend zone; defaults to the whole repository")
-    create.add_argument(
-        "--integration-ref",
-        help="branch on origin this batch's base is fetched and pinned against; "
-        "falls back to the project's base_branch for epic-less tasks",
-    )
-    create.add_argument("--definition-of-done", action="append", required=True)
-    create.add_argument("--prohibited-change", action="append", required=True)
-    create.add_argument("--required-gate", action="append")
-    create.add_argument("--dependency", action="append")
-    create.set_defaults(handler=create_batch)
-
-    approve = batch_commands.add_parser("approve")
-    _common(approve)
-    approve.add_argument("--batch", required=True)
-    approve.add_argument("--approved-by", required=True)
-    approve.add_argument("--approved-at", required=True)
-    approve.set_defaults(handler=approve_batch)
-
-    batch_list = batch_commands.add_parser("list")
-    _common(batch_list)
-    batch_list.add_argument("--ticket", help="only batches of this ticket")
-    batch_list.add_argument("--state", help="only batches in this state")
-    batch_list.add_argument("--open", action="store_true", help="hide batches already in a terminal state")
-    batch_list.set_defaults(handler=list_batches)
-
-    batch_abandon = batch_commands.add_parser("abandon")
-    _common(batch_abandon)
-    batch_abandon.add_argument("--batch", required=True)
-    batch_abandon.add_argument("--approved-by", required=True)
-    batch_abandon.add_argument("--approved-at", required=True)
-    batch_abandon.add_argument("--reason", required=True, help="why this batch can no longer be decided")
-    batch_abandon.set_defaults(handler=abandon_batch)
-
-    decide = batch_commands.add_parser("decide")
-    _common(decide)
-    decide.add_argument("--batch", required=True)
-    decide.add_argument("--decision", choices=sorted(DECISIONS), required=True)
-    decide.add_argument("--approved-by", required=True)
-    decide.add_argument("--approved-at", required=True)
-    decide.add_argument("--note", default="none")
-    decide.set_defaults(handler=decide_batch)
-
-    packet = batch_commands.add_parser("decision-packet", help="render concise evidence required for an approval")
-    _common(packet)
-    packet.add_argument("--batch", required=True)
-    packet.add_argument("--dispatch", help="approved or reported dispatch in this batch")
-    packet.set_defaults(handler=decision_packet)
-
-    risk = commands.add_parser("risk")
-    risk_commands = risk.add_subparsers(dest="risk_command", required=True)
-    assess = risk_commands.add_parser("assess")
-    _common(assess)
-    assess.add_argument("--batch", required=True)
-    assess.add_argument("--candidate-commit", required=True)
-    assess.add_argument("--base-commit", help="optional immutable diff base for a multi-commit candidate")
-    assess.add_argument("--changed-file", action="append", required=True)
-    assess.add_argument("--developer-trigger", action="append")
-    assess.set_defaults(handler=assess_risk)
-
-    context_package = commands.add_parser("context-package")
-    context_package_commands = context_package.add_subparsers(dest="context_package_command", required=True)
-    context_package_register = context_package_commands.add_parser("register")
-    _common(context_package_register)
-    context_package_register.add_argument("--batch", required=True)
-    context_package_register.add_argument("--candidate-commit", required=True)
-    context_package_register.add_argument("--role", default="shared")
-    context_package_register.add_argument("--inclusion-reason", default="manual immutable context registration")
-    context_package_register.add_argument("--base-commit", help="optional immutable diff base; defaults to the batch base")
-    context_package_register.add_argument("--symbol-graph-depth", type=int, default=2)
-    context_package_register.add_argument("--min-starting-files", type=int, default=5)
-    context_package_register.add_argument("--max-starting-files", type=int, default=10)
-    context_package_register.add_argument("--max-package-size-bytes", type=int, default=512_000)
-    context_package_register.set_defaults(handler=register_context_package)
-
-    dispatch = commands.add_parser("dispatch")
-    dispatch_commands = dispatch.add_subparsers(dest="dispatch_command", required=True)
-    preflight = dispatch_commands.add_parser("preflight", help="validate a future dispatch without creating it")
-    _common(preflight)
-    preflight.add_argument("--batch", required=True)
-    preflight.add_argument("--role", required=True)
-    preflight.add_argument("--runtime")
-    preflight.add_argument("--candidate-commit")
-    preflight.set_defaults(handler=preflight_dispatch)
-    dispatch_create = dispatch_commands.add_parser("create", aliases=["approve"])
-    _common(dispatch_create)
-    dispatch_create.add_argument("--batch", required=True)
-    dispatch_create.add_argument("--role", default="developer")
-    dispatch_create.add_argument(
-        "--runtime",
-        help="named runtime from the role assignment plan; required when a multi-runtime role has no default_runtime",
-    )
-    dispatch_create.add_argument("--purpose", choices=sorted(DISPATCH_PURPOSES), default="work")
-    dispatch_create.add_argument("--candidate-commit")
-    dispatch_create.add_argument(
-        "--delta-review-of",
-        help="prior retried code-review dispatch id this test-only fix delta-reviews; code-review role only",
-    )
-    dispatch_create.add_argument("--model", help="session model, used only without .harness/orchestration.json")
-    dispatch_create.add_argument("--effort", help="session effort, used only without .harness/orchestration.json")
-    dispatch_create.add_argument("--approved-by", help="required by manual_all and risk milestones")
-    dispatch_create.add_argument("--approved-at", help="required by manual_all and risk milestones")
-    dispatch_create.set_defaults(handler=create_dispatch)
-
-    dispatch_send = dispatch_commands.add_parser("send")
-    _common(dispatch_send)
-    dispatch_send.add_argument("--dispatch", required=True)
-    dispatch_send.add_argument("--adapter", help="runtime adapter; required for the orca transport only")
-    dispatch_send.add_argument("--adapter-arg", action="append")
-    dispatch_send.add_argument("--checkout")
-    dispatch_send.set_defaults(handler=send_dispatch)
-
-    dispatch_cancel = dispatch_commands.add_parser("cancel")
-    _common(dispatch_cancel)
-    dispatch_cancel.add_argument("--dispatch", required=True)
-    dispatch_cancel.add_argument("--approved-by", required=True)
-    dispatch_cancel.add_argument("--approved-at", required=True)
-    dispatch_cancel.add_argument("--reason", required=True, help="why this approved brief must not reach a runtime")
-    dispatch_cancel.set_defaults(handler=cancel_dispatch)
-
-    dispatch_self_report = dispatch_commands.add_parser("self-report")
-    _common(dispatch_self_report)
-    dispatch_self_report.add_argument("--dispatch", required=True)
-    dispatch_self_report.add_argument("--model", required=True, help="the model the role is actually running")
-    dispatch_self_report.set_defaults(handler=self_report_dispatch)
-
-    dispatch_heartbeat = dispatch_commands.add_parser("heartbeat")
-    _common(dispatch_heartbeat)
-    dispatch_heartbeat.add_argument("--dispatch", required=True)
-    dispatch_heartbeat.add_argument("--note", default="none")
-    dispatch_heartbeat.set_defaults(handler=heartbeat_dispatch)
-
-    dispatch_rate_limited = dispatch_commands.add_parser("rate-limited", help="record a checkpointed provider 429 and retry window")
-    _common(dispatch_rate_limited)
-    dispatch_rate_limited.add_argument("--dispatch", required=True)
-    dispatch_rate_limited.add_argument("--retry-after-seconds", type=int, default=DEFAULT_RATE_LIMIT_RETRY_SECONDS)
-    dispatch_rate_limited.set_defaults(handler=rate_limited_dispatch)
-
-    dispatch_wait = dispatch_commands.add_parser("wait", help="wait locally for reported, stale, mismatch, 429 or failure")
-    _common(dispatch_wait)
-    dispatch_wait.add_argument("--dispatch", required=True)
-    dispatch_wait.add_argument("--timeout", type=int, default=60)
-    dispatch_wait.add_argument("--poll-interval", type=int, default=5)
-    dispatch_wait.add_argument("--stale-after", type=int, default=DEFAULT_STALE_AFTER_SECONDS)
-    dispatch_wait.set_defaults(handler=wait_dispatch)
-
-    dispatch_telemetry = dispatch_commands.add_parser("telemetry", help="record source-observed worker or coordinator metrics")
-    _common(dispatch_telemetry)
-    dispatch_telemetry.add_argument("--file", required=True)
-    dispatch_telemetry.set_defaults(handler=record_telemetry)
-
-    dispatch_checkpoint = dispatch_commands.add_parser("checkpoint")
-    _common(dispatch_checkpoint)
-    dispatch_checkpoint.add_argument("--file", required=True)
-    dispatch_checkpoint.set_defaults(handler=checkpoint_dispatch)
-
-    dispatch_resume = dispatch_commands.add_parser("resume")
-    _common(dispatch_resume)
-    dispatch_resume.add_argument("--dispatch", required=True)
-    dispatch_resume.add_argument(
-        "--termination-reason", default="",
-        help="runtime adapter termination reason; a recognized rate limit (rate_limit/rate-limit/429) "
-             "authorizes the new worker session automatically",
-    )
-    dispatch_resume.add_argument(
-        "--trigger", choices=sorted(PLANNED_TRIGGER_KINDS),
-        help="planned-trigger kind; required unless --termination-reason is a recognized rate limit",
-    )
-    dispatch_resume.add_argument(
-        "--measured-value", type=int,
-        help="measured value for a context-limit/tdd-cycles/failure-log planned trigger, "
-             "checked against the project's adaptive_continuation_policy threshold",
-    )
-    dispatch_resume.add_argument(
-        "--file", help="continuation facts JSON restating remaining DoD/risks/blockers/dependencies; "
-                        "required for a planned-trigger continuation",
-    )
-    dispatch_resume.add_argument("--approved-by")
-    dispatch_resume.add_argument("--approved-at")
-    dispatch_resume.add_argument("--note")
-    dispatch_resume.set_defaults(handler=resume_dispatch)
-
-    dispatch_status_command = dispatch_commands.add_parser("status")
-    _common(dispatch_status_command)
-    dispatch_status_command.add_argument("--dispatch")
-    dispatch_status_command.add_argument("--batch")
-    dispatch_status_command.add_argument("--stale-after", type=int, default=DEFAULT_STALE_AFTER_SECONDS)
-    dispatch_status_command.set_defaults(handler=dispatch_status)
-
-    dispatch_publish = dispatch_commands.add_parser("publish")
-    _common(dispatch_publish)
-    dispatch_publish.add_argument("--dispatch", required=True)
-    dispatch_publish.add_argument("--remote", default="origin")
-    dispatch_publish.set_defaults(handler=publish_dispatch)
-
-    qa = commands.add_parser("qa")
-    qa_commands = qa.add_subparsers(dest="qa_command", required=True)
-    qa_run = qa_commands.add_parser("run")
-    _common(qa_run)
-    qa_run.add_argument("--dispatch", required=True)
-    qa_run.add_argument("--lease-seconds", type=int, default=1800)
-    qa_run.set_defaults(handler=run_qa)
-
-    qa_status_command = qa_commands.add_parser("status")
-    _common(qa_status_command)
-    qa_status_command.set_defaults(handler=qa_status)
-
-    qa_evidence_command = qa_commands.add_parser("evidence")
-    _common(qa_evidence_command)
-    qa_evidence_command.add_argument("--batch", help="optional batch ID when multiple batches accepted the same candidate")
-    qa_evidence_command.add_argument("--ticket", required=True)
-    qa_evidence_command.add_argument("--branch", required=True)
-    qa_evidence_command.add_argument("--candidate-commit", required=True)
-    qa_evidence_command.set_defaults(handler=qa_evidence)
-
-    qa_clear = qa_commands.add_parser("clear-stale-lease")
-    _common(qa_clear)
-    qa_clear.add_argument("--approved-by", required=True)
-    qa_clear.add_argument("--approved-at", required=True)
-    qa_clear.add_argument("--expected-host", required=True)
-    qa_clear.add_argument("--expected-pid", type=int, required=True)
-    qa_clear.add_argument("--expected-expiry", required=True)
-    qa_clear.add_argument("--reason", required=True)
-    qa_clear.set_defaults(handler=clear_qa_lease)
-
-    report = commands.add_parser("report")
-    report_commands = report.add_subparsers(dest="report_command", required=True)
-    report_submit = report_commands.add_parser("submit", aliases=["record"])
-    _common(report_submit)
-    report_submit.add_argument("--file", required=True)
-    report_submit.set_defaults(handler=submit_report)
-    return root
+    return build_parser(sys.modules[__name__], sys.modules[__name__])
 
 
 def main() -> int:
