@@ -116,6 +116,7 @@ def _qa_report(dispatch: dict[str, Any], checks: list[dict[str, str]], artifact:
         "risks": "QA gate failed; inspect immutable evidence" if failed else "none",
         "blockers": "new approved developer retry required" if failed else "none",
         "next_coordinator_action": "create a new approved developer retry" if failed else "accept or continue",
+        "report_language": "ru",
     }
 
 

@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -66,6 +68,81 @@ class TokenControlTests(unittest.TestCase):
     def test_invalid_reasoning_effort_is_rejected_before_dispatch(self) -> None:
         with self.assertRaisesRegex(contract.ContractError, "assignment effort"):
             contract._valid_effort("highда")
+
+    def test_communication_policy_defaults_to_english_protocol_and_russian_reports(self) -> None:
+        self.assertEqual(
+            coordinator._communication_policy({}),
+            {"agent_to_agent_language": "en", "coordinator_report_language": "ru"},
+        )
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "English.*Russian"):
+            coordinator._communication_policy(
+                {"communication_policy": {"agent_to_agent_language": "ru", "coordinator_report_language": "en"}},
+            )
+
+    def test_pre_approval_batch_shape_remains_usable_without_state_edit(self) -> None:
+        batch_id = "batch-372-abc"
+        legacy_fields = {
+            "batch_id": batch_id,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "base_commit": "a" * 40,
+            "integration_ref": "main",
+            "branch_start_commit": "a" * 40,
+            "ticket": "#372",
+            "branch": "feature/issue-372-legacy",
+            "worktree": "C:/worktree",
+            "zone": "repository",
+            "definition_of_done": ["preserve legacy batch"],
+            "prohibited_changes": ["secrets"],
+            "developer_verification_commands": ["test"],
+            "verification_commands": ["test"],
+            "required_gates": ["none"],
+            "dependencies": ["none"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coordinator.LifecycleLedger(root).ensure()
+            records = coordinator.LifecycleLedger(root).records_root()
+            (records / "batches" / f"{batch_id}.json").write_text(
+                json.dumps(legacy_fields), encoding="utf-8",
+            )
+            (records / "plans" / f"{batch_id}.json").write_text(
+                json.dumps(legacy_fields), encoding="utf-8",
+            )
+
+            coordinator._validate_batch_integrity(root, legacy_fields)
+
+    def test_pre_approval_shape_rejects_one_sided_approval_policy(self) -> None:
+        batch_id = "batch-372-abc"
+        legacy_fields = {
+            "batch_id": batch_id,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "base_commit": "a" * 40,
+            "integration_ref": "main",
+            "branch_start_commit": "a" * 40,
+            "ticket": "#372",
+            "branch": "feature/issue-372-legacy",
+            "worktree": "C:/worktree",
+            "zone": "repository",
+            "definition_of_done": ["preserve legacy batch"],
+            "prohibited_changes": ["secrets"],
+            "developer_verification_commands": ["test"],
+            "verification_commands": ["test"],
+            "required_gates": ["none"],
+            "dependencies": ["none"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coordinator.LifecycleLedger(root).ensure()
+            records = coordinator.LifecycleLedger(root).records_root()
+            (records / "batches" / f"{batch_id}.json").write_text(
+                json.dumps({**legacy_fields, "approval_policy": "manual_all"}), encoding="utf-8",
+            )
+            (records / "plans" / f"{batch_id}.json").write_text(
+                json.dumps(legacy_fields), encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(coordinator.CoordinatorError, "batch record is incomplete"):
+                coordinator._validate_batch_integrity(root, {**legacy_fields, "approval_policy": "manual_all"})
 
 
 if __name__ == "__main__":

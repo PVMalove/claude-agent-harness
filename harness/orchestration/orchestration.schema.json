@@ -81,6 +81,25 @@
       "default": true,
       "description": "Require each runtime worker to attest its canonical Git worktree, branch and pinned commit before a completion report is accepted. New projects should keep this enabled; omitted keeps legacy projects compatible."
     },
+    "communication_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {
+        "agent_to_agent_language": "en",
+        "coordinator_report_language": "ru"
+      },
+      "required": ["agent_to_agent_language", "coordinator_report_language"],
+      "properties": {
+        "agent_to_agent_language": {
+          "const": "en",
+          "description": "Language for agent-to-agent handoffs, state evidence and internal protocol text."
+        },
+        "coordinator_report_language": {
+          "const": "ru",
+          "description": "Language for completion reports and summaries addressed to the coordinator."
+        }
+      }
+    },
     "adaptive_continuation_policy": {
       "type": "object",
       "additionalProperties": false,

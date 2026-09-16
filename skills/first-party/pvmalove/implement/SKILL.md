@@ -8,6 +8,10 @@ disable-model-invocation: true
 
 **Objective:** Coordinate exactly one ticket through `architect → developer → code-review → qa → publish`, then offer `/to-pull-requests`. This session **is** the coordinator: it creates and observes dispatches but never implements the ticket itself.
 
+Language contract: agents communicate with each other and write free-text protocol/state evidence in
+English. Every completion report addressed to this coordinator is in Russian and includes
+`"report_language": "ru"`; preserve commands, paths, IDs, and quoted evidence verbatim.
+
 ## Route
 
 This is the opt-in `backend-orchestration` route. Confirm that its installed coordinator is usable:

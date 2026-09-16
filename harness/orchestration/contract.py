@@ -31,8 +31,11 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "$schema", "developer_verification_commands", "test_path_patterns",
     "adaptive_continuation_policy", "approval_policy", "low_risk_zones", "context_package_policy",
     "continuation_policy", "retry_policy", "preflight_policy", "worker_attestation_required",
+    "communication_policy",
 }
 APPROVAL_POLICIES = {"manual_all", "milestone", "low_risk"}
+COMMUNICATION_POLICY_FIELDS = frozenset({"agent_to_agent_language", "coordinator_report_language"})
+COMMUNICATION_LANGUAGES = {"en", "ru"}
 CODE_REVIEW_REQUIRED_RISK_TRIGGERS = frozenset(
     {
         "api-public-contract", "schema-change", "data-migration", "outbox", "queues",
@@ -512,6 +515,18 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     attestation_required = config.get("worker_attestation_required")
     if attestation_required is not None and not isinstance(attestation_required, bool):
         problems.append("orchestration worker_attestation_required must be a boolean when provided")
+    communication_policy = config.get("communication_policy")
+    if communication_policy is not None:
+        if not isinstance(communication_policy, dict) or set(communication_policy) != COMMUNICATION_POLICY_FIELDS:
+            problems.append(
+                "orchestration communication_policy must contain exactly agent_to_agent_language and coordinator_report_language"
+            )
+        elif any(value not in COMMUNICATION_LANGUAGES for value in communication_policy.values()):
+            problems.append("orchestration communication_policy languages must be en or ru")
+        elif communication_policy["agent_to_agent_language"] != "en":
+            problems.append("orchestration communication_policy agent_to_agent_language must be en")
+        elif communication_policy["coordinator_report_language"] != "ru":
+            problems.append("orchestration communication_policy coordinator_report_language must be ru")
     problems.extend(_policy_problem(
         config,
         "context_package_policy",

@@ -1363,6 +1363,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "risks": "none",
         "blockers": "none",
         "next_coordinator_action": "accept and dispatch the developer",
+        "report_language": "ru",
     }
     architect_report_file.write_text(json.dumps(architect_payload, indent=2) + "\n", encoding="utf-8")
     if coordinator_run("report", "submit", "--file", str(architect_report_file)).returncode == 0:
@@ -1468,6 +1469,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "risks": "none",
         "blockers": "none",
         "next_coordinator_action": "accept",
+        "report_language": "ru",
         "risk_triggers": ["authorization-security"],
     }
     report_file.write_text(json.dumps(report_payload, indent=2) + "\n", encoding="utf-8")
@@ -1591,6 +1593,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "risks": "standards warning requires coordinator decision",
         "blockers": "none",
         "next_coordinator_action": "override-warning or retry",
+        "report_language": "ru",
         "review": {
             "candidate_commit": candidate_sha,
             "scope": ["services/retry.py"],
@@ -1924,7 +1927,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 "command": "python developer_check.py" if role_name == "developer" else "python qa_baseline.py",
                 "result": "pass", "evidence": "1 passed",
             }],
-            "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+            "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
         }
         payload.update(payload_extra)
         payload_file = test_root / f"delta-{role_name}-{role_dispatch}-report.json"
@@ -1984,6 +1987,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "checks_run": [{"command": "python qa_baseline.py", "result": "pass", "evidence": "review scope inspected"}],
         "risks": "spec warning requires coordinator decision", "blockers": "none",
         "next_coordinator_action": "override-warning or retry",
+        "report_language": "ru",
         "review": {
             "candidate_commit": delta_first_sha, "scope": ["services/delta_formatter.py"],
             "standards": {"severity": "clean", "findings": [], "risks": "none", "blockers": "none"},
@@ -2076,7 +2080,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "delta-review completed", "commit_sha": "not applicable — read-only role",
         "changed_files": [],
         "checks_run": [{"command": "python qa_baseline.py", "result": "pass", "evidence": "fix diff inspected"}],
-        "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+        "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
         "review": {
             "candidate_commit": delta_second_sha, "scope": ["services/delta_formatter.py", "services/tests/test_delta_formatter.py"],
             "standards": {
@@ -2166,7 +2170,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "output": f"{role_name} finished the requested step", "commit_sha": "not applicable — read-only role",
             "changed_files": [],
             "checks_run": [{"command": "python developer_check.py" if role_name == "developer" else "python qa_baseline.py", "result": "pass", "evidence": "1 passed"}],
-            "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+            "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
         }
         payload.update(payload_extra)
         payload_file = test_root / f"low-risk-{role_name}-report.json"
@@ -2250,7 +2254,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "output": f"{role_name} finished the requested step", "commit_sha": "not applicable — read-only role",
             "changed_files": [],
             "checks_run": [{"command": "python developer_check.py" if role_name == "developer" else "python qa_baseline.py", "result": "pass", "evidence": "1 passed"}],
-            "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+            "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
         }
         payload.update(payload_extra)
         payload_file = test_root / f"context-package-{role_name}-{role_dispatch}.json"
@@ -2355,6 +2359,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "checks_run": [{"command": "python qa_baseline.py", "result": "pass", "evidence": "review scope inspected"}],
         "risks": "standards warning requires coordinator decision", "blockers": "none",
         "next_coordinator_action": "override-warning or retry",
+        "report_language": "ru",
         "review": {
             "candidate_commit": ctxpkg_first_sha, "scope": ["services/context_package_demo.py"],
             "standards": {
@@ -2461,7 +2466,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 "command": "python developer_check.py" if role_name == "developer" else "python qa_baseline.py",
                 "result": "pass", "evidence": "1 passed",
             }],
-            "risks": "none", "blockers": "none", "next_coordinator_action": approved_action,
+            "risks": "none", "blockers": "none", "next_coordinator_action": approved_action, "report_language": "ru",
         }
         payload.update(extra)
         payload_file = test_root / f"checkpoint-{role_name}-{dispatch_id}.json"
@@ -2618,7 +2623,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "both checkpoint sessions complete", "commit_sha": checkpoint_second_sha,
         "changed_files": ["services/checkpoint_demo.py", "services/checkpoint_demo_v2.py"],
         "checks_run": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
-        "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+        "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
     }, indent=2) + "\n", encoding="utf-8")
     if coordinator_run(
         "--state-dir", str(checkpoint_state), "report", "submit", "--file", str(early_final_report_file),
@@ -2821,7 +2826,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 "command": "python developer_check.py" if role_name == "developer" else "python qa_baseline.py",
                 "result": "pass", "evidence": "1 passed",
             }],
-            "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+            "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
         }
         payload.update(payload_extra)
         payload_file = test_root / f"stale-base-{role_name}-report.json"
@@ -2922,7 +2927,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "attempted rebase without producing a new commit", "commit_sha": stale_sha,
         "changed_files": ["services/stale_base.py"],
         "checks_run": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
-        "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+        "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
     }
     same_sha_file = test_root / "stale-base-rebase-same-sha-report.json"
     same_sha_file.write_text(json.dumps(same_sha_payload, indent=2) + "\n", encoding="utf-8")
@@ -2939,7 +2944,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "rebased onto the current integration tip", "commit_sha": rebased_sha,
         "changed_files": ["services/stale_base.py"],
         "checks_run": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
-        "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
+        "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
     }
     rebase_file = test_root / "stale-base-rebase-report.json"
     rebase_file.write_text(json.dumps(rebase_payload, indent=2) + "\n", encoding="utf-8")

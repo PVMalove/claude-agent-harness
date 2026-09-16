@@ -5,6 +5,12 @@ declared backend zone, acceptance criteria, prohibited changes, issue branch, wo
 verification commands. A role does not amend the brief; material new information is escalated for a
 new coordinator decision.
 
+Use English for all agent-to-agent protocol text: handoff notes, checkpoints, state evidence,
+dependency explanations, and messages to the next worker. Treat `.harness/orchestration/state/` as a
+machine-readable audit trail and keep any free-text coordination fields in English. Completion
+reports addressed to the coordinator must be written in Russian and include `"report_language": "ru"`.
+Do not translate commands, paths, commit IDs, test names, or quoted source evidence.
+
 Each role returns one completion report: its output, changed files, checks run and results, residual
 risks, and blockers. A write role also reports the commit SHA that contains its work. The coordinator
 records the selected provider and model separately; manifests never choose either.

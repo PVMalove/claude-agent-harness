@@ -44,6 +44,12 @@ Coordinator state, immutable briefs/reports и санитизированные 
 кодом проекта. Оно остаётся локальным evidence до явного решения coordinator-а о безопасной очистке:
 роль и adapter не удаляют историю batch.
 
+Внутренний протокол имеет фиксированные языки: agent-to-agent handoff, checkpoint, state evidence и
+свободный текст в `.harness/orchestration/state/` пишутся на английском; completion report,
+адресованный coordinator-у, — на русском и содержит `"report_language": "ru"`. Команды, пути, SHA,
+имена тестов и цитаты исходных требований не переводятся. Это уменьшает двусмысленность между
+разными runtime и оставляет отчёт человеку читаемым.
+
 Manifest определяет режим роли (`write` или `read-only`), capability и risk triggers. Проектный
 конфиг выбирает agent/fallback на уровне provider profile, а `model` и `effort` — отдельно для
 каждой роли в её assignment plan, вместе с зоной, бюджетом параллелизма и командами проверки; он не может

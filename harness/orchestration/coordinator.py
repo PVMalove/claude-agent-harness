@@ -35,8 +35,8 @@ CONTEXT_BUILDER_ROOT = MODULE_ROOT.parent / "context_builder"
 if str(CONTEXT_BUILDER_ROOT) not in sys.path:
     sys.path.insert(0, str(CONTEXT_BUILDER_ROOT))
 from contract import (
-    ContractError, health_problems, load_role_manifest, resolve_assignment, resolve_runtime_name,
-    validate_brief_policy,
+    COMMUNICATION_POLICY_FIELDS, ContractError, health_problems, load_role_manifest,
+    resolve_assignment, resolve_runtime_name, validate_brief_policy,
 )
 from context_builder import ContextPackageError, build_context_package
 from dispatch_preflight import PreflightError, prepare as prepare_dispatch
@@ -60,6 +60,10 @@ ROLE_TRANSPORTS = {"orca", "in-process"}
 DEFAULT_ZONE = "repository"
 DEFAULT_PROFILE = "session"
 DEFAULT_STALE_AFTER_SECONDS = 900
+DEFAULT_COMMUNICATION_POLICY = {
+    "agent_to_agent_language": "en",
+    "coordinator_report_language": "ru",
+}
 LIVE_DISPATCH_STATES = {"dispatched", "working"}
 REVIEW_SEVERITIES = {"none", "clean", "warning", "blocker"}
 FINDING_SEVERITIES = {"info", "warning", "blocker"}
@@ -68,16 +72,22 @@ QA_QUEUE_FIELDS = {"dispatch_id", "sequence", "queued_at"}
 PLAN_FIELDS = (
     "batch_id", "created_at", "base_commit", "integration_ref", "branch_start_commit", "ticket", "branch",
     "worktree", "zone", "definition_of_done", "prohibited_changes", "developer_verification_commands",
-    "verification_commands", "required_gates", "dependencies", "approval_policy", "scope_preflight",
+    "verification_commands", "required_gates", "dependencies", "approval_policy", "communication_policy",
+    "scope_preflight",
     "harness_runtime_sha256",
 )
-LEGACY_PLAN_FIELDS = tuple(field for field in PLAN_FIELDS if field not in {"scope_preflight", "harness_runtime_sha256"})
+LEGACY_PLAN_FIELDS = tuple(
+    field for field in PLAN_FIELDS
+    if field not in {"scope_preflight", "harness_runtime_sha256", "communication_policy"}
+)
+PRE_APPROVAL_LEGACY_PLAN_FIELDS = tuple(field for field in LEGACY_PLAN_FIELDS if field != "approval_policy")
 DISPATCH_FIELDS = {
     "dispatch_id", "batch_id", "ticket", "role", "access", "zone", "write_paths", "branch", "worktree",
     "definition_of_done", "prohibited_changes", "verification_commands", "required_gates", "dependencies",
     "resolved_runtime", "resolved_provider_profile", "resolved_model", "resolved_effort", "resolved_transport", "coordinator_approval", "candidate_commit", "review_base", "review_scope",
     "risk_assessment_id", "purpose", "state", "created_at", "delta_review_of", "delta_review_axis",
     "context_package_id", "context_package_sha256", "context_package_summary", "worker_attestation_required",
+    "communication_policy",
     "snapshot_commit",
 }
 DEFAULT_TEST_PATH_PATTERNS = ("tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py")
@@ -94,7 +104,7 @@ REPORT_FIELDS = {
     "blockers",
     "next_coordinator_action",
 }
-REPORT_OPTIONAL_FIELDS = {"risk_triggers", "review"}
+REPORT_OPTIONAL_FIELDS = {"risk_triggers", "review", "report_language"}
 RISK_ASSESSMENT_FIELDS = {
     "risk_assessment_id", "batch_id", "candidate_commit", "base_commit", "changed_files", "matched_triggers",
     "developer_triggers", "review_required", "review_scope", "created_at",
@@ -686,6 +696,19 @@ def _worker_attestation_required(config: dict[str, Any]) -> bool:
     return value
 
 
+def _communication_policy(config: dict[str, Any]) -> dict[str, str]:
+    value = config.get("communication_policy", DEFAULT_COMMUNICATION_POLICY)
+    if not isinstance(value, dict) or set(value) != COMMUNICATION_POLICY_FIELDS:
+        raise CoordinatorError(
+            "communication_policy must contain agent_to_agent_language and coordinator_report_language"
+        )
+    if value != DEFAULT_COMMUNICATION_POLICY:
+        raise CoordinatorError(
+            "communication_policy must use English for agent communication and Russian for coordinator reports"
+        )
+    return dict(value)
+
+
 def _resolve_assignment(
     repo: Path,
     config: dict[str, Any],
@@ -1078,11 +1101,30 @@ def clean_ledger(args: argparse.Namespace) -> dict[str, Any]:
 
 def _validate_batch_integrity(root: Path, batch: dict[str, Any]) -> None:
     plan = _read_object(_plan_path(root, batch.get("batch_id")), "immutable batch plan")
+    for field in ("approval_policy", "communication_policy"):
+        if (field in batch) != (field in plan):
+            raise CoordinatorError("batch record is incomplete")
     for fields in (PLAN_FIELDS, LEGACY_PLAN_FIELDS):
         if all(field in batch for field in fields) and all(field in plan for field in fields):
             if {field: batch[field] for field in fields} == {field: plan[field] for field in fields}:
                 return
             raise CoordinatorError("batch record does not match its immutable plan")
+    # Batch records created before approval_policy was added are still immutable and safe to
+    # continue: the transition code resolves the project default when the field is absent. Accept
+    # this historical shape only when both records omit the field; a one-sided omission indicates
+    # corruption or an incomplete manual migration and must remain blocked.
+    if (
+        all(field in batch for field in PRE_APPROVAL_LEGACY_PLAN_FIELDS)
+        and all(field in plan for field in PRE_APPROVAL_LEGACY_PLAN_FIELDS)
+        and "approval_policy" not in batch
+        and "approval_policy" not in plan
+        and {
+            field: batch[field] for field in PRE_APPROVAL_LEGACY_PLAN_FIELDS
+        } == {
+            field: plan[field] for field in PRE_APPROVAL_LEGACY_PLAN_FIELDS
+        }
+    ):
+        return
     raise CoordinatorError("batch record is incomplete")
 
 
@@ -1093,7 +1135,7 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
     # historical shape and is treated as an explicit legacy opt-out instead of being rewritten.
     pre_summary_fields = DISPATCH_FIELDS - {"context_package_summary"}
     legacy_fields = DISPATCH_FIELDS - {
-        "context_package_summary", "worker_attestation_required", "snapshot_commit",
+        "context_package_summary", "worker_attestation_required", "snapshot_commit", "communication_policy",
     }
     if frozenset(dispatch) not in {
         frozenset(DISPATCH_FIELDS), frozenset(pre_summary_fields), frozenset(legacy_fields),
@@ -1103,6 +1145,9 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
         raise CoordinatorError("dispatch record is not an approved immutable brief")
     if dispatch.get("batch_id") != batch.get("batch_id"):
         raise CoordinatorError("dispatch record does not belong to its batch")
+    expected_communication_policy = batch.get("communication_policy", DEFAULT_COMMUNICATION_POLICY)
+    if dispatch.get("communication_policy", expected_communication_policy) != expected_communication_policy:
+        raise CoordinatorError("dispatch communication policy does not match its batch")
     if dispatch.get("purpose") not in DISPATCH_PURPOSES:
         raise CoordinatorError("dispatch record has an invalid purpose")
     package_id = dispatch.get("context_package_id")
@@ -1634,6 +1679,7 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
         "required_gates": _strings(getattr(args, "required_gate", None) or ["none"], "required_gates"),
         "dependencies": dependencies,
         "approval_policy": _approval_policy(config),
+        "communication_policy": _communication_policy(config),
         "scope_preflight": scope_preflight,
         "harness_runtime_sha256": _harness_runtime_sha256(repo),
         "dispatches": [],
@@ -2146,6 +2192,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "context_package_summary": _context_package_summary(context_package) if context_package else None,
             "worker_attestation_required": _worker_attestation_required(config),
+            "communication_policy": batch.get("communication_policy", _communication_policy(config)),
             "snapshot_commit": candidate or batch["base_commit"],
         }
         _reject_sensitive(brief, "dispatch brief")
@@ -2780,6 +2827,7 @@ def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 for command in dispatch["verification_commands"]
             ],
             "risks": "none", "blockers": "none", "next_coordinator_action": "accept publication or inspect remote evidence",
+            "report_language": "ru",
         }
         report_path = _persist_report(root, batch, dispatch, report)
     return {"dispatch_id": dispatch["dispatch_id"], "state": "reported", "report": str(report_path), "candidate_commit": candidate}
@@ -2883,6 +2931,11 @@ def _validate_report(
         missing = sorted(REPORT_FIELDS - set(report))
         extra = sorted(set(report) - REPORT_FIELDS - REPORT_OPTIONAL_FIELDS)
         raise CoordinatorError(f"completion report schema mismatch (missing={missing}, extra={extra})")
+    report_language = report.get("report_language")
+    if report_language is not None and report_language != "ru":
+        raise CoordinatorError("completion report report_language must be ru")
+    if "communication_policy" in dispatch and report_language != "ru":
+        raise CoordinatorError("new completion reports must set report_language to ru")
     brief = dispatch
     for field in ("dispatch_id", "ticket", "role"):
         if report[field] != brief[field]:
