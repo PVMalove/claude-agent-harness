@@ -36,9 +36,13 @@ before a developer dispatch; review keeps independent Standards and Spec evidenc
 verifies the candidate commit; publish pushes only the accepted SHA. The final report precedes the
 separately approved publish dispatch.
 
-Every dispatched role first records a model self-report against its immutable brief and emits
-heartbeats while it works. Between send and report, run `dispatch wait`: it returns only `reported`,
-`stale`, `model_mismatch`, `rate_limited`, or `failed`, never heartbeat chatter. A mismatch or stale
+Every dispatched role starts from its Context Package, records a model self-report against its immutable
+brief, and, when the project enables it, attests the canonical runtime worktree from `git rev-parse
+--show-toplevel`. A failed attestation is a `worktree_mismatch`, not a reason to search for another
+checkout. Before the first write, use only the package's starting files and directly referenced symbols;
+if that bounded startup cannot establish the next edit, checkpoint or block the role rather than broad
+discovery. Between send and report, run `dispatch wait`: it returns only `reported`, `stale`,
+`model_mismatch`, `worktree_mismatch`, `rate_limited`, or `failed`, never heartbeat chatter. A mismatch or stale
 dispatch is a blocker for the developer; this event-driven watchdog recovers with a newly approved dispatch, never by editing a
 brief or state record. For a 429, record the checkpoint and retry window with `dispatch rate-limited`;
 resume only through the configured continuation policy after that window.
@@ -51,7 +55,8 @@ new worker session after a fresh self-report and heartbeat. Read-only roles cann
 resume, and planned-trigger resumes still require an existing coordinator decision.
 
 The coordinator fetches the integration base and rechecks the base-commit gate before review and
-publish. A stale base requires a new developer/rebase dispatch. After a Warning, delta-review is
+publish. It carries forward bounded developer check evidence; the full independent gate belongs only
+to the QA lane, while the reviewer runs its own approved review checks. A stale base requires a new developer/rebase dispatch. After a Warning, delta-review is
 allowed only for a new candidate whose diff is test-only; it is always a separate independent
 review dispatch.
 

@@ -41,3 +41,9 @@ Each successful dispatch writes a new JSON record under `.harness/orca-dispatche
 file creation. The record preserves the original brief, resolved profile/agent/model, Orca task and
 worker identifiers when returned, dispatch ID, and launch outcome. A repeat always creates a new ID
 and record; it cannot overwrite an earlier record.
+
+The adapter does not guess or construct a relative CWD inside that new worktree. A project with
+`worker_attestation_required: true` requires the worker's first self-report to submit the canonical
+`git rev-parse --show-toplevel` result. The coordinator verifies that path belongs to this repository's
+registered worktrees and that its branch or pinned review SHA matches the immutable brief before it
+will accept a completion report.

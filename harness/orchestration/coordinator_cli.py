@@ -150,6 +150,7 @@ def build_parser(handlers: Any, defaults: Any) -> argparse.ArgumentParser:
     _common(dispatch_self_report)
     dispatch_self_report.add_argument("--dispatch", required=True)
     dispatch_self_report.add_argument("--model", required=True, help="the model the role is actually running")
+    dispatch_self_report.add_argument("--worktree", help="canonical Git worktree from git rev-parse --show-toplevel; required when project policy enables worker attestation")
     dispatch_self_report.set_defaults(handler=handlers.self_report_dispatch)
     dispatch_heartbeat = dispatch_commands.add_parser("heartbeat")
     _common(dispatch_heartbeat)

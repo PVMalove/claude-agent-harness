@@ -24,6 +24,7 @@ CONFIG_REQUIRED_FIELDS = (
 CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "$schema", "developer_verification_commands", "test_path_patterns",
     "adaptive_continuation_policy", "approval_policy", "low_risk_zones", "context_package_policy",
+    "worker_attestation_required",
 }
 APPROVAL_POLICIES = {"manual_all", "milestone", "low_risk"}
 CODE_REVIEW_REQUIRED_RISK_TRIGGERS = frozenset(
@@ -211,6 +212,13 @@ def validate_brief_policy(
         raise ContractError("dispatch brief zone and branch must be non-empty strings")
     if not non_empty(brief["worktree"]):
         raise ContractError("dispatch brief worktree must be a non-empty string")
+    attestation_required = config.get("worker_attestation_required", False)
+    if not isinstance(attestation_required, bool):
+        raise ContractError("project worker_attestation_required must be a boolean")
+    if brief.get("worker_attestation_required", False) is not attestation_required:
+        raise ContractError("dispatch brief worker_attestation_required does not match project policy")
+    if attestation_required and (not non_empty(brief.get("snapshot_commit"))):
+        raise ContractError("attested dispatch brief requires a non-empty snapshot_commit")
     if not isinstance(brief["definition_of_done"], list) or not all(non_empty(item) for item in brief["definition_of_done"]):
         raise ContractError("dispatch brief definition_of_done must be a non-empty list of strings")
     if not isinstance(brief["prohibited_changes"], list) or not all(non_empty(item) for item in brief["prohibited_changes"]):
@@ -456,4 +464,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     low_risk_zones = config.get("low_risk_zones")
     if low_risk_zones is not None and (not string_list(low_risk_zones) or not set(low_risk_zones).issubset(zones)):
         problems.append("orchestration low_risk_zones must name configured backend zones")
+    attestation_required = config.get("worker_attestation_required")
+    if attestation_required is not None and not isinstance(attestation_required, bool):
+        problems.append("orchestration worker_attestation_required must be a boolean when provided")
     return problems

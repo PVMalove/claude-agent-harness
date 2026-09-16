@@ -43,6 +43,7 @@ from gate_runner import concise_evidence, sanitise
 from ledger import LedgerError, LifecycleLedger
 from coordinator_cli import build_parser
 import qa_lane
+from runtime_attestation import AttestationError, attest as attest_runtime_worktree
 
 
 STATE_REL = Path(".harness/orchestration/state")
@@ -70,7 +71,7 @@ DISPATCH_FIELDS = {
     "definition_of_done", "prohibited_changes", "verification_commands", "required_gates", "dependencies",
     "resolved_runtime", "resolved_provider_profile", "resolved_model", "resolved_effort", "resolved_transport", "coordinator_approval", "candidate_commit", "review_base", "review_scope",
     "risk_assessment_id", "purpose", "state", "created_at", "delta_review_of", "delta_review_axis",
-    "context_package_id", "context_package_sha256",
+    "context_package_id", "context_package_sha256", "worker_attestation_required", "snapshot_commit",
 }
 DEFAULT_TEST_PATH_PATTERNS = ("tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py")
 REPORT_FIELDS = {
@@ -568,6 +569,13 @@ def _developer_verification_commands(config: dict[str, Any]) -> list[str]:
     return _strings(commands, "developer_verification_commands", allow_empty=True)
 
 
+def _worker_attestation_required(config: dict[str, Any]) -> bool:
+    value = config.get("worker_attestation_required", False)
+    if not isinstance(value, bool):
+        raise CoordinatorError("worker_attestation_required must be a boolean")
+    return value
+
+
 def _resolve_assignment(
     repo: Path,
     config: dict[str, Any],
@@ -932,7 +940,10 @@ def _validate_batch_integrity(root: Path, batch: dict[str, Any]) -> None:
 
 def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: dict[str, Any], dispatch: dict[str, Any]) -> None:
     _reject_sensitive(dispatch, "dispatch record")
-    if set(dispatch) != DISPATCH_FIELDS:
+    # Briefs are immutable. A record created before worker attestation was introduced keeps its
+    # historical shape and is treated as an explicit legacy opt-out instead of being rewritten.
+    legacy_fields = DISPATCH_FIELDS - {"worker_attestation_required", "snapshot_commit"}
+    if frozenset(dispatch) not in {frozenset(DISPATCH_FIELDS), frozenset(legacy_fields)}:
         raise CoordinatorError("dispatch record schema mismatch")
     if dispatch.get("state") != "approved":
         raise CoordinatorError("dispatch record is not an approved immutable brief")
@@ -1136,8 +1147,9 @@ def decision_packet(args: argparse.Namespace) -> dict[str, Any]:
             return {
                 "batch_id": batch["batch_id"], "ticket": batch["ticket"], "action": "approve next dispatch",
                 "branch": batch["branch"], "worktree": batch["worktree"], "base_sha": batch["base_commit"],
-                "candidate_sha": None, "changed_files": [], "checks": [], "risks": "not assessed yet",
+                "snapshot_sha": batch["base_commit"], "candidate_sha": None, "changed_files": [], "checks": [], "risks": "not assessed yet",
                 "blockers": "none", "report": None, "diff": None,
+                "worker_attestation_required": _worker_attestation_required(_config(repo)),
                 "approval_reason": "the next immutable dispatch has not been created",
                 "options": ["accept", "block", "full review"],
             }
@@ -1151,8 +1163,9 @@ def decision_packet(args: argparse.Namespace) -> dict[str, Any]:
             "action": "decide completion report" if report else "approve and send dispatch",
             "dispatch_id": dispatch["dispatch_id"], "role": dispatch["role"], "runtime": dispatch["resolved_runtime"],
             "branch": dispatch["branch"], "worktree": dispatch["worktree"], "base_sha": batch["base_commit"],
-            "candidate_sha": candidate, "changed_files": changed,
+            "snapshot_sha": dispatch.get("snapshot_commit", batch["base_commit"]), "candidate_sha": candidate, "changed_files": changed,
             "scope": dispatch["write_paths"] or dispatch.get("review_scope", []),
+            "worker_attestation_required": dispatch.get("worker_attestation_required", False),
             "summary": report.get("output") if report else "immutable brief prepared",
             "checks": report.get("checks_run", []) if report else [
                 {"command": command, "result": "pending"} for command in dispatch["verification_commands"]
@@ -1839,6 +1852,8 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 hashlib.sha256(_canonical(context_package).encode("utf-8")).hexdigest()
                 if context_package else None
             ),
+            "worker_attestation_required": _worker_attestation_required(config),
+            "snapshot_commit": candidate or batch["base_commit"],
         }
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the
@@ -1984,7 +1999,21 @@ def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     with _state_lock(root):
         dispatch, status = _live_status(root, args.dispatch)
         expected = dispatch["resolved_model"]
-        matched = reported == expected
+        model_matched = reported == expected
+        attestation: dict[str, Any] | None = None
+        worktree_matched = True
+        if dispatch.get("worker_attestation_required", False):
+            supplied_worktree = getattr(args, "worktree", None)
+            if not _non_empty(supplied_worktree):
+                worktree_matched = False
+                attestation = {"match": False, "error": "runtime worktree attestation is required"}
+            else:
+                try:
+                    attestation = {"match": True, **attest_runtime_worktree(repo, dispatch, supplied_worktree)}
+                except AttestationError as exc:
+                    worktree_matched = False
+                    attestation = {"match": False, "error": str(exc)}
+        matched = model_matched and worktree_matched
         moment = _now()
         status["state"] = "working" if matched else "blocked"
         status["updated_at"] = moment
@@ -1992,9 +2021,11 @@ def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         status["model_self_report"] = {
             "reported_model": reported,
             "expected_model": expected,
-            "match": matched,
+            "match": model_matched,
             "reported_at": moment,
         }
+        if attestation is not None:
+            status["worktree_attestation"] = {**attestation, "reported_at": moment}
         _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), status)
         if not matched:
             batch = _load_batch(root, dispatch["batch_id"])
@@ -2004,11 +2035,15 @@ def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             batch["state"] = "blocked"
             _replace(_batch_path(root, batch["batch_id"]), batch)
     if not matched:
+        mismatch = []
+        if not model_matched:
+            mismatch.append(f"running {reported!r} but approved brief resolved {expected!r}")
+        if not worktree_matched:
+            mismatch.append(str(attestation["error"]))
         raise CoordinatorError(
-            f"dispatch is running {reported!r} but its approved brief resolved {expected!r}; "
-            "the dispatch is blocked and needs a new coordinator decision"
+            "dispatch " + "; ".join(mismatch) + "; the dispatch is blocked and needs a new coordinator decision"
         )
-    return {"dispatch_id": dispatch["dispatch_id"], "state": "working", "model": reported}
+    return {"dispatch_id": dispatch["dispatch_id"], "state": "working", "model": reported, "worktree": attestation.get("worktree") if attestation else None}
 
 
 def heartbeat_dispatch(args: argparse.Namespace) -> dict[str, Any]:
@@ -2076,6 +2111,8 @@ def wait_dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 return {"dispatch_id": dispatch["dispatch_id"], "event": "rate_limited", "retry_not_before": status.get("retry_not_before")}
             if state == "blocked" and status.get("model_self_report", {}).get("match") is False:
                 return {"dispatch_id": dispatch["dispatch_id"], "event": "model_mismatch"}
+            if state == "blocked" and status.get("worktree_attestation", {}).get("match") is False:
+                return {"dispatch_id": dispatch["dispatch_id"], "event": "worktree_mismatch"}
             if state in {"failed", "abandoned", "cancelled"}:
                 return {"dispatch_id": dispatch["dispatch_id"], "event": "failed", "state": state}
             if state in LIVE_DISPATCH_STATES and _silent_seconds(status) >= threshold:
@@ -2667,6 +2704,8 @@ def submit_report(args: argparse.Namespace) -> dict[str, Any]:
         self_report = status.get("model_self_report")
         if not isinstance(self_report, dict) or self_report.get("match") is not True:
             raise CoordinatorError("a dispatched role must confirm its active model before reporting")
+        if dispatch.get("worker_attestation_required", False) and status.get("worktree_attestation", {}).get("match") is not True:
+            raise CoordinatorError("a dispatched role must attest its canonical Git worktree before reporting")
         role = _role(repo, dispatch["role"])
         _validate_report(report, dispatch, role, repo, batch.get("base_commit"))
         retry_candidate: str | None = None

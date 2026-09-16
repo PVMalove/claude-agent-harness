@@ -76,6 +76,11 @@
       "items": {"type": "string", "minLength": 1},
       "description": "Explicitly pre-approved zones eligible for low_risk continuation; omitted means no zone is eligible."
     },
+    "worker_attestation_required": {
+      "type": "boolean",
+      "default": true,
+      "description": "Require each runtime worker to attest its canonical Git worktree, branch and pinned commit before a completion report is accepted. New projects should keep this enabled; omitted keeps legacy projects compatible."
+    },
     "adaptive_continuation_policy": {
       "type": "object",
       "additionalProperties": false,
