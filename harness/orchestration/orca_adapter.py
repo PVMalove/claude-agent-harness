@@ -25,7 +25,10 @@ if str(MODULE_ROOT) not in sys.path:
 from contract import ContractError, validate_brief_policy
 
 
-SENSITIVE_KEY = re.compile(r"(?:api[_-]?key|credential|password|secret|token)", re.IGNORECASE)
+SENSITIVE_KEY = re.compile(
+    r"(?:api[_-]?key|credential|password|secret|(?:access|auth|refresh|id|bearer)[_-]?token|(?:^|[_-])token(?:$|[_-](?:id|value|secret|key)$))",
+    re.IGNORECASE,
+)
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
 
 

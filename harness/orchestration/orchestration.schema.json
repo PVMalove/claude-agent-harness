@@ -102,6 +102,47 @@
           "description": "Minimum --measured-value for a failure-log planned trigger. Default 20000."
         }
       }
+    },
+    "context_package_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Token-aware Context Package admission limits. The package must fit within the configured context window after reserving prompt headroom.",
+      "properties": {
+        "max_tokens": {"type": "integer", "minimum": 1, "default": 80000},
+        "context_window_tokens": {"type": "integer", "minimum": 1, "default": 150000},
+        "reserved_prompt_tokens": {"type": "integer", "minimum": 1, "default": 20000}
+      }
+    },
+    "continuation_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Maximum worker-session continuations per dispatch, including provider rate-limit resumes.",
+      "properties": {
+        "max_continuations": {"type": "integer", "minimum": 1, "default": 2},
+        "max_rate_limit_resumes": {"type": "integer", "minimum": 1, "default": 1}
+      }
+    },
+    "retry_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Maximum new developer attempts after review or QA asks for a retry.",
+      "properties": {
+        "max_developer_retries": {"type": "integer", "minimum": 0, "default": 1}
+      }
+    },
+    "preflight_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Admission limits checked before a batch is created. Oversized work must be split before any model dispatch.",
+      "properties": {
+        "require_estimates": {"type": "boolean", "default": true},
+        "max_definition_of_done_items": {"type": "integer", "minimum": 1, "default": 5},
+        "max_dependencies": {"type": "integer", "minimum": 1, "default": 3},
+        "max_expected_files": {"type": "integer", "minimum": 1, "default": 12},
+        "max_expected_services": {"type": "integer", "minimum": 1, "default": 1},
+        "max_expected_changed_lines": {"type": "integer", "minimum": 1, "default": 800},
+        "max_expected_context_tokens": {"type": "integer", "minimum": 1, "default": 80000}
+      }
     }
   },
   "definitions": {

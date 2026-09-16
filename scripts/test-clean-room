@@ -1024,6 +1024,16 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         coordinator_env = dict(os.environ, FAKE_ADAPTER_LOG=str(fake_adapter_log))
         if env:
             coordinator_env.update(env)
+        # New batches are subject to the same bounded-scope preflight as production use.  The
+        # lifecycle fixture is intentionally small, so give each synthetic ticket a compact
+        # declared envelope unless a scenario explicitly supplies one of its own.
+        arguments = list(arguments)
+        if "batch" in arguments and "create" in arguments and "--expected-file" not in arguments:
+            arguments.extend([
+                "--expected-file", "backend/service.py",
+                "--expected-service", "backend",
+                "--expected-changed-lines", "10",
+            ])
         return subprocess.run(
             [sys.executable, str(coordinator_path), "--repo", str(orchestration_project), *arguments],
             capture_output=True,
@@ -1282,7 +1292,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         [sys.executable, str(coordinator_path), "--repo", str(orchestration_project), "--state-dir", str(unicode_state),
          "batch", "create", "--ticket", "#908", "--branch", "feature/issue-908-unicode-output",
          "--worktree", "issue-908-unicode-output", "--zone", "backend", "--definition-of-done", "Проверить кодировку",
-         "--prohibited-change", "Не менять данные", "--integration-ref", "integration/test-908"],
+         "--prohibited-change", "Не менять данные", "--integration-ref", "integration/test-908",
+         "--expected-file", "backend/encoding.py", "--expected-service", "backend", "--expected-changed-lines", "10"],
         capture_output=True, env=unicode_env,
     )
     if unicode_result.returncode != 0:
@@ -2200,10 +2211,10 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
 
     print("fixed-sequence review verification passed")
 
-    # Context Package: ledger integration and shadow-mode freshness gate (Issue #138).  The
+    # Context Package: ledger integration and freshness gate (Issue #138).  The
     # coordinator registers a built package as its own immutable, hashed ledger record -- the same
     # ownership pattern as a risk assessment -- and checks its freshness before every new dispatch
-    # brief.  A stale package is only ever recorded on the batch; it never blocks dispatch creation.
+    # brief.  A package is shared across role sessions when the pinned base/candidate is unchanged.
     ctxpkg_state = test_root / "context-package-state"
     subprocess.run(["git", "branch", "feature/issue-138-context-package"], cwd=orchestration_project, check=True)
     sync_origin_base()
@@ -2315,6 +2326,13 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if first_ctxpkg_review.returncode != 0:
         sys.exit("coordinator rejected the context-package fixture's first review dispatch: " + first_ctxpkg_review.stderr)
     first_ctxpkg_review_record = json.loads(first_ctxpkg_review.stdout)
+    if first_ctxpkg_review_record["brief"].get("context_package_id") != ctxpkg_record["context_package_id"]:
+        sys.exit("review did not reuse the matching shared Context Package")
+    summary = first_ctxpkg_review_record["brief"].get("context_package_summary")
+    if not isinstance(summary, dict) or "services/context_package_demo.py" not in {
+        item.get("path") for item in summary.get("starting_files", [])
+    }:
+        sys.exit("review brief did not receive the compact shared Context Package summary")
     if first_ctxpkg_review_record.get("context_package_freshness", {}).get("status") != "fresh":
         sys.exit(
             "coordinator did not record a fresh context package before a matching dispatch: "
@@ -2380,7 +2398,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if second_ctxpkg_risk.returncode != 0:
         sys.exit("coordinator rejected the context-package fixture's second risk assessment: " + second_ctxpkg_risk.stderr)
 
-    # The coordinator refreshes a role-specific immutable Context Package before the review brief.
+    # A new candidate receives one new immutable shared Context Package before review.
     second_ctxpkg_review = coordinator_run(
         "--state-dir", str(ctxpkg_state), "dispatch", "create", "--batch", ctxpkg_batch,
         "--role", "code-review", "--candidate-commit", ctxpkg_second_sha,
@@ -2388,7 +2406,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     )
     if second_ctxpkg_review.returncode != 0:
         sys.exit(
-            "coordinator could not refresh a role-specific context package before the review: "
+            "coordinator could not refresh a shared context package before the review: "
             + second_ctxpkg_review.stderr
         )
     second_ctxpkg_review_record = json.loads(second_ctxpkg_review.stdout)
@@ -2405,12 +2423,15 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     ctxpkg_final_batch = json.loads(
         (lifecycle_records(ctxpkg_state) / "batches" / f"{ctxpkg_batch}.json").read_text(encoding="utf-8")
     )
-    final_package = next(
+    final_package_pointer = next(
         entry for entry in ctxpkg_final_batch["context_packages"]
         if entry["context_package_id"] == second_ctxpkg_review_record["brief"]["context_package_id"]
     )
-    if final_package.get("role") != "code-review":
-        sys.exit("review brief did not receive a role-specific context package")
+    final_package = json.loads(
+        (lifecycle_records(ctxpkg_state) / "context-packages" / f"{final_package_pointer['context_package_id']}.json").read_text(encoding="utf-8")
+    )
+    if final_package.get("role") != "shared" or final_package.get("estimated_tokens", 0) < 1:
+        sys.exit("review brief did not receive a token-estimated shared context package")
 
     print("context package ledger integration and freshness-gate verification passed")
 

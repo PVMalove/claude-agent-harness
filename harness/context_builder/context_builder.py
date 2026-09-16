@@ -52,6 +52,7 @@ class ContextPackage:
     precedent_cards: list[PrecedentCard]
     file_hashes: dict[str, str]
     size_bytes: int
+    estimated_tokens: int
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -304,6 +305,19 @@ def _keywords_for(paths: list[str]) -> set[str]:
     return keywords
 
 
+def estimate_tokens(text: str) -> int:
+    """Return a deterministic conservative token estimate for a package payload.
+
+    The coordinator cannot assume a provider tokenizer, and a byte ceiling is especially unsafe
+    for non-ASCII source and prose.  Two UTF-8 bytes per token deliberately leaves room for the
+    less favourable tokenisation seen in code, identifiers and Cyrillic text.  It is a safety
+    bound for dispatch admission, not a claim about provider billing.
+    """
+    if not text:
+        return 0
+    return (len(text.encode("utf-8")) + 1) // 2
+
+
 def build_context_package(
     repository: Path,
     base_commit: str,
@@ -312,7 +326,8 @@ def build_context_package(
     symbol_graph_depth: int = 2,
     min_starting_files: int = 5,
     max_starting_files: int = 10,
-    max_package_size_bytes: int | None = 512_000,
+    max_package_size_bytes: int | None = None,
+    max_package_tokens: int | None = 80_000,
     seed_paths: list[str] | None = None,
 ) -> ContextPackage:
     """Build one immutable Context Package for `base_commit`..`candidate_commit`.
@@ -320,7 +335,9 @@ def build_context_package(
     Reads only pinned git history (`git show`/`git diff`/`git ls-tree`), never the working tree, so
     the same inputs always produce the same output regardless of local checkout state. Raises
     `ContextPackageError` instead of silently truncating when the assembled package would exceed
-    `max_package_size_bytes` (pass `None` to disable the limit).
+    `max_package_size_bytes` (pass `None` to disable the legacy diagnostic limit) or the
+    token-aware `max_package_tokens` limit.  The latter is the admission control used by the
+    coordinator; bytes are retained only for explicit backwards-compatible callers.
     """
     if min_starting_files < 1 or max_starting_files < min_starting_files:
         raise ContextPackageError("min_starting_files must be >=1 and <= max_starting_files")
@@ -378,10 +395,23 @@ def build_context_package(
     contents = {path: _read_file(repository, candidate_commit, path) for path in included_paths}
     file_hashes = {path: hashlib.sha256(content.encode("utf-8")).hexdigest() for path, content in contents.items()}
 
-    size_bytes = len(diff.encode("utf-8")) + sum(len(content.encode("utf-8")) for content in contents.values())
+    payload_text = "\n".join(
+        [
+            diff,
+            json.dumps(symbol_graph, ensure_ascii=False, sort_keys=True),
+            json.dumps([asdict(card) for card in precedent_cards], ensure_ascii=False, sort_keys=True),
+            *[contents[path] for path in sorted(contents)],
+        ]
+    )
+    size_bytes = len(payload_text.encode("utf-8"))
+    estimated_tokens = estimate_tokens(payload_text)
     if max_package_size_bytes is not None and size_bytes > max_package_size_bytes:
         raise ContextPackageError(
             f"context package size {size_bytes} bytes exceeds max_package_size_bytes={max_package_size_bytes}"
+        )
+    if max_package_tokens is not None and estimated_tokens > max_package_tokens:
+        raise ContextPackageError(
+            f"context package estimate {estimated_tokens} tokens exceeds max_package_tokens={max_package_tokens}"
         )
 
     return ContextPackage(
@@ -394,4 +424,5 @@ def build_context_package(
         precedent_cards=precedent_cards,
         file_hashes=file_hashes,
         size_bytes=size_bytes,
+        estimated_tokens=estimated_tokens,
     )

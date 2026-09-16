@@ -35,7 +35,8 @@ CONTEXT_BUILDER_ROOT = MODULE_ROOT.parent / "context_builder"
 if str(CONTEXT_BUILDER_ROOT) not in sys.path:
     sys.path.insert(0, str(CONTEXT_BUILDER_ROOT))
 from contract import (
-    ContractError, load_role_manifest, resolve_assignment, resolve_runtime_name, validate_brief_policy,
+    ContractError, health_problems, load_role_manifest, resolve_assignment, resolve_runtime_name,
+    validate_brief_policy,
 )
 from context_builder import ContextPackageError, build_context_package
 from dispatch_preflight import PreflightError, prepare as prepare_dispatch
@@ -47,7 +48,10 @@ from runtime_attestation import AttestationError, attest as attest_runtime_workt
 
 
 STATE_REL = Path(".harness/orchestration/state")
-SENSITIVE_KEY = re.compile(r"(?:api[_-]?key|credential|password|secret|token)", re.IGNORECASE)
+SENSITIVE_KEY = re.compile(
+    r"(?:api[_-]?key|credential|password|secret|(?:access|auth|refresh|id|bearer)[_-]?token|(?:^|[_-])token(?:$|[_-](?:id|value|secret|key)$))",
+    re.IGNORECASE,
+)
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
 DECISIONS = {"accept", "override-warning", "retry", "block", "fail"}
 TERMINAL_BATCH_STATES = {"completed", "failed", "blocked"}
@@ -64,14 +68,17 @@ QA_QUEUE_FIELDS = {"dispatch_id", "sequence", "queued_at"}
 PLAN_FIELDS = (
     "batch_id", "created_at", "base_commit", "integration_ref", "branch_start_commit", "ticket", "branch",
     "worktree", "zone", "definition_of_done", "prohibited_changes", "developer_verification_commands",
-    "verification_commands", "required_gates", "dependencies", "approval_policy",
+    "verification_commands", "required_gates", "dependencies", "approval_policy", "scope_preflight",
+    "harness_runtime_sha256",
 )
+LEGACY_PLAN_FIELDS = tuple(field for field in PLAN_FIELDS if field not in {"scope_preflight", "harness_runtime_sha256"})
 DISPATCH_FIELDS = {
     "dispatch_id", "batch_id", "ticket", "role", "access", "zone", "write_paths", "branch", "worktree",
     "definition_of_done", "prohibited_changes", "verification_commands", "required_gates", "dependencies",
     "resolved_runtime", "resolved_provider_profile", "resolved_model", "resolved_effort", "resolved_transport", "coordinator_approval", "candidate_commit", "review_base", "review_scope",
     "risk_assessment_id", "purpose", "state", "created_at", "delta_review_of", "delta_review_axis",
-    "context_package_id", "context_package_sha256", "worker_attestation_required", "snapshot_commit",
+    "context_package_id", "context_package_sha256", "context_package_summary", "worker_attestation_required",
+    "snapshot_commit",
 }
 DEFAULT_TEST_PATH_PATTERNS = ("tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py")
 REPORT_FIELDS = {
@@ -95,8 +102,9 @@ RISK_ASSESSMENT_FIELDS = {
 CONTEXT_PACKAGE_FIELDS = {
     "context_package_id", "batch_id", "base_commit", "candidate_commit", "diff", "starting_files",
     "symbol_graph", "related_tests", "precedent_cards", "file_hashes", "size_bytes", "created_at",
-    "role", "inclusion_reason",
+    "role", "inclusion_reason", "estimated_tokens",
 }
+LEGACY_CONTEXT_PACKAGE_FIELDS = CONTEXT_PACKAGE_FIELDS - {"estimated_tokens"}
 CHECKPOINT_NO_CONTEXT_PACKAGE = "not applicable — no context package registered"
 CHECKPOINT_INPUT_FIELDS = {
     "dispatch_id", "commit_sha", "changed_files", "remaining_definition_of_done", "passing_checks",
@@ -116,6 +124,22 @@ DEFAULT_ADAPTIVE_CONTINUATION_POLICY = {
     "context_limit": 150_000,
     "tdd_cycle_count": 3,
     "failure_log_bytes": 20_000,
+}
+DEFAULT_CONTEXT_PACKAGE_POLICY = {
+    "max_tokens": 80_000,
+    "context_window_tokens": 150_000,
+    "reserved_prompt_tokens": 20_000,
+}
+DEFAULT_CONTINUATION_POLICY = {"max_continuations": 2, "max_rate_limit_resumes": 1}
+DEFAULT_RETRY_POLICY = {"max_developer_retries": 1}
+DEFAULT_PREFLIGHT_POLICY = {
+    "require_estimates": True,
+    "max_definition_of_done_items": 5,
+    "max_dependencies": 3,
+    "max_expected_files": 12,
+    "max_expected_services": 1,
+    "max_expected_changed_lines": 800,
+    "max_expected_context_tokens": 80_000,
 }
 DEFAULT_RATE_LIMIT_RETRY_SECONDS = 60
 MAX_CHECK_EVIDENCE_CHARS = 1_600
@@ -329,6 +353,9 @@ def _config(repo: Path) -> dict[str, Any]:
         return _default_config(repo)
     value = _read_object(repo / ".harness/orchestration.json", "project orchestration config")
     _reject_sensitive(value, "project orchestration config")
+    problems = health_problems(repo / ".harness/orchestration.json", repo / ".harness/orchestration/roles")
+    if problems:
+        raise CoordinatorError("invalid project orchestration config: " + "; ".join(problems))
     return value
 
 
@@ -345,6 +372,89 @@ def _adaptive_continuation_policy(config: dict[str, Any]) -> dict[str, int]:
             if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
                 resolved[key] = value
     return resolved
+
+
+def _numeric_policy(config: dict[str, Any], key: str, defaults: dict[str, int]) -> dict[str, int]:
+    """Resolve a small project policy after config validation, retaining safe defaults.
+
+    This second guard makes direct coordinator use safe even if a caller bypasses ``harness
+    health``.  ``retry_policy.max_developer_retries`` alone permits zero to explicitly disable
+    retries; all other policy values are positive.
+    """
+    resolved = dict(defaults)
+    configured = config.get(key)
+    if not isinstance(configured, dict):
+        return resolved
+    for name, default in defaults.items():
+        value = configured.get(name)
+        minimum = 0 if key == "retry_policy" and name == "max_developer_retries" else 1
+        if isinstance(value, int) and not isinstance(value, bool) and value >= minimum:
+            resolved[name] = value
+    return resolved
+
+
+def _context_package_policy(config: dict[str, Any]) -> dict[str, int]:
+    policy = _numeric_policy(config, "context_package_policy", DEFAULT_CONTEXT_PACKAGE_POLICY)
+    if policy["reserved_prompt_tokens"] >= policy["context_window_tokens"]:
+        raise CoordinatorError("context_package_policy reserved_prompt_tokens must be below context_window_tokens")
+    available = policy["context_window_tokens"] - policy["reserved_prompt_tokens"]
+    if policy["max_tokens"] > available:
+        raise CoordinatorError("context_package_policy max_tokens exceeds available context after prompt headroom")
+    return policy
+
+
+def _continuation_policy(config: dict[str, Any]) -> dict[str, int]:
+    return _numeric_policy(config, "continuation_policy", DEFAULT_CONTINUATION_POLICY)
+
+
+def _retry_policy(config: dict[str, Any]) -> dict[str, int]:
+    return _numeric_policy(config, "retry_policy", DEFAULT_RETRY_POLICY)
+
+
+def _preflight_policy(config: dict[str, Any]) -> dict[str, Any]:
+    policy: dict[str, Any] = dict(DEFAULT_PREFLIGHT_POLICY)
+    configured = config.get("preflight_policy")
+    if not isinstance(configured, dict):
+        return policy
+    for name, default in DEFAULT_PREFLIGHT_POLICY.items():
+        value = configured.get(name)
+        if name == "require_estimates":
+            if isinstance(value, bool):
+                policy[name] = value
+        elif isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+            policy[name] = value
+    return policy
+
+
+def _runtime_snapshot_root(repo: Path) -> Path:
+    installed = repo / ".harness/orchestration"
+    return installed if installed.is_dir() else MODULE_ROOT
+
+
+def _harness_runtime_sha256(repo: Path) -> str:
+    """Hash the coordinator runtime without volatile state so a batch cannot span an update."""
+    root = _runtime_snapshot_root(repo)
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file() and "state" not in item.relative_to(root).parts):
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _validate_harness_runtime_snapshot(repo: Path, batch: dict[str, Any]) -> None:
+    expected = batch.get("harness_runtime_sha256")
+    if expected is None:  # Explicitly supported legacy batch; never rewrite history in place.
+        return
+    if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise CoordinatorError("batch has an invalid harness runtime snapshot hash")
+    actual = _harness_runtime_sha256(repo)
+    if actual != expected:
+        raise CoordinatorError(
+            "the harness runtime changed after this batch was planned; do not spend a worker on recovery. "
+            "Finish with the pinned harness revision or abandon and re-plan the batch."
+        )
 
 
 def _git(repo: Path, *arguments: str) -> str:
@@ -749,7 +859,7 @@ def _load_context_package(root: Path, package_id: str) -> dict[str, Any]:
 
 def _validate_context_package(root: Path, batch: dict[str, Any], package: dict[str, Any]) -> None:
     _reject_sensitive(package, "context package")
-    if set(package) != CONTEXT_PACKAGE_FIELDS:
+    if set(package) != CONTEXT_PACKAGE_FIELDS and set(package) != LEGACY_CONTEXT_PACKAGE_FIELDS:
         raise CoordinatorError("context package schema mismatch")
     if package["batch_id"] != batch["batch_id"]:
         raise CoordinatorError("context package does not belong to its batch")
@@ -763,6 +873,42 @@ def _validate_context_package(root: Path, batch: dict[str, Any], package: dict[s
     expected = hashlib.sha256(_canonical(package).encode("utf-8")).hexdigest()
     if not entry or entry.get("record_sha256") != expected:
         raise CoordinatorError("context package failed immutable record integrity check")
+
+
+def _context_package_summary(package: dict[str, Any]) -> dict[str, Any]:
+    """Compact portable handoff data for a new role session.
+
+    The full immutable package remains in the ledger exactly once.  The brief carries enough
+    bounded navigation to start work without rediscovering files or copying the full diff into
+    every model prompt; the pinned commits let a role obtain a precise diff when it truly needs it.
+    """
+    return {
+        "base_commit": package["base_commit"],
+        "candidate_commit": package["candidate_commit"],
+        "starting_files": package["starting_files"],
+        "related_tests": package["related_tests"],
+        "precedent_cards": package["precedent_cards"],
+        "estimated_tokens": package.get("estimated_tokens"),
+    }
+
+
+def _reusable_context_package(
+    root: Path, batch: dict[str, Any], base_commit: str, candidate_commit: str,
+) -> dict[str, Any] | None:
+    """Return the current batch's shared package for exactly the same pinned diff.
+
+    A package is immutable and role-neutral. Architect and developer therefore share the base
+    snapshot, and a resumed worker keeps its brief's exact package ID instead of rebuilding or
+    re-reading discovery. Review gets a new package only once the candidate actually changes.
+    """
+    for entry in reversed(batch.get("context_packages", [])):
+        if entry.get("base_commit") != base_commit or entry.get("candidate_commit") != candidate_commit:
+            continue
+        package = _load_context_package(root, entry.get("context_package_id"))
+        _validate_context_package(root, batch, package)
+        if package.get("role") == "shared":
+            return package
+    return None
 
 
 def _latest_context_package(root: Path, batch: dict[str, Any]) -> dict[str, Any] | None:
@@ -932,18 +1078,26 @@ def clean_ledger(args: argparse.Namespace) -> dict[str, Any]:
 
 def _validate_batch_integrity(root: Path, batch: dict[str, Any]) -> None:
     plan = _read_object(_plan_path(root, batch.get("batch_id")), "immutable batch plan")
-    if any(field not in batch for field in PLAN_FIELDS) or any(field not in plan for field in PLAN_FIELDS):
-        raise CoordinatorError("batch record is incomplete")
-    if {field: batch[field] for field in PLAN_FIELDS} != {field: plan[field] for field in PLAN_FIELDS}:
-        raise CoordinatorError("batch record does not match its immutable plan")
+    for fields in (PLAN_FIELDS, LEGACY_PLAN_FIELDS):
+        if all(field in batch for field in fields) and all(field in plan for field in fields):
+            if {field: batch[field] for field in fields} == {field: plan[field] for field in fields}:
+                return
+            raise CoordinatorError("batch record does not match its immutable plan")
+    raise CoordinatorError("batch record is incomplete")
 
 
 def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: dict[str, Any], dispatch: dict[str, Any]) -> None:
+    _validate_harness_runtime_snapshot(repo, batch)
     _reject_sensitive(dispatch, "dispatch record")
     # Briefs are immutable. A record created before worker attestation was introduced keeps its
     # historical shape and is treated as an explicit legacy opt-out instead of being rewritten.
-    legacy_fields = DISPATCH_FIELDS - {"worker_attestation_required", "snapshot_commit"}
-    if frozenset(dispatch) not in {frozenset(DISPATCH_FIELDS), frozenset(legacy_fields)}:
+    pre_summary_fields = DISPATCH_FIELDS - {"context_package_summary"}
+    legacy_fields = DISPATCH_FIELDS - {
+        "context_package_summary", "worker_attestation_required", "snapshot_commit",
+    }
+    if frozenset(dispatch) not in {
+        frozenset(DISPATCH_FIELDS), frozenset(pre_summary_fields), frozenset(legacy_fields),
+    }:
         raise CoordinatorError("dispatch record schema mismatch")
     if dispatch.get("state") != "approved":
         raise CoordinatorError("dispatch record is not an approved immutable brief")
@@ -958,11 +1112,14 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
             raise CoordinatorError("architect, developer and code-review briefs require a Context Package reference")
         package = _load_context_package(root, package_id)
         _validate_context_package(root, batch, package)
-        if package.get("role") != dispatch["role"]:
-            raise CoordinatorError("dispatch Context Package is not role-specific")
+        if package.get("role") not in {"shared", dispatch["role"]}:
+            raise CoordinatorError("dispatch Context Package is neither shared nor assigned to this role")
         if hashlib.sha256(_canonical(package).encode("utf-8")).hexdigest() != package_sha:
             raise CoordinatorError("dispatch Context Package hash does not match its immutable package")
-    elif package_id is not None or package_sha is not None:
+        summary = dispatch.get("context_package_summary")
+        if summary is not None and summary != _context_package_summary(package):
+            raise CoordinatorError("dispatch Context Package summary does not match its immutable package")
+    elif package_id is not None or package_sha is not None or dispatch.get("context_package_summary") is not None:
         raise CoordinatorError("only architect, developer and code-review briefs may reference a Context Package")
     entry = next((item for item in batch.get("dispatches", []) if item.get("dispatch_id") == dispatch.get("dispatch_id")), None)
     if not entry or entry.get("brief_sha256") != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest():
@@ -1268,19 +1425,28 @@ def _persist_context_package(
     inclusion_reason: str,
     min_starting_files: int = 1,
     max_starting_files: int = 10,
-    max_package_size_bytes: int = 512_000,
+    max_package_size_bytes: int | None = None,
+    max_package_tokens: int | None = None,
 ) -> dict[str, Any]:
-    """Build and register the exact bounded context consumed by one role brief."""
+    """Build once and register a reusable Context Package for one pinned diff."""
+    package_base = batch.get("integration_base_commit") or batch["base_commit"]
+    reusable = _reusable_context_package(root, batch, package_base, snapshot)
+    if reusable is not None:
+        return reusable
+    if role != "shared":
+        raise CoordinatorError("automatic Context Packages must be shared; role focus belongs in the immutable brief")
+    policy = _context_package_policy(_config(repo))
+    token_limit = max_package_tokens if max_package_tokens is not None else policy["max_tokens"]
     seed_files = [
-        "AGENTS.md", "README.md", f".harness/orchestration/roles/{role}.md",
+        "AGENTS.md", "README.md", ".harness/orchestration/roles/_common.md",
         ".harness/orchestration/contract.py",
     ]
     try:
-        package_base = batch.get("integration_base_commit") or batch["base_commit"]
         built = build_context_package(
             repo, package_base, snapshot,
             symbol_graph_depth=2, min_starting_files=min_starting_files,
             max_starting_files=max_starting_files, max_package_size_bytes=max_package_size_bytes,
+            max_package_tokens=token_limit,
             seed_paths=seed_files,
         )
     except ContextPackageError as exc:
@@ -1291,13 +1457,13 @@ def _persist_context_package(
         "starting_files": [asdict(item) for item in built.starting_files], "symbol_graph": built.symbol_graph,
         "related_tests": built.related_tests, "precedent_cards": [asdict(item) for item in built.precedent_cards],
         "file_hashes": built.file_hashes, "size_bytes": built.size_bytes, "created_at": _now(),
-        "role": role, "inclusion_reason": inclusion_reason,
+        "estimated_tokens": built.estimated_tokens, "role": "shared", "inclusion_reason": inclusion_reason,
     }
     _reject_sensitive(package, "context package")
     _write_exclusive(_context_package_path(root, package["context_package_id"]), package)
     batch.setdefault("context_packages", []).append({
         "context_package_id": package["context_package_id"], "base_commit": package["base_commit"],
-        "candidate_commit": package["candidate_commit"], "role": role,
+        "candidate_commit": package["candidate_commit"], "role": "shared",
         "record_sha256": hashlib.sha256(_canonical(package).encode("utf-8")).hexdigest(),
     })
     return package
@@ -1311,6 +1477,9 @@ def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
     candidate = _candidate_commit(repo, args.candidate_commit)
+    requested_role = getattr(args, "role", "shared")
+    if requested_role != "shared":
+        raise CoordinatorError("Context Packages are batch-shared; role-specific focus stays in the dispatch brief")
     with _state_lock(root):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
@@ -1324,13 +1493,105 @@ def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
         if candidate != _latest_developer_candidate(repo, root, batch):
             raise CoordinatorError("candidate commit does not match the accepted developer report")
         package = _persist_context_package(
-            repo, root, batch, role=getattr(args, "role", "shared"), snapshot=candidate,
+            repo, root, batch, role="shared", snapshot=candidate,
             inclusion_reason=getattr(args, "inclusion_reason", "manual immutable context registration"),
             min_starting_files=args.min_starting_files, max_starting_files=args.max_starting_files,
             max_package_size_bytes=args.max_package_size_bytes,
+            max_package_tokens=getattr(args, "max_package_tokens", None),
         )
         _replace(_batch_path(root, batch["batch_id"]), batch)
     return package
+
+
+def _scope_values(args: argparse.Namespace, name: str) -> list[str]:
+    value = getattr(args, name, None)
+    if value is None:
+        return []
+    return _strings(value, name, allow_empty=True)
+
+
+def _expected_positive(args: argparse.Namespace, name: str) -> int | None:
+    value = getattr(args, name, None)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise CoordinatorError(f"{name.replace('_', '-')} must be a positive integer when provided")
+    return value
+
+
+def _scope_preflight(
+    config: dict[str, Any], ticket: str, zone: str, definition_of_done: list[str], dependencies: list[str],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Reject an oversized ticket before a batch, worktree dispatch, or model session exists."""
+    policy = _preflight_policy(config)
+    expected_files = sorted(set(_scope_values(args, "expected_file")))
+    expected_services = sorted(set(_scope_values(args, "expected_service")))
+    expected_changed_lines = _expected_positive(args, "expected_changed_lines")
+    supplied_context_tokens = _expected_positive(args, "expected_context_tokens")
+    real_dependencies = [item for item in dependencies if item != "none"]
+    missing: list[str] = []
+    if policy["require_estimates"]:
+        if not expected_files:
+            missing.append("--expected-file")
+        if not expected_services:
+            missing.append("--expected-service")
+        if expected_changed_lines is None:
+            missing.append("--expected-changed-lines")
+    if missing:
+        raise CoordinatorError(
+            "batch preflight requires " + ", ".join(missing)
+            + "; split the ticket or declare a bounded expected scope before any model dispatch"
+        )
+    # A deterministic conservative admission estimate.  It prevents a tiny-looking line count
+    # spread across many files from escaping the same context budget.  A caller can supply a
+    # stricter observed estimate, but cannot lower this floor.
+    derived_context_tokens = (
+        (expected_changed_lines or 0) * 20 + len(expected_files) * 2_000
+    )
+    expected_context_tokens = max(supplied_context_tokens or 0, derived_context_tokens)
+    problems: list[str] = []
+    checks = {
+        "definition_of_done_items": (len(definition_of_done), policy["max_definition_of_done_items"]),
+        "dependencies": (len(real_dependencies), policy["max_dependencies"]),
+        "expected_files": (len(expected_files), policy["max_expected_files"]),
+        "expected_services": (len(expected_services), policy["max_expected_services"]),
+        "expected_changed_lines": (expected_changed_lines or 0, policy["max_expected_changed_lines"]),
+        "expected_context_tokens": (expected_context_tokens, policy["max_expected_context_tokens"]),
+    }
+    for label, (actual, limit) in checks.items():
+        if actual > limit:
+            problems.append(f"{label}={actual} exceeds {limit}")
+    if problems:
+        raise CoordinatorError(
+            "batch preflight rejected this ticket: " + "; ".join(problems)
+            + ". Split it with /to-tickets before creating a batch."
+        )
+    return {
+        "ticket": ticket,
+        "zone": zone,
+        "policy": policy,
+        "definition_of_done_items": len(definition_of_done),
+        "dependencies": real_dependencies,
+        "expected_files": expected_files,
+        "expected_services": expected_services,
+        "expected_changed_lines": expected_changed_lines or 0,
+        "expected_context_tokens": expected_context_tokens,
+        "status": "pass",
+        "checked_at": _now(),
+    }
+
+
+def preflight_batch(args: argparse.Namespace) -> dict[str, Any]:
+    repo = _repo(args)
+    config = _config(repo)
+    ticket = getattr(args, "ticket", None)
+    zone = getattr(args, "zone", None)
+    if not _non_empty(ticket) or not _non_empty(zone):
+        raise CoordinatorError("ticket and zone must be non-empty strings")
+    definition_of_done = _strings(getattr(args, "definition_of_done", None), "definition_of_done")
+    dependencies = _strings(getattr(args, "dependency", None) or ["none"], "dependencies")
+    return _scope_preflight(config, ticket.strip(), zone.strip(), definition_of_done, dependencies, args)
 
 
 def create_batch(args: argparse.Namespace) -> dict[str, Any]:
@@ -1343,6 +1604,7 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     integration_ref = getattr(args, "integration_ref", None)
     dod = _strings(getattr(args, "definition_of_done", None), "definition_of_done")
     prohibited = _strings(getattr(args, "prohibited_change", None), "prohibited_changes")
+    dependencies = _strings(getattr(args, "dependency", None) or ["none"], "dependencies")
     if not _non_empty(ticket) or not _non_empty(worktree) or not _non_empty(zone):
         raise CoordinatorError("ticket, worktree and zone must be non-empty strings")
     _validate_branch(repo, branch)
@@ -1352,6 +1614,7 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     # `_validate_branch` falls back to, rather than inventing a second convention.
     fetch_ref = integration_ref.strip() if _non_empty(integration_ref) else _required_base_branch(repo)
     pinned_base = _fetch_ref_tip(repo, fetch_ref)
+    scope_preflight = _scope_preflight(config, ticket.strip(), zone.strip(), dod, dependencies, args)
     record = {
         "batch_id": f"batch-{uuid.uuid4()}",
         "created_at": _now(),
@@ -1369,8 +1632,10 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
         "developer_verification_commands": _developer_verification_commands(config),
         "verification_commands": _verification_commands(config),
         "required_gates": _strings(getattr(args, "required_gate", None) or ["none"], "required_gates"),
-        "dependencies": _strings(getattr(args, "dependency", None) or ["none"], "dependencies"),
+        "dependencies": dependencies,
         "approval_policy": _approval_policy(config),
+        "scope_preflight": scope_preflight,
+        "harness_runtime_sha256": _harness_runtime_sha256(repo),
         "dispatches": [],
         "risk_assessments": [],
         "risk_escalations": [],
@@ -1414,6 +1679,24 @@ def _pending_report(root: Path, batch: dict[str, Any], entry: dict[str, Any]) ->
     return report
 
 
+def _developer_retry_count(batch: dict[str, Any]) -> int:
+    """Count approved retry decisions, not ordinary initial developer dispatches."""
+    return sum(
+        1
+        for decision in batch.get("coordinator_decisions", [])
+        if decision.get("decision") == "retry" and decision.get("next_role") == "developer"
+    )
+
+
+def _continuation_counts(batch: dict[str, Any], dispatch_id: str) -> tuple[int, int]:
+    decisions = [
+        decision for decision in batch.get("coordinator_decisions", [])
+        if decision.get("dispatch_id") == dispatch_id and decision.get("decision") in {"continue", "continue-automatic"}
+    ]
+    automatic = sum(1 for decision in decisions if decision.get("decision") == "continue-automatic")
+    return len(decisions), automatic
+
+
 def _review_severity(review: dict[str, Any]) -> dict[str, str]:
     return {axis: review[axis]["severity"] for axis in ("standards", "spec")}
 
@@ -1447,6 +1730,12 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
                 raise CoordinatorError("override-warning requires a review warning")
         elif args.decision == "override-warning":
             raise CoordinatorError("only a recorded review warning can be overridden")
+        if args.decision == "retry":
+            retry_policy = _retry_policy(_config(repo))
+            if _developer_retry_count(batch) >= retry_policy["max_developer_retries"]:
+                raise CoordinatorError(
+                    "developer retry budget is exhausted for this batch; split, block, or re-plan instead of starting another worker"
+                )
         decision = {
             "decision": args.decision,
             "approved_by": _approval(args)["approved_by"],
@@ -1454,7 +1743,10 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
             "note": args.note.strip() if _non_empty(args.note) else "none",
         }
         pending[0]["decision"] = decision
-        batch.setdefault("coordinator_decisions", []).append({"dispatch_id": pending[0]["dispatch_id"], **decision})
+        decision_entry = {"dispatch_id": pending[0]["dispatch_id"], **decision}
+        if args.decision == "retry":
+            decision_entry["next_role"] = "developer"
+        batch.setdefault("coordinator_decisions", []).append(decision_entry)
         if args.decision == "retry":
             batch["required_next_role"] = "developer"
             batch["retry_candidate_required"] = True
@@ -1804,9 +2096,9 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 except CoordinatorError:
                     snapshot = batch["base_commit"]
             context_package = _persist_context_package(
-                repo, root, batch, role=role_name, snapshot=snapshot,
+                repo, root, batch, role="shared", snapshot=snapshot,
                 inclusion_reason=(
-                    f"automatic {role_name} package at pinned snapshot {snapshot}; "
+                    f"automatic shared package for {role_name} at pinned snapshot {snapshot}; "
                     "included before immutable brief creation"
                 ),
             )
@@ -1852,6 +2144,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 hashlib.sha256(_canonical(context_package).encode("utf-8")).hexdigest()
                 if context_package else None
             ),
+            "context_package_summary": _context_package_summary(context_package) if context_package else None,
             "worker_attestation_required": _worker_attestation_required(config),
             "snapshot_commit": candidate or batch["base_commit"],
         }
@@ -1888,7 +2181,9 @@ def _validate_checkout(checkout: Path, candidate: str, base: str | None, scope: 
         raise CoordinatorError("review checkout is not a git worktree") from exc
     if actual != candidate:
         raise CoordinatorError("review checkout HEAD does not match the pinned candidate commit")
-    status = _git(checkout, "status", "--porcelain", "--ignored", "--untracked-files=all")
+    # Ignored virtual environments and tool caches do not alter the pinned candidate.  Treating
+    # them as a dirty review checkout sends the coordinator into needless recovery/review loops.
+    status = _git(checkout, "status", "--porcelain", "--untracked-files=normal")
     mutable_paths = []
     for line in status.splitlines():
         path = line[3:].split(" -> ", 1)[-1].replace("\\", "/")
@@ -2362,7 +2657,17 @@ def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             status.get("state") != "checkpointed" and not resumable_rate_limit
         ):
             raise CoordinatorError("only a checkpointed or rate-limited dispatch may start a new worker session")
+        continuation_policy = _continuation_policy(config)
+        continuation_count, rate_limit_count = _continuation_counts(batch, dispatch["dispatch_id"])
+        if continuation_count >= continuation_policy["max_continuations"]:
+            raise CoordinatorError(
+                "continuation budget is exhausted for this dispatch; submit a final report or block for a new scoped batch"
+            )
         if termination_reason in RATE_LIMIT_TERMINATION_REASONS:
+            if rate_limit_count >= continuation_policy["max_rate_limit_resumes"]:
+                raise CoordinatorError(
+                    "automatic rate-limit resume budget is exhausted; require a newly scoped batch instead of looping"
+                )
             retry_not_before = status.get("retry_not_before")
             if isinstance(retry_not_before, str) and _moment(retry_not_before, "retry_not_before") > datetime.now(timezone.utc):
                 raise CoordinatorError("rate-limit retry window has not elapsed")

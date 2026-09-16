@@ -6,5 +6,26 @@
   "concurrency_budget": 1,
   "approval_policy": "manual_all",
   "worker_attestation_required": true,
+  "context_package_policy": {
+    "max_tokens": 80000,
+    "context_window_tokens": 150000,
+    "reserved_prompt_tokens": 20000
+  },
+  "continuation_policy": {
+    "max_continuations": 2,
+    "max_rate_limit_resumes": 1
+  },
+  "retry_policy": {
+    "max_developer_retries": 1
+  },
+  "preflight_policy": {
+    "require_estimates": true,
+    "max_definition_of_done_items": 5,
+    "max_dependencies": 3,
+    "max_expected_files": 12,
+    "max_expected_services": 1,
+    "max_expected_changed_lines": 800,
+    "max_expected_context_tokens": 80000
+  },
   "verification_commands": []
 }

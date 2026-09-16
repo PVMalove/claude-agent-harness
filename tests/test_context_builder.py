@@ -131,6 +131,17 @@ class ContextBuilderTests(ContextBuilderFixture):
                 self.repo, self.base_commit, self.candidate_commit, min_starting_files=1, max_package_size_bytes=1
             )
 
+    def test_reports_a_deterministic_token_estimate_and_enforces_it(self) -> None:
+        package = build_context_package(
+            self.repo, self.base_commit, self.candidate_commit, min_starting_files=1, max_package_tokens=10_000
+        )
+
+        self.assertGreater(package.estimated_tokens, 0)
+        with self.assertRaisesRegex(ContextPackageError, "max_package_tokens"):
+            build_context_package(
+                self.repo, self.base_commit, self.candidate_commit, min_starting_files=1, max_package_tokens=1
+            )
+
     def test_fails_clearly_instead_of_silently_returning_fewer_than_the_minimum_starting_files(self) -> None:
         with self.assertRaises(ContextPackageError):
             build_context_package(self.repo, self.base_commit, self.candidate_commit, min_starting_files=5)

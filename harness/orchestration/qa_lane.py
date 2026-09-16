@@ -170,7 +170,9 @@ def run(args: Any, ops: Any) -> dict[str, Any]:
         ops._replace(ops._dispatch_status_path(root, dispatch["dispatch_id"]), {"dispatch_id": dispatch["dispatch_id"], "state": "working", "updated_at": ops._now()})
         ops._replace(ops._batch_path(root, batch["batch_id"]), batch)
     try:
-        gate = run_gate(dispatch["verification_commands"], CleanRoomPolicy(repo, dispatch["candidate_commit"]), stop_on_failure=False)
+        # The first failed deterministic gate is sufficient evidence for a developer retry.  Do
+        # not consume CI time and coordinator context collecting unrelated failures afterwards.
+        gate = run_gate(dispatch["verification_commands"], CleanRoomPolicy(repo, dispatch["candidate_commit"]), stop_on_failure=True)
     except GateRunnerError as exc:
         raise ops.CoordinatorError(str(exc)) from exc
     artifact_text, checks = gate.artifact, gate.checks

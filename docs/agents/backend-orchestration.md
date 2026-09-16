@@ -189,6 +189,30 @@ summary, а санитизированный полный лог доступе�
 он проверит JSON, существование profile/zone, совместимость capability, fallback и режим
 `code-review`.
 
+### Бюджет контекста и preflight
+
+Новый batch не создаётся, пока `batch preflight` (он же автоматически вызывается из `batch create`)
+не подтвердит ограниченный scope. Укажите ожидаемые changed paths, один bounded context/service и
+консервативный размер diff; значения выше project policy нужно сначала разделить через
+`/to-tickets`, а не передавать в architect как discovery-задачу:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch preflight \
+  --ticket '#123' --zone payments \
+  --definition-of-done 'Добавить валидацию платежа' \
+  --expected-file services/payments/validation.py \
+  --expected-service payments --expected-changed-lines 120
+```
+
+Template ограничивает DoD (5), dependencies (3), файлы (12), сервисы (1), diff (800 строк) и
+ожидаемый context (80k tokens). Проект может ужесточить эти значения через `preflight_policy`.
+`context_package_policy` использует консервативную token estimate и резервирует место для системных
+инструкций; байтовый предел остаётся только диагностической совместимостью. Один immutable shared
+Context Package переиспользуется всеми role sessions на том же base/candidate; новый строится только
+при новом candidate. `continuation_policy` (2 continuations, из них максимум один automatic 429
+resume) и `retry_policy` (один developer retry) делают циклы конечными. Все поля проверяются
+`harness health`; effort допускает только документированные уровни (`none`…`ultra`).
+
 ### Discovery Context и Context Package
 
 Discovery Pipeline переносит проверенный контекст от проектирования к dispatch. `/grilling` ведёт
@@ -205,20 +229,24 @@ ledger:
 python .harness/orchestration/coordinator.py --repo . context-package register \
   --batch <batch-id> --candidate-commit <candidate-sha> \
   --symbol-graph-depth 1 --min-starting-files 5 --max-starting-files 10 \
-  --max-package-size-bytes 200000
+  --max-package-tokens 60000
 ```
 
 `context_builder.py` не вызывает LLM и работает по pinned base/candidate commits. Package содержит
 точный diff, 5–10 стартовых файлов с причинами, bounded symbol/dependency graph, связанные тесты,
-краткие карточки ADR/precedent, SHA-256 каждого включённого файла и размер. Для Python AST извлекает
+краткие карточки ADR/precedent, SHA-256 каждого включённого файла, byte size и консервативную token
+estimate. Для Python AST извлекает
 сигнатуры прямых локальных зависимостей; текущий Discovery-контракт ограничивает разворачивание
 одним уровнем. Неподдержанный формат получает первые 30 строк как deterministic fallback. При
-превышении лимита сборка завершается ошибкой, а не молча обрезает пакет.
+превышении token limit сборка завершается ошибкой, а не молча обрезает пакет. Legacy
+`--max-package-size-bytes` можно задать как дополнительную диагностику, но он не заменяет token limit.
 
-Запись package immutable, versioned и hash-проверяема. Перед каждым новым dispatch coordinator
-сверяет её base/hash с текущим состоянием и сохраняет результат `fresh` или `stale`; в текущей
-shadow-фазе stale только surfaced coordinator-у и ещё не блокирует создание dispatch. Package не
-заменяет immutable brief и не отменяет обязательные self-report, heartbeat, review или QA.
+Запись package immutable, versioned и hash-проверяема. Она shared внутри batch: один и тот же
+base/candidate переиспользует один package ID между architect, developer и continuation sessions;
+новый package создаётся только после нового candidate. Coordinator проверяет freshness до handoff и
+не создаёт brief со stale package. Brief передаёт compact summary (starting files, related tests,
+precedents и pinned commits), а полный diff остаётся в package один раз. Package не заменяет immutable brief и не отменяет обязательные
+self-report, heartbeat, review или QA.
 
 ## 3. Выбрать роли и спланировать batch
 

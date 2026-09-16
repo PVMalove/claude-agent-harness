@@ -16,7 +16,13 @@ from typing import Any
 ROLE_MODES = {"write", "read-only"}
 ROLE_TRANSPORTS = {"orca", "in-process"}
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
-SENSITIVE_KEY = re.compile(r"(?:api[_-]?key|credential|password|secret|token)", re.IGNORECASE)
+# ``input_tokens`` and friends are accounting fields, not secrets.  Match token-shaped
+# credentials precisely so policy can safely validate token budgets and provider telemetry.
+SENSITIVE_KEY = re.compile(
+    r"(?:api[_-]?key|credential|password|secret|(?:access|auth|refresh|id|bearer)[_-]?token|(?:^|[_-])token(?:$|[_-](?:id|value|secret|key)$))",
+    re.IGNORECASE,
+)
+EFFORT_LEVELS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 ROLE_FIELDS = frozenset({"name", "mode", "required_capabilities", "risk_triggers"})
 CONFIG_REQUIRED_FIELDS = (
     "provider_profiles", "assignment_plans", "backend_zones", "concurrency_budget", "verification_commands",
@@ -24,7 +30,7 @@ CONFIG_REQUIRED_FIELDS = (
 CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "$schema", "developer_verification_commands", "test_path_patterns",
     "adaptive_continuation_policy", "approval_policy", "low_risk_zones", "context_package_policy",
-    "worker_attestation_required",
+    "continuation_policy", "retry_policy", "preflight_policy", "worker_attestation_required",
 }
 APPROVAL_POLICIES = {"manual_all", "milestone", "low_risk"}
 CODE_REVIEW_REQUIRED_RISK_TRIGGERS = frozenset(
@@ -97,6 +103,14 @@ def _inside(path: str, boundary: str) -> bool:
 def _valid_model(value: object) -> str:
     if not non_empty(value) or MODEL_ID.fullmatch(value.strip()) is None:
         raise ContractError("assignment model must be a CLI model ID or alias without spaces")
+    return value.strip()
+
+
+def _valid_effort(value: object) -> str:
+    if not non_empty(value) or value.strip() not in EFFORT_LEVELS:
+        raise ContractError(
+            "assignment effort must be one of: " + ", ".join(sorted(EFFORT_LEVELS))
+        )
     return value.strip()
 
 
@@ -173,15 +187,13 @@ def resolve_assignment(
         if not isinstance(capabilities, list) or not set(required).intersection(capabilities):
             raise ContractError(f"provider profile {candidate_id!r} is incompatible with role {role_name!r}")
     model = _valid_model(runtime.get("model"))
-    effort = runtime.get("effort")
-    if not non_empty(effort):
-        raise ContractError(f"assignment plan for role {role_name!r} has an invalid effort")
+    effort = _valid_effort(runtime.get("effort"))
     return {
         "role": role,
         "zone": {"paths": [] if role["mode"] == "read-only" else list(write_paths)},
         "profile_id": profile_id,
         "model": model,
-        "effort": effort.strip(),
+        "effort": effort,
         "transport": transport,
         "runtime_plan": runtime,
     }
@@ -258,6 +270,33 @@ def validate_brief_policy(
         if field in brief and brief[field] != expected:
             raise ContractError(f"dispatch brief {field} does not match the project assignment")
     return role, assignment
+
+
+def _policy_problem(
+    config: dict[str, Any], key: str, fields: set[str], *, booleans: set[str] | None = None,
+    minimum: int = 1,
+) -> list[str]:
+    """Validate small numeric policy maps without a JSON-schema runtime dependency."""
+    value = config.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        return [f"orchestration {key} must be an object"]
+    problems: list[str] = []
+    unknown = sorted(set(value) - fields - (booleans or set()))
+    if unknown:
+        problems.append(f"orchestration {key} has unknown field(s): {', '.join(unknown)}")
+    for field in fields:
+        if field not in value:
+            continue
+        item = value[field]
+        if isinstance(item, bool) or not isinstance(item, int) or item < minimum:
+            qualifier = "a non-negative integer" if minimum == 0 else "a positive integer"
+            problems.append(f"orchestration {key}.{field} must be {qualifier}")
+    for field in booleans or set():
+        if field in value and not isinstance(value[field], bool):
+            problems.append(f"orchestration {key}.{field} must be a boolean")
+    return problems
 
 
 def health_problems(config_path: Path, roles_root: Path) -> list[str]:
@@ -439,6 +478,12 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
                 model = runtime.get("model")
                 if non_empty(model) and MODEL_ID.fullmatch(model.strip()) is None:
                     problems.append(f"assignment runtime {runtime_name!r} for role {role_name!r} model must be a CLI model ID or alias without spaces")
+                effort = runtime.get("effort")
+                if non_empty(effort) and effort.strip() not in EFFORT_LEVELS:
+                    problems.append(
+                        f"assignment runtime {runtime_name!r} for role {role_name!r} effort must be one of: "
+                        + ", ".join(sorted(EFFORT_LEVELS))
+                    )
                 for profile_id in profile_ids:
                     if profile_id not in profiles:
                         problems.append(f"unknown provider profile {profile_id!r} for role {role_name!r}")
@@ -467,4 +512,29 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     attestation_required = config.get("worker_attestation_required")
     if attestation_required is not None and not isinstance(attestation_required, bool):
         problems.append("orchestration worker_attestation_required must be a boolean when provided")
+    problems.extend(_policy_problem(
+        config,
+        "context_package_policy",
+        {"max_tokens", "context_window_tokens", "reserved_prompt_tokens"},
+    ))
+    context_policy = config.get("context_package_policy")
+    if isinstance(context_policy, dict):
+        maximum = context_policy.get("max_tokens")
+        window = context_policy.get("context_window_tokens")
+        reserve = context_policy.get("reserved_prompt_tokens")
+        if all(isinstance(item, int) and not isinstance(item, bool) for item in (maximum, window, reserve)) and maximum > window - reserve:
+            problems.append("orchestration context_package_policy.max_tokens must fit inside context_window_tokens minus reserved_prompt_tokens")
+    problems.extend(_policy_problem(
+        config, "continuation_policy", {"max_continuations", "max_rate_limit_resumes"},
+    ))
+    problems.extend(_policy_problem(config, "retry_policy", {"max_developer_retries"}, minimum=0))
+    problems.extend(_policy_problem(
+        config,
+        "preflight_policy",
+        {
+            "max_definition_of_done_items", "max_dependencies", "max_expected_files",
+            "max_expected_services", "max_expected_changed_lines", "max_expected_context_tokens",
+        },
+        booleans={"require_estimates"},
+    ))
     return problems

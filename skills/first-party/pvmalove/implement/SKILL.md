@@ -22,47 +22,28 @@ beginning another.
 
 ## Coordinator contract
 
-Resolve the ticket, its integration branch and its blockers through the project's tracker and Git
-guidance. Use an isolated issue branch and worktree; protected and `integration/*` branches are
-never write targets. Read the ticket's existing dispatch status before planning: an open batch is
-evidence to present to the developer, not state to reuse or replace.
+Resolve the tracker ticket, issue branch and blockers without opening a second batch for the same
+work. Before `batch create`, run the batch-level preflight with bounded expected files, services and
+diff size. If it rejects the ticket, split it with `/to-tickets`; never ask an architect to discover
+whether an oversized ticket should have been split.
 
-Before proposing each handoff, run `dispatch preflight` for its role. It resolves the project-owned
-runtime, verifies the pinned Git worktree and snapshot, and returns a preview only; it never creates
-a brief or starts a worker. Then show `batch decision-packet` beside every explicit approval request.
-A report
-is evidence, never authority to advance the batch. The architect is required
-before a developer dispatch; review keeps independent Standards and Spec evidence; independent QA
-verifies the candidate commit; publish pushes only the accepted SHA. The final report precedes the
-separately approved publish dispatch.
+For each handoff, run `dispatch preflight`, show `batch decision-packet`, then create an approved
+immutable brief. The coordinator never writes feature code or repairs state by hand. A report is
+evidence, not permission to advance. Architect precedes developer; accepted candidate proceeds
+through the required review/QA/publish gates.
 
-Every dispatched role starts from its Context Package, records a model self-report against its immutable
-brief, and, when the project enables it, attests the canonical runtime worktree from `git rev-parse
---show-toplevel`. A failed attestation is a `worktree_mismatch`, not a reason to search for another
-checkout. Before the first write, use only the package's starting files and directly referenced symbols;
-if that bounded startup cannot establish the next edit, checkpoint or block the role rather than broad
-discovery. Between send and report, run `dispatch wait`: it returns only `reported`, `stale`,
-`model_mismatch`, `worktree_mismatch`, `rate_limited`, or `failed`, never heartbeat chatter. A mismatch or stale
-dispatch is a blocker for the developer; this event-driven watchdog recovers with a newly approved dispatch, never by editing a
-brief or state record. For a 429, record the checkpoint and retry window with `dispatch rate-limited`;
-resume only through the configured continuation policy after that window.
+Every transition needs explicit approval. Each worker records a model self-report and is observed
+by the event-driven watchdog; those facts are evidence, never a reason to edit an immutable brief.
 
-Before every architect, developer and code-review dispatch, the coordinator registers a fresh,
-role-specific deterministic Context Package from pinned commits and links its ID and hash from the
-brief. Reuse its exact diff, bounded dependency context, tests, and precedent cards inside the
-batch; it is evidence, not a replacement for the immutable brief or human approval. A write-role may save a non-terminal checkpoint and resume the same dispatch in a
-new worker session after a fresh self-report and heartbeat. Read-only roles cannot checkpoint or
-resume, and planned-trigger resumes still require an existing coordinator decision.
+Use the brief's shared Context Package ID across architect, developer and resumed worker sessions
+when the pinned base/candidate is unchanged. Read only its starting files and directly referenced
+symbols before escalating. A changed candidate creates one new shared package for its review, not a
+role-specific duplicate. Continuations and retries stop at the project budget; a 429 is not an
+exception to that budget.
 
-The coordinator fetches the integration base and rechecks the base-commit gate before review and
-publish. It carries forward bounded developer check evidence; the full independent gate belongs only
-to the QA lane, while the reviewer runs its own approved review checks. A stale base requires a new developer/rebase dispatch. After a Warning, delta-review is
-allowed only for a new candidate whose diff is test-only; it is always a separate independent
-review dispatch.
-
-For an in-process transport, send records the immutable handoff and the coordinator immediately
-launches the role subagent in the declared worktree. An external adapter is transport-only and must
-preserve the same handoff, liveness, approval, and report contract.
+Run `dispatch wait` between send and report. `stale`, model/worktree mismatch, changed harness
+snapshot, and a failed deterministic gate are blockers for the coordinator, not prompts for broad
+LLM recovery. In-process and external transports preserve the same brief and evidence contract.
 
 ## Authoritative guidance
 
