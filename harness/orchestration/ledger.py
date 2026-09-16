@@ -179,6 +179,45 @@ class LifecycleLedger:
         pointer = self._select(generation)
         return {"version": pointer["version"], "generation": pointer["generation"], "reset": True}
 
+    def clean(self) -> dict[str, Any]:
+        """Remove orphaned dispatch evidence from the current generation or legacy state."""
+        pointer = self.pointer()
+        if pointer is not None:
+            if pointer["version"] != LEDGER_VERSION:
+                raise LedgerError("ledger generation requires an explicit ledger migrate before cleaning")
+            root = self.root / GENERATIONS / pointer["generation"]
+        else:
+            root = self.root
+            if not self._legacy_records_present():
+                return {"version": 0, "generation": None, "cleaned": 0}
+
+        referenced: set[str] = set()
+        for batch_path in (root / "batches").glob("*.json"):
+            try:
+                batch = _read(batch_path, "batch record")
+                entries = batch.get("dispatches", [])
+                if isinstance(entries, list):
+                    for entry in entries:
+                        if isinstance(entry, dict) and isinstance(entry.get("dispatch_id"), str):
+                            referenced.add(entry["dispatch_id"])
+            except LedgerError:
+                continue
+
+        removed = 0
+        for directory in ("dispatches", "dispatch-status", "reports", "checkpoints"):
+            dir_path = root / directory
+            if dir_path.exists():
+                for path in dir_path.glob("*.json"):
+                    if path.stem not in referenced:
+                        path.unlink()
+                        removed += 1
+
+        return {
+            "version": pointer["version"] if pointer else 0,
+            "generation": pointer["generation"] if pointer else None,
+            "cleaned": removed
+        }
+
     def write_immutable(self, path: Path, value: dict[str, Any], *, artifact: bool = False) -> None:
         generation, relative = self._selected_path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -409,7 +448,7 @@ class LifecycleLedger:
                     if entry.get("report_sha256") != hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest():
                         raise LedgerError(f"completion report failed immutable integrity check: {dispatch_id}")
         if set(dispatches) != referenced or set(statuses) != referenced:
-            raise LedgerError("lifecycle state contains orphaned dispatch evidence")
+            raise LedgerError("lifecycle state contains orphaned dispatch evidence (run 'ledger clean' to fix)")
 
     @staticmethod
     def _validate_audit(root: Path) -> None:

@@ -17,4 +17,6 @@ context zone. Do not perform schema/data migration work or outbox, message-schem
 DLQ work; those specialist triggers belong to their respective roles.
 
 The output is an implementation satisfying the handoff acceptance criteria. Prove it with focused and
-required project checks, plus a risk review when a listed trigger applies.
+required project checks, plus a risk review when a listed trigger applies. Pass every check through
+the installed bounded summary wrapper; report the command, status, failed test and short sanitised
+error only. Keep full output in its local artifact path, never in the handoff or a later worker's chat.

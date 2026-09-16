@@ -67,7 +67,9 @@ either.
 
 A dispatched role is not assumed to be alive because it was sent. Its first action after receiving
 its brief is a model self-report: it names the model it is actually running, and the coordinator
-compares that against `resolved_model` in the immutable brief. A mismatch blocks the dispatch
+compares that against `resolved_model` in the immutable brief. When the project enables
+`worker_attestation_required`, that same first action proves the canonical Git top-level, branch and
+pinned candidate from the runtime's actual CWD. A model or worktree mismatch blocks the dispatch
 immediately, and its completion report is refused; the recovery is a new dispatch, never an edited
 brief. While it works, the role emits a heartbeat, and the coordinator watches for a silence longer
 than its declared threshold. A stale dispatch is escalated to the human as a blocker; the coordinator

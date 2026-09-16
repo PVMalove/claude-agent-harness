@@ -110,6 +110,13 @@ runtime-наборы (`codex`, `claude` и т.п.); в каждом обязат
 `agent` нужен только для последующего запуска через Orca, но показан сразу, чтобы один конфиг
 подходил обоим режимам.
 
+Если у роли несколько runtime, задайте `default_runtime` в её assignment plan; иначе каждый
+`dispatch create` обязан явно передать `--runtime`. Скрытого fallback на Codex нет. Для review,
+который проект всегда хочет запускать через Claude, это выглядит как
+`"default_runtime": "claude"` рядом с `runtimes`. Новый template также включает
+`"worker_attestation_required": true`: worker до любой работы подтверждает свой фактический Git
+worktree, branch и SHA; legacy projects могут включить это поле постепенно.
+
 ```json
 {
   "$schema": "./orchestration/orchestration.schema.json",
@@ -365,11 +372,14 @@ python .harness/orchestration/coordinator.py --repo . dispatch cancel \
 
 ```bash
 python .harness/orchestration/coordinator.py --repo . dispatch self-report \
-  --dispatch <dispatch-id> --model <фактическая модель>
+  --dispatch <dispatch-id> --model <фактическая модель> \
+  --worktree "$(git rev-parse --show-toplevel)"
 ```
 
-Совпадение с `resolved_model` immutable brief переводит dispatch в `working`. Расхождение немедленно
-переводит его в `blocked`, помечает batch `blocked` и завершает команду ошибкой; после этого
+Совпадение с `resolved_model` immutable brief переводит dispatch в `working`. Если включён
+`worker_attestation_required`, coordinator также проверяет переданный Git top-level, issue branch
+write-роли либо pinned SHA review-роли; расхождение немедленно переводит dispatch в `blocked`,
+помечает batch `blocked` и завершает команду ошибкой; после этого
 `report submit` для такого dispatch не принимается. Починка — новый dispatch с новым brief, а не
 правка отправленного. Completion report вообще не принимается без успешного self-report, поэтому
 подменённая или неверно настроенная модель видна сразу, а не после потраченного окна.

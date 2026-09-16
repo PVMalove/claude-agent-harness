@@ -9,6 +9,12 @@ Each role returns one completion report: its output, changed files, checks run a
 risks, and blockers. A write role also reports the commit SHA that contains its work. The coordinator
 records the selected provider and model separately; manifests never choose either.
 
+Start with the Context Package and one startup probe: run `git rev-parse --show-toplevel`, `git branch
+--show-current`, and `git rev-parse HEAD` in the runtime's current directory. Report that canonical
+worktree through `dispatch self-report --worktree <top-level>` when the project requires worker
+attestation. This is the only startup discovery needed before role-specific files; after the probe,
+work from the package rather than navigating to a guessed relative repository path.
+
 Write work happens only on the handoff's issue branch and isolated worktree, only inside the declared
 zone. Protected branches and `integration/*` are never direct write targets. A batch has one active
 writer; role handoffs are sequential. A commit is evidence only after the required checks pass and its

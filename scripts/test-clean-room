@@ -813,6 +813,7 @@ else:
         "write_paths": ["services/**"],
         "branch": "feature/issue-900-approved-dispatch",
         "worktree": "isolated-orca-worktree",
+        "resolved_runtime": "codex",
         "definition_of_done": ["produce the requested backend change"],
         "prohibited_changes": ["no merge or production operations"],
         "verification_commands": ["python qa_baseline.py"],
@@ -1828,26 +1829,22 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 "            'spec': {'severity': spec_value, 'findings': [], 'risks': 'r', 'blockers': 'b'}}\n"
                 "prior = {'candidate_commit': prior_sha}\n"
                 "axis = coordinator._delta_review_eligibility(\n"
-                "    repo, {}, known, prior, {'review': severities('warning', 'clean')}, eligible_sha,\n"
+                "    repo, {}, known, prior, {'review': severities('clean', 'warning')}, eligible_sha,\n"
                 ")\n"
-                "if axis != 'standards': raise SystemExit(f'unexpected delta-review axis: {axis}')\n"
+                "if axis != 'spec': raise SystemExit(f'unexpected delta-review axis: {axis}')\n"
                 "for bad_sha, label in ((nontest_sha, 'non-test'), (trigger_sha, 'risk-trigger')):\n"
                 "    try:\n"
                 "        coordinator._delta_review_eligibility(\n"
-                "            repo, {}, known, prior, {'review': severities('warning', 'clean')}, bad_sha,\n"
+                "            repo, {}, known, prior, {'review': severities('clean', 'warning')}, bad_sha,\n"
                 "        )\n"
                 "    except coordinator.CoordinatorError:\n"
                 "        pass\n"
                 "    else:\n"
                 "        raise SystemExit(f'accepted an ineligible {label} delta-review')\n"
-                "try:\n"
-                "    coordinator._delta_review_eligibility(\n"
-                "        repo, {}, known, prior, {'review': severities('blocker', 'clean')}, eligible_sha,\n"
-                "    )\n"
-                "except coordinator.CoordinatorError:\n"
-                "    pass\n"
-                "else:\n"
-                "    raise SystemExit('accepted a delta-review after a review blocker')\n"
+                "axis = coordinator._delta_review_eligibility(\n"
+                "    repo, {}, known, prior, {'review': severities('clean', 'blocker')}, eligible_sha,\n"
+                ")\n"
+                "if axis != 'spec': raise SystemExit(f'unexpected blocker delta-review axis: {axis}')\n"
                 "try:\n"
                 "    coordinator._delta_review_eligibility(\n"
                 "        repo, {}, known, prior, {'review': severities('warning', 'warning')}, eligible_sha,\n"
@@ -1855,7 +1852,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 "except coordinator.CoordinatorError:\n"
                 "    pass\n"
                 "else:\n"
-                "    raise SystemExit('accepted a delta-review with two Warning axes')\n"
+                "    raise SystemExit('accepted a delta-review without inherited Standards=Clean')\n"
             ),
             str(coordinator_path),
             str(probe_repo),
@@ -1974,16 +1971,16 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "independent composite review completed", "commit_sha": "not applicable — read-only role",
         "changed_files": [],
         "checks_run": [{"command": "python qa_baseline.py", "result": "pass", "evidence": "review scope inspected"}],
-        "risks": "standards warning requires coordinator decision", "blockers": "none",
+        "risks": "spec warning requires coordinator decision", "blockers": "none",
         "next_coordinator_action": "override-warning or retry",
         "review": {
             "candidate_commit": delta_first_sha, "scope": ["services/delta_formatter.py"],
-            "standards": {
+            "standards": {"severity": "clean", "findings": [], "risks": "none", "blockers": "none"},
+            "spec": {
                 "severity": "warning",
-                "findings": [{"severity": "warning", "evidence": "missing docstring", "summary": "style warning"}],
-                "risks": "style risk", "blockers": "none",
+                "findings": [{"severity": "warning", "evidence": "missing edge case", "summary": "spec warning"}],
+                "risks": "spec risk", "blockers": "none",
             },
-            "spec": {"severity": "clean", "findings": [], "risks": "none", "blockers": "none"},
         },
     }
     first_review_file = test_root / f"delta-first-review-{first_review_id}.json"
@@ -2050,8 +2047,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit("delta-review reused the prior review's dispatch ID instead of a new independent dispatch")
     if second_review_record["brief"]["delta_review_of"] != first_review_id:
         sys.exit("delta-review brief did not reference the prior review as evidence")
-    if second_review_record["brief"]["delta_review_axis"] != "standards":
-        sys.exit("delta-review brief did not target the prior Warning axis")
+    if second_review_record["brief"]["delta_review_axis"] != "spec":
+        sys.exit("delta-review brief did not target the Spec axis")
 
     second_review_sent = coordinator_run(
         "--state-dir", str(delta_state), "dispatch", "send", "--dispatch", second_review_id,
@@ -2071,18 +2068,18 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "risks": "none", "blockers": "none", "next_coordinator_action": "accept",
         "review": {
             "candidate_commit": delta_second_sha, "scope": ["services/delta_formatter.py", "services/tests/test_delta_formatter.py"],
-            "standards": {"severity": "clean", "findings": [], "risks": "docstring warning resolved", "blockers": "none"},
-            "spec": {
+            "standards": {
                 "severity": "clean", "findings": [], "risks": "inherited from the prior review", "blockers": "none",
                 "inherited_from": first_review_id,
             },
+            "spec": {"severity": "clean", "findings": [], "risks": "edge case covered", "blockers": "none"},
         },
     }
     # A delta-review report must not re-derive the inherited axis: prove this on the *live* dispatch
     # before the well-formed report below settles it, or the rejection would happen for the wrong
     # reason (an already-reported dispatch is never live, whatever the content).
     re_derived = json.loads(json.dumps(second_review_payload))
-    re_derived["review"]["spec"] = {
+    re_derived["review"]["standards"] = {
         "severity": "warning",
         "findings": [{"severity": "warning", "summary": "reflagged", "evidence": "re-checked"}],
         "risks": "re-checked", "blockers": "none", "inherited_from": first_review_id,
@@ -2107,7 +2104,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     second_review_markdown = (
         lifecycle_records(delta_state) / "reports" / f"{second_review_id}.md"
     ).read_text(encoding="utf-8")
-    if f"Review Spec inherited from: {first_review_id}" not in second_review_markdown:
+    if f"Review Standards inherited from: {first_review_id}" not in second_review_markdown:
         sys.exit("delta-review markdown projection did not reference the prior review as evidence")
 
     delta_decision = coordinator_run(
@@ -2383,9 +2380,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if second_ctxpkg_risk.returncode != 0:
         sys.exit("coordinator rejected the context-package fixture's second risk assessment: " + second_ctxpkg_risk.stderr)
 
-    # The Context Package registered for the first candidate is never re-registered here; the
-    # coordinator must now record it stale against the new accepted developer candidate -- and
-    # must still create the dispatch, since shadow mode never blocks on staleness.
+    # The coordinator refreshes a role-specific immutable Context Package before the review brief.
     second_ctxpkg_review = coordinator_run(
         "--state-dir", str(ctxpkg_state), "dispatch", "create", "--batch", ctxpkg_batch,
         "--role", "code-review", "--candidate-commit", ctxpkg_second_sha,
@@ -2393,27 +2388,29 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     )
     if second_ctxpkg_review.returncode != 0:
         sys.exit(
-            "coordinator blocked a dispatch on a stale context package instead of only recording it: "
+            "coordinator could not refresh a role-specific context package before the review: "
             + second_ctxpkg_review.stderr
         )
     second_ctxpkg_review_record = json.loads(second_ctxpkg_review.stdout)
     second_ctxpkg_freshness = second_ctxpkg_review_record.get("context_package_freshness")
-    if not second_ctxpkg_freshness or second_ctxpkg_freshness.get("status") != "stale":
+    if not second_ctxpkg_freshness or second_ctxpkg_freshness.get("status") != "fresh":
         sys.exit(
-            "coordinator did not record a stale context package before a mismatched dispatch: "
+            "coordinator did not refresh the Context Package before the review dispatch: "
             + json.dumps(second_ctxpkg_review_record)
         )
-    if second_ctxpkg_freshness.get("registered_candidate_commit") != ctxpkg_first_sha:
-        sys.exit("stale context package evidence did not reference the originally registered candidate")
+    if second_ctxpkg_freshness.get("registered_candidate_commit") != ctxpkg_second_sha:
+        sys.exit("refreshed context package did not pin the new candidate")
     if second_ctxpkg_freshness.get("current_candidate_commit") != ctxpkg_second_sha:
         sys.exit("stale context package evidence did not reference the current accepted developer candidate")
     ctxpkg_final_batch = json.loads(
         (lifecycle_records(ctxpkg_state) / "batches" / f"{ctxpkg_batch}.json").read_text(encoding="utf-8")
     )
-    if not any(
-        entry.get("status") == "stale" for entry in ctxpkg_final_batch.get("context_package_freshness_checks", [])
-    ):
-        sys.exit("batch did not persist the stale context package freshness evidence")
+    final_package = next(
+        entry for entry in ctxpkg_final_batch["context_packages"]
+        if entry["context_package_id"] == second_ctxpkg_review_record["brief"]["context_package_id"]
+    )
+    if final_package.get("role") != "code-review":
+        sys.exit("review brief did not receive a role-specific context package")
 
     print("context package ledger integration and freshness-gate verification passed")
 
@@ -2489,7 +2486,9 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     )
     if checkpoint_dev.returncode != 0:
         sys.exit("coordinator rejected the checkpoint fixture's developer dispatch: " + checkpoint_dev.stderr)
-    checkpoint_dev_id = json.loads(checkpoint_dev.stdout)["dispatch_id"]
+    checkpoint_dev_record = json.loads(checkpoint_dev.stdout)
+    checkpoint_dev_id = checkpoint_dev_record["dispatch_id"]
+    checkpoint_context_package_id = checkpoint_dev_record["brief"]["context_package_id"]
     coordinator_run(
         "--state-dir", str(checkpoint_state), "dispatch", "send", "--dispatch", checkpoint_dev_id,
         "--adapter", str(fake_adapter),
@@ -2526,7 +2525,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "remaining_definition_of_done": ["implement checkpoint step two"],
         "passing_checks": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
         "risks": "none yet", "blockers": "none",
-        "context_package_id": "not applicable — no context package registered",
+        "context_package_id": checkpoint_context_package_id,
     }, indent=2) + "\n", encoding="utf-8")
     checkpoint_one_result = coordinator_run(
         "--state-dir", str(checkpoint_state), "dispatch", "checkpoint", "--file", str(checkpoint_one_file),
@@ -2622,7 +2621,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "remaining_definition_of_done": [],
         "passing_checks": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
         "risks": "none", "blockers": "none",
-        "context_package_id": "not applicable — no context package registered",
+        "context_package_id": checkpoint_context_package_id,
     }, indent=2) + "\n", encoding="utf-8")
     if coordinator_run(
         "--state-dir", str(checkpoint_state), "dispatch", "checkpoint", "--file", str(checkpoint_two_file),

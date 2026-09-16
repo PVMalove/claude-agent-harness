@@ -23,7 +23,10 @@ CONFIG_REQUIRED_FIELDS = (
 )
 CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "$schema", "developer_verification_commands", "test_path_patterns",
+    "adaptive_continuation_policy", "approval_policy", "low_risk_zones", "context_package_policy",
+    "worker_attestation_required",
 }
+APPROVAL_POLICIES = {"manual_all", "milestone", "low_risk"}
 CODE_REVIEW_REQUIRED_RISK_TRIGGERS = frozenset(
     {
         "api-public-contract", "schema-change", "data-migration", "outbox", "queues",
@@ -97,6 +100,31 @@ def _valid_model(value: object) -> str:
     return value.strip()
 
 
+def resolve_runtime_name(plan: dict[str, Any], requested: object) -> str:
+    """Resolve a role runtime without a global, hidden provider default.
+
+    A one-runtime plan is unambiguous. A multi-runtime plan must either name its project-owned
+    ``default_runtime`` or receive an explicit CLI selection. Keeping this decision in the
+    portable contract lets preflight, the coordinator and adapters agree before a brief exists.
+    """
+    runtimes = plan.get("runtimes")
+    if not isinstance(runtimes, dict) or not runtimes:
+        raise ContractError("assignment plan has no runtime assignments")
+    if non_empty(requested):
+        runtime = requested.strip()
+        if runtime not in runtimes:
+            raise ContractError(f"role is not assigned to runtime {runtime!r}")
+        return runtime
+    if len(runtimes) == 1:
+        return next(iter(runtimes))
+    default = plan.get("default_runtime")
+    if not non_empty(default) or default.strip() not in runtimes:
+        raise ContractError(
+            "role has multiple runtimes; configure default_runtime or pass --runtime explicitly"
+        )
+    return default.strip()
+
+
 def resolve_assignment(
     config: dict[str, Any], role: dict[str, Any], role_name: str, zone_name: str, runtime_name: str,
 ) -> dict[str, Any]:
@@ -129,7 +157,8 @@ def resolve_assignment(
     runtimes = plan.get("runtimes")
     if not isinstance(runtimes, dict):
         raise ContractError(f"role {role_name!r} has no runtime assignments")
-    runtime = runtimes.get(runtime_name)
+    resolved_runtime = resolve_runtime_name(plan, runtime_name)
+    runtime = runtimes.get(resolved_runtime)
     if not isinstance(runtime, dict):
         raise ContractError(f"role {role_name!r} is not assigned to runtime {runtime_name!r}")
     profile_ids = runtime.get("profiles")
@@ -183,6 +212,13 @@ def validate_brief_policy(
         raise ContractError("dispatch brief zone and branch must be non-empty strings")
     if not non_empty(brief["worktree"]):
         raise ContractError("dispatch brief worktree must be a non-empty string")
+    attestation_required = config.get("worker_attestation_required", False)
+    if not isinstance(attestation_required, bool):
+        raise ContractError("project worker_attestation_required must be a boolean")
+    if brief.get("worker_attestation_required", False) is not attestation_required:
+        raise ContractError("dispatch brief worker_attestation_required does not match project policy")
+    if attestation_required and (not non_empty(brief.get("snapshot_commit"))):
+        raise ContractError("attested dispatch brief requires a non-empty snapshot_commit")
     if not isinstance(brief["definition_of_done"], list) or not all(non_empty(item) for item in brief["definition_of_done"]):
         raise ContractError("dispatch brief definition_of_done must be a non-empty list of strings")
     if not isinstance(brief["prohibited_changes"], list) or not all(non_empty(item) for item in brief["prohibited_changes"]):
@@ -205,7 +241,7 @@ def validate_brief_policy(
         raise ContractError("dispatch brief branch must be an issue branch and never a protected or integration branch")
     role_name = brief["role"]
     role = load_role_manifest(roles_root / f"{role_name}.md")
-    assignment = resolve_assignment(config, role, role_name, brief["zone"], brief.get("resolved_runtime", "codex"))
+    assignment = resolve_assignment(config, role, role_name, brief["zone"], brief.get("resolved_runtime"))
     if brief.get("access") != role["mode"]:
         raise ContractError(f"dispatch brief access must be {role['mode']!r} for role {role_name!r}")
     expected_paths = assignment["zone"]["paths"]
@@ -352,7 +388,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
             if not isinstance(plan, dict):
                 problems.append(f"assignment plan for role {role_name!r} must be an object")
                 continue
-            extra_plan = sorted(set(plan) - {"zone", "write_paths", "runtimes", "transport"})
+            extra_plan = sorted(set(plan) - {"zone", "write_paths", "runtimes", "transport", "default_runtime"})
             if extra_plan:
                 problems.append(f"assignment plan for role {role_name!r} cannot override role manifest fields: {', '.join(extra_plan)}")
             if "transport" in plan and plan["transport"] not in ROLE_TRANSPORTS:
@@ -378,6 +414,13 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
             if not isinstance(runtimes, dict) or not runtimes:
                 problems.append(f"assignment plan for role {role_name!r} runtimes must be a non-empty object")
                 continue
+            default_runtime = plan.get("default_runtime")
+            if default_runtime is not None and (
+                not non_empty(default_runtime) or default_runtime.strip() not in runtimes
+            ):
+                problems.append(
+                    f"assignment plan for role {role_name!r} default_runtime must name one configured runtime"
+                )
             for runtime_name in runtimes:
                 runtime = runtimes[runtime_name]
                 if not non_empty(runtime_name) or not isinstance(runtime, dict):
@@ -415,4 +458,13 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     developer_commands = config.get("developer_verification_commands")
     if developer_commands is not None and not string_list(developer_commands):
         problems.append("orchestration developer_verification_commands must be a list of strings when provided")
+    approval_policy = config.get("approval_policy", "manual_all")
+    if approval_policy not in APPROVAL_POLICIES:
+        problems.append("orchestration approval_policy must be one of: " + ", ".join(sorted(APPROVAL_POLICIES)))
+    low_risk_zones = config.get("low_risk_zones")
+    if low_risk_zones is not None and (not string_list(low_risk_zones) or not set(low_risk_zones).issubset(zones)):
+        problems.append("orchestration low_risk_zones must name configured backend zones")
+    attestation_required = config.get("worker_attestation_required")
+    if attestation_required is not None and not isinstance(attestation_required, bool):
+        problems.append("orchestration worker_attestation_required must be a boolean when provided")
     return problems

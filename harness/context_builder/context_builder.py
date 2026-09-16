@@ -313,6 +313,7 @@ def build_context_package(
     min_starting_files: int = 5,
     max_starting_files: int = 10,
     max_package_size_bytes: int | None = 512_000,
+    seed_paths: list[str] | None = None,
 ) -> ContextPackage:
     """Build one immutable Context Package for `base_commit`..`candidate_commit`.
 
@@ -326,8 +327,6 @@ def build_context_package(
 
     diff = _run_git(repository, "diff", "--no-color", base_commit, candidate_commit)
     changed = _changed_files(repository, base_commit, candidate_commit)
-    if not changed:
-        raise ContextPackageError(f"no changes between {base_commit} and {candidate_commit}")
 
     files = _list_files(repository, candidate_commit)
     import_graph = _build_import_graph(repository, candidate_commit, files)
@@ -336,9 +335,23 @@ def build_context_package(
         for target in imports:
             imported_by[target].add(path)
 
-    starting_files = _select_starting_files(
-        changed, import_graph, imported_by, min_files=min_starting_files, max_files=max_starting_files
-    )
+    available_changed = [entry for entry in changed if entry[0] in files]
+    if available_changed:
+        starting_files = _select_starting_files(
+            available_changed, import_graph, imported_by, min_files=min_starting_files, max_files=max_starting_files
+        )
+    else:
+        requested = [path for path in (seed_paths or []) if path in files]
+        if not requested:
+            requested = [path for path in ("AGENTS.md", "README.md") if path in files]
+        if not requested:
+            requested = files[:max_starting_files]
+        requested = list(dict.fromkeys(requested))[:max_starting_files]
+        if len(requested) < min_starting_files:
+            raise ContextPackageError(
+                f"only {len(requested)} static starting file(s) available but min_starting_files={min_starting_files}"
+            )
+        starting_files = [StartingFile(path=path, reason="role preflight seed at pinned snapshot") for path in requested]
     starting_paths = [item.path for item in starting_files]
 
     symbol_graph = _bounded_symbol_graph(import_graph, starting_paths, symbol_graph_depth)

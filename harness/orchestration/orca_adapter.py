@@ -258,7 +258,7 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
     role, plan = _validate_brief(brief, repo, config)
     candidates = _candidate_profiles(config, plan, role, brief.get("resolved_provider_profile"))
     primary_profile, primary_model, primary_effort = candidates[0]
-    if brief.get("resolved_runtime", "codex") not in config.get("assignment_plans", {}).get(brief["role"], {}).get("runtimes", {}):
+    if brief.get("resolved_runtime") not in config.get("assignment_plans", {}).get(brief["role"], {}).get("runtimes", {}):
         raise DispatchError("dispatch brief runtime does not match the project assignment")
     if brief.get("resolved_provider_profile") is not None and brief["resolved_provider_profile"] != primary_profile:
         raise DispatchError("dispatch brief provider profile does not match the project assignment")
