@@ -66,6 +66,16 @@
       },
       "description": "Optional fnmatch-style glob patterns identifying this project's test files, used to gate delta-review eligibility for a test-only fix after a code-review Warning. Defaults to a Python/pytest convention (tests/**, **/tests/**, **/test_*.py, **/*_test.py) when omitted."
     },
+    "approval_policy": {
+      "enum": ["manual_all", "milestone", "low_risk"],
+      "default": "manual_all",
+      "description": "Human approval cadence. manual_all approves every transition; milestone keeps plan, risk/scope, QA and publish gates; low_risk is restricted to explicitly approved low-risk zones."
+    },
+    "low_risk_zones": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "Explicitly pre-approved zones eligible for low_risk continuation; omitted means no zone is eligible."
+    },
     "adaptive_continuation_policy": {
       "type": "object",
       "additionalProperties": false,
@@ -148,6 +158,11 @@
           "enum": ["orca", "in-process"],
           "default": "in-process",
           "description": "How this role is executed: an explicitly selected Orca-dispatched isolated worker, or an in-process subagent of the coordinator session. Both consume the same immutable brief and must pass the model self-report."
+        },
+        "default_runtime": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Project-owned default used only when this role declares more than one runtime. Without it callers must pass --runtime."
         },
         "runtimes": {
           "type": "object",

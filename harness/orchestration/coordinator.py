@@ -16,6 +16,7 @@ import re
 import socket
 import subprocess
 import sys
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -34,8 +35,11 @@ if str(GATE_RUNNER_ROOT) not in sys.path:
 CONTEXT_BUILDER_ROOT = MODULE_ROOT.parent / "context_builder"
 if str(CONTEXT_BUILDER_ROOT) not in sys.path:
     sys.path.insert(0, str(CONTEXT_BUILDER_ROOT))
-from contract import ContractError, load_role_manifest, resolve_assignment, validate_brief_policy
+from contract import (
+    ContractError, load_role_manifest, resolve_assignment, resolve_runtime_name, validate_brief_policy,
+)
 from context_builder import ContextPackageError, build_context_package
+from dispatch_preflight import PreflightError, prepare as prepare_dispatch
 from gate_runner import CleanRoomPolicy, GateRunnerError, concise_evidence, run_gate, sanitise
 from ledger import LedgerError, LifecycleLedger
 
@@ -58,13 +62,14 @@ QA_QUEUE_FIELDS = {"dispatch_id", "sequence", "queued_at"}
 PLAN_FIELDS = (
     "batch_id", "created_at", "base_commit", "integration_ref", "branch_start_commit", "ticket", "branch",
     "worktree", "zone", "definition_of_done", "prohibited_changes", "developer_verification_commands",
-    "verification_commands", "required_gates", "dependencies",
+    "verification_commands", "required_gates", "dependencies", "approval_policy",
 )
 DISPATCH_FIELDS = {
     "dispatch_id", "batch_id", "ticket", "role", "access", "zone", "write_paths", "branch", "worktree",
     "definition_of_done", "prohibited_changes", "verification_commands", "required_gates", "dependencies",
     "resolved_runtime", "resolved_provider_profile", "resolved_model", "resolved_effort", "resolved_transport", "coordinator_approval", "candidate_commit", "review_base", "review_scope",
     "risk_assessment_id", "purpose", "state", "created_at", "delta_review_of", "delta_review_axis",
+    "context_package_id", "context_package_sha256",
 }
 DEFAULT_TEST_PATH_PATTERNS = ("tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py")
 REPORT_FIELDS = {
@@ -88,6 +93,7 @@ RISK_ASSESSMENT_FIELDS = {
 CONTEXT_PACKAGE_FIELDS = {
     "context_package_id", "batch_id", "base_commit", "candidate_commit", "diff", "starting_files",
     "symbol_graph", "related_tests", "precedent_cards", "file_hashes", "size_bytes", "created_at",
+    "role", "inclusion_reason",
 }
 CHECKPOINT_NO_CONTEXT_PACKAGE = "not applicable — no context package registered"
 CHECKPOINT_INPUT_FIELDS = {
@@ -109,7 +115,14 @@ DEFAULT_ADAPTIVE_CONTINUATION_POLICY = {
     "tdd_cycle_count": 3,
     "failure_log_bytes": 20_000,
 }
+DEFAULT_RATE_LIMIT_RETRY_SECONDS = 60
+MAX_CHECK_EVIDENCE_CHARS = 1_600
 CONTINUATION_FACTS_FIELDS = {"dispatch_id", "remaining_definition_of_done", "risks", "dependencies"}
+TELEMETRY_FIELDS = {
+    "dispatch_id", "session_kind", "input_tokens", "output_tokens", "cache_read_tokens",
+    "cache_write_tokens", "max_context_tokens", "tool_calls", "tool_output_bytes", "poll_turns",
+    "restart_reason", "recorded_at",
+}
 
 
 class CoordinatorError(Exception):
@@ -569,7 +582,7 @@ def _resolve_assignment(
     *,
     session_model: object = None,
     session_effort: object = None,
-) -> tuple[dict[str, Any], dict[str, Any], str, str, str, str]:
+) -> tuple[dict[str, Any], dict[str, Any], str, str, str, str, str]:
     role = _role(repo, role_name)
     if not _configured(repo):
         if zone_name != DEFAULT_ZONE:
@@ -582,14 +595,19 @@ def _resolve_assignment(
             )
         # No project-owned provider profile exists, so the only honest transport is the invoking
         # session itself; an Orca worker would have no agent to start.
-        return role, {"paths": ["**"]}, DEFAULT_PROFILE, session_model.strip(), session_effort.strip(), "in-process"
+        return (
+            role, {"paths": ["**"]}, DEFAULT_PROFILE, session_model.strip(), session_effort.strip(),
+            "in-process", runtime_name.strip() if _non_empty(runtime_name) else "session",
+        )
     try:
-        assignment = resolve_assignment(config, role, role_name, zone_name, runtime_name)
+        plan = config.get("assignment_plans", {}).get(role_name)
+        resolved_runtime = resolve_runtime_name(plan, runtime_name) if isinstance(plan, dict) else ""
+        assignment = resolve_assignment(config, role, role_name, zone_name, resolved_runtime)
     except ContractError as exc:
         raise CoordinatorError(str(exc)) from exc
     return (
         assignment["role"], assignment["zone"], assignment["profile_id"], assignment["model"],
-        assignment["effort"], assignment["transport"],
+        assignment["effort"], assignment["transport"], resolved_runtime,
     )
 
 
@@ -973,6 +991,17 @@ def reset_ledger(args: argparse.Namespace) -> dict[str, Any]:
             raise CoordinatorError(str(exc)) from exc
 
 
+def clean_ledger(args: argparse.Namespace) -> dict[str, Any]:
+    """Safely remove orphaned dispatch evidence from the ledger state."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    with _state_lock(root):
+        try:
+            return LifecycleLedger(root).clean()
+        except LedgerError as exc:
+            raise CoordinatorError(str(exc)) from exc
+
+
 def _validate_batch_integrity(root: Path, batch: dict[str, Any]) -> None:
     plan = _read_object(_plan_path(root, batch.get("batch_id")), "immutable batch plan")
     if any(field not in batch for field in PLAN_FIELDS) or any(field not in plan for field in PLAN_FIELDS):
@@ -991,6 +1020,19 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
         raise CoordinatorError("dispatch record does not belong to its batch")
     if dispatch.get("purpose") not in DISPATCH_PURPOSES:
         raise CoordinatorError("dispatch record has an invalid purpose")
+    package_id = dispatch.get("context_package_id")
+    package_sha = dispatch.get("context_package_sha256")
+    if dispatch["role"] in {"architect", "developer", "code-review"}:
+        if not isinstance(package_id, str) or not isinstance(package_sha, str):
+            raise CoordinatorError("architect, developer and code-review briefs require a Context Package reference")
+        package = _load_context_package(root, package_id)
+        _validate_context_package(root, batch, package)
+        if package.get("role") != dispatch["role"]:
+            raise CoordinatorError("dispatch Context Package is not role-specific")
+        if hashlib.sha256(_canonical(package).encode("utf-8")).hexdigest() != package_sha:
+            raise CoordinatorError("dispatch Context Package hash does not match its immutable package")
+    elif package_id is not None or package_sha is not None:
+        raise CoordinatorError("only architect, developer and code-review briefs may reference a Context Package")
     entry = next((item for item in batch.get("dispatches", []) if item.get("dispatch_id") == dispatch.get("dispatch_id")), None)
     if not entry or entry.get("brief_sha256") != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest():
         raise CoordinatorError("dispatch record failed immutable brief integrity check")
@@ -1018,7 +1060,7 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
         _validate_branch(repo, dispatch["branch"])
         # In zero-config mode the brief itself is the only record of the session-supplied runtime,
         # so it is replayed here; brief_sha256 above already protects it from being edited.
-        role, zone, profile_id, model, effort, transport = _resolve_assignment(
+        role, zone, profile_id, model, effort, transport, resolved_runtime = _resolve_assignment(
             repo, config, dispatch["role"], batch["zone"], dispatch["resolved_runtime"],
             session_model=dispatch["resolved_model"], session_effort=dispatch["resolved_effort"],
         )
@@ -1028,6 +1070,7 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
             or dispatch["resolved_model"] != model
             or dispatch["resolved_effort"] != effort
             or dispatch["resolved_transport"] != transport
+            or dispatch["resolved_runtime"] != resolved_runtime
         ):
             raise CoordinatorError("dispatch record does not match the role assignment")
         expected_paths = zone["paths"] if role["mode"] == "write" else []
@@ -1079,6 +1122,128 @@ def _approval(args: argparse.Namespace) -> dict[str, str]:
     result = {"approved_by": approved_by.strip(), "approved_at": approved_at.strip()}
     _reject_sensitive(result, "coordinator approval")
     return result
+
+
+def _approval_policy(config: dict[str, Any]) -> str:
+    policy = config.get("approval_policy", "manual_all")
+    if policy not in {"manual_all", "milestone", "low_risk"}:
+        raise CoordinatorError("approval_policy must be manual_all, milestone or low_risk")
+    return policy
+
+
+def _dispatch_approval(
+    args: argparse.Namespace, batch: dict[str, Any], config: dict[str, Any], role: str,
+    purpose: str, risk: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Apply a project-approved continuation only outside the preserved risk milestones."""
+    if _non_empty(getattr(args, "approved_by", None)) or _non_empty(getattr(args, "approved_at", None)):
+        return _approval(args)
+    policy = batch.get("approval_policy", _approval_policy(config))
+    risk_triggered = bool(risk and risk.get("matched_triggers"))
+    milestone = purpose == "publish" or role == "qa" or risk_triggered or batch.get("risk_reassessment_required")
+    if policy == "manual_all" or milestone:
+        raise CoordinatorError("this transition requires --approved-by and --approved-at under its approval policy")
+    if policy == "low_risk":
+        zones = config.get("low_risk_zones", [])
+        if batch["zone"] not in zones:
+            raise CoordinatorError("low_risk continuation requires the batch zone in low_risk_zones")
+    return {"approved_by": f"policy:{policy}", "approved_at": _now()}
+
+
+def preflight_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    """Render one deterministic dispatch proposal without writing a brief or starting a worker."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    config = _config(repo)
+    if not _configured(repo):
+        raise CoordinatorError("dispatch preflight requires a project-owned .harness/orchestration.json")
+    with _state_lock(root):
+        batch = _load_batch(root, args.batch)
+        _validate_batch_integrity(root, batch)
+        candidate = _candidate_commit(repo, args.candidate_commit) if args.candidate_commit else None
+        if candidate is None:
+            try:
+                candidate = _latest_developer_candidate(repo, root, batch)
+            except CoordinatorError:
+                candidate = None
+        snapshot = candidate or batch["base_commit"]
+        package = _latest_context_package(root, batch)
+        package_pointer: dict[str, Any] = {}
+        if package is not None:
+            package_pointer = {
+                "package_id": package["context_package_id"],
+                "sha256": hashlib.sha256(_canonical(package).encode("utf-8")).hexdigest(),
+                "freshness": _context_package_freshness(repo, root, batch),
+            }
+        checks = (
+            batch["developer_verification_commands"]
+            if args.role == "developer" else batch["verification_commands"]
+        )
+        state = {
+            "repo": str(repo), "config": config, "branch": batch["branch"], "worktree": batch["worktree"],
+            "zone": batch["zone"], "base_sha": batch["base_commit"], "candidate_sha": candidate,
+            "snapshot_sha": snapshot, "integration_ref": _integration_ref(repo, batch), "runtime": args.runtime,
+            "mandatory_checks": checks, "starting_files": package_pointer,
+            "architecture_decision": batch.get("architecture_decision"),
+            "affected_symbols": batch.get("affected_symbols", []),
+            "related_tests": package.get("related_tests", []) if package else [],
+            "pinned_diff": package.get("diff", "") if package else "",
+            "prior_findings": batch.get("prior_findings", []),
+        }
+    try:
+        prepared = prepare_dispatch(batch["ticket"], args.role, state)
+    except PreflightError as exc:
+        raise CoordinatorError(str(exc)) from exc
+    return prepared.to_dict()
+
+
+def decision_packet(args: argparse.Namespace) -> dict[str, Any]:
+    """Return concise approval evidence, with immutable report and diff paths kept in the ledger."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    with _state_lock(root):
+        batch = _load_batch(root, args.batch)
+        _validate_batch_integrity(root, batch)
+        entry = None
+        if args.dispatch:
+            entry = next((item for item in batch.get("dispatches", []) if item.get("dispatch_id") == args.dispatch), None)
+            if entry is None:
+                raise CoordinatorError("decision packet dispatch does not belong to this batch")
+        else:
+            pending = [item for item in batch.get("dispatches", []) if item.get("state") == "reported" and "decision" not in item]
+            entry = pending[0] if len(pending) == 1 else None
+        if entry is None:
+            return {
+                "batch_id": batch["batch_id"], "ticket": batch["ticket"], "action": "approve next dispatch",
+                "branch": batch["branch"], "worktree": batch["worktree"], "base_sha": batch["base_commit"],
+                "candidate_sha": None, "changed_files": [], "checks": [], "risks": "not assessed yet",
+                "blockers": "none", "report": None, "diff": None,
+                "approval_reason": "the next immutable dispatch has not been created",
+                "options": ["accept", "block", "full review"],
+            }
+        dispatch = _load_dispatch(root, entry["dispatch_id"])
+        report = _pending_report(root, batch, entry) if entry.get("state") == "reported" else None
+        candidate = dispatch.get("candidate_commit")
+        changed = report.get("changed_files", []) if report else dispatch.get("review_scope", [])
+        risk = _risk_for_candidate(root, batch, candidate) if isinstance(candidate, str) else None
+        return {
+            "batch_id": batch["batch_id"], "ticket": batch["ticket"],
+            "action": "decide completion report" if report else "approve and send dispatch",
+            "dispatch_id": dispatch["dispatch_id"], "role": dispatch["role"], "runtime": dispatch["resolved_runtime"],
+            "branch": dispatch["branch"], "worktree": dispatch["worktree"], "base_sha": batch["base_commit"],
+            "candidate_sha": candidate, "changed_files": changed,
+            "scope": dispatch["write_paths"] or dispatch.get("review_scope", []),
+            "summary": report.get("output") if report else "immutable brief prepared",
+            "checks": report.get("checks_run", []) if report else [
+                {"command": command, "result": "pending"} for command in dispatch["verification_commands"]
+            ],
+            "risks": report.get("risks") if report else (risk.get("matched_triggers") if risk else "not assessed yet"),
+            "blockers": report.get("blockers") if report else "none",
+            "report": str(_records_root(root) / entry["report"]) if report else None,
+            "diff": f"git diff {batch['base_commit']}..{candidate}" if candidate else None,
+            "approval_reason": "a human decision is required before the ledger may advance this gate",
+            "options": ["accept", "retry", "block", "full review", "delta-review"],
+        }
 
 
 def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
@@ -1160,6 +1325,51 @@ def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
     return risk
 
 
+def _persist_context_package(
+    repo: Path,
+    root: Path,
+    batch: dict[str, Any],
+    *,
+    role: str,
+    snapshot: str,
+    inclusion_reason: str,
+    min_starting_files: int = 1,
+    max_starting_files: int = 10,
+    max_package_size_bytes: int = 512_000,
+) -> dict[str, Any]:
+    """Build and register the exact bounded context consumed by one role brief."""
+    seed_files = [
+        "AGENTS.md", "README.md", f".harness/orchestration/roles/{role}.md",
+        ".harness/orchestration/contract.py",
+    ]
+    try:
+        package_base = batch.get("integration_base_commit") or batch["base_commit"]
+        built = build_context_package(
+            repo, package_base, snapshot,
+            symbol_graph_depth=2, min_starting_files=min_starting_files,
+            max_starting_files=max_starting_files, max_package_size_bytes=max_package_size_bytes,
+            seed_paths=seed_files,
+        )
+    except ContextPackageError as exc:
+        raise CoordinatorError(str(exc)) from exc
+    package = {
+        "context_package_id": f"context-package-{uuid.uuid4()}", "batch_id": batch["batch_id"],
+        "base_commit": built.base_commit, "candidate_commit": built.candidate_commit, "diff": built.diff,
+        "starting_files": [asdict(item) for item in built.starting_files], "symbol_graph": built.symbol_graph,
+        "related_tests": built.related_tests, "precedent_cards": [asdict(item) for item in built.precedent_cards],
+        "file_hashes": built.file_hashes, "size_bytes": built.size_bytes, "created_at": _now(),
+        "role": role, "inclusion_reason": inclusion_reason,
+    }
+    _reject_sensitive(package, "context package")
+    _write_exclusive(_context_package_path(root, package["context_package_id"]), package)
+    batch.setdefault("context_packages", []).append({
+        "context_package_id": package["context_package_id"], "base_commit": package["base_commit"],
+        "candidate_commit": package["candidate_commit"], "role": role,
+        "record_sha256": hashlib.sha256(_canonical(package).encode("utf-8")).hexdigest(),
+    })
+    return package
+
+
 def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
     """Build one Context Package for the batch's accepted developer candidate and register it as a
     new immutable, versioned, hashed ledger record -- the same ownership pattern as a risk
@@ -1180,39 +1390,11 @@ def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
                 raise CoordinatorError("context package base must match the batch-captured base commit")
         if candidate != _latest_developer_candidate(repo, root, batch):
             raise CoordinatorError("candidate commit does not match the accepted developer report")
-        try:
-            built = build_context_package(
-                repo, base, candidate,
-                symbol_graph_depth=args.symbol_graph_depth,
-                min_starting_files=args.min_starting_files,
-                max_starting_files=args.max_starting_files,
-                max_package_size_bytes=args.max_package_size_bytes,
-            )
-        except ContextPackageError as exc:
-            raise CoordinatorError(str(exc)) from exc
-        package = {
-            "context_package_id": f"context-package-{uuid.uuid4()}",
-            "batch_id": batch["batch_id"],
-            "base_commit": built.base_commit,
-            "candidate_commit": built.candidate_commit,
-            "diff": built.diff,
-            "starting_files": [asdict(item) for item in built.starting_files],
-            "symbol_graph": built.symbol_graph,
-            "related_tests": built.related_tests,
-            "precedent_cards": [asdict(item) for item in built.precedent_cards],
-            "file_hashes": built.file_hashes,
-            "size_bytes": built.size_bytes,
-            "created_at": _now(),
-        }
-        _reject_sensitive(package, "context package")
-        _write_exclusive(_context_package_path(root, package["context_package_id"]), package)
-        batch.setdefault("context_packages", []).append(
-            {
-                "context_package_id": package["context_package_id"],
-                "base_commit": package["base_commit"],
-                "candidate_commit": package["candidate_commit"],
-                "record_sha256": hashlib.sha256(_canonical(package).encode("utf-8")).hexdigest(),
-            }
+        package = _persist_context_package(
+            repo, root, batch, role=getattr(args, "role", "shared"), snapshot=candidate,
+            inclusion_reason=getattr(args, "inclusion_reason", "manual immutable context registration"),
+            min_starting_files=args.min_starting_files, max_starting_files=args.max_starting_files,
+            max_package_size_bytes=args.max_package_size_bytes,
         )
         _replace(_batch_path(root, batch["batch_id"]), batch)
     return package
@@ -1255,6 +1437,7 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
         "verification_commands": _verification_commands(config),
         "required_gates": _strings(getattr(args, "required_gate", None) or ["none"], "required_gates"),
         "dependencies": _strings(getattr(args, "dependency", None) or ["none"], "dependencies"),
+        "approval_policy": _approval_policy(config),
         "dispatches": [],
         "risk_assessments": [],
         "risk_escalations": [],
@@ -1540,18 +1723,15 @@ def _delta_review_eligibility(
 ) -> str:
     """Whether ``candidate`` may be delta-reviewed against ``prior_dispatch``'s review.
 
-    Eligible only for a test-only fix closing the prior review's single Warning finding: the prior
-    review must show exactly one Warning axis and no Blocker, and the diff since the prior reviewed
-    candidate must touch only test files and match none of the code-review role's risk triggers.
-    Returns the axis name that must be re-evaluated; anything else raises so the caller falls back
-    to a full independent review.
+    Eligible only for a test-only fix after the prior Spec axis raised a Warning or Blocker. The
+    Standards evidence is inherited only when it was Clean; Spec is always re-evaluated against the
+    new candidate. Any production or risk-triggering diff falls back to a full independent review.
     """
     severities = _review_severity(prior_report["review"])
-    if "blocker" in severities.values():
-        raise CoordinatorError("delta-review is not permitted after a review blocker")
-    warning_axes = [axis for axis, value in severities.items() if value == "warning"]
-    if len(warning_axes) != 1 or any(value not in {"warning", "clean"} for value in severities.values()):
-        raise CoordinatorError("delta-review requires exactly one prior Warning axis and one prior Clean axis")
+    if severities.get("standards") != "clean" or severities.get("spec") not in {"warning", "blocker"}:
+        raise CoordinatorError(
+            "delta-review requires prior Standards=Clean and prior Spec=Warning or Blocker"
+        )
     prior_candidate = prior_dispatch.get("candidate_commit")
     if (
         not isinstance(prior_candidate, str)
@@ -1574,7 +1754,7 @@ def _delta_review_eligibility(
         raise CoordinatorError(
             "delta-review is rejected because the fix diff matches risk trigger(s): " + ", ".join(sorted(matched))
         )
-    return warning_axes[0]
+    return "spec"
 
 
 def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
@@ -1590,8 +1770,9 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if pending_report:
             raise CoordinatorError("the previous completion report requires an explicit coordinator decision")
         _check_batch_conflicts(root, config, batch)
-        # Shadow-mode freshness gate (Issue #138): evidence only, recorded on the batch before
-        # every new dispatch brief. A stale package never blocks dispatch creation here.
+        # Existing packages are recorded as audit evidence. A fresh role-specific package is
+        # registered below before the immutable brief is written, so a stale snapshot cannot be
+        # silently reused by a new role.
         context_package_freshness = _context_package_freshness(repo, root, batch)
         if context_package_freshness is not None:
             batch.setdefault("context_package_freshness_checks", []).append(context_package_freshness)
@@ -1617,7 +1798,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             raise CoordinatorError(
                 "a developer dispatch requires an accepted architect report for the same batch"
             )
-        role, zone, profile_id, model, effort, transport = _resolve_assignment(
+        role, zone, profile_id, model, effort, transport, resolved_runtime = _resolve_assignment(
             repo, config, role_name, batch["zone"], args.runtime,
             session_model=getattr(args, "model", None), session_effort=getattr(args, "effort", None),
         )
@@ -1680,7 +1861,25 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         required_role = batch.get("required_next_role")
         if required_role and role_name != required_role:
             raise CoordinatorError(f"the coordinator requires a new {required_role} dispatch before this role")
-        approval = _approval(args)
+        approval = _dispatch_approval(args, batch, config, role_name, purpose, risk)
+        context_package = None
+        if role_name in {"architect", "developer", "code-review"}:
+            snapshot = candidate
+            if snapshot is None:
+                try:
+                    snapshot = _latest_developer_candidate(repo, root, batch)
+                except CoordinatorError:
+                    snapshot = batch["base_commit"]
+            context_package = _persist_context_package(
+                repo, root, batch, role=role_name, snapshot=snapshot,
+                inclusion_reason=(
+                    f"automatic {role_name} package at pinned snapshot {snapshot}; "
+                    "included before immutable brief creation"
+                ),
+            )
+            context_package_freshness = _context_package_freshness(repo, root, batch)
+            if context_package_freshness is None or context_package_freshness["status"] != "fresh":
+                raise CoordinatorError("newly registered Context Package is stale; refresh before dispatch")
         dispatch_id = f"dispatch-{uuid.uuid4()}"
         dispatch_commands = (
             batch["developer_verification_commands"]
@@ -1702,7 +1901,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "verification_commands": dispatch_commands,
             "required_gates": batch["required_gates"],
             "dependencies": batch["dependencies"],
-            "resolved_runtime": args.runtime,
+            "resolved_runtime": resolved_runtime,
             "resolved_provider_profile": profile_id,
             "resolved_model": model,
             "resolved_effort": effort,
@@ -1715,6 +1914,11 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "purpose": purpose,
             "delta_review_of": delta_review_of,
             "delta_review_axis": delta_review_axis,
+            "context_package_id": context_package["context_package_id"] if context_package else None,
+            "context_package_sha256": (
+                hashlib.sha256(_canonical(context_package).encode("utf-8")).hexdigest()
+                if context_package else None
+            ),
         }
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the
@@ -1900,6 +2104,99 @@ def heartbeat_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         status["heartbeat_note"] = _sanitise(note)[:240]
         _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), status)
     return {"dispatch_id": dispatch["dispatch_id"], "state": status["state"], "heartbeat_at": moment}
+
+
+def rate_limited_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    """Record a provider 429 without model-side polling or a lost checkpoint."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    retry_after = args.retry_after_seconds
+    if isinstance(retry_after, bool) or not isinstance(retry_after, int) or retry_after < 1:
+        raise CoordinatorError("retry-after-seconds must be a positive integer")
+    with _state_lock(root):
+        dispatch = _load_dispatch(root, args.dispatch)
+        batch = _load_batch(root, dispatch["batch_id"])
+        _validate_batch_integrity(root, batch)
+        _latest_checkpoint_for_dispatch(root, batch, dispatch["dispatch_id"])
+        status = _load_dispatch_status(root, dispatch["dispatch_id"])
+        entry = next((item for item in batch["dispatches"] if item["dispatch_id"] == dispatch["dispatch_id"]), None)
+        if not entry or entry.get("state") != "checkpointed" or status.get("state") != "checkpointed":
+            raise CoordinatorError("rate_limited requires a checkpointed write dispatch")
+        retry_not_before = (datetime.now(timezone.utc) + timedelta(seconds=retry_after)).isoformat()
+        status.update({
+            "state": "rate_limited", "updated_at": _now(), "retry_not_before": retry_not_before,
+            "last_event": "rate_limited",
+        })
+        entry["state"] = "rate_limited"
+        batch.setdefault("liveness_events", []).append({
+            "dispatch_id": dispatch["dispatch_id"], "event": "rate_limited", "recorded_at": _now(),
+            "retry_not_before": retry_not_before,
+        })
+        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), status)
+        _replace(_batch_path(root, batch["batch_id"]), batch)
+    return {"dispatch_id": dispatch["dispatch_id"], "event": "rate_limited", "retry_not_before": retry_not_before}
+
+
+def wait_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    """Wait locally for a significant event; heartbeat updates never reach the coordinator chat."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    timeout, interval, threshold = args.timeout, args.poll_interval, args.stale_after
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in (timeout, interval, threshold)):
+        raise CoordinatorError("timeout, poll-interval and stale-after must be positive integers")
+    deadline = time.monotonic() + timeout
+    while True:
+        with _state_lock(root):
+            dispatch = _load_dispatch(root, args.dispatch)
+            status = _load_dispatch_status(root, dispatch["dispatch_id"])
+            state = status.get("state")
+            if state == "reported":
+                return {"dispatch_id": dispatch["dispatch_id"], "event": "reported"}
+            if state == "rate_limited":
+                return {"dispatch_id": dispatch["dispatch_id"], "event": "rate_limited", "retry_not_before": status.get("retry_not_before")}
+            if state == "blocked" and status.get("model_self_report", {}).get("match") is False:
+                return {"dispatch_id": dispatch["dispatch_id"], "event": "model_mismatch"}
+            if state in {"failed", "abandoned", "cancelled"}:
+                return {"dispatch_id": dispatch["dispatch_id"], "event": "failed", "state": state}
+            if state in LIVE_DISPATCH_STATES and _silent_seconds(status) >= threshold:
+                return {"dispatch_id": dispatch["dispatch_id"], "event": "stale", "silent_seconds": _silent_seconds(status)}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"dispatch_id": args.dispatch, "event": "timeout"}
+        time.sleep(min(interval, max(1, int(remaining))))
+
+
+def record_telemetry(args: argparse.Namespace) -> dict[str, Any]:
+    """Attach source-observed worker/coordinator metrics to the batch audit trail.
+
+    Missing provider fields stay ``null`` rather than becoming estimated zeroes. This command is
+    intentionally data-only: it cannot alter role state, scheduling, approvals or model routing.
+    """
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    payload = _read_object(Path(args.file), "telemetry payload")
+    if set(payload) != TELEMETRY_FIELDS:
+        raise CoordinatorError("telemetry payload schema mismatch")
+    _reject_sensitive(payload, "telemetry payload")
+    if payload["session_kind"] not in {"worker", "coordinator"}:
+        raise CoordinatorError("telemetry session_kind must be worker or coordinator")
+    if not _non_empty(payload["restart_reason"]) or not _non_empty(payload["recorded_at"]):
+        raise CoordinatorError("telemetry restart_reason and recorded_at must be non-empty strings")
+    _moment(payload["recorded_at"], "telemetry recorded_at")
+    for field in TELEMETRY_FIELDS - {"dispatch_id", "session_kind", "restart_reason", "recorded_at"}:
+        value = payload[field]
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+            raise CoordinatorError(f"telemetry {field} must be a non-negative integer or null")
+    with _state_lock(root):
+        dispatch = _load_dispatch(root, payload["dispatch_id"])
+        batch = _load_batch(root, dispatch["batch_id"])
+        _validate_batch_integrity(root, batch)
+        record = dict(payload)
+        record["telemetry_id"] = f"telemetry-{uuid.uuid4()}"
+        record["record_sha256"] = hashlib.sha256(_canonical(record).encode("utf-8")).hexdigest()
+        batch.setdefault("telemetry", []).append(record)
+        _replace(_batch_path(root, batch["batch_id"]), batch)
+    return {"telemetry_id": record["telemetry_id"], "dispatch_id": payload["dispatch_id"]}
 
 
 def _validate_checkpoint(
@@ -2103,9 +2400,15 @@ def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         _validate_dispatch(repo, config, root, batch, dispatch)
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
         entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
-        if not entry or entry.get("state") != "checkpointed" or status.get("state") != "checkpointed":
-            raise CoordinatorError("only a checkpointed dispatch may start a new worker session")
+        resumable_rate_limit = entry and entry.get("state") == "rate_limited" and status.get("state") == "rate_limited"
+        if not entry or (entry.get("state") != "checkpointed" and not resumable_rate_limit) or (
+            status.get("state") != "checkpointed" and not resumable_rate_limit
+        ):
+            raise CoordinatorError("only a checkpointed or rate-limited dispatch may start a new worker session")
         if termination_reason in RATE_LIMIT_TERMINATION_REASONS:
+            retry_not_before = status.get("retry_not_before")
+            if isinstance(retry_not_before, str) and _moment(retry_not_before, "retry_not_before") > datetime.now(timezone.utc):
+                raise CoordinatorError("rate-limit retry window has not elapsed")
             authorization = _authorize_rate_limit_continuation(termination_reason)
         else:
             checkpoint = _latest_checkpoint_for_dispatch(root, batch, dispatch["dispatch_id"])
@@ -2118,7 +2421,7 @@ def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         moment = _now()
         _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
             "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": moment,
-            "heartbeat_at": moment,
+            "heartbeat_at": moment, "last_event": "resumed",
         })
     return {
         "dispatch_id": dispatch["dispatch_id"], "state": "dispatched",
@@ -2473,6 +2776,10 @@ def _validate_report(
             raise CoordinatorError("completion report checks_run has an invalid entry")
         if not all(_non_empty(check[field]) for field in ("command", "result", "evidence")):
             raise CoordinatorError("completion report checks_run entries must contain text evidence")
+        if len(check["evidence"]) > MAX_CHECK_EVIDENCE_CHARS:
+            raise CoordinatorError(
+                "completion report check evidence exceeds the bounded summary limit; store the full log as an artifact and report its path"
+            )
     if [check["command"] for check in checks] != dispatch["verification_commands"]:
         raise CoordinatorError("completion report checks_run must exactly match approved verification commands")
     commit_sha = report["commit_sha"]
@@ -2644,16 +2951,19 @@ def parser() -> argparse.ArgumentParser:
 
     ledger = commands.add_parser("ledger", help="inspect or explicitly maintain versioned lifecycle state")
     ledger_commands = ledger.add_subparsers(dest="ledger_command", required=True)
-    ledger_status_command = ledger_commands.add_parser("status")
+    ledger_status_command = ledger_commands.add_parser("status", help="Report the selected lifecycle-ledger generation")
     _common(ledger_status_command)
     ledger_status_command.set_defaults(handler=ledger_status)
-    ledger_migrate = ledger_commands.add_parser("migrate")
+    ledger_migrate = ledger_commands.add_parser("migrate", help="Validate and migrate legacy state to current schema")
     _common(ledger_migrate)
     ledger_migrate.set_defaults(handler=migrate_ledger)
-    ledger_reset = ledger_commands.add_parser("reset")
+    ledger_reset = ledger_commands.add_parser("reset", help="Select an empty generation (requires --confirm RESET)")
     _common(ledger_reset)
     ledger_reset.add_argument("--confirm", required=True, help="literal RESET acknowledgement")
     ledger_reset.set_defaults(handler=reset_ledger)
+    ledger_clean = ledger_commands.add_parser("clean", help="Safely remove orphaned dispatch evidence to fix migration errors")
+    _common(ledger_clean)
+    ledger_clean.set_defaults(handler=clean_ledger)
 
     batch = commands.add_parser("batch")
     batch_commands = batch.add_subparsers(dest="batch_command", required=True)
@@ -2705,6 +3015,12 @@ def parser() -> argparse.ArgumentParser:
     decide.add_argument("--note", default="none")
     decide.set_defaults(handler=decide_batch)
 
+    packet = batch_commands.add_parser("decision-packet", help="render concise evidence required for an approval")
+    _common(packet)
+    packet.add_argument("--batch", required=True)
+    packet.add_argument("--dispatch", help="approved or reported dispatch in this batch")
+    packet.set_defaults(handler=decision_packet)
+
     risk = commands.add_parser("risk")
     risk_commands = risk.add_subparsers(dest="risk_command", required=True)
     assess = risk_commands.add_parser("assess")
@@ -2722,6 +3038,8 @@ def parser() -> argparse.ArgumentParser:
     _common(context_package_register)
     context_package_register.add_argument("--batch", required=True)
     context_package_register.add_argument("--candidate-commit", required=True)
+    context_package_register.add_argument("--role", default="shared")
+    context_package_register.add_argument("--inclusion-reason", default="manual immutable context registration")
     context_package_register.add_argument("--base-commit", help="optional immutable diff base; defaults to the batch base")
     context_package_register.add_argument("--symbol-graph-depth", type=int, default=2)
     context_package_register.add_argument("--min-starting-files", type=int, default=5)
@@ -2731,11 +3049,21 @@ def parser() -> argparse.ArgumentParser:
 
     dispatch = commands.add_parser("dispatch")
     dispatch_commands = dispatch.add_subparsers(dest="dispatch_command", required=True)
+    preflight = dispatch_commands.add_parser("preflight", help="validate a future dispatch without creating it")
+    _common(preflight)
+    preflight.add_argument("--batch", required=True)
+    preflight.add_argument("--role", required=True)
+    preflight.add_argument("--runtime")
+    preflight.add_argument("--candidate-commit")
+    preflight.set_defaults(handler=preflight_dispatch)
     dispatch_create = dispatch_commands.add_parser("create", aliases=["approve"])
     _common(dispatch_create)
     dispatch_create.add_argument("--batch", required=True)
     dispatch_create.add_argument("--role", default="developer")
-    dispatch_create.add_argument("--runtime", default="codex", help="named runtime from the role assignment plan")
+    dispatch_create.add_argument(
+        "--runtime",
+        help="named runtime from the role assignment plan; required when a multi-runtime role has no default_runtime",
+    )
     dispatch_create.add_argument("--purpose", choices=sorted(DISPATCH_PURPOSES), default="work")
     dispatch_create.add_argument("--candidate-commit")
     dispatch_create.add_argument(
@@ -2744,8 +3072,8 @@ def parser() -> argparse.ArgumentParser:
     )
     dispatch_create.add_argument("--model", help="session model, used only without .harness/orchestration.json")
     dispatch_create.add_argument("--effort", help="session effort, used only without .harness/orchestration.json")
-    dispatch_create.add_argument("--approved-by", required=True)
-    dispatch_create.add_argument("--approved-at", required=True)
+    dispatch_create.add_argument("--approved-by", help="required by manual_all and risk milestones")
+    dispatch_create.add_argument("--approved-at", help="required by manual_all and risk milestones")
     dispatch_create.set_defaults(handler=create_dispatch)
 
     dispatch_send = dispatch_commands.add_parser("send")
@@ -2775,6 +3103,25 @@ def parser() -> argparse.ArgumentParser:
     dispatch_heartbeat.add_argument("--dispatch", required=True)
     dispatch_heartbeat.add_argument("--note", default="none")
     dispatch_heartbeat.set_defaults(handler=heartbeat_dispatch)
+
+    dispatch_rate_limited = dispatch_commands.add_parser("rate-limited", help="record a checkpointed provider 429 and retry window")
+    _common(dispatch_rate_limited)
+    dispatch_rate_limited.add_argument("--dispatch", required=True)
+    dispatch_rate_limited.add_argument("--retry-after-seconds", type=int, default=DEFAULT_RATE_LIMIT_RETRY_SECONDS)
+    dispatch_rate_limited.set_defaults(handler=rate_limited_dispatch)
+
+    dispatch_wait = dispatch_commands.add_parser("wait", help="wait locally for reported, stale, mismatch, 429 or failure")
+    _common(dispatch_wait)
+    dispatch_wait.add_argument("--dispatch", required=True)
+    dispatch_wait.add_argument("--timeout", type=int, default=60)
+    dispatch_wait.add_argument("--poll-interval", type=int, default=5)
+    dispatch_wait.add_argument("--stale-after", type=int, default=DEFAULT_STALE_AFTER_SECONDS)
+    dispatch_wait.set_defaults(handler=wait_dispatch)
+
+    dispatch_telemetry = dispatch_commands.add_parser("telemetry", help="record source-observed worker or coordinator metrics")
+    _common(dispatch_telemetry)
+    dispatch_telemetry.add_argument("--file", required=True)
+    dispatch_telemetry.set_defaults(handler=record_telemetry)
 
     dispatch_checkpoint = dispatch_commands.add_parser("checkpoint")
     _common(dispatch_checkpoint)
