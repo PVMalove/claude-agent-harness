@@ -667,7 +667,9 @@ def validate_integrations(repo: Path, problems: list[str]) -> int:
 
 
 PROJECT_JSON_REQUIRED_FIELDS = ("language", "base_branch", "branch_pattern", "qa_gate_commands")
-PROJECT_JSON_ALLOWED_FIELDS = frozenset(PROJECT_JSON_REQUIRED_FIELDS) | {"$schema"}
+PROJECT_JSON_ALLOWED_FIELDS = frozenset(PROJECT_JSON_REQUIRED_FIELDS) | {"$schema", "story_points"}
+STORY_POINTS_REQUIRED_FIELDS = ("scale", "fast_threshold", "full_threshold", "gray_zone")
+STORY_POINTS_ALLOWED_FIELDS = frozenset(STORY_POINTS_REQUIRED_FIELDS)
 
 
 def validate_project_json(repo: Path, problems: list[str]) -> None:
@@ -703,6 +705,29 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
         commands = data["qa_gate_commands"]
         if not isinstance(commands, list) or not all(isinstance(item, str) for item in commands):
             problems.append(".harness/project.json qa_gate_commands must be a list of strings")
+    if "story_points" in data:
+        story_points = data["story_points"]
+        if not isinstance(story_points, dict):
+            problems.append(".harness/project.json story_points must be an object")
+        else:
+            sp_missing = [f for f in STORY_POINTS_REQUIRED_FIELDS if f not in story_points]
+            if sp_missing:
+                problems.append(f".harness/project.json story_points missing field(s): {', '.join(sp_missing)}")
+            sp_extra = sorted(set(story_points) - STORY_POINTS_ALLOWED_FIELDS)
+            if sp_extra:
+                problems.append(f".harness/project.json story_points has unknown field(s): {', '.join(sp_extra)}")
+            scale = story_points.get("scale")
+            if "scale" in story_points and (
+                not isinstance(scale, list)
+                or not scale
+                or not all(isinstance(v, int) and not isinstance(v, bool) and v >= 1 for v in scale)
+            ):
+                problems.append(".harness/project.json story_points.scale must be a non-empty list of integers >= 1")
+            for field in ("fast_threshold", "full_threshold", "gray_zone"):
+                if field in story_points and (
+                    not isinstance(story_points[field], int) or isinstance(story_points[field], bool)
+                ):
+                    problems.append(f".harness/project.json story_points.{field} must be an integer")
 
 
 ORCHESTRATION_CONFIG_REL = Path(".harness/orchestration.json")
