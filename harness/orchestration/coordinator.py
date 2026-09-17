@@ -1464,9 +1464,9 @@ def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
         # immutable brief.
         batch["next_action"] = "code-review" if risk["review_required"] else "qa"
         _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return risk
 
 
@@ -1574,9 +1574,9 @@ def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
             max_related_tests=getattr(args, "max_related_tests", None),
         )
         _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return package
 
 
@@ -1861,9 +1861,9 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
         elif batch.get("state") != "completed":
             batch["state"] = "awaiting-approval"
         _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return batch
 
 
@@ -1966,9 +1966,9 @@ def abandon_batch(args: argparse.Namespace) -> dict[str, Any]:
             "note": reason,
         })
         _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return {
         "batch_id": batch["batch_id"],
         "ticket": batch["ticket"],
@@ -2018,9 +2018,9 @@ def cancel_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             }).to_dict(),
         )
         _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return {"dispatch_id": dispatch["dispatch_id"], "batch_id": batch["batch_id"], "state": "cancelled"}
 
 
@@ -2272,9 +2272,9 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             batch.pop("required_next_role", None)
         batch["state"] = "active"
         _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return {
         "dispatch_id": dispatch_id, "batch_id": batch["batch_id"], "state": "approved", "brief": brief,
         "context_package_freshness": context_package_freshness,
@@ -2375,9 +2375,9 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             }).to_dict(),
         )
         _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "dispatched",
@@ -2437,9 +2437,9 @@ def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if attestation is not None:
             status["worktree_attestation"] = {**attestation, "reported_at": moment}
         _replace(
-        _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
-        DispatchStatusRecord.from_dict(status).to_dict(),
-    )
+            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
+            DispatchStatusRecord.from_dict(status).to_dict(),
+        )
         if not matched:
             batch = _load_batch(root, dispatch["batch_id"])
             for entry in batch.get("dispatches", []):
@@ -2447,9 +2447,9 @@ def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
                     entry["state"] = "blocked"
             batch["state"] = "blocked"
             _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+                _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+                BatchRecord.from_dict(batch).to_dict(),
+            )
     if not matched:
         mismatch = []
         if not model_matched:
@@ -2474,9 +2474,9 @@ def heartbeat_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         status["heartbeat_at"] = moment
         status["heartbeat_note"] = _sanitise(note)[:240]
         _replace(
-        _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
-        DispatchStatusRecord.from_dict(status).to_dict(),
-    )
+            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
+            DispatchStatusRecord.from_dict(status).to_dict(),
+        )
     return {"dispatch_id": dispatch["dispatch_id"], "state": status["state"], "heartbeat_at": moment}
 
 
@@ -2507,13 +2507,13 @@ def rate_limited_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "retry_not_before": retry_not_before,
         })
         _replace(
-        _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
-        DispatchStatusRecord.from_dict(status).to_dict(),
-    )
+            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
+            DispatchStatusRecord.from_dict(status).to_dict(),
+        )
         _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return {"dispatch_id": dispatch["dispatch_id"], "event": "rate_limited", "retry_not_before": retry_not_before}
 
 
@@ -2578,9 +2578,9 @@ def record_telemetry(args: argparse.Namespace) -> dict[str, Any]:
         record["record_sha256"] = hashlib.sha256(_canonical(record).encode("utf-8")).hexdigest()
         batch.setdefault("telemetry", []).append(record)
         _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return {"telemetry_id": record["telemetry_id"], "dispatch_id": payload["dispatch_id"]}
 
 
@@ -2684,15 +2684,15 @@ def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "record_sha256": hashlib.sha256(_canonical(record).encode("utf-8")).hexdigest(),
         })
         _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
         moment = _now()
         status.update({"state": "checkpointed", "updated_at": moment})
         _replace(
-        _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
-        DispatchStatusRecord.from_dict(status).to_dict(),
-    )
+            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
+            DispatchStatusRecord.from_dict(status).to_dict(),
+        )
     return {"dispatch_id": dispatch["dispatch_id"], "state": "checkpointed", "checkpoint_id": record["checkpoint_id"]}
 
 
@@ -2822,9 +2822,9 @@ def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "dispatch_id": dispatch["dispatch_id"], **authorization,
         })
         _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
         moment = _now()
         _replace(
             _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
@@ -2921,9 +2921,9 @@ def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             }).to_dict(),
         )
         _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
         changed = _changed_files_between(repo, batch["base_commit"], candidate) if batch.get("base_commit") else _commit_changed_files(repo, candidate)
         report = {
             "dispatch_id": dispatch["dispatch_id"], "ticket": dispatch["ticket"], "role": "developer",
