@@ -328,6 +328,7 @@ def build_context_package(
     max_starting_files: int = 10,
     max_package_size_bytes: int | None = None,
     max_package_tokens: int | None = 80_000,
+    max_related_tests: int | None = None,
     seed_paths: list[str] | None = None,
 ) -> ContextPackage:
     """Build one immutable Context Package for `base_commit`..`candidate_commit`.
@@ -335,9 +336,11 @@ def build_context_package(
     Reads only pinned git history (`git show`/`git diff`/`git ls-tree`), never the working tree, so
     the same inputs always produce the same output regardless of local checkout state. Raises
     `ContextPackageError` instead of silently truncating when the assembled package would exceed
-    `max_package_size_bytes` (pass `None` to disable the legacy diagnostic limit) or the
-    token-aware `max_package_tokens` limit.  The latter is the admission control used by the
-    coordinator; bytes are retained only for explicit backwards-compatible callers.
+    `max_package_size_bytes` (pass `None` to disable the legacy diagnostic limit), the token-aware
+    `max_package_tokens` limit, or -- when `max_related_tests` is set -- an import-graph fan-out
+    that pulls in more related tests than a misscoped batch should. The token/byte limits are the
+    admission control used by the coordinator; bytes are retained only for explicit
+    backwards-compatible callers.
     """
     if min_starting_files < 1 or max_starting_files < min_starting_files:
         raise ContextPackageError("min_starting_files must be >=1 and <= max_starting_files")
@@ -385,6 +388,11 @@ def build_context_package(
         )["context"] = context
 
     related_tests = _related_tests(import_graph, files, set(starting_paths))
+    if max_related_tests is not None and len(related_tests) > max_related_tests:
+        raise ContextPackageError(
+            f"related_tests count {len(related_tests)} exceeds max_related_tests={max_related_tests}; "
+            "narrow the batch scope or raise context_package_policy.max_related_tests"
+        )
 
     keywords = _keywords_for(starting_paths)
     precedent_cards = _precedent_cards(repository, candidate_commit, files, keywords)
@@ -395,12 +403,17 @@ def build_context_package(
     contents = {path: _read_file(repository, candidate_commit, path) for path in included_paths}
     file_hashes = {path: hashlib.sha256(content.encode("utf-8")).hexdigest() for path, content in contents.items()}
 
+    # An added file's unified diff already contains 100% of its content as `+` lines, so counting
+    # `contents[path]` again for the token/size estimate would double-count the exact same bytes
+    # without adding information (unlike a modified file, where the diff is only hunks and
+    # `contents[path]` genuinely adds the rest of the file).
+    added_paths = {path for path, status in changed if status == "added"}
     payload_text = "\n".join(
         [
             diff,
             json.dumps(symbol_graph, ensure_ascii=False, sort_keys=True),
             json.dumps([asdict(card) for card in precedent_cards], ensure_ascii=False, sort_keys=True),
-            *[contents[path] for path in sorted(contents)],
+            *[contents[path] for path in sorted(contents) if path not in added_paths],
         ]
     )
     size_bytes = len(payload_text.encode("utf-8"))

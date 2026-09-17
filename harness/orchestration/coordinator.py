@@ -136,9 +136,11 @@ DEFAULT_ADAPTIVE_CONTINUATION_POLICY = {
     "failure_log_bytes": 20_000,
 }
 DEFAULT_CONTEXT_PACKAGE_POLICY = {
-    "max_tokens": 80_000,
-    "context_window_tokens": 150_000,
+    "max_tokens": 200_000,
+    "context_window_tokens": 250_000,
     "reserved_prompt_tokens": 20_000,
+    "symbol_graph_depth": 2,
+    "max_related_tests": 25,
 }
 DEFAULT_CONTINUATION_POLICY = {"max_continuations": 2, "max_rate_limit_resumes": 1}
 DEFAULT_RETRY_POLICY = {"max_developer_retries": 1}
@@ -1472,6 +1474,8 @@ def _persist_context_package(
     max_starting_files: int = 10,
     max_package_size_bytes: int | None = None,
     max_package_tokens: int | None = None,
+    symbol_graph_depth: int | None = None,
+    max_related_tests: int | None = None,
 ) -> dict[str, Any]:
     """Build once and register a reusable Context Package for one pinned diff."""
     package_base = batch.get("integration_base_commit") or batch["base_commit"]
@@ -1481,7 +1485,19 @@ def _persist_context_package(
     if role != "shared":
         raise CoordinatorError("automatic Context Packages must be shared; role focus belongs in the immutable brief")
     policy = _context_package_policy(_config(repo))
+    # `max_package_tokens` is documented as an optional *stricter* ceiling (see coordinator_cli.py
+    # --max-package-tokens help text). Silently honouring a caller-supplied value above the
+    # project's configured budget is exactly how a review context package was pushed to ~130k
+    # tokens against an 80k policy without any recorded decision; fail loudly instead.
+    if max_package_tokens is not None and max_package_tokens > policy["max_tokens"]:
+        raise CoordinatorError(
+            f"--max-package-tokens={max_package_tokens} exceeds the configured "
+            f"context_package_policy.max_tokens={policy['max_tokens']}; raise context_package_policy.max_tokens "
+            "in project orchestration config instead of overriding it ad hoc per dispatch"
+        )
     token_limit = max_package_tokens if max_package_tokens is not None else policy["max_tokens"]
+    depth = symbol_graph_depth if symbol_graph_depth is not None else policy["symbol_graph_depth"]
+    related_tests_cap = max_related_tests if max_related_tests is not None else policy["max_related_tests"]
     seed_files = [
         "AGENTS.md", "README.md", ".harness/orchestration/roles/_common.md",
         ".harness/orchestration/contract.py",
@@ -1489,9 +1505,9 @@ def _persist_context_package(
     try:
         built = build_context_package(
             repo, package_base, snapshot,
-            symbol_graph_depth=2, min_starting_files=min_starting_files,
+            symbol_graph_depth=depth, min_starting_files=min_starting_files,
             max_starting_files=max_starting_files, max_package_size_bytes=max_package_size_bytes,
-            max_package_tokens=token_limit,
+            max_package_tokens=token_limit, max_related_tests=related_tests_cap,
             seed_paths=seed_files,
         )
     except ContextPackageError as exc:
@@ -1543,6 +1559,8 @@ def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
             min_starting_files=args.min_starting_files, max_starting_files=args.max_starting_files,
             max_package_size_bytes=args.max_package_size_bytes,
             max_package_tokens=getattr(args, "max_package_tokens", None),
+            symbol_graph_depth=getattr(args, "symbol_graph_depth", None),
+            max_related_tests=getattr(args, "max_related_tests", None),
         )
         _replace(_batch_path(root, batch["batch_id"]), batch)
     return package

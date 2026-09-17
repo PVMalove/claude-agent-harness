@@ -127,9 +127,21 @@
       "additionalProperties": false,
       "description": "Token-aware Context Package admission limits. The package must fit within the configured context window after reserving prompt headroom.",
       "properties": {
-        "max_tokens": {"type": "integer", "minimum": 1, "default": 80000},
-        "context_window_tokens": {"type": "integer", "minimum": 1, "default": 150000},
-        "reserved_prompt_tokens": {"type": "integer", "minimum": 1, "default": 20000}
+        "max_tokens": {"type": "integer", "minimum": 1, "default": 200000},
+        "context_window_tokens": {"type": "integer", "minimum": 1, "default": 250000},
+        "reserved_prompt_tokens": {"type": "integer", "minimum": 1, "default": 20000},
+        "symbol_graph_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2,
+          "description": "Import-graph traversal depth from a Context Package's starting files. Applies to every automatic package (architect/developer/code-review dispatch creation) as well as a manual `context-package register`; `--symbol-graph-depth` on the latter overrides it for that package only."
+        },
+        "max_related_tests": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 25,
+          "description": "Fail-loud circuit breaker: a Context Package whose related_tests (tests that import a starting file) exceed this count raises ContextPackageError instead of silently including all of them. `--max-related-tests` on `context-package register` overrides it for that package only."
+        }
       }
     },
     "continuation_policy": {

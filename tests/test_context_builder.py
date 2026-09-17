@@ -15,6 +15,7 @@ sys.path.insert(0, str(MODULE_ROOT))
 from context_builder import (  # noqa: E402
     ContextPackageError,
     build_context_package,
+    estimate_tokens,
 )
 
 
@@ -190,6 +191,32 @@ class ContextBuilderTests(ContextBuilderFixture):
             package.symbol_graph["pkg/notes.txt"]["context"],
             [f"line {index}" for index in range(30)],
         )
+
+    def test_fails_clearly_instead_of_silently_including_too_many_related_tests(self) -> None:
+        with self.assertRaisesRegex(ContextPackageError, "max_related_tests"):
+            build_context_package(
+                self.repo, self.base_commit, self.candidate_commit, min_starting_files=1, max_related_tests=0
+            )
+
+    def test_added_file_content_is_not_double_counted_against_its_diff(self) -> None:
+        _write(self.repo, "pkg/generated.py", "\n".join(f"VALUE_{index} = {index}" for index in range(400)))
+        _run("add", ".", cwd=self.repo)
+        _run("commit", "-qm", "feat: add a large generated file", cwd=self.repo)
+        candidate_with_addition = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+        package = build_context_package(
+            self.repo, self.candidate_commit, candidate_with_addition, min_starting_files=1
+        )
+
+        self.assertIn("pkg/generated.py", {item.path for item in package.starting_files})
+        # A brand-new file's unified diff already contains 100% of its content as `+` lines.
+        # Re-reading and re-counting that same content for the token estimate would roughly
+        # double it for this dominant file; assert it stays close to the diff-only estimate
+        # instead of drifting toward double.
+        diff_only_estimate = estimate_tokens(package.diff)
+        self.assertLess(package.estimated_tokens, diff_only_estimate * 1.5)
 
     def test_makes_no_model_call_and_stays_pure_python_over_git_plumbing(self) -> None:
         module_source = (MODULE_ROOT / "context_builder.py").read_text(encoding="utf-8")

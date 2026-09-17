@@ -530,7 +530,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     problems.extend(_policy_problem(
         config,
         "context_package_policy",
-        {"max_tokens", "context_window_tokens", "reserved_prompt_tokens"},
+        {"max_tokens", "context_window_tokens", "reserved_prompt_tokens", "symbol_graph_depth", "max_related_tests"},
     ))
     context_policy = config.get("context_package_policy")
     if isinstance(context_policy, dict):

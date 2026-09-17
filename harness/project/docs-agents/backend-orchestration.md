@@ -213,7 +213,18 @@ python .harness/orchestration/coordinator.py --repo . batch preflight \
 Template ограничивает DoD (5), dependencies (3), файлы (12), сервисы (1), diff (800 строк) и
 ожидаемый context (80k tokens). Проект может ужесточить эти значения через `preflight_policy`.
 `context_package_policy` использует консервативную token estimate и резервирует место для системных
-инструкций; байтовый предел остаётся только диагностической совместимостью. Один immutable shared
+инструкций; байтовый предел остаётся только диагностической совместимостью. `symbol_graph_depth`
+(по умолчанию 2) в этой политике управляет глубиной import-графа для *каждого* автоматического
+Context Package — включая пакеты, которые coordinator строит сам при `dispatch create` для
+architect/developer/code-review, а не только для ручного `context-package register`.
+`--max-package-tokens` на `context-package register` — это только более строгий потолок для одного
+пакета: значение выше сконфигурированного `context_package_policy.max_tokens` coordinator отклоняет
+с ошибкой, а не применяет молча — лимит поднимается только правкой `context_package_policy.max_tokens`
+в конфиге проекта, осознанно и с прохождением `harness health`. `max_related_tests` (по умолчанию 25)
+— отдельный fail-loud предохранитель: если import-граф стартовых файлов задевает больше
+related_tests, чем этот предел, сборка пакета завершается `ContextPackageError` вместо того, чтобы
+молча утащить в оценку токенов половину test suite; `--max-related-tests` переопределяет его для
+одного ручного `context-package register`. Один immutable shared
 Context Package переиспользуется всеми role sessions на том же base/candidate; новый строится только
 при новом candidate. `continuation_policy` (2 continuations, из них максимум один automatic 429
 resume) и `retry_policy` (один developer retry) делают циклы конечными. Все поля проверяются

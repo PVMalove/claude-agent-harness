@@ -61,6 +61,41 @@ class TokenControlTests(unittest.TestCase):
         }
         self.assertEqual(coordinator._continuation_counts(batch, "dispatch-a"), (2, 1))
 
+    def test_context_package_policy_defaults_symbol_graph_depth_to_two(self) -> None:
+        self.assertEqual(coordinator._context_package_policy({})["symbol_graph_depth"], 2)
+
+    def test_context_package_policy_honours_a_configured_symbol_graph_depth(self) -> None:
+        policy = coordinator._context_package_policy(
+            {"context_package_policy": {"symbol_graph_depth": 4}}
+        )
+        self.assertEqual(policy["symbol_graph_depth"], 4)
+
+    def test_context_package_policy_defaults_max_related_tests_to_twenty_five(self) -> None:
+        self.assertEqual(coordinator._context_package_policy({})["max_related_tests"], 25)
+
+    def test_context_package_policy_honours_a_configured_max_related_tests(self) -> None:
+        policy = coordinator._context_package_policy(
+            {"context_package_policy": {"max_related_tests": 10}}
+        )
+        self.assertEqual(policy["max_related_tests"], 10)
+
+    def test_persist_context_package_rejects_a_token_override_above_policy(self) -> None:
+        """`--max-package-tokens` is documented as a stricter-only ceiling. A caller-supplied
+        value above `context_package_policy.max_tokens` must fail loudly instead of silently
+        expanding the budget (the retro for issue #373 found a review package pushed against an
+        undocumented, ad hoc raised ceiling with no recorded decision)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".harness").mkdir()
+            (repo / ".harness" / "project.json").write_text("{}", encoding="utf-8")
+            batch = {"batch_id": "batch-1", "base_commit": "0" * 40, "context_packages": []}
+            above_default_policy = coordinator.DEFAULT_CONTEXT_PACKAGE_POLICY["max_tokens"] + 1
+            with self.assertRaisesRegex(coordinator.CoordinatorError, "exceeds the configured"):
+                coordinator._persist_context_package(
+                    repo, repo, batch, role="shared", snapshot="1" * 40,
+                    inclusion_reason="test", max_package_tokens=above_default_policy,
+                )
+
     def test_tokens_fields_are_not_secrets_but_session_token_is(self) -> None:
         self.assertIsNone(coordinator.SENSITIVE_KEY.search("input_tokens"))
         self.assertIsNotNone(coordinator.SENSITIVE_KEY.search("session_token"))

@@ -119,7 +119,14 @@ def build_parser(handlers: Any, defaults: Any) -> argparse.ArgumentParser:
     context_package_register.add_argument("--role", default="shared", choices=["shared"], help="packages are shared across role sessions")
     context_package_register.add_argument("--inclusion-reason", default="manual immutable context registration")
     context_package_register.add_argument("--base-commit", help="optional immutable diff base; defaults to the batch base")
-    context_package_register.add_argument("--symbol-graph-depth", type=int, default=2)
+    context_package_register.add_argument(
+        "--symbol-graph-depth", type=int, default=None,
+        help="override context_package_policy.symbol_graph_depth for this package only",
+    )
+    context_package_register.add_argument(
+        "--max-related-tests", type=int, default=None,
+        help="override context_package_policy.max_related_tests for this package only",
+    )
     context_package_register.add_argument("--min-starting-files", type=int, default=5)
     context_package_register.add_argument("--max-starting-files", type=int, default=10)
     context_package_register.add_argument("--max-package-size-bytes", type=int, help="legacy diagnostic ceiling; token policy remains authoritative")
