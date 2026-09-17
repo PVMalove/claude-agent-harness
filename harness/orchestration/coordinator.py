@@ -18,7 +18,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace as _vo_replace
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -41,7 +41,10 @@ from contract import (
 from context_builder import ContextPackageError, build_context_package
 from dispatch_preflight import PreflightError, prepare as prepare_dispatch
 from gate_runner import concise_evidence, sanitise
-from ledger import LedgerError, LifecycleLedger
+from ledger import (
+    BatchRecord, CheckpointRecord, ContextPackageRecord, DispatchRecord, DispatchStatusRecord,
+    LedgerError, LifecycleLedger, PlanRecord, RiskAssessmentRecord,
+)
 from coordinator_cli import build_parser
 import qa_lane
 from runtime_attestation import AttestationError, attest as attest_runtime_worktree
@@ -319,6 +322,20 @@ def _state_lock(root: Path) -> Iterator[None]:
             pass
 
 
+@contextmanager
+def _ledger_lock(root: Path) -> Iterator[None]:
+    """Exclusive lock through ``LifecycleLedger.lock()``, translating ``LedgerError`` to
+    ``CoordinatorError`` for this call site -- the same translation ``_write_exclusive``,
+    ``_replace`` and ``_delete`` already apply on every write.  Centralising the translation here
+    (rather than repeating a ``try/except`` at every one of this module's lock sites) removes the
+    risk of a lock site forgetting it and leaking an uncaught ``LedgerError`` into the CLI."""
+    try:
+        with LifecycleLedger(root).lock():
+            yield
+    except LedgerError as exc:
+        raise CoordinatorError(str(exc)) from exc
+
+
 def _project(repo: Path) -> dict[str, Any]:
     return _read_object(repo / ".harness/project.json", "project config")
 
@@ -531,7 +548,10 @@ def _enforce_base_freshness(repo: Path, root: Path, batch: dict[str, Any]) -> No
     batch["required_next_role"] = "developer"
     batch["retry_candidate_required"] = True
     batch["base_rebase_required"] = True
-    _replace(_batch_path(root, batch["batch_id"]), batch)
+    _replace(
+        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+        BatchRecord.from_dict(batch).to_dict(),
+    )
     raise CoordinatorError(
         f"batch base is stale: origin/{ref} has moved from {recorded} to {current}; "
         "only a new developer rebase dispatch can clear this block"
@@ -753,28 +773,8 @@ def _batch_path(root: Path, batch_id: str) -> Path:
     return _records_root(root) / "batches" / f"{_safe_id(batch_id, 'batch')}.json"
 
 
-def _dispatch_path(root: Path, dispatch_id: str) -> Path:
-    return _records_root(root) / "dispatches" / f"{_safe_id(dispatch_id, 'dispatch')}.json"
-
-
 def _dispatch_status_path(root: Path, dispatch_id: str) -> Path:
     return _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch_id, 'dispatch')}.json"
-
-
-def _risk_path(root: Path, risk_id: str) -> Path:
-    return _records_root(root) / "risk-assessments" / f"{_safe_id(risk_id, 'risk assessment')}.json"
-
-
-def _context_package_path(root: Path, package_id: str) -> Path:
-    return _records_root(root) / "context-packages" / f"{_safe_id(package_id, 'context package')}.json"
-
-
-def _checkpoint_path(root: Path, checkpoint_id: str) -> Path:
-    return _records_root(root) / "checkpoints" / f"{_safe_id(checkpoint_id, 'checkpoint')}.json"
-
-
-def _plan_path(root: Path, batch_id: str) -> Path:
-    return _records_root(root) / "plans" / f"{_safe_id(batch_id, 'batch')}.json"
 
 
 def _moment(value: object, label: str) -> datetime:
@@ -808,19 +808,19 @@ def _concise_evidence(text: str) -> str:
 
 
 def _load_batch(root: Path, batch_id: str) -> dict[str, Any]:
-    return _read_object(_batch_path(root, batch_id), "batch record")
+    return _read_object(_records_root(root) / "batches" / f"{_safe_id(batch_id, 'batch')}.json", "batch record")
 
 
 def _load_dispatch(root: Path, dispatch_id: str) -> dict[str, Any]:
-    return _read_object(_dispatch_path(root, dispatch_id), "dispatch record")
+    return _read_object(_records_root(root) / "dispatches" / f"{_safe_id(dispatch_id, 'dispatch')}.json", "dispatch record")
 
 
 def _load_dispatch_status(root: Path, dispatch_id: str) -> dict[str, Any]:
-    return _read_object(_dispatch_status_path(root, dispatch_id), "dispatch status")
+    return _read_object(_records_root(root) / "dispatch-status" / f"{_safe_id(dispatch_id, 'dispatch')}.json", "dispatch status")
 
 
 def _load_risk(root: Path, risk_id: str) -> dict[str, Any]:
-    return _read_object(_risk_path(root, risk_id), "risk assessment")
+    return _read_object(_records_root(root) / "risk-assessments" / f"{_safe_id(risk_id, 'risk assessment')}.json", "risk assessment")
 
 
 def _validate_risk(root: Path, batch: dict[str, Any], risk: dict[str, Any]) -> None:
@@ -864,7 +864,7 @@ def _risk_for_candidate(root: Path, batch: dict[str, Any], candidate: str) -> di
 
 
 def _load_checkpoint(root: Path, checkpoint_id: str) -> dict[str, Any]:
-    return _read_object(_checkpoint_path(root, checkpoint_id), "checkpoint")
+    return _read_object(_records_root(root) / "checkpoints" / f"{_safe_id(checkpoint_id, 'checkpoint')}.json", "checkpoint")
 
 
 def _latest_checkpoint_for_dispatch(root: Path, batch: dict[str, Any], dispatch_id: str) -> dict[str, Any]:
@@ -879,7 +879,7 @@ def _latest_checkpoint_for_dispatch(root: Path, batch: dict[str, Any], dispatch_
 
 
 def _load_context_package(root: Path, package_id: str) -> dict[str, Any]:
-    return _read_object(_context_package_path(root, package_id), "context package")
+    return _read_object(_records_root(root) / "context-packages" / f"{_safe_id(package_id, 'context package')}.json", "context package")
 
 
 def _validate_context_package(root: Path, batch: dict[str, Any], package: dict[str, Any]) -> None:
@@ -1061,7 +1061,7 @@ def ledger_status(args: argparse.Namespace) -> dict[str, Any]:
     """Report the selected lifecycle-ledger generation without changing it."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _state_lock(root):
+    with _ledger_lock(root):
         try:
             return LifecycleLedger(root).status()
         except LedgerError as exc:
@@ -1072,7 +1072,7 @@ def migrate_ledger(args: argparse.Namespace) -> dict[str, Any]:
     """Explicitly validate legacy state and atomically select its versioned replacement."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _state_lock(root):
+    with _ledger_lock(root):
         try:
             return LifecycleLedger(root).migrate()
         except LedgerError as exc:
@@ -1083,7 +1083,7 @@ def reset_ledger(args: argparse.Namespace) -> dict[str, Any]:
     """Select an empty generation only after an explicit confirmation and no active batch."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _state_lock(root):
+    with _ledger_lock(root):
         try:
             return LifecycleLedger(root).reset(args.confirm)
         except LedgerError as exc:
@@ -1094,7 +1094,7 @@ def clean_ledger(args: argparse.Namespace) -> dict[str, Any]:
     """Safely remove orphaned dispatch evidence from the ledger state."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _state_lock(root):
+    with _ledger_lock(root):
         try:
             return LifecycleLedger(root).clean()
         except LedgerError as exc:
@@ -1102,7 +1102,9 @@ def clean_ledger(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _validate_batch_integrity(root: Path, batch: dict[str, Any]) -> None:
-    plan = _read_object(_plan_path(root, batch.get("batch_id")), "immutable batch plan")
+    plan = _read_object(
+        _records_root(root) / "plans" / f"{_safe_id(batch.get('batch_id'), 'batch')}.json", "immutable batch plan",
+    )
     for field in ("approval_policy", "communication_policy"):
         if (field in batch) != (field in plan):
             raise CoordinatorError("batch record is incomplete")
@@ -1292,7 +1294,7 @@ def preflight_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     config = _config(repo)
     if not _configured(repo):
         raise CoordinatorError("dispatch preflight requires a project-owned .harness/orchestration.json")
-    with _state_lock(root):
+    with _ledger_lock(root):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         candidate = _candidate_commit(repo, args.candidate_commit) if args.candidate_commit else None
@@ -1336,7 +1338,7 @@ def decision_packet(args: argparse.Namespace) -> dict[str, Any]:
     """Return concise approval evidence, with immutable report and diff paths kept in the ledger."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _state_lock(root):
+    with _ledger_lock(root):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         entry = None
@@ -1390,7 +1392,7 @@ def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
     candidate = _candidate_commit(repo, args.candidate_commit)
     changed_files = [item.replace("\\", "/") for item in _strings(args.changed_file, "changed_files")]
     developer_triggers = _validate_trigger_names(args.developer_trigger or [], "developer_triggers", known)
-    with _state_lock(root):
+    with _ledger_lock(root):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         if batch.get("state") != "awaiting-approval":
@@ -1434,7 +1436,10 @@ def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
             "created_at": _now(),
         }
         _reject_sensitive(risk, "risk assessment")
-        _write_exclusive(_risk_path(root, risk["risk_assessment_id"]), risk)
+        _write_exclusive(
+            _records_root(root) / "risk-assessments" / f"{_safe_id(risk['risk_assessment_id'], 'risk assessment')}.json",
+            RiskAssessmentRecord.from_dict(risk).to_dict(),
+        )
         batch.setdefault("risk_assessments", []).append(
             {
                 "risk_assessment_id": risk["risk_assessment_id"],
@@ -1458,7 +1463,10 @@ def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
         # handoff visible to the coordinator; a later, separately approved dispatch creates the
         # immutable brief.
         batch["next_action"] = "code-review" if risk["review_required"] else "qa"
-        _replace(_batch_path(root, batch["batch_id"]), batch)
+        _replace(
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return risk
 
 
@@ -1521,7 +1529,10 @@ def _persist_context_package(
         "estimated_tokens": built.estimated_tokens, "role": "shared", "inclusion_reason": inclusion_reason,
     }
     _reject_sensitive(package, "context package")
-    _write_exclusive(_context_package_path(root, package["context_package_id"]), package)
+    _write_exclusive(
+        _records_root(root) / "context-packages" / f"{_safe_id(package['context_package_id'], 'context package')}.json",
+        ContextPackageRecord.from_dict(package).to_dict(),
+    )
     batch.setdefault("context_packages", []).append({
         "context_package_id": package["context_package_id"], "base_commit": package["base_commit"],
         "candidate_commit": package["candidate_commit"], "role": "shared",
@@ -1541,7 +1552,7 @@ def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
     requested_role = getattr(args, "role", "shared")
     if requested_role != "shared":
         raise CoordinatorError("Context Packages are batch-shared; role-specific focus stays in the dispatch brief")
-    with _state_lock(root):
+    with _ledger_lock(root):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         if batch.get("state") != "awaiting-approval":
@@ -1562,7 +1573,10 @@ def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
             symbol_graph_depth=getattr(args, "symbol_graph_depth", None),
             max_related_tests=getattr(args, "max_related_tests", None),
         )
-        _replace(_batch_path(root, batch["batch_id"]), batch)
+        _replace(
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return package
 
 
@@ -1707,27 +1721,34 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     }
     _reject_sensitive(record, "batch")
     root = _state_root(args, repo)
-    with _state_lock(root):
+    with _ledger_lock(root):
         try:
             LifecycleLedger(root).ensure()
         except LedgerError as exc:
             raise CoordinatorError(str(exc)) from exc
-        _write_exclusive(_plan_path(root, record["batch_id"]), {field: record[field] for field in PLAN_FIELDS})
-        _write_exclusive(_batch_path(root, record["batch_id"]), record)
+        _write_exclusive(
+            _records_root(root) / "plans" / f"{_safe_id(record['batch_id'], 'batch')}.json",
+            PlanRecord.from_dict({field: record[field] for field in PLAN_FIELDS}).to_dict(),
+        )
+        _write_exclusive(
+            _records_root(root) / "batches" / f"{_safe_id(record['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(record).to_dict(),
+        )
     return record
 
 
 def approve_batch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _state_lock(root):
+    with _ledger_lock(root):
         record = _load_batch(root, args.batch)
         _validate_batch_integrity(root, record)
         if record.get("state") != "planned":
             raise CoordinatorError("only a planned batch can receive its planning approval")
-        record["coordinator_approval"] = _approval(args)
-        record["state"] = "awaiting-approval"
-        _replace(_batch_path(root, record["batch_id"]), record)
+        record = _vo_replace(
+            BatchRecord.from_dict(record), coordinator_approval=_approval(args), state="awaiting-approval",
+        ).to_dict()
+        _replace(_records_root(root) / "batches" / f"{_safe_id(record['batch_id'], 'batch')}.json", record)
     return record
 
 
@@ -1768,7 +1789,7 @@ def _review_severity(review: dict[str, Any]) -> dict[str, str]:
 def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _state_lock(root):
+    with _ledger_lock(root):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         pending = [item for item in batch.get("dispatches", []) if item.get("state") == "reported" and "decision" not in item]
@@ -1839,7 +1860,10 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
             batch["state"] = "failed"
         elif batch.get("state") != "completed":
             batch["state"] = "awaiting-approval"
-        _replace(_batch_path(root, batch["batch_id"]), batch)
+        _replace(
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return batch
 
 
@@ -1862,7 +1886,7 @@ def list_batches(args: argparse.Namespace) -> dict[str, Any]:
     """
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _state_lock(root):
+    with _ledger_lock(root):
         batches = []
         for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
             batch = _read_object(path, "batch record")
@@ -1906,7 +1930,7 @@ def abandon_batch(args: argparse.Namespace) -> dict[str, Any]:
     if not reason:
         raise CoordinatorError("abandoning a batch requires a recorded reason")
     _reject_sensitive({"reason": reason}, "abandon reason")
-    with _state_lock(root):
+    with _ledger_lock(root):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         open_dispatches = [item["dispatch_id"] for item in batch.get("dispatches", []) if not _settled(item)]
@@ -1920,11 +1944,11 @@ def abandon_batch(args: argparse.Namespace) -> dict[str, Any]:
             if _settled(entry):
                 continue
             entry["state"] = "abandoned"
-            status_path = _dispatch_status_path(root, entry["dispatch_id"])
+            status_path = _records_root(root) / "dispatch-status" / f"{_safe_id(entry['dispatch_id'], 'dispatch')}.json"
             if status_path.exists():
                 status = _load_dispatch_status(root, entry["dispatch_id"])
                 status.update({"state": "abandoned", "updated_at": moment})
-                _replace(status_path, status)
+                _replace(status_path, DispatchStatusRecord.from_dict(status).to_dict())
         batch["state"] = "failed"
         batch.pop("next_action", None)
         batch.pop("required_next_role", None)
@@ -1941,7 +1965,10 @@ def abandon_batch(args: argparse.Namespace) -> dict[str, Any]:
             "approved_at": approval["approved_at"],
             "note": reason,
         })
-        _replace(_batch_path(root, batch["batch_id"]), batch)
+        _replace(
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return {
         "batch_id": batch["batch_id"],
         "ticket": batch["ticket"],
@@ -1964,7 +1991,7 @@ def cancel_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     if not reason:
         raise CoordinatorError("cancelling a dispatch requires a recorded reason")
     _reject_sensitive({"reason": reason}, "dispatch cancellation reason")
-    with _state_lock(root):
+    with _ledger_lock(root):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -1983,11 +2010,17 @@ def cancel_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         batch.setdefault("coordinator_decisions", []).append({
             "dispatch_id": dispatch["dispatch_id"], "decision": "cancel", **approval, "note": reason,
         })
-        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
-            "dispatch_id": dispatch["dispatch_id"], "state": "cancelled", "updated_at": moment,
-            "cancellation": entry["cancellation"],
-        })
-        _replace(_batch_path(root, batch["batch_id"]), batch)
+        _replace(
+            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
+            DispatchStatusRecord.from_dict({
+                "dispatch_id": dispatch["dispatch_id"], "state": "cancelled", "updated_at": moment,
+                "cancellation": entry["cancellation"],
+            }).to_dict(),
+        )
+        _replace(
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return {"dispatch_id": dispatch["dispatch_id"], "batch_id": batch["batch_id"], "state": "cancelled"}
 
 
@@ -2050,7 +2083,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
     config = _config(repo)
-    with _state_lock(root):
+    with _ledger_lock(root):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         if batch.get("state") != "awaiting-approval":
@@ -2219,8 +2252,16 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         dispatch = dict(brief)
         dispatch["state"] = "approved"
         dispatch["created_at"] = _now()
-        _write_exclusive(_dispatch_path(root, dispatch_id), dispatch)
-        _write_exclusive(_dispatch_status_path(root, dispatch_id), {"dispatch_id": dispatch_id, "state": "approved", "updated_at": _now()})
+        _write_exclusive(
+            _records_root(root) / "dispatches" / f"{_safe_id(dispatch_id, 'dispatch')}.json",
+            DispatchRecord.from_dict(dispatch).to_dict(),
+        )
+        _write_exclusive(
+            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch_id, 'dispatch')}.json",
+            DispatchStatusRecord.from_dict(
+                {"dispatch_id": dispatch_id, "state": "approved", "updated_at": _now()}
+            ).to_dict(),
+        )
         batch["dispatches"].append({
             "dispatch_id": dispatch_id,
             "role": role_name,
@@ -2230,7 +2271,10 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if required_role and role_name == required_role:
             batch.pop("required_next_role", None)
         batch["state"] = "active"
-        _replace(_batch_path(root, batch["batch_id"]), batch)
+        _replace(
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return {
         "dispatch_id": dispatch_id, "batch_id": batch["batch_id"], "state": "approved", "brief": brief,
         "context_package_freshness": context_package_freshness,
@@ -2281,7 +2325,7 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             raise CoordinatorError(f"runtime adapter does not exist: {adapter}")
     elif args.adapter or args.adapter_arg:
         raise CoordinatorError("an in-process dispatch runs inside this session and takes no runtime adapter")
-    with _state_lock(root):
+    with _ledger_lock(root):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -2298,7 +2342,7 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
         if not entry or entry.get("state") != "approved":
             raise CoordinatorError("dispatch was already sent or is not registered in its batch")
-        brief_path = _dispatch_path(root, dispatch["dispatch_id"])
+        brief_path = _records_root(root) / "dispatches" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json"
         if adapter is not None:
             command = [str(adapter)] if adapter.suffix.lower() != ".py" else [sys.executable, str(adapter)]
             adapter_args = args.adapter_arg or []
@@ -2323,11 +2367,17 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         else:
             raise CoordinatorError("dispatch is not registered in its batch")
         sent_at = _now()
-        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
-            "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": sent_at,
-            "heartbeat_at": sent_at,
-        })
-        _replace(_batch_path(root, batch["batch_id"]), batch)
+        _replace(
+            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
+            DispatchStatusRecord.from_dict({
+                "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": sent_at,
+                "heartbeat_at": sent_at,
+            }).to_dict(),
+        )
+        _replace(
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "dispatched",
@@ -2356,7 +2406,7 @@ def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     reported = args.model.strip() if _non_empty(args.model) else ""
     if not reported:
         raise CoordinatorError("a model self-report must name the actually active model")
-    with _state_lock(root):
+    with _ledger_lock(root):
         dispatch, status = _live_status(root, args.dispatch)
         expected = dispatch["resolved_model"]
         model_matched = reported == expected
@@ -2386,14 +2436,20 @@ def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         }
         if attestation is not None:
             status["worktree_attestation"] = {**attestation, "reported_at": moment}
-        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), status)
+        _replace(
+            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
+            DispatchStatusRecord.from_dict(status).to_dict(),
+        )
         if not matched:
             batch = _load_batch(root, dispatch["batch_id"])
             for entry in batch.get("dispatches", []):
                 if entry["dispatch_id"] == dispatch["dispatch_id"]:
                     entry["state"] = "blocked"
             batch["state"] = "blocked"
-            _replace(_batch_path(root, batch["batch_id"]), batch)
+            _replace(
+                _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+                BatchRecord.from_dict(batch).to_dict(),
+            )
     if not matched:
         mismatch = []
         if not model_matched:
@@ -2411,13 +2467,16 @@ def heartbeat_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     root = _state_root(args, repo)
     note = args.note.strip() if _non_empty(args.note) else "none"
     _reject_sensitive({"note": note}, "dispatch heartbeat")
-    with _state_lock(root):
+    with _ledger_lock(root):
         dispatch, status = _live_status(root, args.dispatch)
         moment = _now()
         status["updated_at"] = moment
         status["heartbeat_at"] = moment
         status["heartbeat_note"] = _sanitise(note)[:240]
-        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), status)
+        _replace(
+            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
+            DispatchStatusRecord.from_dict(status).to_dict(),
+        )
     return {"dispatch_id": dispatch["dispatch_id"], "state": status["state"], "heartbeat_at": moment}
 
 
@@ -2428,7 +2487,7 @@ def rate_limited_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     retry_after = args.retry_after_seconds
     if isinstance(retry_after, bool) or not isinstance(retry_after, int) or retry_after < 1:
         raise CoordinatorError("retry-after-seconds must be a positive integer")
-    with _state_lock(root):
+    with _ledger_lock(root):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -2447,8 +2506,14 @@ def rate_limited_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "dispatch_id": dispatch["dispatch_id"], "event": "rate_limited", "recorded_at": _now(),
             "retry_not_before": retry_not_before,
         })
-        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), status)
-        _replace(_batch_path(root, batch["batch_id"]), batch)
+        _replace(
+            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
+            DispatchStatusRecord.from_dict(status).to_dict(),
+        )
+        _replace(
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return {"dispatch_id": dispatch["dispatch_id"], "event": "rate_limited", "retry_not_before": retry_not_before}
 
 
@@ -2461,7 +2526,7 @@ def wait_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         raise CoordinatorError("timeout, poll-interval and stale-after must be positive integers")
     deadline = time.monotonic() + timeout
     while True:
-        with _state_lock(root):
+        with _ledger_lock(root):
             dispatch = _load_dispatch(root, args.dispatch)
             status = _load_dispatch_status(root, dispatch["dispatch_id"])
             state = status.get("state")
@@ -2504,7 +2569,7 @@ def record_telemetry(args: argparse.Namespace) -> dict[str, Any]:
         value = payload[field]
         if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
             raise CoordinatorError(f"telemetry {field} must be a non-negative integer or null")
-    with _state_lock(root):
+    with _ledger_lock(root):
         dispatch = _load_dispatch(root, payload["dispatch_id"])
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -2512,7 +2577,10 @@ def record_telemetry(args: argparse.Namespace) -> dict[str, Any]:
         record["telemetry_id"] = f"telemetry-{uuid.uuid4()}"
         record["record_sha256"] = hashlib.sha256(_canonical(record).encode("utf-8")).hexdigest()
         batch.setdefault("telemetry", []).append(record)
-        _replace(_batch_path(root, batch["batch_id"]), batch)
+        _replace(
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
     return {"telemetry_id": record["telemetry_id"], "dispatch_id": payload["dispatch_id"]}
 
 
@@ -2583,7 +2651,7 @@ def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
     checkpoint = _read_object(Path(args.file).resolve(), "checkpoint")
-    with _state_lock(root):
+    with _ledger_lock(root):
         dispatch, status = _live_status(root, checkpoint.get("dispatch_id"))
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -2603,7 +2671,10 @@ def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "created_at": _now(),
             **checkpoint,
         }
-        _write_exclusive(_checkpoint_path(root, record["checkpoint_id"]), record)
+        _write_exclusive(
+            _records_root(root) / "checkpoints" / f"{_safe_id(record['checkpoint_id'], 'checkpoint')}.json",
+            CheckpointRecord.from_dict(record).to_dict(),
+        )
         entry["state"] = "checkpointed"
         # Batch-level pointer, the same ownership pattern as risk_assessments/context_packages;
         # dispatch_id is carried alongside since a checkpoint is dispatch-scoped, not batch-scoped.
@@ -2612,10 +2683,16 @@ def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "dispatch_id": dispatch["dispatch_id"],
             "record_sha256": hashlib.sha256(_canonical(record).encode("utf-8")).hexdigest(),
         })
-        _replace(_batch_path(root, batch["batch_id"]), batch)
+        _replace(
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
         moment = _now()
         status.update({"state": "checkpointed", "updated_at": moment})
-        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), status)
+        _replace(
+            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
+            DispatchStatusRecord.from_dict(status).to_dict(),
+        )
     return {"dispatch_id": dispatch["dispatch_id"], "state": "checkpointed", "checkpoint_id": record["checkpoint_id"]}
 
 
@@ -2709,7 +2786,7 @@ def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
     termination_reason = args.termination_reason.strip().lower() if _non_empty(args.termination_reason) else ""
-    with _state_lock(root):
+    with _ledger_lock(root):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -2744,12 +2821,18 @@ def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         batch.setdefault("coordinator_decisions", []).append({
             "dispatch_id": dispatch["dispatch_id"], **authorization,
         })
-        _replace(_batch_path(root, batch["batch_id"]), batch)
+        _replace(
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
         moment = _now()
-        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
-            "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": moment,
-            "heartbeat_at": moment, "last_event": "resumed",
-        })
+        _replace(
+            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
+            DispatchStatusRecord.from_dict({
+                "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": moment,
+                "heartbeat_at": moment, "last_event": "resumed",
+            }).to_dict(),
+        )
     return {
         "dispatch_id": dispatch["dispatch_id"], "state": "dispatched",
         "authorization": authorization["decision"],
@@ -2765,7 +2848,7 @@ def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
     threshold = args.stale_after
     if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 1:
         raise CoordinatorError("stale-after must be a positive number of seconds")
-    with _state_lock(root):
+    with _ledger_lock(root):
         entries: list[dict[str, Any]] = []
         for path in sorted((_records_root(root) / "dispatch-status").glob("dispatch-*.json")):
             status = _read_object(path, "dispatch status")
@@ -2807,7 +2890,7 @@ def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         raise CoordinatorError("publish remote must be a non-empty string")
     if remote not in _git(repo, "remote").splitlines():
         raise CoordinatorError("publish remote is not configured for this repository")
-    with _state_lock(root):
+    with _ledger_lock(root):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -2831,10 +2914,16 @@ def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if not published or published.split()[0] != candidate:
             raise CoordinatorError("remote branch does not resolve to the accepted QA candidate")
         entry["state"] = "dispatched"
-        _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), {
-            "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": _now(),
-        })
-        _replace(_batch_path(root, batch["batch_id"]), batch)
+        _replace(
+            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
+            DispatchStatusRecord.from_dict({
+                "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": _now(),
+            }).to_dict(),
+        )
+        _replace(
+            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+            BatchRecord.from_dict(batch).to_dict(),
+        )
         changed = _changed_files_between(repo, batch["base_commit"], candidate) if batch.get("base_commit") else _commit_changed_files(repo, candidate)
         report = {
             "dispatch_id": dispatch["dispatch_id"], "ticket": dispatch["ticket"], "role": "developer",
@@ -2871,8 +2960,14 @@ def _persist_report(root: Path, batch: dict[str, Any], dispatch: dict[str, Any],
     batch["state"] = "awaiting-approval"
     closed = _load_dispatch_status(root, dispatch["dispatch_id"])
     closed.update({"dispatch_id": dispatch["dispatch_id"], "state": "reported", "updated_at": _now()})
-    _replace(_dispatch_status_path(root, dispatch["dispatch_id"]), closed)
-    _replace(_batch_path(root, batch["batch_id"]), batch)
+    _replace(
+        _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
+        DispatchStatusRecord.from_dict(closed).to_dict(),
+    )
+    _replace(
+        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
+        BatchRecord.from_dict(batch).to_dict(),
+    )
     return report_json
 
 
@@ -3065,7 +3160,7 @@ def submit_report(args: argparse.Namespace) -> dict[str, Any]:
     except CoordinatorError:
         raise
     root = _state_root(args, repo)
-    with _state_lock(root):
+    with _ledger_lock(root):
         dispatch = _load_dispatch(root, report.get("dispatch_id"))
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
