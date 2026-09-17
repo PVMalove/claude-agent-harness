@@ -213,6 +213,43 @@ failed`. Batch хранит ticket, issue-ветку, worktree и историю
 dispatch с новым immutable brief, а не возврат состояния назад.
 _Avoid_: self-transition воркера, повторное использование старого dispatch.
 
+**Worker session**:
+Одно фактическое runtime-исполнение роли — от cold start до завершения (успешного, по 429 или по
+сбою). Один dispatch может состоять из нескольких последовательных worker session, только если это
+явно разрешено ролью (сейчас — только write-роли с итеративным TDD: `developer`,
+`database-migrations`, `messaging-integration`); каждая новая сессия заново проходит model
+self-report и heartbeat.
+_Avoid_: dispatch, попытка, запуск воркера.
+
+**Checkpoint**:
+Проверяемый non-terminal снимок состояния write-роли на зелёной границе TDD-цикла: commit SHA,
+изменённые файлы, оставшийся DoD, пройденные проверки, краткие риски/блокеры и ссылка на Context
+Package. Не переносит историю чата, логи прошлых неудач или скрытые рассуждения и не является
+completion report.
+_Avoid_: completion report, промежуточный отчёт, снапшот сессии.
+
+**Continuation**:
+Coordinator decision о запуске новой worker session того же active dispatch из последнего
+checkpoint, без изменения scope, DoD, рисков и зависимостей. Не создаёт новый dispatch и не требует
+нового immutable brief; любое изменение scope или DoD обязано закрыть текущий dispatch и открыть
+новый через обычный approval.
+_Avoid_: retry, продолжение чата, повторный dispatch.
+
+**Context Package**:
+Ledger-owned immutable артефакт, детерминированно построенный отдельным модулем без участия LLM до
+dispatch: цель и DoD, integration base и candidate SHA, точный diff, стартовые файлы с причиной
+включения, ограниченный граф символов/зависимостей, связанные тесты, релевантные ADR-карточки и
+hash каждого включённого файла. Coordinator проверяет его свежесть перед каждым новым dispatch и
+отказывается создавать brief, если пакет устарел.
+_Avoid_: brief, discovery-лог, произвольное чтение репозитория.
+
+**Advisory output**:
+Недетерминированный вывод дешёвой модели (ранжирование файлов, сводка логов, первичная
+риск-классификация), полученный вне brief/report-контракта роли как non-role tool call. Не входит в
+Context Package и не версионируется, регенерируется по требованию и не может сам разрешить dispatch,
+снизить риск, принять QA или изменить scope.
+_Avoid_: recommendation, findings, автономное решение.
+
 **Lifecycle ledger**:
 Версионируемый модуль ядра оркестрации, который хранит state batch/dispatch и применяет их
 переходы, approvals, immutable records и audit как один контракт.

@@ -49,6 +49,15 @@ Epic grouping no longer uses a label. A ticket decomposed from an epic is linked
 | `wayfinder:grilling` | violet `#6554c0` | HITL ticket type — a conversation, the default case. |
 | `wayfinder:task` | slate `#8993a4` | HITL-or-AFK ticket type — manual work that unblocks a decision. |
 
+### Pipeline hint (`pipeline::*`) — from story points, `afk` only
+
+A separate namespace, independent of `hitl`/`afk` and `workflow::*`. `/to-tickets` assigns every `afk` ticket a Fibonacci story-point score (Planning Poker: one primary pass, plus a second cheap advisory pass when the score lands in the gray zone) and derives one of these labels from it on the STOP-AND-ASK gate, where a developer can override the label without changing the score. `hitl` tickets never receive a `pipeline::*` label. The scale and thresholds (default: `≤3` fast, `≥5` full, gray zone `4`) live in `harness/project/project.schema.json`'s optional `story_points` field, overridable per project in `.harness/project.json`.
+
+| Label | Color | Meaning |
+| --- | --- | --- |
+| `pipeline::fast` | pale blue `#c5def5` | Score `≤ fast_threshold` and `Execution: afk` — the short `/fast-implement` path, no gates. |
+| `pipeline::full` | orange-red `#d93f0b` | Score `≥ full_threshold` — the gated `/implement` pipeline. |
+
 ## State machine
 
 An unlabeled issue is implicitly "needs triage" — there's no dedicated label for that state.
@@ -70,6 +79,8 @@ A local-markdown-tracked ticket (`.scratch/<feature>/issues/NN-*.md`) has no Git
 **Category:** bug / enhancement
 **Workflow:** workflow::specs / workflow::ready / workflow::in-progress / workflow::blocked / done
 **Execution:** hitl / afk (omit while **Workflow:** is workflow::specs)
+**Story Points:** Fibonacci score (afk tickets only; omit the line entirely for hitl tickets)
+**Pipeline:** pipeline::fast / pipeline::full (afk tickets only, derived from Story Points; omit the line entirely for hitl tickets)
 **Task report:** required (omit the line entirely if not required)
 ```
 

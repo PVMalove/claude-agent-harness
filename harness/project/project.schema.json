@@ -32,6 +32,35 @@
         "minLength": 1
       },
       "description": "Lint/typecheck/test commands qa-gate runs in order before a PR opens. An empty list is valid here but qa-gate refuses to silently skip on one - it stops and asks you to fill this in rather than treating an empty list as 'no checks configured, proceed'."
+    },
+    "story_points": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scale", "fast_threshold", "full_threshold", "gray_zone"],
+      "description": "Fibonacci story-point scale and pipeline::fast/pipeline::full routing thresholds that to-tickets, /implement, and /fast-implement read without depending on the optional backend-orchestration capability (see docs/tasks/issue-165-planning-poker/issue-165-spec-planning-poker.md). Optional field - a project without it has no story-point routing configured.",
+      "properties": {
+        "scale": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "description": "Fibonacci-like story-point values to-tickets may assign (1, 2, 3, 5, 8, 13, ...)."
+        },
+        "fast_threshold": {
+          "type": "integer",
+          "description": "Score at or below which to-tickets proposes pipeline::fast (score <= fast_threshold)."
+        },
+        "full_threshold": {
+          "type": "integer",
+          "description": "Score at or above which to-tickets proposes pipeline::full (score >= full_threshold)."
+        },
+        "gray_zone": {
+          "type": "integer",
+          "description": "The single score strictly between fast_threshold and full_threshold that triggers a second advisory scoring pass in to-tickets."
+        }
+      }
     }
   }
 }
