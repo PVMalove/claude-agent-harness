@@ -24,9 +24,9 @@ You must execute this skill in two distinct phases to ensure the user agrees wit
    guess it. Ask the user to approve both. **Do not proceed to Phase 2 until the user confirms.**
 
 ### Phase 2: Drafting & Publishing (After User Approval)
-1. **Draft the File:** Write the spec using the `<spec-template>` below, in its own folder under `docs/tasks/`.
-    - *Naming convention:* If the issue ID is known, use it. If not, use a descriptive slug (e.g., `docs/tasks/add-user-auth/add-user-auth.md`) and rename both the folder and file later once the ID is generated — see `docs/agents/artifacts.md` for the full convention, including the epic-folder grouping.
-    - Take the final Discovery Context file list from the session's `Live Artifact`; if artifact publishing is unavailable, take the approved-paths list from the final Trunk summary instead. Append it in the template's final `## Relevant Files (Discovery Context)` section. Preserve every path and any supplied context; do not rediscover or replace that list while drafting.
+1. **Draft the File:** Write the spec using the `<spec-template>` below, at the root of its own folder under `docs/tasks/` — that folder also reserves `tickets/` (one file per child ticket, filled in later by `/to-tickets`) and `artifacts/` (the `/grilling` Live Artifact).
+    - *Naming convention:* If the issue ID is known, use it. If not, use a descriptive slug (e.g., `docs/tasks/add-user-auth/add-user-auth.md`) and rename both the folder and file later once the ID is generated — see `docs/agents/artifacts.md` for the full convention, including the epic-folder grouping and the `tickets/`/`artifacts/` subfolders.
+    - Take the final Discovery Context file list from that same folder's `artifacts/discovery-context.md` (written by `/grilling`'s Persisted List step); if that file doesn't exist because artifact tracking never ran, take the approved-paths list from the final Trunk summary instead. Append it in the template's final `## Relevant Files (Discovery Context)` section. Preserve every path and any supplied context; do not rediscover or replace that list while drafting.
 2. **Publish to Tracker:** Publish the issue using the CLI: `gh issue create --body-file <path>`.
     - **CRITICAL:** Do NOT use an inline `--body` heredoc. Spec bodies contain characters (nested quotes, backticks, etc.) that break heredoc quoting. Always use `--body-file`.
 3. **Apply Labels:** This published issue acts as the feature's **epic**. Apply the following labels (see `docs/agents/triage-labels.md` for the full taxonomy):

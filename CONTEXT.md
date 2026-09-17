@@ -11,6 +11,28 @@ coding agents. Операционные процессы и архитектур
 реестра и lock-файлов, работающий независимо от исходного репозитория харнесса.
 _Avoid_: инсталляция, харнесс без уточнения «проекта».
 
+**Харнесс-скретч** (`.harness/scratch/tmp/`):
+Единый, runtime-независимый корень для одноразового тела PR/комментария (`pr-body-<issue>-<slug>.md`),
+удаляемого сразу после успешной публикации и сохраняемого при сбое для повторной попытки. Не
+хранит черновики спек/тикетов (см. `docs/tasks/`), QA/orchestration evidence и не смешивается с
+durable-записью локального трекера (см. [ADR 0017](docs/adr/0017-unified-harness-scratch-for-ephemeral-artifacts.md)).
+_Avoid_: `.claude/tmp/`, `.agents/tmp/`, `.scratch/tmp/` — упразднённые per-runtime пути.
+
+**Постоянный локальный архив задач** (`docs/tasks/issue-<N-или-slug>-<slug>/`):
+Не эфемерный черновик под удаление, а gitignored (не коммитится, но и не удаляется инструментами)
+исторический архив для человека-мейнтейнера: `issue-<N>-spec-<slug>.md` (спека), `tickets/`
+(дочерние тикеты, один файл на тикет) и `artifacts/` (Discovery Context из `/grilling`). Папка
+создаётся по описательному slug ещё до публикации и переименовывается в `issue-<N>-<slug>` только
+после фактического создания тикета трекером.
+_Avoid_: временный черновик, харнесс-скретч.
+
+**Durable-запись трекера** (`.scratch/<feature-slug>/`):
+Коммитящийся `spec.md` и `issues/` локального markdown-трекера (когда нет GitHub/GitLab remote) —
+постоянная запись состояния тикетов. Отдельно от постоянного локального архива задач: тот всегда
+gitignored и специфичен для любого трекера, этот коммитится и существует только при отсутствии
+GitHub/GitLab remote.
+_Avoid_: скретч без уточнения, temp-файлы.
+
 **Сидируемые файлы** (seed files):
 Проектные файлы, которые CLI добавляет при отсутствии и после этого передаёт во владение целевому
 проекту: инструкции, документы, hooks, rules, subagents и project config.
@@ -49,9 +71,11 @@ _Avoid_: рассинхронизация, устаревание.
 
 **Проектный конфиг** (`.harness/project.json`):
 Источник проектных значений для `qa-gate`, `pr-composer`, `code-review`, `to-guide` и branch
-hooks: `language`, `base_branch`, `branch_pattern` и `qa_gate_commands`; необязателен только
-`$schema`. Форма описана в `harness/project/project.schema.json`, а `harness health` применяет тот
-же строгий контракт и отклоняет неизвестные поля.
+hooks: `language`, `base_branch`, `branch_pattern` и `qa_gate_commands`; необязательны `$schema`,
+`story_points` и `shell` (какой шелл `qa-gate` использует для `qa_gate_commands` — `bash` по
+умолчанию или `powershell` для native-Windows checkout). Форма описана в
+`harness/project/project.schema.json`, а `harness health` применяет тот же строгий контракт и
+отклоняет неизвестные поля.
 _Avoid_: конфигурация проекта, settings.
 
 **Интеграционная ветка эпика** (`integration/<service-or-team>`):
@@ -347,7 +371,7 @@ _Avoid_: risk assessment (`coordinator.py risk assess` — ledger-owned и autho
 Package, completion report.
 
 **Discovery Context**:
-Собранный агентом и выверенный человеком (explicit opt-in) список релевантных путей файлов, передаваемый от Эпика к тикетам для исключения слепого поиска при разработке.
+Собранный агентом и выверенный человеком (explicit opt-in) список релевантных путей файлов, передаваемый от Эпика к тикетам для исключения слепого поиска при разработке. В момент `/grilling` сохраняется в `docs/tasks/issue-<N-или-slug>-<slug>/artifacts/` (постоянный локальный архив задач); `/to-spec` дополнительно вписывает тот же список в текст эпика под «## Relevant Files (Discovery Context)».
 _Avoid_: Relevant Files, стартовый контекст.
 
 **Context Package**:

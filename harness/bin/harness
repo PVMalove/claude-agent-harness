@@ -667,7 +667,7 @@ def validate_integrations(repo: Path, problems: list[str]) -> int:
 
 
 PROJECT_JSON_REQUIRED_FIELDS = ("language", "base_branch", "branch_pattern", "qa_gate_commands")
-PROJECT_JSON_ALLOWED_FIELDS = frozenset(PROJECT_JSON_REQUIRED_FIELDS) | {"$schema", "story_points"}
+PROJECT_JSON_ALLOWED_FIELDS = frozenset(PROJECT_JSON_REQUIRED_FIELDS) | {"$schema", "story_points", "shell"}
 STORY_POINTS_REQUIRED_FIELDS = ("scale", "fast_threshold", "full_threshold", "gray_zone")
 STORY_POINTS_ALLOWED_FIELDS = frozenset(STORY_POINTS_REQUIRED_FIELDS)
 
@@ -705,6 +705,8 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
         commands = data["qa_gate_commands"]
         if not isinstance(commands, list) or not all(isinstance(item, str) for item in commands):
             problems.append(".harness/project.json qa_gate_commands must be a list of strings")
+    if "shell" in data and data["shell"] not in ("bash", "powershell"):
+        problems.append(f".harness/project.json shell must be 'bash' or 'powershell', got {data['shell']!r}")
     if "story_points" in data:
         story_points = data["story_points"]
         if not isinstance(story_points, dict):
@@ -859,6 +861,7 @@ def print_diff(result: dict) -> None:
 PVMALOVE_CAPABILITY = "pvmalove-suite"
 BACKEND_ORCHESTRATION_CAPABILITY = "backend-orchestration"
 PROJECT_TEMPLATE_DIR = PACKAGE / "project"
+DOCS_TASKS_GITIGNORE_LINE = "/docs/tasks/"
 
 
 def _prompt(label: str, default: str) -> str:
@@ -888,7 +891,9 @@ def scaffold_pvmalove_extras(
     repo: Path, args: argparse.Namespace, *, orchestration_enabled: bool = False
 ) -> list[str]:
     """Non-skill project files pvmalove-suite ships alongside the managed skill
-    snapshot: docs, hooks, Claude Code subagents, a rule, and .harness/project.json.
+    snapshot: docs, hooks, Claude Code subagents, a rule, .harness/project.json,
+    and two idempotent .gitignore protections (a nested .harness/scratch/.gitignore
+    and a /docs/tasks/ line in the target project's root .gitignore).
     Written once if absent, like AGENTS.md/CLAUDE.md above - not tracked in
     harness.lock, never touched by update. See CONTEXT.md and docs/adr/0003.
 
@@ -920,6 +925,21 @@ def scaffold_pvmalove_extras(
         result = _copy_if_absent(agent, repo / ".claude/agents" / agent.name, force=force_seed, differing=differing)
         if result:
             written.append(result)
+
+    scratch_gitignore_result = _copy_if_absent(
+        PROJECT_TEMPLATE_DIR / "scratch/.gitignore", repo / ".harness/scratch/.gitignore", force=force_seed, differing=differing
+    )
+    if scratch_gitignore_result:
+        written.append(scratch_gitignore_result)
+
+    root_gitignore = repo / ".gitignore"
+    root_gitignore_text = root_gitignore.read_text(encoding="utf-8") if root_gitignore.exists() else ""
+    if DOCS_TASKS_GITIGNORE_LINE not in root_gitignore_text.splitlines():
+        if root_gitignore_text and not root_gitignore_text.endswith("\n"):
+            root_gitignore_text += "\n"
+        root_gitignore_text += DOCS_TASKS_GITIGNORE_LINE + "\n"
+        root_gitignore.write_text(root_gitignore_text, encoding="utf-8", newline="\n")
+        written.append(str(root_gitignore))
 
     settings = repo / ".claude/settings.local.json"
     template_text = (PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl").read_text(encoding="utf-8")

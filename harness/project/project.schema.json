@@ -33,6 +33,11 @@
       },
       "description": "Lint/typecheck/test commands qa-gate runs in order before a PR opens. An empty list is valid here but qa-gate refuses to silently skip on one - it stops and asks you to fill this in rather than treating an empty list as 'no checks configured, proceed'."
     },
+    "shell": {
+      "type": "string",
+      "enum": ["bash", "powershell"],
+      "description": "Shell qa-gate wraps each qa_gate_commands entry in before running it. 'bash' (default when this field is absent) runs 'bash -lc <command>' - correct on Linux/macOS and inside WSL. 'powershell' runs 'powershell -NoProfile -NonInteractive -Command <command>' - use this on a native Windows checkout, where a bare 'bash' on PATH can resolve to the System32 WSL launcher stub ahead of Git Bash and fail if no WSL distro is configured, even for a command that needs no shell at all."
+    },
     "story_points": {
       "type": "object",
       "additionalProperties": false,

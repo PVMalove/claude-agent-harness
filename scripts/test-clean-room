@@ -3704,22 +3704,65 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if not scratch_hook.is_file():
         sys.exit("pvmalove-suite init did not scaffold block-scratch-outside-docs-tasks.sh")
 
+    scratch_gitignore = pv_project / ".harness" / "scratch" / ".gitignore"
+    if not scratch_gitignore.is_file():
+        sys.exit("pvmalove-suite init did not scaffold .harness/scratch/.gitignore")
+    if scratch_gitignore.read_text(encoding="utf-8") != "*\n!.gitignore\n":
+        sys.exit("pvmalove-suite init scaffolded .harness/scratch/.gitignore with unexpected content")
+
+    root_gitignore = pv_project / ".gitignore"
+    if not root_gitignore.is_file():
+        sys.exit("pvmalove-suite init did not create a root .gitignore")
+    if "/docs/tasks/" not in root_gitignore.read_text(encoding="utf-8").splitlines():
+        sys.exit("pvmalove-suite init did not add /docs/tasks/ to the root .gitignore")
+
+    # Retrofit path: emulate a project harnessed before these two protections existed by
+    # removing them, then confirm a plain `update` restores both without disturbing the
+    # rest of the root .gitignore, and that re-running it does not duplicate the line.
+    scratch_gitignore.unlink()
+    other_gitignore_lines = [
+        line for line in root_gitignore.read_text(encoding="utf-8").splitlines() if line != "/docs/tasks/"
+    ]
+    root_gitignore.write_text(
+        "\n".join(other_gitignore_lines) + ("\n" if other_gitignore_lines else ""), encoding="utf-8", newline="\n"
+    )
+    run_ok(HARNESS + ["update", str(pv_project)])
+    if not scratch_gitignore.is_file():
+        sys.exit("update did not retrofit .harness/scratch/.gitignore onto an already-installed project")
+    updated_gitignore_lines = root_gitignore.read_text(encoding="utf-8").splitlines()
+    if "/docs/tasks/" not in updated_gitignore_lines:
+        sys.exit("update did not retrofit /docs/tasks/ into an already-installed project's root .gitignore")
+    for line in other_gitignore_lines:
+        if line not in updated_gitignore_lines:
+            sys.exit(f"update retrofit of /docs/tasks/ removed an unrelated root .gitignore line: {line}")
+    run_ok(HARNESS + ["update", str(pv_project)])
+    if root_gitignore.read_text(encoding="utf-8").splitlines().count("/docs/tasks/") != 1:
+        sys.exit("repeated update runs duplicated the /docs/tasks/ line in the root .gitignore")
+
     scratch_pr_body = pv_project / ".claude" / "tmp" / "pr-body-1-test.md"
     if run_hook(
         scratch_hook,
         pv_project,
         "",
         raw_payload=json.dumps({"tool_input": {"file_path": str(scratch_pr_body)}}),
-    ).returncode != 0:
-        sys.exit("block-scratch-outside-docs-tasks.sh rejected a PR body in repository scratch")
+    ).returncode == 0:
+        sys.exit("block-scratch-outside-docs-tasks.sh allowed a PR body in the retired .claude/tmp/ path")
     windows_scratch_pr_body = r"C:\repo\.claude\tmp\pr-body-1-test.md"
     if run_hook(
         scratch_hook,
         pv_project,
         "",
         raw_payload=json.dumps({"tool_input": {"file_path": windows_scratch_pr_body}}),
+    ).returncode == 0:
+        sys.exit("block-scratch-outside-docs-tasks.sh allowed an escaped Windows retired .claude\\tmp\\ path")
+    harness_scratch_pr_body = pv_project / ".harness" / "scratch" / "tmp" / "pr-body-1-test.md"
+    if run_hook(
+        scratch_hook,
+        pv_project,
+        "",
+        raw_payload=json.dumps({"tool_input": {"file_path": str(harness_scratch_pr_body)}}),
     ).returncode != 0:
-        sys.exit("block-scratch-outside-docs-tasks.sh rejected an escaped Windows scratch path")
+        sys.exit("block-scratch-outside-docs-tasks.sh rejected a PR body in .harness/scratch/tmp/")
     docs_pr_body = pv_project / "docs" / "tasks" / "pr-body-1-test.md"
     if run_hook(
         scratch_hook,
