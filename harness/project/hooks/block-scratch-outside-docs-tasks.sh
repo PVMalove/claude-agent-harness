@@ -1,6 +1,6 @@
 #!/bin/bash
 # PreToolUse(Write|Edit): task artifacts belong in docs/tasks/, while one-shot PR metadata belongs
-# only in the repository scratch directory .claude/tmp/ (docs/agents/artifacts.md and git-workflow.md §1).
+# only in the repository scratch directory .scratch/tmp/ (docs/agents/artifacts.md and git-workflow.md §1).
 INPUT=$(cat)
 PY="$(command -v python3 || command -v python)"
 if [ -z "$PY" ]; then
@@ -26,14 +26,14 @@ if [ $? -ne 0 ]; then
 fi
 
 if echo "$FILE_PATH" | grep -qiE 'pr-body|pr-comment|issue-comment'; then
-  if printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.claude/tmp/'; then
+  if printf '%s' "$FILE_PATH" | grep -qiE '(^|/)(\.scratch|\.claude|\.agents)/tmp/'; then
     exit 0
   fi
-  echo "git-workflow.md §1: тело PR/комментария пишется только в .claude/tmp/ (например, .claude/tmp/pr-body-<issue>-<slug>.md), не в docs/tasks/; удали его после успешного gh/glab: $FILE_PATH" >&2
+  echo "git-workflow.md §1: тело PR/комментария пишется только в .scratch/tmp/ (например, .scratch/tmp/pr-body-<issue>-<slug>.md), не в docs/tasks/; удали его после успешного gh/glab: $FILE_PATH" >&2
   exit 2
 fi
 
-if printf '%s' "$FILE_PATH" | grep -qiE '(AppData.(Local|Roaming).Temp|/tmp/|/scratchpad/)'; then
+if ! printf '%s' "$FILE_PATH" | grep -qiE '(^|/)(\.scratch|\.claude|\.agents)/(tmp|scratch|temp)(/|$)' && printf '%s' "$FILE_PATH" | grep -qiE '(AppData.(Local|Roaming).Temp|/tmp/|/scratchpad/)'; then
   echo "artifacts.md: спецификации и скретчпады пишем в docs/tasks/, не в системный temp: $FILE_PATH" >&2
   exit 2
 fi
