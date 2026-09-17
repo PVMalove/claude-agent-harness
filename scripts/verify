@@ -73,6 +73,19 @@ def check_docs_agents_mirror():
             sys.exit(f"docs/agents/{template.name} has drifted from harness/project/docs-agents/{template.name}")
 
 
+def check_scratch_hook_mirror():
+    """.claude/hooks/block-scratch-outside-docs-tasks.sh is the project's own copy of the hook
+    harness/project/hooks/block-scratch-outside-docs-tasks.sh scaffolds into every pvmalove-suite
+    project. Both are maintained by hand - catch drift between them here instead of relying on
+    every edit remembering to touch both."""
+    template = ROOT / "harness" / "project" / "hooks" / "block-scratch-outside-docs-tasks.sh"
+    counterpart = ROOT / ".claude" / "hooks" / "block-scratch-outside-docs-tasks.sh"
+    if not counterpart.is_file():
+        sys.exit(f"{template} has no .claude/hooks counterpart: {counterpart}")
+    if _normalized_text(template) != _normalized_text(counterpart):
+        sys.exit(f"{counterpart} has drifted from {template}")
+
+
 def check_docs_agents_enumeration():
     """README.md and harness-guide.md each spell out, by hand, the docs/agents/{...}.md
     brace-list scaffold_pvmalove_extras deploys. Catch a file added to (or removed from)
@@ -260,6 +273,7 @@ def main():
     run_ok(["git", "-C", str(ROOT), "diff", "--exit-code", "--", "skills/REGISTRY.md"])
 
     check_docs_agents_mirror()
+    check_scratch_hook_mirror()
     check_docs_agents_enumeration()
     check_pvmalove_override_docs_sync()
     check_pvmalove_additions_docs_sync()
