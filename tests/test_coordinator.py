@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Regression tests for coordinator.py's migration to per-record Value Objects and
-``LifecycleLedger.lock()`` (issue #195).
+``LifecycleLedger.lock()`` (issues #195, #203).
 
 These exercise the coordinator's own public functions against a real ``LifecycleLedger`` on a real
 temporary git repository -- no mocks -- mirroring ``tests/test_qa_lane.py``'s pattern. They prove
-the migration kept batch/dispatch persistence and the nine ``qa_lane.py`` bridge symbols intact.
+the migration kept batch/dispatch persistence intact, and that ``qa_lane.py``'s bridge into
+``coordinator.py`` (the ``ops`` parameter) carries only validation/loading helpers -- never a
+raw-path builder or a bare ``Path``+``dict`` write adapter.
 """
 
 from __future__ import annotations
@@ -201,19 +203,44 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         )
         self.assertEqual(on_disk_status["state"], "reported")
 
-    def test_bridge_functions_remain_defined_and_callable(self) -> None:
-        """Regression seed for the seven ``qa_lane.py`` bridge symbols: ``coordinator.py`` stops
-        calling them internally, but qa_lane still imports them by these exact names."""
-        names = (
-            "_write_exclusive", "_write_text_exclusive", "_replace", "_ledger_for_path",
-            "_records_root", "_batch_path", "_dispatch_status_path",
+    def test_qa_lane_bridge_surface_has_no_path_builders(self) -> None:
+        """``qa_lane.py`` constructs its own ``LifecycleLedger`` and Value Objects directly (issue
+        #196); the only things it still reaches into ``coordinator.py`` (via the ``ops`` parameter)
+        for are validation/loading helpers, field-set constants and ``_now()`` -- never a raw-path
+        builder or a bare ``Path``+``dict`` write adapter. This is the corrected, narrower successor
+        to the #195-era bridge-symbols test, which pinned a wider surface (including
+        ``_batch_path``/``_dispatch_status_path``/``_replace``) that a later fix (issue #203) proved
+        was never actually required to stay that wide."""
+        required = (
+            "CoordinatorError", "STATE_REL", "_read_object", "QA_QUEUE_FIELDS", "_safe_id",
+            "_non_empty", "_now", "QA_LEASE_FIELDS", "_moment", "_repo", "_candidate_commit",
+            "_batch_for_ticket_branch", "_accepted_qa_for_candidate", "_load_batch",
+            "_validate_batch_integrity", "_validate_dispatch", "_config", "_load_dispatch_status",
+            "_validate_report", "_role", "_persist_report", "_load_dispatch", "_approval",
         )
-        for name in names:
-            self.assertTrue(hasattr(coordinator, name), f"{name} must remain defined")
-            self.assertTrue(callable(getattr(coordinator, name)), f"{name} must remain callable")
-        self.assertEqual(list(inspect.signature(coordinator._batch_path).parameters), ["root", "batch_id"])
+        for name in required:
+            self.assertTrue(hasattr(coordinator, name), f"{name} must remain defined for qa_lane.py")
+        # ``_write_exclusive``/``_write_text_exclusive`` still exist -- ``_persist_report`` keeps
+        # using them for the one write path with no Value Object -- but qa_lane.py no longer reaches
+        # them (confirmed above: neither name appears in `required`), and none of the four below
+        # (path builders / the path-sniffing bare ``_replace``) survive at all.
+        removed = ("_replace", "_ledger_for_path", "_batch_path", "_dispatch_status_path")
+        for name in removed:
+            self.assertNotIn(
+                name, dir(coordinator),
+                f"{name} was coordinator.py's own raw-path/bare-dict bridge for qa_lane.py and must "
+                "stay deleted now that qa_lane.py builds Value Objects and calls "
+                "LifecycleLedger.write_record/replace_record directly",
+            )
+
+    def test_persist_report_takes_an_explicit_ledger_instead_of_sniffing_the_path(self) -> None:
+        """``_persist_report`` (the one write path with no Value Object -- no ``ReportRecord``
+        exists) still uses the bare ``Path``+``dict`` primitives, but takes its ``LifecycleLedger``
+        explicitly rather than rediscovering it by walking the filesystem for a ``ledger.json``
+        marker (the now-deleted ``_ledger_for_path``)."""
         self.assertEqual(
-            list(inspect.signature(coordinator._dispatch_status_path).parameters), ["root", "dispatch_id"],
+            list(inspect.signature(coordinator._persist_report).parameters),
+            ["ledger", "root", "batch", "dispatch", "report"],
         )
 
 

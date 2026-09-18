@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from gate_runner import CleanRoomPolicy, GateRunnerError, run_gate
-from ledger import LedgerError, LifecycleLedger
+from ledger import BatchRecord, DispatchStatusRecord, LedgerError, LifecycleLedger
 
 
 def _state_root(args: Any, repo: Path, ops: Any) -> Path:
@@ -61,9 +61,16 @@ def _write_artifact(ledger: LifecycleLedger, ops: Any, path: Path, value: str) -
         raise ops.CoordinatorError(str(exc)) from exc
 
 
-def _replace_record(ledger: LifecycleLedger, ops: Any, path: Path, value: dict[str, Any]) -> None:
+def _replace_path(ledger: LifecycleLedger, ops: Any, path: Path, value: dict[str, Any]) -> None:
     try:
         ledger.replace(path, value)
+    except LedgerError as exc:
+        raise ops.CoordinatorError(str(exc)) from exc
+
+
+def _replace_record(ledger: LifecycleLedger, ops: Any, record: Any) -> None:
+    try:
+        ledger.replace_record(record)
     except LedgerError as exc:
         raise ops.CoordinatorError(str(exc)) from exc
 
@@ -117,7 +124,7 @@ def _enqueue(ledger: LifecycleLedger, dispatch_id: str, ops: Any) -> tuple[Path,
     _write_immutable(ledger, ops, path, entry)
     next_counter = {"next": counter["next"] + 1}
     if counter_path.exists():
-        _replace_record(ledger, ops, counter_path, next_counter)
+        _replace_path(ledger, ops, counter_path, next_counter)
     else:
         # The first queue entry in a fresh ledger has no mutable counter yet.  Seed it as an
         # immutable record; subsequent enqueues may use the ledger transition primitive.
@@ -173,7 +180,9 @@ def _qa_report(dispatch: dict[str, Any], checks: list[dict[str, str]], artifact:
     }
 
 
-def _record_report(root: Path, repo: Path, dispatch: dict[str, Any], report: dict[str, Any], ops: Any) -> Path:
+def _record_report(
+    ledger: LifecycleLedger, root: Path, repo: Path, dispatch: dict[str, Any], report: dict[str, Any], ops: Any,
+) -> Path:
     batch = ops._load_batch(root, dispatch["batch_id"])
     ops._validate_batch_integrity(root, batch)
     ops._validate_dispatch(repo, ops._config(repo), root, batch, dispatch)
@@ -182,7 +191,7 @@ def _record_report(root: Path, repo: Path, dispatch: dict[str, Any], report: dic
     if not entry or entry.get("state") != "dispatched" or status.get("state") != "working":
         raise ops.CoordinatorError("QA report requires a running QA dispatch")
     ops._validate_report(report, dispatch, ops._role(repo, "qa"), repo, batch.get("base_commit"))
-    return ops._persist_report(root, batch, dispatch, report)
+    return ops._persist_report(ledger, root, batch, dispatch, report)
 
 
 def run(args: Any, ops: Any) -> dict[str, Any]:
@@ -222,8 +231,12 @@ def run(args: Any, ops: Any) -> dict[str, Any]:
         }
         _write_immutable(ledger, ops, _lane_path(ledger, ops), lease)
         entry["state"] = "dispatched"
-        ops._replace(ops._dispatch_status_path(root, dispatch["dispatch_id"]), {"dispatch_id": dispatch["dispatch_id"], "state": "working", "updated_at": ops._now()})
-        ops._replace(ops._batch_path(root, batch["batch_id"]), batch)
+        ops._safe_id(dispatch["dispatch_id"], "dispatch")
+        _replace_record(ledger, ops, DispatchStatusRecord.from_dict(
+            {"dispatch_id": dispatch["dispatch_id"], "state": "working", "updated_at": ops._now()}
+        ))
+        ops._safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, ops, BatchRecord.from_dict(batch))
     try:
         # The first failed deterministic gate is sufficient evidence for a developer retry.  Do
         # not consume CI time and coordinator context collecting unrelated failures afterwards.
@@ -239,7 +252,7 @@ def run(args: Any, ops: Any) -> dict[str, Any]:
         raise ops.CoordinatorError("could not persist immutable QA evidence") from exc
     report = _qa_report(dispatch, checks, artifact, checksum)
     with _lock(ledger, ops):
-        report_path = _record_report(root, repo, dispatch, report, ops)
+        report_path = _record_report(ledger, root, repo, dispatch, report, ops)
         _queue_entries(ledger, ops)
         if queue_path.exists():
             _delete_record(ledger, ops, queue_path, reason="complete QA queue entry")

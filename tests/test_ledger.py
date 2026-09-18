@@ -103,6 +103,68 @@ class ValueObjectRoundTripTests(unittest.TestCase):
                 self.assertEqual(restored, original)
 
 
+class RecordApiTests(unittest.TestCase):
+    def test_each_value_object_exposes_its_directory_and_record_id(self) -> None:
+        cases = [
+            (BatchRecord(batch_id="batch-1", state="planned", dispatches=[], coordinator_approval=None), "batches", "batch-1"),
+            (PlanRecord(batch_id="batch-1"), "plans", "batch-1"),
+            (DispatchRecord(dispatch_id="dispatch-1", batch_id="batch-1", state="approved", coordinator_approval=None), "dispatches", "dispatch-1"),
+            (DispatchStatusRecord(dispatch_id="dispatch-1", state="working"), "dispatch-status", "dispatch-1"),
+            (RiskAssessmentRecord(risk_assessment_id="risk-1"), "risk-assessments", "risk-1"),
+            (ContextPackageRecord(context_package_id="context-package-1"), "context-packages", "context-package-1"),
+            (CheckpointRecord(checkpoint_id="checkpoint-1"), "checkpoints", "checkpoint-1"),
+        ]
+        for record, directory, record_id in cases:
+            self.assertEqual(record.directory, directory)
+            self.assertEqual(record.record_id, record_id)
+
+    def test_write_record_persists_at_the_path_derived_from_the_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            ledger.ensure()
+
+            record = DispatchStatusRecord(dispatch_id="dispatch-1", state="approved")
+            ledger.write_record(record)
+
+            path = ledger.records_root() / "dispatch-status" / "dispatch-1.json"
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), record.to_dict())
+
+    def test_replace_record_persists_a_transition_at_the_same_derived_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            ledger.ensure()
+
+            ledger.write_record(DispatchStatusRecord(dispatch_id="dispatch-1", state="approved"))
+            ledger.replace_record(DispatchStatusRecord(dispatch_id="dispatch-1", state="working"))
+
+            path = ledger.records_root() / "dispatch-status" / "dispatch-1.json"
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["state"], "working")
+
+    def test_replace_record_still_enforces_batch_transition_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            ledger.ensure()
+
+            ledger.write_record(PlanRecord(batch_id="batch-1"))
+            ledger.write_record(BatchRecord(batch_id="batch-1", state="planned", dispatches=[], coordinator_approval=None))
+
+            with self.assertRaises(LedgerError):
+                ledger.replace_record(BatchRecord(batch_id="batch-1", state="not-a-real-state", dispatches=[], coordinator_approval=None))
+
+    def test_write_record_rejects_a_record_id_that_is_not_a_safe_path_segment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            ledger.ensure()
+
+            for bad_id in ("../evil", "a/b", "a\\b", "", "."):
+                with self.assertRaises(LedgerError):
+                    ledger.write_record(DispatchStatusRecord(dispatch_id=bad_id, state="approved"))
+
+
 class LockTests(unittest.TestCase):
     def test_lock_raises_ledger_error_on_contention_and_is_reacquirable_after_release(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

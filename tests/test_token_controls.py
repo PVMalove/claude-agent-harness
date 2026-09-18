@@ -16,6 +16,7 @@ sys.path.insert(0, str(ORCHESTRATION_ROOT))
 
 import contract  # noqa: E402
 import coordinator  # noqa: E402
+from ledger import LifecycleLedger  # noqa: E402
 
 
 class TokenControlTests(unittest.TestCase):
@@ -92,7 +93,7 @@ class TokenControlTests(unittest.TestCase):
             above_default_policy = coordinator.DEFAULT_CONTEXT_PACKAGE_POLICY["max_tokens"] + 1
             with self.assertRaisesRegex(coordinator.CoordinatorError, "exceeds the configured"):
                 coordinator._persist_context_package(
-                    repo, repo, batch, role="shared", snapshot="1" * 40,
+                    repo, repo, LifecycleLedger(repo), batch, role="shared", snapshot="1" * 40,
                     inclusion_reason="test", max_package_tokens=above_default_policy,
                 )
 

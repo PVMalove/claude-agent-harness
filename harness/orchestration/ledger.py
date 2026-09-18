@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, ClassVar, Iterator, Protocol
 
 
 LEDGER_VERSION = 3
@@ -39,11 +39,17 @@ class LedgerError(Exception):
 class BatchRecord:
     """Value Object for a ``batches/*.json`` record."""
 
+    directory: ClassVar[str] = "batches"
+
     batch_id: str
     state: str
     dispatches: list[Any]
     coordinator_approval: dict[str, Any] | None
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def record_id(self) -> str:
+        return self.batch_id
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -67,8 +73,14 @@ class BatchRecord:
 class PlanRecord:
     """Value Object for a ``plans/*.json`` record."""
 
+    directory: ClassVar[str] = "plans"
+
     batch_id: str
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def record_id(self) -> str:
+        return self.batch_id
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -86,11 +98,17 @@ class PlanRecord:
 class DispatchRecord:
     """Value Object for a ``dispatches/*.json`` record."""
 
+    directory: ClassVar[str] = "dispatches"
+
     dispatch_id: str
     batch_id: str
     state: str
     coordinator_approval: dict[str, Any] | None
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def record_id(self) -> str:
+        return self.dispatch_id
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -114,9 +132,15 @@ class DispatchRecord:
 class DispatchStatusRecord:
     """Value Object for a ``dispatch-status/*.json`` record."""
 
+    directory: ClassVar[str] = "dispatch-status"
+
     dispatch_id: str
     state: str
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def record_id(self) -> str:
+        return self.dispatch_id
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -134,8 +158,14 @@ class DispatchStatusRecord:
 class RiskAssessmentRecord:
     """Value Object for a ``risk-assessments/*.json`` record."""
 
+    directory: ClassVar[str] = "risk-assessments"
+
     risk_assessment_id: str
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def record_id(self) -> str:
+        return self.risk_assessment_id
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -153,8 +183,14 @@ class RiskAssessmentRecord:
 class ContextPackageRecord:
     """Value Object for a ``context-packages/*.json`` record."""
 
+    directory: ClassVar[str] = "context-packages"
+
     context_package_id: str
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def record_id(self) -> str:
+        return self.context_package_id
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -172,8 +208,14 @@ class ContextPackageRecord:
 class CheckpointRecord:
     """Value Object for a ``checkpoints/*.json`` record."""
 
+    directory: ClassVar[str] = "checkpoints"
+
     checkpoint_id: str
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def record_id(self) -> str:
+        return self.checkpoint_id
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -185,6 +227,19 @@ class CheckpointRecord:
         known = ("checkpoint_id",)
         extra = {key: value for key, value in data.items() if key not in known}
         return cls(checkpoint_id=data.get("checkpoint_id"), extra=extra)
+
+
+class LedgerRecordVO(Protocol):
+    """Structural shape a Value Object must have to be persisted via ``write_record``/
+    ``replace_record`` -- satisfied by ``BatchRecord``, ``DispatchRecord``, and the other frozen
+    record dataclasses above without inheriting from this class."""
+
+    directory: ClassVar[str]
+
+    @property
+    def record_id(self) -> str: ...
+
+    def to_dict(self) -> dict[str, Any]: ...
 
 
 def _now() -> str:
@@ -420,6 +475,24 @@ class LifecycleLedger:
             "generation": pointer["generation"] if pointer else None,
             "cleaned": removed
         }
+
+    def _record_path(self, record: LedgerRecordVO) -> Path:
+        self._check_record_id(record.record_id)
+        return self.records_root() / record.directory / f"{record.record_id}.json"
+
+    @staticmethod
+    def _check_record_id(record_id: object) -> None:
+        if not isinstance(record_id, str) or not record_id or "/" in record_id or "\\" in record_id \
+                or record_id in {".", ".."}:
+            raise LedgerError("record id is not a valid path segment")
+
+    def write_record(self, record: LedgerRecordVO) -> None:
+        """Persist a new Value-Object-backed record, deriving its path from the record itself."""
+        self.write_immutable(self._record_path(record), record.to_dict())
+
+    def replace_record(self, record: LedgerRecordVO) -> None:
+        """Persist a Value-Object-backed record transition, deriving its path from the record."""
+        self.replace(self._record_path(record), record.to_dict())
 
     def write_immutable(self, path: Path, value: dict[str, Any], *, artifact: bool = False) -> None:
         generation, relative = self._selected_path(path)
