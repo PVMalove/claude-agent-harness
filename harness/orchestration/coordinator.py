@@ -138,6 +138,7 @@ DEFAULT_ADAPTIVE_CONTINUATION_POLICY = {
     "context_limit": 150_000,
     "tdd_cycle_count": 3,
     "failure_log_bytes": 20_000,
+    "context_warn_ratio": 0.8,
 }
 DEFAULT_CONTEXT_PACKAGE_POLICY = {
     "max_tokens": 200_000,
@@ -402,7 +403,7 @@ def _config(repo: Path) -> dict[str, Any]:
     return value
 
 
-def _adaptive_continuation_policy(config: dict[str, Any]) -> dict[str, int]:
+def _adaptive_continuation_policy(config: dict[str, Any]) -> dict[str, Any]:
     """Adaptive-policy thresholds for a planned-trigger continuation. Project-configurable per
     AC5; an absent or partially-specified `adaptive_continuation_policy` falls back to the
     documented defaults field by field, the same tolerance `_default_config` gives every other
@@ -411,10 +412,33 @@ def _adaptive_continuation_policy(config: dict[str, Any]) -> dict[str, int]:
     resolved = dict(DEFAULT_ADAPTIVE_CONTINUATION_POLICY)
     if isinstance(policy, dict):
         for key in resolved:
+            if key == "context_warn_ratio":
+                continue
             value = policy.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
                 resolved[key] = value
+        ratio = policy.get("context_warn_ratio")
+        if (
+            isinstance(ratio, (int, float)) and not isinstance(ratio, bool)
+            and 0 < ratio <= 1
+        ):
+            resolved["context_warn_ratio"] = ratio
     return resolved
+
+
+def _context_advisory(config: dict[str, Any], observed: int | None) -> dict[str, Any]:
+    """Advisory-only read of an observed token count against `context_warn_ratio` of
+    `context_limit`. Never authorizes a checkpoint or changes state — a coordinator decision does."""
+    policy = _adaptive_continuation_policy(config)
+    limit = policy["context_limit"]
+    warn_at = round(limit * policy["context_warn_ratio"])
+    if observed is None or observed < warn_at:
+        level = "ok"
+    elif observed < limit:
+        level = "warn"
+    else:
+        level = "over"
+    return {"level": level, "limit": limit, "warn_at": warn_at, "observed": observed}
 
 
 def _numeric_policy(config: dict[str, Any], key: str, defaults: dict[str, int]) -> dict[str, int]:
@@ -2541,6 +2565,12 @@ def heartbeat_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     root = _state_root(args, repo)
     note = args.note.strip() if _non_empty(args.note) else "none"
     _reject_sensitive({"note": note}, "dispatch heartbeat")
+    context_tokens = args.context_tokens
+    context_source = args.context_source
+    if (context_tokens is None) != (context_source is None):
+        raise CoordinatorError("--context-tokens and --context-source must be given together")
+    if context_tokens is not None and (isinstance(context_tokens, bool) or not isinstance(context_tokens, int) or context_tokens < 0):
+        raise CoordinatorError("--context-tokens must be a non-negative integer")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch, status = _live_status(root, args.dispatch)
@@ -2548,9 +2578,16 @@ def heartbeat_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         status["updated_at"] = moment
         status["heartbeat_at"] = moment
         status["heartbeat_note"] = _sanitise(note)[:240]
+        if context_tokens is not None:
+            status["context_tokens"] = context_tokens
+            status["context_source"] = context_source
         _safe_id(dispatch["dispatch_id"], "dispatch")
         _replace_record(ledger, DispatchStatusRecord.from_dict(status))
-    return {"dispatch_id": dispatch["dispatch_id"], "state": status["state"], "heartbeat_at": moment}
+    result = {"dispatch_id": dispatch["dispatch_id"], "state": status["state"], "heartbeat_at": moment}
+    if context_tokens is not None:
+        result["context_tokens"] = context_tokens
+        result["context_source"] = context_source
+    return result
 
 
 def rate_limited_dispatch(args: argparse.Namespace) -> dict[str, Any]:
@@ -2651,7 +2688,8 @@ def record_telemetry(args: argparse.Namespace) -> dict[str, Any]:
         batch.setdefault("telemetry", []).append(record)
         _safe_id(batch["batch_id"], "batch")
         _replace_record(ledger, BatchRecord.from_dict(batch))
-    return {"telemetry_id": record["telemetry_id"], "dispatch_id": payload["dispatch_id"]}
+    advisory = _context_advisory(_config(repo), payload["max_context_tokens"])
+    return {"telemetry_id": record["telemetry_id"], "dispatch_id": payload["dispatch_id"], "context_advisory": advisory}
 
 
 def _validate_checkpoint(
@@ -2910,6 +2948,7 @@ def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
     threshold = args.stale_after
     if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 1:
         raise CoordinatorError("stale-after must be a positive number of seconds")
+    config = _config(repo)
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         entries: list[dict[str, Any]] = []
@@ -2920,6 +2959,12 @@ def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
             dispatch = _load_dispatch(root, status.get("dispatch_id"))
             if args.batch and dispatch.get("batch_id") != args.batch:
                 continue
+            batch = _load_batch(root, dispatch["batch_id"])
+            telemetry = [
+                record for record in batch.get("telemetry", [])
+                if record.get("dispatch_id") == dispatch["dispatch_id"]
+            ]
+            latest_telemetry = max(telemetry, key=lambda record: record["recorded_at"], default=None)
             live = status.get("state") in LIVE_DISPATCH_STATES
             silent = _silent_seconds(status) if live else 0
             entries.append({
@@ -2936,6 +2981,10 @@ def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
                 "heartbeat_at": status.get("heartbeat_at") or status.get("updated_at"),
                 "silent_seconds": silent,
                 "stale": live and silent >= threshold,
+                "telemetry": latest_telemetry,
+                "context_advisory": _context_advisory(
+                    config, latest_telemetry["max_context_tokens"] if latest_telemetry else None,
+                ),
             })
     return {
         "stale_after_seconds": threshold,

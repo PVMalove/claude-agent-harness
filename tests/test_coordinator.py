@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 
@@ -113,6 +114,24 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             batch=batch_id, role="architect", runtime="claude", purpose="work",
             candidate_commit=None, delta_review_of=None, model="sonnet", effort="high",
             approved_by="Malove", approved_at="2026-09-17T00:00:00+00:00",
+        ))
+
+    def _telemetry_payload(
+        self, dispatch_id: str, *, max_context_tokens: int | None = None,
+        recorded_at: str = "2026-09-18T00:00:00+00:00", session_kind: str = "worker",
+    ) -> dict:
+        return {
+            "dispatch_id": dispatch_id, "session_kind": session_kind,
+            "input_tokens": 100, "output_tokens": 50, "cache_read_tokens": 0, "cache_write_tokens": 0,
+            "max_context_tokens": max_context_tokens, "tool_calls": 1, "tool_output_bytes": 10,
+            "poll_turns": 1, "restart_reason": "none", "recorded_at": recorded_at,
+        }
+
+    def _record_telemetry(self, payload: dict) -> dict:
+        path = self.tmp / f"telemetry-{uuid.uuid4()}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return coordinator.record_telemetry(_ns(
+            repo=str(self.repo), state_dir=str(self.state_dir), file=str(path),
         ))
 
     def test_batch_create_writes_immutable_batch_and_plan_records(self) -> None:
@@ -235,6 +254,180 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
                 "stay deleted now that qa_lane.py builds Value Objects and calls "
                 "LifecycleLedger.write_record/replace_record directly",
             )
+
+    def test_adaptive_continuation_policy_resolves_context_warn_ratio(self) -> None:
+        self.assertEqual(coordinator._adaptive_continuation_policy({})["context_warn_ratio"], 0.8)
+        self.assertEqual(
+            coordinator._adaptive_continuation_policy(
+                {"adaptive_continuation_policy": {"context_warn_ratio": 0.5}}
+            )["context_warn_ratio"],
+            0.5,
+        )
+        self.assertEqual(
+            coordinator._adaptive_continuation_policy(
+                {"adaptive_continuation_policy": {"context_warn_ratio": 1}}
+            )["context_warn_ratio"],
+            1,
+        )
+        for invalid in (0, 1.5, "0.5", True, -0.1):
+            resolved = coordinator._adaptive_continuation_policy(
+                {"adaptive_continuation_policy": {"context_warn_ratio": invalid}}
+            )
+            self.assertEqual(resolved["context_warn_ratio"], 0.8, f"{invalid!r} should fall back to default")
+
+    def test_record_telemetry_returns_context_advisory_levels(self) -> None:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+        dispatch_id = dispatch["dispatch_id"]
+
+        ok = self._record_telemetry(self._telemetry_payload(
+            dispatch_id, max_context_tokens=50_000, recorded_at="2026-09-18T00:00:00+00:00",
+        ))
+        self.assertEqual(
+            ok["context_advisory"], {"level": "ok", "limit": 150_000, "warn_at": 120_000, "observed": 50_000},
+        )
+
+        warn = self._record_telemetry(self._telemetry_payload(
+            dispatch_id, max_context_tokens=130_000, recorded_at="2026-09-18T00:01:00+00:00",
+        ))
+        self.assertEqual(
+            warn["context_advisory"], {"level": "warn", "limit": 150_000, "warn_at": 120_000, "observed": 130_000},
+        )
+
+        over = self._record_telemetry(self._telemetry_payload(
+            dispatch_id, max_context_tokens=150_000, recorded_at="2026-09-18T00:02:00+00:00",
+        ))
+        self.assertEqual(over["context_advisory"]["level"], "over")
+
+        null_observed = self._record_telemetry(self._telemetry_payload(
+            dispatch_id, max_context_tokens=None, recorded_at="2026-09-18T00:03:00+00:00",
+        ))
+        self.assertEqual(
+            null_observed["context_advisory"],
+            {"level": "ok", "limit": 150_000, "warn_at": 120_000, "observed": None},
+        )
+
+    def test_record_telemetry_context_advisory_is_not_persisted(self) -> None:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+        dispatch_id = dispatch["dispatch_id"]
+
+        self._record_telemetry(self._telemetry_payload(dispatch_id, max_context_tokens=130_000))
+
+        on_disk_batch = coordinator._read_object(
+            self._records_root() / "batches" / f"{batch['batch_id']}.json", "batch",
+        )
+        telemetry_records = on_disk_batch.get("telemetry", [])
+        self.assertEqual(len(telemetry_records), 1)
+        self.assertNotIn("context_advisory", telemetry_records[0])
+        self.assertEqual(
+            set(telemetry_records[0]) - {"telemetry_id", "record_sha256"}, coordinator.TELEMETRY_FIELDS,
+        )
+
+    def test_dispatch_status_reports_latest_telemetry_and_context_advisory(self) -> None:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+        dispatch_id = dispatch["dispatch_id"]
+
+        self._record_telemetry(self._telemetry_payload(
+            dispatch_id, max_context_tokens=50_000, recorded_at="2026-09-18T00:00:00+00:00",
+        ))
+        self._record_telemetry(self._telemetry_payload(
+            dispatch_id, max_context_tokens=130_000, recorded_at="2026-09-18T00:05:00+00:00",
+        ))
+
+        status = coordinator.dispatch_status(_ns(
+            repo=str(self.repo), state_dir=str(self.state_dir),
+            dispatch=None, batch=batch["batch_id"], stale_after=900,
+        ))
+        entry = status["dispatches"][0]
+        self.assertEqual(entry["telemetry"]["max_context_tokens"], 130_000)
+        self.assertEqual(
+            entry["context_advisory"], {"level": "warn", "limit": 150_000, "warn_at": 120_000, "observed": 130_000},
+        )
+
+    def test_dispatch_status_context_advisory_ok_when_no_telemetry(self) -> None:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        self._create_architect_dispatch(batch["batch_id"])
+
+        status = coordinator.dispatch_status(_ns(
+            repo=str(self.repo), state_dir=str(self.state_dir),
+            dispatch=None, batch=batch["batch_id"], stale_after=900,
+        ))
+        entry = status["dispatches"][0]
+        self.assertIsNone(entry["telemetry"])
+        self.assertEqual(
+            entry["context_advisory"], {"level": "ok", "limit": 150_000, "warn_at": 120_000, "observed": None},
+        )
+
+    def test_heartbeat_dispatch_records_context_tokens_probe_in_extra(self) -> None:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+        dispatch_id = dispatch["dispatch_id"]
+        coordinator.send_dispatch(_ns(
+            repo=str(self.repo), state_dir=str(self.state_dir),
+            dispatch=dispatch_id, adapter=None, adapter_arg=None, checkout=None,
+        ))
+
+        result = coordinator.heartbeat_dispatch(_ns(
+            repo=str(self.repo), state_dir=str(self.state_dir), dispatch=dispatch_id, note=None,
+            context_tokens=142_000, context_source="probe",
+        ))
+        self.assertEqual(result["context_tokens"], 142_000)
+        self.assertEqual(result["context_source"], "probe")
+        on_disk = coordinator._read_object(
+            self._records_root() / "dispatch-status" / f"{dispatch_id}.json", "status",
+        )
+        self.assertEqual(on_disk["context_tokens"], 142_000)
+        self.assertEqual(on_disk["context_source"], "probe")
+
+    def test_heartbeat_dispatch_without_context_tokens_omits_extra_fields(self) -> None:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+        dispatch_id = dispatch["dispatch_id"]
+        coordinator.send_dispatch(_ns(
+            repo=str(self.repo), state_dir=str(self.state_dir),
+            dispatch=dispatch_id, adapter=None, adapter_arg=None, checkout=None,
+        ))
+
+        result = coordinator.heartbeat_dispatch(_ns(
+            repo=str(self.repo), state_dir=str(self.state_dir), dispatch=dispatch_id, note=None,
+            context_tokens=None, context_source=None,
+        ))
+        self.assertNotIn("context_tokens", result)
+        self.assertNotIn("context_source", result)
+        on_disk = coordinator._read_object(
+            self._records_root() / "dispatch-status" / f"{dispatch_id}.json", "status",
+        )
+        self.assertNotIn("context_tokens", on_disk)
+        self.assertNotIn("context_source", on_disk)
+
+    def test_heartbeat_dispatch_requires_context_tokens_and_source_together(self) -> None:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+        dispatch_id = dispatch["dispatch_id"]
+        coordinator.send_dispatch(_ns(
+            repo=str(self.repo), state_dir=str(self.state_dir),
+            dispatch=dispatch_id, adapter=None, adapter_arg=None, checkout=None,
+        ))
+
+        with self.assertRaises(coordinator.CoordinatorError):
+            coordinator.heartbeat_dispatch(_ns(
+                repo=str(self.repo), state_dir=str(self.state_dir), dispatch=dispatch_id, note=None,
+                context_tokens=142_000, context_source=None,
+            ))
+        with self.assertRaises(coordinator.CoordinatorError):
+            coordinator.heartbeat_dispatch(_ns(
+                repo=str(self.repo), state_dir=str(self.state_dir), dispatch=dispatch_id, note=None,
+                context_tokens=None, context_source="probe",
+            ))
 
     def test_persist_report_takes_an_explicit_ledger_instead_of_sniffing_the_path(self) -> None:
         """``_persist_report`` (the one write path with no Value Object -- no ``ReportRecord``
