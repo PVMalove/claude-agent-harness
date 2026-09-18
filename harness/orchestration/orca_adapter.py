@@ -79,6 +79,8 @@ def _resolved_commit(repo: Path, value: object) -> str:
         ["git", "-C", str(repo), "rev-parse", "--verify", f"{value.strip()}^{{commit}}"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode != 0 or result.stdout.strip() != value.strip().lower():
         raise DispatchError("candidate_commit must resolve to its full commit SHA in the target repository")
@@ -86,7 +88,9 @@ def _resolved_commit(repo: Path, value: object) -> str:
 
 
 def _git_output(repo: Path, arguments: list[str]) -> str:
-    result = subprocess.run(["git", "-C", str(repo), *arguments], capture_output=True, text=True)
+    result = subprocess.run(
+        ["git", "-C", str(repo), *arguments], capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
     if result.returncode != 0:
         raise DispatchError("cannot inspect the pinned candidate commit")
     return result.stdout.strip()
@@ -105,6 +109,8 @@ def _is_ancestor(repo: Path, base: str, candidate: str) -> bool:
         ["git", "-C", str(repo), "merge-base", "--is-ancestor", base, candidate],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode not in {0, 1}:
         raise DispatchError("cannot verify review_base ancestry")
@@ -208,7 +214,9 @@ def _orca_command(orca_bin: str, args: list[str]) -> list[str]:
 
 
 def _run_orca(orca_bin: str, args: list[str]) -> dict[str, Any]:
-    result = subprocess.run(_orca_command(orca_bin, args), capture_output=True, text=True)
+    result = subprocess.run(
+        _orca_command(orca_bin, args), capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as exc:

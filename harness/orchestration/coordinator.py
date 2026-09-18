@@ -92,6 +92,7 @@ DISPATCH_FIELDS = {
     "context_package_id", "context_package_sha256", "context_package_summary", "worker_attestation_required",
     "communication_policy",
     "snapshot_commit",
+    "report_staging_path",
 }
 DEFAULT_TEST_PATH_PATTERNS = ("tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py")
 REPORT_FIELDS = {
@@ -296,6 +297,80 @@ def _repo(args: argparse.Namespace) -> Path:
 def _state_root(args: argparse.Namespace, repo: Path) -> Path:
     supplied = getattr(args, "state_dir", None)
     return (Path(supplied).resolve() if supplied else repo / STATE_REL).resolve()
+
+
+SCRATCH_REL = Path(".harness") / "scratch"
+AGENT_INBOX_REL = SCRATCH_REL / "inbox"
+
+
+def _agent_inbox(repo: Path) -> Path:
+    """The one canonical place a role writes the JSON it is about to hand to the coordinator.
+
+    Without a declared absolute location a role invents one (``~/reports``, ``~/review-reports``,
+    the system temp), so the evidence a human later looks for is scattered outside the project.
+    """
+    return (repo / AGENT_INBOX_REL).resolve()
+
+
+NON_ENGLISH_BRIEF_PATTERN = re.compile(r"[\u0400-\u04FF\u0500-\u052F]")
+
+
+def _reject_non_english(values: Any, field: str) -> None:
+    """Hold the language contract where it is machine-checkable: brief text handed to a role.
+
+    Agent-to-agent protocol text is English. A completion report addressed to the coordinator is
+    Russian by contract and is deliberately not checked here.
+    """
+    items = values if isinstance(values, (list, tuple)) else [values]
+    for item in items:
+        if isinstance(item, str) and NON_ENGLISH_BRIEF_PATTERN.search(item):
+            raise CoordinatorError(
+                f"{field} is handed to a role as agent-to-agent protocol text and must be written "
+                "in English; translate it before creating the batch and keep commands, paths, IDs "
+                "and quoted evidence verbatim"
+            )
+
+
+def _prepare_agent_inbox(repo: Path) -> Path:
+    """Create the staging directory and keep its contents out of version control."""
+    inbox = _agent_inbox(repo)
+    inbox.mkdir(parents=True, exist_ok=True)
+    ignore = inbox.parent / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text("*\n!.gitignore\n", encoding="utf-8")
+    return inbox
+
+
+def _worktree_roots(repo: Path) -> set[Path]:
+    """Every checkout of this repository: the main one plus each linked worktree."""
+    roots = {repo.resolve()}
+    try:
+        listing = _git(repo, "worktree", "list", "--porcelain")
+    except CoordinatorError:
+        return roots
+    for line in listing.splitlines():
+        if line.startswith("worktree "):
+            roots.add(Path(line[len("worktree "):].strip()).resolve())
+    return roots
+
+
+def _agent_authored_file(repo: Path, value: str, label: str) -> Path:
+    """Resolve a role-authored payload and refuse anything written outside the project.
+
+    A path under the home directory or the system temp is never the project's audit trail; it is a
+    guessed location, and accepting it is what lets evidence drift out of the ledger.
+    """
+    path = Path(value).expanduser().resolve()
+    for root in _worktree_roots(repo):
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        return path
+    raise CoordinatorError(
+        f"{label} must be written inside the repository or one of its worktrees, not at {path}; "
+        f"use the canonical staging path {_agent_inbox(repo)}"
+    )
 
 
 def _records_root(root: Path) -> Path:
@@ -1141,9 +1216,13 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
     legacy_fields = DISPATCH_FIELDS - {
         "context_package_summary", "worker_attestation_required", "snapshot_commit", "communication_policy",
     }
-    if frozenset(dispatch) not in {
-        frozenset(DISPATCH_FIELDS), frozenset(pre_summary_fields), frozenset(legacy_fields),
-    }:
+    # A brief written before the canonical reporting path existed keeps its historical shape, the
+    # same way every earlier field addition is treated here.
+    accepted = {
+        frozenset(fields) for fields in (DISPATCH_FIELDS, pre_summary_fields, legacy_fields)
+    }
+    accepted |= {fields - {"report_staging_path"} for fields in set(accepted)}
+    if frozenset(dispatch) not in accepted:
         raise CoordinatorError("dispatch record schema mismatch")
     if dispatch.get("state") != "approved":
         raise CoordinatorError("dispatch record is not an approved immutable brief")
@@ -1251,6 +1330,46 @@ def _check_batch_conflicts(root: Path, config: dict[str, Any], batch: dict[str, 
         raise CoordinatorError("concurrency_budget is exhausted")
 
 
+def _human_approval_gate(config: dict[str, Any]) -> str:
+    gate = config.get("human_approval_gate", "trusted")
+    if gate not in {"trusted", "tty"}:
+        raise CoordinatorError("human_approval_gate must be trusted or tty")
+    return gate
+
+
+def _confirm_on_terminal(approved_by: str) -> None:
+    """Take the approval from the controlling terminal instead of from the calling session.
+
+    `--approved-by` and `--approved-at` are only claims: a coordinator session holding a shell can
+    type them itself, which is exactly how a gate gets advanced without the human ever seeing the
+    decision packet. A line read from the real terminal cannot be produced by a non-interactive
+    tool call, so under this gate the approval is the operator's or it does not happen.
+    """
+    prompt = f"Type 'approve' to record this decision as {approved_by}: "
+    try:
+        if os.name == "nt":
+            stream = open("CONIN$", "r", encoding="utf-8")  # noqa: SIM115 - closed below
+            sink = open("CONOUT$", "w", encoding="utf-8")  # noqa: SIM115 - closed below
+        else:
+            stream = open("/dev/tty", "r", encoding="utf-8")  # noqa: SIM115 - closed below
+            sink = open("/dev/tty", "w", encoding="utf-8")  # noqa: SIM115 - closed below
+    except OSError as exc:
+        raise CoordinatorError(
+            "human_approval_gate is 'tty': this decision must be confirmed by a human on the "
+            "terminal, and this session has none. Show the decision packet and have the operator "
+            "run the same command in their own terminal."
+        ) from exc
+    try:
+        sink.write(prompt)
+        sink.flush()
+        answer = stream.readline().strip().lower()
+    finally:
+        stream.close()
+        sink.close()
+    if answer != "approve":
+        raise CoordinatorError("human approval was not confirmed on the terminal")
+
+
 def _approval(args: argparse.Namespace) -> dict[str, str]:
     approved_by = getattr(args, "approved_by", None)
     approved_at = getattr(args, "approved_at", None)
@@ -1258,6 +1377,12 @@ def _approval(args: argparse.Namespace) -> dict[str, str]:
         raise CoordinatorError("explicit coordinator approval requires approved-by and approved-at")
     result = {"approved_by": approved_by.strip(), "approved_at": approved_at.strip()}
     _reject_sensitive(result, "coordinator approval")
+    try:
+        config = _config(_repo(args))
+    except CoordinatorError:
+        config = {}
+    if _human_approval_gate(config) == "tty":
+        _confirm_on_terminal(result["approved_by"])
     return result
 
 
@@ -1691,6 +1816,8 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     # `_validate_branch` falls back to, rather than inventing a second convention.
     fetch_ref = integration_ref.strip() if _non_empty(integration_ref) else _required_base_branch(repo)
     pinned_base = _fetch_ref_tip(repo, fetch_ref)
+    _reject_non_english(dod, "definition_of_done")
+    _reject_non_english(prohibited, "prohibited_changes")
     scope_preflight = _scope_preflight(config, ticket.strip(), zone.strip(), dod, dependencies, args)
     record = {
         "batch_id": f"batch-{uuid.uuid4()}",
@@ -2245,6 +2372,9 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "worker_attestation_required": _worker_attestation_required(config),
             "communication_policy": batch.get("communication_policy", _communication_policy(config)),
             "snapshot_commit": candidate or batch["base_commit"],
+            # Absolute, so a role never resolves a relative reporting path against a guessed
+            # current directory and never invents a home-directory folder of its own.
+            "report_staging_path": str(_agent_inbox(repo) / f"{dispatch_id}.json"),
         }
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the
@@ -2275,8 +2405,10 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
             BatchRecord.from_dict(batch).to_dict(),
         )
+    _prepare_agent_inbox(repo)
     return {
         "dispatch_id": dispatch_id, "batch_id": batch["batch_id"], "state": "approved", "brief": brief,
+        "report_staging_path": brief["report_staging_path"],
         "context_package_freshness": context_package_freshness,
     }
 
@@ -2356,7 +2488,11 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             command.append("dispatch")
             command.extend(adapter_args)
             command.extend(["--repo", str(repo), "--brief", str(brief_path)])
-            result = subprocess.run(command, capture_output=True, text=True)
+            # Windows consoles default to a legacy ANSI codepage: without an explicit encoding a
+            # UTF-8 adapter message is mojibaked before it ever reaches the coordinator error.
+            result = subprocess.run(
+                command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            )
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout).strip()
                 raise CoordinatorError(f"runtime adapter rejected dispatch: {detail}")
@@ -2384,6 +2520,7 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         "transport": transport,
         "brief": str(brief_path),
         "expected_model": dispatch["resolved_model"],
+        "report_staging_path": dispatch.get("report_staging_path") or str(_agent_inbox(repo) / f"{dispatch['dispatch_id']}.json"),
         "next_role_action": "dispatch self-report",
     }
 
@@ -2650,7 +2787,7 @@ def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     than one worker session."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    checkpoint = _read_object(Path(args.file).resolve(), "checkpoint")
+    checkpoint = _read_object(_agent_authored_file(repo, args.file, "a checkpoint"), "checkpoint")
     with _ledger_lock(root):
         dispatch, status = _live_status(root, checkpoint.get("dispatch_id"))
         batch = _load_batch(root, dispatch["batch_id"])
@@ -3156,7 +3293,7 @@ def _report_markdown(report: dict[str, Any]) -> str:
 def submit_report(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     try:
-        report = _read_object(Path(args.file).resolve(), "completion report")
+        report = _read_object(_agent_authored_file(repo, args.file, "a completion report"), "completion report")
     except CoordinatorError:
         raise
     root = _state_root(args, repo)

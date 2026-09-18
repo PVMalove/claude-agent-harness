@@ -71,6 +71,11 @@
       "default": "manual_all",
       "description": "Human approval cadence. manual_all approves every transition; milestone keeps plan, risk/scope, QA and publish gates; low_risk is restricted to explicitly approved low-risk zones."
     },
+    "human_approval_gate": {
+      "enum": ["trusted", "tty"],
+      "default": "trusted",
+      "description": "How an explicit human approval is proven. trusted accepts --approved-by/--approved-at as authored by the operator; tty additionally requires a confirmation typed on the real terminal, which a non-interactive agent session cannot produce, so a coordinator session cannot advance a gate on its own."
+    },
     "low_risk_zones": {
       "type": "array",
       "items": {"type": "string", "minLength": 1},

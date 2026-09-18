@@ -173,7 +173,16 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "risks": "none", "blockers": "none", "next_coordinator_action": "dispatch developer",
             "report_language": "ru",
         }
-        report_file = self.tmp / "report.json"
+        # A report is staged inside the project, at the absolute path the brief names, so the
+        # evidence a human later looks for is in the repository and not in a guessed folder.
+        stray_file = self.tmp / "report.json"
+        stray_file.write_text(json.dumps(report), encoding="utf-8")
+        with self.assertRaises(coordinator.CoordinatorError):
+            coordinator.submit_report(_ns(
+                repo=str(self.repo), state_dir=str(self.state_dir), file=str(stray_file),
+            ))
+
+        report_file = coordinator._prepare_agent_inbox(self.repo) / f"{dispatch_id}.json"
         report_file.write_text(json.dumps(report), encoding="utf-8")
 
         submitted = coordinator.submit_report(_ns(

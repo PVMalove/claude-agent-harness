@@ -31,9 +31,10 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "$schema", "developer_verification_commands", "test_path_patterns",
     "adaptive_continuation_policy", "approval_policy", "low_risk_zones", "context_package_policy",
     "continuation_policy", "retry_policy", "preflight_policy", "worker_attestation_required",
-    "communication_policy",
+    "communication_policy", "human_approval_gate",
 }
 APPROVAL_POLICIES = {"manual_all", "milestone", "low_risk"}
+HUMAN_APPROVAL_GATES = {"trusted", "tty"}
 COMMUNICATION_POLICY_FIELDS = frozenset({"agent_to_agent_language", "coordinator_report_language"})
 COMMUNICATION_LANGUAGES = {"en", "ru"}
 CODE_REVIEW_REQUIRED_RISK_TRIGGERS = frozenset(
@@ -509,6 +510,9 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     approval_policy = config.get("approval_policy", "manual_all")
     if approval_policy not in APPROVAL_POLICIES:
         problems.append("orchestration approval_policy must be one of: " + ", ".join(sorted(APPROVAL_POLICIES)))
+    human_gate = config.get("human_approval_gate", "trusted")
+    if human_gate not in HUMAN_APPROVAL_GATES:
+        problems.append("orchestration human_approval_gate must be one of: " + ", ".join(sorted(HUMAN_APPROVAL_GATES)))
     low_risk_zones = config.get("low_risk_zones")
     if low_risk_zones is not None and (not string_list(low_risk_zones) or not set(low_risk_zones).issubset(zones)):
         problems.append("orchestration low_risk_zones must name configured backend zones")

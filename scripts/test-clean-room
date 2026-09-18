@@ -355,6 +355,17 @@ def _run(test_root: Path):
         sys.exit("fast-implement does not carry the ungated single-session flow")
 
     orchestration_project = test_root / "orchestration_project"
+
+    def staged_payload(name: str) -> Path:
+        """Role-authored payloads live inside the project, at the brief's staging path.
+
+        The coordinator refuses a report or checkpoint written outside the repository and its
+        worktrees, which is what stops evidence from landing in a guessed home-directory folder.
+        """
+        path = orchestration_project / ".harness" / "scratch" / "inbox" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
     orchestration_project.mkdir(parents=True)
     subprocess.run(["git", "init", "-q"], cwd=orchestration_project, check=True)
     orchestration_remote = test_root / "orchestration-remote.git"
@@ -1288,18 +1299,36 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     unicode_state = test_root / "unicode-output-state"
     unicode_env = dict(os.environ, PYTHONIOENCODING="cp1251")
     sync_origin_base("integration/test-908")
+    # The ticket title stays multilingual: it names the human's work item and is not the
+    # agent-to-agent brief text the language contract governs.
+    unicode_ticket = "#908 Проверить кодировку"
     unicode_result = subprocess.run(
         [sys.executable, str(coordinator_path), "--repo", str(orchestration_project), "--state-dir", str(unicode_state),
-         "batch", "create", "--ticket", "#908", "--branch", "feature/issue-908-unicode-output",
-         "--worktree", "issue-908-unicode-output", "--zone", "backend", "--definition-of-done", "Проверить кодировку",
-         "--prohibited-change", "Не менять данные", "--integration-ref", "integration/test-908",
+         "batch", "create", "--ticket", unicode_ticket, "--branch", "feature/issue-908-unicode-output",
+         "--worktree", "issue-908-unicode-output", "--zone", "backend", "--definition-of-done", "verify console encoding",
+         "--prohibited-change", "do not change stored data", "--integration-ref", "integration/test-908",
          "--expected-file", "backend/encoding.py", "--expected-service", "backend", "--expected-changed-lines", "10"],
         capture_output=True, env=unicode_env,
     )
     if unicode_result.returncode != 0:
         sys.exit("coordinator rejected the Unicode output fixture: " + unicode_result.stderr.decode("utf-8", errors="replace"))
-    if json.loads(unicode_result.stdout.decode("utf-8"))["definition_of_done"] != ["Проверить кодировку"]:
+    if json.loads(unicode_result.stdout.decode("utf-8"))["ticket"] != unicode_ticket:
         sys.exit("coordinator stdout is not UTF-8 when Python inherits a legacy output encoding")
+
+    # The same contract the roles are told to honour, enforced where it is machine-checkable: a
+    # brief field written in Russian never reaches a worker prompt in the first place.
+    sync_origin_base("integration/test-909")
+    non_english = coordinator_run(
+        "--state-dir", str(unicode_state),
+        "batch", "create", "--ticket", "#909", "--branch", "feature/issue-909-language-contract",
+        "--worktree", "issue-909-language-contract", "--zone", "backend",
+        "--definition-of-done", "Проверить кодировку", "--prohibited-change", "do not change stored data",
+        "--integration-ref", "integration/test-909",
+    )
+    if non_english.returncode == 0:
+        sys.exit("coordinator accepted a non-English definition_of_done into an agent-facing brief")
+    if "must be written in English" not in non_english.stderr:
+        sys.exit("coordinator rejected a non-English brief without naming the language contract")
 
     sync_origin_base("integration/test-901")
     planned = coordinator_run(
@@ -1350,7 +1379,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if active_reset.returncode == 0 or "active" not in active_reset.stderr:
         sys.exit("ledger reset did not reject an active batch")
 
-    architect_report_file = test_root / "architect-report.json"
+    architect_report_file = staged_payload("architect-report.json")
     architect_payload = {
         "dispatch_id": architect_id,
         "ticket": "#901",
@@ -1456,7 +1485,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         ["git", "rev-parse", "HEAD"], cwd=orchestration_project, check=True, capture_output=True, text=True
     ).stdout.strip()
 
-    report_file = test_root / "developer-report.json"
+    report_file = staged_payload("developer-report.json")
     report_payload = {
         "dispatch_id": dispatch_id,
         "ticket": "#901",
@@ -1490,7 +1519,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if json.loads(stored_report.read_text(encoding="utf-8")) != report_payload:
         sys.exit("coordinator changed the canonical completion report")
 
-    invalid_report = test_root / "invalid-report.json"
+    invalid_report = staged_payload("invalid-report.json")
     invalid_payload = dict(report_payload, role="qa")
     invalid_report.write_text(json.dumps(invalid_payload), encoding="utf-8")
     if coordinator_run("report", "submit", "--file", str(invalid_report)).returncode == 0:
@@ -1498,12 +1527,12 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if stored_report.read_text(encoding="utf-8") != json.dumps(report_payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n":
         sys.exit("coordinator changed a report after rejecting an incompatible report")
 
-    secret_report = test_root / "secret-report.json"
+    secret_report = staged_payload("secret-report.json")
     secret_report.write_text(json.dumps(dict(report_payload, api_token="must-not-pass")), encoding="utf-8")
     if coordinator_run("report", "submit", "--file", str(secret_report)).returncode == 0:
         sys.exit("coordinator accepted a secret-shaped report")
 
-    overwritten_report = test_root / "overwritten-report.json"
+    overwritten_report = staged_payload("overwritten-report.json")
     overwritten_report.write_text(json.dumps(report_payload), encoding="utf-8")
     if coordinator_run("report", "submit", "--file", str(overwritten_report)).returncode == 0:
         sys.exit("coordinator overwrote an immutable report")
@@ -1580,7 +1609,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if not runtime_worker_calls or runtime_worker_calls[-1][runtime_worker_calls[-1].index("--base-branch") + 1] != candidate_sha:
         sys.exit("Orca adapter did not pin the runtime worker to candidate_commit")
 
-    review_report_file = test_root / "review-report.json"
+    review_report_file = staged_payload("review-report.json")
     review_payload = {
         "dispatch_id": review_id,
         "ticket": "#901",
@@ -1930,7 +1959,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
         }
         payload.update(payload_extra)
-        payload_file = test_root / f"delta-{role_name}-{role_dispatch}-report.json"
+        payload_file = staged_payload(f"delta-{role_name}-{role_dispatch}-report.json")
         payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         submitted = coordinator_run("--state-dir", str(delta_state), "report", "submit", "--file", str(payload_file))
         if submitted.returncode != 0:
@@ -1998,7 +2027,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             },
         },
     }
-    first_review_file = test_root / f"delta-first-review-{first_review_id}.json"
+    first_review_file = staged_payload(f"delta-first-review-{first_review_id}.json")
     first_review_file.write_text(json.dumps(first_review_payload, indent=2) + "\n", encoding="utf-8")
     first_review_submit = coordinator_run(
         "--state-dir", str(delta_state), "report", "submit", "--file", str(first_review_file),
@@ -2099,7 +2128,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "findings": [{"severity": "warning", "summary": "reflagged", "evidence": "re-checked"}],
         "risks": "re-checked", "blockers": "none", "inherited_from": first_review_id,
     }
-    re_derived_file = test_root / f"delta-second-review-{second_review_id}-rederived.json"
+    re_derived_file = staged_payload(f"delta-second-review-{second_review_id}-rederived.json")
     re_derived_file.write_text(json.dumps(re_derived, indent=2) + "\n", encoding="utf-8")
     re_derived_submit = coordinator_run(
         "--state-dir", str(delta_state), "report", "submit", "--file", str(re_derived_file),
@@ -2109,7 +2138,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     if "inherit" not in re_derived_submit.stderr:
         sys.exit("coordinator did not explain the inherited-axis rejection: " + re_derived_submit.stderr)
 
-    second_review_file = test_root / f"delta-second-review-{second_review_id}.json"
+    second_review_file = staged_payload(f"delta-second-review-{second_review_id}.json")
     second_review_file.write_text(json.dumps(second_review_payload, indent=2) + "\n", encoding="utf-8")
     second_review_submit = coordinator_run(
         "--state-dir", str(delta_state), "report", "submit", "--file", str(second_review_file),
@@ -2173,7 +2202,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
         }
         payload.update(payload_extra)
-        payload_file = test_root / f"low-risk-{role_name}-report.json"
+        payload_file = staged_payload(f"low-risk-{role_name}-report.json")
         payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         submitted = coordinator_run("--state-dir", str(low_risk_state), "report", "submit", "--file", str(payload_file))
         if submitted.returncode != 0:
@@ -2257,7 +2286,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
         }
         payload.update(payload_extra)
-        payload_file = test_root / f"context-package-{role_name}-{role_dispatch}.json"
+        payload_file = staged_payload(f"context-package-{role_name}-{role_dispatch}.json")
         payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         submitted = coordinator_run("--state-dir", str(ctxpkg_state), "report", "submit", "--file", str(payload_file))
         if submitted.returncode != 0:
@@ -2370,7 +2399,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "spec": {"severity": "clean", "findings": [], "risks": "none", "blockers": "none"},
         },
     }
-    first_ctxpkg_review_file = test_root / f"context-package-first-review-{first_ctxpkg_review_id}.json"
+    first_ctxpkg_review_file = staged_payload(f"context-package-first-review-{first_ctxpkg_review_id}.json")
     first_ctxpkg_review_file.write_text(json.dumps(first_ctxpkg_review_payload, indent=2) + "\n", encoding="utf-8")
     if coordinator_run(
         "--state-dir", str(ctxpkg_state), "report", "submit", "--file", str(first_ctxpkg_review_file),
@@ -2469,7 +2498,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "risks": "none", "blockers": "none", "next_coordinator_action": approved_action, "report_language": "ru",
         }
         payload.update(extra)
-        payload_file = test_root / f"checkpoint-{role_name}-{dispatch_id}.json"
+        payload_file = staged_payload(f"checkpoint-{role_name}-{dispatch_id}.json")
         payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         submitted = coordinator_run("--state-dir", str(checkpoint_state), "report", "submit", "--file", str(payload_file))
         if submitted.returncode != 0:
@@ -2488,7 +2517,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "--dispatch", checkpoint_architect, "--model", "project-architect-model",
     )
 
-    read_only_probe_file = test_root / "checkpoint-read-only-probe.json"
+    read_only_probe_file = staged_payload("checkpoint-read-only-probe.json")
     read_only_probe_file.write_text(json.dumps({
         "dispatch_id": checkpoint_architect, "commit_sha": "0" * 40, "changed_files": [],
         "remaining_definition_of_done": [], "passing_checks": [], "risks": "none", "blockers": "none",
@@ -2531,7 +2560,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     subprocess.run(["git", "commit", "-qm", "feat: checkpoint demo session one"], cwd=orchestration_project, check=True)
     checkpoint_first_sha = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
 
-    bad_context_package_file = test_root / "checkpoint-bad-context-package.json"
+    bad_context_package_file = staged_payload("checkpoint-bad-context-package.json")
     bad_context_package_file.write_text(json.dumps({
         "dispatch_id": checkpoint_dev_id, "commit_sha": checkpoint_first_sha,
         "changed_files": ["services/checkpoint_demo.py"],
@@ -2544,7 +2573,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     ).returncode == 0:
         sys.exit("coordinator accepted a checkpoint referencing a nonexistent context package")
 
-    checkpoint_one_file = test_root / "checkpoint-session-one.json"
+    checkpoint_one_file = staged_payload("checkpoint-session-one.json")
     checkpoint_one_file.write_text(json.dumps({
         "dispatch_id": checkpoint_dev_id, "commit_sha": checkpoint_first_sha,
         "changed_files": ["services/checkpoint_demo.py"],
@@ -2617,7 +2646,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     subprocess.run(["git", "commit", "-qm", "feat: checkpoint demo session two"], cwd=orchestration_project, check=True)
     checkpoint_second_sha = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
 
-    early_final_report_file = test_root / "checkpoint-early-final-report.json"
+    early_final_report_file = staged_payload("checkpoint-early-final-report.json")
     early_final_report_file.write_text(json.dumps({
         "dispatch_id": checkpoint_dev_id, "ticket": "#139", "role": "developer", "outcome": "completed",
         "output": "both checkpoint sessions complete", "commit_sha": checkpoint_second_sha,
@@ -2640,7 +2669,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     ).returncode != 0:
         sys.exit("coordinator rejected the resumed worker session's heartbeat")
 
-    checkpoint_two_file = test_root / "checkpoint-session-two.json"
+    checkpoint_two_file = staged_payload("checkpoint-session-two.json")
     checkpoint_two_file.write_text(json.dumps({
         "dispatch_id": checkpoint_dev_id, "commit_sha": checkpoint_second_sha,
         "changed_files": ["services/checkpoint_demo.py", "services/checkpoint_demo_v2.py"],
@@ -2662,13 +2691,13 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "dispatch_id": checkpoint_dev_id, "remaining_definition_of_done": [], "risks": "none",
         "dependencies": ["none"],
     }
-    facts_unchanged_file = test_root / "continuation-facts-unchanged.json"
+    facts_unchanged_file = staged_payload("continuation-facts-unchanged.json")
     facts_unchanged_file.write_text(json.dumps(facts_unchanged, indent=2) + "\n", encoding="utf-8")
-    facts_risks_drifted_file = test_root / "continuation-facts-risks-drifted.json"
+    facts_risks_drifted_file = staged_payload("continuation-facts-risks-drifted.json")
     facts_risks_drifted_file.write_text(json.dumps(
         {**facts_unchanged, "risks": "scope grew since the checkpoint"}, indent=2,
     ) + "\n", encoding="utf-8")
-    facts_dependencies_drifted_file = test_root / "continuation-facts-dependencies-drifted.json"
+    facts_dependencies_drifted_file = staged_payload("continuation-facts-dependencies-drifted.json")
     facts_dependencies_drifted_file.write_text(json.dumps(
         {**facts_unchanged, "dependencies": ["#999"]}, indent=2,
     ) + "\n", encoding="utf-8")
@@ -2829,7 +2858,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
         }
         payload.update(payload_extra)
-        payload_file = test_root / f"stale-base-{role_name}-report.json"
+        payload_file = staged_payload(f"stale-base-{role_name}-report.json")
         payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         submitted = coordinator_run("--state-dir", str(stale_state), "report", "submit", "--file", str(payload_file))
         if submitted.returncode != 0:
@@ -2929,7 +2958,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "checks_run": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
         "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
     }
-    same_sha_file = test_root / "stale-base-rebase-same-sha-report.json"
+    same_sha_file = staged_payload("stale-base-rebase-same-sha-report.json")
     same_sha_file.write_text(json.dumps(same_sha_payload, indent=2) + "\n", encoding="utf-8")
     same_sha_submit = coordinator_run("--state-dir", str(stale_state), "report", "submit", "--file", str(same_sha_file))
     if same_sha_submit.returncode == 0:
@@ -2946,7 +2975,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "checks_run": [{"command": "python developer_check.py", "result": "pass", "evidence": "1 passed"}],
         "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
     }
-    rebase_file = test_root / "stale-base-rebase-report.json"
+    rebase_file = staged_payload("stale-base-rebase-report.json")
     rebase_file.write_text(json.dumps(rebase_payload, indent=2) + "\n", encoding="utf-8")
     rebase_submit = coordinator_run("--state-dir", str(stale_state), "report", "submit", "--file", str(rebase_file))
     if rebase_submit.returncode != 0:
