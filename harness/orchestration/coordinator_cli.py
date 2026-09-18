@@ -183,6 +183,14 @@ def build_parser(handlers: Any, defaults: Any) -> argparse.ArgumentParser:
     _common(dispatch_heartbeat)
     dispatch_heartbeat.add_argument("--dispatch", required=True)
     dispatch_heartbeat.add_argument("--note", default="none")
+    dispatch_heartbeat.add_argument(
+        "--context-tokens", type=int,
+        help="coordinator-measured token count from a live context probe (issue #206); requires --context-source",
+    )
+    dispatch_heartbeat.add_argument(
+        "--context-source", choices=["probe"],
+        help="source of --context-tokens; only a coordinator-run probe, never a role self-report",
+    )
     dispatch_heartbeat.set_defaults(handler=handlers.heartbeat_dispatch)
     dispatch_rate_limited = dispatch_commands.add_parser("rate-limited", help="record a checkpointed provider 429 and retry window")
     _common(dispatch_rate_limited)

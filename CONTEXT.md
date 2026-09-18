@@ -407,3 +407,13 @@ checkpoint, dependencies из dispatch) с текущими — блокер: di
 может естественно меняться между сессиями без реального дрейфа scope/DoD/risks/dependencies.
 _Avoid_: automatic continuation как безусловное поведение (только для recognized rate limit),
 planned trigger без coordinator decision.
+
+**Context advisory** (`context_advisory`, `coordinator.py dispatch telemetry`/`dispatch status`):
+Чистая, non-authoritative оценка `max_context_tokens` против `adaptive_continuation_policy.
+context_limit` и доли `context_warn_ratio` (по умолчанию `0.8`) — `{"level": "ok"|"warn"|"over",
+"limit", "warn_at", "observed"}`. Живёт только в возвращаемом значении `dispatch telemetry`
+(intentionally data-only) и в чтении `dispatch status`; не пишется в ledger-запись телеметрии, не
+триггерит checkpoint автоматически и не меняет state/approvals/routing — решение о checkpoint
+остаётся coordinator-ом, как и для любого сигнала, кроме auto-resume по recognized rate limit.
+_Avoid_: Continuation authorization (это авторизует `dispatch resume`, context advisory ничего не
+авторизует), скрытый лимит вместо baseline-ориентира.

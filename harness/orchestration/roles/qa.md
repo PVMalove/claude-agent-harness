@@ -14,3 +14,6 @@ production code nor authors the tests or fixtures used as the sole proof of the 
 
 The output is a QA finding that states the executed checks, reproducible evidence, observed result,
 and any defect or remaining risk. Proof is independent execution through the project-facing interface.
+
+Work from the Context Package's `related_tests`; only widen beyond them when that set cannot exercise
+the acceptance criteria.

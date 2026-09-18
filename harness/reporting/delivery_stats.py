@@ -437,6 +437,41 @@ def claude_project_dirs(home: Path, repo: Path) -> list:
     return found
 
 
+def _claude_transcripts(directory: Path) -> list:
+    """Every transcript belonging to one project directory: top-level session logs, then -- nested
+    one level deeper under each session's own directory -- its subagent transcripts at
+    <session-uuid>/subagents/*.jsonl. Each entry is (path, is_subagent): a subagent transcript's own
+    "sessionId" field replays its *parent's* session id (confirmed against real Claude Code output
+    on disk), so it must never be used as that transcript's own grouping key -- the transcript's own
+    filename (path.stem) is, and is_subagent tells the caller which key to use.
+    """
+    main = [(path, False) for path in sorted(directory.glob("*.jsonl"))]
+    sub = [(path, True) for path in sorted(directory.glob("*/subagents/*.jsonl"))]
+    return main + sub
+
+
+def _is_billable_turn(record: dict) -> bool:
+    """Whether a record is an API turn with a priceable model, not a locally generated notice."""
+    message = record.get("message")
+    return (
+        record.get("type") == "assistant"
+        and isinstance(message, dict)
+        and message.get("model") not in NON_BILLABLE_MODELS
+        and not record.get("isApiErrorMessage")
+    )
+
+
+def _usage_complete(usage: object) -> bool:
+    """Whether a turn's usage dict has every Claude field, each a real (non-bool) int."""
+    return isinstance(usage, dict) and not any(
+        not isinstance(usage.get(field), int) or isinstance(usage.get(field), bool) for field in CLAUDE_FIELDS
+    )
+
+
+def _turn_input(usage: dict) -> int:
+    return sum(_int(usage.get(f)) for f in CLAUDE_FIELDS[:3])
+
+
 def claude_usage(project_dirs: list, numbers: set) -> dict:
     """Token usage of every Claude Code turn recorded on a branch belonging to a ticket in scope."""
     if not project_dirs:
@@ -453,8 +488,10 @@ def claude_usage(project_dirs: list, numbers: set) -> dict:
     synthetic = 0
     incomplete_telemetry = False
 
-    transcripts = [path for directory in project_dirs for path in sorted(directory.glob("*.jsonl"))]
-    for transcript in transcripts:
+    session_stats: dict[str, dict] = {}
+
+    transcripts = [entry for directory in project_dirs for entry in _claude_transcripts(directory)]
+    for transcript, is_subagent in transcripts:
         for record in _read_jsonl(transcript):
             branch = record.get("gitBranch")
             if ticket_of_branch(branch) not in numbers:
@@ -464,20 +501,33 @@ def claude_usage(project_dirs: list, numbers: set) -> dict:
             if record.get("type") != "assistant" or not isinstance(message, dict):
                 continue
             usage = message.get("usage")
-            if message.get("model") in NON_BILLABLE_MODELS or record.get("isApiErrorMessage"):
+            if not _is_billable_turn(record):
                 # Locally generated notices ("you've hit your session limit"), not API turns: their
                 # usage is all zeros and no rate card can ever price them. Counting them would add a
                 # pseudo-model to the breakdown and to the unpriced list for no reason.
                 synthetic += 1
                 continue
-            if not isinstance(usage, dict) or any(
-                not isinstance(usage.get(field), int) or isinstance(usage.get(field), bool)
-                for field in CLAUDE_FIELDS
-            ):
+            if not _usage_complete(usage):
                 incomplete_telemetry = True
                 continue
             turns += 1
-            sessions.add(record.get("sessionId") or transcript.stem)
+            # A subagent's transcript replays the parent's sessionId inside its JSON records, so the
+            # record alone cannot identify the subagent. Using the filename (transcript.stem) is the
+            # established convention here, as the tool generating the logs (e.g. Claude Code) does not
+            # currently emit a distinct subagentId field.
+            session_id = transcript.stem if is_subagent else (record.get("sessionId") or transcript.stem)
+            sessions.add(session_id)
+
+            turn_input = _turn_input(usage)
+            s_bucket = session_stats.setdefault(
+                session_id,
+                {"branch": branch, "kind": "subagent" if is_subagent else "main", "turns": 0, "total_input": 0, "max_input": 0},
+            )
+            s_bucket["turns"] += 1
+            s_bucket["total_input"] += turn_input
+            if turn_input > s_bucket["max_input"]:
+                s_bucket["max_input"] = turn_input
+
             moment = _moment(record.get("timestamp"))
             if moment:
                 first = moment if first is None or moment < first else first
@@ -514,9 +564,52 @@ def claude_usage(project_dirs: list, numbers: set) -> dict:
         "thinking_tokens": thinking,
         "non_billable_turns": synthetic,
         "sidechain": sidechain,
+        "session_stats": sorted(
+            [{"id": k} | v for k, v in session_stats.items()],
+            key=lambda x: x["total_input"],
+            reverse=True
+        ),
         "first_activity": first.isoformat() if first else None,
         "last_activity": last.isoformat() if last else None,
         "quota": quota if quota else MISSING,
+    }
+
+
+def live_probe(project_dirs: list, branch: str) -> dict:
+    """Live, branch-scoped snapshot of every session/subagent transcript recorded so far -- turn
+    count, the largest single-turn input this identity has sent, and the input size of its most
+    recent turn. Deliberately NOT epic-scoped and not a replacement for claude_usage(): this answers
+    "what is active on this branch right now", not "what did a finished epic cost".
+    """
+    if not project_dirs:
+        return {"status": MISSING, "reason": "нет транскриптов Claude Code для этого репозитория"}
+    sessions: dict[str, dict] = {}
+    for directory in project_dirs:
+        for transcript, is_subagent in _claude_transcripts(directory):
+            for record in _read_jsonl(transcript):
+                if record.get("gitBranch") != branch:
+                    continue
+                if not _is_billable_turn(record):
+                    continue
+                usage = record["message"].get("usage")
+                if not _usage_complete(usage):
+                    continue
+                session_id = transcript.stem if is_subagent else (record.get("sessionId") or transcript.stem)
+                turn_input = _turn_input(usage)
+                bucket = sessions.setdefault(
+                    session_id,
+                    {"kind": "subagent" if is_subagent else "main", "turns": 0, "max_input": 0, "last_input": 0},
+                )
+                bucket["turns"] += 1
+                bucket["last_input"] = turn_input
+                if turn_input > bucket["max_input"]:
+                    bucket["max_input"] = turn_input
+    if not sessions:
+        return {"status": MISSING, "reason": f"нет ходов Claude Code на ветке {branch}"}
+    return {
+        "status": "ok",
+        "branch": branch,
+        "sessions": [{"id": k} | v for k, v in sessions.items()],
     }
 
 
@@ -1187,6 +1280,11 @@ def render_terminal(report: dict) -> str:
                 f"  Claude {model}: вход {_compact(sum(bucket[f] for f in CLAUDE_FIELDS[:3]))}, "
                 f"выход {_compact(bucket['output_tokens'])}, ходов {bucket['turns']}"
             )
+        session_stats = claude.get("session_stats", [])
+        if session_stats:
+            lines.append("Топ-3 сессий по объему контекста:")
+            for s in session_stats[:3]:
+                lines.append(f"  Ветка {s['branch']}: ходов {s['turns']}, макс. контекст {_compact(s['max_input'])}, всего входных {_compact(s['total_input'])}")
     else:
         lines.append(f"  Claude: {claude.get('reason', MISSING)}")
 
@@ -1275,6 +1373,27 @@ def render_terminal(report: dict) -> str:
     return "\n".join(lines)
 
 
+def main_live_probe(argv: list) -> int:
+    parser = argparse.ArgumentParser(
+        prog="delivery_stats.py live-probe",
+        description="Live snapshot of active Claude Code sessions/subagents on one branch.",
+    )
+    parser.add_argument("--repo", default=".", help="target project root")
+    parser.add_argument("--branch", required=True, help="git branch to probe")
+    parser.add_argument("--home", help="home directory holding agent session logs")
+    parser.add_argument(
+        "--claude-projects",
+        action="append",
+        help="explicit transcript directory; repeatable when a project has more than one",
+    )
+    args = parser.parse_args(argv)
+    repo = Path(args.repo).resolve()
+    home = Path(args.home).expanduser() if args.home else Path.home()
+    project_dirs = [Path(p) for p in args.claude_projects] if args.claude_projects else claude_project_dirs(home, repo)
+    print(json.dumps(live_probe(project_dirs, args.branch), ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         # The report is authored in Russian; a legacy console code page would mangle it.
@@ -1284,6 +1403,8 @@ def main() -> int:
                 reconfigure(encoding="utf-8")
             except (ValueError, OSError):
                 pass
+    if sys.argv[1:2] == ["live-probe"]:
+        return main_live_probe(sys.argv[2:])
     parser = argparse.ArgumentParser(description="Delivery statistics for one epic and its tickets.")
     parser.add_argument("--repo", default=".", help="target project root")
     parser.add_argument("--epic", type=int, required=True, help="epic issue number")

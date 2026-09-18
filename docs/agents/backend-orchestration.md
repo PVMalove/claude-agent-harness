@@ -465,6 +465,42 @@ self-report, время последнего heartbeat, `silent_seconds` и пр
 QA-lease-expiry на любой dispatch, а не только на clean-room QA lane. Stale — блокер, который
 coordinator выносит человеку: сам он состояние по таймауту не меняет.
 
+`dispatch heartbeat` принимает необязательную пару `--context-tokens <N> --context-source probe` —
+координатор-измеренное число токенов из live-пробы контекста (см. «Отчётность и мониторинг токенов»
+ниже), а не self-report роли: это сохраняет правило из начала документа («Токены — только
+наблюдаемая provider- или runtime-telemetry», строки 27-29) — сама роль это значение не поставляет.
+Значение попадает в открытое поле `extra` статуса dispatch-а, схема ledger не меняется, и новое
+событие в `dispatch wait` не вводится.
+
+`dispatch status` дополнительно отдаёт для каждого dispatch последнюю запись `telemetry`
+(`dispatch telemetry`, см. ниже) и `context_advisory` — чистое чтение: отсутствие телеметрии не
+считается ошибкой, `telemetry` и `context_advisory.observed` в этом случае — `null`
+(`context_advisory.level` при этом остаётся `"ok"`).
+
+### Отчётность и мониторинг токенов: `dispatch telemetry`
+
+```bash
+python .harness/orchestration/coordinator.py --repo . dispatch telemetry --file telemetry.json
+```
+
+Записывает source-observed метрики (worker- или coordinator-сессии) в audit trail batch-а:
+`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `max_context_tokens`,
+`tool_calls`, `tool_output_bytes`, `poll_turns`, `restart_reason`, `recorded_at` — недостающее
+provider-поле остаётся `null`, а не оценочным нулём. Команда **intentionally data-only**: не может
+изменить состояние роли, планирование, approvals или model routing — только пишет запись
+телеметрии.
+
+В **возвращаемом значении** (не в сохранённой ledger-записи) команда добавляет
+`context_advisory: {"level": "ok"|"warn"|"over", "limit", "warn_at", "observed"}` — advisory-оценка
+`max_context_tokens` против порога `adaptive_continuation_policy.context_limit` в проектной
+`.harness/orchestration.json`, доля которого задаётся `adaptive_continuation_policy.context_warn_ratio`
+(доля от `context_limit`, по умолчанию `0.8`; `warn_at = round(context_limit * context_warn_ratio)`).
+`level` — `"ok"` пока `observed` (или его отсутствие) ниже `warn_at`, `"warn"` — в диапазоне
+`[warn_at, context_limit)`, `"over"` — на `context_limit` и выше. Это чистая оценка: она не
+триггерит checkpoint автоматически — решение о checkpoint остаётся за coordinator-ом, как и для
+любого другого сигнала, кроме auto-resume по 429 (см. `current-state.md`). Baseline из
+`playbook.md` («Baseline metrics») тем же образом остаётся ориентиром, а не скрытым лимитом.
+
 ### Checkpoint и новая worker session
 
 Write-роль (developer, database-migrations, messaging-integration) может растянуть один dispatch на

@@ -1,0 +1,9 @@
+{
+    "python.analysis.extraPaths": [
+        "harness/orchestration",
+        "harness/gate_runner",
+        "harness/context_builder",
+        "harness/reporting"
+    ],
+    "python.analysis.typeCheckingMode": "off"
+}

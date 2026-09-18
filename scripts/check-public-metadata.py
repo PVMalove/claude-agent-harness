@@ -11,8 +11,8 @@ from pathlib import Path
 
 
 FORBIDDEN = re.compile(
-    r"claude|claude\.ai/code/session|openai|chatgpt|gpt[-_ ]?[0-9]|copilot|gemini|codex|"
-    r"co-authored[- ]by|ai[-_ ]?(agent|assistant|generated)",
+    r"\bclaude\b|\bopenai\b|\bchatgpt\b|\bgpt[-_ ]?[0-9]|\bcopilot\b|\bgemini\b|\bcodex\b|"
+    r"\bco-authored[- ]by\b|\bai[-_ ]?(agent|assistant|generated)\b",
     re.IGNORECASE,
 )
 

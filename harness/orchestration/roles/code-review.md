@@ -24,6 +24,9 @@ authorization/security, concurrency/retry, and retry/dead-letter queues. Other c
 this role after an explicit risk assessment. It must not change production code or integrate the
 reviewed branch.
 
+Review the diff and the Context Package, not the whole tree; an insufficient package is a blocker to
+escalate, not a reason to walk the repository at large.
+
 A deviation from the letter of the brief is a finding, not automatically a retry. When the
 implemented form is functionally equivalent or safer than the one the brief named, report it as a
 `warning` with that assessment stated, so the coordinator can record `override-warning` and keep

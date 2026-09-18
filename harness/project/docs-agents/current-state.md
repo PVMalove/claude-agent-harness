@@ -103,6 +103,13 @@ python .harness/orchestration/coordinator.py --repo . batch decide ...
 30 строк. Coordinator регистрирует immutable hash-проверяемый Context Package в ledger и в shadow
 режиме фиксирует его `fresh`/`stale` перед каждым новым dispatch.
 
+Промпт-уровневая дисциплина ADR-0016 (Context Package как рабочий набор, поиск — крайняя мера,
+недостаточность пакета — блокер, а не слепое чтение репозитория; ограниченное свидетельство —
+`summarize-log`, диапазоны, целевой node-id, checkpoint при разрастании) выкачена в общую преамбулу
+ролей (`roles/_common.md`) и точечно в `developer.md`, `code-review.md`, `qa.md`, `architect.md`.
+Это рабочая дисциплина, не гейт: freshness-проверка Context Package на `dispatch create` остаётся в
+shadow mode, а пилот checkpoint/continuation, заявленный тем же ADR, ещё не проводился.
+
 Write-роль может растянуть один dispatch на несколько worker session: `dispatch checkpoint`
 записывает неитоговую hashed ledger-запись (commit SHA, changed files, оставшийся DoD, проходящие
 проверки, остаточные risks/blockers, ссылка на Context Package) и переводит dispatch-status в

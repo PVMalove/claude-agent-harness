@@ -351,6 +351,22 @@ def _tickets_panel(report: dict) -> str:
     )
 
 
+def _session_stats_panel(claude: dict) -> str:
+    if claude.get("status") != "ok" or not claude.get("session_stats"):
+        return ""
+    stats = claude["session_stats"]
+    rows = []
+    for s in stats:
+        kind = "Подагент" if s.get("kind", "main") == "subagent" else "Основная"
+        rows.append(f"<tr><td>{_esc(s['branch'])}</td><td>{_esc(kind)}</td><td class='num'>{s['turns']}</td><td class='num'>{_thousands(s['max_input'])}</td><td class='num'>{_thousands(s['total_input'])}</td></tr>")
+    return _panel(
+        "Самые затратные сессии",
+        "<div class='table-wrap'><table>"
+        "<thead><tr><th>Ветка</th><th>Тип</th><th class='num'>Ходов</th><th class='num'>Макс. контекст</th><th class='num'>Всего токенов</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>",
+    )
+
+
 def _orchestration_panel(orchestration: Any) -> str:
     if not isinstance(orchestration, dict) or orchestration.get("status") != "ok":
         reason = orchestration.get("reason", MISSING) if isinstance(orchestration, dict) else MISSING
@@ -421,6 +437,9 @@ def build_html(report: dict) -> str:
         "</div>",
         '<div class="grid">',
         _tickets_panel(report),
+        "</div>",
+        '<div class="grid">',
+        _session_stats_panel(claude),
         "</div>",
         '<div class="grid">',
         _orchestration_panel(report.get("orchestration")),

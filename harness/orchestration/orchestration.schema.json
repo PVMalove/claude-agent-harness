@@ -124,6 +124,12 @@
           "type": "integer",
           "minimum": 1,
           "description": "Minimum --measured-value for a failure-log planned trigger. Default 20000."
+        },
+        "context_warn_ratio": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "description": "Share of context_limit at which record_telemetry/dispatch_status's context_advisory reaches level warn. Default 0.8."
         }
       }
     },
