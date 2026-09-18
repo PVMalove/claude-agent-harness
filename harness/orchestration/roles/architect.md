@@ -25,6 +25,9 @@ repository and requirement evidence sufficient for the coordinator to make the d
 required only for a substantial irreversible trade-off. The completion report links to this brief and
 does not repeat its narrative.
 
+Escalate a blocker naming the missing ADR or precedent card when the Context Package lacks one the
+decision needs, rather than reading the repository at large to reconstruct it.
+
 Run only checks that distinguish the architectural decision. The architect must not run the batch's
 full verification suite merely to establish a baseline: the developer and independent QA gates own
 that evidence. Escalate if a broad baseline is the only way to establish a material premise.

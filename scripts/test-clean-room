@@ -1249,6 +1249,16 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     subprocess.run(["git", "commit", "-qm", "chore: create baseline"], cwd=orchestration_project, check=True)
     subprocess.run(["git", "branch", "feature/issue-901-coordinator"], cwd=orchestration_project, check=True)
 
+    # `batch create` eagerly validates that `--worktree` names a path git itself already tracks
+    # as a linked worktree (coordinator.py's `_validate_worktree`). The validation only checks
+    # membership in `git worktree list`, not that the worktree is checked out to the batch's own
+    # branch, so every synthetic batch below can point at this one shared, detached worktree.
+    shared_worktree = test_root / "shared-worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "--detach", str(shared_worktree), "master"],
+        cwd=orchestration_project, check=True,
+    )
+
     # An assignment plan must never silently launch an external runtime.  A role without an
     # explicit transport stays in the coordinator session, and an approved-but-unsent brief can
     # be cancelled without abandoning its whole batch or losing the audit trail.
@@ -1261,7 +1271,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     sync_origin_base("integration/test-907")
     implicit_batch = json.loads(coordinator_run(
         "--state-dir", str(implicit_transport_state), "batch", "create", "--ticket", "#907",
-        "--branch", "feature/issue-907-implicit-transport", "--worktree", "issue-907-implicit-transport",
+        "--branch", "feature/issue-907-implicit-transport", "--worktree", str(shared_worktree),
         "--zone", "backend", "--definition-of-done", "confirm the dispatch transport",
         "--prohibited-change", "do not merge", "--integration-ref", "integration/test-907",
     ).stdout)["batch_id"]
@@ -1305,7 +1315,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     unicode_result = subprocess.run(
         [sys.executable, str(coordinator_path), "--repo", str(orchestration_project), "--state-dir", str(unicode_state),
          "batch", "create", "--ticket", unicode_ticket, "--branch", "feature/issue-908-unicode-output",
-         "--worktree", "issue-908-unicode-output", "--zone", "backend", "--definition-of-done", "verify console encoding",
+         "--worktree", str(shared_worktree), "--zone", "backend", "--definition-of-done", "verify console encoding",
          "--prohibited-change", "do not change stored data", "--integration-ref", "integration/test-908",
          "--expected-file", "backend/encoding.py", "--expected-service", "backend", "--expected-changed-lines", "10"],
         capture_output=True, env=unicode_env,
@@ -1321,7 +1331,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     non_english = coordinator_run(
         "--state-dir", str(unicode_state),
         "batch", "create", "--ticket", "#909", "--branch", "feature/issue-909-language-contract",
-        "--worktree", "issue-909-language-contract", "--zone", "backend",
+        "--worktree", str(shared_worktree), "--zone", "backend",
         "--definition-of-done", "Проверить кодировку", "--prohibited-change", "do not change stored data",
         "--integration-ref", "integration/test-909",
     )
@@ -1333,7 +1343,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     sync_origin_base("integration/test-901")
     planned = coordinator_run(
         "batch", "create", "--ticket", "#901", "--branch", "feature/issue-901-coordinator",
-        "--worktree", "issue-901-coordinator", "--zone", "backend", "--definition-of-done",
+        "--worktree", str(shared_worktree), "--zone", "backend", "--definition-of-done",
         "implement the requested backend change", "--prohibited-change", "do not merge",
         "--integration-ref", "integration/test-901",
     )
@@ -1742,7 +1752,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     for history_index in range(2):
         historical = coordinator_run(
             "batch", "create", "--ticket", "#901", "--branch", "feature/issue-901-coordinator",
-            "--worktree", f"issue-901-history-{history_index}", "--zone", "backend",
+            "--worktree", str(shared_worktree), "--zone", "backend",
             "--definition-of-done", "superseded planning attempt", "--prohibited-change", "do not merge",
         )
         if historical.returncode != 0:
@@ -1921,7 +1931,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     sync_origin_base()
     delta_batch_created = json.loads(coordinator_run(
         "--state-dir", str(delta_state), "batch", "create", "--ticket", "#906",
-        "--branch", "feature/issue-906-delta-review", "--worktree", "issue-906-delta-review",
+        "--branch", "feature/issue-906-delta-review", "--worktree", str(shared_worktree),
         "--zone", "backend", "--definition-of-done", "add the summary formatter with a passing test",
         "--prohibited-change", "do not merge",
     ).stdout)
@@ -2169,7 +2179,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     sync_origin_base()
     low_risk_batch = json.loads(coordinator_run(
         "--state-dir", str(low_risk_state), "batch", "create", "--ticket", "#904",
-        "--branch", "feature/issue-904-low-risk", "--worktree", "issue-904-low-risk",
+        "--branch", "feature/issue-904-low-risk", "--worktree", str(shared_worktree),
         "--zone", "backend", "--definition-of-done", "add the greeting helper",
         "--prohibited-change", "do not merge",
     ).stdout)["batch_id"]
@@ -2253,7 +2263,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     sync_origin_base()
     ctxpkg_batch = json.loads(coordinator_run(
         "--state-dir", str(ctxpkg_state), "batch", "create", "--ticket", "#138",
-        "--branch", "feature/issue-138-context-package", "--worktree", "issue-138-context-package",
+        "--branch", "feature/issue-138-context-package", "--worktree", str(shared_worktree),
         "--zone", "backend", "--definition-of-done", "register a context package",
         "--prohibited-change", "do not merge",
     ).stdout)["batch_id"]
@@ -2477,7 +2487,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     sync_origin_base()
     checkpoint_batch = json.loads(coordinator_run(
         "--state-dir", str(checkpoint_state), "batch", "create", "--ticket", "#139",
-        "--branch", "feature/issue-139-checkpoint", "--worktree", "issue-139-checkpoint",
+        "--branch", "feature/issue-139-checkpoint", "--worktree", str(shared_worktree),
         "--zone", "backend", "--definition-of-done", "implement checkpoint step one",
         "--definition-of-done", "implement checkpoint step two", "--prohibited-change", "do not merge",
     ).stdout)["batch_id"]
@@ -2813,7 +2823,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     pre_batch_head = capture(["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]).strip()
     stale_batch = json.loads(coordinator_run(
         "--state-dir", str(stale_state), "batch", "create", "--ticket", "#134",
-        "--branch", "feature/issue-134-stale-base", "--worktree", "issue-134-stale-base",
+        "--branch", "feature/issue-134-stale-base", "--worktree", str(shared_worktree),
         "--zone", "backend", "--definition-of-done", "protect the base commit",
         "--prohibited-change", "do not merge",
     ).stdout)["batch_id"]
@@ -3031,7 +3041,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     sync_origin_base()
     mismatch_batch = json.loads(coordinator_run(
         "--state-dir", str(mismatch_state), "batch", "create", "--ticket", "#902",
-        "--branch", "feature/issue-902-model-mismatch", "--worktree", "issue-902-model-mismatch",
+        "--branch", "feature/issue-902-model-mismatch", "--worktree", str(shared_worktree),
         "--zone", "backend", "--definition-of-done", "implement the requested backend change",
         "--prohibited-change", "do not merge",
     ).stdout)["batch_id"]
@@ -3078,7 +3088,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     sync_origin_base()
     wedged_batch = json.loads(coordinator_run(
         "--state-dir", str(wedge_state), "batch", "create", "--ticket", "#905",
-        "--branch", "feature/issue-905-wedged", "--worktree", "issue-905-wedged",
+        "--branch", "feature/issue-905-wedged", "--worktree", str(shared_worktree),
         "--zone", "backend", "--definition-of-done", "implement the requested backend change",
         "--prohibited-change", "do not merge",
     ).stdout)["batch_id"]
@@ -3161,7 +3171,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     sync_origin_base()
     restart = coordinator_run(
         "--state-dir", str(wedge_state), "batch", "create", "--ticket", "#905",
-        "--branch", "feature/issue-905-wedged", "--worktree", "issue-905-wedged",
+        "--branch", "feature/issue-905-wedged", "--worktree", str(shared_worktree),
         "--zone", "backend", "--definition-of-done", "implement the requested backend change",
         "--prohibited-change", "do not merge",
     )
@@ -3186,7 +3196,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     sync_origin_base()
     seeded = coordinator_run(
         "--state-dir", str(test_root / "empty-seed-state"), "batch", "create", "--ticket", "#906",
-        "--branch", "feature/issue-906-empty-seed", "--worktree", "issue-906-empty-seed",
+        "--branch", "feature/issue-906-empty-seed", "--worktree", str(shared_worktree),
         "--definition-of-done", "implement the requested change", "--prohibited-change", "do not merge",
     )
     if seeded.returncode != 0:
@@ -3200,7 +3210,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     sync_origin_base()
     zero_batch = coordinator_run(
         "--state-dir", str(zero_config_state), "batch", "create", "--ticket", "#903",
-        "--branch", "feature/issue-903-zero-config", "--worktree", "issue-903-zero-config",
+        "--branch", "feature/issue-903-zero-config", "--worktree", str(shared_worktree),
         "--definition-of-done", "implement the requested change", "--prohibited-change", "do not merge",
     )
     if zero_batch.returncode != 0:
