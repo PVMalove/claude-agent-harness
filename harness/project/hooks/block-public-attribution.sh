@@ -27,7 +27,7 @@ if [ $? -ne 0 ]; then
   exit 2
 fi
 
-FORBIDDEN='claude|claude\.ai/code/session|openai|chatgpt|gpt[-_ ]?[0-9]|copilot|gemini|codex|co-authored[- ]by|ai[-_ ]?(agent|assistant|generated)'
+FORBIDDEN='\bclaude\b|\bopenai\b|\bchatgpt\b|\bgpt[-_ ]?[0-9]|\bcopilot\b|\bgemini\b|\bcodex\b|\bco-authored[- ]by\b|\bai[-_ ]?(agent|assistant|generated)\b'
 
 is_commit=0
 is_pr=0
