@@ -273,17 +273,6 @@ def _ledger_for_path(path: Path) -> LifecycleLedger | None:
     return None
 
 
-def _delete(path: Path, *, reason: str) -> None:
-    ledger = _ledger_for_path(path)
-    if ledger is not None:
-        try:
-            ledger.delete(path, reason=reason)
-        except LedgerError as exc:
-            raise CoordinatorError(str(exc)) from exc
-        return
-    path.unlink()
-
-
 def _safe_id(value: object, label: str) -> str:
     if not isinstance(value, str) or re.fullmatch(r"(?:batch|dispatch|risk|context-package|checkpoint)-[0-9a-f-]+", value) is None:
         raise CoordinatorError(f"{label} is not a valid coordinator ID")
@@ -381,29 +370,12 @@ def _records_root(root: Path) -> Path:
 
 
 @contextmanager
-def _state_lock(root: Path) -> Iterator[None]:
-    root.mkdir(parents=True, exist_ok=True)
-    lock = root / ".coordinator.lock"
-    try:
-        lock.mkdir()
-    except FileExistsError as exc:
-        raise CoordinatorError("another coordinator operation is in progress") from exc
-    try:
-        yield
-    finally:
-        try:
-            lock.rmdir()
-        except OSError:
-            pass
-
-
-@contextmanager
 def _ledger_lock(root: Path) -> Iterator[None]:
     """Exclusive lock through ``LifecycleLedger.lock()``, translating ``LedgerError`` to
-    ``CoordinatorError`` for this call site -- the same translation ``_write_exclusive``,
-    ``_replace`` and ``_delete`` already apply on every write.  Centralising the translation here
-    (rather than repeating a ``try/except`` at every one of this module's lock sites) removes the
-    risk of a lock site forgetting it and leaking an uncaught ``LedgerError`` into the CLI."""
+    ``CoordinatorError`` for this call site -- the same translation ``_write_exclusive`` and
+    ``_replace`` already apply on every write.  Centralising the translation here (rather than
+    repeating a ``try/except`` at every one of this module's lock sites) removes the risk of a lock
+    site forgetting it and leaking an uncaught ``LedgerError`` into the CLI."""
     try:
         with LifecycleLedger(root).lock():
             yield
