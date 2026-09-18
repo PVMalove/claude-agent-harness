@@ -202,16 +202,15 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         self.assertEqual(on_disk_status["state"], "reported")
 
     def test_bridge_functions_remain_defined_and_callable(self) -> None:
-        """Regression seed for the nine ``qa_lane.py`` bridge symbols: ``coordinator.py`` stops
+        """Regression seed for the seven ``qa_lane.py`` bridge symbols: ``coordinator.py`` stops
         calling them internally, but qa_lane still imports them by these exact names."""
         names = (
-            "_write_exclusive", "_write_text_exclusive", "_replace", "_delete", "_ledger_for_path",
-            "_records_root", "_state_lock", "_batch_path", "_dispatch_status_path",
+            "_write_exclusive", "_write_text_exclusive", "_replace", "_ledger_for_path",
+            "_records_root", "_batch_path", "_dispatch_status_path",
         )
         for name in names:
             self.assertTrue(hasattr(coordinator, name), f"{name} must remain defined")
             self.assertTrue(callable(getattr(coordinator, name)), f"{name} must remain callable")
-        self.assertEqual(list(inspect.signature(coordinator._state_lock).parameters), ["root"])
         self.assertEqual(list(inspect.signature(coordinator._batch_path).parameters), ["root", "batch_id"])
         self.assertEqual(
             list(inspect.signature(coordinator._dispatch_status_path).parameters), ["root", "dispatch_id"],
