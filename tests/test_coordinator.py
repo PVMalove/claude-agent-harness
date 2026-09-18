@@ -88,9 +88,12 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         return LifecycleLedger(root).records_root()
 
     def _create_batch(self, ticket: str = "#195", branch: str = "feature/issue-195-thing") -> dict:
+        worktree_path = self.tmp / "worktree"
+        if not worktree_path.exists():
+            _git(self.repo, "worktree", "add", "-b", branch, str(worktree_path), "master")
         args = _ns(
             repo=str(self.repo), state_dir=str(self.state_dir),
-            ticket=ticket, branch=branch, worktree="C:/worktree", zone="repository",
+            ticket=ticket, branch=branch, worktree=str(worktree_path), zone="repository",
             integration_ref="master", definition_of_done=["do the thing"], prohibited_change=["secrets"],
             required_gate=None, dependency=None,
             expected_file=["services/x.py"], expected_service=["core"], expected_changed_lines=10,
