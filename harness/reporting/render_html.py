@@ -357,11 +357,12 @@ def _session_stats_panel(claude: dict) -> str:
     stats = claude["session_stats"]
     rows = []
     for s in stats:
-        rows.append(f"<tr><td>{_esc(s['branch'])}</td><td class='num'>{s['turns']}</td><td class='num'>{_thousands(s['max_input'])}</td><td class='num'>{_thousands(s['total_input'])}</td></tr>")
+        kind = "Подагент" if s.get("kind", "main") == "subagent" else "Основная"
+        rows.append(f"<tr><td>{_esc(s['branch'])}</td><td>{_esc(kind)}</td><td class='num'>{s['turns']}</td><td class='num'>{_thousands(s['max_input'])}</td><td class='num'>{_thousands(s['total_input'])}</td></tr>")
     return _panel(
         "Самые затратные сессии",
         "<div class='table-wrap'><table>"
-        "<thead><tr><th>Ветка</th><th class='num'>Ходов</th><th class='num'>Макс. контекст</th><th class='num'>Всего токенов</th></tr></thead>"
+        "<thead><tr><th>Ветка</th><th>Тип</th><th class='num'>Ходов</th><th class='num'>Макс. контекст</th><th class='num'>Всего токенов</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table></div>",
     )
 

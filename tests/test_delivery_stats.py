@@ -240,5 +240,118 @@ class OrchestrationMetricsIncompatibleLedgerModuleTests(unittest.TestCase):
         self.assertEqual(ticket["qa_failure_rate"], 0.0)
 
 
+def _turn(branch, session_id, model, input_tokens, output_tokens, *,
+          is_sidechain=False, cache_write=0, cache_read=0, timestamp="2026-01-01T10:00:00.000Z") -> str:
+    """One assistant-turn JSONL record, complete enough to satisfy _usage_complete()."""
+    return json.dumps({
+        "type": "assistant", "gitBranch": branch, "sessionId": session_id,
+        "timestamp": timestamp, "isSidechain": is_sidechain,
+        "message": {"model": model, "usage": {
+            "input_tokens": input_tokens, "cache_creation_input_tokens": cache_write,
+            "cache_read_input_tokens": cache_read, "output_tokens": output_tokens}},
+    })
+
+
+class ClaudeUsageSubagentTranscriptTests(unittest.TestCase):
+    """Issue #206: a subagent's own transcript (<parent-session>/subagents/agent-<hex>.jsonl) must
+    be counted under its own identity, not collapsed into its parent's session_stats row -- even
+    though the subagent transcript's own "sessionId" field replays the *parent's* session id."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.project = self.tmp / "project"
+        self.project.mkdir()
+        (self.project / "parent1.jsonl").write_text(
+            _turn("feature/issue-42-x", "parent1", "model-a", 100, 50) + "\n", encoding="utf-8")
+        subagents = self.project / "parent1" / "subagents"
+        subagents.mkdir(parents=True)
+        (subagents / "agent-aaa.jsonl").write_text(
+            _turn("feature/issue-42-x", "parent1", "model-a", 10, 5, is_sidechain=True) + "\n", encoding="utf-8")
+        (subagents / "agent-bbb.jsonl").write_text(
+            _turn("feature/issue-42-x", "parent1", "model-a", 777, 333, is_sidechain=True) + "\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_subagent_counted_and_not_collapsed_with_sibling(self) -> None:
+        report = delivery_stats.claude_usage([self.project], {42})
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["sidechain"]["turns"], 2)
+        ids = {s["id"] for s in report["session_stats"]}
+        self.assertIn("agent-aaa", ids)
+        self.assertIn("agent-bbb", ids)
+        self.assertIn("parent1", ids)
+        by_id = {s["id"]: s for s in report["session_stats"]}
+        self.assertEqual(by_id["agent-aaa"]["kind"], "subagent")
+        self.assertEqual(by_id["agent-bbb"]["kind"], "subagent")
+        self.assertEqual(by_id["parent1"]["kind"], "main")
+        self.assertNotEqual(by_id["agent-aaa"]["total_input"], by_id["agent-bbb"]["total_input"])
+        self.assertEqual(report["turns"], 3)
+
+    def test_claude_usage_unchanged_without_subagents(self) -> None:
+        import shutil
+        subagents_dir = self.project / "parent1" / "subagents"
+        shutil.rmtree(subagents_dir)
+        
+        report = delivery_stats.claude_usage([self.project], {42})
+        
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["sidechain"]["turns"], 0)
+        self.assertEqual(report["turns"], 1)
+        
+        by_id = {s["id"]: s for s in report["session_stats"]}
+        self.assertIn("parent1", by_id)
+        self.assertEqual(by_id["parent1"]["kind"], "main")
+        self.assertEqual(by_id["parent1"]["turns"], 1)
+        self.assertEqual(len(by_id), 1)
+
+
+class LiveProbeTests(unittest.TestCase):
+    """Issue #206: live_probe() is a branch-scoped, non-epic-scoped snapshot separate from
+    claude_usage()'s post-epic report."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.project = self.tmp / "project2"
+        self.project.mkdir()
+        (self.project / "s1.jsonl").write_text(
+            "\n".join([
+                _turn("feature/issue-9-y", "s1", "model-a", 500, 10, timestamp="2026-01-01T10:00:00.000Z"),
+                _turn("feature/issue-9-y", "s1", "model-a", 120, 10, timestamp="2026-01-01T10:05:00.000Z"),
+            ]) + "\n", encoding="utf-8")
+        subagents = self.project / "s1" / "subagents"
+        subagents.mkdir(parents=True)
+        (subagents / "agent-ccc.jsonl").write_text(
+            _turn("feature/issue-9-y", "s1", "model-a", 42, 5, is_sidechain=True) + "\n", encoding="utf-8")
+        (self.project / "s2.jsonl").write_text(
+            _turn("feature/issue-999-other", "s2", "model-a", 999, 10) + "\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_live_probe_shape_on_synthetic_data(self) -> None:
+        result = delivery_stats.live_probe([self.project], "feature/issue-9-y")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["branch"], "feature/issue-9-y")
+        ids = {s["id"] for s in result["sessions"]}
+        self.assertEqual(ids, {"s1", "agent-ccc"})
+        by_id = {s["id"]: s for s in result["sessions"]}
+        self.assertEqual(by_id["s1"]["turns"], 2)
+        self.assertEqual(by_id["s1"]["max_input"], 500)
+        self.assertEqual(by_id["s1"]["last_input"], 120)
+        self.assertEqual(by_id["agent-ccc"]["kind"], "subagent")
+        self.assertEqual(by_id["agent-ccc"]["turns"], 1)
+        self.assertEqual(by_id["agent-ccc"]["last_input"], 42)
+
+    def test_live_probe_missing_when_no_matching_branch(self) -> None:
+        result = delivery_stats.live_probe([self.project], "feature/issue-000-nowhere")
+
+        self.assertEqual(result["status"], delivery_stats.MISSING)
+
+
 if __name__ == "__main__":
     unittest.main()
