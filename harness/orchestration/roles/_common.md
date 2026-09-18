@@ -24,7 +24,7 @@ records the selected provider and model separately; manifests never choose eithe
 
 Start with the Context Package and one startup probe: run `git rev-parse --show-toplevel`, `git branch
 --show-current`, and `git rev-parse HEAD` in the runtime's current directory. Report that canonical
-worktree through `dispatch self-report --worktree <top-level>` when the project requires worker
+worktree through `dispatch self-report --dispatch <dispatch_id> --model <model> --worktree <top-level>` when the project requires worker
 attestation. This is the only startup discovery needed before role-specific files; after the probe,
 work from the package rather than navigating to a guessed relative repository path.
 

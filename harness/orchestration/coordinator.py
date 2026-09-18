@@ -705,6 +705,24 @@ def _validate_branch(repo: Path, branch: str) -> None:
         raise CoordinatorError("branch must be an issue branch, never a protected or integration branch")
 
 
+def _validate_worktree(repo: Path, worktree: str) -> None:
+    if not _non_empty(worktree):
+        raise CoordinatorError("worktree must be a non-empty string")
+    try:
+        resolved = Path(worktree).resolve()
+    except Exception as exc:
+        raise CoordinatorError("worktree is not a valid path") from exc
+    
+    output = _git(repo, "worktree", "list", "--porcelain")
+    paths: set[Path] = set()
+    for line in output.splitlines():
+        if line.startswith("worktree "):
+            paths.add(Path(line.removeprefix("worktree ")).resolve())
+            
+    if resolved not in paths:
+        raise CoordinatorError(f"worktree {worktree!r} is not registered by git worktree")
+
+
 def _verification_commands(config: dict[str, Any]) -> list[str]:
     commands = config.get("verification_commands")
     return _strings(commands, "verification_commands", allow_empty=True)
@@ -1737,9 +1755,10 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     dod = _strings(getattr(args, "definition_of_done", None), "definition_of_done")
     prohibited = _strings(getattr(args, "prohibited_change", None), "prohibited_changes")
     dependencies = _strings(getattr(args, "dependency", None) or ["none"], "dependencies")
-    if not _non_empty(ticket) or not _non_empty(worktree) or not _non_empty(zone):
-        raise CoordinatorError("ticket, worktree and zone must be non-empty strings")
+    if not _non_empty(ticket) or not _non_empty(zone):
+        raise CoordinatorError("ticket and zone must be non-empty strings")
     _validate_branch(repo, branch)
+    _validate_worktree(repo, worktree)
     if not isinstance(config.get("backend_zones"), dict) or zone not in config["backend_zones"]:
         raise CoordinatorError(f"unknown backend zone {zone!r}")
     # Nullable for epic-less tasks: falls back to the project's base_branch, the same field
