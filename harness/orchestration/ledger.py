@@ -198,7 +198,7 @@ def _canonical(value: dict[str, Any]) -> str:
 def _read(path: Path, label: str) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         raise LedgerError(f"{label} is not valid JSON: {path.name}") from exc
     if not isinstance(value, dict):
         raise LedgerError(f"{label} must be a JSON object: {path.name}")
@@ -266,6 +266,35 @@ class LifecycleLedger:
         # cross-record graph before a migration/selects a generation.
         self._validate_generation(generation, complete=False)
         return generation
+
+    def records_root_lenient(self) -> Path | None:
+        """Return the selected generation without raising, for a caller (delivery_stats.py) that
+        must degrade a missing or malformed record to an absence signal instead of aborting.
+
+        Unlike ``records_root()``, this deliberately never calls ``pointer()`` (which raises on a
+        schema/version defect) and never checks the pointer's ``version`` field, and it never runs
+        ``_validate_generation()`` (no per-record JSON parsing, no batch/plan or record-graph cross
+        check). It is a read of whatever is on disk right now, not a validated selection."""
+        if not self.pointer_path.exists():
+            return self.root if self.root.is_dir() else None
+        try:
+            pointer = json.loads(self.pointer_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        generation = pointer.get("generation") if isinstance(pointer, dict) else None
+        if not isinstance(generation, str):
+            return None
+        candidate = self.root / GENERATIONS / generation
+        return candidate if candidate.is_dir() else None
+
+    @staticmethod
+    def read_record_lenient(path: Path) -> dict[str, Any] | None:
+        """Read one record file, returning ``None`` instead of raising for any of: a missing
+        file, unparseable JSON, or JSON that does not parse to an object."""
+        try:
+            return _read(path, "ledger record")
+        except LedgerError:
+            return None
 
     def ensure(self) -> dict[str, Any]:
         """Create the first empty generation; never reinterpret legacy records implicitly."""
