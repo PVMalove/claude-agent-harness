@@ -453,6 +453,8 @@ def claude_usage(project_dirs: list, numbers: set) -> dict:
     synthetic = 0
     incomplete_telemetry = False
 
+    session_stats: dict[str, dict] = {}
+
     transcripts = [path for directory in project_dirs for path in sorted(directory.glob("*.jsonl"))]
     for transcript in transcripts:
         for record in _read_jsonl(transcript):
@@ -477,7 +479,16 @@ def claude_usage(project_dirs: list, numbers: set) -> dict:
                 incomplete_telemetry = True
                 continue
             turns += 1
-            sessions.add(record.get("sessionId") or transcript.stem)
+            session_id = record.get("sessionId") or transcript.stem
+            sessions.add(session_id)
+            
+            turn_input = sum(_int(usage.get(f)) for f in CLAUDE_FIELDS[:3])
+            s_bucket = session_stats.setdefault(session_id, {"branch": branch, "turns": 0, "total_input": 0, "max_input": 0})
+            s_bucket["turns"] += 1
+            s_bucket["total_input"] += turn_input
+            if turn_input > s_bucket["max_input"]:
+                s_bucket["max_input"] = turn_input
+                
             moment = _moment(record.get("timestamp"))
             if moment:
                 first = moment if first is None or moment < first else first
@@ -514,6 +525,11 @@ def claude_usage(project_dirs: list, numbers: set) -> dict:
         "thinking_tokens": thinking,
         "non_billable_turns": synthetic,
         "sidechain": sidechain,
+        "session_stats": sorted(
+            [{"id": k} | v for k, v in session_stats.items()],
+            key=lambda x: x["total_input"],
+            reverse=True
+        ),
         "first_activity": first.isoformat() if first else None,
         "last_activity": last.isoformat() if last else None,
         "quota": quota if quota else MISSING,
@@ -1187,6 +1203,11 @@ def render_terminal(report: dict) -> str:
                 f"  Claude {model}: вход {_compact(sum(bucket[f] for f in CLAUDE_FIELDS[:3]))}, "
                 f"выход {_compact(bucket['output_tokens'])}, ходов {bucket['turns']}"
             )
+        session_stats = claude.get("session_stats", [])
+        if session_stats:
+            lines.append("Топ-3 сессий по объему контекста:")
+            for s in session_stats[:3]:
+                lines.append(f"  Ветка {s['branch']}: ходов {s['turns']}, макс. контекст {_compact(s['max_input'])}, всего входных {_compact(s['total_input'])}")
     else:
         lines.append(f"  Claude: {claude.get('reason', MISSING)}")
 
