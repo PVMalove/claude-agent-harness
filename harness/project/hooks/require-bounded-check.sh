@@ -21,7 +21,7 @@ FULL_SUITE=0
 
 while IFS= read -r gate_command; do
   [ -z "$gate_command" ] && continue
-  ESCAPED=$(echo "$gate_command" | sed -E 's/[][\.*^$/]/\\&/g')
+  ESCAPED=$(echo "$gate_command" | sed -E 's/[][\.*^$/+?(){}|]/\\&/g')
   echo "$COMMAND" | grep -qE "$ESCAPED" && FULL_SUITE=1
 done < <(
   grep -oE '"qa_gate_commands"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$PROJECT_JSON" 2>/dev/null \
