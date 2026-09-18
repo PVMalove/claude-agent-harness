@@ -3129,8 +3129,12 @@ def _validate_report(
             raise CoordinatorError(
                 "completion report check evidence exceeds the bounded summary limit; store the full log as an artifact and report its path"
             )
-    if [check["command"] for check in checks] != dispatch["verification_commands"]:
-        raise CoordinatorError("completion report checks_run must exactly match approved verification commands")
+    commands_run = [check["command"] for check in checks]
+    if commands_run != dispatch["verification_commands"]:
+        raise CoordinatorError(
+            f"completion report checks_run must exactly match approved verification commands "
+            f"(expected {dispatch['verification_commands']}, got {commands_run})"
+        )
     commit_sha = report["commit_sha"]
     if role["mode"] == "write" and (
         not isinstance(commit_sha, str)
