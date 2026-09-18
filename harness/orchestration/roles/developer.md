@@ -20,3 +20,6 @@ The output is an implementation satisfying the handoff acceptance criteria. Prov
 required project checks, plus a risk review when a listed trigger applies. Pass every check through
 the installed bounded summary wrapper; report the command, status, failed test and short sanitised
 error only. Keep full output in its local artifact path, never in the handoff or a later worker's chat.
+
+Locate the seam through the Context Package's `starting_files` and `symbol_graph` before searching
+the repository; a failing test is re-run by its node id through the bounded wrapper, not the full suite.
