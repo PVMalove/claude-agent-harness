@@ -212,65 +212,32 @@ def _canonical(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
-def _write_exclusive(path: Path, value: dict[str, Any]) -> None:
-    ledger = _ledger_for_path(path)
-    if ledger is not None:
-        try:
-            ledger.write_immutable(path, value)
-        except LedgerError as exc:
-            raise CoordinatorError(str(exc)) from exc
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _write_exclusive(ledger: LifecycleLedger, path: Path, value: dict[str, Any]) -> None:
     try:
-        with path.open("x", encoding="utf-8", newline="\n") as stream:
-            stream.write(_canonical(value))
-    except FileExistsError as exc:
-        raise CoordinatorError(f"refusing to overwrite immutable record: {path.name}") from exc
+        ledger.write_immutable(path, value)
+    except LedgerError as exc:
+        raise CoordinatorError(str(exc)) from exc
 
 
-def _write_text_exclusive(path: Path, value: str) -> None:
-    ledger = _ledger_for_path(path)
-    if ledger is not None:
-        try:
-            ledger.write_artifact(path, value)
-        except LedgerError as exc:
-            raise CoordinatorError(str(exc)) from exc
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _write_text_exclusive(ledger: LifecycleLedger, path: Path, value: str) -> None:
     try:
-        with path.open("x", encoding="utf-8", newline="\n") as stream:
-            stream.write(value)
-    except FileExistsError as exc:
-        if path.read_text(encoding="utf-8") != value:
-            raise CoordinatorError(f"refusing to overwrite immutable artifact: {path.name}") from exc
+        ledger.write_artifact(path, value)
+    except LedgerError as exc:
+        raise CoordinatorError(str(exc)) from exc
 
 
-def _replace(path: Path, value: dict[str, Any]) -> None:
-    ledger = _ledger_for_path(path)
-    if ledger is not None:
-        try:
-            ledger.replace(path, value)
-        except LedgerError as exc:
-            raise CoordinatorError(str(exc)) from exc
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+def _write_record(ledger: LifecycleLedger, record: Any) -> None:
     try:
-        temporary.write_text(_canonical(value), encoding="utf-8", newline="\n")
-        os.replace(temporary, path)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        ledger.write_record(record)
+    except LedgerError as exc:
+        raise CoordinatorError(str(exc)) from exc
 
-def _ledger_for_path(path: Path) -> LifecycleLedger | None:
-    """Find the selected ledger that owns a coordinator record path."""
-    for parent in (path.parent, *path.parents):
-        if not (parent / "ledger.json").is_file():
-            continue
-        return LifecycleLedger(parent)
-    return None
+
+def _replace_record(ledger: LifecycleLedger, record: Any) -> None:
+    try:
+        ledger.replace_record(record)
+    except LedgerError as exc:
+        raise CoordinatorError(str(exc)) from exc
 
 
 def _safe_id(value: object, label: str) -> str:
@@ -370,14 +337,14 @@ def _records_root(root: Path) -> Path:
 
 
 @contextmanager
-def _ledger_lock(root: Path) -> Iterator[None]:
+def _ledger_lock(ledger: LifecycleLedger) -> Iterator[None]:
     """Exclusive lock through ``LifecycleLedger.lock()``, translating ``LedgerError`` to
     ``CoordinatorError`` for this call site -- the same translation ``_write_exclusive`` and
-    ``_replace`` already apply on every write.  Centralising the translation here (rather than
+    ``_replace_record`` already apply on every write.  Centralising the translation here (rather than
     repeating a ``try/except`` at every one of this module's lock sites) removes the risk of a lock
     site forgetting it and leaking an uncaught ``LedgerError`` into the CLI."""
     try:
-        with LifecycleLedger(root).lock():
+        with ledger.lock():
             yield
     except LedgerError as exc:
         raise CoordinatorError(str(exc)) from exc
@@ -580,7 +547,7 @@ def _integration_ref(repo: Path, batch: dict[str, Any]) -> str:
     return _required_base_branch(repo)
 
 
-def _enforce_base_freshness(repo: Path, root: Path, batch: dict[str, Any]) -> None:
+def _enforce_base_freshness(repo: Path, root: Path, ledger: LifecycleLedger, batch: dict[str, Any]) -> None:
     """Mandatory re-check, immediately before a review or publish dispatch: the batch's pinned
     integration base must still be the integration ref's current tip. A stale base is cleared only
     by a new developer dispatch (a rebase), never by the coordinator moving this field directly."""
@@ -595,10 +562,8 @@ def _enforce_base_freshness(repo: Path, root: Path, batch: dict[str, Any]) -> No
     batch["required_next_role"] = "developer"
     batch["retry_candidate_required"] = True
     batch["base_rebase_required"] = True
-    _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+    _safe_id(batch["batch_id"], "batch")
+    _replace_record(ledger, BatchRecord.from_dict(batch))
     raise CoordinatorError(
         f"batch base is stale: origin/{ref} has moved from {recorded} to {current}; "
         "only a new developer rebase dispatch can clear this block"
@@ -816,14 +781,6 @@ def _resolve_assignment(
     )
 
 
-def _batch_path(root: Path, batch_id: str) -> Path:
-    return _records_root(root) / "batches" / f"{_safe_id(batch_id, 'batch')}.json"
-
-
-def _dispatch_status_path(root: Path, dispatch_id: str) -> Path:
-    return _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch_id, 'dispatch')}.json"
-
-
 def _moment(value: object, label: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value)  # type: ignore[arg-type]
@@ -855,19 +812,19 @@ def _concise_evidence(text: str) -> str:
 
 
 def _load_batch(root: Path, batch_id: str) -> dict[str, Any]:
-    return _read_object(_records_root(root) / "batches" / f"{_safe_id(batch_id, 'batch')}.json", "batch record")
+    return _read_object(_records_root(root) / BatchRecord.directory / f"{_safe_id(batch_id, 'batch')}.json", "batch record")
 
 
 def _load_dispatch(root: Path, dispatch_id: str) -> dict[str, Any]:
-    return _read_object(_records_root(root) / "dispatches" / f"{_safe_id(dispatch_id, 'dispatch')}.json", "dispatch record")
+    return _read_object(_records_root(root) / DispatchRecord.directory / f"{_safe_id(dispatch_id, 'dispatch')}.json", "dispatch record")
 
 
 def _load_dispatch_status(root: Path, dispatch_id: str) -> dict[str, Any]:
-    return _read_object(_records_root(root) / "dispatch-status" / f"{_safe_id(dispatch_id, 'dispatch')}.json", "dispatch status")
+    return _read_object(_records_root(root) / DispatchStatusRecord.directory / f"{_safe_id(dispatch_id, 'dispatch')}.json", "dispatch status")
 
 
 def _load_risk(root: Path, risk_id: str) -> dict[str, Any]:
-    return _read_object(_records_root(root) / "risk-assessments" / f"{_safe_id(risk_id, 'risk assessment')}.json", "risk assessment")
+    return _read_object(_records_root(root) / RiskAssessmentRecord.directory / f"{_safe_id(risk_id, 'risk assessment')}.json", "risk assessment")
 
 
 def _validate_risk(root: Path, batch: dict[str, Any], risk: dict[str, Any]) -> None:
@@ -911,7 +868,7 @@ def _risk_for_candidate(root: Path, batch: dict[str, Any], candidate: str) -> di
 
 
 def _load_checkpoint(root: Path, checkpoint_id: str) -> dict[str, Any]:
-    return _read_object(_records_root(root) / "checkpoints" / f"{_safe_id(checkpoint_id, 'checkpoint')}.json", "checkpoint")
+    return _read_object(_records_root(root) / CheckpointRecord.directory / f"{_safe_id(checkpoint_id, 'checkpoint')}.json", "checkpoint")
 
 
 def _latest_checkpoint_for_dispatch(root: Path, batch: dict[str, Any], dispatch_id: str) -> dict[str, Any]:
@@ -926,7 +883,7 @@ def _latest_checkpoint_for_dispatch(root: Path, batch: dict[str, Any], dispatch_
 
 
 def _load_context_package(root: Path, package_id: str) -> dict[str, Any]:
-    return _read_object(_records_root(root) / "context-packages" / f"{_safe_id(package_id, 'context package')}.json", "context package")
+    return _read_object(_records_root(root) / ContextPackageRecord.directory / f"{_safe_id(package_id, 'context package')}.json", "context package")
 
 
 def _validate_context_package(root: Path, batch: dict[str, Any], package: dict[str, Any]) -> None:
@@ -1108,9 +1065,10 @@ def ledger_status(args: argparse.Namespace) -> dict[str, Any]:
     """Report the selected lifecycle-ledger generation without changing it."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         try:
-            return LifecycleLedger(root).status()
+            return ledger.status()
         except LedgerError as exc:
             raise CoordinatorError(str(exc)) from exc
 
@@ -1119,9 +1077,10 @@ def migrate_ledger(args: argparse.Namespace) -> dict[str, Any]:
     """Explicitly validate legacy state and atomically select its versioned replacement."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         try:
-            return LifecycleLedger(root).migrate()
+            return ledger.migrate()
         except LedgerError as exc:
             raise CoordinatorError(str(exc)) from exc
 
@@ -1130,9 +1089,10 @@ def reset_ledger(args: argparse.Namespace) -> dict[str, Any]:
     """Select an empty generation only after an explicit confirmation and no active batch."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         try:
-            return LifecycleLedger(root).reset(args.confirm)
+            return ledger.reset(args.confirm)
         except LedgerError as exc:
             raise CoordinatorError(str(exc)) from exc
 
@@ -1141,9 +1101,10 @@ def clean_ledger(args: argparse.Namespace) -> dict[str, Any]:
     """Safely remove orphaned dispatch evidence from the ledger state."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         try:
-            return LifecycleLedger(root).clean()
+            return ledger.clean()
         except LedgerError as exc:
             raise CoordinatorError(str(exc)) from exc
 
@@ -1391,7 +1352,8 @@ def preflight_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     config = _config(repo)
     if not _configured(repo):
         raise CoordinatorError("dispatch preflight requires a project-owned .harness/orchestration.json")
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         candidate = _candidate_commit(repo, args.candidate_commit) if args.candidate_commit else None
@@ -1435,7 +1397,8 @@ def decision_packet(args: argparse.Namespace) -> dict[str, Any]:
     """Return concise approval evidence, with immutable report and diff paths kept in the ledger."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         entry = None
@@ -1489,7 +1452,8 @@ def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
     candidate = _candidate_commit(repo, args.candidate_commit)
     changed_files = [item.replace("\\", "/") for item in _strings(args.changed_file, "changed_files")]
     developer_triggers = _validate_trigger_names(args.developer_trigger or [], "developer_triggers", known)
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         if batch.get("state") != "awaiting-approval":
@@ -1533,10 +1497,8 @@ def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
             "created_at": _now(),
         }
         _reject_sensitive(risk, "risk assessment")
-        _write_exclusive(
-            _records_root(root) / "risk-assessments" / f"{_safe_id(risk['risk_assessment_id'], 'risk assessment')}.json",
-            RiskAssessmentRecord.from_dict(risk).to_dict(),
-        )
+        _safe_id(risk["risk_assessment_id"], "risk assessment")
+        _write_record(ledger, RiskAssessmentRecord.from_dict(risk))
         batch.setdefault("risk_assessments", []).append(
             {
                 "risk_assessment_id": risk["risk_assessment_id"],
@@ -1560,16 +1522,15 @@ def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
         # handoff visible to the coordinator; a later, separately approved dispatch creates the
         # immutable brief.
         batch["next_action"] = "code-review" if risk["review_required"] else "qa"
-        _replace(
-            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-            BatchRecord.from_dict(batch).to_dict(),
-        )
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
     return risk
 
 
 def _persist_context_package(
     repo: Path,
     root: Path,
+    ledger: LifecycleLedger,
     batch: dict[str, Any],
     *,
     role: str,
@@ -1626,10 +1587,8 @@ def _persist_context_package(
         "estimated_tokens": built.estimated_tokens, "role": "shared", "inclusion_reason": inclusion_reason,
     }
     _reject_sensitive(package, "context package")
-    _write_exclusive(
-        _records_root(root) / "context-packages" / f"{_safe_id(package['context_package_id'], 'context package')}.json",
-        ContextPackageRecord.from_dict(package).to_dict(),
-    )
+    _safe_id(package["context_package_id"], "context package")
+    _write_record(ledger, ContextPackageRecord.from_dict(package))
     batch.setdefault("context_packages", []).append({
         "context_package_id": package["context_package_id"], "base_commit": package["base_commit"],
         "candidate_commit": package["candidate_commit"], "role": "shared",
@@ -1649,7 +1608,8 @@ def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
     requested_role = getattr(args, "role", "shared")
     if requested_role != "shared":
         raise CoordinatorError("Context Packages are batch-shared; role-specific focus stays in the dispatch brief")
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         if batch.get("state") != "awaiting-approval":
@@ -1662,7 +1622,7 @@ def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
         if candidate != _latest_developer_candidate(repo, root, batch):
             raise CoordinatorError("candidate commit does not match the accepted developer report")
         package = _persist_context_package(
-            repo, root, batch, role="shared", snapshot=candidate,
+            repo, root, ledger, batch, role="shared", snapshot=candidate,
             inclusion_reason=getattr(args, "inclusion_reason", "manual immutable context registration"),
             min_starting_files=args.min_starting_files, max_starting_files=args.max_starting_files,
             max_package_size_bytes=args.max_package_size_bytes,
@@ -1670,10 +1630,8 @@ def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
             symbol_graph_depth=getattr(args, "symbol_graph_depth", None),
             max_related_tests=getattr(args, "max_related_tests", None),
         )
-        _replace(
-            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-            BatchRecord.from_dict(batch).to_dict(),
-        )
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
     return package
 
 
@@ -1820,34 +1778,33 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     }
     _reject_sensitive(record, "batch")
     root = _state_root(args, repo)
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         try:
-            LifecycleLedger(root).ensure()
+            ledger.ensure()
         except LedgerError as exc:
             raise CoordinatorError(str(exc)) from exc
-        _write_exclusive(
-            _records_root(root) / "plans" / f"{_safe_id(record['batch_id'], 'batch')}.json",
-            PlanRecord.from_dict({field: record[field] for field in PLAN_FIELDS}).to_dict(),
-        )
-        _write_exclusive(
-            _records_root(root) / "batches" / f"{_safe_id(record['batch_id'], 'batch')}.json",
-            BatchRecord.from_dict(record).to_dict(),
-        )
+        _safe_id(record["batch_id"], "batch")
+        _write_record(ledger, PlanRecord.from_dict({field: record[field] for field in PLAN_FIELDS}))
+        _write_record(ledger, BatchRecord.from_dict(record))
     return record
 
 
 def approve_batch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         record = _load_batch(root, args.batch)
         _validate_batch_integrity(root, record)
         if record.get("state") != "planned":
             raise CoordinatorError("only a planned batch can receive its planning approval")
-        record = _vo_replace(
+        updated = _vo_replace(
             BatchRecord.from_dict(record), coordinator_approval=_approval(args), state="awaiting-approval",
-        ).to_dict()
-        _replace(_records_root(root) / "batches" / f"{_safe_id(record['batch_id'], 'batch')}.json", record)
+        )
+        _safe_id(updated.batch_id, "batch")
+        _replace_record(ledger, updated)
+        record = updated.to_dict()
     return record
 
 
@@ -1888,7 +1845,8 @@ def _review_severity(review: dict[str, Any]) -> dict[str, str]:
 def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         pending = [item for item in batch.get("dispatches", []) if item.get("state") == "reported" and "decision" not in item]
@@ -1959,10 +1917,8 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
             batch["state"] = "failed"
         elif batch.get("state") != "completed":
             batch["state"] = "awaiting-approval"
-        _replace(
-            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-            BatchRecord.from_dict(batch).to_dict(),
-        )
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
     return batch
 
 
@@ -1985,7 +1941,8 @@ def list_batches(args: argparse.Namespace) -> dict[str, Any]:
     """
     repo = _repo(args)
     root = _state_root(args, repo)
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         batches = []
         for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
             batch = _read_object(path, "batch record")
@@ -2029,7 +1986,8 @@ def abandon_batch(args: argparse.Namespace) -> dict[str, Any]:
     if not reason:
         raise CoordinatorError("abandoning a batch requires a recorded reason")
     _reject_sensitive({"reason": reason}, "abandon reason")
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         open_dispatches = [item["dispatch_id"] for item in batch.get("dispatches", []) if not _settled(item)]
@@ -2043,11 +2001,11 @@ def abandon_batch(args: argparse.Namespace) -> dict[str, Any]:
             if _settled(entry):
                 continue
             entry["state"] = "abandoned"
-            status_path = _records_root(root) / "dispatch-status" / f"{_safe_id(entry['dispatch_id'], 'dispatch')}.json"
+            status_path = _records_root(root) / DispatchStatusRecord.directory / f"{_safe_id(entry['dispatch_id'], 'dispatch')}.json"
             if status_path.exists():
                 status = _load_dispatch_status(root, entry["dispatch_id"])
                 status.update({"state": "abandoned", "updated_at": moment})
-                _replace(status_path, DispatchStatusRecord.from_dict(status).to_dict())
+                _replace_record(ledger, DispatchStatusRecord.from_dict(status))
         batch["state"] = "failed"
         batch.pop("next_action", None)
         batch.pop("required_next_role", None)
@@ -2064,10 +2022,8 @@ def abandon_batch(args: argparse.Namespace) -> dict[str, Any]:
             "approved_at": approval["approved_at"],
             "note": reason,
         })
-        _replace(
-            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-            BatchRecord.from_dict(batch).to_dict(),
-        )
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
     return {
         "batch_id": batch["batch_id"],
         "ticket": batch["ticket"],
@@ -2090,7 +2046,8 @@ def cancel_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     if not reason:
         raise CoordinatorError("cancelling a dispatch requires a recorded reason")
     _reject_sensitive({"reason": reason}, "dispatch cancellation reason")
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -2109,17 +2066,13 @@ def cancel_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         batch.setdefault("coordinator_decisions", []).append({
             "dispatch_id": dispatch["dispatch_id"], "decision": "cancel", **approval, "note": reason,
         })
-        _replace(
-            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
-            DispatchStatusRecord.from_dict({
-                "dispatch_id": dispatch["dispatch_id"], "state": "cancelled", "updated_at": moment,
-                "cancellation": entry["cancellation"],
-            }).to_dict(),
-        )
-        _replace(
-            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-            BatchRecord.from_dict(batch).to_dict(),
-        )
+        _safe_id(dispatch["dispatch_id"], "dispatch")
+        _replace_record(ledger, DispatchStatusRecord.from_dict({
+            "dispatch_id": dispatch["dispatch_id"], "state": "cancelled", "updated_at": moment,
+            "cancellation": entry["cancellation"],
+        }))
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
     return {"dispatch_id": dispatch["dispatch_id"], "batch_id": batch["batch_id"], "state": "cancelled"}
 
 
@@ -2182,7 +2135,8 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
     config = _config(repo)
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         if batch.get("state") != "awaiting-approval":
@@ -2243,7 +2197,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             raise CoordinatorError("dispatch purpose is invalid")
         is_review_work = role_name == "code-review" and purpose == "work"
         if is_review_work or purpose == "publish":
-            _enforce_base_freshness(repo, root, batch)
+            _enforce_base_freshness(repo, root, ledger, batch)
         if candidate is not None:
             risk = _risk_for_candidate(root, batch, candidate)
         if role_name in {"code-review", "qa"} and candidate != _latest_developer_candidate(repo, root, batch):
@@ -2292,7 +2246,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 except CoordinatorError:
                     snapshot = batch["base_commit"]
             context_package = _persist_context_package(
-                repo, root, batch, role="shared", snapshot=snapshot,
+                repo, root, ledger, batch, role="shared", snapshot=snapshot,
                 inclusion_reason=(
                     f"automatic shared package for {role_name} at pinned snapshot {snapshot}; "
                     "included before immutable brief creation"
@@ -2354,16 +2308,11 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         dispatch = dict(brief)
         dispatch["state"] = "approved"
         dispatch["created_at"] = _now()
-        _write_exclusive(
-            _records_root(root) / "dispatches" / f"{_safe_id(dispatch_id, 'dispatch')}.json",
-            DispatchRecord.from_dict(dispatch).to_dict(),
-        )
-        _write_exclusive(
-            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch_id, 'dispatch')}.json",
-            DispatchStatusRecord.from_dict(
-                {"dispatch_id": dispatch_id, "state": "approved", "updated_at": _now()}
-            ).to_dict(),
-        )
+        _safe_id(dispatch_id, "dispatch")
+        _write_record(ledger, DispatchRecord.from_dict(dispatch))
+        _write_record(ledger, DispatchStatusRecord.from_dict(
+            {"dispatch_id": dispatch_id, "state": "approved", "updated_at": _now()}
+        ))
         batch["dispatches"].append({
             "dispatch_id": dispatch_id,
             "role": role_name,
@@ -2373,10 +2322,8 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if required_role and role_name == required_role:
             batch.pop("required_next_role", None)
         batch["state"] = "active"
-        _replace(
-            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-            BatchRecord.from_dict(batch).to_dict(),
-        )
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
     _prepare_agent_inbox(repo)
     return {
         "dispatch_id": dispatch_id, "batch_id": batch["batch_id"], "state": "approved", "brief": brief,
@@ -2429,7 +2376,8 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             raise CoordinatorError(f"runtime adapter does not exist: {adapter}")
     elif args.adapter or args.adapter_arg:
         raise CoordinatorError("an in-process dispatch runs inside this session and takes no runtime adapter")
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -2451,7 +2399,7 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
         if not entry or entry.get("state") != "approved":
             raise CoordinatorError("dispatch was already sent or is not registered in its batch")
-        brief_path = _records_root(root) / "dispatches" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json"
+        brief_path = _records_root(root) / DispatchRecord.directory / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json"
         if adapter is not None:
             command = [str(adapter)] if adapter.suffix.lower() != ".py" else [sys.executable, str(adapter)]
             adapter_args = args.adapter_arg or []
@@ -2480,17 +2428,13 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         else:
             raise CoordinatorError("dispatch is not registered in its batch")
         sent_at = _now()
-        _replace(
-            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
-            DispatchStatusRecord.from_dict({
-                "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": sent_at,
-                "heartbeat_at": sent_at,
-            }).to_dict(),
-        )
-        _replace(
-            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-            BatchRecord.from_dict(batch).to_dict(),
-        )
+        _safe_id(dispatch["dispatch_id"], "dispatch")
+        _replace_record(ledger, DispatchStatusRecord.from_dict({
+            "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": sent_at,
+            "heartbeat_at": sent_at,
+        }))
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "dispatched",
@@ -2520,7 +2464,8 @@ def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     reported = args.model.strip() if _non_empty(args.model) else ""
     if not reported:
         raise CoordinatorError("a model self-report must name the actually active model")
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         dispatch, status = _live_status(root, args.dispatch)
         expected = dispatch["resolved_model"]
         model_matched = reported == expected
@@ -2550,20 +2495,16 @@ def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         }
         if attestation is not None:
             status["worktree_attestation"] = {**attestation, "reported_at": moment}
-        _replace(
-            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
-            DispatchStatusRecord.from_dict(status).to_dict(),
-        )
+        _safe_id(dispatch["dispatch_id"], "dispatch")
+        _replace_record(ledger, DispatchStatusRecord.from_dict(status))
         if not matched:
             batch = _load_batch(root, dispatch["batch_id"])
             for entry in batch.get("dispatches", []):
                 if entry["dispatch_id"] == dispatch["dispatch_id"]:
                     entry["state"] = "blocked"
             batch["state"] = "blocked"
-            _replace(
-                _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-                BatchRecord.from_dict(batch).to_dict(),
-            )
+            _safe_id(batch["batch_id"], "batch")
+            _replace_record(ledger, BatchRecord.from_dict(batch))
     if not matched:
         mismatch = []
         if not model_matched:
@@ -2581,16 +2522,15 @@ def heartbeat_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     root = _state_root(args, repo)
     note = args.note.strip() if _non_empty(args.note) else "none"
     _reject_sensitive({"note": note}, "dispatch heartbeat")
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         dispatch, status = _live_status(root, args.dispatch)
         moment = _now()
         status["updated_at"] = moment
         status["heartbeat_at"] = moment
         status["heartbeat_note"] = _sanitise(note)[:240]
-        _replace(
-            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
-            DispatchStatusRecord.from_dict(status).to_dict(),
-        )
+        _safe_id(dispatch["dispatch_id"], "dispatch")
+        _replace_record(ledger, DispatchStatusRecord.from_dict(status))
     return {"dispatch_id": dispatch["dispatch_id"], "state": status["state"], "heartbeat_at": moment}
 
 
@@ -2601,7 +2541,8 @@ def rate_limited_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     retry_after = args.retry_after_seconds
     if isinstance(retry_after, bool) or not isinstance(retry_after, int) or retry_after < 1:
         raise CoordinatorError("retry-after-seconds must be a positive integer")
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -2620,14 +2561,10 @@ def rate_limited_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "dispatch_id": dispatch["dispatch_id"], "event": "rate_limited", "recorded_at": _now(),
             "retry_not_before": retry_not_before,
         })
-        _replace(
-            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
-            DispatchStatusRecord.from_dict(status).to_dict(),
-        )
-        _replace(
-            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-            BatchRecord.from_dict(batch).to_dict(),
-        )
+        _safe_id(dispatch["dispatch_id"], "dispatch")
+        _replace_record(ledger, DispatchStatusRecord.from_dict(status))
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
     return {"dispatch_id": dispatch["dispatch_id"], "event": "rate_limited", "retry_not_before": retry_not_before}
 
 
@@ -2639,8 +2576,9 @@ def wait_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in (timeout, interval, threshold)):
         raise CoordinatorError("timeout, poll-interval and stale-after must be positive integers")
     deadline = time.monotonic() + timeout
+    ledger = LifecycleLedger(root)
     while True:
-        with _ledger_lock(root):
+        with _ledger_lock(ledger):
             dispatch = _load_dispatch(root, args.dispatch)
             status = _load_dispatch_status(root, dispatch["dispatch_id"])
             state = status.get("state")
@@ -2683,7 +2621,8 @@ def record_telemetry(args: argparse.Namespace) -> dict[str, Any]:
         value = payload[field]
         if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
             raise CoordinatorError(f"telemetry {field} must be a non-negative integer or null")
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, payload["dispatch_id"])
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -2691,10 +2630,8 @@ def record_telemetry(args: argparse.Namespace) -> dict[str, Any]:
         record["telemetry_id"] = f"telemetry-{uuid.uuid4()}"
         record["record_sha256"] = hashlib.sha256(_canonical(record).encode("utf-8")).hexdigest()
         batch.setdefault("telemetry", []).append(record)
-        _replace(
-            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-            BatchRecord.from_dict(batch).to_dict(),
-        )
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
     return {"telemetry_id": record["telemetry_id"], "dispatch_id": payload["dispatch_id"]}
 
 
@@ -2765,7 +2702,8 @@ def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
     checkpoint = _read_object(_agent_authored_file(repo, args.file, "a checkpoint"), "checkpoint")
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         dispatch, status = _live_status(root, checkpoint.get("dispatch_id"))
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -2785,10 +2723,8 @@ def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "created_at": _now(),
             **checkpoint,
         }
-        _write_exclusive(
-            _records_root(root) / "checkpoints" / f"{_safe_id(record['checkpoint_id'], 'checkpoint')}.json",
-            CheckpointRecord.from_dict(record).to_dict(),
-        )
+        _safe_id(record["checkpoint_id"], "checkpoint")
+        _write_record(ledger, CheckpointRecord.from_dict(record))
         entry["state"] = "checkpointed"
         # Batch-level pointer, the same ownership pattern as risk_assessments/context_packages;
         # dispatch_id is carried alongside since a checkpoint is dispatch-scoped, not batch-scoped.
@@ -2797,16 +2733,12 @@ def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "dispatch_id": dispatch["dispatch_id"],
             "record_sha256": hashlib.sha256(_canonical(record).encode("utf-8")).hexdigest(),
         })
-        _replace(
-            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-            BatchRecord.from_dict(batch).to_dict(),
-        )
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
         moment = _now()
         status.update({"state": "checkpointed", "updated_at": moment})
-        _replace(
-            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
-            DispatchStatusRecord.from_dict(status).to_dict(),
-        )
+        _safe_id(dispatch["dispatch_id"], "dispatch")
+        _replace_record(ledger, DispatchStatusRecord.from_dict(status))
     return {"dispatch_id": dispatch["dispatch_id"], "state": "checkpointed", "checkpoint_id": record["checkpoint_id"]}
 
 
@@ -2900,7 +2832,8 @@ def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     root = _state_root(args, repo)
     termination_reason = args.termination_reason.strip().lower() if _non_empty(args.termination_reason) else ""
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -2935,18 +2868,14 @@ def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         batch.setdefault("coordinator_decisions", []).append({
             "dispatch_id": dispatch["dispatch_id"], **authorization,
         })
-        _replace(
-            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-            BatchRecord.from_dict(batch).to_dict(),
-        )
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
         moment = _now()
-        _replace(
-            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
-            DispatchStatusRecord.from_dict({
-                "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": moment,
-                "heartbeat_at": moment, "last_event": "resumed",
-            }).to_dict(),
-        )
+        _safe_id(dispatch["dispatch_id"], "dispatch")
+        _replace_record(ledger, DispatchStatusRecord.from_dict({
+            "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": moment,
+            "heartbeat_at": moment, "last_event": "resumed",
+        }))
     return {
         "dispatch_id": dispatch["dispatch_id"], "state": "dispatched",
         "authorization": authorization["decision"],
@@ -2962,9 +2891,10 @@ def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
     threshold = args.stale_after
     if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 1:
         raise CoordinatorError("stale-after must be a positive number of seconds")
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         entries: list[dict[str, Any]] = []
-        for path in sorted((_records_root(root) / "dispatch-status").glob("dispatch-*.json")):
+        for path in sorted((_records_root(root) / DispatchStatusRecord.directory).glob("dispatch-*.json")):
             status = _read_object(path, "dispatch status")
             if args.dispatch and status.get("dispatch_id") != args.dispatch:
                 continue
@@ -3004,7 +2934,8 @@ def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         raise CoordinatorError("publish remote must be a non-empty string")
     if remote not in _git(repo, "remote").splitlines():
         raise CoordinatorError("publish remote is not configured for this repository")
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -3028,16 +2959,12 @@ def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if not published or published.split()[0] != candidate:
             raise CoordinatorError("remote branch does not resolve to the accepted QA candidate")
         entry["state"] = "dispatched"
-        _replace(
-            _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
-            DispatchStatusRecord.from_dict({
-                "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": _now(),
-            }).to_dict(),
-        )
-        _replace(
-            _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-            BatchRecord.from_dict(batch).to_dict(),
-        )
+        _safe_id(dispatch["dispatch_id"], "dispatch")
+        _replace_record(ledger, DispatchStatusRecord.from_dict({
+            "dispatch_id": dispatch["dispatch_id"], "state": "dispatched", "updated_at": _now(),
+        }))
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
         changed = _changed_files_between(repo, batch["base_commit"], candidate) if batch.get("base_commit") else _commit_changed_files(repo, candidate)
         report = {
             "dispatch_id": dispatch["dispatch_id"], "ticket": dispatch["ticket"], "role": "developer",
@@ -3050,19 +2977,21 @@ def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "risks": "none", "blockers": "none", "next_coordinator_action": "accept publication or inspect remote evidence",
             "report_language": "ru",
         }
-        report_path = _persist_report(root, batch, dispatch, report)
+        report_path = _persist_report(ledger, root, batch, dispatch, report)
     return {"dispatch_id": dispatch["dispatch_id"], "state": "reported", "report": str(report_path), "candidate_commit": candidate}
 
 
-def _persist_report(root: Path, batch: dict[str, Any], dispatch: dict[str, Any], report: dict[str, Any]) -> Path:
+def _persist_report(
+    ledger: LifecycleLedger, root: Path, batch: dict[str, Any], dispatch: dict[str, Any], report: dict[str, Any],
+) -> Path:
     """Persist a role report and advance its batch atomically under the coordinator lock."""
     report_json = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.json"
     report_md = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.md"
     if report_json.exists() or report_md.exists():
         raise CoordinatorError("refusing to overwrite immutable completion report")
-    _write_exclusive(report_json, report)
+    _write_exclusive(ledger, report_json, report)
     try:
-        _write_text_exclusive(report_md, _report_markdown(report))
+        _write_text_exclusive(ledger, report_md, _report_markdown(report))
     except CoordinatorError as exc:
         raise CoordinatorError("refusing to overwrite immutable Markdown report") from exc
     entry = next((item for item in batch["dispatches"] if item["dispatch_id"] == dispatch["dispatch_id"]), None)
@@ -3074,14 +3003,10 @@ def _persist_report(root: Path, batch: dict[str, Any], dispatch: dict[str, Any],
     batch["state"] = "awaiting-approval"
     closed = _load_dispatch_status(root, dispatch["dispatch_id"])
     closed.update({"dispatch_id": dispatch["dispatch_id"], "state": "reported", "updated_at": _now()})
-    _replace(
-        _records_root(root) / "dispatch-status" / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json",
-        DispatchStatusRecord.from_dict(closed).to_dict(),
-    )
-    _replace(
-        _records_root(root) / "batches" / f"{_safe_id(batch['batch_id'], 'batch')}.json",
-        BatchRecord.from_dict(batch).to_dict(),
-    )
+    _safe_id(dispatch["dispatch_id"], "dispatch")
+    _replace_record(ledger, DispatchStatusRecord.from_dict(closed))
+    _safe_id(batch["batch_id"], "batch")
+    _replace_record(ledger, BatchRecord.from_dict(batch))
     return report_json
 
 
@@ -3274,7 +3199,8 @@ def submit_report(args: argparse.Namespace) -> dict[str, Any]:
     except CoordinatorError:
         raise
     root = _state_root(args, repo)
-    with _ledger_lock(root):
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, report.get("dispatch_id"))
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
@@ -3341,7 +3267,7 @@ def submit_report(args: argparse.Namespace) -> dict[str, Any]:
                 batch["risk_reassessment_required"] = False
                 batch.pop("risk_reassessment_candidate", None)
                 batch.pop("risk_reassessment_triggers", None)
-        report_json = _persist_report(root, batch, dispatch, report)
+        report_json = _persist_report(ledger, root, batch, dispatch, report)
     return {"dispatch_id": dispatch["dispatch_id"], "state": "reported", "report": str(report_json)}
 
 
