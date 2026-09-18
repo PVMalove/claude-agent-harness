@@ -9,11 +9,13 @@ missing rather than as zero, and figures that can only be attributed approximate
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -613,11 +615,51 @@ def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple) -> dic
 # --------------------------------------------------------------------------- orchestration ledger
 
 
-def _ledger_records_root(repo: Path, state_dir: Optional[Path]) -> Optional[Path]:
-    """Resolve the ledger's selected generation the same way the coordinator's public pointer file
-    says to, without re-running the coordinator's own cross-record validation: a report has to
-    degrade a single bad record to missing, never abort on it."""
-    root = state_dir if state_dir is not None else repo / ORCHESTRATION_STATE_REL
+def _load_ledger_class(repo: Path) -> Any:
+    """Import LifecycleLedger from the analyzed repo's own .harness/orchestration/ledger.py, when
+    present there.
+
+    backend-orchestration is an optional capability, independent of this reporting module (which
+    ships in the always-installed base suite): the repository this delivery_stats.py copy is
+    itself deployed in may never have installed it, while --repo (the project being analyzed) can
+    be a different, unrelated project that has -- so ledger.py cannot be imported as a sibling of
+    this file (there is no __init__.py anywhere under harness/ to make it a package import either).
+    Loaded by file path under a private name and never registered in sys.modules, so this never
+    collides with, or is shadowed by, an already-imported "ledger" module belonging to a different
+    repository's copy within the same process. Returns None when that module is not present or
+    fails to import -- a caller then falls back to ``_fallback_records_root``/``_fallback_read_record``
+    below, which implement the identical tolerant algorithm inline for a repo whose ledger state
+    was written directly (e.g. by a test fixture, or a harness install that never carried the
+    optional backend-orchestration Python source alongside its data).
+
+    The loaded module is registered in ``sys.modules`` under its private name for the duration of
+    ``exec_module``: ledger.py declares several ``@dataclass`` records, and the dataclass machinery
+    looks its own module up via ``sys.modules[cls.__module__]`` while processing the class body, so
+    an unregistered module fails with an unrelated-looking AttributeError."""
+    ledger_path = repo / ".harness" / "orchestration" / "ledger.py"
+    if not ledger_path.is_file():
+        return None
+    module_name = f"_delivery_stats_ledger_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(module_name, ledger_path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        return None
+    finally:
+        sys.modules.pop(module_name, None)
+    return getattr(module, "LifecycleLedger", None)
+
+
+def _fallback_records_root(root: Path) -> Optional[Path]:
+    """LifecycleLedger.records_root_lenient()'s own tolerant pointer-resolution algorithm,
+    inlined for the rare case ``_load_ledger_class`` finds no ledger.py module at all. Kept in
+    lockstep with the real method (never checks the pointer schema or version, never runs
+    per-record validation) by tests/test_ledger.py's coverage of that method and
+    tests/test_delivery_stats.py's coverage of this fallback against the same fixtures."""
     pointer_path = root / "ledger.json"
     if not pointer_path.is_file():
         return root if root.is_dir() else None
@@ -632,7 +674,8 @@ def _ledger_records_root(repo: Path, state_dir: Optional[Path]) -> Optional[Path
     return candidate if candidate.is_dir() else None
 
 
-def _read_ledger_record(path: Path) -> Optional[dict]:
+def _fallback_read_record(path: Path) -> Optional[dict]:
+    """LifecycleLedger.read_record_lenient()'s own algorithm, inlined for the same fallback."""
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -640,19 +683,41 @@ def _read_ledger_record(path: Path) -> Optional[dict]:
     return value if isinstance(value, dict) else None
 
 
-def _dispatch_record(root: Path, dispatch_id: object) -> Optional[dict]:
+def _lenient_records_root(root: Path, ledger_cls: Any) -> Optional[Path]:
+    if ledger_cls is None:
+        return _fallback_records_root(root)
+    try:
+        return ledger_cls(root).records_root_lenient()
+    except Exception:
+        # ledger_cls came from a dynamically loaded module (_load_ledger_class): an incompatible
+        # or old LifecycleLedger (e.g. missing records_root_lenient()) must degrade to the same
+        # fallback as no module at all, never propagate out of orchestration_metrics().
+        return _fallback_records_root(root)
+
+
+def _lenient_read_record(path: Path, ledger_cls: Any) -> Optional[dict]:
+    if ledger_cls is None:
+        return _fallback_read_record(path)
+    try:
+        return ledger_cls.read_record_lenient(path)
+    except Exception:
+        # Same rationale as _lenient_records_root above.
+        return _fallback_read_record(path)
+
+
+def _dispatch_record(root: Path, dispatch_id: object, ledger_cls: Any) -> Optional[dict]:
     if not isinstance(dispatch_id, str):
         return None
-    return _read_ledger_record(root / "dispatches" / f"{dispatch_id}.json")
+    return _lenient_read_record(root / "dispatches" / f"{dispatch_id}.json", ledger_cls)
 
 
-def _developer_write_paths(root: Path, batch: dict) -> Optional[list]:
+def _developer_write_paths(root: Path, batch: dict, ledger_cls: Any) -> Optional[list]:
     """The declared zone a code-review diff is checked against: the most recent developer
     dispatch's own recorded write_paths (retries share the same zone, so the latest is enough)."""
     for entry in reversed(batch.get("dispatches", [])):
         if not isinstance(entry, dict) or entry.get("role") != "developer":
             continue
-        dispatch = _dispatch_record(root, entry.get("dispatch_id"))
+        dispatch = _dispatch_record(root, entry.get("dispatch_id"), ledger_cls)
         paths = dispatch.get("write_paths") if dispatch else None
         if isinstance(paths, list) and paths:
             return paths
@@ -663,7 +728,7 @@ def _empty_ticket_orchestration() -> dict:
     return {"batches": [], "worker_sessions": [], "qa_decided": 0, "qa_failed": 0, "review_scope": []}
 
 
-def _accumulate_batch_orchestration(root: Path, batch: dict, bucket: dict) -> None:
+def _accumulate_batch_orchestration(root: Path, batch: dict, bucket: dict, ledger_cls: Any) -> None:
     bucket["batches"].append(batch.get("batch_id"))
     restarts_by_dispatch: dict[str, list] = {}
     for decision in batch.get("coordinator_decisions", []):
@@ -677,7 +742,7 @@ def _accumulate_batch_orchestration(root: Path, batch: dict, bucket: dict) -> No
             "reason": decision.get("note") or MISSING,
             "approved_at": decision.get("approved_at", MISSING),
         })
-    developer_paths = _developer_write_paths(root, batch)
+    developer_paths = _developer_write_paths(root, batch, ledger_cls)
     for entry in batch.get("dispatches", []):
         if not isinstance(entry, dict) or not isinstance(entry.get("dispatch_id"), str):
             continue
@@ -696,7 +761,7 @@ def _accumulate_batch_orchestration(root: Path, batch: dict, bucket: dict) -> No
             if decision.get("decision") != "accept":
                 bucket["qa_failed"] += 1
         if role == "code-review" and developer_paths is not None:
-            dispatch = _dispatch_record(root, dispatch_id)
+            dispatch = _dispatch_record(root, dispatch_id, ledger_cls)
             scope = dispatch.get("review_scope") if dispatch else None
             if isinstance(scope, list) and scope:
                 out_of_scope = [
@@ -727,7 +792,9 @@ def orchestration_metrics(repo: Path, numbers: set, state_dir: Optional[Path] = 
     the share of a code-review diff outside the developer's declared write-path zone, and QA failure
     rate. Every figure here comes from the coordinator's own hash-linked records, never a role's
     free-text self-report; an absent or unreadable ledger reports the whole metric as missing."""
-    root = _ledger_records_root(repo, state_dir)
+    ledger_cls = _load_ledger_class(repo)
+    root_dir = state_dir if state_dir is not None else repo / ORCHESTRATION_STATE_REL
+    root = _lenient_records_root(root_dir, ledger_cls)
     if root is None:
         return {"status": MISSING, "reason": "оркестрационный ledger недоступен для этого репозитория"}
     batches_dir = root / "batches"
@@ -735,14 +802,14 @@ def orchestration_metrics(repo: Path, numbers: set, state_dir: Optional[Path] = 
         return {"status": MISSING, "reason": "в ledger нет записей batches"}
     tickets: dict[str, Any] = {}
     for path in sorted(batches_dir.glob("batch-*.json")):
-        batch = _read_ledger_record(path)
+        batch = _lenient_read_record(path, ledger_cls)
         if batch is None:
             continue
         ticket_number = ticket_of_branch(batch.get("branch"))
         if ticket_number not in numbers:
             continue
         bucket = tickets.setdefault(str(ticket_number), _empty_ticket_orchestration())
-        _accumulate_batch_orchestration(root, batch, bucket)
+        _accumulate_batch_orchestration(root, batch, bucket, ledger_cls)
     if not tickets:
         return {"status": MISSING, "reason": "в ledger нет batch-записей для тикетов этой области"}
     return {"status": "ok", "tickets": {number: _finalize_ticket_orchestration(bucket) for number, bucket in tickets.items()}}

@@ -11,6 +11,13 @@ machine-readable audit trail and keep any free-text coordination fields in Engli
 reports addressed to the coordinator must be written in Russian and include `"report_language": "ru"`.
 Do not translate commands, paths, commit IDs, test names, or quoted source evidence.
 
+Write the completion report, and any checkpoint, to the absolute `report_staging_path` named in the
+brief (`.harness/scratch/inbox/<dispatch_id>.json`) and hand that same path to
+`report submit --file`. Never resolve a relative reporting path against the current directory and
+never invent a location of your own: a payload written outside the repository or its worktrees —
+a home-directory folder, the system temp — is rejected, and the coordinator cannot find evidence
+that is not in the project.
+
 Each role returns one completion report: its output, changed files, checks run and results, residual
 risks, and blockers. A write role also reports the commit SHA that contains its work. The coordinator
 records the selected provider and model separately; manifests never choose either.

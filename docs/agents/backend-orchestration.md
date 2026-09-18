@@ -343,6 +343,11 @@ batch в `awaiting-approval` и оставляет dispatch в `reported` до �
    сессии — никаких чтений предыдущих dispatch/report/template между этими действиями. Без
    `.harness/orchestration.json` к `dispatch create` добавляются `--model` и `--effort` вызывающей
    сессии; для coordinator и architect выбирайте `medium`, если разработчик явно не одобрил иное.
+
+   `dispatch send --role code-review` — единственный случай, когда нужен ещё один обязательный флаг:
+   `--checkout <путь>`, указывающий на worktree, реально зачекаученный на `candidate_commit` dispatch-а
+   (см. clean-room QA lane ниже — та же изоляция нужна и для review). Все остальные роли `--checkout` не
+   передают. Без него `dispatch send` отклоняется с точным текстом ожидаемого флага.
 4. Принять один schema-validated completion report с evidence. Он сохраняется как canonical JSON
    и детерминированная Markdown-проекция, после чего dispatch остаётся `reported`, а batch ждёт
    следующего решения:
@@ -428,6 +433,24 @@ write-роли либо pinned SHA review-роли; расхождение не�
 `report submit` для такого dispatch не принимается. Починка — новый dispatch с новым brief, а не
 правка отправленного. Completion report вообще не принимается без успешного self-report, поэтому
 подменённая или неверно настроенная модель видна сразу, а не после потраченного окна.
+
+Для architect/developer `worker_attestation_required` также требует, чтобы Git-worktree HEAD в момент
+`self-report` буквально совпадал с immutable `snapshot_commit` из brief. После `batch decide --decision
+retry` (например, developer-retry после code-review blocker) новый developer dispatch **всегда** пинит
+`snapshot_commit` обратно на `base_commit` batch-а, а не на отклонённый кандидатный коммит — чтобы retry
+не мог молча унаследовать состояние отклонённого коммита. Это значит, что coordinator обязан сам
+привести worktree к этому состоянию **до** `dispatch send`, иначе первый же `dispatch self-report`
+новой worker session упадёт с `AttestationError`:
+
+```bash
+git -C <worktree> status --short
+git -C <worktree> reset --soft <base_commit>
+```
+
+Используйте именно `--soft`, не `--hard`: он передвигает только HEAD, оставляя diff отклонённого
+кандидата staged в рабочем дереве — новая worker session стартует с тем же кодом и правит только то,
+что назвал review, вместо повторной реализации с нуля. Ошибка attestation-несовпадения теперь сама
+называет точную команду для исправления.
 
 Пока роль работает, она отбивает heartbeat, а coordinator-сессия опрашивает состояние:
 

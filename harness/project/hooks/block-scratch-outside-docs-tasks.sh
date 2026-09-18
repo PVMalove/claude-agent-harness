@@ -34,7 +34,11 @@ if echo "$FILE_PATH" | grep -qiE 'pr-body|pr-comment|issue-comment'; then
 fi
 
 if ! printf '%s' "$FILE_PATH" | grep -qiE '(^|/)(\.scratch|\.claude|\.agents)/(tmp|scratch|temp)(/|$)' && printf '%s' "$FILE_PATH" | grep -qiE '(AppData.(Local|Roaming).Temp|/tmp/|/scratchpad/)'; then
-  echo "artifacts.md: спецификации и скретчпады пишем в docs/tasks/, не в системный temp: $FILE_PATH" >&2
+  if printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/scratch/tmp/'; then
+    echo "git-workflow.md §1: .harness/scratch/tmp/ разрешён только для тела PR/issue-комментария — имя файла должно содержать pr-body, pr-comment или issue-comment (например, .harness/scratch/tmp/issue-comment-<issue>-<slug>.md); любой другой скретч-файл в этой директории отклоняется, даже если директория верная. Для прочих скретч-файлов используй docs/tasks/ или путь вне репозитория: $FILE_PATH" >&2
+  else
+    echo "artifacts.md: спецификации и скретчпады пишем в docs/tasks/, не в системный temp: $FILE_PATH" >&2
+  fi
   exit 2
 fi
 

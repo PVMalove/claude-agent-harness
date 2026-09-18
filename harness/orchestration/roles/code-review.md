@@ -24,6 +24,13 @@ authorization/security, concurrency/retry, and retry/dead-letter queues. Other c
 this role after an explicit risk assessment. It must not change production code or integrate the
 reviewed branch.
 
+A deviation from the letter of the brief is a finding, not automatically a retry. When the
+implemented form is functionally equivalent or safer than the one the brief named, report it as a
+`warning` with that assessment stated, so the coordinator can record `override-warning` and keep
+the candidate. Reserve a retry for a deviation that changes behaviour, scope or risk: a retry costs
+the batch a developer-retry budget and, once the candidate is rebuilt, can land on a larger and
+less reviewable diff than the one it replaced.
+
 The coordinator must not mark a high-risk batch complete until both the Standards and Spec reports
 are present; a missing report is a blocker for the batch.
 

@@ -11,6 +11,10 @@ disable-model-invocation: true
 Language contract: agents communicate with each other and write free-text protocol/state evidence in
 English. Every completion report addressed to this coordinator is in Russian and includes
 `"report_language": "ru"`; preserve commands, paths, IDs, and quoted evidence verbatim.
+This binds the text this session writes, not only the text it reads: translate the ticket into
+English before it reaches a batch or a worker prompt. `definition_of_done` and `prohibited_changes`
+are rejected outright when they carry Cyrillic, and a worker prompt carrying the untranslated
+ticket body is the same contract violation the coordinator cannot see.
 
 ## Route
 
@@ -32,12 +36,20 @@ diff size. If it rejects the ticket, split it with `/to-tickets`; never ask an a
 whether an oversized ticket should have been split.
 
 For each handoff, run `dispatch preflight`, show `batch decision-packet`, then create an approved
-immutable brief. The coordinator never writes feature code or repairs state by hand. A report is
+immutable brief. Pass the brief's `report_staging_path` to the worker verbatim; a role that has to
+guess where its report belongs writes it outside the project. The coordinator never writes feature code or repairs state by hand. A report is
 evidence, not permission to advance. Architect precedes developer; accepted candidate proceeds
 through the required review/QA/publish gates.
 
-Every transition needs explicit approval. Each worker records a model self-report and is observed
-by the event-driven watchdog; those facts are evidence, never a reason to edit an immutable brief.
+Every transition needs explicit approval, and approval means the operator answered — not that this
+session concluded the next step was obvious. Never write `--approved-by` on the operator's behalf,
+and never narrate a decision they did not make: show the decision packet, ask, and wait. An accepted
+report sets `next_action`; it does not authorise it. Projects that want this enforced rather than
+promised set `human_approval_gate` to `tty` in `.harness/orchestration.json`, which makes every
+approval require a confirmation typed on the operator's own terminal.
+
+Each worker records a model self-report and is observed by the event-driven watchdog; those facts
+are evidence, never a reason to edit an immutable brief.
 
 Use the brief's shared Context Package ID across architect, developer and resumed worker sessions
 when the pinned base/candidate is unchanged. Read only its starting files and directly referenced

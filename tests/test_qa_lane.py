@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import sys
 import tempfile
-import types
 import unittest
 from pathlib import Path
 
@@ -24,27 +23,15 @@ class QaLaneBootstrapTests(unittest.TestCase):
             state_root = Path(temporary) / "state"
             ledger = LifecycleLedger(state_root)
             ledger.ensure()
-            ledger.records_root()
-            ops = types.SimpleNamespace(
-                CoordinatorError=coordinator.CoordinatorError,
-                QA_QUEUE_FIELDS=coordinator.QA_QUEUE_FIELDS,
-                _records_root=coordinator._records_root,
-                _read_object=coordinator._read_object,
-                _safe_id=coordinator._safe_id,
-                _non_empty=coordinator._non_empty,
-                _now=coordinator._now,
-                _write_exclusive=coordinator._write_exclusive,
-                _replace=coordinator._replace,
-            )
 
-            queue_path, entry = qa_lane._enqueue(state_root, "dispatch-0123456789abcdef", ops)
+            queue_path, entry = qa_lane._enqueue(ledger, "dispatch-0123456789abcdef", coordinator)
 
             self.assertTrue(queue_path.is_file())
             self.assertEqual(entry["sequence"], 1)
-            sequence_path = coordinator._records_root(state_root) / "qa-lane" / "sequence.json"
+            sequence_path = ledger.records_root() / "qa-lane" / "sequence.json"
             self.assertEqual(coordinator._read_object(sequence_path, "sequence"), {"next": 2})
 
-            _, second = qa_lane._enqueue(state_root, "dispatch-fedcba9876543210", ops)
+            _, second = qa_lane._enqueue(ledger, "dispatch-fedcba9876543210", coordinator)
             self.assertEqual(second["sequence"], 2)
             self.assertEqual(coordinator._read_object(sequence_path, "sequence"), {"next": 3})
 
