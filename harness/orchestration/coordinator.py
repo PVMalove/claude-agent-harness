@@ -2438,7 +2438,12 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if dispatch["role"] == "code-review":
             checkout = Path(args.checkout).resolve() if args.checkout else None
             if checkout is None:
-                raise CoordinatorError("code-review dispatch requires an explicit checkout")
+                raise CoordinatorError(
+                    "code-review dispatch requires an explicit checkout: pass "
+                    "--checkout <path-to-a-worktree-pinned-at-candidate_commit> "
+                    f"(candidate_commit={dispatch['candidate_commit']}); "
+                    "other roles omit --checkout entirely"
+                )
             _validate_checkout(checkout, dispatch["candidate_commit"], dispatch["review_base"], dispatch["review_scope"])
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
         if status.get("state") != "approved":

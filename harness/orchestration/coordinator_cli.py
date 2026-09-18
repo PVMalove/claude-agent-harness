@@ -160,7 +160,11 @@ def build_parser(handlers: Any, defaults: Any) -> argparse.ArgumentParser:
     dispatch_send.add_argument("--dispatch", required=True)
     dispatch_send.add_argument("--adapter", help="runtime adapter; required for the orca transport only")
     dispatch_send.add_argument("--adapter-arg", action="append")
-    dispatch_send.add_argument("--checkout")
+    dispatch_send.add_argument(
+        "--checkout",
+        help="required for role code-review only: path to a worktree checked out at the dispatch's "
+        "candidate_commit; every other role omits this",
+    )
     dispatch_send.set_defaults(handler=handlers.send_dispatch)
     dispatch_cancel = dispatch_commands.add_parser("cancel")
     _common(dispatch_cancel)
