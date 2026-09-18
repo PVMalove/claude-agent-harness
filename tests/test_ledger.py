@@ -159,5 +159,94 @@ class StructuralValidationCharacterizationTests(unittest.TestCase):
                 ledger.replace(batch_path, {**batch, "state": "awaiting-approval"})
 
 
+class RecordsRootLenientTests(unittest.TestCase):
+    def test_returns_none_on_empty_root_with_no_pointer_and_no_legacy_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+
+            self.assertIsNone(ledger.records_root_lenient())
+
+    def test_returns_same_path_as_records_root_once_ensure_selected_a_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            ledger.ensure()
+
+            self.assertEqual(ledger.records_root_lenient(), ledger.records_root())
+
+    def test_returns_none_when_pointer_is_garbage_but_records_root_still_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            ledger.ensure()
+            ledger.pointer_path.write_text("not json {{{", encoding="utf-8")
+
+            self.assertIsNone(ledger.records_root_lenient())
+            with self.assertRaises(LedgerError):
+                ledger.records_root()
+
+    def test_returns_none_when_pointer_references_a_missing_generation_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            ledger.ensure()
+            pointer = json.loads(ledger.pointer_path.read_text(encoding="utf-8"))
+            pointer["generation"] = "generation-deadbeef"
+            ledger.pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+
+            self.assertIsNone(ledger.records_root_lenient())
+
+    def test_stale_version_pointer_still_resolves_under_lenient_but_records_root_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            ledger.ensure()
+            generation = ledger.records_root()
+            pointer = json.loads(ledger.pointer_path.read_text(encoding="utf-8"))
+            pointer["version"] = 1
+            ledger.pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+
+            self.assertEqual(ledger.records_root_lenient(), generation)
+            with self.assertRaises(LedgerError):
+                ledger.records_root()
+
+
+class ReadRecordLenientTests(unittest.TestCase):
+    def test_returns_none_for_nonexistent_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "missing.json"
+
+            self.assertIsNone(LifecycleLedger.read_record_lenient(path))
+
+    def test_returns_none_for_invalid_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "bad.json"
+            path.write_text("not json {{{", encoding="utf-8")
+
+            self.assertIsNone(LifecycleLedger.read_record_lenient(path))
+
+    def test_returns_none_for_valid_json_that_is_not_an_object(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "array.json"
+            path.write_text("[1, 2, 3]", encoding="utf-8")
+
+            self.assertIsNone(LifecycleLedger.read_record_lenient(path))
+
+    def test_returns_parsed_dict_for_a_valid_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "record.json"
+            path.write_text(json.dumps({"dispatch_id": "dispatch-1"}), encoding="utf-8")
+
+            self.assertEqual(LifecycleLedger.read_record_lenient(path), {"dispatch_id": "dispatch-1"})
+
+    def test_returns_none_for_non_utf8_bytes_instead_of_raising(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "binary.json"
+            path.write_bytes(b"\xff\xfe\x00\x01garbage")
+
+            self.assertIsNone(LifecycleLedger.read_record_lenient(path))
+
+
 if __name__ == "__main__":
     unittest.main()
