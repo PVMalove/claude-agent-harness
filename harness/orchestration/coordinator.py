@@ -55,7 +55,7 @@ from harness.orchestration.dispatch_preflight import PreflightError, prepare as 
 from harness.gate_runner.gate_runner import concise_evidence, sanitise
 from harness.orchestration.ledger import (
     BatchRecord, CheckpointRecord, ContextPackageRecord, DispatchRecord, DispatchStatusRecord,
-    LedgerError, LifecycleLedger, PlanRecord, RiskAssessmentRecord,
+    LedgerError, LedgerRecordVO, LifecycleLedger, PlanRecord, RiskAssessmentRecord,
 )
 from harness.orchestration.coordinator_cli import build_parser
 from harness.orchestration import qa_lane
@@ -202,7 +202,7 @@ def _read_object(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
-def _reject_sensitive(value: Any, location: str) -> None:
+def _reject_sensitive(value: object, location: str) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             if not isinstance(key, str):
@@ -239,14 +239,14 @@ def _write_text_exclusive(ledger: LifecycleLedger, path: Path, value: str) -> No
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def _write_record(ledger: LifecycleLedger, record: Any) -> None:
+def _write_record(ledger: LifecycleLedger, record: LedgerRecordVO) -> None:
     try:
         ledger.write_record(record)
     except LedgerError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def _replace_record(ledger: LifecycleLedger, record: Any) -> None:
+def _replace_record(ledger: LifecycleLedger, record: LedgerRecordVO) -> None:
     try:
         ledger.replace_record(record)
     except LedgerError as exc:
@@ -284,7 +284,7 @@ def _agent_inbox(repo: Path) -> Path:
 NON_ENGLISH_BRIEF_PATTERN = re.compile(r"[\u0400-\u04FF\u0500-\u052F]")
 
 
-def _reject_non_english(values: Any, field: str) -> None:
+def _reject_non_english(values: object, field: str) -> None:
     """Hold the language contract where it is machine-checkable: brief text handed to a role.
 
     Agent-to-agent protocol text is English. A completion report addressed to the coordinator is
