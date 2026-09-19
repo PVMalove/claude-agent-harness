@@ -5,18 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-
-ORCHESTRATION_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
-sys.path.insert(0, str(ORCHESTRATION_ROOT))
-
-import contract  # noqa: E402
-import coordinator  # noqa: E402
-from ledger import LifecycleLedger  # noqa: E402
+from harness.orchestration import contract, coordinator
+from harness.orchestration.ledger import LifecycleLedger
 
 
 class TokenControlTests(unittest.TestCase):

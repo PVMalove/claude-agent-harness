@@ -3,18 +3,12 @@
 
 from __future__ import annotations
 
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-
-ORCHESTRATION_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
-sys.path.insert(0, str(ORCHESTRATION_ROOT))
-
-import coordinator  # noqa: E402
-import qa_lane  # noqa: E402
-from ledger import LifecycleLedger  # noqa: E402
+from harness.orchestration import coordinator, qa_lane
+from harness.orchestration.ledger import LifecycleLedger
 
 
 class QaLaneBootstrapTests(unittest.TestCase):

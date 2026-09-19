@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, ClassVar, Iterator, Protocol
 
+from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+
 
 LEDGER_VERSION = 3
 SUPPORTED_LEDGER_VERSIONS = (1, 2, 3)
@@ -31,7 +33,7 @@ RECORD_DIRECTORIES = (
 )
 
 
-class LedgerError(Exception):
+class LedgerError(HarnessError):
     """The durable lifecycle state cannot safely be selected or changed."""
 
 
@@ -254,9 +256,9 @@ def _read(path: Path, label: str) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise LedgerError(f"{label} is not valid JSON: {path.name}") from exc
+        raise LedgerError(f"{label} is not valid JSON: {path.name}", remedy=f"fix the JSON syntax in {path}") from exc
     if not isinstance(value, dict):
-        raise LedgerError(f"{label} must be a JSON object: {path.name}")
+        raise LedgerError(f"{label} must be a JSON object: {path.name}", remedy=f"rewrite {path} as a JSON object")
     return value
 
 
@@ -281,7 +283,10 @@ class LifecycleLedger:
         try:
             lock_dir.mkdir()
         except FileExistsError as exc:
-            raise LedgerError("ledger is locked by another operation") from exc
+            raise LedgerError(
+                "ledger is locked by another operation",
+                remedy=f"wait for the other operation to finish, or remove a stale lock at {lock_dir} if no operation is actually running",
+            ) from exc
         try:
             yield
         finally:
@@ -299,11 +304,20 @@ class LifecycleLedger:
             return None
         pointer = _read(self.pointer_path, "ledger pointer")
         if set(pointer) != {"version", "generation", "selected_at"}:
-            raise LedgerError("ledger pointer has an invalid schema")
+            raise LedgerError(
+                "ledger pointer has an invalid schema",
+                remedy=f"fix or remove the corrupted pointer at {self.pointer_path} (it must have exactly version, generation and selected_at)",
+            )
         if pointer["version"] not in SUPPORTED_LEDGER_VERSIONS or not isinstance(pointer["generation"], str):
-            raise LedgerError("ledger pointer has an unsupported version or generation")
+            raise LedgerError(
+                "ledger pointer has an unsupported version or generation",
+                remedy=f"fix {self.pointer_path}: version must be one of {SUPPORTED_LEDGER_VERSIONS} and generation a string",
+            )
         if not pointer["generation"].startswith("generation-") or not isinstance(pointer["selected_at"], str):
-            raise LedgerError("ledger pointer has an invalid generation")
+            raise LedgerError(
+                "ledger pointer has an invalid generation",
+                remedy=f"fix {self.pointer_path}: generation must start with 'generation-' and selected_at must be a string",
+            )
         return pointer
 
     def records_root(self) -> Path:
@@ -311,10 +325,15 @@ class LifecycleLedger:
         pointer = self.pointer()
         if pointer is None:
             if self._legacy_records_present():
-                raise LedgerError("legacy lifecycle state requires an explicit ledger migrate")
+                raise LedgerError(
+                    "legacy lifecycle state requires an explicit ledger migrate", remedy="run 'coordinator.py ledger migrate' once"
+                )
             return self.root
         if pointer["version"] != LEDGER_VERSION:
-            raise LedgerError("ledger generation requires an explicit ledger migrate to the current schema version")
+            raise LedgerError(
+                "ledger generation requires an explicit ledger migrate to the current schema version",
+                remedy=f"run 'coordinator.py ledger migrate' to move generation {pointer['generation']!r} to version {LEDGER_VERSION}",
+            )
         generation = self.root / GENERATIONS / pointer["generation"]
         # A coordinator operation may create an immutable dispatch and its status record in two
         # writes under one state lock.  Validate the container and audit here; validate the full
@@ -356,10 +375,15 @@ class LifecycleLedger:
         pointer = self.pointer()
         if pointer is not None:
             if pointer["version"] != LEDGER_VERSION:
-                raise LedgerError("ledger generation requires an explicit ledger migrate to the current schema version")
+                raise LedgerError(
+                    "ledger generation requires an explicit ledger migrate to the current schema version",
+                    remedy=f"run 'coordinator.py ledger migrate' to move generation {pointer['generation']!r} to version {LEDGER_VERSION}",
+                )
             return pointer
         if self._legacy_records_present():
-            raise LedgerError("legacy lifecycle state requires an explicit ledger migrate")
+            raise LedgerError(
+                "legacy lifecycle state requires an explicit ledger migrate", remedy="run 'coordinator.py ledger migrate' once"
+            )
         generation = self._new_generation("initialize")
         return self._select(generation)
 
@@ -419,7 +443,9 @@ class LifecycleLedger:
 
     def reset(self, confirmation: str) -> dict[str, Any]:
         if confirmation != "RESET":
-            raise LedgerError("ledger reset requires --confirm RESET")
+            raise LedgerError(
+                "ledger reset requires --confirm RESET", remedy="pass --confirm RESET (the literal string) to acknowledge the reset"
+            )
         current = self.records_root()
         active = []
         for path in (current / "batches").glob("*.json"):
@@ -427,7 +453,10 @@ class LifecycleLedger:
             if batch.get("state") == "active":
                 active.append(batch.get("batch_id", path.stem))
         if active:
-            raise LedgerError("ledger reset is refused while batches are active: " + ", ".join(map(str, active)))
+            raise LedgerError(
+                "ledger reset is refused while batches are active: " + ", ".join(map(str, active)),
+                remedy="decide (complete or abandon) the listed active batches before resetting the ledger",
+            )
         previous = self.pointer()
         generation = self._new_generation("reset")
         self._append_audit(generation, "reset", {
@@ -442,7 +471,10 @@ class LifecycleLedger:
         pointer = self.pointer()
         if pointer is not None:
             if pointer["version"] != LEDGER_VERSION:
-                raise LedgerError("ledger generation requires an explicit ledger migrate before cleaning")
+                raise LedgerError(
+                    "ledger generation requires an explicit ledger migrate before cleaning",
+                    remedy=f"run 'coordinator.py ledger migrate' to move generation {pointer['generation']!r} to version {LEDGER_VERSION}",
+                )
             root = self.root / GENERATIONS / pointer["generation"]
         else:
             root = self.root
@@ -484,7 +516,9 @@ class LifecycleLedger:
     def _check_record_id(record_id: object) -> None:
         if not isinstance(record_id, str) or not record_id or "/" in record_id or "\\" in record_id \
                 or record_id in {".", ".."}:
-            raise LedgerError("record id is not a valid path segment")
+            raise LedgerError(
+                "record id is not a valid path segment", remedy="use a non-empty record id with no path separators and not '.' or '..'"
+            )
 
     def write_record(self, record: LedgerRecordVO) -> None:
         """Persist a new Value-Object-backed record, deriving its path from the record itself."""
@@ -501,7 +535,10 @@ class LifecycleLedger:
             with path.open("x", encoding="utf-8", newline="\n") as stream:
                 stream.write(_canonical(value))
         except FileExistsError as exc:
-            raise LedgerError(f"refusing to overwrite immutable record: {path.name}") from exc
+            raise LedgerError(
+                f"refusing to overwrite immutable record: {path.name}",
+                remedy=f"use a different record id, or 'ledger clean'/inspect {path} if it is orphaned evidence",
+            ) from exc
         self._append_audit(generation, "immutable-artifact" if artifact else "immutable-record", {
             "path": relative, "sha256": _digest(path),
         })
@@ -514,14 +551,19 @@ class LifecycleLedger:
                 stream.write(value)
         except FileExistsError as exc:
             if path.read_text(encoding="utf-8") != value:
-                raise LedgerError(f"refusing to overwrite immutable artifact: {path.name}") from exc
+                raise LedgerError(
+                    f"refusing to overwrite immutable artifact: {path.name}",
+                    remedy=f"write a new artifact under a different name instead of overwriting {path}",
+                ) from exc
         self._append_audit(generation, "immutable-artifact", {"path": relative, "sha256": _digest(path)})
 
     def replace(self, path: Path, value: dict[str, Any]) -> None:
         """Atomically persist one allowed record transition and append its immutable audit event."""
         generation, relative = self._selected_path(path)
         if not path.is_file():
-            raise LedgerError(f"ledger transition targets a missing record: {relative}")
+            raise LedgerError(
+                f"ledger transition targets a missing record: {relative}", remedy=f"write the record at {path} before transitioning it"
+            )
         before = _read(path, "current lifecycle record")
         transition: dict[str, Any] = {"path": relative, "before_sha256": _digest(path)}
         if relative.startswith("batches/"):
@@ -535,7 +577,9 @@ class LifecycleLedger:
         """Delete a mutable coordination lease/queue record with immutable evidence of removal."""
         generation, relative = self._selected_path(path)
         if not path.is_file():
-            raise LedgerError(f"ledger deletion targets a missing record: {relative}")
+            raise LedgerError(
+                f"ledger deletion targets a missing record: {relative}", remedy=f"verify {path} exists before deleting it"
+            )
         previous = _digest(path)
         path.unlink()
         self._append_audit(generation, "deletion", {"path": relative, "sha256": previous, "reason": reason})
@@ -545,9 +589,13 @@ class LifecycleLedger:
         try:
             relative = path.resolve().relative_to(generation).as_posix()
         except ValueError as exc:
-            raise LedgerError("lifecycle record escapes the selected generation") from exc
+            raise LedgerError(
+                "lifecycle record escapes the selected generation", remedy=f"pass a path inside the selected generation {generation}"
+            ) from exc
         if relative.startswith("audit/"):
-            raise LedgerError("lifecycle audit records are append-only")
+            raise LedgerError(
+                "lifecycle audit records are append-only", remedy="write a new audit event instead of modifying an existing one"
+            )
         return generation, relative
 
     @staticmethod
@@ -575,21 +623,35 @@ class LifecycleLedger:
             "completed": {"completed", "failed"},
         }
         if previous not in allowed or target not in allowed[previous]:
-            raise LedgerError(f"ledger rejects batch transition {previous!r} -> {target!r}")
+            raise LedgerError(
+                f"ledger rejects batch transition {previous!r} -> {target!r}",
+                remedy=f"transition through one of the allowed states for {previous!r}: {sorted(allowed.get(previous, ()))}",
+            )
         if previous == "planned" and target == "awaiting-approval":
             approval = after.get("coordinator_approval")
             if not isinstance(approval, dict) or not all(isinstance(approval.get(key), str) and approval[key].strip() for key in ("approved_by", "approved_at")):
-                raise LedgerError("ledger requires recorded coordinator approval before a batch awaits dispatch")
+                raise LedgerError(
+                    "ledger requires recorded coordinator approval before a batch awaits dispatch",
+                    remedy="set coordinator_approval.approved_by and .approved_at before moving the batch to awaiting-approval",
+                )
         if previous == "awaiting-approval" and target == "active":
             dispatches = after.get("dispatches")
             if not isinstance(dispatches, list) or not dispatches:
-                raise LedgerError("ledger requires an approved dispatch before activating a batch")
+                raise LedgerError(
+                    "ledger requires an approved dispatch before activating a batch", remedy="approve a dispatch for this batch before activating it"
+                )
             dispatch_id = dispatches[-1].get("dispatch_id") if isinstance(dispatches[-1], dict) else None
             if not isinstance(dispatch_id, str):
-                raise LedgerError("ledger requires a valid approved dispatch ID before activating a batch")
+                raise LedgerError(
+                    "ledger requires a valid approved dispatch ID before activating a batch",
+                    remedy="ensure the batch's last dispatch entry has a string dispatch_id before activating it",
+                )
             dispatch = _read(generation / "dispatches" / f"{dispatch_id}.json", "approved dispatch")
             if dispatch.get("state") != "approved" or not isinstance(dispatch.get("coordinator_approval"), dict):
-                raise LedgerError("ledger requires an immutable approved dispatch before activating a batch")
+                raise LedgerError(
+                    "ledger requires an immutable approved dispatch before activating a batch",
+                    remedy=f"approve dispatch {dispatch_id!r} (state=approved with coordinator_approval) before activating this batch",
+                )
 
     def _legacy_records_present(self) -> bool:
         return any((self.root / directory).exists() for directory in RECORD_DIRECTORIES if directory != "audit")
@@ -641,7 +703,7 @@ class LifecycleLedger:
             if not source.exists():
                 continue
             if not source.is_dir():
-                raise LedgerError(f"legacy lifecycle path is not a directory: {directory}")
+                raise LedgerError(f"legacy lifecycle path is not a directory: {directory}", remedy=f"remove or replace the non-directory at {source}")
             self._validate_json_records(
                 source, "legacy lifecycle record", allow_non_json=directory in {"qa-artifacts", "reports"}
             )
@@ -650,11 +712,15 @@ class LifecycleLedger:
 
     def _validate_generation(self, generation: Path, *, complete: bool = True) -> None:
         if not generation.is_dir():
-            raise LedgerError("selected ledger generation is missing")
+            raise LedgerError(
+                "selected ledger generation is missing", remedy=f"restore or re-migrate the generation directory {generation}"
+            )
         for directory in RECORD_DIRECTORIES:
             path = generation / directory
             if not path.is_dir():
-                raise LedgerError(f"ledger generation is missing {directory}")
+                raise LedgerError(
+                    f"ledger generation is missing {directory}", remedy=f"restore the {directory} directory under {generation}"
+                )
             self._validate_json_records(path, "ledger record", allow_non_json=directory in {"qa-artifacts", "reports"})
             if directory == "audit":
                 self._validate_audit(path)
@@ -670,7 +736,7 @@ class LifecycleLedger:
             if path.suffix != ".json":
                 if allow_non_json:
                     continue
-                raise LedgerError(f"{label} has an unsupported file: {path.name}")
+                raise LedgerError(f"{label} has an unsupported file: {path.name}", remedy=f"remove or rename {path} to end in .json")
             _read(path, label)
 
     @staticmethod
@@ -681,10 +747,13 @@ class LifecycleLedger:
             batch = _read(batch_path, "batch record")
             plan_path = plans / batch_path.name
             if not plan_path.is_file():
-                raise LedgerError(f"batch has no immutable plan: {batch_path.name}")
+                raise LedgerError(f"batch has no immutable plan: {batch_path.name}", remedy=f"restore the missing plan record {plan_path}")
             plan = _read(plan_path, "immutable batch plan")
             if any(batch.get(key) != value for key, value in plan.items()):
-                raise LedgerError(f"batch does not match its immutable plan: {batch_path.name}")
+                raise LedgerError(
+                    f"batch does not match its immutable plan: {batch_path.name}",
+                    remedy=f"the batch record and its immutable plan {plan_path} have diverged -- {INTERNAL_INVARIANT_REMEDY}",
+                )
 
     @staticmethod
     def _validate_record_graph(root: Path) -> None:
@@ -696,35 +765,60 @@ class LifecycleLedger:
             batch = _read(batch_path, "batch record")
             entries = batch.get("dispatches", [])
             if not isinstance(entries, list):
-                raise LedgerError(f"batch dispatches are invalid: {batch_path.name}")
+                raise LedgerError(
+                    f"batch dispatches are invalid: {batch_path.name}", remedy=f"fix {batch_path.name} so its dispatches field is a list"
+                )
             for entry in entries:
                 if not isinstance(entry, dict) or not isinstance(entry.get("dispatch_id"), str):
-                    raise LedgerError(f"batch has an invalid dispatch entry: {batch_path.name}")
+                    raise LedgerError(
+                        f"batch has an invalid dispatch entry: {batch_path.name}",
+                        remedy=f"fix {batch_path.name} so each dispatches entry is an object with a string dispatch_id",
+                    )
                 dispatch_id = entry["dispatch_id"]
                 referenced.add(dispatch_id)
                 dispatch_path = dispatches.get(dispatch_id)
                 status_path = statuses.get(dispatch_id)
                 if dispatch_path is None or status_path is None:
-                    raise LedgerError(f"batch dispatch evidence is incomplete: {dispatch_id}")
+                    raise LedgerError(
+                        f"batch dispatch evidence is incomplete: {dispatch_id}",
+                        remedy=f"restore the missing dispatches/{dispatch_id}.json and/or dispatch-status/{dispatch_id}.json records",
+                    )
                 dispatch = _read(dispatch_path, "dispatch record")
                 status = _read(status_path, "dispatch status")
                 if dispatch.get("dispatch_id") != dispatch_id or dispatch.get("batch_id") != batch.get("batch_id"):
-                    raise LedgerError(f"dispatch does not belong to its batch: {dispatch_id}")
+                    raise LedgerError(
+                        f"dispatch does not belong to its batch: {dispatch_id}",
+                        remedy=f"fix dispatches/{dispatch_id}.json's dispatch_id/batch_id fields, or remove it from {batch_path.name}",
+                    )
                 if status.get("dispatch_id") != dispatch_id or not isinstance(status.get("state"), str):
-                    raise LedgerError(f"dispatch status is invalid: {dispatch_id}")
+                    raise LedgerError(
+                        f"dispatch status is invalid: {dispatch_id}", remedy=f"fix dispatch-status/{dispatch_id}.json's dispatch_id/state fields"
+                    )
                 expected_brief = entry.get("brief_sha256")
                 if expected_brief != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest():
-                    raise LedgerError(f"dispatch failed immutable brief integrity check: {dispatch_id}")
+                    raise LedgerError(
+                        f"dispatch failed immutable brief integrity check: {dispatch_id}",
+                        remedy=f"dispatches/{dispatch_id}.json was modified after its brief_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
+                    )
                 if entry.get("state") == "reported":
                     report_name = entry.get("report")
                     if not isinstance(report_name, str) or Path(report_name).is_absolute() or ".." in Path(report_name).parts:
-                        raise LedgerError(f"reported dispatch has an invalid report path: {dispatch_id}")
+                        raise LedgerError(
+                            f"reported dispatch has an invalid report path: {dispatch_id}",
+                            remedy=f"fix {batch_path.name}'s report path for dispatch {dispatch_id} to a relative path inside the generation",
+                        )
                     report_path = root / report_name
                     report = _read(report_path, "completion report")
                     if entry.get("report_sha256") != hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest():
-                        raise LedgerError(f"completion report failed immutable integrity check: {dispatch_id}")
+                        raise LedgerError(
+                            f"completion report failed immutable integrity check: {dispatch_id}",
+                            remedy=f"{report_path} was modified after its report_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
+                        )
         if set(dispatches) != referenced or set(statuses) != referenced:
-            raise LedgerError("lifecycle state contains orphaned dispatch evidence (run 'ledger clean' to fix)")
+            raise LedgerError(
+                "lifecycle state contains orphaned dispatch evidence (run 'ledger clean' to fix)",
+                remedy="run 'coordinator.py ledger clean' to remove dispatch/status records no batch references",
+            )
 
     @staticmethod
     def _validate_audit(root: Path) -> None:
@@ -733,4 +827,7 @@ class LifecycleLedger:
             checksum = record.pop("record_sha256", None)
             expected = hashlib.sha256(_canonical(record).encode("utf-8")).hexdigest()
             if checksum != expected:
-                raise LedgerError(f"ledger audit record failed immutable integrity check: {path.name}")
+                raise LedgerError(
+                    f"ledger audit record failed immutable integrity check: {path.name}",
+                    remedy=f"{path} was modified after its record_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
+                )

@@ -18,8 +18,10 @@ import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from ..errors import HarnessError
 
-class ContextPackageError(Exception):
+
+class ContextPackageError(HarnessError):
     """The package could not be built, or would exceed its configured size limit."""
 
 
@@ -68,7 +70,10 @@ def _run_git(repository: Path, *args: str) -> str:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
-        raise ContextPackageError(f"git {' '.join(args)} failed: {detail or 'unknown error'}")
+        raise ContextPackageError(
+            f"git {' '.join(args)} failed: {detail or 'unknown error'}",
+            remedy=f"inspect the git error above and fix the repository/commit refs before retrying 'git {' '.join(args)}'",
+        )
     return result.stdout
 
 
@@ -255,7 +260,8 @@ def _select_starting_files(
         raise ContextPackageError(
             f"only {len(ordered)} starting file(s) available (changed files plus their direct "
             f"import-graph neighbours) but min_starting_files={min_files}; fails clearly rather "
-            "than silently returning fewer than the configured minimum"
+            "than silently returning fewer than the configured minimum",
+            remedy=f"lower min_starting_files below {min_files}, widen the diff, or pass explicit seed_paths",
         )
 
     ordered.sort()
@@ -343,7 +349,10 @@ def build_context_package(
     backwards-compatible callers.
     """
     if min_starting_files < 1 or max_starting_files < min_starting_files:
-        raise ContextPackageError("min_starting_files must be >=1 and <= max_starting_files")
+        raise ContextPackageError(
+            "min_starting_files must be >=1 and <= max_starting_files",
+            remedy=f"set min_starting_files>=1 and max_starting_files>=min_starting_files (got min={min_starting_files}, max={max_starting_files})",
+        )
 
     diff = _run_git(repository, "diff", "--no-color", base_commit, candidate_commit)
     changed = _changed_files(repository, base_commit, candidate_commit)
@@ -369,7 +378,8 @@ def build_context_package(
         requested = list(dict.fromkeys(requested))[:max_starting_files]
         if len(requested) < min_starting_files:
             raise ContextPackageError(
-                f"only {len(requested)} static starting file(s) available but min_starting_files={min_starting_files}"
+                f"only {len(requested)} static starting file(s) available but min_starting_files={min_starting_files}",
+                remedy=f"lower min_starting_files below {min_starting_files} or pass more seed_paths that exist at {candidate_commit}",
             )
         starting_files = [StartingFile(path=path, reason="role preflight seed at pinned snapshot") for path in requested]
     starting_paths = [item.path for item in starting_files]
@@ -391,7 +401,8 @@ def build_context_package(
     if max_related_tests is not None and len(related_tests) > max_related_tests:
         raise ContextPackageError(
             f"related_tests count {len(related_tests)} exceeds max_related_tests={max_related_tests}; "
-            "narrow the batch scope or raise context_package_policy.max_related_tests"
+            "narrow the batch scope or raise context_package_policy.max_related_tests",
+            remedy=f"narrow the batch's changed files or raise context_package_policy.max_related_tests above {len(related_tests)}",
         )
 
     keywords = _keywords_for(starting_paths)
@@ -420,11 +431,13 @@ def build_context_package(
     estimated_tokens = estimate_tokens(payload_text)
     if max_package_size_bytes is not None and size_bytes > max_package_size_bytes:
         raise ContextPackageError(
-            f"context package size {size_bytes} bytes exceeds max_package_size_bytes={max_package_size_bytes}"
+            f"context package size {size_bytes} bytes exceeds max_package_size_bytes={max_package_size_bytes}",
+            remedy=f"narrow the batch scope or raise max_package_size_bytes above {size_bytes}",
         )
     if max_package_tokens is not None and estimated_tokens > max_package_tokens:
         raise ContextPackageError(
-            f"context package estimate {estimated_tokens} tokens exceeds max_package_tokens={max_package_tokens}"
+            f"context package estimate {estimated_tokens} tokens exceeds max_package_tokens={max_package_tokens}",
+            remedy=f"narrow the batch scope or raise context_package_policy.max_package_tokens above {estimated_tokens}",
         )
 
     return ContextPackage(

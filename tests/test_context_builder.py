@@ -4,15 +4,13 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 
 MODULE_ROOT = Path(__file__).resolve().parents[1] / "harness" / "context_builder"
-sys.path.insert(0, str(MODULE_ROOT))
-from context_builder import (  # noqa: E402
+from harness.context_builder.context_builder import (
     ContextPackageError,
     build_context_package,
     estimate_tokens,

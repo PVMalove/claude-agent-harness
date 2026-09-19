@@ -10,9 +10,7 @@ import unittest
 from pathlib import Path
 
 
-MODULE_ROOT = Path(__file__).resolve().parents[1] / "harness" / "gate_runner"
-sys.path.insert(0, str(MODULE_ROOT))
-from gate_runner import CleanRoomPolicy, LocalPolicy, run_gate
+from harness.gate_runner.gate_runner import CleanRoomPolicy, LocalPolicy, run_gate
 
 
 class GateRunnerTests(unittest.TestCase):

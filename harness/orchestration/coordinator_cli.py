@@ -7,7 +7,7 @@ injected by :mod:`coordinator`, keeping parser changes from coupling to ledger t
 from __future__ import annotations
 
 import argparse
-from typing import Any
+import types
 
 
 def _common(parser: argparse.ArgumentParser) -> None:
@@ -15,7 +15,7 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--state-dir", default=argparse.SUPPRESS, help="coordinator state directory")
 
 
-def build_parser(handlers: Any, defaults: Any) -> argparse.ArgumentParser:
+def build_parser(handlers: types.ModuleType, defaults: types.ModuleType) -> argparse.ArgumentParser:
     """Build the stable public CLI using an injected coordinator handler facade."""
     root = argparse.ArgumentParser(description="Coordinate approved backend role dispatches.")
     root.add_argument("--repo", default=".", help="target project root")

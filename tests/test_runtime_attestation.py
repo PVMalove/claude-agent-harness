@@ -4,15 +4,11 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-
-MODULE_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
-sys.path.insert(0, str(MODULE_ROOT))
-from runtime_attestation import AttestationError, attest
+from harness.orchestration.runtime_attestation import AttestationError, attest
 
 
 def _git(path: Path, *arguments: str) -> str:

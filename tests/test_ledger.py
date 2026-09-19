@@ -4,16 +4,11 @@
 from __future__ import annotations
 
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-
-ORCHESTRATION_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
-sys.path.insert(0, str(ORCHESTRATION_ROOT))
-
-from ledger import (  # noqa: E402
+from harness.orchestration.ledger import (
     BatchRecord,
     CheckpointRecord,
     ContextPackageRecord,

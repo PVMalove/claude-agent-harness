@@ -840,12 +840,16 @@ else:
             sys.executable,
             "-c",
             (
-                "import copy, importlib.util, json, sys\n"
+                "import copy, importlib, importlib.util, json, sys\n"
                 "from pathlib import Path\n"
-                "spec = importlib.util.spec_from_file_location('contract', sys.argv[1])\n"
-                "contract = importlib.util.module_from_spec(spec)\n"
-                "sys.modules[spec.name] = contract\n"
-                "spec.loader.exec_module(contract)\n"
+                "harness_root = Path(sys.argv[1]).parent.parent\n"
+                "sys.path.insert(0, str(harness_root.parent))\n"
+                "spec = importlib.util.spec_from_file_location(\n"
+                "  'harness', harness_root / '__init__.py', submodule_search_locations=[str(harness_root)])\n"
+                "package = importlib.util.module_from_spec(spec)\n"
+                "sys.modules['harness'] = package\n"
+                "spec.loader.exec_module(package)\n"
+                "contract = importlib.import_module('harness.orchestration.contract')\n"
                 "config = json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))\n"
                 "role = contract.load_role_manifest(Path(sys.argv[3]))\n"
                 "for mutate in (\n"

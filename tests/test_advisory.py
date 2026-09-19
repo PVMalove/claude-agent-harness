@@ -14,8 +14,7 @@ from pathlib import Path
 
 MODULE_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
 MODULE_PATH = MODULE_ROOT / "advisory.py"
-sys.path.insert(0, str(MODULE_ROOT))
-from advisory import classify_risk, rank_files, summarize_log
+from harness.orchestration.advisory import classify_risk, rank_files, summarize_log
 
 
 def _imported_module_names(path: Path) -> set[str]:

@@ -42,22 +42,36 @@ def redact(line: str) -> str:
 
 
 def _gate_runner():
-    """Load the managed shared runner without assuming a Python package install."""
+    """Load the managed shared runner without assuming a Python package install.
+
+    gate_runner.py is an ordinary submodule of the ``harness``/``.harness`` package (it does
+    ``from ..errors import HarnessError``), so it must be imported through that package rather
+    than exec'd standalone -- alias ``harness`` to whichever of ``harness``/``.harness`` this
+    tool actually finds, mirroring the bootstrap in coordinator.py/orca_adapter.py/delivery_stats.py.
+    """
     global _GATE_RUNNER
     if _GATE_RUNNER is not None:
         return _GATE_RUNNER
     for parent in Path(__file__).resolve().parents:
         for relative in (Path(".harness/gate_runner/gate_runner.py"), Path("harness/gate_runner/gate_runner.py")):
             path = parent / relative
-            if path.is_file():
-                spec = importlib.util.spec_from_file_location("agent_harness_gate_runner", path)
+            if not path.is_file():
+                continue
+            harness_root = path.parent.parent
+            repo_root = harness_root.parent
+            if str(repo_root) not in sys.path:
+                sys.path.insert(0, str(repo_root))
+            if harness_root.name != "harness":
+                spec = importlib.util.spec_from_file_location(
+                    "harness", harness_root / "__init__.py", submodule_search_locations=[str(harness_root)]
+                )
                 if spec is None or spec.loader is None:
                     break
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[spec.name] = module
-                spec.loader.exec_module(module)
-                _GATE_RUNNER = module
-                return _GATE_RUNNER
+                package = importlib.util.module_from_spec(spec)
+                sys.modules["harness"] = package
+                spec.loader.exec_module(package)
+            _GATE_RUNNER = importlib.import_module("harness.gate_runner.gate_runner")
+            return _GATE_RUNNER
     raise RuntimeError("shared gate-runner is missing; run harness update")
 
 

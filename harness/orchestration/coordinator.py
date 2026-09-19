@@ -25,29 +25,41 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 MODULE_ROOT = Path(__file__).resolve().parent
-if str(MODULE_ROOT) not in sys.path:
-    sys.path.insert(0, str(MODULE_ROOT))
 
-GATE_RUNNER_ROOT = MODULE_ROOT.parent / "gate_runner"
-if str(GATE_RUNNER_ROOT) not in sys.path:
-    sys.path.insert(0, str(GATE_RUNNER_ROOT))
-CONTEXT_BUILDER_ROOT = MODULE_ROOT.parent / "context_builder"
-if str(CONTEXT_BUILDER_ROOT) not in sys.path:
-    sys.path.insert(0, str(CONTEXT_BUILDER_ROOT))
-from contract import (
+# `harness/bin/harness`'s package_files() copies this file verbatim into target projects as
+# `.harness/orchestration/coordinator.py` -- a different directory name than the source tree's
+# `harness/`. Alias `harness` to whichever of the two this file actually lives under so
+# `from harness...` resolves the same way in both places. See docs/adr/0018.
+_HARNESS_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = _HARNESS_ROOT.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+if _HARNESS_ROOT.name != "harness":
+    import importlib.util
+
+    _spec = importlib.util.spec_from_file_location(
+        "harness", _HARNESS_ROOT / "__init__.py", submodule_search_locations=[str(_HARNESS_ROOT)]
+    )
+    assert _spec is not None and _spec.loader is not None
+    _pkg = importlib.util.module_from_spec(_spec)
+    sys.modules["harness"] = _pkg
+    _spec.loader.exec_module(_pkg)
+
+from harness.errors import HarnessError, INTERNAL_INVARIANT_REMEDY, print_and_exit
+from harness.orchestration.contract import (
     COMMUNICATION_POLICY_FIELDS, ContractError, health_problems, load_role_manifest,
     resolve_assignment, resolve_runtime_name, validate_brief_policy,
 )
-from context_builder import ContextPackageError, build_context_package
-from dispatch_preflight import PreflightError, prepare as prepare_dispatch
-from gate_runner import concise_evidence, sanitise
-from ledger import (
+from harness.context_builder.context_builder import ContextPackageError, build_context_package
+from harness.orchestration.dispatch_preflight import PreflightError, prepare as prepare_dispatch
+from harness.gate_runner.gate_runner import concise_evidence, sanitise
+from harness.orchestration.ledger import (
     BatchRecord, CheckpointRecord, ContextPackageRecord, DispatchRecord, DispatchStatusRecord,
     LedgerError, LifecycleLedger, PlanRecord, RiskAssessmentRecord,
 )
-from coordinator_cli import build_parser
-import qa_lane
-from runtime_attestation import AttestationError, attest as attest_runtime_worktree
+from harness.orchestration.coordinator_cli import build_parser
+from harness.orchestration import qa_lane
+from harness.orchestration.runtime_attestation import AttestationError, attest as attest_runtime_worktree
 
 
 STATE_REL = Path(".harness/orchestration/state")
@@ -168,7 +180,7 @@ TELEMETRY_FIELDS = {
 }
 
 
-class CoordinatorError(Exception):
+class CoordinatorError(HarnessError):
     """A request that must fail without advancing coordinator state."""
 
 
@@ -184,9 +196,9 @@ def _read_object(path: Path, label: str) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise CoordinatorError(f"{label} is not valid JSON") from exc
+        raise CoordinatorError(f"{label} is not valid JSON", remedy=f"fix the JSON syntax in {label}") from exc
     if not isinstance(value, dict):
-        raise CoordinatorError(f"{label} must be a JSON object")
+        raise CoordinatorError(f"{label} must be a JSON object", remedy=f"set {label} to a JSON object")
     return value
 
 
@@ -194,9 +206,9 @@ def _reject_sensitive(value: Any, location: str) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             if not isinstance(key, str):
-                raise CoordinatorError(f"{location} contains a non-string key")
+                raise CoordinatorError(f"{location} contains a non-string key", remedy=f"use only string keys in {location}")
             if SENSITIVE_KEY.search(key):
-                raise CoordinatorError(f"{location} contains secret-shaped field {key!r}")
+                raise CoordinatorError(f"{location} contains secret-shaped field {key!r}", remedy=f"remove the secret-shaped field {key!r} from {location}; credentials never belong in this config")
             _reject_sensitive(child, f"{location}.{key}")
     elif isinstance(value, list):
         for index, child in enumerate(value):
@@ -205,7 +217,7 @@ def _reject_sensitive(value: Any, location: str) -> None:
 
 def _strings(value: object, label: str, *, allow_empty: bool = False) -> list[str]:
     if not isinstance(value, list) or (not allow_empty and not value) or not all(_non_empty(item) for item in value):
-        raise CoordinatorError(f"{label} must be a list of non-empty strings")
+        raise CoordinatorError(f"{label} must be a list of non-empty strings", remedy=f"set {label} to a list of non-empty strings")
     return list(value)
 
 
@@ -217,33 +229,33 @@ def _write_exclusive(ledger: LifecycleLedger, path: Path, value: dict[str, Any])
     try:
         ledger.write_immutable(path, value)
     except LedgerError as exc:
-        raise CoordinatorError(str(exc)) from exc
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _write_text_exclusive(ledger: LifecycleLedger, path: Path, value: str) -> None:
     try:
         ledger.write_artifact(path, value)
     except LedgerError as exc:
-        raise CoordinatorError(str(exc)) from exc
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _write_record(ledger: LifecycleLedger, record: Any) -> None:
     try:
         ledger.write_record(record)
     except LedgerError as exc:
-        raise CoordinatorError(str(exc)) from exc
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _replace_record(ledger: LifecycleLedger, record: Any) -> None:
     try:
         ledger.replace_record(record)
     except LedgerError as exc:
-        raise CoordinatorError(str(exc)) from exc
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _safe_id(value: object, label: str) -> str:
     if not isinstance(value, str) or re.fullmatch(r"(?:batch|dispatch|risk|context-package|checkpoint)-[0-9a-f-]+", value) is None:
-        raise CoordinatorError(f"{label} is not a valid coordinator ID")
+        raise CoordinatorError(f"{label} is not a valid coordinator ID", remedy=f"use a valid coordinator-generated ID for {label}")
     return value
 
 
@@ -284,7 +296,8 @@ def _reject_non_english(values: Any, field: str) -> None:
             raise CoordinatorError(
                 f"{field} is handed to a role as agent-to-agent protocol text and must be written "
                 "in English; translate it before creating the batch and keep commands, paths, IDs "
-                "and quoted evidence verbatim"
+                "and quoted evidence verbatim",
+                remedy=f"rewrite {field} in English, keeping commands, paths, IDs and quoted evidence verbatim",
             )
 
 
@@ -326,7 +339,8 @@ def _agent_authored_file(repo: Path, value: str, label: str) -> Path:
         return path
     raise CoordinatorError(
         f"{label} must be written inside the repository or one of its worktrees, not at {path}; "
-        f"use the canonical staging path {_agent_inbox(repo)}"
+        f"use the canonical staging path {_agent_inbox(repo)}",
+        remedy=f"write role-authored files under the repository or one of its worktrees, e.g. {_agent_inbox(repo)}",
     )
 
 
@@ -334,7 +348,7 @@ def _records_root(root: Path) -> Path:
     try:
         return LifecycleLedger(root).records_root()
     except LedgerError as exc:
-        raise CoordinatorError(str(exc)) from exc
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 @contextmanager
@@ -348,7 +362,7 @@ def _ledger_lock(ledger: LifecycleLedger) -> Iterator[None]:
         with ledger.lock():
             yield
     except LedgerError as exc:
-        raise CoordinatorError(str(exc)) from exc
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _project(repo: Path) -> dict[str, Any]:
@@ -399,7 +413,7 @@ def _config(repo: Path) -> dict[str, Any]:
     _reject_sensitive(value, "project orchestration config")
     problems = health_problems(repo / ".harness/orchestration.json", repo / ".harness/orchestration/roles")
     if problems:
-        raise CoordinatorError("invalid project orchestration config: " + "; ".join(problems))
+        raise CoordinatorError("invalid project orchestration config: " + "; ".join(problems), remedy="fix the listed project orchestration config problem(s) before retrying")
     return value
 
 
@@ -463,10 +477,10 @@ def _numeric_policy(config: dict[str, Any], key: str, defaults: dict[str, int]) 
 def _context_package_policy(config: dict[str, Any]) -> dict[str, int]:
     policy = _numeric_policy(config, "context_package_policy", DEFAULT_CONTEXT_PACKAGE_POLICY)
     if policy["reserved_prompt_tokens"] >= policy["context_window_tokens"]:
-        raise CoordinatorError("context_package_policy reserved_prompt_tokens must be below context_window_tokens")
+        raise CoordinatorError("context_package_policy reserved_prompt_tokens must be below context_window_tokens", remedy="lower context_package_policy.reserved_prompt_tokens below context_window_tokens")
     available = policy["context_window_tokens"] - policy["reserved_prompt_tokens"]
     if policy["max_tokens"] > available:
-        raise CoordinatorError("context_package_policy max_tokens exceeds available context after prompt headroom")
+        raise CoordinatorError("context_package_policy max_tokens exceeds available context after prompt headroom", remedy="lower context_package_policy.max_tokens so it fits inside context_window_tokens minus reserved_prompt_tokens")
     return policy
 
 
@@ -515,12 +529,13 @@ def _validate_harness_runtime_snapshot(repo: Path, batch: dict[str, Any]) -> Non
     if expected is None:  # Explicitly supported legacy batch; never rewrite history in place.
         return
     if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
-        raise CoordinatorError("batch has an invalid harness runtime snapshot hash")
+        raise CoordinatorError("batch has an invalid harness runtime snapshot hash", remedy="the batch's recorded harness runtime snapshot hash is malformed -- " + INTERNAL_INVARIANT_REMEDY)
     actual = _harness_runtime_sha256(repo)
     if actual != expected:
         raise CoordinatorError(
             "the harness runtime changed after this batch was planned; do not spend a worker on recovery. "
-            "Finish with the pinned harness revision or abandon and re-plan the batch."
+            "Finish with the pinned harness revision or abandon and re-plan the batch.",
+            remedy="finish this batch with the pinned harness revision, or abandon and re-plan it under the current one",
         )
 
 
@@ -530,7 +545,10 @@ def _git(repo: Path, *arguments: str) -> str:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
-        raise CoordinatorError(f"git command failed: {detail or 'unknown error'}")
+        raise CoordinatorError(
+            f"git command failed: {detail or 'unknown error'}",
+            remedy=f"inspect the git error above and fix the repository state before retrying 'git {' '.join(arguments)}'",
+        )
     return result.stdout.strip()
 
 
@@ -550,7 +568,7 @@ def _fetch_ref_tip(repo: Path, ref: str) -> str:
     try:
         _git(repo, "fetch", "origin", ref)
     except CoordinatorError as exc:
-        raise CoordinatorError(f"could not fetch origin {ref!r}: {exc}") from exc
+        raise CoordinatorError(f"could not fetch origin {ref!r}: {exc}", remedy=f"inspect the git fetch error above for {ref!r} and retry") from exc
     return _git(repo, "rev-parse", "--verify", "FETCH_HEAD")
 
 
@@ -560,7 +578,7 @@ def _required_base_branch(repo: Path) -> str:
     against a branch the project never named."""
     base = _project(repo).get("base_branch")
     if not _non_empty(base):
-        raise CoordinatorError("project config has no usable base_branch for the integration ref fallback")
+        raise CoordinatorError("project config has no usable base_branch for the integration ref fallback", remedy="set project config base_branch, or pass --integration-ref explicitly")
     return base
 
 
@@ -577,7 +595,7 @@ def _enforce_base_freshness(repo: Path, root: Path, ledger: LifecycleLedger, bat
     by a new developer dispatch (a rebase), never by the coordinator moving this field directly."""
     recorded = batch.get("integration_base_commit")
     if not isinstance(recorded, str) or not recorded:
-        raise CoordinatorError("batch has no recorded integration base commit to check freshness against")
+        raise CoordinatorError("batch has no recorded integration base commit to check freshness against", remedy="this batch predates integration-base freshness tracking; re-plan it to record one")
     ref = _integration_ref(repo, batch)
     current = _fetch_ref_tip(repo, ref)
     if current == recorded:
@@ -590,17 +608,18 @@ def _enforce_base_freshness(repo: Path, root: Path, ledger: LifecycleLedger, bat
     _replace_record(ledger, BatchRecord.from_dict(batch))
     raise CoordinatorError(
         f"batch base is stale: origin/{ref} has moved from {recorded} to {current}; "
-        "only a new developer rebase dispatch can clear this block"
+        "only a new developer rebase dispatch can clear this block",
+        remedy="run a new developer rebase dispatch to bring the batch base up to date with origin, then retry",
     )
 
 
 def _candidate_commit(repo: Path, value: object) -> str:
     if not isinstance(value, str) or re.fullmatch(r"[0-9a-fA-F]{7,64}", value.strip()) is None:
-        raise CoordinatorError("candidate_commit must be a hexadecimal commit SHA")
+        raise CoordinatorError("candidate_commit must be a hexadecimal commit SHA", remedy="pass candidate_commit as a 7-64 character hex commit SHA")
     try:
         return _git(repo, "rev-parse", "--verify", f"{value.strip()}^{{commit}}")
     except CoordinatorError as exc:
-        raise CoordinatorError("candidate_commit does not resolve to a commit") from exc
+        raise CoordinatorError("candidate_commit does not resolve to a commit", remedy="pass a candidate_commit that resolves to a real commit in this repository") from exc
 
 
 def _commit_changed_files(repo: Path, commit: str) -> list[str]:
@@ -621,7 +640,7 @@ def _git_is_ancestor(repo: Path, base: str, candidate: str) -> bool:
         encoding="utf-8",
     )
     if result.returncode not in {0, 1}:
-        raise CoordinatorError("cannot verify the candidate diff ancestry")
+        raise CoordinatorError("cannot verify the candidate diff ancestry", remedy="verify the candidate and base commits both exist and are reachable in this repository")
     return result.returncode == 0
 
 
@@ -645,7 +664,7 @@ def _risk_triggers(repo: Path) -> list[str]:
     role = _role(repo, "code-review")
     triggers = role.get("risk_triggers")
     if not isinstance(triggers, list) or not all(_non_empty(item) for item in triggers):
-        raise CoordinatorError("code-review role has no valid risk triggers")
+        raise CoordinatorError("code-review role has no valid risk triggers", remedy="add the code-review role's required risk triggers to its role manifest")
     return list(triggers)
 
 
@@ -653,7 +672,7 @@ def _validate_trigger_names(triggers: object, label: str, known: list[str]) -> l
     values = _strings(triggers, label, allow_empty=True)
     unknown = [trigger for trigger in values if trigger not in known]
     if unknown:
-        raise CoordinatorError(f"{label} contains unknown risk triggers: {unknown}")
+        raise CoordinatorError(f"{label} contains unknown risk triggers: {unknown}", remedy=f"remove the unknown trigger(s) from {label}, or add them to the project's known risk triggers")
     return list(dict.fromkeys(values))
 
 
@@ -710,32 +729,32 @@ def _role(repo: Path, name: str) -> dict[str, Any]:
     try:
         return load_role_manifest(repo / ".harness/orchestration/roles" / f"{name}.md")
     except ContractError as exc:
-        raise CoordinatorError(str(exc)) from exc
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _validate_branch(repo: Path, branch: str) -> None:
     if not _non_empty(branch):
-        raise CoordinatorError("branch must be a non-empty string")
+        raise CoordinatorError("branch must be a non-empty string", remedy="pass a non-empty branch name")
     project = _project(repo)
     pattern = project.get("branch_pattern", r"^feature/issue-[0-9]+-.+")
     base = project.get("base_branch", "master")
     if not isinstance(pattern, str):
-        raise CoordinatorError("project config has an invalid branch_pattern")
+        raise CoordinatorError("project config has an invalid branch_pattern", remedy="fix the branch_pattern regular expression in the project config")
     try:
         matches = re.fullmatch(pattern, branch) is not None
     except re.error as exc:
-        raise CoordinatorError("project config has an invalid branch_pattern") from exc
+        raise CoordinatorError("project config has an invalid branch_pattern", remedy="fix the branch_pattern regular expression in the project config") from exc
     if branch.startswith("integration/") or branch == base or not matches:
-        raise CoordinatorError("branch must be an issue branch, never a protected or integration branch")
+        raise CoordinatorError("branch must be an issue branch, never a protected or integration branch", remedy="use an issue branch, never a protected or integration/* branch")
 
 
 def _validate_worktree(repo: Path, worktree: str) -> None:
     if not _non_empty(worktree):
-        raise CoordinatorError("worktree must be a non-empty string")
+        raise CoordinatorError("worktree must be a non-empty string", remedy="pass a non-empty worktree path")
     try:
         resolved = Path(worktree).resolve()
     except Exception as exc:
-        raise CoordinatorError("worktree is not a valid path") from exc
+        raise CoordinatorError("worktree is not a valid path", remedy="pass a worktree that is a valid filesystem path") from exc
     
     output = _git(repo, "worktree", "list", "--porcelain")
     paths: set[Path] = set()
@@ -744,7 +763,7 @@ def _validate_worktree(repo: Path, worktree: str) -> None:
             paths.add(Path(line.removeprefix("worktree ")).resolve())
             
     if resolved not in paths:
-        raise CoordinatorError(f"worktree {worktree!r} is not registered by git worktree")
+        raise CoordinatorError(f"worktree {worktree!r} is not registered by git worktree", remedy=f"run 'git worktree add' for {worktree}, or pass a worktree already registered by git worktree")
 
 
 def _verification_commands(config: dict[str, Any]) -> list[str]:
@@ -768,7 +787,7 @@ def _developer_verification_commands(config: dict[str, Any]) -> list[str]:
 def _worker_attestation_required(config: dict[str, Any]) -> bool:
     value = config.get("worker_attestation_required", False)
     if not isinstance(value, bool):
-        raise CoordinatorError("worker_attestation_required must be a boolean")
+        raise CoordinatorError("worker_attestation_required must be a boolean", remedy="set worker_attestation_required to true or false in the project orchestration config")
     return value
 
 
@@ -776,11 +795,13 @@ def _communication_policy(config: dict[str, Any]) -> dict[str, str]:
     value = config.get("communication_policy", DEFAULT_COMMUNICATION_POLICY)
     if not isinstance(value, dict) or set(value) != COMMUNICATION_POLICY_FIELDS:
         raise CoordinatorError(
-            "communication_policy must contain agent_to_agent_language and coordinator_report_language"
+            "communication_policy must contain agent_to_agent_language and coordinator_report_language",
+            remedy="set communication_policy to an object with agent_to_agent_language and coordinator_report_language",
         )
     if value != DEFAULT_COMMUNICATION_POLICY:
         raise CoordinatorError(
-            "communication_policy must use English for agent communication and Russian for coordinator reports"
+            "communication_policy must use English for agent communication and Russian for coordinator reports",
+            remedy="set communication_policy.agent_to_agent_language to 'en' and coordinator_report_language to 'ru'",
         )
     return dict(value)
 
@@ -799,11 +820,13 @@ def _resolve_assignment(
     if not _configured(repo):
         if zone_name != DEFAULT_ZONE:
             raise CoordinatorError(
-                f"without .harness/orchestration.json the only backend zone is {DEFAULT_ZONE!r}"
+                f"without .harness/orchestration.json the only backend zone is {DEFAULT_ZONE!r}",
+                remedy=f"create .harness/orchestration.json to declare backend zones other than {DEFAULT_ZONE!r}",
             )
         if not _non_empty(session_model) or not _non_empty(session_effort):
             raise CoordinatorError(
-                "without .harness/orchestration.json the invoking session must supply --model and --effort"
+                "without .harness/orchestration.json the invoking session must supply --model and --effort",
+                remedy="pass --model and --effort explicitly, or create .harness/orchestration.json with an assignment plan",
             )
         # No project-owned provider profile exists, so the only honest transport is the invoking
         # session itself; an Orca worker would have no agent to start.
@@ -816,7 +839,7 @@ def _resolve_assignment(
         resolved_runtime = resolve_runtime_name(plan, runtime_name) if isinstance(plan, dict) else ""
         assignment = resolve_assignment(config, role, role_name, zone_name, resolved_runtime)
     except ContractError as exc:
-        raise CoordinatorError(str(exc)) from exc
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
     return (
         assignment["role"], assignment["zone"], assignment["profile_id"], assignment["model"],
         assignment["effort"], assignment["transport"], resolved_runtime,
@@ -827,9 +850,9 @@ def _moment(value: object, label: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value)  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
-        raise CoordinatorError(f"{label} is not a readable timestamp") from exc
+        raise CoordinatorError(f"{label} is not a readable timestamp", remedy=f"pass {label} as an ISO-8601 timestamp") from exc
     if parsed.tzinfo is None:
-        raise CoordinatorError(f"{label} must include a timezone")
+        raise CoordinatorError(f"{label} must include a timezone", remedy=f"include an explicit UTC offset (e.g. Z or +00:00) in {label}")
     return parsed
 
 
@@ -872,30 +895,30 @@ def _load_risk(root: Path, risk_id: str) -> dict[str, Any]:
 def _validate_risk(root: Path, batch: dict[str, Any], risk: dict[str, Any]) -> None:
     _reject_sensitive(risk, "risk assessment")
     if set(risk) != RISK_ASSESSMENT_FIELDS:
-        raise CoordinatorError("risk assessment schema mismatch")
+        raise CoordinatorError("risk assessment schema mismatch", remedy="regenerate the risk assessment record so its schema matches the current version")
     if risk["batch_id"] != batch["batch_id"]:
-        raise CoordinatorError("risk assessment does not belong to its batch")
+        raise CoordinatorError("risk assessment does not belong to its batch", remedy="the risk assessment record does not belong to this batch -- " + INTERNAL_INVARIANT_REMEDY)
     if not isinstance(risk["candidate_commit"], str) or re.fullmatch(r"[0-9a-f]{40}", risk["candidate_commit"]) is None:
-        raise CoordinatorError("risk assessment has an invalid candidate commit")
+        raise CoordinatorError("risk assessment has an invalid candidate commit", remedy="regenerate the risk assessment with a valid candidate_commit")
     if risk["base_commit"] is not None and (
         not isinstance(risk["base_commit"], str) or re.fullmatch(r"[0-9a-f]{40}", risk["base_commit"]) is None
     ):
-        raise CoordinatorError("risk assessment has an invalid base commit")
+        raise CoordinatorError("risk assessment has an invalid base commit", remedy="regenerate the risk assessment with a valid base_commit")
     if not isinstance(risk["changed_files"], list) or not all(_non_empty(item) for item in risk["changed_files"]):
-        raise CoordinatorError("risk assessment has invalid changed files")
+        raise CoordinatorError("risk assessment has invalid changed files", remedy="regenerate the risk assessment with a valid changed_files list")
     if not isinstance(risk["matched_triggers"], list) or not all(_non_empty(item) for item in risk["matched_triggers"]):
-        raise CoordinatorError("risk assessment has invalid matched triggers")
+        raise CoordinatorError("risk assessment has invalid matched triggers", remedy="regenerate the risk assessment with valid matched_triggers")
     if not isinstance(risk["developer_triggers"], list) or not all(_non_empty(item) for item in risk["developer_triggers"]):
-        raise CoordinatorError("risk assessment has invalid developer triggers")
+        raise CoordinatorError("risk assessment has invalid developer triggers", remedy="regenerate the risk assessment with valid developer_triggers")
     if not isinstance(risk["review_required"], bool) or risk["review_scope"] != risk["changed_files"]:
-        raise CoordinatorError("risk assessment review scope is invalid")
+        raise CoordinatorError("risk assessment review scope is invalid", remedy="regenerate the risk assessment with a valid review scope")
     entry = next(
         (item for item in batch.get("risk_assessments", []) if item.get("risk_assessment_id") == risk["risk_assessment_id"]),
         None,
     )
     expected = hashlib.sha256(_canonical(risk).encode("utf-8")).hexdigest()
     if not entry or entry.get("record_sha256") != expected:
-        raise CoordinatorError("risk assessment failed immutable record integrity check")
+        raise CoordinatorError("risk assessment failed immutable record integrity check", remedy="the risk assessment record was modified after its integrity hash was recorded -- " + INTERNAL_INVARIANT_REMEDY)
 
 
 def _risk_for_candidate(root: Path, batch: dict[str, Any], candidate: str) -> dict[str, Any] | None:
@@ -916,11 +939,11 @@ def _load_checkpoint(root: Path, checkpoint_id: str) -> dict[str, Any]:
 def _latest_checkpoint_for_dispatch(root: Path, batch: dict[str, Any], dispatch_id: str) -> dict[str, Any]:
     entries = [item for item in batch.get("checkpoints", []) if item.get("dispatch_id") == dispatch_id]
     if not entries:
-        raise CoordinatorError("dispatch has no recorded checkpoint to resume from")
+        raise CoordinatorError("dispatch has no recorded checkpoint to resume from", remedy="checkpoint this dispatch before attempting to resume it")
     checkpoint = _load_checkpoint(root, entries[-1]["checkpoint_id"])
     expected = hashlib.sha256(_canonical(checkpoint).encode("utf-8")).hexdigest()
     if entries[-1].get("record_sha256") != expected:
-        raise CoordinatorError("checkpoint failed immutable record integrity check")
+        raise CoordinatorError("checkpoint failed immutable record integrity check", remedy="the checkpoint record was modified after its integrity hash was recorded -- " + INTERNAL_INVARIANT_REMEDY)
     return checkpoint
 
 
@@ -931,9 +954,9 @@ def _load_context_package(root: Path, package_id: str) -> dict[str, Any]:
 def _validate_context_package(root: Path, batch: dict[str, Any], package: dict[str, Any]) -> None:
     _reject_sensitive(package, "context package")
     if set(package) != CONTEXT_PACKAGE_FIELDS and set(package) != LEGACY_CONTEXT_PACKAGE_FIELDS:
-        raise CoordinatorError("context package schema mismatch")
+        raise CoordinatorError("context package schema mismatch", remedy="regenerate the context package record so its schema matches the current version")
     if package["batch_id"] != batch["batch_id"]:
-        raise CoordinatorError("context package does not belong to its batch")
+        raise CoordinatorError("context package does not belong to its batch", remedy="the context package record does not belong to this batch -- " + INTERNAL_INVARIANT_REMEDY)
     entry = next(
         (
             item for item in batch.get("context_packages", [])
@@ -943,7 +966,7 @@ def _validate_context_package(root: Path, batch: dict[str, Any], package: dict[s
     )
     expected = hashlib.sha256(_canonical(package).encode("utf-8")).hexdigest()
     if not entry or entry.get("record_sha256") != expected:
-        raise CoordinatorError("context package failed immutable record integrity check")
+        raise CoordinatorError("context package failed immutable record integrity check", remedy="the context package record was modified after its integrity hash was recorded -- " + INTERNAL_INVARIANT_REMEDY)
 
 
 def _context_package_summary(package: dict[str, Any]) -> dict[str, Any]:
@@ -1025,12 +1048,12 @@ def _latest_developer_candidate(repo: Path, root: Path, batch: dict[str, Any]) -
         and item.get("decision", {}).get("decision") in {"accept", "override-warning"}
     ]
     if not accepted:
-        raise CoordinatorError("candidate dispatch requires an accepted developer completion report")
+        raise CoordinatorError("candidate dispatch requires an accepted developer completion report", remedy="accept the developer's completion report before creating a candidate dispatch")
     report = _pending_report(root, batch, accepted[-1])
     try:
         return _candidate_commit(repo, report["commit_sha"])
     except (KeyError, CoordinatorError) as exc:
-        raise CoordinatorError("accepted developer report has no resolvable candidate commit") from exc
+        raise CoordinatorError("accepted developer report has no resolvable candidate commit", remedy="the accepted developer report has no resolvable candidate commit -- " + INTERNAL_INVARIANT_REMEDY) from exc
 
 
 def _accepted_architect(batch: dict[str, Any]) -> bool:
@@ -1056,7 +1079,7 @@ def _accepted_qa_for_candidate(root: Path, batch: dict[str, Any], candidate: str
         report = _pending_report(root, batch, entry)
         if report.get("outcome") == "completed":
             return report
-    raise CoordinatorError("publish requires accepted green QA evidence for the candidate commit")
+    raise CoordinatorError("publish requires accepted green QA evidence for the candidate commit", remedy="accept green QA evidence for this candidate commit before publishing")
 
 
 def _batch_for_ticket_branch(
@@ -1070,7 +1093,7 @@ def _batch_for_ticket_branch(
     """
     batches_dir = _records_root(root) / "batches"
     if not batches_dir.is_dir():
-        raise CoordinatorError("no orchestration batches exist for the ticket branch")
+        raise CoordinatorError("no orchestration batches exist for the ticket branch", remedy="verify the ticket/branch and that a batch exists for it")
     matches = []
     for path in sorted(batches_dir.glob("*.json")):
         batch = _read_object(path, "batch record")
@@ -1078,12 +1101,12 @@ def _batch_for_ticket_branch(
             _validate_batch_integrity(root, batch)
             matches.append(batch)
     if not matches:
-        raise CoordinatorError("no orchestration batch matches the ticket and issue branch")
+        raise CoordinatorError("no orchestration batch matches the ticket and issue branch", remedy="pass a ticket and branch that match an existing orchestration batch")
     if requested_batch is not None:
         batch_id = _safe_id(requested_batch, "batch")
         selected = next((batch for batch in matches if batch.get("batch_id") == batch_id), None)
         if selected is None:
-            raise CoordinatorError("requested batch does not match the ticket and issue branch")
+            raise CoordinatorError("requested batch does not match the ticket and issue branch", remedy="pass a batch, ticket and branch that all match one existing orchestration batch")
         return selected
     candidates = []
     for batch in matches:
@@ -1094,8 +1117,8 @@ def _batch_for_ticket_branch(
         candidates.append(batch)
     if len(candidates) != 1:
         if not candidates:
-            raise CoordinatorError("no batch has accepted green QA evidence for the candidate commit")
-        raise CoordinatorError("multiple batches have accepted green QA evidence for the candidate commit; pass --batch")
+            raise CoordinatorError("no batch has accepted green QA evidence for the candidate commit", remedy="accept green QA evidence for this candidate commit, or pass --batch to disambiguate")
+        raise CoordinatorError("multiple batches have accepted green QA evidence for the candidate commit; pass --batch", remedy="pass --batch to disambiguate which batch's accepted QA evidence to use")
     return candidates[0]
 
 
@@ -1112,7 +1135,7 @@ def ledger_status(args: argparse.Namespace) -> dict[str, Any]:
         try:
             return ledger.status()
         except LedgerError as exc:
-            raise CoordinatorError(str(exc)) from exc
+            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def migrate_ledger(args: argparse.Namespace) -> dict[str, Any]:
@@ -1124,7 +1147,7 @@ def migrate_ledger(args: argparse.Namespace) -> dict[str, Any]:
         try:
             return ledger.migrate()
         except LedgerError as exc:
-            raise CoordinatorError(str(exc)) from exc
+            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def reset_ledger(args: argparse.Namespace) -> dict[str, Any]:
@@ -1136,7 +1159,7 @@ def reset_ledger(args: argparse.Namespace) -> dict[str, Any]:
         try:
             return ledger.reset(args.confirm)
         except LedgerError as exc:
-            raise CoordinatorError(str(exc)) from exc
+            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def clean_ledger(args: argparse.Namespace) -> dict[str, Any]:
@@ -1148,7 +1171,7 @@ def clean_ledger(args: argparse.Namespace) -> dict[str, Any]:
         try:
             return ledger.clean()
         except LedgerError as exc:
-            raise CoordinatorError(str(exc)) from exc
+            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _validate_batch_integrity(root: Path, batch: dict[str, Any]) -> None:
@@ -1157,12 +1180,12 @@ def _validate_batch_integrity(root: Path, batch: dict[str, Any]) -> None:
     )
     for field in ("approval_policy", "communication_policy"):
         if (field in batch) != (field in plan):
-            raise CoordinatorError("batch record is incomplete")
+            raise CoordinatorError("batch record is incomplete", remedy="restore the batch record so it has every required field, or run 'ledger clean'")
     for fields in (PLAN_FIELDS, LEGACY_PLAN_FIELDS):
         if all(field in batch for field in fields) and all(field in plan for field in fields):
             if {field: batch[field] for field in fields} == {field: plan[field] for field in fields}:
                 return
-            raise CoordinatorError("batch record does not match its immutable plan")
+            raise CoordinatorError("batch record does not match its immutable plan", remedy="the batch record diverged from its immutable plan -- " + INTERNAL_INVARIANT_REMEDY)
     # Batch records created before approval_policy was added are still immutable and safe to
     # continue: the transition code resolves the project default when the field is absent. Accept
     # this historical shape only when both records omit the field; a one-sided omission indicates
@@ -1179,7 +1202,7 @@ def _validate_batch_integrity(root: Path, batch: dict[str, Any]) -> None:
         }
     ):
         return
-    raise CoordinatorError("batch record is incomplete")
+    raise CoordinatorError("batch record is incomplete", remedy="restore the batch record so it has every required field, or run 'ledger clean'")
 
 
 def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: dict[str, Any], dispatch: dict[str, Any]) -> None:
@@ -1198,45 +1221,45 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
     }
     accepted |= {fields - {"report_staging_path"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
-        raise CoordinatorError("dispatch record schema mismatch")
+        raise CoordinatorError("dispatch record schema mismatch", remedy="the dispatch record schema is malformed -- " + INTERNAL_INVARIANT_REMEDY)
     if dispatch.get("state") != "approved":
-        raise CoordinatorError("dispatch record is not an approved immutable brief")
+        raise CoordinatorError("dispatch record is not an approved immutable brief", remedy="the dispatch record has no approved coordinator_approval -- " + INTERNAL_INVARIANT_REMEDY)
     if dispatch.get("batch_id") != batch.get("batch_id"):
-        raise CoordinatorError("dispatch record does not belong to its batch")
+        raise CoordinatorError("dispatch record does not belong to its batch", remedy="the dispatch record does not belong to its batch -- " + INTERNAL_INVARIANT_REMEDY)
     expected_communication_policy = batch.get("communication_policy", DEFAULT_COMMUNICATION_POLICY)
     if dispatch.get("communication_policy", expected_communication_policy) != expected_communication_policy:
-        raise CoordinatorError("dispatch communication policy does not match its batch")
+        raise CoordinatorError("dispatch communication policy does not match its batch", remedy="the dispatch record's communication policy diverged from its batch -- " + INTERNAL_INVARIANT_REMEDY)
     if dispatch.get("purpose") not in DISPATCH_PURPOSES:
-        raise CoordinatorError("dispatch record has an invalid purpose")
+        raise CoordinatorError("dispatch record has an invalid purpose", remedy="the dispatch record has an invalid purpose -- " + INTERNAL_INVARIANT_REMEDY)
     package_id = dispatch.get("context_package_id")
     package_sha = dispatch.get("context_package_sha256")
     if dispatch["role"] in {"architect", "developer", "code-review"}:
         if not isinstance(package_id, str) or not isinstance(package_sha, str):
-            raise CoordinatorError("architect, developer and code-review briefs require a Context Package reference")
+            raise CoordinatorError("architect, developer and code-review briefs require a Context Package reference", remedy="reference a registered Context Package in the dispatch brief for this role")
         package = _load_context_package(root, package_id)
         _validate_context_package(root, batch, package)
         if package.get("role") not in {"shared", dispatch["role"]}:
-            raise CoordinatorError("dispatch Context Package is neither shared nor assigned to this role")
+            raise CoordinatorError("dispatch Context Package is neither shared nor assigned to this role", remedy="share the Context Package with this role, or register one assigned to it")
         if hashlib.sha256(_canonical(package).encode("utf-8")).hexdigest() != package_sha:
-            raise CoordinatorError("dispatch Context Package hash does not match its immutable package")
+            raise CoordinatorError("dispatch Context Package hash does not match its immutable package", remedy="the dispatch's Context Package hash does not match its immutable package -- " + INTERNAL_INVARIANT_REMEDY)
         summary = dispatch.get("context_package_summary")
         if summary is not None and summary != _context_package_summary(package):
-            raise CoordinatorError("dispatch Context Package summary does not match its immutable package")
+            raise CoordinatorError("dispatch Context Package summary does not match its immutable package", remedy="the dispatch's Context Package summary does not match its immutable package -- " + INTERNAL_INVARIANT_REMEDY)
     elif package_id is not None or package_sha is not None or dispatch.get("context_package_summary") is not None:
-        raise CoordinatorError("only architect, developer and code-review briefs may reference a Context Package")
+        raise CoordinatorError("only architect, developer and code-review briefs may reference a Context Package", remedy="only reference a Context Package from an architect, developer or code-review brief")
     entry = next((item for item in batch.get("dispatches", []) if item.get("dispatch_id") == dispatch.get("dispatch_id")), None)
     if not entry or entry.get("brief_sha256") != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest():
-        raise CoordinatorError("dispatch record failed immutable brief integrity check")
+        raise CoordinatorError("dispatch record failed immutable brief integrity check", remedy="the dispatch record was modified after its brief integrity hash was recorded -- " + INTERNAL_INVARIANT_REMEDY)
     for field in ("ticket", "branch", "worktree", "zone", "definition_of_done", "prohibited_changes", "required_gates", "dependencies"):
         if dispatch[field] != batch[field]:
-            raise CoordinatorError(f"dispatch record {field} does not match its batch")
+            raise CoordinatorError(f"dispatch record {field} does not match its batch", remedy=f"the dispatch record's {field} does not match its batch -- " + INTERNAL_INVARIANT_REMEDY)
     expected_commands = (
         batch["developer_verification_commands"]
         if dispatch["role"] == "developer" and dispatch["purpose"] == "work"
         else batch["verification_commands"]
     )
     if dispatch["verification_commands"] != expected_commands:
-        raise CoordinatorError("dispatch record verification_commands do not match its batch and role")
+        raise CoordinatorError("dispatch record verification_commands do not match its batch and role", remedy="the dispatch record's verification_commands diverged from its batch/role -- " + INTERNAL_INVARIANT_REMEDY)
     if _configured(repo):
         try:
             validate_brief_policy(
@@ -1246,7 +1269,7 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
                 repo / ".harness/orchestration/roles",
             )
         except ContractError as exc:
-            raise CoordinatorError(str(exc)) from exc
+            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
     else:
         _validate_branch(repo, dispatch["branch"])
         # In zero-config mode the brief itself is the only record of the session-supplied runtime,
@@ -1263,36 +1286,36 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
             or dispatch["resolved_transport"] != transport
             or dispatch["resolved_runtime"] != resolved_runtime
         ):
-            raise CoordinatorError("dispatch record does not match the role assignment")
+            raise CoordinatorError("dispatch record does not match the role assignment", remedy="the dispatch record does not match the role assignment -- " + INTERNAL_INVARIANT_REMEDY)
         expected_paths = zone["paths"] if role["mode"] == "write" else []
         if dispatch["write_paths"] != expected_paths:
-            raise CoordinatorError("dispatch record write paths do not match the role boundary")
+            raise CoordinatorError("dispatch record write paths do not match the role boundary", remedy="the dispatch record write paths do not match the role boundary -- " + INTERNAL_INVARIANT_REMEDY)
     candidate = dispatch.get("candidate_commit")
     if dispatch["role"] in {"code-review", "qa"} and not isinstance(candidate, str):
-        raise CoordinatorError("review and QA dispatches must pin a candidate commit")
+        raise CoordinatorError("review and QA dispatches must pin a candidate commit", remedy="pass --candidate-commit for a review or QA dispatch")
     if dispatch["purpose"] == "publish":
         if dispatch["role"] != "developer" or not isinstance(candidate, str):
-            raise CoordinatorError("publish dispatches must be pinned developer briefs")
+            raise CoordinatorError("publish dispatches must be pinned developer briefs", remedy="only a pinned developer brief may be published")
         _accepted_qa_for_candidate(root, batch, candidate)
     if candidate is not None:
         resolved = _candidate_commit(repo, candidate)
         if resolved != candidate:
-            raise CoordinatorError("dispatch candidate_commit must be the full resolved commit SHA")
+            raise CoordinatorError("dispatch candidate_commit must be the full resolved commit SHA", remedy="set the dispatch's candidate_commit to its full resolved commit SHA")
         risk = _risk_for_candidate(root, batch, candidate)
         if risk is None or dispatch.get("risk_assessment_id") != risk["risk_assessment_id"]:
-            raise CoordinatorError("dispatch candidate is not linked to its immutable risk assessment")
+            raise CoordinatorError("dispatch candidate is not linked to its immutable risk assessment", remedy="link this dispatch candidate to its immutable risk assessment before proceeding")
         if dispatch["role"] == "code-review" and dispatch.get("review_scope") != risk["review_scope"]:
-            raise CoordinatorError("review dispatch scope does not match its immutable risk assessment")
+            raise CoordinatorError("review dispatch scope does not match its immutable risk assessment", remedy="regenerate the review dispatch scope from its immutable risk assessment")
         if dispatch["role"] == "code-review" and dispatch.get("review_base") != risk["base_commit"]:
-            raise CoordinatorError("review dispatch base does not match its immutable risk assessment")
+            raise CoordinatorError("review dispatch base does not match its immutable risk assessment", remedy="regenerate the review dispatch base from its immutable risk assessment")
     elif dispatch.get("review_scope") or dispatch.get("risk_assessment_id"):
-        raise CoordinatorError("dispatch contains review metadata without a candidate commit")
+        raise CoordinatorError("dispatch contains review metadata without a candidate commit", remedy="remove review metadata from a dispatch with no candidate_commit, or pin one")
 
 
 def _check_batch_conflicts(root: Path, config: dict[str, Any], batch: dict[str, Any]) -> None:
     budget = config.get("concurrency_budget")
     if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
-        raise CoordinatorError("project orchestration config has an invalid concurrency_budget")
+        raise CoordinatorError("project orchestration config has an invalid concurrency_budget", remedy="set concurrency_budget to a positive integer in the project orchestration config")
     active = 0
     for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
         other = _read_object(path, "batch record")
@@ -1300,15 +1323,15 @@ def _check_batch_conflicts(root: Path, config: dict[str, Any], batch: dict[str, 
             continue
         active += 1
         if other.get("zone") == batch.get("zone"):
-            raise CoordinatorError("another active batch already owns this backend zone")
+            raise CoordinatorError("another active batch already owns this backend zone", remedy="wait for the other active batch in this backend zone to close before creating a new one")
     if active >= budget:
-        raise CoordinatorError("concurrency_budget is exhausted")
+        raise CoordinatorError("concurrency_budget is exhausted", remedy="wait for an active worker to finish, or raise concurrency_budget")
 
 
 def _human_approval_gate(config: dict[str, Any]) -> str:
     gate = config.get("human_approval_gate", "trusted")
     if gate not in {"trusted", "tty"}:
-        raise CoordinatorError("human_approval_gate must be trusted or tty")
+        raise CoordinatorError("human_approval_gate must be trusted or tty", remedy="set human_approval_gate to 'trusted' or 'tty' in the project orchestration config")
     return gate
 
 
@@ -1332,7 +1355,8 @@ def _confirm_on_terminal(approved_by: str) -> None:
         raise CoordinatorError(
             "human_approval_gate is 'tty': this decision must be confirmed by a human on the "
             "terminal, and this session has none. Show the decision packet and have the operator "
-            "run the same command in their own terminal."
+            "run the same command in their own terminal.",
+            remedy="show the decision packet and have a human operator run this same command in their own terminal",
         ) from exc
     try:
         sink.write(prompt)
@@ -1342,14 +1366,14 @@ def _confirm_on_terminal(approved_by: str) -> None:
         stream.close()
         sink.close()
     if answer != "approve":
-        raise CoordinatorError("human approval was not confirmed on the terminal")
+        raise CoordinatorError("human approval was not confirmed on the terminal", remedy="run this same decision command in a real interactive terminal so it can prompt for confirmation")
 
 
 def _approval(args: argparse.Namespace) -> dict[str, str]:
     approved_by = getattr(args, "approved_by", None)
     approved_at = getattr(args, "approved_at", None)
     if not _non_empty(approved_by) or not _non_empty(approved_at):
-        raise CoordinatorError("explicit coordinator approval requires approved-by and approved-at")
+        raise CoordinatorError("explicit coordinator approval requires approved-by and approved-at", remedy="pass --approved-by and --approved-at for this decision")
     result = {"approved_by": approved_by.strip(), "approved_at": approved_at.strip()}
     _reject_sensitive(result, "coordinator approval")
     try:
@@ -1364,7 +1388,7 @@ def _approval(args: argparse.Namespace) -> dict[str, str]:
 def _approval_policy(config: dict[str, Any]) -> str:
     policy = config.get("approval_policy", "manual_all")
     if policy not in {"manual_all", "milestone", "low_risk"}:
-        raise CoordinatorError("approval_policy must be manual_all, milestone or low_risk")
+        raise CoordinatorError("approval_policy must be manual_all, milestone or low_risk", remedy="set approval_policy to 'manual_all', 'milestone' or 'low_risk' in the project orchestration config")
     return policy
 
 
@@ -1379,11 +1403,11 @@ def _dispatch_approval(
     risk_triggered = bool(risk and risk.get("matched_triggers"))
     milestone = purpose == "publish" or role == "qa" or risk_triggered or batch.get("risk_reassessment_required")
     if policy == "manual_all" or milestone:
-        raise CoordinatorError("this transition requires --approved-by and --approved-at under its approval policy")
+        raise CoordinatorError("this transition requires --approved-by and --approved-at under its approval policy", remedy="pass --approved-by and --approved-at, as required by this project's approval_policy")
     if policy == "low_risk":
         zones = config.get("low_risk_zones", [])
         if batch["zone"] not in zones:
-            raise CoordinatorError("low_risk continuation requires the batch zone in low_risk_zones")
+            raise CoordinatorError("low_risk continuation requires the batch zone in low_risk_zones", remedy="add the batch's zone to low_risk_zones in the project orchestration config, or use a different approval_policy")
     return {"approved_by": f"policy:{policy}", "approved_at": _now()}
 
 
@@ -1393,7 +1417,7 @@ def preflight_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     root = _state_root(args, repo)
     config = _config(repo)
     if not _configured(repo):
-        raise CoordinatorError("dispatch preflight requires a project-owned .harness/orchestration.json")
+        raise CoordinatorError("dispatch preflight requires a project-owned .harness/orchestration.json", remedy="create .harness/orchestration.json for this project (see harness init/update) before dispatching")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
@@ -1431,7 +1455,7 @@ def preflight_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     try:
         prepared = prepare_dispatch(batch["ticket"], args.role, state)
     except PreflightError as exc:
-        raise CoordinatorError(str(exc)) from exc
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
     return prepared.to_dict()
 
 
@@ -1447,7 +1471,7 @@ def decision_packet(args: argparse.Namespace) -> dict[str, Any]:
         if args.dispatch:
             entry = next((item for item in batch.get("dispatches", []) if item.get("dispatch_id") == args.dispatch), None)
             if entry is None:
-                raise CoordinatorError("decision packet dispatch does not belong to this batch")
+                raise CoordinatorError("decision packet dispatch does not belong to this batch", remedy="the decision-packet dispatch does not belong to this batch -- " + INTERNAL_INVARIANT_REMEDY)
         else:
             pending = [item for item in batch.get("dispatches", []) if item.get("state") == "reported" and "decision" not in item]
             entry = pending[0] if len(pending) == 1 else None
@@ -1499,19 +1523,19 @@ def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         if batch.get("state") != "awaiting-approval":
-            raise CoordinatorError("risk assessment requires a batch awaiting coordinator approval")
+            raise CoordinatorError("risk assessment requires a batch awaiting coordinator approval", remedy="move the batch to awaiting coordinator approval before registering a risk assessment")
         base = batch.get("base_commit")
         if args.base_commit:
             requested_base = _candidate_commit(repo, args.base_commit)
             if requested_base != base:
-                raise CoordinatorError("risk assessment base must match the batch-captured base commit")
+                raise CoordinatorError("risk assessment base must match the batch-captured base commit", remedy="the risk assessment base does not match the batch-captured base commit -- " + INTERNAL_INVARIANT_REMEDY)
         if base and not _git_is_ancestor(repo, base, candidate):
-            raise CoordinatorError("risk assessment base must be an ancestor of the candidate commit")
+            raise CoordinatorError("risk assessment base must be an ancestor of the candidate commit", remedy="pass a risk assessment base that is an ancestor of candidate_commit")
         actual_files = _changed_files_between(repo, base, candidate) if base else _commit_changed_files(repo, candidate)
         if actual_files != changed_files:
-            raise CoordinatorError("changed_files must exactly match the candidate diff")
+            raise CoordinatorError("changed_files must exactly match the candidate diff", remedy="regenerate changed_files from the actual diff for candidate_commit")
         if _latest_developer_candidate(repo, root, batch) != candidate:
-            raise CoordinatorError("candidate commit does not match the accepted developer report")
+            raise CoordinatorError("candidate commit does not match the accepted developer report", remedy="pass the candidate_commit from the accepted developer report")
         inherited_triggers = {
             trigger
             for escalation in batch.get("risk_escalations", [])
@@ -1591,7 +1615,7 @@ def _persist_context_package(
     if reusable is not None:
         return reusable
     if role != "shared":
-        raise CoordinatorError("automatic Context Packages must be shared; role focus belongs in the immutable brief")
+        raise CoordinatorError("automatic Context Packages must be shared; role focus belongs in the immutable brief", remedy="remove role-specific focus from the shared Context Package; put it in the immutable dispatch brief instead")
     policy = _context_package_policy(_config(repo))
     # `max_package_tokens` is documented as an optional *stricter* ceiling (see coordinator_cli.py
     # --max-package-tokens help text). Silently honouring a caller-supplied value above the
@@ -1601,7 +1625,8 @@ def _persist_context_package(
         raise CoordinatorError(
             f"--max-package-tokens={max_package_tokens} exceeds the configured "
             f"context_package_policy.max_tokens={policy['max_tokens']}; raise context_package_policy.max_tokens "
-            "in project orchestration config instead of overriding it ad hoc per dispatch"
+            "in project orchestration config instead of overriding it ad hoc per dispatch",
+            remedy="raise context_package_policy.max_tokens in the project orchestration config instead of a per-dispatch override",
         )
     token_limit = max_package_tokens if max_package_tokens is not None else policy["max_tokens"]
     depth = symbol_graph_depth if symbol_graph_depth is not None else policy["symbol_graph_depth"]
@@ -1619,7 +1644,7 @@ def _persist_context_package(
             seed_paths=seed_files,
         )
     except ContextPackageError as exc:
-        raise CoordinatorError(str(exc)) from exc
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
     package = {
         "context_package_id": f"context-package-{uuid.uuid4()}", "batch_id": batch["batch_id"],
         "base_commit": built.base_commit, "candidate_commit": built.candidate_commit, "diff": built.diff,
@@ -1649,20 +1674,20 @@ def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
     candidate = _candidate_commit(repo, args.candidate_commit)
     requested_role = getattr(args, "role", "shared")
     if requested_role != "shared":
-        raise CoordinatorError("Context Packages are batch-shared; role-specific focus stays in the dispatch brief")
+        raise CoordinatorError("Context Packages are batch-shared; role-specific focus stays in the dispatch brief", remedy="remove --inclusion-reason role-specific focus; put it in the dispatch brief instead")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         if batch.get("state") != "awaiting-approval":
-            raise CoordinatorError("a context package requires a batch awaiting coordinator approval")
+            raise CoordinatorError("a context package requires a batch awaiting coordinator approval", remedy="move the batch to awaiting coordinator approval before registering a context package")
         base = batch.get("base_commit")
         if args.base_commit:
             requested_base = _candidate_commit(repo, args.base_commit)
             if requested_base != base:
-                raise CoordinatorError("context package base must match the batch-captured base commit")
+                raise CoordinatorError("context package base must match the batch-captured base commit", remedy="the context package base does not match the batch-captured base commit -- " + INTERNAL_INVARIANT_REMEDY)
         if candidate != _latest_developer_candidate(repo, root, batch):
-            raise CoordinatorError("candidate commit does not match the accepted developer report")
+            raise CoordinatorError("candidate commit does not match the accepted developer report", remedy="pass the candidate_commit from the accepted developer report")
         package = _persist_context_package(
             repo, root, ledger, batch, role="shared", snapshot=candidate,
             inclusion_reason=getattr(args, "inclusion_reason", "manual immutable context registration"),
@@ -1689,7 +1714,7 @@ def _expected_positive(args: argparse.Namespace, name: str) -> int | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise CoordinatorError(f"{name.replace('_', '-')} must be a positive integer when provided")
+        raise CoordinatorError(f"{name.replace('_', '-')} must be a positive integer when provided", remedy=f"pass a positive integer for --{name.replace('_', '-')}")
     return value
 
 
@@ -1715,7 +1740,8 @@ def _scope_preflight(
     if missing:
         raise CoordinatorError(
             "batch preflight requires " + ", ".join(missing)
-            + "; split the ticket or declare a bounded expected scope before any model dispatch"
+            + "; split the ticket or declare a bounded expected scope before any model dispatch",
+            remedy="split the ticket or declare a bounded expected scope (definition-of-done/expected-files/etc.) before dispatching",
         )
     # A deterministic conservative admission estimate.  It prevents a tiny-looking line count
     # spread across many files from escaping the same context budget.  A caller can supply a
@@ -1739,7 +1765,8 @@ def _scope_preflight(
     if problems:
         raise CoordinatorError(
             "batch preflight rejected this ticket: " + "; ".join(problems)
-            + ". Split it with /to-tickets before creating a batch."
+            + ". Split it with /to-tickets before creating a batch.",
+            remedy="split this ticket with /to-tickets before creating a batch",
         )
     return {
         "ticket": ticket,
@@ -1762,7 +1789,7 @@ def preflight_batch(args: argparse.Namespace) -> dict[str, Any]:
     ticket = getattr(args, "ticket", None)
     zone = getattr(args, "zone", None)
     if not _non_empty(ticket) or not _non_empty(zone):
-        raise CoordinatorError("ticket and zone must be non-empty strings")
+        raise CoordinatorError("ticket and zone must be non-empty strings", remedy="pass a non-empty --ticket and --zone")
     definition_of_done = _strings(getattr(args, "definition_of_done", None), "definition_of_done")
     dependencies = _strings(getattr(args, "dependency", None) or ["none"], "dependencies")
     return _scope_preflight(config, ticket.strip(), zone.strip(), definition_of_done, dependencies, args)
@@ -1780,11 +1807,11 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     prohibited = _strings(getattr(args, "prohibited_change", None), "prohibited_changes")
     dependencies = _strings(getattr(args, "dependency", None) or ["none"], "dependencies")
     if not _non_empty(ticket) or not _non_empty(zone):
-        raise CoordinatorError("ticket and zone must be non-empty strings")
+        raise CoordinatorError("ticket and zone must be non-empty strings", remedy="pass a non-empty --ticket and --zone")
     _validate_branch(repo, branch)
     _validate_worktree(repo, worktree)
     if not isinstance(config.get("backend_zones"), dict) or zone not in config["backend_zones"]:
-        raise CoordinatorError(f"unknown backend zone {zone!r}")
+        raise CoordinatorError(f"unknown backend zone {zone!r}", remedy=f"declare backend zone {zone!r} in the project orchestration config, or pass a configured zone")
     # Nullable for epic-less tasks: falls back to the project's base_branch, the same field
     # `_validate_branch` falls back to, rather than inventing a second convention.
     fetch_ref = integration_ref.strip() if _non_empty(integration_ref) else _required_base_branch(repo)
@@ -1826,7 +1853,7 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
         try:
             ledger.ensure()
         except LedgerError as exc:
-            raise CoordinatorError(str(exc)) from exc
+            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
         _safe_id(record["batch_id"], "batch")
         _write_record(ledger, PlanRecord.from_dict({field: record[field] for field in PLAN_FIELDS}))
         _write_record(ledger, BatchRecord.from_dict(record))
@@ -1841,7 +1868,7 @@ def approve_batch(args: argparse.Namespace) -> dict[str, Any]:
         record = _load_batch(root, args.batch)
         _validate_batch_integrity(root, record)
         if record.get("state") != "planned":
-            raise CoordinatorError("only a planned batch can receive its planning approval")
+            raise CoordinatorError("only a planned batch can receive its planning approval", remedy="only approve a batch that is still in the planned state")
         updated = _vo_replace(
             BatchRecord.from_dict(record), coordinator_approval=_approval(args), state="awaiting-approval",
         )
@@ -1854,12 +1881,12 @@ def approve_batch(args: argparse.Namespace) -> dict[str, Any]:
 def _pending_report(root: Path, batch: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
     report_path = entry.get("report")
     if not isinstance(report_path, str):
-        raise CoordinatorError("reported dispatch has no completion report")
+        raise CoordinatorError("reported dispatch has no completion report", remedy="the reported dispatch has no completion report on disk -- " + INTERNAL_INVARIANT_REMEDY)
     report = _read_object(_records_root(root) / report_path, "completion report")
     expected = entry.get("report_sha256")
     actual = hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest()
     if not isinstance(expected, str) or expected != actual:
-        raise CoordinatorError("completion report failed immutable integrity check")
+        raise CoordinatorError("completion report failed immutable integrity check", remedy="the completion report was modified after its integrity hash was recorded -- " + INTERNAL_INVARIANT_REMEDY)
     return report
 
 
@@ -1894,32 +1921,33 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
         _validate_batch_integrity(root, batch)
         pending = [item for item in batch.get("dispatches", []) if item.get("state") == "reported" and "decision" not in item]
         if len(pending) != 1:
-            raise CoordinatorError("batch has no single completion report awaiting a coordinator decision")
+            raise CoordinatorError("batch has no single completion report awaiting a coordinator decision", remedy="wait for exactly one completion report to be awaiting a coordinator decision on this batch")
         report = _pending_report(root, batch, pending[0])
         dispatch = _load_dispatch(root, pending[0]["dispatch_id"])
         _validate_dispatch(repo, _config(repo), root, batch, dispatch)
         _validate_report(report, dispatch, _role(repo, dispatch["role"]), repo, batch.get("base_commit"))
         if report.get("outcome") != "completed" and args.decision in {"accept", "override-warning"}:
-            raise CoordinatorError("a non-completed role report cannot be accepted or warning-overridden")
+            raise CoordinatorError("a non-completed role report cannot be accepted or warning-overridden", remedy="only accept or warning-override a completed role report")
         if report.get("role") == "code-review":
             severities = _review_severity(report["review"])
             if any(value == "blocker" for value in severities.values()):
                 if args.decision != "retry":
-                    raise CoordinatorError("a review blocker requires a new developer retry")
+                    raise CoordinatorError("a review blocker requires a new developer retry", remedy="start a new developer retry dispatch to address the review blocker")
             elif any(value == "warning" for value in severities.values()):
                 if args.decision == "accept":
-                    raise CoordinatorError("a review warning requires override-warning or retry")
+                    raise CoordinatorError("a review warning requires override-warning or retry", remedy="pass --decision override-warning (with --note) or retry for a review warning")
                 if args.decision == "override-warning" and not _non_empty(args.note):
-                    raise CoordinatorError("warning override requires a recorded note")
+                    raise CoordinatorError("warning override requires a recorded note", remedy="pass --note explaining the warning override")
             elif args.decision == "override-warning":
-                raise CoordinatorError("override-warning requires a review warning")
+                raise CoordinatorError("override-warning requires a review warning", remedy="only use override-warning to resolve a recorded review warning")
         elif args.decision == "override-warning":
-            raise CoordinatorError("only a recorded review warning can be overridden")
+            raise CoordinatorError("only a recorded review warning can be overridden", remedy="only override a recorded review warning")
         if args.decision == "retry":
             retry_policy = _retry_policy(_config(repo))
             if _developer_retry_count(batch) >= retry_policy["max_developer_retries"]:
                 raise CoordinatorError(
-                    "developer retry budget is exhausted for this batch; split, block, or re-plan instead of starting another worker"
+                    "developer retry budget is exhausted for this batch; split, block, or re-plan instead of starting another worker",
+                    remedy="split, block, or re-plan this batch instead of starting another developer retry",
                 )
         decision = {
             "decision": args.decision,
@@ -2027,7 +2055,7 @@ def abandon_batch(args: argparse.Namespace) -> dict[str, Any]:
     approval = _approval(args)
     reason = args.reason.strip() if _non_empty(args.reason) else ""
     if not reason:
-        raise CoordinatorError("abandoning a batch requires a recorded reason")
+        raise CoordinatorError("abandoning a batch requires a recorded reason", remedy="pass --reason explaining why this batch cannot be decided")
     _reject_sensitive({"reason": reason}, "abandon reason")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
@@ -2035,7 +2063,7 @@ def abandon_batch(args: argparse.Namespace) -> dict[str, Any]:
         _validate_batch_integrity(root, batch)
         open_dispatches = [item["dispatch_id"] for item in batch.get("dispatches", []) if not _settled(item)]
         if batch.get("state") in TERMINAL_BATCH_STATES and not open_dispatches:
-            raise CoordinatorError(f"batch is already {batch['state']} and has nothing open to close")
+            raise CoordinatorError(f"batch is already {batch['state']} and has nothing open to close", remedy=f"this batch is already {batch['state']!r}; nothing further to close")
         # A terminal batch that still carries an open dispatch is a repair case: its state was moved
         # without closing what it held, and that dispatch would otherwise be surfaced as live for
         # ever. Closing the remainder is exactly this command's job.
@@ -2087,7 +2115,7 @@ def cancel_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     approval = _approval(args)
     reason = args.reason.strip() if _non_empty(args.reason) else ""
     if not reason:
-        raise CoordinatorError("cancelling a dispatch requires a recorded reason")
+        raise CoordinatorError("cancelling a dispatch requires a recorded reason", remedy="pass --reason explaining why this dispatch is being cancelled")
     _reject_sensitive({"reason": reason}, "dispatch cancellation reason")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
@@ -2096,12 +2124,12 @@ def cancel_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         _validate_batch_integrity(root, batch)
         entry = next((item for item in batch.get("dispatches", []) if item.get("dispatch_id") == dispatch["dispatch_id"]), None)
         if not entry or entry.get("brief_sha256") != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest():
-            raise CoordinatorError("dispatch record failed immutable brief integrity check")
+            raise CoordinatorError("dispatch record failed immutable brief integrity check", remedy="the dispatch record was modified after its brief integrity hash was recorded -- " + INTERNAL_INVARIANT_REMEDY)
         if entry.get("state") != "approved":
-            raise CoordinatorError("only an approved, unsent dispatch may be cancelled")
+            raise CoordinatorError("only an approved, unsent dispatch may be cancelled", remedy="only cancel a dispatch that is approved and not yet sent")
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
         if status.get("state") != "approved":
-            raise CoordinatorError("only an approved, unsent dispatch may be cancelled")
+            raise CoordinatorError("only an approved, unsent dispatch may be cancelled", remedy="only cancel a dispatch that is approved and not yet sent")
         moment = _now()
         entry["state"] = "cancelled"
         entry["cancellation"] = {**approval, "cancelled_at": moment, "reason": reason}
@@ -2124,9 +2152,9 @@ def _prior_review_entry(batch: dict[str, Any], dispatch_id: str) -> dict[str, An
         (item for item in batch.get("dispatches", []) if item.get("dispatch_id") == dispatch_id), None,
     )
     if entry is None or entry.get("role") != "code-review":
-        raise CoordinatorError("delta-review-of must reference a code-review dispatch in this batch")
+        raise CoordinatorError("delta-review-of must reference a code-review dispatch in this batch", remedy="pass --delta-review-of naming a code-review dispatch that belongs to this batch")
     if entry.get("state") != "reported" or entry.get("decision", {}).get("decision") != "retry":
-        raise CoordinatorError("delta-review-of must reference a retried code-review dispatch")
+        raise CoordinatorError("delta-review-of must reference a retried code-review dispatch", remedy="pass --delta-review-of naming a code-review dispatch that was actually retried")
     return entry
 
 
@@ -2147,7 +2175,8 @@ def _delta_review_eligibility(
     severities = _review_severity(prior_report["review"])
     if severities.get("standards") != "clean" or severities.get("spec") not in {"warning", "blocker"}:
         raise CoordinatorError(
-            "delta-review requires prior Standards=Clean and prior Spec=Warning or Blocker"
+            "delta-review requires prior Standards=Clean and prior Spec=Warning or Blocker",
+            remedy="only delta-review a dispatch whose prior review was Standards=Clean and Spec=Warning or Blocker; otherwise dispatch a full review",
         )
     prior_candidate = prior_dispatch.get("candidate_commit")
     if (
@@ -2155,21 +2184,23 @@ def _delta_review_eligibility(
         or prior_candidate == candidate
         or not _git_is_ancestor(repo, prior_candidate, candidate)
     ):
-        raise CoordinatorError("delta-review requires a new candidate descended from the prior reviewed candidate")
+        raise CoordinatorError("delta-review requires a new candidate descended from the prior reviewed candidate", remedy="delta-review requires the new candidate to descend from the prior reviewed candidate; rebase or dispatch a full review instead")
     delta_files = _changed_files_between(repo, prior_candidate, candidate)
     if not delta_files:
-        raise CoordinatorError("delta-review requires a non-empty fix diff since the prior reviewed candidate")
+        raise CoordinatorError("delta-review requires a non-empty fix diff since the prior reviewed candidate", remedy="delta-review requires a non-empty fix diff since the prior reviewed candidate")
     patterns = _test_path_patterns(config)
     non_test = sorted(path for path in delta_files if not _is_test_path(path, patterns))
     if non_test:
         raise CoordinatorError(
-            "delta-review is rejected because the fix diff touches non-test file(s): " + ", ".join(non_test)
+            "delta-review is rejected because the fix diff touches non-test file(s): " + ", ".join(non_test),
+            remedy="keep a delta-review fix diff to test files only, or dispatch a full review",
         )
     evidence = _commit_evidence(repo, prior_candidate, candidate)
     matched = _matching_triggers(evidence, known)
     if matched:
         raise CoordinatorError(
-            "delta-review is rejected because the fix diff matches risk trigger(s): " + ", ".join(sorted(matched))
+            "delta-review is rejected because the fix diff matches risk trigger(s): " + ", ".join(sorted(matched)),
+            remedy="a fix diff touching a risk trigger needs a full review, not a delta-review",
         )
     return "spec"
 
@@ -2183,10 +2214,10 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         if batch.get("state") != "awaiting-approval":
-            raise CoordinatorError("a dispatch requires a batch awaiting explicit approval")
+            raise CoordinatorError("a dispatch requires a batch awaiting explicit approval", remedy="move the batch to awaiting explicit approval before creating this dispatch")
         pending_report = any(item.get("state") == "reported" and "decision" not in item for item in batch.get("dispatches", []))
         if pending_report:
-            raise CoordinatorError("the previous completion report requires an explicit coordinator decision")
+            raise CoordinatorError("the previous completion report requires an explicit coordinator decision", remedy="decide (accept/override-warning/retry/block/fail) the previous completion report before continuing")
         _check_batch_conflicts(root, config, batch)
         # Existing packages are recorded as audit evidence. A fresh role-specific package is
         # registered below before the immutable brief is written, so a stale snapshot cannot be
@@ -2207,14 +2238,15 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "developer-retry": {("developer", "work")},
         }
         if next_action == "risk-assessment":
-            raise CoordinatorError("risk assessment must prepare the next dispatch before another role starts")
+            raise CoordinatorError("risk assessment must prepare the next dispatch before another role starts", remedy="register a risk assessment for this candidate before dispatching another role")
         if (role_name, purpose) not in required.get(next_action, set()):
-            raise CoordinatorError("dispatch does not match the coordinator-prepared next action")
+            raise CoordinatorError("dispatch does not match the coordinator-prepared next action", remedy="dispatch exactly the role/action the coordinator prepared next")
         # The architect step cannot be skipped, whatever the entry point: no coding dispatch exists
         # for a batch whose architect report has not been accepted.
         if role_name == "developer" and purpose == "work" and not _accepted_architect(batch):
             raise CoordinatorError(
-                "a developer dispatch requires an accepted architect report for the same batch"
+                "a developer dispatch requires an accepted architect report for the same batch",
+                remedy="accept an architect completion report for this batch before dispatching a developer",
             )
         role, zone, profile_id, model, effort, transport, resolved_runtime = _resolve_assignment(
             repo, config, role_name, batch["zone"], args.runtime,
@@ -2229,24 +2261,24 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if args.candidate_commit is not None:
             candidate = _candidate_commit(repo, args.candidate_commit)
         if role_name in {"code-review", "qa"} and candidate is None:
-            raise CoordinatorError(f"{role_name} dispatch requires candidate_commit")
+            raise CoordinatorError(f"{role_name} dispatch requires candidate_commit", remedy=f"pass --candidate-commit before dispatching the {role_name} role")
         if purpose == "publish":
             if role_name != "developer" or candidate is None:
-                raise CoordinatorError("publish requires a developer role and candidate_commit")
+                raise CoordinatorError("publish requires a developer role and candidate_commit", remedy="publish requires a developer role and a pinned candidate_commit")
             if candidate != _latest_developer_candidate(repo, root, batch):
-                raise CoordinatorError("publish must use the latest accepted developer candidate")
+                raise CoordinatorError("publish must use the latest accepted developer candidate", remedy="publish must use the latest accepted developer candidate_commit")
             _accepted_qa_for_candidate(root, batch, candidate)
         elif purpose != "work":
-            raise CoordinatorError("dispatch purpose is invalid")
+            raise CoordinatorError("dispatch purpose is invalid", remedy="pass a recognized dispatch purpose")
         is_review_work = role_name == "code-review" and purpose == "work"
         if is_review_work or purpose == "publish":
             _enforce_base_freshness(repo, root, ledger, batch)
         if candidate is not None:
             risk = _risk_for_candidate(root, batch, candidate)
         if role_name in {"code-review", "qa"} and candidate != _latest_developer_candidate(repo, root, batch):
-            raise CoordinatorError("review and QA dispatches must use the latest accepted developer candidate")
+            raise CoordinatorError("review and QA dispatches must use the latest accepted developer candidate", remedy="pin the latest accepted developer candidate_commit for this review/QA dispatch")
         if role_name in {"code-review", "qa"} and risk is None:
-            raise CoordinatorError("candidate commit has no coordinator risk assessment")
+            raise CoordinatorError("candidate commit has no coordinator risk assessment", remedy="register a risk assessment for this candidate commit before dispatching review/QA")
         if role_name == "code-review":
             # The risk assessment decides when review is *mandatory*, never when it is permitted:
             # the fixed pipeline reviews every candidate, high-risk or not.
@@ -2255,17 +2287,17 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 prior_entry = _prior_review_entry(batch, requested_delta_review_of)
                 prior_dispatch = _load_dispatch(root, requested_delta_review_of)
                 if prior_dispatch.get("batch_id") != batch["batch_id"]:
-                    raise CoordinatorError("delta-review-of must reference a dispatch in this batch")
+                    raise CoordinatorError("delta-review-of must reference a dispatch in this batch", remedy="pass --delta-review-of naming a dispatch that belongs to this batch")
                 prior_report = _pending_report(root, batch, prior_entry)
                 delta_review_axis = _delta_review_eligibility(
                     repo, config, _risk_triggers(repo), prior_dispatch, prior_report, candidate,
                 )
                 delta_review_of = requested_delta_review_of
         elif requested_delta_review_of is not None:
-            raise CoordinatorError("--delta-review-of is only valid for a code-review dispatch")
+            raise CoordinatorError("--delta-review-of is only valid for a code-review dispatch", remedy="only pass --delta-review-of for a code-review dispatch")
         if role_name == "qa":
             if batch.get("risk_reassessment_required"):
-                raise CoordinatorError("QA is blocked until the candidate is risk-assessed again")
+                raise CoordinatorError("QA is blocked until the candidate is risk-assessed again", remedy="register a new risk assessment for this candidate before dispatching QA")
             if risk["review_required"]:
                 accepted_review = any(
                     item.get("role") == "code-review"
@@ -2275,10 +2307,10 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
                     for item in batch.get("dispatches", [])
                 )
                 if not accepted_review:
-                    raise CoordinatorError("QA requires an accepted composite review for the candidate")
+                    raise CoordinatorError("QA requires an accepted composite review for the candidate", remedy="accept a composite review for this candidate before dispatching QA")
         required_role = batch.get("required_next_role")
         if required_role and role_name != required_role:
-            raise CoordinatorError(f"the coordinator requires a new {required_role} dispatch before this role")
+            raise CoordinatorError(f"the coordinator requires a new {required_role} dispatch before this role", remedy=f"dispatch a new {required_role} role before this one")
         approval = _dispatch_approval(args, batch, config, role_name, purpose, risk)
         context_package = None
         if role_name in {"architect", "developer", "code-review"}:
@@ -2297,7 +2329,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             )
             context_package_freshness = _context_package_freshness(repo, root, batch)
             if context_package_freshness is None or context_package_freshness["status"] != "fresh":
-                raise CoordinatorError("newly registered Context Package is stale; refresh before dispatch")
+                raise CoordinatorError("newly registered Context Package is stale; refresh before dispatch", remedy="re-register the Context Package immediately before dispatching; it is validated fresh at dispatch time")
         dispatch_id = f"dispatch-{uuid.uuid4()}"
         dispatch_commands = (
             batch["developer_verification_commands"]
@@ -2377,13 +2409,13 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
 
 def _validate_checkout(checkout: Path, candidate: str, base: str | None, scope: list[str]) -> None:
     if not checkout.is_dir():
-        raise CoordinatorError(f"review checkout does not exist: {checkout}")
+        raise CoordinatorError(f"review checkout does not exist: {checkout}", remedy=f"pass --checkout pointing at an existing worktree, not {checkout}")
     try:
         actual = _git(checkout, "rev-parse", "--verify", "HEAD^{commit}")
     except CoordinatorError as exc:
-        raise CoordinatorError("review checkout is not a git worktree") from exc
+        raise CoordinatorError("review checkout is not a git worktree", remedy="pass --checkout pointing at a real git worktree") from exc
     if actual != candidate:
-        raise CoordinatorError("review checkout HEAD does not match the pinned candidate commit")
+        raise CoordinatorError("review checkout HEAD does not match the pinned candidate commit", remedy="checkout the pinned candidate commit in the review worktree before sending this dispatch")
     # Ignored virtual environments and tool caches do not alter the pinned candidate.  Treating
     # them as a dirty review checkout sends the coordinator into needless recovery/review loops.
     status = _git(checkout, "status", "--porcelain", "--untracked-files=normal")
@@ -2393,10 +2425,10 @@ def _validate_checkout(checkout: Path, candidate: str, base: str | None, scope: 
         if not path.startswith(".harness/orchestration/state/"):
             mutable_paths.append(path)
     if mutable_paths:
-        raise CoordinatorError("review checkout must be clean; mutable files are outside the pinned scope")
+        raise CoordinatorError("review checkout must be clean; mutable files are outside the pinned scope", remedy="clean the review checkout (git status --porcelain must be empty) before sending this dispatch")
     actual_files = _changed_files_between(checkout, base, candidate) if base else _commit_changed_files(checkout, candidate)
     if actual_files != scope:
-        raise CoordinatorError("review checkout changed files do not match the immutable review scope")
+        raise CoordinatorError("review checkout changed files do not match the immutable review scope", remedy="the review checkout's changed files must exactly match the immutable review scope; re-checkout the pinned candidate")
 
 
 def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
@@ -2404,21 +2436,21 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     root = _state_root(args, repo)
     dispatch_record = _load_dispatch(root, args.dispatch)
     if dispatch_record.get("role") == "qa":
-        raise CoordinatorError("QA dispatches must run through the clean-room QA lane, never a runtime adapter")
+        raise CoordinatorError("QA dispatches must run through the clean-room QA lane, never a runtime adapter", remedy="send a QA dispatch through the clean-room QA lane (qa run), not a runtime adapter")
     if dispatch_record.get("purpose") == "publish":
-        raise CoordinatorError("publish-only dispatches must use the verified coordinator publish boundary")
+        raise CoordinatorError("publish-only dispatches must use the verified coordinator publish boundary", remedy="send a publish-only dispatch through the coordinator publish command, not a runtime adapter")
     transport = dispatch_record.get("resolved_transport")
     if transport not in ROLE_TRANSPORTS:
-        raise CoordinatorError("dispatch record has an invalid transport")
+        raise CoordinatorError("dispatch record has an invalid transport", remedy="the dispatch record has an invalid transport -- " + INTERNAL_INVARIANT_REMEDY)
     adapter: Path | None = None
     if transport == "orca":
         if not args.adapter:
-            raise CoordinatorError("an orca-transport dispatch requires an explicit runtime adapter")
+            raise CoordinatorError("an orca-transport dispatch requires an explicit runtime adapter", remedy="pass --adapter for an orca-transport dispatch")
         adapter = Path(args.adapter).resolve()
         if not adapter.is_file():
-            raise CoordinatorError(f"runtime adapter does not exist: {adapter}")
+            raise CoordinatorError(f"runtime adapter does not exist: {adapter}", remedy=f"install or configure the runtime adapter at {adapter}")
     elif args.adapter or args.adapter_arg:
-        raise CoordinatorError("an in-process dispatch runs inside this session and takes no runtime adapter")
+        raise CoordinatorError("an in-process dispatch runs inside this session and takes no runtime adapter", remedy="omit --adapter for an in-process dispatch; it runs inside this session")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
@@ -2433,15 +2465,16 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
                     "code-review dispatch requires an explicit checkout: pass "
                     "--checkout <path-to-a-worktree-pinned-at-candidate_commit> "
                     f"(candidate_commit={dispatch['candidate_commit']}); "
-                    "other roles omit --checkout entirely"
+                    "other roles omit --checkout entirely",
+                    remedy="pass --checkout <path-to-a-worktree-pinned-at-candidate_commit> for a code-review dispatch; other roles omit --checkout",
                 )
             _validate_checkout(checkout, dispatch["candidate_commit"], dispatch["review_base"], dispatch["review_scope"])
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
         if status.get("state") != "approved":
-            raise CoordinatorError("only an approved dispatch may be sent to a runtime adapter")
+            raise CoordinatorError("only an approved dispatch may be sent to a runtime adapter", remedy="only send an approved dispatch to a runtime adapter")
         entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
         if not entry or entry.get("state") != "approved":
-            raise CoordinatorError("dispatch was already sent or is not registered in its batch")
+            raise CoordinatorError("dispatch was already sent or is not registered in its batch", remedy="the dispatch was already sent or is not registered in its batch -- " + INTERNAL_INVARIANT_REMEDY)
         brief_path = _records_root(root) / DispatchRecord.directory / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json"
         if adapter is not None:
             command = [str(adapter)] if adapter.suffix.lower() != ".py" else [sys.executable, str(adapter)]
@@ -2452,7 +2485,7 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 or argument.startswith("--brief=")
                 for argument in adapter_args
             ):
-                raise CoordinatorError("adapter arguments cannot override dispatch, repo or brief")
+                raise CoordinatorError("adapter arguments cannot override dispatch, repo or brief", remedy="pass adapter arguments that do not collide with --dispatch, --repo or --brief")
             command.append("dispatch")
             command.extend(adapter_args)
             command.extend(["--repo", str(repo), "--brief", str(brief_path)])
@@ -2463,13 +2496,13 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             )
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout).strip()
-                raise CoordinatorError(f"runtime adapter rejected dispatch: {detail}")
+                raise CoordinatorError(f"runtime adapter rejected dispatch: {detail}", remedy=f"inspect the runtime adapter's rejection above: {detail}")
         for entry in batch["dispatches"]:
             if entry["dispatch_id"] == dispatch["dispatch_id"]:
                 entry["state"] = "dispatched"
                 break
         else:
-            raise CoordinatorError("dispatch is not registered in its batch")
+            raise CoordinatorError("dispatch is not registered in its batch", remedy="the dispatch is not registered in its batch -- " + INTERNAL_INVARIANT_REMEDY)
         sent_at = _now()
         _safe_id(dispatch["dispatch_id"], "dispatch")
         _replace_record(ledger, DispatchStatusRecord.from_dict({
@@ -2493,7 +2526,7 @@ def _live_status(root: Path, dispatch_id: str) -> tuple[dict[str, Any], dict[str
     dispatch = _load_dispatch(root, dispatch_id)
     status = _load_dispatch_status(root, dispatch_id)
     if status.get("state") not in LIVE_DISPATCH_STATES:
-        raise CoordinatorError("only a dispatched role can report liveness")
+        raise CoordinatorError("only a dispatched role can report liveness", remedy="only the currently dispatched role may report liveness for this dispatch")
     return dispatch, status
 
 
@@ -2506,7 +2539,7 @@ def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     root = _state_root(args, repo)
     reported = args.model.strip() if _non_empty(args.model) else ""
     if not reported:
-        raise CoordinatorError("a model self-report must name the actually active model")
+        raise CoordinatorError("a model self-report must name the actually active model", remedy="pass --model naming the model actually running this session")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch, status = _live_status(root, args.dispatch)
@@ -2555,7 +2588,8 @@ def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if not worktree_matched:
             mismatch.append(str(attestation["error"]))
         raise CoordinatorError(
-            "dispatch " + "; ".join(mismatch) + "; the dispatch is blocked and needs a new coordinator decision"
+            "dispatch " + "; ".join(mismatch) + "; the dispatch is blocked and needs a new coordinator decision",
+            remedy="resolve the listed mismatch(es) and get a fresh coordinator decision before continuing this dispatch",
         )
     return {"dispatch_id": dispatch["dispatch_id"], "state": "working", "model": reported, "worktree": attestation.get("worktree") if attestation else None}
 
@@ -2568,9 +2602,9 @@ def heartbeat_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     context_tokens = args.context_tokens
     context_source = args.context_source
     if (context_tokens is None) != (context_source is None):
-        raise CoordinatorError("--context-tokens and --context-source must be given together")
+        raise CoordinatorError("--context-tokens and --context-source must be given together", remedy="pass --context-tokens together with --context-source")
     if context_tokens is not None and (isinstance(context_tokens, bool) or not isinstance(context_tokens, int) or context_tokens < 0):
-        raise CoordinatorError("--context-tokens must be a non-negative integer")
+        raise CoordinatorError("--context-tokens must be a non-negative integer", remedy="pass --context-tokens as a non-negative integer")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch, status = _live_status(root, args.dispatch)
@@ -2596,7 +2630,7 @@ def rate_limited_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     root = _state_root(args, repo)
     retry_after = args.retry_after_seconds
     if isinstance(retry_after, bool) or not isinstance(retry_after, int) or retry_after < 1:
-        raise CoordinatorError("retry-after-seconds must be a positive integer")
+        raise CoordinatorError("retry-after-seconds must be a positive integer", remedy="pass --retry-after-seconds as a positive integer")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
@@ -2606,7 +2640,7 @@ def rate_limited_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
         entry = next((item for item in batch["dispatches"] if item["dispatch_id"] == dispatch["dispatch_id"]), None)
         if not entry or entry.get("state") != "checkpointed" or status.get("state") != "checkpointed":
-            raise CoordinatorError("rate_limited requires a checkpointed write dispatch")
+            raise CoordinatorError("rate_limited requires a checkpointed write dispatch", remedy="only mark a checkpointed write dispatch as rate-limited")
         retry_not_before = (datetime.now(timezone.utc) + timedelta(seconds=retry_after)).isoformat()
         status.update({
             "state": "rate_limited", "updated_at": _now(), "retry_not_before": retry_not_before,
@@ -2630,7 +2664,7 @@ def wait_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     root = _state_root(args, repo)
     timeout, interval, threshold = args.timeout, args.poll_interval, args.stale_after
     if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in (timeout, interval, threshold)):
-        raise CoordinatorError("timeout, poll-interval and stale-after must be positive integers")
+        raise CoordinatorError("timeout, poll-interval and stale-after must be positive integers", remedy="pass --timeout, --poll-interval and --stale-after as positive integers")
     deadline = time.monotonic() + timeout
     ledger = LifecycleLedger(root)
     while True:
@@ -2666,17 +2700,17 @@ def record_telemetry(args: argparse.Namespace) -> dict[str, Any]:
     root = _state_root(args, repo)
     payload = _read_object(Path(args.file), "telemetry payload")
     if set(payload) != TELEMETRY_FIELDS:
-        raise CoordinatorError("telemetry payload schema mismatch")
+        raise CoordinatorError("telemetry payload schema mismatch", remedy="the telemetry payload schema is malformed -- " + INTERNAL_INVARIANT_REMEDY)
     _reject_sensitive(payload, "telemetry payload")
     if payload["session_kind"] not in {"worker", "coordinator"}:
-        raise CoordinatorError("telemetry session_kind must be worker or coordinator")
+        raise CoordinatorError("telemetry session_kind must be worker or coordinator", remedy="set session_kind to 'worker' or 'coordinator'")
     if not _non_empty(payload["restart_reason"]) or not _non_empty(payload["recorded_at"]):
-        raise CoordinatorError("telemetry restart_reason and recorded_at must be non-empty strings")
+        raise CoordinatorError("telemetry restart_reason and recorded_at must be non-empty strings", remedy="set restart_reason and recorded_at to non-empty strings")
     _moment(payload["recorded_at"], "telemetry recorded_at")
     for field in TELEMETRY_FIELDS - {"dispatch_id", "session_kind", "restart_reason", "recorded_at"}:
         value = payload[field]
         if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
-            raise CoordinatorError(f"telemetry {field} must be a non-negative integer or null")
+            raise CoordinatorError(f"telemetry {field} must be a non-negative integer or null", remedy=f"pass telemetry {field} as a non-negative integer or omit it")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, payload["dispatch_id"])
@@ -2698,19 +2732,20 @@ def _validate_checkpoint(
 ) -> None:
     _reject_sensitive(checkpoint, "checkpoint")
     if set(checkpoint) != CHECKPOINT_INPUT_FIELDS:
-        raise CoordinatorError("checkpoint schema mismatch")
+        raise CoordinatorError("checkpoint schema mismatch", remedy="the checkpoint schema is malformed -- " + INTERNAL_INVARIANT_REMEDY)
     if checkpoint["dispatch_id"] != dispatch["dispatch_id"]:
-        raise CoordinatorError("checkpoint dispatch_id does not match the dispatched role")
+        raise CoordinatorError("checkpoint dispatch_id does not match the dispatched role", remedy="the checkpoint dispatch_id does not match the dispatched role -- " + INTERNAL_INVARIANT_REMEDY)
     if role["mode"] != "write":
         raise CoordinatorError(
-            "a checkpoint is only valid for a write role; a read-only role cannot span multiple worker sessions"
+            "a checkpoint is only valid for a write role; a read-only role cannot span multiple worker sessions",
+            remedy="only checkpoint a write role; a read-only role completes in a single worker session",
         )
     for field in ("risks", "blockers"):
         if not _non_empty(checkpoint[field]):
-            raise CoordinatorError(f"checkpoint {field} must be a non-empty string")
+            raise CoordinatorError(f"checkpoint {field} must be a non-empty string", remedy=f"set checkpoint {field} to a non-empty string")
     commit_sha = checkpoint["commit_sha"]
     if not isinstance(commit_sha, str) or re.fullmatch(r"[0-9a-fA-F]{7,64}", commit_sha) is None:
-        raise CoordinatorError("checkpoint requires a commit_sha")
+        raise CoordinatorError("checkpoint requires a commit_sha", remedy="pass a commit_sha in the checkpoint payload")
     changed_files = _strings(checkpoint["changed_files"], "checkpoint changed_files", allow_empty=True)
     paths = dispatch["write_paths"]
     for changed_file in changed_files:
@@ -2718,35 +2753,36 @@ def _validate_checkpoint(
         if normalized.startswith("/") or ".." in Path(normalized).parts or not any(
             fnmatchcase(normalized, pattern) for pattern in paths
         ):
-            raise CoordinatorError("checkpoint changed_files must remain inside the approved zone")
+            raise CoordinatorError("checkpoint changed_files must remain inside the approved zone", remedy="keep checkpoint changed_files inside the role's approved write zone")
     resolved = _candidate_commit(repo, commit_sha)
     actual_files = _changed_files_between(repo, base_commit, resolved) if base_commit else _commit_changed_files(repo, resolved)
     if actual_files != changed_files:
-        raise CoordinatorError("checkpoint changed_files must exactly match commit_sha")
+        raise CoordinatorError("checkpoint changed_files must exactly match commit_sha", remedy="regenerate changed_files from the actual diff at commit_sha")
     remaining = _strings(
         checkpoint["remaining_definition_of_done"], "checkpoint remaining_definition_of_done", allow_empty=True
     )
     if not set(remaining) <= set(dispatch["definition_of_done"]):
-        raise CoordinatorError("checkpoint remaining_definition_of_done must be drawn from the dispatch definition_of_done")
+        raise CoordinatorError("checkpoint remaining_definition_of_done must be drawn from the dispatch definition_of_done", remedy="only list remaining_definition_of_done items that are part of the dispatch's own definition_of_done")
     passing_checks = checkpoint["passing_checks"]
     if not isinstance(passing_checks, list):
-        raise CoordinatorError("checkpoint passing_checks must be a list")
+        raise CoordinatorError("checkpoint passing_checks must be a list", remedy="set passing_checks to a list")
     for check in passing_checks:
         if not isinstance(check, dict) or set(check) != {"command", "result", "evidence"}:
-            raise CoordinatorError("checkpoint passing_checks has an invalid entry")
+            raise CoordinatorError("checkpoint passing_checks has an invalid entry", remedy="fix the malformed passing_checks entry")
         if not all(_non_empty(check[field]) for field in ("command", "result", "evidence")):
-            raise CoordinatorError("checkpoint passing_checks entries must contain text evidence")
+            raise CoordinatorError("checkpoint passing_checks entries must contain text evidence", remedy="each passing_checks entry must contain text evidence of the check result")
         if check["command"] not in dispatch["verification_commands"]:
-            raise CoordinatorError("checkpoint passing_checks must reference an approved verification command")
+            raise CoordinatorError("checkpoint passing_checks must reference an approved verification command", remedy="each passing_checks entry must reference one of the dispatch's approved verification commands")
     package = _latest_context_package(root, batch)
     if package is None:
         if checkpoint["context_package_id"] != CHECKPOINT_NO_CONTEXT_PACKAGE:
             raise CoordinatorError(
                 "checkpoint context_package_id must be the no-package sentinel; "
-                "the batch has no registered context package"
+                "the batch has no registered context package",
+                remedy="leave checkpoint context_package_id as the no-package sentinel; this batch has no registered context package",
             )
     elif checkpoint["context_package_id"] != package["context_package_id"]:
-        raise CoordinatorError("checkpoint context_package_id must reference the batch's latest registered context package")
+        raise CoordinatorError("checkpoint context_package_id must reference the batch's latest registered context package", remedy="reference the batch's latest registered context package, or omit context_package_id")
 
 
 def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
@@ -2769,10 +2805,10 @@ def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         role = _role(repo, dispatch["role"])
         entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
         if not entry or entry.get("state") != "dispatched":
-            raise CoordinatorError("a checkpoint requires a dispatched role")
+            raise CoordinatorError("a checkpoint requires a dispatched role", remedy="only checkpoint a dispatched role")
         self_report = status.get("model_self_report")
         if not isinstance(self_report, dict) or self_report.get("match") is not True:
-            raise CoordinatorError("a dispatched role must confirm its active model before checkpointing")
+            raise CoordinatorError("a dispatched role must confirm its active model before checkpointing", remedy="pass --model naming the model actually running this session before checkpointing")
         _validate_checkpoint(checkpoint, dispatch, role, repo, batch.get("base_commit"), root, batch)
         record = {
             "checkpoint_id": f"checkpoint-{uuid.uuid4()}",
@@ -2819,7 +2855,8 @@ def _authorize_planned_continuation(
     if trigger not in PLANNED_TRIGGER_KINDS:
         raise CoordinatorError(
             "a continuation without a recognized rate-limit termination reason is a planned trigger and "
-            f"requires --trigger to be one of {sorted(PLANNED_TRIGGER_KINDS)}"
+            f"requires --trigger to be one of {sorted(PLANNED_TRIGGER_KINDS)}",
+            remedy="pass --trigger naming one of the configured planned-trigger kinds",
         )
     threshold_key = PLANNED_TRIGGER_THRESHOLD_KEY.get(trigger)
     if threshold_key is not None:
@@ -2828,7 +2865,8 @@ def _authorize_planned_continuation(
         if isinstance(measured, bool) or not isinstance(measured, int) or measured < threshold:
             raise CoordinatorError(
                 f"planned trigger {trigger!r} requires --measured-value at least the configured "
-                f"threshold ({threshold})"
+                f"threshold ({threshold})",
+                remedy=f"pass --measured-value >= {threshold} for planned trigger {trigger!r}",
             )
     _check_continuation_facts_unchanged(dispatch, checkpoint, args)
     approval = _approval(args)
@@ -2853,14 +2891,15 @@ def _check_continuation_facts_unchanged(
     if not _non_empty(getattr(args, "file", None)):
         raise CoordinatorError(
             "a planned-trigger continuation requires --file restating the current remaining "
-            "Definition of Done, risks and dependencies"
+            "Definition of Done, risks and dependencies",
+            remedy="pass --file with the continuation facts (remaining Definition of Done, risks and dependencies)",
         )
     facts = _read_object(Path(args.file).resolve(), "continuation facts")
     _reject_sensitive(facts, "continuation facts")
     if set(facts) != CONTINUATION_FACTS_FIELDS:
-        raise CoordinatorError("continuation facts schema mismatch")
+        raise CoordinatorError("continuation facts schema mismatch", remedy="the continuation facts schema is malformed -- " + INTERNAL_INVARIANT_REMEDY)
     if facts["dispatch_id"] != dispatch["dispatch_id"]:
-        raise CoordinatorError("continuation facts dispatch_id does not match the dispatched role")
+        raise CoordinatorError("continuation facts dispatch_id does not match the dispatched role", remedy="the continuation facts dispatch_id does not match the dispatched role -- " + INTERNAL_INVARIANT_REMEDY)
     unchanged = (
         facts["remaining_definition_of_done"] == checkpoint["remaining_definition_of_done"]
         and facts["risks"] == checkpoint["risks"]
@@ -2870,7 +2909,8 @@ def _check_continuation_facts_unchanged(
         raise CoordinatorError(
             "continuation facts differ from the checkpointed scope, Definition of Done, risks, blockers "
             "or dependencies; close this dispatch and open a new one through ordinary approval instead "
-            "of resuming it"
+            "of resuming it",
+            remedy="open a new dispatch through ordinary approval instead of resuming one whose scope has drifted",
         )
 
 
@@ -2902,21 +2942,23 @@ def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if not entry or (entry.get("state") != "checkpointed" and not resumable_rate_limit) or (
             status.get("state") != "checkpointed" and not resumable_rate_limit
         ):
-            raise CoordinatorError("only a checkpointed or rate-limited dispatch may start a new worker session")
+            raise CoordinatorError("only a checkpointed or rate-limited dispatch may start a new worker session", remedy="only start a new worker session for a checkpointed or rate-limited dispatch")
         continuation_policy = _continuation_policy(config)
         continuation_count, rate_limit_count = _continuation_counts(batch, dispatch["dispatch_id"])
         if continuation_count >= continuation_policy["max_continuations"]:
             raise CoordinatorError(
-                "continuation budget is exhausted for this dispatch; submit a final report or block for a new scoped batch"
+                "continuation budget is exhausted for this dispatch; submit a final report or block for a new scoped batch",
+                remedy="submit a final completion report, or block this batch for a new, newly scoped batch",
             )
         if termination_reason in RATE_LIMIT_TERMINATION_REASONS:
             if rate_limit_count >= continuation_policy["max_rate_limit_resumes"]:
                 raise CoordinatorError(
-                    "automatic rate-limit resume budget is exhausted; require a newly scoped batch instead of looping"
+                    "automatic rate-limit resume budget is exhausted; require a newly scoped batch instead of looping",
+                    remedy="require a newly scoped batch instead of looping rate-limit resumes",
                 )
             retry_not_before = status.get("retry_not_before")
             if isinstance(retry_not_before, str) and _moment(retry_not_before, "retry_not_before") > datetime.now(timezone.utc):
-                raise CoordinatorError("rate-limit retry window has not elapsed")
+                raise CoordinatorError("rate-limit retry window has not elapsed", remedy="wait for the recorded retry-after window to elapse before resuming")
             authorization = _authorize_rate_limit_continuation(termination_reason)
         else:
             checkpoint = _latest_checkpoint_for_dispatch(root, batch, dispatch["dispatch_id"])
@@ -2947,7 +2989,7 @@ def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
     root = _state_root(args, repo)
     threshold = args.stale_after
     if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 1:
-        raise CoordinatorError("stale-after must be a positive number of seconds")
+        raise CoordinatorError("stale-after must be a positive number of seconds", remedy="pass --stale-after as a positive number of seconds")
     config = _config(repo)
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
@@ -2999,9 +3041,9 @@ def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     root = _state_root(args, repo)
     remote = args.remote.strip() if _non_empty(args.remote) else ""
     if not remote:
-        raise CoordinatorError("publish remote must be a non-empty string")
+        raise CoordinatorError("publish remote must be a non-empty string", remedy="pass --remote as a non-empty string")
     if remote not in _git(repo, "remote").splitlines():
-        raise CoordinatorError("publish remote is not configured for this repository")
+        raise CoordinatorError("publish remote is not configured for this repository", remedy="add the named remote to this repository (git remote add) before publishing")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
@@ -3009,11 +3051,11 @@ def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         _validate_batch_integrity(root, batch)
         _validate_dispatch(repo, _config(repo), root, batch, dispatch)
         if dispatch["purpose"] != "publish":
-            raise CoordinatorError("only a publish-only dispatch may push a candidate")
+            raise CoordinatorError("only a publish-only dispatch may push a candidate", remedy="only a publish-only dispatch may push a candidate")
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
         entry = next((item for item in batch["dispatches"] if item["dispatch_id"] == dispatch["dispatch_id"]), None)
         if not entry or entry.get("state") != "approved" or status.get("state") != "approved":
-            raise CoordinatorError("publish requires an approved, unsent publish-only dispatch")
+            raise CoordinatorError("publish requires an approved, unsent publish-only dispatch", remedy="approve a publish-only dispatch, and send it, before publishing")
         candidate = dispatch["candidate_commit"]
         _accepted_qa_for_candidate(root, batch, candidate)
         result = subprocess.run(
@@ -3022,10 +3064,10 @@ def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         )
         if result.returncode != 0:
             detail = _sanitise((result.stderr or result.stdout).strip())
-            raise CoordinatorError(f"could not publish the accepted candidate: {detail or 'unknown error'}")
+            raise CoordinatorError(f"could not publish the accepted candidate: {detail or 'unknown error'}", remedy=f"inspect the git push error above and fix it before retrying publish")
         published = _git(repo, "ls-remote", "--heads", remote, f"refs/heads/{dispatch['branch']}")
         if not published or published.split()[0] != candidate:
-            raise CoordinatorError("remote branch does not resolve to the accepted QA candidate")
+            raise CoordinatorError("remote branch does not resolve to the accepted QA candidate", remedy="push exactly the accepted QA candidate commit to the remote branch")
         entry["state"] = "dispatched"
         _safe_id(dispatch["dispatch_id"], "dispatch")
         _replace_record(ledger, DispatchStatusRecord.from_dict({
@@ -3056,15 +3098,18 @@ def _persist_report(
     report_json = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.json"
     report_md = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.md"
     if report_json.exists() or report_md.exists():
-        raise CoordinatorError("refusing to overwrite immutable completion report")
+        raise CoordinatorError("refusing to overwrite immutable completion report", remedy="a completion report already exists at this immutable path -- " + INTERNAL_INVARIANT_REMEDY)
     _write_exclusive(ledger, report_json, report)
     try:
         _write_text_exclusive(ledger, report_md, _report_markdown(report))
     except CoordinatorError as exc:
-        raise CoordinatorError("refusing to overwrite immutable Markdown report") from exc
+        raise CoordinatorError(
+            "refusing to overwrite immutable Markdown report",
+            remedy=f"a Markdown report already exists at this immutable path -- {INTERNAL_INVARIANT_REMEDY}",
+        ) from exc
     entry = next((item for item in batch["dispatches"] if item["dispatch_id"] == dispatch["dispatch_id"]), None)
     if entry is None:
-        raise CoordinatorError("dispatch is not registered in its batch")
+        raise CoordinatorError("dispatch is not registered in its batch", remedy="the dispatch is not registered in its batch -- " + INTERNAL_INVARIANT_REMEDY)
     entry["state"] = "reported"
     entry["report"] = f"reports/{dispatch['dispatch_id']}.json"
     entry["report_sha256"] = hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest()
@@ -3093,9 +3138,9 @@ def clear_qa_lease(args: argparse.Namespace) -> dict[str, Any]:
 
 def _validate_review(review: object, dispatch: dict[str, Any]) -> None:
     if not isinstance(review, dict) or set(review) != {"candidate_commit", "scope", "standards", "spec"}:
-        raise CoordinatorError("composite review must contain independent standards and spec evidence")
+        raise CoordinatorError("composite review must contain independent standards and spec evidence", remedy="submit composite review evidence with independent standards and spec findings")
     if review["candidate_commit"] != dispatch["candidate_commit"] or review["scope"] != dispatch["review_scope"]:
-        raise CoordinatorError("composite review evidence does not match the approved review brief")
+        raise CoordinatorError("composite review evidence does not match the approved review brief", remedy="regenerate composite review evidence from the actual approved review brief")
     delta_review_of = dispatch.get("delta_review_of")
     delta_review_axis = dispatch.get("delta_review_axis")
     for axis in ("standards", "spec"):
@@ -3107,39 +3152,40 @@ def _validate_review(review: object, dispatch: dict[str, Any]) -> None:
             else {"severity", "findings", "risks", "blockers"}
         )
         if not isinstance(evidence, dict) or set(evidence) != expected_keys:
-            raise CoordinatorError(f"composite review {axis} evidence has an invalid schema")
+            raise CoordinatorError(f"composite review {axis} evidence has an invalid schema", remedy=f"resubmit composite review {axis} evidence with a valid schema")
         if inherited:
             if evidence["severity"] != "clean" or evidence["findings"] != []:
                 raise CoordinatorError(
-                    f"composite review {axis} must inherit the prior Clean verdict without re-analysis"
+                    f"composite review {axis} must inherit the prior Clean verdict without re-analysis",
+                    remedy=f"set composite review {axis} severity=clean and findings=[] to inherit a delta-review's prior Clean verdict",
                 )
             if evidence["inherited_from"] != delta_review_of:
-                raise CoordinatorError(f"composite review {axis} must reference the prior review as evidence")
+                raise CoordinatorError(f"composite review {axis} must reference the prior review as evidence", remedy=f"composite review {axis} must cite the prior review as evidence for a delta-review")
             if not _non_empty(evidence["risks"]) or not _non_empty(evidence["blockers"]):
-                raise CoordinatorError(f"composite review {axis} must state risks and blockers")
+                raise CoordinatorError(f"composite review {axis} must state risks and blockers", remedy=f"composite review {axis} must state its risks and blockers explicitly")
             continue
         if evidence["severity"] not in REVIEW_SEVERITIES:
-            raise CoordinatorError(f"composite review {axis} severity is invalid")
+            raise CoordinatorError(f"composite review {axis} severity is invalid", remedy=f"set composite review {axis} severity to a recognized value")
         if not isinstance(evidence["findings"], list):
-            raise CoordinatorError(f"composite review {axis} findings must be a list")
+            raise CoordinatorError(f"composite review {axis} findings must be a list", remedy=f"set composite review {axis} findings to a list")
         highest = "none"
         for finding in evidence["findings"]:
             if not isinstance(finding, dict) or set(finding) != {"severity", "summary", "evidence"}:
-                raise CoordinatorError(f"composite review {axis} finding has an invalid schema")
+                raise CoordinatorError(f"composite review {axis} finding has an invalid schema", remedy=f"fix the malformed composite review {axis} finding")
             if finding["severity"] not in FINDING_SEVERITIES or not all(
                 _non_empty(finding[field]) for field in ("summary", "evidence")
             ):
-                raise CoordinatorError(f"composite review {axis} finding is invalid")
+                raise CoordinatorError(f"composite review {axis} finding is invalid", remedy=f"fix the invalid composite review {axis} finding")
             if finding["severity"] == "blocker":
                 highest = "blocker"
             elif finding["severity"] == "warning" and highest == "none":
                 highest = "warning"
         if highest == "blocker" and evidence["severity"] != "blocker":
-            raise CoordinatorError(f"composite review {axis} hides a blocker finding")
+            raise CoordinatorError(f"composite review {axis} hides a blocker finding", remedy=f"composite review {axis} must disclose every blocker finding, not hide it")
         if highest == "warning" and evidence["severity"] in {"none", "clean"}:
-            raise CoordinatorError(f"composite review {axis} hides a warning finding")
+            raise CoordinatorError(f"composite review {axis} hides a warning finding", remedy=f"composite review {axis} must disclose every warning finding, not hide it")
         if not _non_empty(evidence["risks"]) or not _non_empty(evidence["blockers"]):
-            raise CoordinatorError(f"composite review {axis} must state risks and blockers")
+            raise CoordinatorError(f"composite review {axis} must state risks and blockers", remedy=f"composite review {axis} must state its risks and blockers explicitly")
 
 
 def _validate_report(
@@ -3150,39 +3196,41 @@ def _validate_report(
     if not REPORT_FIELDS <= set(report) or set(report) - REPORT_FIELDS - REPORT_OPTIONAL_FIELDS:
         missing = sorted(REPORT_FIELDS - set(report))
         extra = sorted(set(report) - REPORT_FIELDS - REPORT_OPTIONAL_FIELDS)
-        raise CoordinatorError(f"completion report schema mismatch (missing={missing}, extra={extra})")
+        raise CoordinatorError(f"completion report schema mismatch (missing={missing}, extra={extra})", remedy=f"resubmit the completion report with exactly the required fields (missing={missing}, extra={extra})")
     report_language = report.get("report_language")
     if report_language is not None and report_language != "ru":
-        raise CoordinatorError("completion report report_language must be ru")
+        raise CoordinatorError("completion report report_language must be ru", remedy="set report_language to 'ru'")
     if "communication_policy" in dispatch and report_language != "ru":
-        raise CoordinatorError("new completion reports must set report_language to ru")
+        raise CoordinatorError("new completion reports must set report_language to ru", remedy="set report_language to 'ru' in the completion report")
     brief = dispatch
     for field in ("dispatch_id", "ticket", "role"):
         if report[field] != brief[field]:
-            raise CoordinatorError(f"completion report {field} does not match the approved dispatch")
+            raise CoordinatorError(f"completion report {field} does not match the approved dispatch", remedy=f"resubmit completion report {field} matching the approved dispatch")
     if report["outcome"] not in REPORT_OUTCOMES:
-        raise CoordinatorError("completion report outcome is invalid")
+        raise CoordinatorError("completion report outcome is invalid", remedy="set outcome to one of the accepted completion-report outcomes")
     for field in ("output", "risks", "blockers", "next_coordinator_action"):
         if not _non_empty(report[field]):
-            raise CoordinatorError(f"completion report {field} must be a non-empty string")
+            raise CoordinatorError(f"completion report {field} must be a non-empty string", remedy=f"set completion report {field} to a non-empty string")
     changed_files = _strings(report["changed_files"], "completion report changed_files", allow_empty=True)
     checks = report["checks_run"]
     if not isinstance(checks, list) or not checks:
-        raise CoordinatorError("completion report checks_run must be a non-empty list")
+        raise CoordinatorError("completion report checks_run must be a non-empty list", remedy="set checks_run to a non-empty list")
     for check in checks:
         if not isinstance(check, dict) or set(check) != {"command", "result", "evidence"}:
-            raise CoordinatorError("completion report checks_run has an invalid entry")
+            raise CoordinatorError("completion report checks_run has an invalid entry", remedy="fix the malformed checks_run entry")
         if not all(_non_empty(check[field]) for field in ("command", "result", "evidence")):
-            raise CoordinatorError("completion report checks_run entries must contain text evidence")
+            raise CoordinatorError("completion report checks_run entries must contain text evidence", remedy="each checks_run entry must contain text evidence of the check result")
         if len(check["evidence"]) > MAX_CHECK_EVIDENCE_CHARS:
             raise CoordinatorError(
-                "completion report check evidence exceeds the bounded summary limit; store the full log as an artifact and report its path"
+                "completion report check evidence exceeds the bounded summary limit; store the full log as an artifact and report its path",
+                remedy="store the full check log as an artifact and report its path instead of the raw output",
             )
     commands_run = [check["command"] for check in checks]
     if commands_run != dispatch["verification_commands"]:
         raise CoordinatorError(
             f"completion report checks_run must exactly match approved verification commands "
-            f"(expected {dispatch['verification_commands']}, got {commands_run})"
+            f"(expected {dispatch['verification_commands']}, got {commands_run})",
+            remedy="re-run exactly the approved verification_commands and report those results",
         )
     commit_sha = report["commit_sha"]
     if role["mode"] == "write" and (
@@ -3190,9 +3238,9 @@ def _validate_report(
         or re.fullmatch(r"[0-9a-fA-F]{7,64}", commit_sha) is None
         or not changed_files
     ):
-        raise CoordinatorError("write-role completion reports require commit_sha and changed_files")
+        raise CoordinatorError("write-role completion reports require commit_sha and changed_files", remedy="a write role's completion report must include commit_sha and changed_files")
     if role["mode"] == "read-only" and changed_files:
-        raise CoordinatorError("read-only completion reports cannot claim changed files")
+        raise CoordinatorError("read-only completion reports cannot claim changed files", remedy="a read-only role's completion report must not claim changed_files")
     if role["mode"] == "write":
         paths = dispatch["write_paths"]
         for changed_file in changed_files:
@@ -3200,20 +3248,20 @@ def _validate_report(
             if normalized.startswith("/") or ".." in Path(normalized).parts or not any(
                 fnmatchcase(normalized, pattern) for pattern in paths
             ):
-                raise CoordinatorError("completion report changed_files must remain inside the approved zone")
+                raise CoordinatorError("completion report changed_files must remain inside the approved zone", remedy="keep completion report changed_files inside the role's approved write zone")
         if repo is not None:
             resolved = _candidate_commit(repo, commit_sha)
             actual_files = _changed_files_between(repo, base_commit, resolved) if base_commit else _commit_changed_files(repo, resolved)
             if actual_files != changed_files:
-                raise CoordinatorError("completion report changed_files must exactly match commit_sha")
+                raise CoordinatorError("completion report changed_files must exactly match commit_sha", remedy="regenerate completion report changed_files from the actual diff at commit_sha")
     if role["mode"] == "read-only" and commit_sha != "not applicable — read-only role":
-        raise CoordinatorError("read-only completion reports must not claim a commit SHA")
+        raise CoordinatorError("read-only completion reports must not claim a commit SHA", remedy="a read-only role's completion report must not claim a commit_sha")
     if "risk_triggers" in report:
         _strings(report["risk_triggers"], "completion report risk_triggers", allow_empty=True)
     if role.get("name") == "code-review":
         _validate_review(report.get("review"), dispatch)
     elif "review" in report:
-        raise CoordinatorError("only the code-review role may submit composite review evidence")
+        raise CoordinatorError("only the code-review role may submit composite review evidence", remedy="only the code-review role may submit composite review evidence")
 
 
 def _report_markdown(report: dict[str, Any]) -> str:
@@ -3279,16 +3327,16 @@ def submit_report(args: argparse.Namespace) -> dict[str, Any]:
         config = _config(repo)
         _validate_dispatch(repo, config, root, batch, dispatch)
         if dispatch["role"] == "qa":
-            raise CoordinatorError("QA reports must be produced by the clean-room QA runner")
+            raise CoordinatorError("QA reports must be produced by the clean-room QA runner", remedy="run QA through the clean-room QA runner (qa run), not by hand")
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
         entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
         if not entry or entry.get("state") != "dispatched" or status.get("state") not in LIVE_DISPATCH_STATES:
-            raise CoordinatorError("completion report requires a dispatched role")
+            raise CoordinatorError("completion report requires a dispatched role", remedy="only a dispatched role may submit a completion report")
         self_report = status.get("model_self_report")
         if not isinstance(self_report, dict) or self_report.get("match") is not True:
-            raise CoordinatorError("a dispatched role must confirm its active model before reporting")
+            raise CoordinatorError("a dispatched role must confirm its active model before reporting", remedy="pass --model naming the model actually running this session before reporting")
         if dispatch.get("worker_attestation_required", False) and status.get("worktree_attestation", {}).get("match") is not True:
-            raise CoordinatorError("a dispatched role must attest its canonical Git worktree before reporting")
+            raise CoordinatorError("a dispatched role must attest its canonical Git worktree before reporting", remedy="attest the canonical Git worktree (dispatch self-report) before reporting")
         role = _role(repo, dispatch["role"])
         _validate_report(report, dispatch, role, repo, batch.get("base_commit"))
         retry_candidate: str | None = None
@@ -3302,7 +3350,7 @@ def submit_report(args: argparse.Namespace) -> dict[str, Any]:
                 if isinstance(item.get("candidate_commit"), str)
             }
             if retry_candidate in prior_candidates:
-                raise CoordinatorError("a retry must produce a new candidate commit before review or QA")
+                raise CoordinatorError("a retry must produce a new candidate commit before review or QA", remedy="produce a new candidate commit (developer retry) before the next review or QA dispatch")
             batch["retry_candidate_required"] = False
         if "risk_triggers" in report and role["name"] == "developer":
             triggers = _validate_trigger_names(
@@ -3359,9 +3407,8 @@ def main() -> int:
     args = parser().parse_args()
     try:
         output = args.handler(args)
-    except CoordinatorError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 2
+    except HarnessError as exc:
+        return print_and_exit(exc)
     print(json.dumps(output, ensure_ascii=False, sort_keys=True))
     return 0
 

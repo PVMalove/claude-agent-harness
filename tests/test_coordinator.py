@@ -15,18 +15,15 @@ import argparse
 import inspect
 import json
 import subprocess
-import sys
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
 
+from harness.orchestration import coordinator, coordinator_cli
+from harness.orchestration.ledger import LifecycleLedger
 
 ORCHESTRATION_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
-sys.path.insert(0, str(ORCHESTRATION_ROOT))
-
-import coordinator  # noqa: E402
-from ledger import LifecycleLedger  # noqa: E402
 
 
 def _git(repo: Path, *arguments: str) -> str:
@@ -438,6 +435,25 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             list(inspect.signature(coordinator._persist_report).parameters),
             ["ledger", "root", "batch", "dispatch", "report"],
         )
+
+
+class CoordinatorCliParserTests(unittest.TestCase):
+    """coordinator_cli.py has no test coverage of its own (issue #219): a working ArgumentParser
+    that resolves real subcommands to the right handler, seeded here before narrowing
+    build_parser's ``handlers``/``defaults`` parameters off ``Any``."""
+
+    def test_build_parser_resolves_dispatch_status_to_its_handler(self) -> None:
+        parser = coordinator_cli.build_parser(coordinator, coordinator)
+        self.assertIsInstance(parser, argparse.ArgumentParser)
+
+        args = parser.parse_args(["dispatch", "status"])
+
+        self.assertIs(args.handler, coordinator.dispatch_status)
+
+    def test_coordinator_parser_wires_the_same_handler(self) -> None:
+        args = coordinator.parser().parse_args(["dispatch", "status"])
+
+        self.assertIs(args.handler, coordinator.dispatch_status)
 
 
 if __name__ == "__main__":
