@@ -4,6 +4,10 @@
 coding agents. Операционные процессы и архитектурные решения находятся в `docs/agents/` и
 `docs/adr/`, а не в этом файле.
 
+Актуальный словарь триаж-меток (`type::*`, `priority::*`, `severity::*`, `status::*`,
+`resolution::wontfix`, `hitl`/`afk`, `pipeline::*`) описан в
+[triage-labels.md](docs/agents/triage-labels.md) — не дублируется здесь.
+
 ## Термины
 
 **Харнесс проекта** (project harness):
