@@ -1945,7 +1945,8 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 raise CoordinatorError("override-warning requires a review warning", remedy="only use override-warning to resolve a recorded review warning")
         elif args.decision == "override-warning":
             raise CoordinatorError("only a recorded review warning can be overridden", remedy="only override a recorded review warning")
-        if args.decision == "retry":
+        retry_role = getattr(args, "retry_role", "developer")
+        if args.decision == "retry" and retry_role == "developer":
             retry_policy = _retry_policy(_config(repo))
             if _developer_retry_count(batch) >= retry_policy["max_developer_retries"]:
                 raise CoordinatorError(
@@ -1961,12 +1962,12 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         pending[0]["decision"] = decision
         decision_entry = {"dispatch_id": pending[0]["dispatch_id"], **decision}
         if args.decision == "retry":
-            decision_entry["next_role"] = "developer"
+            decision_entry["next_role"] = retry_role
         batch.setdefault("coordinator_decisions", []).append(decision_entry)
         if args.decision == "retry":
-            batch["required_next_role"] = "developer"
-            batch["retry_candidate_required"] = True
-            batch["next_action"] = "developer-retry"
+            batch["required_next_role"] = retry_role
+            batch["retry_candidate_required"] = (retry_role == "developer")
+            batch["next_action"] = "developer-retry" if retry_role == "developer" else retry_role
         elif args.decision in {"accept", "override-warning"}:
             if report["role"] == "developer":
                 if batch.get("base_rebase_required"):

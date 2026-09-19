@@ -31,7 +31,7 @@ class ContextBuilderFixture(unittest.TestCase):
     """Build a small real repository: a package with an import edge, its test, and an ADR."""
 
     def setUp(self) -> None:
-        self._temporary = tempfile.TemporaryDirectory()
+        self._temporary = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.repo = Path(self._temporary.name) / "repo"
         self.repo.mkdir()
         _run("init", "-q", cwd=self.repo)
