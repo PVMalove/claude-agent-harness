@@ -73,7 +73,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
     """TDD seeds for the #195 migration, run against real git + a real LifecycleLedger."""
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.tmp = Path(self._tmp.name)
         self.repo = _init_repo(self.tmp)
         self.state_dir = self.tmp / "state"

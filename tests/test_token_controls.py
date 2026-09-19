@@ -79,7 +79,7 @@ class TokenControlTests(unittest.TestCase):
         value above `context_package_policy.max_tokens` must fail loudly instead of silently
         expanding the budget (the retro for issue #373 found a review package pushed against an
         undocumented, ad hoc raised ceiling with no recorded decision)."""
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             repo = Path(tmp)
             (repo / ".harness").mkdir()
             (repo / ".harness" / "project.json").write_text("{}", encoding="utf-8")
@@ -128,7 +128,7 @@ class TokenControlTests(unittest.TestCase):
             "required_gates": ["none"],
             "dependencies": ["none"],
         }
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             root = Path(directory)
             coordinator.LifecycleLedger(root).ensure()
             records = coordinator.LifecycleLedger(root).records_root()
@@ -160,7 +160,7 @@ class TokenControlTests(unittest.TestCase):
             "required_gates": ["none"],
             "dependencies": ["none"],
         }
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             root = Path(directory)
             coordinator.LifecycleLedger(root).ensure()
             records = coordinator.LifecycleLedger(root).records_root()

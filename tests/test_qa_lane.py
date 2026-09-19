@@ -13,7 +13,7 @@ from harness.orchestration.ledger import LifecycleLedger
 
 class QaLaneBootstrapTests(unittest.TestCase):
     def test_first_enqueue_creates_the_ledger_sequence_record(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             state_root = Path(temporary) / "state"
             ledger = LifecycleLedger(state_root)
             ledger.ensure()

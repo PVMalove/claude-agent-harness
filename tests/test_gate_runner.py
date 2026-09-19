@@ -15,7 +15,7 @@ from harness.gate_runner.gate_runner import CleanRoomPolicy, LocalPolicy, run_ga
 
 class GateRunnerTests(unittest.TestCase):
     def test_local_and_clean_room_return_the_same_sanitised_evidence_shape(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             root = Path(temporary)
             repo = root / "repo"
             repo.mkdir()
@@ -46,7 +46,7 @@ class GateRunnerTests(unittest.TestCase):
             self.assertNotIn("token=visible", result.checks[0]["evidence"])
 
     def test_stops_at_first_failure_when_the_policy_requests_it(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             root = Path(temporary)
             failed = f'{sys.executable} -c "import sys; print(\'password=visible\'); sys.exit(7)"'
             skipped = f'{sys.executable} -c "print(\'must not run\')"'

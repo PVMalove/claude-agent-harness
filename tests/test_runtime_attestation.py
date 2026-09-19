@@ -18,7 +18,7 @@ def _git(path: Path, *arguments: str) -> str:
 
 class RuntimeAttestationTests(unittest.TestCase):
     def test_write_role_requires_the_registered_issue_worktree(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             repo = Path(temporary) / "repo"
             repo.mkdir()
             _git(repo, "init", "-q")
@@ -43,7 +43,7 @@ class RuntimeAttestationTests(unittest.TestCase):
                 attest(repo, dispatch, str(worktree / "nested"))
 
     def test_review_role_requires_the_pinned_candidate(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             repo = Path(temporary) / "repo"
             repo.mkdir()
             _git(repo, "init", "-q")

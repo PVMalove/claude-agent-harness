@@ -75,7 +75,7 @@ class ClassifyRiskTests(unittest.TestCase):
 
 class AdvisoryCliTests(unittest.TestCase):
     def test_output_is_ephemeral_json_and_writes_no_state(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             before = sorted(Path(temporary).rglob("*"))
             result = subprocess.run(
                 [sys.executable, str(MODULE_PATH), "rank-files", "--keyword", "payments", "a.py", "services/payments/x.py"],
