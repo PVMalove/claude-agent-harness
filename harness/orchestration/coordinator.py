@@ -62,6 +62,8 @@ from harness.orchestration.coordinator_cli import build_parser
 from harness.orchestration import qa_lane
 from harness.orchestration.runtime_attestation import AttestationError, attest as attest_runtime_worktree
 
+JsonObject = dict[str, Any]  # type: ignore[explicit-any]  # dynamic JSON boundary: ledger/config/report payloads are json.loads output validated at runtime by the *_FIELDS sets
+
 
 STATE_REL = Path(".harness/orchestration/state")
 SENSITIVE_KEY = re.compile(
@@ -193,7 +195,7 @@ def _non_empty(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _read_object(path: Path, label: str) -> dict[str, Any]:
+def _read_object(path: Path, label: str) -> JsonObject:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -222,11 +224,11 @@ def _strings(value: object, label: str, *, allow_empty: bool = False) -> list[st
     return list(value)
 
 
-def _canonical(value: dict[str, Any]) -> str:
+def _canonical(value: JsonObject) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
-def _write_exclusive(ledger: LifecycleLedger, path: Path, value: dict[str, Any]) -> None:
+def _write_exclusive(ledger: LifecycleLedger, path: Path, value: JsonObject) -> None:
     try:
         ledger.write_immutable(path, value)
     except LedgerError as exc:
@@ -366,7 +368,7 @@ def _ledger_lock(ledger: LifecycleLedger) -> Iterator[None]:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def _project(repo: Path) -> dict[str, Any]:
+def _project(repo: Path) -> JsonObject:
     return _read_object(repo / ".harness/project.json", "project config")
 
 
@@ -390,7 +392,7 @@ def _configured(repo: Path) -> bool:
     return bool(value.get("backend_zones")) or bool(value.get("assignment_plans"))
 
 
-def _default_config(repo: Path) -> dict[str, Any]:
+def _default_config(repo: Path) -> JsonObject:
     """Zero-configuration fallback.  A project that has not authored an orchestration config still
     gets one working zone — the whole repository — and takes the role runtime from the invoking
     session, so the gated pipeline is available before any assignment plan exists."""
@@ -407,7 +409,7 @@ def _default_config(repo: Path) -> dict[str, Any]:
     }
 
 
-def _config(repo: Path) -> dict[str, Any]:
+def _config(repo: Path) -> JsonObject:
     if not _configured(repo):
         return _default_config(repo)
     value = _read_object(repo / ".harness/orchestration.json", "project orchestration config")
@@ -418,7 +420,7 @@ def _config(repo: Path) -> dict[str, Any]:
     return value
 
 
-def _adaptive_continuation_policy(config: dict[str, Any]) -> dict[str, Any]:
+def _adaptive_continuation_policy(config: JsonObject) -> JsonObject:
     """Adaptive-policy thresholds for a planned-trigger continuation. Project-configurable per
     AC5; an absent or partially-specified `adaptive_continuation_policy` falls back to the
     documented defaults field by field, the same tolerance `_default_config` gives every other
@@ -441,7 +443,7 @@ def _adaptive_continuation_policy(config: dict[str, Any]) -> dict[str, Any]:
     return resolved
 
 
-def _context_advisory(config: dict[str, Any], observed: int | None) -> dict[str, Any]:
+def _context_advisory(config: JsonObject, observed: int | None) -> JsonObject:
     """Advisory-only read of an observed token count against `context_warn_ratio` of
     `context_limit`. Never authorizes a checkpoint or changes state — a coordinator decision does."""
     policy = _adaptive_continuation_policy(config)
@@ -456,7 +458,7 @@ def _context_advisory(config: dict[str, Any], observed: int | None) -> dict[str,
     return {"level": level, "limit": limit, "warn_at": warn_at, "observed": observed}
 
 
-def _numeric_policy(config: dict[str, Any], key: str, defaults: dict[str, int]) -> dict[str, int]:
+def _numeric_policy(config: JsonObject, key: str, defaults: dict[str, int]) -> dict[str, int]:
     """Resolve a small project policy after config validation, retaining safe defaults.
 
     This second guard makes direct coordinator use safe even if a caller bypasses ``harness
@@ -475,7 +477,7 @@ def _numeric_policy(config: dict[str, Any], key: str, defaults: dict[str, int]) 
     return resolved
 
 
-def _context_package_policy(config: dict[str, Any]) -> dict[str, int]:
+def _context_package_policy(config: JsonObject) -> dict[str, int]:
     policy = _numeric_policy(config, "context_package_policy", DEFAULT_CONTEXT_PACKAGE_POLICY)
     if policy["reserved_prompt_tokens"] >= policy["context_window_tokens"]:
         raise CoordinatorError("context_package_policy reserved_prompt_tokens must be below context_window_tokens", remedy="lower context_package_policy.reserved_prompt_tokens below context_window_tokens")
@@ -485,16 +487,16 @@ def _context_package_policy(config: dict[str, Any]) -> dict[str, int]:
     return policy
 
 
-def _continuation_policy(config: dict[str, Any]) -> dict[str, int]:
+def _continuation_policy(config: JsonObject) -> dict[str, int]:
     return _numeric_policy(config, "continuation_policy", DEFAULT_CONTINUATION_POLICY)
 
 
-def _retry_policy(config: dict[str, Any]) -> dict[str, int]:
+def _retry_policy(config: JsonObject) -> dict[str, int]:
     return _numeric_policy(config, "retry_policy", DEFAULT_RETRY_POLICY)
 
 
-def _preflight_policy(config: dict[str, Any]) -> dict[str, Any]:
-    policy: dict[str, Any] = dict(DEFAULT_PREFLIGHT_POLICY)
+def _preflight_policy(config: JsonObject) -> JsonObject:
+    policy: JsonObject = dict(DEFAULT_PREFLIGHT_POLICY)
     configured = config.get("preflight_policy")
     if not isinstance(configured, dict):
         return policy
@@ -525,7 +527,7 @@ def _harness_runtime_sha256(repo: Path) -> str:
     return digest.hexdigest()
 
 
-def _validate_harness_runtime_snapshot(repo: Path, batch: dict[str, Any]) -> None:
+def _validate_harness_runtime_snapshot(repo: Path, batch: JsonObject) -> None:
     expected = batch.get("harness_runtime_sha256")
     if expected is None:  # Explicitly supported legacy batch; never rewrite history in place.
         return
@@ -583,14 +585,14 @@ def _required_base_branch(repo: Path) -> str:
     return base
 
 
-def _integration_ref(repo: Path, batch: dict[str, Any]) -> str:
+def _integration_ref(repo: Path, batch: JsonObject) -> str:
     ref = batch.get("integration_ref")
     if _non_empty(ref):
         return ref
     return _required_base_branch(repo)
 
 
-def _enforce_base_freshness(repo: Path, root: Path, ledger: LifecycleLedger, batch: dict[str, Any]) -> None:
+def _enforce_base_freshness(repo: Path, root: Path, ledger: LifecycleLedger, batch: JsonObject) -> None:
     """Mandatory re-check, immediately before a review or publish dispatch: the batch's pinned
     integration base must still be the integration ref's current tip. A stale base is cleared only
     by a new developer dispatch (a rebase), never by the coordinator moving this field directly."""
@@ -715,7 +717,7 @@ def _trigger_patterns(trigger: str) -> tuple[str, ...]:
     return tuple(patterns)
 
 
-def _test_path_patterns(config: dict[str, Any]) -> list[str]:
+def _test_path_patterns(config: JsonObject) -> list[str]:
     patterns = config.get("test_path_patterns")
     if isinstance(patterns, list) and patterns and all(_non_empty(item) for item in patterns):
         return list(patterns)
@@ -726,7 +728,7 @@ def _is_test_path(path: str, patterns: list[str]) -> bool:
     return any(fnmatchcase(path, pattern) for pattern in patterns)
 
 
-def _role(repo: Path, name: str) -> dict[str, Any]:
+def _role(repo: Path, name: str) -> JsonObject:
     try:
         return load_role_manifest(repo / ".harness/orchestration/roles" / f"{name}.md")
     except ContractError as exc:
@@ -767,12 +769,12 @@ def _validate_worktree(repo: Path, worktree: str) -> None:
         raise CoordinatorError(f"worktree {worktree!r} is not registered by git worktree", remedy=f"run 'git worktree add' for {worktree}, or pass a worktree already registered by git worktree")
 
 
-def _verification_commands(config: dict[str, Any]) -> list[str]:
+def _verification_commands(config: JsonObject) -> list[str]:
     commands = config.get("verification_commands")
     return _strings(commands, "verification_commands", allow_empty=True)
 
 
-def _developer_verification_commands(config: dict[str, Any]) -> list[str]:
+def _developer_verification_commands(config: JsonObject) -> list[str]:
     """Focused developer proof, with the historical full-QA list as a safe fallback.
 
     Older project configs have one verification list.  Keeping that as the fallback preserves their
@@ -785,14 +787,14 @@ def _developer_verification_commands(config: dict[str, Any]) -> list[str]:
     return _strings(commands, "developer_verification_commands", allow_empty=True)
 
 
-def _worker_attestation_required(config: dict[str, Any]) -> bool:
+def _worker_attestation_required(config: JsonObject) -> bool:
     value = config.get("worker_attestation_required", False)
     if not isinstance(value, bool):
         raise CoordinatorError("worker_attestation_required must be a boolean", remedy="set worker_attestation_required to true or false in the project orchestration config")
     return value
 
 
-def _communication_policy(config: dict[str, Any]) -> dict[str, str]:
+def _communication_policy(config: JsonObject) -> dict[str, str]:
     value = config.get("communication_policy", DEFAULT_COMMUNICATION_POLICY)
     if not isinstance(value, dict) or set(value) != COMMUNICATION_POLICY_FIELDS:
         raise CoordinatorError(
@@ -809,14 +811,14 @@ def _communication_policy(config: dict[str, Any]) -> dict[str, str]:
 
 def _resolve_assignment(
     repo: Path,
-    config: dict[str, Any],
+    config: JsonObject,
     role_name: str,
     zone_name: str,
     runtime_name: str,
     *,
     session_model: object = None,
     session_effort: object = None,
-) -> tuple[dict[str, Any], dict[str, Any], str, str, str, str, str]:
+) -> tuple[JsonObject, JsonObject, str, str, str, str, str]:
     role = _role(repo, role_name)
     if not _configured(repo):
         if zone_name != DEFAULT_ZONE:
@@ -857,11 +859,11 @@ def _moment(value: object, label: str) -> datetime:
     return parsed
 
 
-def _lease_expired(lease: dict[str, Any]) -> bool:
+def _lease_expired(lease: JsonObject) -> bool:
     return _moment(lease["expires_at"], "QA lease expiry") <= datetime.now(timezone.utc)
 
 
-def _silent_seconds(status: dict[str, Any]) -> int:
+def _silent_seconds(status: JsonObject) -> int:
     """Seconds since a dispatch last proved it was alive.  This generalizes the QA lane's
     lease-expiry check to every dispatch, whatever transport is carrying it."""
     last = status.get("heartbeat_at") or status.get("updated_at")
@@ -877,23 +879,23 @@ def _concise_evidence(text: str) -> str:
     return concise_evidence(text)
 
 
-def _load_batch(root: Path, batch_id: str) -> dict[str, Any]:
+def _load_batch(root: Path, batch_id: str) -> JsonObject:
     return _read_object(_records_root(root) / BatchRecord.directory / f"{_safe_id(batch_id, 'batch')}.json", "batch record")
 
 
-def _load_dispatch(root: Path, dispatch_id: str) -> dict[str, Any]:
+def _load_dispatch(root: Path, dispatch_id: str) -> JsonObject:
     return _read_object(_records_root(root) / DispatchRecord.directory / f"{_safe_id(dispatch_id, 'dispatch')}.json", "dispatch record")
 
 
-def _load_dispatch_status(root: Path, dispatch_id: str) -> dict[str, Any]:
+def _load_dispatch_status(root: Path, dispatch_id: str) -> JsonObject:
     return _read_object(_records_root(root) / DispatchStatusRecord.directory / f"{_safe_id(dispatch_id, 'dispatch')}.json", "dispatch status")
 
 
-def _load_risk(root: Path, risk_id: str) -> dict[str, Any]:
+def _load_risk(root: Path, risk_id: str) -> JsonObject:
     return _read_object(_records_root(root) / RiskAssessmentRecord.directory / f"{_safe_id(risk_id, 'risk assessment')}.json", "risk assessment")
 
 
-def _validate_risk(root: Path, batch: dict[str, Any], risk: dict[str, Any]) -> None:
+def _validate_risk(root: Path, batch: JsonObject, risk: JsonObject) -> None:
     _reject_sensitive(risk, "risk assessment")
     if set(risk) != RISK_ASSESSMENT_FIELDS:
         raise CoordinatorError("risk assessment schema mismatch", remedy="regenerate the risk assessment record so its schema matches the current version")
@@ -922,7 +924,7 @@ def _validate_risk(root: Path, batch: dict[str, Any], risk: dict[str, Any]) -> N
         raise CoordinatorError("risk assessment failed immutable record integrity check", remedy="the risk assessment record was modified after its integrity hash was recorded -- " + INTERNAL_INVARIANT_REMEDY)
 
 
-def _risk_for_candidate(root: Path, batch: dict[str, Any], candidate: str) -> dict[str, Any] | None:
+def _risk_for_candidate(root: Path, batch: JsonObject, candidate: str) -> JsonObject | None:
     matches = [
         item for item in batch.get("risk_assessments", []) if item.get("candidate_commit") == candidate
     ]
@@ -933,11 +935,11 @@ def _risk_for_candidate(root: Path, batch: dict[str, Any], candidate: str) -> di
     return risk
 
 
-def _load_checkpoint(root: Path, checkpoint_id: str) -> dict[str, Any]:
+def _load_checkpoint(root: Path, checkpoint_id: str) -> JsonObject:
     return _read_object(_records_root(root) / CheckpointRecord.directory / f"{_safe_id(checkpoint_id, 'checkpoint')}.json", "checkpoint")
 
 
-def _latest_checkpoint_for_dispatch(root: Path, batch: dict[str, Any], dispatch_id: str) -> dict[str, Any]:
+def _latest_checkpoint_for_dispatch(root: Path, batch: JsonObject, dispatch_id: str) -> JsonObject:
     entries = [item for item in batch.get("checkpoints", []) if item.get("dispatch_id") == dispatch_id]
     if not entries:
         raise CoordinatorError("dispatch has no recorded checkpoint to resume from", remedy="checkpoint this dispatch before attempting to resume it")
@@ -948,11 +950,11 @@ def _latest_checkpoint_for_dispatch(root: Path, batch: dict[str, Any], dispatch_
     return checkpoint
 
 
-def _load_context_package(root: Path, package_id: str) -> dict[str, Any]:
+def _load_context_package(root: Path, package_id: str) -> JsonObject:
     return _read_object(_records_root(root) / ContextPackageRecord.directory / f"{_safe_id(package_id, 'context package')}.json", "context package")
 
 
-def _validate_context_package(root: Path, batch: dict[str, Any], package: dict[str, Any]) -> None:
+def _validate_context_package(root: Path, batch: JsonObject, package: JsonObject) -> None:
     _reject_sensitive(package, "context package")
     if set(package) != CONTEXT_PACKAGE_FIELDS and set(package) != LEGACY_CONTEXT_PACKAGE_FIELDS:
         raise CoordinatorError("context package schema mismatch", remedy="regenerate the context package record so its schema matches the current version")
@@ -970,7 +972,7 @@ def _validate_context_package(root: Path, batch: dict[str, Any], package: dict[s
         raise CoordinatorError("context package failed immutable record integrity check", remedy="the context package record was modified after its integrity hash was recorded -- " + INTERNAL_INVARIANT_REMEDY)
 
 
-def _context_package_summary(package: dict[str, Any]) -> dict[str, Any]:
+def _context_package_summary(package: JsonObject) -> JsonObject:
     """Compact portable handoff data for a new role session.
 
     The full immutable package remains in the ledger exactly once.  The brief carries enough
@@ -988,8 +990,8 @@ def _context_package_summary(package: dict[str, Any]) -> dict[str, Any]:
 
 
 def _reusable_context_package(
-    root: Path, batch: dict[str, Any], base_commit: str, candidate_commit: str,
-) -> dict[str, Any] | None:
+    root: Path, batch: JsonObject, base_commit: str, candidate_commit: str,
+) -> JsonObject | None:
     """Return the current batch's shared package for exactly the same pinned diff.
 
     A package is immutable and role-neutral. Architect and developer therefore share the base
@@ -1006,7 +1008,7 @@ def _reusable_context_package(
     return None
 
 
-def _latest_context_package(root: Path, batch: dict[str, Any]) -> dict[str, Any] | None:
+def _latest_context_package(root: Path, batch: JsonObject) -> JsonObject | None:
     entries = batch.get("context_packages", [])
     if not entries:
         return None
@@ -1015,7 +1017,7 @@ def _latest_context_package(root: Path, batch: dict[str, Any]) -> dict[str, Any]
     return package
 
 
-def _context_package_freshness(repo: Path, root: Path, batch: dict[str, Any]) -> dict[str, Any] | None:
+def _context_package_freshness(repo: Path, root: Path, batch: JsonObject) -> JsonObject | None:
     """Shadow-mode evidence only: records whether the batch's latest registered Context Package
     still matches current repository state (its base and the latest accepted developer candidate).
     Never blocks dispatch creation -- roles are not yet restricted to the package."""
@@ -1041,7 +1043,7 @@ def _context_package_freshness(repo: Path, root: Path, batch: dict[str, Any]) ->
     }
 
 
-def _latest_developer_candidate(repo: Path, root: Path, batch: dict[str, Any]) -> str:
+def _latest_developer_candidate(repo: Path, root: Path, batch: JsonObject) -> str:
     accepted = [
         item for item in batch.get("dispatches", [])
         if item.get("role") == "developer"
@@ -1057,7 +1059,7 @@ def _latest_developer_candidate(repo: Path, root: Path, batch: dict[str, Any]) -
         raise CoordinatorError("accepted developer report has no resolvable candidate commit", remedy="the accepted developer report has no resolvable candidate commit -- " + INTERNAL_INVARIANT_REMEDY) from exc
 
 
-def _accepted_architect(batch: dict[str, Any]) -> bool:
+def _accepted_architect(batch: JsonObject) -> bool:
     return any(
         item.get("role") == "architect"
         and item.get("state") == "reported"
@@ -1067,7 +1069,7 @@ def _accepted_architect(batch: dict[str, Any]) -> bool:
     )
 
 
-def _accepted_qa_for_candidate(root: Path, batch: dict[str, Any], candidate: str) -> dict[str, Any]:
+def _accepted_qa_for_candidate(root: Path, batch: JsonObject, candidate: str) -> JsonObject:
     """Return the accepted green QA report pinned to exactly ``candidate``."""
     for entry in reversed(batch.get("dispatches", [])):
         if entry.get("role") != "qa" or entry.get("state") != "reported":
@@ -1085,7 +1087,7 @@ def _accepted_qa_for_candidate(root: Path, batch: dict[str, Any], candidate: str
 
 def _batch_for_ticket_branch(
     root: Path, ticket: str, branch: str, candidate: str, requested_batch: object = None,
-) -> dict[str, Any]:
+) -> JsonObject:
     """Find the batch whose accepted QA proof is pinned to this candidate.
 
     A coordinator can retain abandoned planning attempts for the same ticket and issue branch.
@@ -1123,11 +1125,11 @@ def _batch_for_ticket_branch(
     return candidates[0]
 
 
-def qa_evidence(args: argparse.Namespace) -> dict[str, Any]:
+def qa_evidence(args: argparse.Namespace) -> JsonObject:
     return qa_lane.qa_evidence(args, sys.modules[__name__])
 
 
-def ledger_status(args: argparse.Namespace) -> dict[str, Any]:
+def ledger_status(args: argparse.Namespace) -> JsonObject:
     """Report the selected lifecycle-ledger generation without changing it."""
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -1139,7 +1141,7 @@ def ledger_status(args: argparse.Namespace) -> dict[str, Any]:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def migrate_ledger(args: argparse.Namespace) -> dict[str, Any]:
+def migrate_ledger(args: argparse.Namespace) -> JsonObject:
     """Explicitly validate legacy state and atomically select its versioned replacement."""
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -1151,7 +1153,7 @@ def migrate_ledger(args: argparse.Namespace) -> dict[str, Any]:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def reset_ledger(args: argparse.Namespace) -> dict[str, Any]:
+def reset_ledger(args: argparse.Namespace) -> JsonObject:
     """Select an empty generation only after an explicit confirmation and no active batch."""
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -1163,7 +1165,7 @@ def reset_ledger(args: argparse.Namespace) -> dict[str, Any]:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def clean_ledger(args: argparse.Namespace) -> dict[str, Any]:
+def clean_ledger(args: argparse.Namespace) -> JsonObject:
     """Safely remove orphaned dispatch evidence from the ledger state."""
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -1175,7 +1177,7 @@ def clean_ledger(args: argparse.Namespace) -> dict[str, Any]:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def _validate_batch_integrity(root: Path, batch: dict[str, Any]) -> None:
+def _validate_batch_integrity(root: Path, batch: JsonObject) -> None:
     plan = _read_object(
         _records_root(root) / "plans" / f"{_safe_id(batch.get('batch_id'), 'batch')}.json", "immutable batch plan",
     )
@@ -1206,7 +1208,7 @@ def _validate_batch_integrity(root: Path, batch: dict[str, Any]) -> None:
     raise CoordinatorError("batch record is incomplete", remedy="restore the batch record so it has every required field, or run 'ledger clean'")
 
 
-def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: dict[str, Any], dispatch: dict[str, Any]) -> None:
+def _validate_dispatch(repo: Path, config: JsonObject, root: Path, batch: JsonObject, dispatch: JsonObject) -> None:
     _validate_harness_runtime_snapshot(repo, batch)
     _reject_sensitive(dispatch, "dispatch record")
     # Briefs are immutable. A record created before worker attestation was introduced keeps its
@@ -1313,7 +1315,7 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
         raise CoordinatorError("dispatch contains review metadata without a candidate commit", remedy="remove review metadata from a dispatch with no candidate_commit, or pin one")
 
 
-def _check_batch_conflicts(root: Path, config: dict[str, Any], batch: dict[str, Any]) -> None:
+def _check_batch_conflicts(root: Path, config: JsonObject, batch: JsonObject) -> None:
     budget = config.get("concurrency_budget")
     if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
         raise CoordinatorError("project orchestration config has an invalid concurrency_budget", remedy="set concurrency_budget to a positive integer in the project orchestration config")
@@ -1329,7 +1331,7 @@ def _check_batch_conflicts(root: Path, config: dict[str, Any], batch: dict[str, 
         raise CoordinatorError("concurrency_budget is exhausted", remedy="wait for an active worker to finish, or raise concurrency_budget")
 
 
-def _human_approval_gate(config: dict[str, Any]) -> str:
+def _human_approval_gate(config: JsonObject) -> str:
     gate = config.get("human_approval_gate", "trusted")
     if gate not in {"trusted", "tty"}:
         raise CoordinatorError("human_approval_gate must be trusted or tty", remedy="set human_approval_gate to 'trusted' or 'tty' in the project orchestration config")
@@ -1386,7 +1388,7 @@ def _approval(args: argparse.Namespace) -> dict[str, str]:
     return result
 
 
-def _approval_policy(config: dict[str, Any]) -> str:
+def _approval_policy(config: JsonObject) -> str:
     policy = config.get("approval_policy", "manual_all")
     if policy not in {"manual_all", "milestone", "low_risk"}:
         raise CoordinatorError("approval_policy must be manual_all, milestone or low_risk", remedy="set approval_policy to 'manual_all', 'milestone' or 'low_risk' in the project orchestration config")
@@ -1394,8 +1396,8 @@ def _approval_policy(config: dict[str, Any]) -> str:
 
 
 def _dispatch_approval(
-    args: argparse.Namespace, batch: dict[str, Any], config: dict[str, Any], role: str,
-    purpose: str, risk: dict[str, Any] | None,
+    args: argparse.Namespace, batch: JsonObject, config: JsonObject, role: str,
+    purpose: str, risk: JsonObject | None,
 ) -> dict[str, str]:
     """Apply a project-approved continuation only outside the preserved risk milestones."""
     if _non_empty(getattr(args, "approved_by", None)) or _non_empty(getattr(args, "approved_at", None)):
@@ -1412,7 +1414,7 @@ def _dispatch_approval(
     return {"approved_by": f"policy:{policy}", "approved_at": _now()}
 
 
-def preflight_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
     """Render one deterministic dispatch proposal without writing a brief or starting a worker."""
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -1431,7 +1433,7 @@ def preflight_dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 candidate = None
         snapshot = candidate or batch["base_commit"]
         package = _latest_context_package(root, batch)
-        package_pointer: dict[str, Any] = {}
+        package_pointer: JsonObject = {}
         if package is not None:
             package_pointer = {
                 "package_id": package["context_package_id"],
@@ -1460,7 +1462,7 @@ def preflight_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     return prepared.to_dict()
 
 
-def decision_packet(args: argparse.Namespace) -> dict[str, Any]:
+def decision_packet(args: argparse.Namespace) -> JsonObject:
     """Return concise approval evidence, with immutable report and diff paths kept in the ledger."""
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -1512,7 +1514,7 @@ def decision_packet(args: argparse.Namespace) -> dict[str, Any]:
         }
 
 
-def assess_risk(args: argparse.Namespace) -> dict[str, Any]:
+def assess_risk(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     known = _risk_triggers(repo)
@@ -1598,7 +1600,7 @@ def _persist_context_package(
     repo: Path,
     root: Path,
     ledger: LifecycleLedger,
-    batch: dict[str, Any],
+    batch: JsonObject,
     *,
     role: str,
     snapshot: str,
@@ -1609,7 +1611,7 @@ def _persist_context_package(
     max_package_tokens: int | None = None,
     symbol_graph_depth: int | None = None,
     max_related_tests: int | None = None,
-) -> dict[str, Any]:
+) -> JsonObject:
     """Build once and register a reusable Context Package for one pinned diff."""
     package_base = batch.get("integration_base_commit") or batch["base_commit"]
     reusable = _reusable_context_package(root, batch, package_base, snapshot)
@@ -1665,7 +1667,7 @@ def _persist_context_package(
     return package
 
 
-def register_context_package(args: argparse.Namespace) -> dict[str, Any]:
+def register_context_package(args: argparse.Namespace) -> JsonObject:
     """Build one Context Package for the batch's accepted developer candidate and register it as a
     new immutable, versioned, hashed ledger record -- the same ownership pattern as a risk
     assessment. Read-only over the repository; writes no coordinator or batch state beyond the
@@ -1720,9 +1722,9 @@ def _expected_positive(args: argparse.Namespace, name: str) -> int | None:
 
 
 def _scope_preflight(
-    config: dict[str, Any], ticket: str, zone: str, definition_of_done: list[str], dependencies: list[str],
+    config: JsonObject, ticket: str, zone: str, definition_of_done: list[str], dependencies: list[str],
     args: argparse.Namespace,
-) -> dict[str, Any]:
+) -> JsonObject:
     """Reject an oversized ticket before a batch, worktree dispatch, or model session exists."""
     policy = _preflight_policy(config)
     expected_files = sorted(set(_scope_values(args, "expected_file")))
@@ -1784,7 +1786,7 @@ def _scope_preflight(
     }
 
 
-def preflight_batch(args: argparse.Namespace) -> dict[str, Any]:
+def preflight_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     config = _config(repo)
     ticket = getattr(args, "ticket", None)
@@ -1796,7 +1798,7 @@ def preflight_batch(args: argparse.Namespace) -> dict[str, Any]:
     return _scope_preflight(config, ticket.strip(), zone.strip(), definition_of_done, dependencies, args)
 
 
-def create_batch(args: argparse.Namespace) -> dict[str, Any]:
+def create_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     config = _config(repo)
     ticket = getattr(args, "ticket", None)
@@ -1861,7 +1863,7 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     return record
 
 
-def approve_batch(args: argparse.Namespace) -> dict[str, Any]:
+def approve_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
@@ -1879,7 +1881,7 @@ def approve_batch(args: argparse.Namespace) -> dict[str, Any]:
     return record
 
 
-def _pending_report(root: Path, batch: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
+def _pending_report(root: Path, batch: JsonObject, entry: JsonObject) -> JsonObject:
     report_path = entry.get("report")
     if not isinstance(report_path, str):
         raise CoordinatorError("reported dispatch has no completion report", remedy="the reported dispatch has no completion report on disk -- " + INTERNAL_INVARIANT_REMEDY)
@@ -1891,7 +1893,7 @@ def _pending_report(root: Path, batch: dict[str, Any], entry: dict[str, Any]) ->
     return report
 
 
-def _developer_retry_count(batch: dict[str, Any]) -> int:
+def _developer_retry_count(batch: JsonObject) -> int:
     """Count approved retry decisions, not ordinary initial developer dispatches."""
     return sum(
         1
@@ -1900,7 +1902,7 @@ def _developer_retry_count(batch: dict[str, Any]) -> int:
     )
 
 
-def _continuation_counts(batch: dict[str, Any], dispatch_id: str) -> tuple[int, int]:
+def _continuation_counts(batch: JsonObject, dispatch_id: str) -> tuple[int, int]:
     decisions = [
         decision for decision in batch.get("coordinator_decisions", [])
         if decision.get("dispatch_id") == dispatch_id and decision.get("decision") in {"continue", "continue-automatic"}
@@ -1909,11 +1911,11 @@ def _continuation_counts(batch: dict[str, Any], dispatch_id: str) -> tuple[int, 
     return len(decisions), automatic
 
 
-def _review_severity(review: dict[str, Any]) -> dict[str, str]:
+def _review_severity(review: JsonObject) -> dict[str, str]:
     return {axis: review[axis]["severity"] for axis in ("standards", "spec")}
 
 
-def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
+def decide_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
@@ -1994,7 +1996,7 @@ def decide_batch(args: argparse.Namespace) -> dict[str, Any]:
     return batch
 
 
-def _settled(entry: dict[str, Any]) -> bool:
+def _settled(entry: JsonObject) -> bool:
     """A dispatch is settled once nothing further can happen to it.
 
     That is either a report the coordinator has decided on, or an abandonment — both are terminal.
@@ -2005,7 +2007,7 @@ def _settled(entry: dict[str, Any]) -> bool:
     return entry.get("state") == "reported" and isinstance(entry.get("decision"), dict)
 
 
-def list_batches(args: argparse.Namespace) -> dict[str, Any]:
+def list_batches(args: argparse.Namespace) -> JsonObject:
     """Inventory of every batch the coordinator holds, with what is still open in each.
 
     Without this there is no way to find the leftovers of an earlier attempt short of reading the
@@ -2042,7 +2044,7 @@ def list_batches(args: argparse.Namespace) -> dict[str, Any]:
     return {"batches": batches}
 
 
-def abandon_batch(args: argparse.Namespace) -> dict[str, Any]:
+def abandon_batch(args: argparse.Namespace) -> JsonObject:
     """Close a batch that can no longer reach a decision, with a recorded reason.
 
     A dispatch whose worker died before confirming its model can never report, and a batch with no
@@ -2104,7 +2106,7 @@ def abandon_batch(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def cancel_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
     """Cancel one approved brief before it reaches any runtime.
 
     This is deliberately narrower than batch abandonment: the immutable brief remains available
@@ -2148,7 +2150,7 @@ def cancel_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     return {"dispatch_id": dispatch["dispatch_id"], "batch_id": batch["batch_id"], "state": "cancelled"}
 
 
-def _prior_review_entry(batch: dict[str, Any], dispatch_id: str) -> dict[str, Any]:
+def _prior_review_entry(batch: JsonObject, dispatch_id: str) -> JsonObject:
     entry = next(
         (item for item in batch.get("dispatches", []) if item.get("dispatch_id") == dispatch_id), None,
     )
@@ -2156,15 +2158,15 @@ def _prior_review_entry(batch: dict[str, Any], dispatch_id: str) -> dict[str, An
         raise CoordinatorError("delta-review-of must reference a code-review dispatch in this batch", remedy="pass --delta-review-of naming a code-review dispatch that belongs to this batch")
     if entry.get("state") != "reported" or entry.get("decision", {}).get("decision") != "retry":
         raise CoordinatorError("delta-review-of must reference a retried code-review dispatch", remedy="pass --delta-review-of naming a code-review dispatch that was actually retried")
-    return cast(dict[str, Any], entry)
+    return cast(JsonObject, entry)
 
 
 def _delta_review_eligibility(
     repo: Path,
-    config: dict[str, Any],
+    config: JsonObject,
     known: list[str],
-    prior_dispatch: dict[str, Any],
-    prior_report: dict[str, Any],
+    prior_dispatch: JsonObject,
+    prior_report: JsonObject,
     candidate: str,
 ) -> str:
     """Whether ``candidate`` may be delta-reviewed against ``prior_dispatch``'s review.
@@ -2206,7 +2208,7 @@ def _delta_review_eligibility(
     return "spec"
 
 
-def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+def create_dispatch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     config = _config(repo)
@@ -2339,7 +2341,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             if role_name == "developer" and purpose == "work"
             else batch["verification_commands"]
         )
-        brief: dict[str, Any] = {
+        brief: JsonObject = {
             "dispatch_id": dispatch_id,
             "batch_id": batch["batch_id"],
             "ticket": batch["ticket"],
@@ -2434,7 +2436,7 @@ def _validate_checkout(checkout: Path, candidate: str, base: str | None, scope: 
         raise CoordinatorError("review checkout changed files do not match the immutable review scope", remedy="the review checkout's changed files must exactly match the immutable review scope; re-checkout the pinned candidate")
 
 
-def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+def send_dispatch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     dispatch_record = _load_dispatch(root, args.dispatch)
@@ -2525,7 +2527,7 @@ def send_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _live_status(root: Path, dispatch_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def _live_status(root: Path, dispatch_id: str) -> tuple[JsonObject, JsonObject]:
     dispatch = _load_dispatch(root, dispatch_id)
     status = _load_dispatch_status(root, dispatch_id)
     if status.get("state") not in LIVE_DISPATCH_STATES:
@@ -2533,7 +2535,7 @@ def _live_status(root: Path, dispatch_id: str) -> tuple[dict[str, Any], dict[str
     return dispatch, status
 
 
-def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
     """Compare the model a dispatched role is actually running against its immutable brief.
 
     A mismatch blocks the dispatch here, at first contact, instead of letting a misconfigured
@@ -2548,7 +2550,7 @@ def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         dispatch, status = _live_status(root, args.dispatch)
         expected = dispatch["resolved_model"]
         model_matched = reported == expected
-        attestation: dict[str, Any] | None = None
+        attestation: JsonObject | None = None
         worktree_matched = True
         if dispatch.get("worker_attestation_required", False):
             supplied_worktree = getattr(args, "worktree", None)
@@ -2598,7 +2600,7 @@ def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     return {"dispatch_id": dispatch["dispatch_id"], "state": "working", "model": reported, "worktree": attestation.get("worktree") if attestation else None}
 
 
-def heartbeat_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+def heartbeat_dispatch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     note = args.note.strip() if _non_empty(args.note) else "none"
@@ -2628,7 +2630,7 @@ def heartbeat_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
-def rate_limited_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+def rate_limited_dispatch(args: argparse.Namespace) -> JsonObject:
     """Record a provider 429 without model-side polling or a lost checkpoint."""
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -2662,7 +2664,7 @@ def rate_limited_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     return {"dispatch_id": dispatch["dispatch_id"], "event": "rate_limited", "retry_not_before": retry_not_before}
 
 
-def wait_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+def wait_dispatch(args: argparse.Namespace) -> JsonObject:
     """Wait locally for a significant event; heartbeat updates never reach the coordinator chat."""
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -2694,7 +2696,7 @@ def wait_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         time.sleep(min(interval, max(1, int(remaining))))
 
 
-def record_telemetry(args: argparse.Namespace) -> dict[str, Any]:
+def record_telemetry(args: argparse.Namespace) -> JsonObject:
     """Attach source-observed worker/coordinator metrics to the batch audit trail.
 
     Missing provider fields stay ``null`` rather than becoming estimated zeroes. This command is
@@ -2731,8 +2733,8 @@ def record_telemetry(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _validate_checkpoint(
-    checkpoint: dict[str, Any], dispatch: dict[str, Any], role: dict[str, Any], repo: Path,
-    base_commit: str | None, root: Path, batch: dict[str, Any],
+    checkpoint: JsonObject, dispatch: JsonObject, role: JsonObject, repo: Path,
+    base_commit: str | None, root: Path, batch: JsonObject,
 ) -> None:
     _reject_sensitive(checkpoint, "checkpoint")
     if set(checkpoint) != CHECKPOINT_INPUT_FIELDS:
@@ -2789,7 +2791,7 @@ def _validate_checkpoint(
         raise CoordinatorError("checkpoint context_package_id must reference the batch's latest registered context package", remedy="reference the batch's latest registered context package, or omit context_package_id")
 
 
-def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
     """Record a non-terminal checkpoint for an in-flight write-role dispatch so its worker session
     can end here and a fresh session can resume the same dispatch later.
 
@@ -2839,7 +2841,7 @@ def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     return {"dispatch_id": dispatch["dispatch_id"], "state": "checkpointed", "checkpoint_id": record["checkpoint_id"]}
 
 
-def _authorize_rate_limit_continuation(termination_reason: str) -> dict[str, Any]:
+def _authorize_rate_limit_continuation(termination_reason: str) -> JsonObject:
     return {
         "decision": "continue-automatic",
         "approved_by": "runtime-adapter",
@@ -2849,8 +2851,8 @@ def _authorize_rate_limit_continuation(termination_reason: str) -> dict[str, Any
 
 
 def _authorize_planned_continuation(
-    config: dict[str, Any], dispatch: dict[str, Any], checkpoint: dict[str, Any], args: argparse.Namespace,
-) -> dict[str, Any]:
+    config: JsonObject, dispatch: JsonObject, checkpoint: JsonObject, args: argparse.Namespace,
+) -> JsonObject:
     """A planned trigger (context limit, N TDD cycles, a large failure log, or a completed
     vertical slice) is a safe-default-toward-approval path: it always requires the same explicit
     coordinator decision an accept/retry/block/fail already does, reusing that record type rather
@@ -2883,7 +2885,7 @@ def _authorize_planned_continuation(
 
 
 def _check_continuation_facts_unchanged(
-    dispatch: dict[str, Any], checkpoint: dict[str, Any], args: argparse.Namespace,
+    dispatch: JsonObject, checkpoint: JsonObject, args: argparse.Namespace,
 ) -> None:
     """Reject a continuation whose recorded facts show scope, Definition of Done, risks, or
     dependencies changed since the checkpoint (Issue #140's continuation-authorization contract).
@@ -2918,7 +2920,7 @@ def _check_continuation_facts_unchanged(
         )
 
 
-def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+def resume_dispatch(args: argparse.Namespace) -> JsonObject:
     """Start a new worker session for a checkpointed dispatch, under the same dispatch ID.
 
     The resumed session is put through the exact same liveness contract as a first session: its
@@ -2986,7 +2988,7 @@ def resume_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
+def dispatch_status(args: argparse.Namespace) -> JsonObject:
     """Liveness view the coordinator session polls; a stale entry is a blocker to surface, never a
     reason for the coordinator to change state on its own."""
     repo = _repo(args)
@@ -2997,7 +2999,7 @@ def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
     config = _config(repo)
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
-        entries: list[dict[str, Any]] = []
+        entries: list[JsonObject] = []
         for path in sorted((_records_root(root) / DispatchStatusRecord.directory).glob("dispatch-*.json")):
             status = _read_object(path, "dispatch status")
             if args.dispatch and status.get("dispatch_id") != args.dispatch:
@@ -3039,7 +3041,7 @@ def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
+def publish_dispatch(args: argparse.Namespace) -> JsonObject:
     """Push one QA-accepted candidate through an approved publish-only brief."""
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -3096,7 +3098,7 @@ def publish_dispatch(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _persist_report(
-    ledger: LifecycleLedger, root: Path, batch: dict[str, Any], dispatch: dict[str, Any], report: dict[str, Any],
+    ledger: LifecycleLedger, root: Path, batch: JsonObject, dispatch: JsonObject, report: JsonObject,
 ) -> Path:
     """Persist a role report and advance its batch atomically under the coordinator lock."""
     report_json = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.json"
@@ -3127,20 +3129,20 @@ def _persist_report(
     return report_json
 
 
-def run_qa(args: argparse.Namespace) -> dict[str, Any]:
+def run_qa(args: argparse.Namespace) -> JsonObject:
     """Run the repository-scoped QA lane without coupling it to CLI wiring."""
     return qa_lane.run(args, sys.modules[__name__])
 
 
-def qa_status(args: argparse.Namespace) -> dict[str, Any]:
+def qa_status(args: argparse.Namespace) -> JsonObject:
     return qa_lane.status(args, sys.modules[__name__])
 
 
-def clear_qa_lease(args: argparse.Namespace) -> dict[str, Any]:
+def clear_qa_lease(args: argparse.Namespace) -> JsonObject:
     return qa_lane.clear_stale_lease(args, sys.modules[__name__])
 
 
-def _validate_review(review: object, dispatch: dict[str, Any]) -> None:
+def _validate_review(review: object, dispatch: JsonObject) -> None:
     if not isinstance(review, dict) or set(review) != {"candidate_commit", "scope", "standards", "spec"}:
         raise CoordinatorError("composite review must contain independent standards and spec evidence", remedy="submit composite review evidence with independent standards and spec findings")
     if review["candidate_commit"] != dispatch["candidate_commit"] or review["scope"] != dispatch["review_scope"]:
@@ -3193,7 +3195,7 @@ def _validate_review(review: object, dispatch: dict[str, Any]) -> None:
 
 
 def _validate_report(
-    report: dict[str, Any], dispatch: dict[str, Any], role: dict[str, Any], repo: Path | None = None,
+    report: JsonObject, dispatch: JsonObject, role: JsonObject, repo: Path | None = None,
     base_commit: str | None = None,
 ) -> None:
     _reject_sensitive(report, "completion report")
@@ -3268,7 +3270,7 @@ def _validate_report(
         raise CoordinatorError("only the code-review role may submit composite review evidence", remedy="only the code-review role may submit composite review evidence")
 
 
-def _report_markdown(report: dict[str, Any]) -> str:
+def _report_markdown(report: JsonObject) -> str:
     lines = [f"# Completion report: {report['dispatch_id']}", ""]
     lines.extend(
         [
@@ -3316,7 +3318,7 @@ def _report_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def submit_report(args: argparse.Namespace) -> dict[str, Any]:
+def submit_report(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     try:
         report = _read_object(_agent_authored_file(repo, args.file, "a completion report"), "completion report")
