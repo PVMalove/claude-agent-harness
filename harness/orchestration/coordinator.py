@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
@@ -22,7 +23,7 @@ from dataclasses import asdict, replace as _vo_replace
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Optional, TypeGuard, cast
 
 MODULE_ROOT = Path(__file__).resolve().parent
 
@@ -188,7 +189,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _non_empty(value: object) -> bool:
+def _non_empty(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and bool(value.strip())
 
 
@@ -1332,7 +1333,7 @@ def _human_approval_gate(config: dict[str, Any]) -> str:
     gate = config.get("human_approval_gate", "trusted")
     if gate not in {"trusted", "tty"}:
         raise CoordinatorError("human_approval_gate must be trusted or tty", remedy="set human_approval_gate to 'trusted' or 'tty' in the project orchestration config")
-    return gate
+    return cast(str, gate)
 
 
 def _confirm_on_terminal(approved_by: str) -> None:
@@ -1389,7 +1390,7 @@ def _approval_policy(config: dict[str, Any]) -> str:
     policy = config.get("approval_policy", "manual_all")
     if policy not in {"manual_all", "milestone", "low_risk"}:
         raise CoordinatorError("approval_policy must be manual_all, milestone or low_risk", remedy="set approval_policy to 'manual_all', 'milestone' or 'low_risk' in the project orchestration config")
-    return policy
+    return cast(str, policy)
 
 
 def _dispatch_approval(
@@ -1799,8 +1800,8 @@ def create_batch(args: argparse.Namespace) -> dict[str, Any]:
     repo = _repo(args)
     config = _config(repo)
     ticket = getattr(args, "ticket", None)
-    branch = getattr(args, "branch", None)
-    worktree = getattr(args, "worktree", None)
+    branch = cast(str, getattr(args, "branch", None))  # validated non-empty by _validate_branch below
+    worktree = cast(str, getattr(args, "worktree", None))  # validated non-empty by _validate_worktree below
     zone = getattr(args, "zone", None)
     integration_ref = getattr(args, "integration_ref", None)
     dod = _strings(getattr(args, "definition_of_done", None), "definition_of_done")
@@ -2155,7 +2156,7 @@ def _prior_review_entry(batch: dict[str, Any], dispatch_id: str) -> dict[str, An
         raise CoordinatorError("delta-review-of must reference a code-review dispatch in this batch", remedy="pass --delta-review-of naming a code-review dispatch that belongs to this batch")
     if entry.get("state") != "reported" or entry.get("decision", {}).get("decision") != "retry":
         raise CoordinatorError("delta-review-of must reference a retried code-review dispatch", remedy="pass --delta-review-of naming a code-review dispatch that was actually retried")
-    return entry
+    return cast(dict[str, Any], entry)
 
 
 def _delta_review_eligibility(
@@ -2282,6 +2283,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if role_name == "code-review":
             # The risk assessment decides when review is *mandatory*, never when it is permitted:
             # the fixed pipeline reviews every candidate, high-risk or not.
+            assert risk is not None  # the guard above raised when a code-review dispatch has no risk
             review_scope = list(risk["review_scope"])
             if requested_delta_review_of is not None:
                 prior_entry = _prior_review_entry(batch, requested_delta_review_of)
@@ -2290,7 +2292,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
                     raise CoordinatorError("delta-review-of must reference a dispatch in this batch", remedy="pass --delta-review-of naming a dispatch that belongs to this batch")
                 prior_report = _pending_report(root, batch, prior_entry)
                 delta_review_axis = _delta_review_eligibility(
-                    repo, config, _risk_triggers(repo), prior_dispatch, prior_report, candidate,
+                    repo, config, _risk_triggers(repo), prior_dispatch, prior_report, cast(str, candidate),
                 )
                 delta_review_of = requested_delta_review_of
         elif requested_delta_review_of is not None:
@@ -2298,6 +2300,7 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if role_name == "qa":
             if batch.get("risk_reassessment_required"):
                 raise CoordinatorError("QA is blocked until the candidate is risk-assessed again", remedy="register a new risk assessment for this candidate before dispatching QA")
+            assert risk is not None  # the guard above raised when a qa dispatch has no risk
             if risk["review_required"]:
                 accepted_review = any(
                     item.get("role") == "code-review"
@@ -2586,6 +2589,7 @@ def self_report_dispatch(args: argparse.Namespace) -> dict[str, Any]:
         if not model_matched:
             mismatch.append(f"running {reported!r} but approved brief resolved {expected!r}")
         if not worktree_matched:
+            assert attestation is not None  # a mismatched worktree always sets the attestation
             mismatch.append(str(attestation["error"]))
         raise CoordinatorError(
             "dispatch " + "; ".join(mismatch) + "; the dispatch is blocked and needs a new coordinator decision",
@@ -2797,7 +2801,7 @@ def checkpoint_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     checkpoint = _read_object(_agent_authored_file(repo, args.file, "a checkpoint"), "checkpoint")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
-        dispatch, status = _live_status(root, checkpoint.get("dispatch_id"))
+        dispatch, status = _live_status(root, cast(str, checkpoint.get("dispatch_id")))
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
         config = _config(repo)
@@ -2998,7 +3002,7 @@ def dispatch_status(args: argparse.Namespace) -> dict[str, Any]:
             status = _read_object(path, "dispatch status")
             if args.dispatch and status.get("dispatch_id") != args.dispatch:
                 continue
-            dispatch = _load_dispatch(root, status.get("dispatch_id"))
+            dispatch = _load_dispatch(root, cast(str, status.get("dispatch_id")))
             if args.batch and dispatch.get("batch_id") != args.batch:
                 continue
             batch = _load_batch(root, dispatch["batch_id"])
@@ -3321,7 +3325,7 @@ def submit_report(args: argparse.Namespace) -> dict[str, Any]:
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
-        dispatch = _load_dispatch(root, report.get("dispatch_id"))
+        dispatch = _load_dispatch(root, cast(str, report.get("dispatch_id")))
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
         config = _config(repo)
@@ -3401,7 +3405,7 @@ def main() -> int:
     # corrupted and mistaken for a damaged state record.
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8")
+            cast(io.TextIOWrapper, stream).reconfigure(encoding="utf-8")
         except (AttributeError, OSError):
             pass
     args = parser().parse_args()
