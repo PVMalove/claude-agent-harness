@@ -492,6 +492,10 @@ opt-in, а отправить пользователя на `/fast-implement`.
   `.harness/orchestration/state/` руками нельзя: это и есть аудиторский след.
 - **Неверный brief до запуска отменяется локально.** `dispatch cancel` требует approval и причины,
   оставляет immutable brief в audit trail и возвращает batch в `awaiting-approval`; это не `batch abandon`.
+- **Уже выполненная задача не имитирует implementation.** `batch not-required` требует approval и
+  evidence, терминально фиксирует, что pinned snapshot уже соответствует DoD, и возвращает
+  рекомендацию закрыть issue с `resolution::wontfix`. Это не ослабляет требование реального commit
+  и changed files для обычного write-role completion report.
 - **Последовательность фиксированная.** Длинный путь всегда проходит architect, developer,
   code-review и qa целиком. Risk assessment решает, когда review *обязателен*, но не когда он
   *разрешён*: low-risk кандидат тоже проходит review. Меньше шагов — это `/fast-implement`, а не

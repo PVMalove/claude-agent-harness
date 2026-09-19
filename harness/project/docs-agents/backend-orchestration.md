@@ -401,6 +401,19 @@ dispatch как `abandoned` и записывает решение рядом с
 brief, отчёты и QA-артефакты остаются на месте. Повторно применить её к уже терминальному batch
 нельзя.
 
+Если pinned snapshot уже удовлетворяет всем пунктам DoD, не создавайте фиктивный commit ради
+write-role отчёта и не используйте `abandon`. Зафиксируйте отдельное терминальное решение:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch not-required \
+  --batch <batch-id> --approved-by 'имя утверждающего' --approved-at 2026-09-11T06:00:00Z \
+  --reason 'pinned snapshot already satisfies every definition-of-done item'
+```
+
+Команда оставляет audit evidence, отменяет незакрытые dispatch, переводит batch в `not-required` и
+возвращает рекомендацию закрыть связанный issue с меткой `resolution::wontfix`. Обычный write-role
+report по-прежнему обязан содержать реальный commit и exact changed files.
+
 Если ошибка найдена **до** передачи brief runtime-у, не abandon batch. Отмените только этот
 неотправленный dispatch: immutable brief останется в audit trail, а batch вернётся в
 `awaiting-approval` и сможет получить исправленный dispatch.

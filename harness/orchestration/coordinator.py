@@ -72,7 +72,7 @@ SENSITIVE_KEY = re.compile(
 )
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
 DECISIONS = {"accept", "override-warning", "retry", "block", "fail"}
-TERMINAL_BATCH_STATES = {"completed", "failed", "blocked"}
+TERMINAL_BATCH_STATES = {"completed", "failed", "blocked", "not-required"}
 DISPATCH_PURPOSES = {"work", "publish"}
 ROLE_TRANSPORTS = {"orca", "in-process"}
 DEFAULT_ZONE = "repository"
@@ -2104,6 +2104,65 @@ def abandon_batch(args: argparse.Namespace) -> JsonObject:
         "ticket": batch["ticket"],
         "state": "failed",
         "abandoned_dispatches": open_dispatches,
+    }
+
+
+def mark_batch_not_required(args: argparse.Namespace) -> JsonObject:
+    """Terminally record a batch whose pinned snapshot already satisfies its definition of done.
+
+    This is deliberately distinct from abandonment: no implementation failure occurred. Open
+    dispatches are cancelled because a truthful no-change write report has neither a commit nor a
+    changed-file list, which ordinary write-report validation must continue to reject.
+    """
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    approval = _approval(args)
+    reason = args.reason.strip() if _non_empty(args.reason) else ""
+    if not reason:
+        raise CoordinatorError("marking a batch not-required requires recorded evidence", remedy="pass --reason stating why the pinned snapshot requires no implementation")
+    _reject_sensitive({"reason": reason}, "not-required reason")
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
+        batch = _load_batch(root, args.batch)
+        _validate_batch_integrity(root, batch)
+        if batch.get("state") in TERMINAL_BATCH_STATES:
+            raise CoordinatorError(f"batch is already {batch['state']}", remedy="create a new batch only if a new implementation requirement appears")
+        moment = _now()
+        cancelled_dispatches = []
+        for entry in batch.get("dispatches", []):
+            if _settled(entry):
+                continue
+            entry["state"] = "cancelled"
+            cancelled_dispatches.append(entry["dispatch_id"])
+            status_path = _records_root(root) / DispatchStatusRecord.directory / f"{_safe_id(entry['dispatch_id'], 'dispatch')}.json"
+            if status_path.exists():
+                status = _load_dispatch_status(root, entry["dispatch_id"])
+                status.update({"state": "cancelled", "updated_at": moment})
+                _replace_record(ledger, DispatchStatusRecord.from_dict(status))
+        batch["state"] = "not-required"
+        batch.pop("next_action", None)
+        batch.pop("required_next_role", None)
+        batch["not_required"] = {
+            "approved_by": approval["approved_by"],
+            "approved_at": approval["approved_at"],
+            "recorded_at": moment,
+            "reason": reason,
+            "tracker_resolution": "resolution::wontfix",
+            "cancelled_dispatches": cancelled_dispatches,
+        }
+        batch.setdefault("coordinator_decisions", []).append({
+            "decision": "not-required",
+            "approved_by": approval["approved_by"],
+            "approved_at": approval["approved_at"],
+            "note": reason,
+        })
+        _replace_record(ledger, BatchRecord.from_dict(batch))
+    return {
+        "batch_id": batch["batch_id"],
+        "ticket": batch["ticket"],
+        "state": "not-required",
+        "tracker_resolution": "resolution::wontfix",
+        "cancelled_dispatches": cancelled_dispatches,
     }
 
 

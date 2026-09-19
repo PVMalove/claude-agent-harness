@@ -222,6 +222,35 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         )
         self.assertEqual(on_disk_status["state"], "reported")
 
+    def test_mark_batch_not_required_is_terminal_and_recommends_wontfix(self) -> None:
+        batch = self._create_batch(ticket="#238")
+        self._approve_batch(batch["batch_id"])
+
+        resolved = coordinator.mark_batch_not_required(_ns(
+            repo=str(self.repo), state_dir=str(self.state_dir), batch=batch["batch_id"],
+            approved_by="Malove", approved_at="2026-09-17T00:01:00+00:00",
+            reason="The pinned snapshot already satisfies every definition-of-done item.",
+        ))
+
+        self.assertEqual(resolved["state"], "not-required")
+        self.assertEqual(resolved["tracker_resolution"], "resolution::wontfix")
+        listed = coordinator.list_batches(_ns(repo=str(self.repo), state_dir=str(self.state_dir), ticket="#238", state=None, open=True))
+        self.assertEqual(listed["batches"], [])
+
+    def test_ordinary_write_report_still_rejects_an_empty_diff(self) -> None:
+        report = {
+            "dispatch_id": "dispatch-123", "ticket": "#238", "role": "developer",
+            "outcome": "completed", "output": "no change", "commit_sha": "not applicable",
+            "changed_files": [], "checks_run": [{"command": "true", "result": "pass", "evidence": "passed"}],
+            "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
+        }
+        dispatch = {"dispatch_id": "dispatch-123", "ticket": "#238", "role": "developer", "verification_commands": ["true"], "write_paths": ["**"]}
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._validate_report(report, dispatch, {"mode": "write"})
+
+        self.assertEqual(caught.exception.message, "write-role completion reports require commit_sha and changed_files")
+
     def test_qa_lane_bridge_surface_has_no_path_builders(self) -> None:
         """``qa_lane.py`` constructs its own ``LifecycleLedger`` and Value Objects directly (issue
         #196); the only things it still reaches into ``coordinator.py`` (via the ``ops`` parameter)
@@ -634,6 +663,14 @@ class CoordinatorCliParserTests(unittest.TestCase):
         args = coordinator.parser().parse_args(["dispatch", "status"])
 
         self.assertIs(args.handler, coordinator.dispatch_status)
+
+    def test_batch_not_required_resolves_to_its_handler(self) -> None:
+        args = coordinator.parser().parse_args([
+            "batch", "not-required", "--batch", "batch-123", "--approved-by", "Malove",
+            "--approved-at", "2026-09-17T00:01:00+00:00", "--reason", "already satisfied",
+        ])
+
+        self.assertIs(args.handler, coordinator.mark_batch_not_required)
 
 
 if __name__ == "__main__":

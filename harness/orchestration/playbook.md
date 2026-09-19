@@ -89,6 +89,13 @@ The brief remains immutable evidence, its batch returns to `awaiting-approval`, 
 creates a new approved brief only after the corrected assignment is reviewed. `batch abandon` is for
 a dispatch that cannot report, not for an unsent configuration mistake.
 
+When the pinned snapshot already satisfies every Definition of Done, use `batch not-required` with
+explicit approval and evidence instead of manufacturing a write-role commit. It terminally records
+`not-required`, cancels any open dispatches, and returns the tracker recommendation
+`resolution::wontfix`. This is not a successful implementation and must not weaken ordinary
+write-role report validation: a normal write report still requires a real commit and exact changed
+files.
+
 ## Immutable handoff brief
 
 The coordinator creates the brief before dispatch and stores the exact version sent to the role.
