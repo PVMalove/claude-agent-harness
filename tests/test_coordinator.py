@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 from harness.orchestration import coordinator, coordinator_cli
-from harness.orchestration.ledger import LifecycleLedger
+from harness.orchestration.ledger import BatchRecord, LifecycleLedger
 
 ORCHESTRATION_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
 
@@ -435,6 +435,76 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             list(inspect.signature(coordinator._persist_report).parameters),
             ["ledger", "root", "batch", "dispatch", "report"],
         )
+
+    def _ledger(self) -> LifecycleLedger:
+        return LifecycleLedger(coordinator._state_root(_ns(repo=str(self.repo), state_dir=str(self.state_dir)), self.repo))
+
+    def test_write_record_maps_a_ledger_refusal_to_a_coordinator_error(self) -> None:
+        batch = self._create_batch()
+        ledger = self._ledger()
+        record = BatchRecord.from_dict(batch)
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._write_record(ledger, record)
+
+        self.assertEqual(caught.exception.message, f"refusing to overwrite immutable record: {batch['batch_id']}.json")
+        self.assertIn("use a different record id", caught.exception.remedy)
+
+    def test_replace_record_maps_a_ledger_refusal_to_a_coordinator_error(self) -> None:
+        self._create_batch()
+        ledger = self._ledger()
+        missing = BatchRecord(batch_id="batch-0000", state="planned", dispatches=[], coordinator_approval=None)
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._replace_record(ledger, missing)
+
+        self.assertEqual(caught.exception.message, "ledger transition targets a missing record: batches/batch-0000.json")
+        self.assertIn("write the record at", caught.exception.remedy)
+
+
+class CoordinatorGuardHelperTests(unittest.TestCase):
+    """Direct-call pins for the config/brief guards whose parameters accept arbitrary JSON."""
+
+    def test_reject_sensitive_accepts_plain_nested_json(self) -> None:
+        coordinator._reject_sensitive({"a": [{"b": 1}, "text", None]}, "config")
+
+    def test_reject_sensitive_rejects_a_non_string_key(self) -> None:
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._reject_sensitive({1: "x"}, "config")
+
+        self.assertEqual(caught.exception.message, "config contains a non-string key")
+        self.assertEqual(caught.exception.remedy, "use only string keys in config")
+
+    def test_reject_sensitive_rejects_a_secret_shaped_key(self) -> None:
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._reject_sensitive({"api_key": "x"}, "config")
+
+        self.assertEqual(caught.exception.message, "config contains secret-shaped field 'api_key'")
+        self.assertIn("remove the secret-shaped field 'api_key' from config", caught.exception.remedy)
+
+    def test_reject_sensitive_descends_into_lists_with_an_indexed_location(self) -> None:
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._reject_sensitive({"items": [{"ok": 1}, {"password": "x"}]}, "config")
+
+        self.assertEqual(caught.exception.message, "config.items[1] contains secret-shaped field 'password'")
+
+    def test_reject_non_english_accepts_english_scalars_and_sequences(self) -> None:
+        coordinator._reject_non_english("plain text", "field")
+        coordinator._reject_non_english(["plain", "text"], "field")
+        coordinator._reject_non_english(("plain",), "field")
+        coordinator._reject_non_english(7, "field")
+
+    def test_reject_non_english_rejects_cyrillic_in_a_string_or_a_sequence(self) -> None:
+        for value in ("привет", ["ok", "привет"], ("привет",)):
+            with self.subTest(value=value):
+                with self.assertRaises(coordinator.CoordinatorError) as caught:
+                    coordinator._reject_non_english(value, "purpose")
+
+                self.assertIn("purpose is handed to a role as agent-to-agent protocol text", caught.exception.message)
+                self.assertEqual(
+                    caught.exception.remedy,
+                    "rewrite purpose in English, keeping commands, paths, IDs and quoted evidence verbatim",
+                )
 
 
 class CoordinatorCliParserTests(unittest.TestCase):
