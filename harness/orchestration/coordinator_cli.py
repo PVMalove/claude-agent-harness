@@ -85,6 +85,15 @@ def build_parser(handlers: types.ModuleType, defaults: types.ModuleType) -> argp
     batch_abandon.add_argument("--approved-at", required=True)
     batch_abandon.add_argument("--reason", required=True, help="why this batch can no longer be decided")
     batch_abandon.set_defaults(handler=handlers.abandon_batch)
+    batch_not_required = batch_commands.add_parser(
+        "not-required", help="record that the pinned snapshot needs no implementation",
+    )
+    _common(batch_not_required)
+    batch_not_required.add_argument("--batch", required=True)
+    batch_not_required.add_argument("--approved-by", required=True)
+    batch_not_required.add_argument("--approved-at", required=True)
+    batch_not_required.add_argument("--reason", required=True, help="evidence that no implementation is required")
+    batch_not_required.set_defaults(handler=handlers.mark_batch_not_required)
     decide = batch_commands.add_parser("decide")
     _common(decide)
     decide.add_argument("--batch", required=True)

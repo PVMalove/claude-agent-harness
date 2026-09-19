@@ -615,12 +615,13 @@ class LifecycleLedger:
         previous = before.get("state")
         target = after.get("state")
         allowed = {
-            "planned": {"planned", "awaiting-approval", "blocked", "failed"},
-            "awaiting-approval": {"awaiting-approval", "active", "completed", "blocked", "failed"},
-            "active": {"active", "awaiting-approval", "blocked", "failed"},
+            "planned": {"planned", "awaiting-approval", "blocked", "failed", "not-required"},
+            "awaiting-approval": {"awaiting-approval", "active", "completed", "blocked", "failed", "not-required"},
+            "active": {"active", "awaiting-approval", "blocked", "failed", "not-required"},
             "blocked": {"blocked", "failed"},
             "failed": {"failed"},
             "completed": {"completed", "failed"},
+            "not-required": {"not-required"},
         }
         if previous not in allowed or target not in allowed[previous]:
             raise LedgerError(
