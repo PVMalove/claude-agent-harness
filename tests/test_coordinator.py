@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 from harness.orchestration import coordinator, coordinator_cli
-from harness.orchestration.ledger import LifecycleLedger
+from harness.orchestration.ledger import BatchRecord, LifecycleLedger
 
 ORCHESTRATION_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
 
@@ -435,6 +435,186 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             list(inspect.signature(coordinator._persist_report).parameters),
             ["ledger", "root", "batch", "dispatch", "report"],
         )
+
+    def _ledger(self) -> LifecycleLedger:
+        return LifecycleLedger(coordinator._state_root(_ns(repo=str(self.repo), state_dir=str(self.state_dir)), self.repo))
+
+    def test_write_record_maps_a_ledger_refusal_to_a_coordinator_error(self) -> None:
+        batch = self._create_batch()
+        ledger = self._ledger()
+        record = BatchRecord.from_dict(batch)
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._write_record(ledger, record)
+
+        self.assertEqual(caught.exception.message, f"refusing to overwrite immutable record: {batch['batch_id']}.json")
+        self.assertIn("use a different record id", caught.exception.remedy)
+
+    def test_replace_record_maps_a_ledger_refusal_to_a_coordinator_error(self) -> None:
+        self._create_batch()
+        ledger = self._ledger()
+        missing = BatchRecord(batch_id="batch-0000", state="planned", dispatches=[], coordinator_approval=None)
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._replace_record(ledger, missing)
+
+        self.assertEqual(caught.exception.message, "ledger transition targets a missing record: batches/batch-0000.json")
+        self.assertIn("write the record at", caught.exception.remedy)
+
+    def _create_batch_args(self, **overrides: object) -> argparse.Namespace:
+        values: dict[str, object] = dict(
+            repo=str(self.repo), state_dir=str(self.state_dir),
+            ticket="#195", branch="feature/issue-195-thing", worktree=str(self.tmp / "worktree"), zone="repository",
+            integration_ref="master", definition_of_done=["do the thing"], prohibited_change=["secrets"],
+            required_gate=None, dependency=None,
+            expected_file=["services/x.py"], expected_service=["core"], expected_changed_lines=10,
+            expected_context_tokens=None,
+        )
+        values.update(overrides)
+        return _ns(**values)
+
+    def test_create_batch_rejects_a_missing_branch_or_worktree(self) -> None:
+        with self.assertRaises(coordinator.CoordinatorError) as no_branch:
+            coordinator.create_batch(self._create_batch_args(branch=None))
+        self.assertEqual(no_branch.exception.message, "branch must be a non-empty string")
+        self.assertEqual(no_branch.exception.remedy, "pass a non-empty branch name")
+
+        with self.assertRaises(coordinator.CoordinatorError) as no_worktree:
+            coordinator.create_batch(self._create_batch_args(worktree=None))
+        self.assertEqual(no_worktree.exception.message, "worktree must be a non-empty string")
+        self.assertEqual(no_worktree.exception.remedy, "pass a non-empty worktree path")
+
+    def test_create_batch_rejects_a_missing_ticket_or_zone(self) -> None:
+        for overrides in ({"ticket": None}, {"zone": ""}):
+            with self.subTest(overrides=overrides):
+                with self.assertRaises(coordinator.CoordinatorError) as caught:
+                    coordinator.create_batch(self._create_batch_args(**overrides))
+                self.assertEqual(caught.exception.message, "ticket and zone must be non-empty strings")
+                self.assertEqual(caught.exception.remedy, "pass a non-empty --ticket and --zone")
+
+    def test_prior_review_entry_returns_a_retried_code_review_entry(self) -> None:
+        entry = {"dispatch_id": "dispatch-1", "role": "code-review", "state": "reported", "decision": {"decision": "retry"}}
+        batch = {"dispatches": [{"dispatch_id": "dispatch-0", "role": "developer"}, entry]}
+
+        self.assertIs(coordinator._prior_review_entry(batch, "dispatch-1"), entry)
+
+    def test_prior_review_entry_rejects_a_missing_or_non_review_dispatch(self) -> None:
+        batch = {"dispatches": [{"dispatch_id": "dispatch-0", "role": "developer"}]}
+        for dispatch_id in ("dispatch-9", "dispatch-0"):
+            with self.subTest(dispatch_id=dispatch_id):
+                with self.assertRaises(coordinator.CoordinatorError) as caught:
+                    coordinator._prior_review_entry(batch, dispatch_id)
+                self.assertEqual(caught.exception.message, "delta-review-of must reference a code-review dispatch in this batch")
+                self.assertEqual(
+                    caught.exception.remedy,
+                    "pass --delta-review-of naming a code-review dispatch that belongs to this batch",
+                )
+
+    def test_prior_review_entry_rejects_a_review_that_was_not_retried(self) -> None:
+        entry = {"dispatch_id": "dispatch-1", "role": "code-review", "state": "reported", "decision": {"decision": "accept"}}
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._prior_review_entry({"dispatches": [entry]}, "dispatch-1")
+
+        self.assertEqual(caught.exception.message, "delta-review-of must reference a retried code-review dispatch")
+        self.assertEqual(
+            caught.exception.remedy, "pass --delta-review-of naming a code-review dispatch that was actually retried",
+        )
+
+    def _self_report(self, dispatch_id: str, **overrides: object) -> dict:
+        values: dict[str, object] = dict(
+            repo=str(self.repo), state_dir=str(self.state_dir), dispatch=dispatch_id, model="sonnet", worktree=None,
+        )
+        values.update(overrides)
+        return coordinator.self_report_dispatch(_ns(**values))
+
+    def _approved_architect_dispatch(self) -> dict:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+        status_path = self._records_root() / "dispatch-status" / f"{dispatch['dispatch_id']}.json"
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        status["state"] = "dispatched"
+        status_path.write_text(json.dumps(status), encoding="utf-8")
+        return coordinator._read_object(
+            self._records_root() / "dispatches" / f"{dispatch['dispatch_id']}.json", "dispatch",
+        )
+
+    def test_self_report_dispatch_blocks_a_model_mismatch(self) -> None:
+        dispatch = self._approved_architect_dispatch()
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._self_report(dispatch["dispatch_id"], model="not-the-approved-model")
+
+        self.assertEqual(
+            caught.exception.message,
+            f"dispatch running 'not-the-approved-model' but approved brief resolved {dispatch['resolved_model']!r}; "
+            "the dispatch is blocked and needs a new coordinator decision",
+        )
+        self.assertEqual(
+            caught.exception.remedy,
+            "resolve the listed mismatch(es) and get a fresh coordinator decision before continuing this dispatch",
+        )
+
+    def test_self_report_dispatch_blocks_when_a_required_worktree_attestation_is_missing(self) -> None:
+        dispatch = self._approved_architect_dispatch()
+        path = self._records_root() / "dispatches" / f"{dispatch['dispatch_id']}.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["worker_attestation_required"] = True
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._self_report(dispatch["dispatch_id"], model=dispatch["resolved_model"])
+
+        self.assertEqual(
+            caught.exception.message,
+            "dispatch runtime worktree attestation is required; the dispatch is blocked and needs a new coordinator decision",
+        )
+
+
+class CoordinatorGuardHelperTests(unittest.TestCase):
+    """Direct-call pins for the config/brief guards whose parameters accept arbitrary JSON."""
+
+    def test_reject_sensitive_accepts_plain_nested_json(self) -> None:
+        coordinator._reject_sensitive({"a": [{"b": 1}, "text", None]}, "config")
+
+    def test_reject_sensitive_rejects_a_non_string_key(self) -> None:
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._reject_sensitive({1: "x"}, "config")
+
+        self.assertEqual(caught.exception.message, "config contains a non-string key")
+        self.assertEqual(caught.exception.remedy, "use only string keys in config")
+
+    def test_reject_sensitive_rejects_a_secret_shaped_key(self) -> None:
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._reject_sensitive({"api_key": "x"}, "config")
+
+        self.assertEqual(caught.exception.message, "config contains secret-shaped field 'api_key'")
+        self.assertIn("remove the secret-shaped field 'api_key' from config", caught.exception.remedy)
+
+    def test_reject_sensitive_descends_into_lists_with_an_indexed_location(self) -> None:
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._reject_sensitive({"items": [{"ok": 1}, {"password": "x"}]}, "config")
+
+        self.assertEqual(caught.exception.message, "config.items[1] contains secret-shaped field 'password'")
+
+    def test_reject_non_english_accepts_english_scalars_and_sequences(self) -> None:
+        coordinator._reject_non_english("plain text", "field")
+        coordinator._reject_non_english(["plain", "text"], "field")
+        coordinator._reject_non_english(("plain",), "field")
+        coordinator._reject_non_english(7, "field")
+
+    def test_reject_non_english_rejects_cyrillic_in_a_string_or_a_sequence(self) -> None:
+        for value in ("привет", ["ok", "привет"], ("привет",)):
+            with self.subTest(value=value):
+                with self.assertRaises(coordinator.CoordinatorError) as caught:
+                    coordinator._reject_non_english(value, "purpose")
+
+                self.assertIn("purpose is handed to a role as agent-to-agent protocol text", caught.exception.message)
+                self.assertEqual(
+                    caught.exception.remedy,
+                    "rewrite purpose in English, keeping commands, paths, IDs and quoted evidence verbatim",
+                )
 
 
 class CoordinatorCliParserTests(unittest.TestCase):
