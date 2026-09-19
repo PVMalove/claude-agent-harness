@@ -19,7 +19,7 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-MIN_PYTHON = (3, 9)  # same floor as bin/install-global and scripts/test-clean-room
+MIN_PYTHON = (3, 12)  # same floor as bin/install-global and scripts/test-clean-room
 if sys.version_info < MIN_PYTHON:
     sys.stderr.write(
         "[ERROR] harness requires Python %s+ (found %s).\n"
