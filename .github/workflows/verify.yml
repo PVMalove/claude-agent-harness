@@ -15,6 +15,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dev dependencies
+        run: pip install .[dev]
       - name: Make script executable
         run: chmod +x scripts/verify
       - name: Verify harness and clean-room install
@@ -34,6 +39,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.12"
+      - name: Install dev dependencies
+        run: pip install .[dev]
       - name: Verify harness and clean-room install
         run: python scripts/verify
