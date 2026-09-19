@@ -30,8 +30,10 @@ if sys.version_info < MIN_PYTHON:
 
 PACKAGE = Path(__file__).resolve().parent.parent
 ROOT = PACKAGE.parent
-sys.path.insert(0, str(PACKAGE / "orchestration"))
-from contract import health_problems
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from harness.errors import HarnessError, print_and_exit
+from harness.orchestration.contract import health_problems
 
 CAPABILITIES_FILE = PACKAGE / "CAPABILITIES.json"
 VERSION_FILE = PACKAGE / "VERSION"
@@ -243,7 +245,7 @@ def _resolve_skill_source(entry: str) -> Path:
 
 def _resolve_resource_source(entry: str) -> Path:
     source = PACKAGE / entry
-    if not source.is_dir():
+    if not source.is_dir() and not source.is_file():
         fail(f"missing capability resource: harness/{entry}")
     return source
 
@@ -356,6 +358,11 @@ def package_files(names: list[str]) -> dict[str, bytes]:
             target = Path(".harness/skills") / source.name / relative
             result[target.as_posix()] = path.read_bytes()
     for source in selected_resources(names):
+        if source.is_file():
+            if _packageable(source):
+                target = Path(".harness") / source.relative_to(PACKAGE)
+                result[target.as_posix()] = source.read_bytes()
+            continue
         for path in sorted(source.rglob("*")):
             if not _packageable(path):
                 continue
@@ -1354,7 +1361,10 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = parser().parse_args()
-    return args.func(args)
+    try:
+        return args.func(args)
+    except HarnessError as exc:
+        return print_and_exit(exc)
 
 
 if __name__ == "__main__":

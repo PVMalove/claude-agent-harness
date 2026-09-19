@@ -17,8 +17,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from gate_runner import CleanRoomPolicy, GateRunnerError, run_gate
-from ledger import BatchRecord, DispatchStatusRecord, LedgerError, LifecycleLedger
+from ..gate_runner.gate_runner import CleanRoomPolicy, GateRunnerError, run_gate
+from .ledger import BatchRecord, DispatchStatusRecord, LedgerError, LifecycleLedger
 
 
 def _state_root(args: Any, repo: Path, ops: Any) -> Path:

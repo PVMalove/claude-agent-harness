@@ -7,20 +7,14 @@ from __future__ import annotations
 
 import json
 import shutil
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+from harness.orchestration.ledger import LifecycleLedger
+from harness.reporting import delivery_stats
 
 ORCHESTRATION_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
-REPORTING_ROOT = Path(__file__).resolve().parents[1] / "harness" / "reporting"
-sys.path.insert(0, str(ORCHESTRATION_ROOT))
-sys.path.insert(0, str(REPORTING_ROOT))
-
-from ledger import LifecycleLedger  # noqa: E402
-
-import delivery_stats  # noqa: E402
 
 
 def _install_ledger_source(repo: Path) -> None:

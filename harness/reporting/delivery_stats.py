@@ -30,6 +30,25 @@ if sys.version_info < MIN_PYTHON:
     )
     raise SystemExit(1)
 
+# `harness/bin/harness`'s package_files() copies this file verbatim into target projects as
+# `.harness/reporting/delivery_stats.py` -- a different directory name than the source tree's
+# `harness/`. Alias `harness` to whichever of the two this file actually lives under so
+# `from harness...` resolves the same way in both places. See docs/adr/0018.
+_HARNESS_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = _HARNESS_ROOT.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+if _HARNESS_ROOT.name != "harness":
+    _spec = importlib.util.spec_from_file_location(
+        "harness", _HARNESS_ROOT / "__init__.py", submodule_search_locations=[str(_HARNESS_ROOT)]
+    )
+    assert _spec is not None and _spec.loader is not None
+    _pkg = importlib.util.module_from_spec(_spec)
+    sys.modules["harness"] = _pkg
+    _spec.loader.exec_module(_pkg)
+
+from harness.errors import HarnessError, print_and_exit
+
 MISSING = "нет данных"
 BASELINE_SCHEMA_VERSION = 1
 CLAUDE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
@@ -43,7 +62,7 @@ ORCHESTRATION_STATE_REL = Path(".harness/orchestration/state")
 CONTINUATION_DECISIONS = {"continue", "continue-automatic"}
 
 
-class StatsError(Exception):
+class StatsError(HarnessError):
     """A request that cannot be answered from local evidence."""
 
 
@@ -60,7 +79,10 @@ def _run(command: list[str], cwd: Optional[Path] = None) -> tuple[int, str, str]
 def _git(repo: Path, *arguments: str) -> str:
     code, out, err = _run(["git", "-C", str(repo), *arguments])
     if code != 0:
-        raise StatsError(f"git {' '.join(arguments)} failed: {err or out or 'unknown error'}")
+        raise StatsError(
+            f"git {' '.join(arguments)} failed: {err or out or 'unknown error'}",
+            remedy=f"inspect the git error above and fix the repository state before retrying 'git {' '.join(arguments)}'",
+        )
     return out
 
 
@@ -130,20 +152,28 @@ def _project_config(repo: Path) -> dict:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except ValueError as exc:
-        raise StatsError(".harness/project.json is not valid JSON") from exc
+        raise StatsError(".harness/project.json is not valid JSON", remedy="fix the JSON syntax in .harness/project.json") from exc
     return value if isinstance(value, dict) else {}
 
 
 def _gh(repo: Path, *arguments: str) -> Any:
     code, out, err = _run(["gh", *arguments], cwd=repo)
     if code == 127:
-        raise StatsError("the gh CLI is required to resolve an epic and is not available")
+        raise StatsError(
+            "the gh CLI is required to resolve an epic and is not available",
+            remedy="install the GitHub CLI (gh) and ensure it is on PATH, or pass --tickets to run offline",
+        )
     if code != 0:
-        raise StatsError(f"gh {' '.join(arguments)} failed: {err or out or 'unknown error'}")
+        raise StatsError(
+            f"gh {' '.join(arguments)} failed: {err or out or 'unknown error'}",
+            remedy=f"inspect the gh error above and fix authentication/permissions before retrying 'gh {' '.join(arguments)}'",
+        )
     try:
         return json.loads(out) if out else None
     except ValueError as exc:
-        raise StatsError("gh returned output that is not valid JSON") from exc
+        raise StatsError(
+            "gh returned output that is not valid JSON", remedy=f"retry 'gh {' '.join(arguments)}'; if it keeps failing, check the gh CLI version"
+        ) from exc
 
 
 ISSUE_BRANCH = re.compile(r"^[a-z]+/issue-(\d+)-")
@@ -197,7 +227,9 @@ def offline_scope(epic: int, tickets: str) -> dict:
     numbers = []
     for chunk in tickets.replace(",", " ").split():
         if not chunk.isdigit():
-            raise StatsError(f"--tickets expects issue numbers, got {chunk!r}")
+            raise StatsError(
+                f"--tickets expects issue numbers, got {chunk!r}", remedy="pass --tickets as a comma/space-separated list of issue numbers only"
+            )
         numbers.append(int(chunk))
     if epic not in numbers:
         numbers.insert(0, epic)
@@ -716,7 +748,7 @@ def _load_ledger_class(repo: Path) -> Any:
     ships in the always-installed base suite): the repository this delivery_stats.py copy is
     itself deployed in may never have installed it, while --repo (the project being analyzed) can
     be a different, unrelated project that has -- so ledger.py cannot be imported as a sibling of
-    this file (there is no __init__.py anywhere under harness/ to make it a package import either).
+    this file (--repo is a separate checkout, outside this harness installation's own package tree).
     Loaded by file path under a private name and never registered in sys.modules, so this never
     collides with, or is shadowed by, an already-imported "ledger" module belonging to a different
     repository's copy within the same process. Returns None when that module is not present or
@@ -935,9 +967,11 @@ def load_rates(path: Optional[Path]) -> dict:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except ValueError as exc:
-        raise StatsError(f"rate card is not valid JSON: {path}") from exc
+        raise StatsError(f"rate card is not valid JSON: {path}", remedy=f"fix the JSON syntax in {path}") from exc
     if not isinstance(value, dict) or not isinstance(value.get("models"), dict):
-        raise StatsError("rate card must be an object with a models object")
+        raise StatsError(
+            "rate card must be an object with a models object", remedy=f"set {path} to a JSON object with a top-level 'models' object"
+        )
     if not any(_is_priced(card) for card in value["models"].values()):
         # An untouched template is not a rate card: every price is 0.0. Reporting its total as a
         # real 0.00 would be the tool asserting a number nobody gave it.
@@ -1111,22 +1145,32 @@ def load_baseline(path: Path) -> dict:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise StatsError(f"не прочитать baseline: {path}: {exc}") from exc
+        raise StatsError(f"не прочитать baseline: {path}: {exc}", remedy=f"fix the file-system error above for {path} and retry") from exc
     except ValueError as exc:
-        raise StatsError(f"baseline не является JSON: {path}") from exc
+        raise StatsError(f"baseline не является JSON: {path}", remedy=f"fix the JSON syntax in {path}") from exc
     if not isinstance(value, dict) or value.get("schema_version") != BASELINE_SCHEMA_VERSION:
-        raise StatsError(f"baseline имеет неподдерживаемый формат: {path}")
+        raise StatsError(
+            f"baseline имеет неподдерживаемый формат: {path}",
+            remedy=f"regenerate {path} with --save-baseline so it matches schema_version={BASELINE_SCHEMA_VERSION}",
+        )
     if not isinstance(value.get("providers"), dict) or not isinstance(value.get("epic"), dict):
-        raise StatsError(f"baseline не содержит providers и epic: {path}")
+        raise StatsError(
+            f"baseline не содержит providers и epic: {path}", remedy=f"regenerate {path} with --save-baseline so it has providers and epic"
+        )
     for provider in ("claude", "codex"):
         telemetry = value["providers"].get(provider)
         if not isinstance(telemetry, dict):
-            raise StatsError(f"baseline не содержит telemetry {provider}: {path}")
+            raise StatsError(
+                f"baseline не содержит telemetry {provider}: {path}", remedy=f"regenerate {path} with --save-baseline so it has {provider} telemetry"
+            )
         if telemetry.get("status") == "ok" and any(
             not isinstance(telemetry.get(field), int) or isinstance(telemetry.get(field), bool)
             for field in ("input_tokens", "output_tokens", "total_tokens")
         ):
-            raise StatsError(f"baseline содержит неполную telemetry {provider}: {path}")
+            raise StatsError(
+                f"baseline содержит неполную telemetry {provider}: {path}",
+                remedy=f"regenerate {path} with --save-baseline so {provider}'s token fields are complete integers",
+            )
     return value
 
 
@@ -1135,7 +1179,7 @@ def save_baseline(snapshot: dict, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
-        raise StatsError(f"не сохранить baseline: {path}: {exc}") from exc
+        raise StatsError(f"не сохранить baseline: {path}: {exc}", remedy=f"fix the file-system error above for {path} and retry") from exc
 
 
 def _cache_delta_field(baseline: dict, current: dict, field: str) -> Any:
@@ -1181,7 +1225,7 @@ def compare_baseline(baseline: dict, current: dict) -> dict:
 def build_report(args: argparse.Namespace) -> dict:
     repo = Path(args.repo).resolve()
     if not (repo / ".git").exists():
-        raise StatsError(f"not a git repository: {repo}")
+        raise StatsError(f"not a git repository: {repo}", remedy="pass --repo pointing at a real Git checkout")
     config = _project_config(repo)
     base = args.base or config.get("base_branch") or "main"
 
@@ -1209,7 +1253,8 @@ def build_report(args: argparse.Namespace) -> dict:
     volume = git_volume(repo, prs, local | set(claude.get("branches") or []), base)
     if not prs and volume["totals"]["insertions"] == 0 and claude.get("status") != "ok" and codex.get("status") != "ok":
         raise StatsError(
-            f"epic #{args.epic}: no pull request, branch or session recorded for it or its sub-issues"
+            f"epic #{args.epic}: no pull request, branch or session recorded for it or its sub-issues",
+            remedy=f"verify epic #{args.epic}'s sub-issue numbers and that its PRs/branches/session logs exist locally, or pass --tickets explicitly",
         )
     tickets = scope["tickets"]
     for ticket in tickets:
@@ -1439,14 +1484,13 @@ def main() -> int:
         if args.save_baseline:
             save_baseline(current_baseline, Path(args.save_baseline))
         if args.html:
-            from render_html import write_dashboard  # local module, shipped beside this CLI
+            from harness.reporting.render_html import write_dashboard
 
             destination = Path(args.html)
             write_dashboard(report, destination)
             report["html"] = str(destination)
-    except StatsError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 2
+    except HarnessError as exc:
+        return print_and_exit(exc)
 
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
@@ -1458,5 +1502,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
     raise SystemExit(main())

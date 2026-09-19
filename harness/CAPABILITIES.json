@@ -64,7 +64,9 @@
     ],
     "resources": [
       "reporting",
-      "gate_runner"
+      "gate_runner",
+      "errors.py",
+      "__init__.py"
     ]
   },
   "backend-orchestration": {
