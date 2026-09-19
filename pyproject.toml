@@ -20,7 +20,6 @@ files = ["harness"]
 
 [[tool.mypy.overrides]]
 module = [
-    "harness.orchestration.coordinator",
     "harness.orchestration.ledger",
     "harness.orchestration.qa_lane",
     "harness.orchestration.orca_adapter",
