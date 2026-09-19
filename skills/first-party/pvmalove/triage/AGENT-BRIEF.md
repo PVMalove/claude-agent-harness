@@ -1,6 +1,6 @@
 # Writing Agent Briefs
 
-An agent brief is a structured comment posted on a GitHub issue or PR when it moves to `workflow::ready` + `afk`. It is the authoritative specification that an AFK agent will work from. The original body and discussion are context — the agent brief is the contract.
+An agent brief is a structured comment posted on a GitHub issue or PR when it moves to `status::ready` + `afk`. It is the authoritative specification that an AFK agent will work from. The original body and discussion are context — the agent brief is the contract.
 
 The brief states **what the agent should do**, which stretches to both surfaces: for an issue, that's building the change from nothing; for a PR, it's what's left to do *to the existing diff* — finish it, close gaps, address review points. Same principles either way; the PR example below shows the difference.
 
@@ -8,7 +8,7 @@ The brief states **what the agent should do**, which stretches to both surfaces:
 
 ### Durability over precision
 
-The issue may sit in `workflow::ready` for days or weeks. The codebase will change in the meantime. Write the brief so it stays useful even as files are renamed, moved, or refactored.
+The issue may sit in `status::ready` for days or weeks. The codebase will change in the meantime. Write the brief so it stays useful even as files are renamed, moved, or refactored.
 
 - **Do** describe interfaces, types, and behavioral contracts
 - **Do** name specific types, function signatures, or config shapes that the agent should look for or modify
@@ -29,7 +29,7 @@ Describe **what** the system should do, not **how** to implement it. The agent w
 
 The agent needs to know when it's done. Every agent brief must have concrete, testable acceptance criteria. Each criterion should be independently verifiable.
 
-- **Good:** "Running `gh issue list --label workflow::ready` returns issues that have completed triage classification"
+- **Good:** "Running `gh issue list --label status::ready` returns issues that have completed triage classification"
 - **Bad:** "Triage should work correctly"
 
 ### Explicit scope boundaries
@@ -41,7 +41,7 @@ State what is out of scope. This prevents the agent from gold-plating or making 
 ```markdown
 ## Agent Brief
 
-**Category:** bug / enhancement
+**Type:** type::bug / type::feature / type::refactoring / type::chore / type::security / type::performance / type::hotfix
 **Summary:** one-line description of what needs to happen
 
 **Current behavior:**
@@ -74,7 +74,7 @@ Be specific about edge cases and error conditions.
 ```markdown
 ## Agent Brief
 
-**Category:** bug
+**Type:** type::bug
 **Summary:** Skill description truncation drops mid-word, producing broken output
 
 **Current behavior:**
@@ -109,11 +109,11 @@ and append "..." to indicate truncation.
 ```markdown
 ## Agent Brief
 
-**Category:** enhancement
+**Type:** type::feature
 **Summary:** Add `.out-of-scope/` directory support for tracking rejected feature requests
 
 **Current behavior:**
-When a feature request is rejected, the issue is closed with an `out-of-scope`
+When a feature request is rejected, the issue is closed with a `resolution::wontfix`
 label and a comment. There is no persistent record of the decision or reasoning.
 Future similar requests require the maintainer to recall or search for the
 prior discussion.
@@ -132,7 +132,7 @@ checked for matches.
   and match incoming issues against them by concept similarity
 
 **Acceptance criteria:**
-- [ ] Closing a feature as `out-of-scope` creates/updates a file in `.out-of-scope/`
+- [ ] Closing a feature as `resolution::wontfix` creates/updates a file in `.out-of-scope/`
 - [ ] The file includes the decision, reasoning, and link to the closed issue
 - [ ] If a matching `.out-of-scope/` file already exists, the new issue is
       appended to its "Prior requests" list rather than creating a duplicate
@@ -142,7 +142,7 @@ checked for matches.
 **Out of scope:**
 - Automated matching (human confirms the match)
 - Reopening previously rejected features
-- Bug reports (only enhancement rejections go to `.out-of-scope/`)
+- Bug reports (only feature rejections go to `.out-of-scope/`)
 ```
 
 ### Good agent brief (PR)
@@ -152,7 +152,7 @@ For a PR, "Current behavior" describes the state of the diff, and the brief asks
 ```markdown
 ## Agent Brief
 
-**Category:** enhancement
+**Type:** type::feature
 **Summary:** Finish the contributor's `--json` output flag for `triage list`
 
 **Current behavior:**
@@ -199,7 +199,7 @@ The function around line 150 has the issue.
 ```
 
 This is bad because:
-- No category
+- No type
 - Vague description ("the triage thing is broken")
 - References file paths and line numbers that will go stale
 - No acceptance criteria

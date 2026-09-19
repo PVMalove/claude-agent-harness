@@ -43,12 +43,12 @@ You must execute this skill in two distinct phases. Do NOT publish anything to t
     - **Integration branch:** Read the parent epic's `## Integration Branch` section before writing
       any child ticket. Copy its exact branch name into every child ticket; if the epic has no
       integration branch, stop and report the missing prerequisite instead of inferring one.
-    - **Local files:** Write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md` (01, 02...). Use `<local-ticket-template>`. Include the finished per-ticket `Relevant Files (Discovery Context)` list when Discovery Context was present. Set `**Workflow:**` to `workflow::blocked` if it has blockers, otherwise `workflow::ready`. Set `**Execution:**` to `hitl` or `afk` per your best judgment of the ticket (see `docs/agents/triage-labels.md`). For `afk` tickets, set `**Story Points:**` to the final score from step 3 and `**Pipeline:**` to the label approved on the STOP-AND-ASK gate — the derived label, or the user's override if they changed it there; the score itself never changes. Omit both lines entirely for `hitl` tickets. Add `**Task report:** required` unless told to skip it (omit the line entirely if not required). `/implement` finds the next ticket by reading each file's `**Workflow:**` field — a purely linear chain resolves top to bottom.
+    - **Local files:** Write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md` (01, 02...). Use `<local-ticket-template>`. Include the finished per-ticket `Relevant Files (Discovery Context)` list when Discovery Context was present. Set `**Workflow:**` to `status::blocked` if it has blockers, otherwise `status::ready`. Set `**Execution:**` to `hitl` or `afk` per your best judgment of the ticket (see `docs/agents/triage-labels.md`). For `afk` tickets, set `**Story Points:**` to the final score from step 3 and `**Pipeline:**` to the label approved on the STOP-AND-ASK gate — the derived label, or the user's override if they changed it there; the score itself never changes. Omit both lines entirely for `hitl` tickets. Add `**Task report:** required` unless told to skip it (omit the line entirely if not required). `/implement` finds the next ticket by reading each file's `**Workflow:**` field — a purely linear chain resolves top to bottom.
     - **GitHub / Real Tracker:**
         - Publish one issue per ticket in dependency order using `gh issue create --body-file <path>`. **CRITICAL:** Do NOT use inline `--body` heredoc, as it breaks bash quoting.
         - Include the finished per-ticket `## Relevant Files (Discovery Context)` section when Discovery Context was present. Preserve the exact paths and their reasons; it is the implementation ticket's curated starting context.
         - Include the finished `## Story Points` section (the approved score) for `afk` tickets; omit the section entirely for `hitl` tickets.
-        - Apply labels (see `docs/agents/triage-labels.md` for the full taxonomy): `bug`/`enhancement`, `workflow::ready` (or `workflow::blocked` if gated by another ticket in this batch), `hitl`/`afk`, `pipeline::fast` or `pipeline::full` for `afk` tickets — the label approved on the STOP-AND-ASK gate, the derived label or the user's override, never applied to `hitl` tickets — and `task-report::required` unless told to skip it.
+        - Apply labels (see `docs/agents/triage-labels.md` for the full taxonomy): `type::*`, `status::ready` (or `status::blocked` if gated by another ticket in this batch), `hitl`/`afk`, `pipeline::fast` or `pipeline::full` for `afk` tickets — the label approved on the STOP-AND-ASK gate, the derived label or the user's override, never applied to `hitl` tickets — and `task-report::required` unless told to skip it.
         - *Grouping:* Link every ticket to the parent epic as a **native sub-issue**. Do NOT use `epic::<slug>` labels.
         - *Local Mirror:* The epic spec already lives in its own folder under `docs/tasks/` (per `docs/agents/artifacts.md`) — rename that folder to `issue-<epic-id>-<epic-slug>/` first if it was still slug-only. Save each published ticket's issue body into that folder's `tickets/` subfolder, as `tickets/issue-<ID>-<slug>.md` — not flat alongside the spec.
         - *Frontier:* Don't trace `Blocked by` by hand to find what's takeable — query it, the same fields and mechanism as `/wayfinder`'s frontier query (`docs/agents/issue-tracker.md#wayfinding-operations`), scoped to the epic's sub-issues instead of the map's children. `/implement` runs this same query itself when handed the epic instead of a specific ticket.
@@ -56,7 +56,7 @@ You must execute this skill in two distinct phases. Do NOT publish anything to t
 2. **Summarize the Batch:**
     - Read `language` from `.harness/project.json` (default `ru` if the file or field is absent) — this decides only the "What to build" column below, not the ticket titles/bodies you publish, which stay in whatever language you drafted them in.
     - If this runtime supports dispatching a sub-agent pinned to a specific model, send a single call with `model: haiku` (cheapest available, one call for the whole batch) — pass it every ticket's title and body plus the target language, asking for one concise sentence per ticket written in that language. Otherwise, write the descriptions yourself, on your own model, in the same language.
-    - Output a final table compiling all data. The labels column must list all applied taxonomy tags (e.g., `enhancement`, `workflow::ready`, `afk`, `pipeline::fast`, `task-report::required`).
+    - Output a final table compiling all data. The labels column must list all applied taxonomy tags (e.g., `type::feature`, `status::ready`, `afk`, `pipeline::fast`, `task-report::required`).
 
    | Ticket | What to build | Story Points | Labels |
       |---|---|---|---|
@@ -74,8 +74,8 @@ You must execute this skill in two distinct phases. Do NOT publish anything to t
 ## Relevant Files (Discovery Context)
 - `<path>` — why this ticket needs it (omit this section when the parent has no Discovery Context).
 
-**Category:** bug / enhancement
-**Workflow:** workflow::ready (or workflow::blocked)
+**Category:** type::bug / type::feature / type::refactoring / type::chore / type::security / type::performance / type::hotfix
+**Workflow:** status::ready (or status::blocked)
 **Execution:** hitl / afk
 **Story Points:** Fibonacci score (afk tickets only; omit the line entirely for hitl tickets)
 **Pipeline:** pipeline::fast / pipeline::full (afk tickets only, derived from Story Points; omit the line entirely for hitl tickets)
@@ -125,8 +125,8 @@ derived pipeline::fast/pipeline::full label is applied on the tracker, not writt
 ## Relevant Files (Discovery Context)
 - `<path>` — зачем этот файл нужен задаче (пропустите секцию, если в эпике нет Discovery Context).
 
-**Category:** bug / enhancement
-**Workflow:** workflow::ready (или workflow::blocked)
+**Category:** type::bug / type::feature / type::refactoring / type::chore / type::security / type::performance / type::hotfix
+**Workflow:** status::ready (или status::blocked)
 **Execution:** hitl / afk
 **Story Points:** Оценка по Фибоначчи (только для afk-тикетов; полностью пропустите строку для hitl-тикетов)
 **Pipeline:** pipeline::fast / pipeline::full (только для afk-тикетов, производная от Story Points; полностью пропустите строку для hitl-тикетов)

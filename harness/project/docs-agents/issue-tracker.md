@@ -5,7 +5,7 @@ described in [current-state.md](./current-state.md). This guide defines tracker-
 
 Detect which section below applies from `git remote -v` (the same check `check-branch-name.sh` uses): a `github.com` remote → GitHub; a `gitlab.`-hosted remote → GitLab; anything else, including no remote at all, → Local markdown. For a different tracker entirely (Jira, Linear, ...), replace this file's content with a description of that workflow instead — see `/setup-matt-pocock-skills`.
 
-This repo's triage label vocabulary is a first-party namespaced taxonomy — `bug`/`enhancement` category, `hitl`/`afk` execution mode, `workflow::*` pipeline state, plus the `task-report::required`/`out-of-scope` context labels — see [triage-labels.md](./triage-labels.md) before applying or querying labels, whichever section below applies.
+This repo's triage label vocabulary is a first-party namespaced taxonomy — `type::*` category, `hitl`/`afk` execution mode, `status::*` pipeline state, optional `priority::*`/`severity::*` context, plus the `task-report::required`/`resolution::wontfix` context labels — see [triage-labels.md](./triage-labels.md) before applying or querying labels, whichever section below applies.
 
 ## GitHub
 
@@ -87,7 +87,7 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - One feature per directory: `.scratch/<feature-slug>/`
 - The spec is `.scratch/<feature-slug>/spec.md`
 - Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` — never a single combined tickets file
-- Triage state is recorded as a `Status:` line near the top of each issue file (see [triage-labels.md](./triage-labels.md) for the role strings)
+- Triage state is recorded as a `Workflow:` line near the top of each issue file, using the `status::*` vocabulary (see [triage-labels.md](./triage-labels.md) for the exact strings)
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
 
 ### When a skill says "publish to the issue tracker"
