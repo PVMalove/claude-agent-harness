@@ -7,8 +7,8 @@ worktree discovery and role-specific pin checks so adapters and report gates sha
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 from ..errors import HarnessError
 
@@ -36,7 +36,7 @@ def _registered_worktrees(repo: Path) -> set[Path]:
     return worktrees
 
 
-def attest(repo: Path, dispatch: dict[str, Any], worktree: str) -> dict[str, str]:
+def attest(repo: Path, dispatch: Mapping[str, object], worktree: str) -> dict[str, str]:
     """Return immutable startup evidence or reject a wrong CWD before role work is accepted."""
     checkout = Path(worktree).resolve()
     if not checkout.is_dir():
@@ -74,6 +74,11 @@ def attest(repo: Path, dispatch: dict[str, Any], worktree: str) -> dict[str, str
     branch = _git(checkout, "branch", "--show-current")
     if role in {"architect", "developer"}:
         expected_branch = dispatch.get("branch")
+        if not isinstance(expected_branch, str):
+            raise AttestationError(
+                "runtime worktree branch does not match the immutable issue branch",
+                remedy=f"pin a string issue branch in the dispatch (got {expected_branch!r}) before dispatching this role",
+            )
         if branch != expected_branch:
             raise AttestationError(
                 "runtime worktree branch does not match the immutable issue branch",
