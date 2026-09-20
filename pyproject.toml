@@ -25,7 +25,8 @@ explicit_package_bases = true
 files = [
     "harness",
     "tests",
-    "scripts/verify",
+    "scripts/verify.py",
     "scripts/check-public-metadata.py",
+    "scripts/diff-coverage.py",
     "skills/first-party/pvmalove/qa-gate/scripts/test_summary.py",
 ]

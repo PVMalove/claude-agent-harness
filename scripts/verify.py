@@ -11,7 +11,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-MIN_PYTHON = (3, 9)
+MIN_PYTHON = (3, 12)
 if sys.version_info < MIN_PYTHON:
     sys.stderr.write(
         "[ERROR] verify requires Python %s+ (found %s).\n"
@@ -246,10 +246,10 @@ def main() -> None:
             "-m",
             "py_compile",
             str(ROOT / "harness" / "bin" / "harness"),
-            str(ROOT / "scripts" / "build-registry"),
+            str(ROOT / "scripts" / "build-registry.py"),
             str(ROOT / "bin" / "install-global"),
-            str(ROOT / "scripts" / "verify"),
-            str(ROOT / "scripts" / "test-clean-room"),
+            str(ROOT / "scripts" / "verify.py"),
+            str(ROOT / "scripts" / "test-clean-room.py"),
         ]
     )
 
@@ -264,7 +264,7 @@ def main() -> None:
     grep_contains(ROOT / "docs" / "skills" / "implement.md", "module-owned guidance")
     grep_contains(ROOT / "docs" / "skills" / "pilot.md", "самоотчёт роли не является token telemetry")
 
-    run_ok([sys.executable, str(ROOT / "scripts" / "build-registry")])
+    run_ok([sys.executable, str(ROOT / "scripts" / "build-registry.py")])
     run_ok(["git", "-C", str(ROOT), "diff", "--exit-code", "--", "skills/REGISTRY.md"])
 
     check_docs_agents_mirror()
@@ -280,7 +280,7 @@ def main() -> None:
     unittest_env = dict(os.environ)
     unittest_env["PYTHONPATH"] = str(ROOT)
     run_ok([sys.executable, "-m", "unittest", "discover", "-s", str(ROOT / "tests")], env=unittest_env)
-    run_ok([sys.executable, str(ROOT / "scripts" / "test-clean-room")])
+    run_ok([sys.executable, str(ROOT / "scripts" / "test-clean-room.py")])
 
     print("agent-harness verification passed")
 

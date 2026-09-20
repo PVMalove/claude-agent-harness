@@ -21,9 +21,9 @@ jobs:
       - name: Install dev dependencies
         run: pip install .[dev]
       - name: Make script executable
-        run: chmod +x scripts/verify
+        run: chmod +x scripts/verify.py
       - name: Verify harness and clean-room install
-        run: scripts/verify
+        run: python scripts/verify.py
       - name: Check public Git metadata
         if: github.event_name == 'pull_request'
         env:
@@ -34,7 +34,7 @@ jobs:
           python scripts/check-public-metadata.py --commit-range "$COMMIT_RANGE" --pr-body-file "$RUNNER_TEMP/pr-body.md"
       - name: Diff coverage of changed Python lines
         if: github.event_name == 'pull_request'
-        run: python scripts/diff-coverage
+        run: python scripts/diff-coverage.py
 
   verify-windows:
     runs-on: windows-latest
@@ -46,4 +46,4 @@ jobs:
       - name: Install dev dependencies
         run: pip install .[dev]
       - name: Verify harness and clean-room install
-        run: python scripts/verify
+        run: python scripts/verify.py

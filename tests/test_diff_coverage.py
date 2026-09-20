@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for scripts/diff-coverage: only executable statements count toward the gate, files nobody
+"""Tests for scripts/diff-coverage.py: only executable statements count toward the gate, files nobody
 imports still appear in the coverage run, and the 70% threshold is exact (issue #231)."""
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "diff-coverage"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "diff-coverage.py"
 
 
 def _load() -> types.ModuleType:
