@@ -7,6 +7,7 @@ with the git output as the remedy hint.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -82,3 +83,12 @@ def _commit_evidence(repo: Path, base: str | None, commit: str) -> str:
             )
         )
     return _git(repo, "show", "--format=%B", "--no-ext-diff", "--no-renames", commit)
+
+
+def _candidate_commit(repo: Path, value: object) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-fA-F]{7,64}", value.strip()) is None:
+        raise CoordinatorError("candidate_commit must be a hexadecimal commit SHA", remedy="pass candidate_commit as a 7-64 character hex commit SHA")
+    try:
+        return _git(repo, "rev-parse", "--verify", f"{value.strip()}^{{commit}}")
+    except CoordinatorError as exc:
+        raise CoordinatorError("candidate_commit does not resolve to a commit", remedy="pass a candidate_commit that resolves to a real commit in this repository") from exc

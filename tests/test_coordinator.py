@@ -29,6 +29,7 @@ from unittest import mock
 from harness.orchestration import contract, coordinator, coordinator_cli, extensions, operational_guards, qa_lane
 from harness.orchestration.core import config, constants, git_utils, utils
 from harness.orchestration.ledger import ledger_ops
+from harness.orchestration.workflow import approval
 from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.ledger import BatchRecord, DispatchStatusRecord, LifecycleLedger
 
@@ -1456,8 +1457,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
     def _patch_config(self, **policy: object) -> None:
         """Layer project policy over the zero-config defaults for the rest of the test."""
-        original = coordinator._config
-        patcher = mock.patch.object(coordinator, "_config", lambda repo: {**original(repo), **policy})
+        original = config._config
+        patcher = mock.patch.object(config, "_config", lambda repo: {**original(repo), **policy})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -1466,7 +1467,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
 
     def _attention(self, batch_id: str, *, after: int = 0) -> JsonObject:
-        with mock.patch.object(coordinator, "_now", return_value=self._later(after)):
+        with mock.patch.object(utils, "_now", return_value=self._later(after)):
             return coordinator.attention_check(self._args(batch=batch_id))
 
     def _resolve_attention(self, batch_id: str) -> JsonObject:
@@ -1845,7 +1846,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         fields = self._proposal_fields(batch["batch_id"], "architect", "work", None)
         denied = coordinator.CoordinatorError("human approval was not confirmed on the terminal", remedy="ask again")
 
-        with mock.patch.object(coordinator, "_confirm_on_terminal", side_effect=denied) as confirm:
+        with mock.patch.object(approval, "_confirm_on_terminal", side_effect=denied) as confirm:
             with self.assertRaises(coordinator.CoordinatorError):
                 coordinator.create_dispatch(self._args(
                     transition_digest=proposal["transition_digest"], **fields, **self._approval(),

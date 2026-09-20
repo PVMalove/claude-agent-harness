@@ -10,6 +10,7 @@ from pathlib import Path
 
 from harness.errors import HarnessError
 from harness.orchestration.core import utils
+from harness.orchestration.workflow import history
 from harness.orchestration.ledger import (
     BatchRecord,
     CheckpointRecord,
@@ -372,8 +373,6 @@ class OperationalRecordMigrationTests(unittest.TestCase):
     def _pressure(self) -> JsonObject:
         import hashlib
 
-        from harness.orchestration import coordinator
-
         record: JsonObject = {
             "pressure_id": "pressure-1", "dispatch_id": "dispatch-1", "observed_tokens": 160_000,
             "context_limit": 150_000, "warning_threshold": 120_000, "level": "critical",
@@ -384,8 +383,6 @@ class OperationalRecordMigrationTests(unittest.TestCase):
         return record
 
     def test_a_pre_ledger_batch_with_the_operational_fields_migrates_and_stays_valid(self) -> None:
-        from harness.orchestration import coordinator
-
         batch = {
             "batch_id": "batch-1", "state": "awaiting-approval", "dispatches": [],
             "coordinator_approval": {"approved_by": "Malove", "approved_at": "2026-09-20T00:00:00+00:00"},
@@ -408,7 +405,7 @@ class OperationalRecordMigrationTests(unittest.TestCase):
             self.assertTrue(result["migrated"])
             migrated = json.loads((ledger.records_root() / "batches" / "batch-1.json").read_text(encoding="utf-8"))
             self.assertEqual(migrated, batch)
-            coordinator._validate_operational_batch_fields(migrated)
+            history._validate_operational_batch_fields(migrated)
             self.assertEqual(ledger.status()["version"], 3)
             self.assertFalse(ledger.migrate()["migrated"])  # already current: the schema version did not change
 
