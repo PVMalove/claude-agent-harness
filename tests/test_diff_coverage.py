@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "diff-coverage"
 
@@ -112,6 +114,39 @@ class SourceDirsTests(unittest.TestCase):
                 }
             ),
         )
+
+
+class RepoRelativeTests(unittest.TestCase):
+    def test_absolute_native_path_under_the_root_becomes_repo_relative(self) -> None:
+        native = str(diff_coverage.ROOT / "harness" / "a.py").replace("/", "\\")
+
+        self.assertEqual(diff_coverage._repo_relative(native), "harness/a.py")
+
+    def test_relative_backslash_path_is_only_normalised(self) -> None:
+        self.assertEqual(diff_coverage._repo_relative("harness\\a.py"), "harness/a.py")
+
+    def test_absolute_path_outside_the_root_is_left_absolute(self) -> None:
+        self.assertEqual(diff_coverage._repo_relative("/elsewhere/a.py"), "/elsewhere/a.py")
+
+
+class MainCoverageRunTests(unittest.TestCase):
+    def test_coverage_run_is_given_the_changed_file_directories_as_sources(self) -> None:
+        changed = {"harness/a.py": {1}, "scripts/tool.py": {2}}
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            with (
+                mock.patch.object(diff_coverage, "_merge_base", return_value="base"),
+                mock.patch.object(diff_coverage, "_changed_lines", return_value=changed),
+                mock.patch.object(diff_coverage, "COVERAGE_DATA_FILE", Path(temporary) / ".coverage"),
+                mock.patch.dict(diff_coverage.os.environ, {}),
+                mock.patch.object(
+                    diff_coverage.subprocess, "run", return_value=types.SimpleNamespace(returncode=3)
+                ) as run,
+            ):
+                exit_code = diff_coverage.main()
+
+        self.assertEqual(exit_code, 3)
+        command = run.call_args.args[0]
+        self.assertIn(f"--source={','.join(diff_coverage.source_dirs(changed))}", command)
 
 
 if __name__ == "__main__":
