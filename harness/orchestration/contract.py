@@ -323,6 +323,10 @@ def resolve_allowed_tools(config: dict[str, Any], role_name: str, mode: str) -> 
     return list(DEFAULT_ALLOWED_TOOLS[mode])
 
 
+def valid_tool_list(value: object) -> bool:
+    return string_list(value) and bool(value) and len(set(value)) == len(value)
+
+
 def _tool_policy_problems(config: dict[str, Any], role_names: set[str]) -> list[str]:
     if "tool_policy" not in config:
         return []
@@ -343,7 +347,7 @@ def _tool_policy_problems(config: dict[str, Any], role_names: set[str]) -> list[
         for name, tools in entries.items():
             if name not in known:
                 problems.append(f"orchestration tool_policy.{section} names unknown entry {name!r}")
-            if not string_list(tools) or not tools or len(set(tools)) != len(tools):
+            if not valid_tool_list(tools):
                 problems.append(
                     f"orchestration tool_policy.{section}.{name} must be a non-empty list of unique tool names"
                 )

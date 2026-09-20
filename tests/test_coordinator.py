@@ -540,19 +540,34 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             with self.assertRaisesRegex(coordinator.CoordinatorError, "schema mismatch"):
                 self._rewritten_brief_validation(batch["batch_id"], dispatch["dispatch_id"], {dropped})
 
-    def test_brief_with_tools_outside_the_project_policy_is_rejected(self) -> None:
+    def test_brief_with_malformed_tool_policy_fields_is_rejected(self) -> None:
         batch = self._create_batch()
         self._approve_batch(batch["batch_id"])
         dispatch = self._create_architect_dispatch(batch["batch_id"])
 
-        with self.assertRaisesRegex(coordinator.CoordinatorError, "allowed_tools"):
-            self._rewritten_brief_validation(
-                batch["batch_id"], dispatch["dispatch_id"], set(), allowed_tools=["Read", "Edit", "Write"],
-            )
-        with self.assertRaisesRegex(coordinator.CoordinatorError, "context_budget"):
-            self._rewritten_brief_validation(
-                batch["batch_id"], dispatch["dispatch_id"], set(), context_budget=1_000_000,
-            )
+        for tools in ([], ["Read", "Read"], ["Read", ""], "Read"):
+            with self.subTest(allowed_tools=tools), self.assertRaisesRegex(coordinator.CoordinatorError, "allowed_tools"):
+                self._rewritten_brief_validation(
+                    batch["batch_id"], dispatch["dispatch_id"], set(), allowed_tools=tools,
+                )
+        for budget in (0, -1, True, "big"):
+            with self.subTest(context_budget=budget), self.assertRaisesRegex(coordinator.CoordinatorError, "context_budget"):
+                self._rewritten_brief_validation(
+                    batch["batch_id"], dispatch["dispatch_id"], set(), context_budget=budget,
+                )
+
+    def test_brief_stays_valid_when_the_project_edits_tool_policy_or_context_limit_in_flight(self) -> None:
+        self._configure_project()
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+        config_path = self.repo / ".harness" / "orchestration.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["adaptive_continuation_policy"] = {"context_limit": 500}
+        config["tool_policy"] = {"roles": {"architect": ["Read"]}}
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+
+        self._rewritten_brief_validation(batch["batch_id"], dispatch["dispatch_id"], set())
 
     def _tool_policy_health(self, tool_policy: object) -> list[str]:
         path = self.tmp / "orchestration.json"

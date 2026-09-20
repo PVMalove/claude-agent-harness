@@ -36,7 +36,7 @@ if str(CONTEXT_BUILDER_ROOT) not in sys.path:
     sys.path.insert(0, str(CONTEXT_BUILDER_ROOT))
 from contract import (
     COMMUNICATION_POLICY_FIELDS, ContractError, health_problems, load_role_manifest,
-    resolve_allowed_tools, resolve_assignment, resolve_runtime_name, validate_brief_policy,
+    resolve_allowed_tools, resolve_assignment, resolve_runtime_name, valid_tool_list, validate_brief_policy,
 )
 from context_builder import ContextPackageError, build_context_package
 from dispatch_preflight import PreflightError, prepare as prepare_dispatch
@@ -1270,11 +1270,14 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
         expected_paths = zone["paths"] if role["mode"] == "write" else []
         if dispatch["write_paths"] != expected_paths:
             raise CoordinatorError("dispatch record write paths do not match the role boundary")
+    # Only the shape is checked: the brief is the immutable record of what was selected at approval,
+    # so a later project edit to `tool_policy` or `context_limit` must not invalidate it in flight.
     if "allowed_tools" in dispatch:
-        if dispatch["allowed_tools"] != resolve_allowed_tools(config, dispatch["role"], dispatch["access"]):
-            raise CoordinatorError("dispatch record allowed_tools do not match the project tool policy")
-        if dispatch["context_budget"] != _adaptive_continuation_policy(config)["context_limit"]:
-            raise CoordinatorError("dispatch record context_budget does not match the project context limit")
+        if not valid_tool_list(dispatch["allowed_tools"]):
+            raise CoordinatorError("dispatch record allowed_tools must be a non-empty list of unique tool names")
+        budget = dispatch["context_budget"]
+        if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
+            raise CoordinatorError("dispatch record context_budget must be a positive integer")
     candidate = dispatch.get("candidate_commit")
     if dispatch["role"] in {"code-review", "qa"} and not isinstance(candidate, str):
         raise CoordinatorError("review and QA dispatches must pin a candidate commit")
