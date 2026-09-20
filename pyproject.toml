@@ -22,4 +22,10 @@ strict = true
 disallow_any_explicit = true
 mypy_path = "."
 explicit_package_bases = true
-files = ["harness"]
+files = [
+    "harness",
+    "tests",
+    "scripts/verify",
+    "scripts/check-public-metadata.py",
+    "skills/first-party/pvmalove/qa-gate/scripts/test_summary.py",
+]

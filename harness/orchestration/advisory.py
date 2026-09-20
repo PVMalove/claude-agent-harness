@@ -21,12 +21,11 @@ from pathlib import Path
 def rank_files(paths: list[str], keywords: list[str]) -> list[dict[str, object]]:
     """Rough relevance ranking by keyword hits in each path. Advisory only."""
     normalized_keywords = [keyword.casefold() for keyword in keywords if keyword]
-    ranked = [
-        {"path": path, "score": sum(1 for keyword in normalized_keywords if keyword in path.casefold())}
-        for path in paths
+    scored = [
+        (sum(1 for keyword in normalized_keywords if keyword in path.casefold()), path) for path in paths
     ]
-    ranked.sort(key=lambda entry: (-entry["score"], entry["path"]))
-    return ranked
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [{"path": path, "score": score} for score, path in scored]
 
 
 _LOG_MARKER = re.compile(r"(?i)\b(error|fail(?:ed|ure)?|exception|traceback|warning)\b")

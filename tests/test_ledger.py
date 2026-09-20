@@ -15,7 +15,9 @@ from harness.orchestration.ledger import (
     ContextPackageRecord,
     DispatchRecord,
     DispatchStatusRecord,
+    JsonObject,
     LedgerError,
+    LedgerRecordVO,
     LifecycleLedger,
     PlanRecord,
     RiskAssessmentRecord,
@@ -80,7 +82,12 @@ class ValueObjectRoundTripTests(unittest.TestCase):
             self.assertEqual(restored, original)
 
     def test_remaining_kinds_round_trip(self) -> None:
-        cases = [
+        cases: list[
+            tuple[
+                PlanRecord | DispatchStatusRecord | RiskAssessmentRecord | ContextPackageRecord | CheckpointRecord,
+                str,
+            ]
+        ] = [
             (PlanRecord(batch_id="batch-1", extra={"ticket": "#194"}), "plans/batch-1.json"),
             (
                 DispatchStatusRecord(dispatch_id="dispatch-1", state="working", extra={"heartbeat_note": "none"}),
@@ -112,7 +119,7 @@ class ValueObjectRoundTripTests(unittest.TestCase):
 
 class RecordApiTests(unittest.TestCase):
     def test_each_value_object_exposes_its_directory_and_record_id(self) -> None:
-        cases = [
+        cases: list[tuple[LedgerRecordVO, str, str]] = [
             (BatchRecord(batch_id="batch-1", state="planned", dispatches=[], coordinator_approval=None), "batches", "batch-1"),
             (PlanRecord(batch_id="batch-1"), "plans", "batch-1"),
             (DispatchRecord(dispatch_id="dispatch-1", batch_id="batch-1", state="approved", coordinator_approval=None), "dispatches", "dispatch-1"),
@@ -219,7 +226,7 @@ class StructuralValidationCharacterizationTests(unittest.TestCase):
             ledger.ensure()
             generation = ledger.records_root()
 
-            batch = {
+            batch: JsonObject = {
                 "batch_id": "batch-1",
                 "state": "planned",
                 "dispatches": [],
@@ -239,7 +246,7 @@ class StructuralValidationCharacterizationTests(unittest.TestCase):
             ledger = LifecycleLedger(Path(temporary) / "state")
             ledger.ensure()
             generation = ledger.records_root()
-            batch = {"batch_id": "batch-1", "state": "planned", "dispatches": []}
+            batch: JsonObject = {"batch_id": "batch-1", "state": "planned", "dispatches": []}
             ledger.write_immutable(generation / "plans" / "batch-1.json", {"batch_id": "batch-1"})
             batch_path = generation / "batches" / "batch-1.json"
             ledger.write_immutable(batch_path, batch)
@@ -247,7 +254,7 @@ class StructuralValidationCharacterizationTests(unittest.TestCase):
             with self.assertRaises(LedgerError):
                 ledger.replace(batch_path, {**batch, "state": "abandoned"})  # nothing to abandon before approval
 
-            approved = {**batch, "state": "awaiting-approval", "coordinator_approval": {"approved_by": "a", "approved_at": "b"}}
+            approved: JsonObject = {**batch, "state": "awaiting-approval", "coordinator_approval": {"approved_by": "a", "approved_at": "b"}}
             ledger.replace(batch_path, approved)
             ledger.replace(batch_path, {**approved, "state": "abandoned"})
 
@@ -361,12 +368,12 @@ class OperationalRecordMigrationTests(unittest.TestCase):
     """Issue #250: batch-level context pressure and attention records survive an explicit migration
     verbatim, keep passing the coordinator's own integrity validation, and need no schema bump."""
 
-    def _pressure(self) -> dict:
+    def _pressure(self) -> JsonObject:
         import hashlib
 
         from harness.orchestration import coordinator
 
-        record = {
+        record: JsonObject = {
             "pressure_id": "pressure-1", "dispatch_id": "dispatch-1", "observed_tokens": 160_000,
             "context_limit": 150_000, "warning_threshold": 120_000, "level": "critical",
             "recorded_at": "2026-09-20T00:00:00+00:00", "source": "provider-usage", "action_required": True,

@@ -6,15 +6,19 @@ from __future__ import annotations
 import argparse
 import tempfile
 import unittest
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import cast
 from unittest import mock
 
 from harness.gate_runner.gate_runner import GateResult, GateRunnerError
 from harness.orchestration import coordinator, qa_lane
 from harness.orchestration.ledger import (
-    BatchRecord, DispatchRecord, DispatchStatusRecord, LedgerError, LifecycleLedger, PlanRecord,
+    BatchRecord, DispatchRecord, DispatchStatusRecord, JsonObject, JsonValue, LedgerError, LifecycleLedger,
+    PlanRecord,
 )
+from harness.orchestration.qa_lane import CoordinatorOps
 
 DISPATCH_ID = "dispatch-0123456789abcdef"
 OTHER_DISPATCH_ID = "dispatch-fedcba9876543210"
@@ -71,8 +75,8 @@ class QaLaneTestCase(unittest.TestCase):
         self.assertTrue(caught.exception.message.strip())
         self.assertTrue(caught.exception.remedy.strip())
 
-    def _lease(self, **overrides: object) -> dict[str, object]:
-        lease: dict[str, object] = {
+    def _lease(self, **overrides: JsonValue) -> JsonObject:
+        lease: JsonObject = {
             "dispatch_id": OTHER_DISPATCH_ID, "host": "host-a", "pid": 42,
             "acquired_at": datetime.now(timezone.utc).isoformat(),
             "expires_at": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
@@ -99,7 +103,7 @@ class QaLaneLedgerTranslationTests(QaLaneTestCase):
             finally:
                 held.rmdir()
 
-        cases = {
+        cases: dict[str, Callable[[], object]] = {
             "lock": lock,
             "write_immutable": lambda: qa_lane._write_immutable(self.ledger, coordinator, existing, {"a": 2}),
             "write_artifact": lambda: qa_lane._write_artifact(self.ledger, coordinator, artifact, "two"),
@@ -137,8 +141,8 @@ class QaLaneValidationTests(QaLaneTestCase):
 
     def test_queue_entries_reject_invalid_entries_with_a_remedy(self) -> None:
         queue = self.lane / "queue"
-        good = {"dispatch_id": DISPATCH_ID, "sequence": 1, "queued_at": "now"}
-        cases = {
+        good: JsonObject = {"dispatch_id": DISPATCH_ID, "sequence": 1, "queued_at": "now"}
+        cases: dict[str, JsonObject] = {
             "schema": {"dispatch_id": DISPATCH_ID},
             "sequence": {**good, "sequence": 0},
             "queued_at": {**good, "queued_at": " "},
@@ -181,7 +185,7 @@ class QaLaneValidationTests(QaLaneTestCase):
         self.assertEqual(qa_lane._lease(self.ledger, coordinator), lease)
 
     def test_lease_rejects_invalid_records_with_a_remedy(self) -> None:
-        cases = {"schema": {"host": "h"}, "acquired_at": self._lease(acquired_at=""), "expires_at": self._lease(expires_at=" ")}
+        cases: dict[str, JsonObject] = {"schema": {"host": "h"}, "acquired_at": self._lease(acquired_at=""), "expires_at": self._lease(expires_at=" ")}
         for name, lease in cases.items():
             path = self.lane / "lease.json"
             self.ledger.write_immutable(path, lease)
@@ -237,16 +241,16 @@ class QaLaneStatusTests(QaLaneTestCase):
 
 
 class QaLaneClearStaleLeaseTests(QaLaneTestCase):
-    def _args(self, lease: dict[str, object], **overrides: object) -> argparse.Namespace:
-        values = {
+    def _args(self, lease: JsonObject, **overrides: object) -> argparse.Namespace:
+        values: dict[str, object] = {
             "repo": str(self.repo), "state_dir": None, "expected_host": lease["host"], "expected_pid": lease["pid"],
             "expected_expiry": lease["expires_at"], "reason": " operator restart ",
         }
         values.update(overrides)
         return _ns(**values)
 
-    def _ops(self) -> _Ops:
-        return _Ops(_approval=lambda args: {"approved_by": "operator", "approved_at": "now"})
+    def _ops(self) -> CoordinatorOps:
+        return cast(CoordinatorOps, _Ops(_approval=lambda args: {"approved_by": "operator", "approved_at": "now"}))
 
     def test_missing_lease_is_rejected_with_a_remedy(self) -> None:
         with self.assertRaises(coordinator.CoordinatorError) as caught:
@@ -291,7 +295,7 @@ class QaLaneClearStaleLeaseTests(QaLaneTestCase):
 class QaLaneRunTests(QaLaneTestCase):
     def setUp(self) -> None:
         super().setUp()
-        self.dispatch: dict[str, object] = {
+        self.dispatch: JsonObject = {
             "dispatch_id": DISPATCH_ID, "batch_id": BATCH_ID, "ticket": "225", "role": "qa",
             "verification_commands": [["true"]], "candidate_commit": "abc1234",
         }
@@ -299,7 +303,7 @@ class QaLaneRunTests(QaLaneTestCase):
 
     def _seed(self, *, batch_state: str = "approved", status_state: str = "approved") -> None:
         records = self.ledger.records_root()
-        batch = {
+        batch: JsonObject = {
             "batch_id": BATCH_ID, "state": "active", "coordinator_approval": None,
             "dispatches": [{"dispatch_id": DISPATCH_ID, "state": batch_state}],
         }
@@ -311,18 +315,18 @@ class QaLaneRunTests(QaLaneTestCase):
             {"dispatch_id": DISPATCH_ID, "state": status_state, "updated_at": "now"},
         )
 
-    def _ops(self, persisted: list[dict[str, object]] | None = None) -> _Ops:
+    def _ops(self, persisted: list[dict[str, object]] | None = None) -> CoordinatorOps:
         def persist(ledger: LifecycleLedger, root: Path, batch: object, dispatch: object, report: dict[str, object]) -> Path:
             if persisted is not None:
                 persisted.append(report)
             return root / "report.json"
 
-        return _Ops(
+        return cast(CoordinatorOps, _Ops(
             _validate_batch_integrity=lambda root, batch: None,
             _validate_dispatch=lambda repo, config, root, batch, dispatch: None,
             _config=lambda repo: {}, _role=lambda repo, name: {},
             _validate_report=lambda *arguments, **keywords: None, _persist_report=persist,
-        )
+        ))
 
     def _assert_run_rejected(self) -> None:
         with self.assertRaises(coordinator.CoordinatorError) as caught:

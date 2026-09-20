@@ -11,7 +11,6 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
 from unittest import mock
 
 from harness.errors import HarnessError
@@ -238,8 +237,9 @@ class OrchestrationMetricsIncompatibleLedgerModuleTests(unittest.TestCase):
         self.assertEqual(ticket["qa_failure_rate"], 0.0)
 
 
-def _turn(branch, session_id, model, input_tokens, output_tokens, *,
-          is_sidechain=False, cache_write=0, cache_read=0, timestamp="2026-01-01T10:00:00.000Z") -> str:
+def _turn(branch: str, session_id: str, model: str, input_tokens: int, output_tokens: int, *,
+          is_sidechain: bool = False, cache_write: int = 0, cache_read: int = 0,
+          timestamp: str = "2026-01-01T10:00:00.000Z") -> str:
     """One assistant-turn JSONL record, complete enough to satisfy _usage_complete()."""
     return json.dumps({
         "type": "assistant", "gitBranch": branch, "sessionId": session_id,
@@ -414,6 +414,7 @@ class NarrowedTypeBehaviorTests(unittest.TestCase):
         used = {"status": "ok", "models": {"m": {
             "input_tokens": 50, "cache_creation_input_tokens": 25, "cache_read_input_tokens": 25}}}
         split = delivery_stats.cache_split(used)
+        assert isinstance(split, dict)
         self.assertEqual(split["total_input"], 100)
         self.assertEqual(split["fresh_percent"], 50.0)
 
@@ -424,10 +425,12 @@ class NarrowedTypeBehaviorTests(unittest.TestCase):
         self.assertEqual(delivery_stats._provider_delta("x", ok), delivery_stats.MISSING)
         self.assertEqual(delivery_stats._provider_delta({"status": "missing"}, ok), delivery_stats.MISSING)
         delta = delivery_stats._provider_delta(ok, later)
+        assert isinstance(delta, dict)
         self.assertEqual(delta["input_tokens"], 20)
         self.assertEqual(delta["cache_write_tokens"], delivery_stats.MISSING)
 
         both = delivery_stats._provider_delta(later, later)
+        assert isinstance(both, dict)
         self.assertEqual(both["cache_read_tokens"], 0)
 
     def test_developer_write_paths_returns_the_latest_developer_dispatch_zone(self) -> None:
@@ -459,23 +462,23 @@ class StatsErrorRemedyTests(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def _assert_stats_error(self, raised: Any, message: str, remedy: str) -> None:
-        self.assertIsInstance(raised.exception, HarnessError)
-        self.assertIn(message, raised.exception.message)
-        self.assertIn(remedy, raised.exception.remedy)
+    def _assert_stats_error(self, exc: HarnessError, message: str, remedy: str) -> None:
+        self.assertIsInstance(exc, HarnessError)
+        self.assertIn(message, exc.message)
+        self.assertIn(remedy, exc.remedy)
 
     def test_git_failure(self) -> None:
         with mock.patch.object(delivery_stats, "_run", return_value=(1, "", "boom")), \
                 self.assertRaises(delivery_stats.StatsError) as raised:
             delivery_stats._git(self.tmp, "status")
-        self._assert_stats_error(raised, "git status failed: boom", "git status")
+        self._assert_stats_error(raised.exception, "git status failed: boom", "git status")
 
     def test_project_config_invalid_json(self) -> None:
         (self.tmp / ".harness").mkdir()
         (self.tmp / ".harness" / "project.json").write_text("{", encoding="utf-8")
         with self.assertRaises(delivery_stats.StatsError) as raised:
             delivery_stats._project_config(self.tmp)
-        self._assert_stats_error(raised, "not valid JSON", ".harness/project.json")
+        self._assert_stats_error(raised.exception, "not valid JSON", ".harness/project.json")
 
     def test_gh_failures(self) -> None:
         for outcome, message, remedy in (
@@ -487,12 +490,12 @@ class StatsErrorRemedyTests(unittest.TestCase):
                 with mock.patch.object(delivery_stats, "_run", return_value=outcome), \
                         self.assertRaises(delivery_stats.StatsError) as raised:
                     delivery_stats._gh(self.tmp, "issue", "view")
-                self._assert_stats_error(raised, message, remedy)
+                self._assert_stats_error(raised.exception, message, remedy)
 
     def test_offline_scope_rejects_non_numeric_ticket(self) -> None:
         with self.assertRaises(delivery_stats.StatsError) as raised:
             delivery_stats.offline_scope(1, "2,abc")
-        self._assert_stats_error(raised, "'abc'", "--tickets")
+        self._assert_stats_error(raised.exception, "'abc'", "--tickets")
 
     def test_rate_card_failures(self) -> None:
         for name, text, message, remedy in (
@@ -503,7 +506,7 @@ class StatsErrorRemedyTests(unittest.TestCase):
                 path = self._write(name, text)
                 with self.assertRaises(delivery_stats.StatsError) as raised:
                     delivery_stats.load_rates(path)
-                self._assert_stats_error(raised, message, remedy)
+                self._assert_stats_error(raised.exception, message, remedy)
 
     def test_load_baseline_failures(self) -> None:
         version = delivery_stats.BASELINE_SCHEMA_VERSION
@@ -533,19 +536,19 @@ class StatsErrorRemedyTests(unittest.TestCase):
                 path = self._write(name, text)
                 with self.assertRaises(delivery_stats.StatsError) as raised:
                     delivery_stats.load_baseline(path)
-                self._assert_stats_error(raised, message, remedy)
+                self._assert_stats_error(raised.exception, message, remedy)
 
     def test_load_baseline_unreadable_file(self) -> None:
         path = self.tmp / "absent.json"
         with self.assertRaises(delivery_stats.StatsError) as raised:
             delivery_stats.load_baseline(path)
-        self._assert_stats_error(raised, "не прочитать baseline", "file-system error")
+        self._assert_stats_error(raised.exception, "не прочитать baseline", "file-system error")
 
     def test_save_baseline_unwritable_destination(self) -> None:
         blocker = self._write("blocker", "file")
         with self.assertRaises(delivery_stats.StatsError) as raised:
             delivery_stats.save_baseline({}, blocker / "baseline.json")
-        self._assert_stats_error(raised, "не сохранить baseline", "file-system error")
+        self._assert_stats_error(raised.exception, "не сохранить baseline", "file-system error")
 
     def test_build_report_failures(self) -> None:
         home = self.tmp / "home"
@@ -556,13 +559,13 @@ class StatsErrorRemedyTests(unittest.TestCase):
         )
         with self.assertRaises(delivery_stats.StatsError) as raised:
             delivery_stats.build_report(args)
-        self._assert_stats_error(raised, "not a git repository", "--repo")
+        self._assert_stats_error(raised.exception, "not a git repository", "--repo")
 
         (self.tmp / ".git").mkdir()
         with mock.patch.object(delivery_stats, "_local_issue_branches", return_value=set()), \
                 self.assertRaises(delivery_stats.StatsError) as raised:
             delivery_stats.build_report(args)
-        self._assert_stats_error(raised, "epic #7: no pull request", "--tickets")
+        self._assert_stats_error(raised.exception, "epic #7: no pull request", "--tickets")
 
 
 if __name__ == "__main__":

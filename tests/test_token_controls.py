@@ -130,8 +130,8 @@ class TokenControlTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             root = Path(directory)
-            coordinator.LifecycleLedger(root).ensure()
-            records = coordinator.LifecycleLedger(root).records_root()
+            LifecycleLedger(root).ensure()
+            records = LifecycleLedger(root).records_root()
             (records / "batches" / f"{batch_id}.json").write_text(
                 json.dumps(legacy_fields), encoding="utf-8",
             )
@@ -162,8 +162,8 @@ class TokenControlTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             root = Path(directory)
-            coordinator.LifecycleLedger(root).ensure()
-            records = coordinator.LifecycleLedger(root).records_root()
+            LifecycleLedger(root).ensure()
+            records = LifecycleLedger(root).records_root()
             (records / "batches" / f"{batch_id}.json").write_text(
                 json.dumps({**legacy_fields, "approval_policy": "manual_all"}), encoding="utf-8",
             )

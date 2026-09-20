@@ -7,12 +7,19 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Protocol
 from pathlib import Path
 from unittest import mock
 
 
 from harness.errors import HarnessError
 from harness.gate_runner.gate_runner import CleanRoomPolicy, GateRunnerError, LocalPolicy, run_gate
+
+
+class _RunFn(Protocol):
+    def __call__(
+        self, command: list[str], *, capture_output: bool, text: bool, encoding: str, errors: str
+    ) -> subprocess.CompletedProcess[str]: ...
 
 
 class GateRunnerTests(unittest.TestCase):
@@ -102,11 +109,13 @@ class GateRunnerTests(unittest.TestCase):
             ).stdout.strip()
             real_run = subprocess.run
 
-            def fake_status(status_result):
-                def run(command, *args, **kwargs):
+            def fake_status(status_result: subprocess.CompletedProcess[str]) -> _RunFn:
+                def run(
+                    command: list[str], *, capture_output: bool, text: bool, encoding: str, errors: str
+                ) -> subprocess.CompletedProcess[str]:
                     if "status" in command:
                         return status_result
-                    return real_run(command, *args, **kwargs)
+                    return real_run(command, capture_output=capture_output, text=text, encoding=encoding, errors=errors)
 
                 return run
 
