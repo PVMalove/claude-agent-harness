@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from harness.orchestration import contract, coordinator
+from harness.orchestration.core import constants
 from harness.orchestration.ledger import LifecycleLedger
 
 
@@ -84,7 +85,7 @@ class TokenControlTests(unittest.TestCase):
             (repo / ".harness").mkdir()
             (repo / ".harness" / "project.json").write_text("{}", encoding="utf-8")
             batch = {"batch_id": "batch-1", "base_commit": "0" * 40, "context_packages": []}
-            above_default_policy = coordinator.DEFAULT_CONTEXT_PACKAGE_POLICY["max_tokens"] + 1
+            above_default_policy = constants.DEFAULT_CONTEXT_PACKAGE_POLICY["max_tokens"] + 1
             with self.assertRaisesRegex(coordinator.CoordinatorError, "exceeds the configured"):
                 coordinator._persist_context_package(
                     repo, repo, LifecycleLedger(repo), batch, role="shared", snapshot="1" * 40,
@@ -92,8 +93,8 @@ class TokenControlTests(unittest.TestCase):
                 )
 
     def test_tokens_fields_are_not_secrets_but_session_token_is(self) -> None:
-        self.assertIsNone(coordinator.SENSITIVE_KEY.search("input_tokens"))
-        self.assertIsNotNone(coordinator.SENSITIVE_KEY.search("session_token"))
+        self.assertIsNone(constants.SENSITIVE_KEY.search("input_tokens"))
+        self.assertIsNotNone(constants.SENSITIVE_KEY.search("session_token"))
 
     def test_invalid_reasoning_effort_is_rejected_before_dispatch(self) -> None:
         with self.assertRaisesRegex(contract.ContractError, "assignment effort"):

@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from harness.errors import HarnessError
+from harness.orchestration.core import utils
 from harness.orchestration.ledger import (
     BatchRecord,
     CheckpointRecord,
@@ -379,7 +380,7 @@ class OperationalRecordMigrationTests(unittest.TestCase):
             "recorded_at": "2026-09-20T00:00:00+00:00", "source": "provider-usage", "action_required": True,
             "required_worker_action": "Return a structured blocker now.",
         }
-        record["record_sha256"] = hashlib.sha256(coordinator._canonical(record).encode("utf-8")).hexdigest()
+        record["record_sha256"] = hashlib.sha256(utils._canonical(record).encode("utf-8")).hexdigest()
         return record
 
     def test_a_pre_ledger_batch_with_the_operational_fields_migrates_and_stays_valid(self) -> None:

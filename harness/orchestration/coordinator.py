@@ -61,180 +61,30 @@ from harness.orchestration.ledger import (
 from harness.orchestration.coordinator_cli import build_parser
 from harness.orchestration import extensions, operational_guards, qa_lane
 from harness.orchestration.runtime_attestation import AttestationError, attest as attest_runtime_worktree
-
-JsonObject = dict[str, Any]  # type: ignore[explicit-any]  # dynamic JSON boundary: ledger/config/report payloads are json.loads output validated at runtime by the *_FIELDS sets
-
-
-STATE_REL = Path(".harness/orchestration/state")
-SENSITIVE_KEY = re.compile(
-    r"(?:api[_-]?key|credential|password|secret|(?:access|auth|refresh|id|bearer)[_-]?token|(?:^|[_-])token(?:$|[_-](?:id|value|secret|key)$))",
-    re.IGNORECASE,
+from harness.orchestration.core import constants
+from harness.orchestration.core.constants import (
+    AGENT_INBOX_REL, APPROVAL_CLOCK_SKEW_SECONDS, ATTENTION_EVENT_KINDS, ATTENTION_STATE_FIELDS,
+    CHECKPOINT_INPUT_FIELDS, CHECKPOINT_NO_CONTEXT_PACKAGE, CONTEXT_PACKAGE_FIELDS, CONTEXT_PRESSURE_FIELDS,
+    CONTEXT_TELEMETRY_SOURCES, CONTINUATION_FACTS_FIELDS, DEFAULT_ADAPTIVE_CONTINUATION_POLICY,
+    DEFAULT_ATTENTION_POLICY, DEFAULT_COMMUNICATION_POLICY, DEFAULT_CONTEXT_PACKAGE_POLICY,
+    DEFAULT_CONTINUATION_POLICY, DEFAULT_PREFLIGHT_POLICY, DEFAULT_PROFILE, DEFAULT_RETRY_POLICY,
+    DEFAULT_TEST_PATH_PATTERNS, DEFAULT_ZONE, DEVELOPER_REASON_CATEGORIES, DISPATCH_FIELDS, DISPATCH_PURPOSES,
+    FINDING_SEVERITIES, LEGACY_CONTEXT_PACKAGE_FIELDS, LEGACY_PLAN_FIELDS, LIVE_DISPATCH_STATES,
+    MAX_CHECK_EVIDENCE_CHARS, NEXT_ACTION_DISPATCH_ROLE, NON_ENGLISH_BRIEF_PATTERN, OPERATIONAL_REASON_CATEGORIES,
+    PLANNED_TRIGGER_KINDS, PLANNED_TRIGGER_THRESHOLD_KEY, PLAN_FIELDS, POLICY_BRIEF_FIELDS,
+    PRE_APPROVAL_LEGACY_PLAN_FIELDS, RATE_LIMIT_TERMINATION_REASONS, REPORT_FIELDS, REPORT_OPTIONAL_FIELDS,
+    REPORT_OUTCOMES, RETRY_REASON_CATEGORIES, REVIEW_SEVERITIES, RISK_ASSESSMENT_FIELDS, ROLE_TRANSPORTS,
+    QA_LEASE_FIELDS as QA_LEASE_FIELDS, QA_QUEUE_FIELDS as QA_QUEUE_FIELDS,
+    SENSITIVE_KEY, STATE_REL as STATE_REL, TELEMETRY_FIELDS, TERMINAL_BATCH_STATES, ZERO_ALLOWED_POLICY_FIELDS,
 )
-REPORT_OUTCOMES = {"completed", "blocked", "failed"}
-DECISIONS = {"accept", "override-warning", "retry", "block", "fail", "abandon"}
-TERMINAL_BATCH_STATES = {"completed", "failed", "blocked", "not-required", "abandoned"}
-# Why a role stopped, as the coordinator records it. Only the first two are operational evidence:
-# they never change what a role would conclude, so they alone may re-run a read-only role (or the
-# publish boundary) on the same candidate. Everything else, or anything unclear, needs a developer.
-OPERATIONAL_REASON_CATEGORIES = ("verification-infrastructure", "transport", "context-pressure")
-DEVELOPER_REASON_CATEGORIES = ("code", "requirements", "candidate-change")
-RETRY_REASON_CATEGORIES = (*OPERATIONAL_REASON_CATEGORIES, *DEVELOPER_REASON_CATEGORIES, "unknown")
-# The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
-NEXT_ACTION_DISPATCH_ROLE = {
-    "architect": "architect", "developer-retry": "developer", "code-review": "code-review", "qa": "qa",
-    "publish": "developer",
-}
-DISPATCH_PURPOSES = {"work", "publish"}
-ROLE_TRANSPORTS = {"orca", "in-process"}
-DEFAULT_ZONE = "repository"
-DEFAULT_PROFILE = "session"
-DEFAULT_STALE_AFTER_SECONDS = 900
-DEFAULT_COMMUNICATION_POLICY = {
-    "agent_to_agent_language": "en",
-    "coordinator_report_language": "ru",
-}
-LIVE_DISPATCH_STATES = {"dispatched", "working"}
-REVIEW_SEVERITIES = {"none", "clean", "warning", "blocker"}
-FINDING_SEVERITIES = {"info", "warning", "blocker"}
-QA_LEASE_FIELDS = {"dispatch_id", "host", "pid", "acquired_at", "expires_at"}
-QA_QUEUE_FIELDS = {"dispatch_id", "sequence", "queued_at"}
-PLAN_FIELDS = (
-    "batch_id", "created_at", "base_commit", "integration_ref", "branch_start_commit", "ticket", "branch",
-    "worktree", "zone", "definition_of_done", "prohibited_changes", "developer_verification_commands",
-    "verification_commands", "required_gates", "dependencies", "approval_policy", "communication_policy",
-    "scope_preflight",
-    "harness_runtime_sha256",
+from harness.orchestration.core.utils import (
+    CoordinatorError as CoordinatorError, JsonObject, _canonical, _non_empty as _non_empty, _now as _now,
+    _read_object as _read_object, _safe_id as _safe_id, _strings,
 )
-LEGACY_PLAN_FIELDS = tuple(
-    field for field in PLAN_FIELDS
-    if field not in {"scope_preflight", "harness_runtime_sha256", "communication_policy"}
+from harness.orchestration.core.git_utils import (
+    _changed_files_between, _commit_changed_files, _commit_evidence, _fetch_ref_tip, _git, _git_is_ancestor,
+    _head_commit,
 )
-PRE_APPROVAL_LEGACY_PLAN_FIELDS = tuple(field for field in LEGACY_PLAN_FIELDS if field != "approval_policy")
-DISPATCH_FIELDS = {
-    "dispatch_id", "batch_id", "ticket", "role", "access", "zone", "write_paths", "branch", "worktree",
-    "definition_of_done", "prohibited_changes", "verification_commands", "required_gates", "dependencies",
-    "resolved_runtime", "resolved_provider_profile", "resolved_model", "resolved_effort", "resolved_transport", "coordinator_approval", "candidate_commit", "review_base", "review_scope",
-    "risk_assessment_id", "purpose", "state", "created_at", "delta_review_of", "delta_review_axis",
-    "context_package_id", "context_package_sha256", "context_package_summary", "worker_attestation_required",
-    "communication_policy",
-    "snapshot_commit",
-    "report_staging_path",
-    "allowed_tools", "context_budget",
-    "transition", "transition_digest", "retry_idempotency_key", "orchestration_policy",
-}
-# The four fields of the transition-bound approval contract (issue #250) are all present or all absent.
-POLICY_BRIEF_FIELDS = frozenset({"transition", "transition_digest", "retry_idempotency_key", "orchestration_policy"})
-DEFAULT_TEST_PATH_PATTERNS = ("tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py")
-REPORT_FIELDS = {
-    "dispatch_id",
-    "ticket",
-    "role",
-    "outcome",
-    "output",
-    "commit_sha",
-    "changed_files",
-    "checks_run",
-    "risks",
-    "blockers",
-    "next_coordinator_action",
-}
-REPORT_OPTIONAL_FIELDS = {"risk_triggers", "review", "report_language"}
-RISK_ASSESSMENT_FIELDS = {
-    "risk_assessment_id", "batch_id", "candidate_commit", "base_commit", "changed_files", "matched_triggers",
-    "developer_triggers", "review_required", "review_scope", "created_at",
-}
-CONTEXT_PACKAGE_FIELDS = {
-    "context_package_id", "batch_id", "base_commit", "candidate_commit", "diff", "starting_files",
-    "symbol_graph", "related_tests", "precedent_cards", "file_hashes", "size_bytes", "created_at",
-    "role", "inclusion_reason", "estimated_tokens",
-}
-LEGACY_CONTEXT_PACKAGE_FIELDS = CONTEXT_PACKAGE_FIELDS - {"estimated_tokens"}
-CHECKPOINT_NO_CONTEXT_PACKAGE = "not applicable — no context package registered"
-CHECKPOINT_INPUT_FIELDS = {
-    "dispatch_id", "commit_sha", "changed_files", "remaining_definition_of_done", "passing_checks",
-    "risks", "blockers", "context_package_id",
-}
-CHECKPOINT_FIELDS = CHECKPOINT_INPUT_FIELDS | {"checkpoint_id", "batch_id", "created_at"}
-# Fixed runtime-adapter termination vocabulary, not a project policy value -- a rate-limit signal
-# always authorizes a continuation automatically, whatever project a batch belongs to.
-RATE_LIMIT_TERMINATION_REASONS = {"rate_limit", "rate-limit", "429"}
-PLANNED_TRIGGER_KINDS = {"context-limit", "tdd-cycles", "failure-log", "vertical-slice"}
-PLANNED_TRIGGER_THRESHOLD_KEY = {
-    "context-limit": "context_limit",
-    "tdd-cycles": "tdd_cycle_count",
-    "failure-log": "failure_log_bytes",
-}
-DEFAULT_ADAPTIVE_CONTINUATION_POLICY = {
-    "context_limit": 150_000,
-    "tdd_cycle_count": 3,
-    "failure_log_bytes": 20_000,
-    "context_warn_ratio": 0.8,
-}
-DEFAULT_CONTEXT_PACKAGE_POLICY = {
-    "max_tokens": 200_000,
-    "context_window_tokens": 250_000,
-    "reserved_prompt_tokens": 20_000,
-    "symbol_graph_depth": 2,
-    "max_related_tests": 25,
-}
-DEFAULT_CONTINUATION_POLICY = {"max_continuations": 2, "max_rate_limit_resumes": 1}
-DEFAULT_RETRY_POLICY = {"max_developer_retries": 1}
-DEFAULT_PREFLIGHT_POLICY = {
-    "require_estimates": True,
-    "max_definition_of_done_items": 5,
-    "max_dependencies": 3,
-    "max_expected_files": 12,
-    "max_expected_services": 1,
-    "max_expected_changed_lines": 800,
-    "max_expected_context_tokens": 80_000,
-}
-DEFAULT_ATTENTION_POLICY = {
-    "retry_queue_seconds": 3_600,
-    "max_infrastructure_retries": 2,
-    "stale_dispatch_seconds": DEFAULT_STALE_AFTER_SECONDS,
-}
-# Policy fields where zero is a meaningful "tolerate none"; every other numeric policy value is positive.
-ZERO_ALLOWED_POLICY_FIELDS = {("retry_policy", "max_developer_retries"), ("attention_policy", "max_infrastructure_retries")}
-APPROVAL_CLOCK_SKEW_SECONDS = 300
-# Only a value the provider or runtime observed is context telemetry; a model's own claim never is.
-CONTEXT_TELEMETRY_SOURCES = ("probe", "provider-usage", "runtime-adapter")
-CONTEXT_PRESSURE_FIELDS = {
-    "pressure_id", "dispatch_id", "observed_tokens", "context_limit", "warning_threshold", "level", "recorded_at",
-    "source", "action_required", "required_worker_action", "record_sha256",
-}
-ATTENTION_EVENT_KINDS = {"raised", "resolved"}
-ATTENTION_STATE_FIELDS = ("attention_reason", "attention_since", "last_safe_action", "recommended_human_action")
-DEFAULT_RATE_LIMIT_RETRY_SECONDS = 60
-MAX_CHECK_EVIDENCE_CHARS = 1_600
-CONTINUATION_FACTS_FIELDS = {"dispatch_id", "remaining_definition_of_done", "risks", "dependencies"}
-TELEMETRY_FIELDS = {
-    "dispatch_id", "session_kind", "input_tokens", "output_tokens", "cache_read_tokens",
-    "cache_write_tokens", "max_context_tokens", "tool_calls", "tool_output_bytes", "poll_turns",
-    "restart_reason", "recorded_at",
-}
-
-
-class CoordinatorError(HarnessError):
-    """A request that must fail without advancing coordinator state."""
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _non_empty(value: object) -> TypeGuard[str]:
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _read_object(path: Path, label: str) -> JsonObject:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise CoordinatorError(f"{label} is not valid JSON", remedy=f"fix the JSON syntax in {label}") from exc
-    if not isinstance(value, dict):
-        raise CoordinatorError(f"{label} must be a JSON object", remedy=f"set {label} to a JSON object")
-    return value
-
 
 def _reject_sensitive(value: object, location: str) -> None:
     if isinstance(value, dict):
@@ -247,16 +97,6 @@ def _reject_sensitive(value: object, location: str) -> None:
     elif isinstance(value, list):
         for index, child in enumerate(value):
             _reject_sensitive(child, f"{location}[{index}]")
-
-
-def _strings(value: object, label: str, *, allow_empty: bool = False) -> list[str]:
-    if not isinstance(value, list) or (not allow_empty and not value) or not all(_non_empty(item) for item in value):
-        raise CoordinatorError(f"{label} must be a list of non-empty strings", remedy=f"set {label} to a list of non-empty strings")
-    return list(value)
-
-
-def _canonical(value: JsonObject) -> str:
-    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
 def _write_exclusive(ledger: LifecycleLedger, path: Path, value: JsonObject) -> None:
@@ -287,12 +127,6 @@ def _replace_record(ledger: LifecycleLedger, record: LedgerRecordVO) -> None:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def _safe_id(value: object, label: str) -> str:
-    if not isinstance(value, str) or re.fullmatch(r"(?:batch|dispatch|risk|context-package|checkpoint)-[0-9a-f-]+", value) is None:
-        raise CoordinatorError(f"{label} is not a valid coordinator ID", remedy=f"use a valid coordinator-generated ID for {label}")
-    return value
-
-
 def _repo(args: argparse.Namespace) -> Path:
     return Path(getattr(args, "repo", ".")).resolve()
 
@@ -302,10 +136,6 @@ def _state_root(args: argparse.Namespace, repo: Path) -> Path:
     return (Path(supplied).resolve() if supplied else repo / STATE_REL).resolve()
 
 
-SCRATCH_REL = Path(".harness") / "scratch"
-AGENT_INBOX_REL = SCRATCH_REL / "inbox"
-
-
 def _agent_inbox(repo: Path) -> Path:
     """The one canonical place a role writes the JSON it is about to hand to the coordinator.
 
@@ -313,9 +143,6 @@ def _agent_inbox(repo: Path) -> Path:
     the system temp), so the evidence a human later looks for is scattered outside the project.
     """
     return (repo / AGENT_INBOX_REL).resolve()
-
-
-NON_ENGLISH_BRIEF_PATTERN = re.compile(r"[\u0400-\u04FF\u0500-\u052F]")
 
 
 def _reject_non_english(values: object, field: str) -> None:
@@ -602,39 +429,6 @@ def _validate_harness_runtime_snapshot(repo: Path, batch: JsonObject) -> None:
         )
 
 
-def _git(repo: Path, *arguments: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(repo), *arguments], capture_output=True, text=True, encoding="utf-8"
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise CoordinatorError(
-            f"git command failed: {detail or 'unknown error'}",
-            remedy=f"inspect the git error above and fix the repository state before retrying 'git {' '.join(arguments)}'",
-        )
-    return result.stdout.strip()
-
-
-def _head_commit(repo: Path) -> str | None:
-    result = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    return result.stdout.strip() if result.returncode == 0 else None
-
-
-def _fetch_ref_tip(repo: Path, ref: str) -> str:
-    """The current commit an integration ref points to on origin, fetched fresh — never a locally
-    cached remote-tracking branch, which is exactly the staleness this gate exists to catch."""
-    try:
-        _git(repo, "fetch", "origin", ref)
-    except CoordinatorError as exc:
-        raise CoordinatorError(f"could not fetch origin {ref!r}: {exc}", remedy=f"inspect the git fetch error above for {ref!r} and retry") from exc
-    return _git(repo, "rev-parse", "--verify", "FETCH_HEAD")
-
-
 def _required_base_branch(repo: Path) -> str:
     """Unlike `_validate_branch`'s own silent `"master"` default, the base-commit gate has nothing
     safe to fetch when the project config omits `base_branch` — fail loudly instead of pinning
@@ -683,44 +477,6 @@ def _candidate_commit(repo: Path, value: object) -> str:
         return _git(repo, "rev-parse", "--verify", f"{value.strip()}^{{commit}}")
     except CoordinatorError as exc:
         raise CoordinatorError("candidate_commit does not resolve to a commit", remedy="pass a candidate_commit that resolves to a real commit in this repository") from exc
-
-
-def _commit_changed_files(repo: Path, commit: str) -> list[str]:
-    output = _git(repo, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", commit)
-    return [line.replace("\\", "/") for line in output.splitlines() if line.strip()]
-
-
-def _commit_parent(repo: Path, commit: str) -> str | None:
-    output = _git(repo, "rev-list", "--parents", "-n", "1", commit).split()
-    return output[1] if len(output) > 1 else None
-
-
-def _git_is_ancestor(repo: Path, base: str, candidate: str) -> bool:
-    result = subprocess.run(
-        ["git", "-C", str(repo), "merge-base", "--is-ancestor", base, candidate],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    if result.returncode not in {0, 1}:
-        raise CoordinatorError("cannot verify the candidate diff ancestry", remedy="verify the candidate and base commits both exist and are reachable in this repository")
-    return result.returncode == 0
-
-
-def _changed_files_between(repo: Path, base: str, candidate: str) -> list[str]:
-    output = _git(repo, "diff", "--name-only", "--no-renames", base, candidate)
-    return [line.replace("\\", "/") for line in output.splitlines() if line.strip()]
-
-
-def _commit_evidence(repo: Path, base: str | None, commit: str) -> str:
-    if base:
-        return "\n".join(
-            (
-                _git(repo, "log", "--format=%B", f"{base}..{commit}"),
-                _git(repo, "diff", "--no-ext-diff", "--no-renames", base, commit),
-            )
-        )
-    return _git(repo, "show", "--format=%B", "--no-ext-diff", "--no-renames", commit)
 
 
 def _risk_triggers(repo: Path) -> list[str]:
@@ -4233,7 +3989,9 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
 
 
 def parser() -> argparse.ArgumentParser:
-    return build_parser(sys.modules[__name__], sys.modules[__name__])
+    # The CLI's two module arguments are the two halves this facade routes between: the command
+    # handlers it exposes, and the fixed default vocabulary they validate against.
+    return build_parser(sys.modules[__name__], constants)
 
 
 def main() -> int:
