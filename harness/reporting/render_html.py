@@ -10,7 +10,11 @@ from __future__ import annotations
 import html
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional, Sequence
+
+# Dynamic JSON boundary: the report is the output of delivery_stats' json-derived builders, its shape
+# validated at runtime, not statically.
+JsonObject = dict[str, Any]  # type: ignore[explicit-any]
 
 MISSING = "нет данных"
 
@@ -66,24 +70,24 @@ footer{color:var(--dim);font-size:12px;margin-top:32px;border-top:1px solid var(
 """
 
 
-def _esc(value: Any) -> str:
+def _esc(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
-def _thousands(value: Any) -> str:
+def _thousands(value: object) -> str:
     if not isinstance(value, int):
         return _esc(value)
     return f"{value:,}".replace(",", " ")
 
 
-def _decimal(value: Any, places: int = 2) -> str:
+def _decimal(value: object, places: int = 2) -> str:
     """Russian copy uses a comma for the decimal separator and a space for thousands."""
     if not isinstance(value, (int, float)):
         return _esc(value)
     return f"{value:,.{places}f}".replace(",", " ").replace(".", ",")
 
 
-def _compact(value: Any) -> str:
+def _compact(value: object) -> str:
     if not isinstance(value, int):
         return _esc(value)
     for limit, suffix in ((1_000_000_000, "млрд"), (1_000_000, "млн"), (1_000, "тыс")):
@@ -92,7 +96,7 @@ def _compact(value: Any) -> str:
     return str(value)
 
 
-def _bars(rows: list, css: str = "") -> str:
+def _bars(rows: Sequence[tuple[str, float, str]], css: str = "") -> str:
     """Rows are (label, numeric value, display value); the widest row sets the scale."""
     if not rows:
         return '<p class="missing">нет данных</p>'
@@ -120,11 +124,11 @@ def _stat(label: str, value: str, note: str = "") -> str:
     )
 
 
-def _claude_input(bucket: dict) -> int:
+def _claude_input(bucket: JsonObject) -> int:
     return sum(int(bucket.get(field, 0)) for field in CLAUDE_INPUT_FIELDS)
 
 
-def _hero(report: dict) -> str:
+def _hero(report: JsonObject) -> str:
     claude, codex = report["claude"], report["codex"]
     total = 0
     parts = []
@@ -152,7 +156,7 @@ def _hero(report: dict) -> str:
     )
 
 
-def _models_panel(title: str, usage: dict, input_of, css: str) -> str:
+def _models_panel(title: str, usage: JsonObject, input_of: Callable[[JsonObject], int], css: str) -> str:
     if usage.get("status") != "ok":
         return _panel(title, f'<p class="missing">{_esc(usage.get("reason", MISSING))}</p>')
     rows = []
@@ -234,7 +238,7 @@ def _comparison_panel(comparison: object) -> str:
     )
 
 
-def _cache_panel(cache: Any) -> str:
+def _cache_panel(cache: object) -> str:
     if not isinstance(cache, dict):
         return _panel("Из чего состоял вход Claude", f'<p class="missing">{_esc(MISSING)}</p>')
     read, write, fresh = cache["cache_read_percent"], cache["cache_write_percent"], cache["fresh_percent"]
@@ -262,7 +266,7 @@ def _cache_panel(cache: Any) -> str:
     )
 
 
-def _cost_panel(cost: dict) -> str:
+def _cost_panel(cost: JsonObject) -> str:
     if cost.get("status") != "ok":
         return _panel("Деньги", f'<p class="missing">{_esc(cost.get("reason", MISSING))}</p>')
     currency = cost["currency"]
@@ -293,7 +297,7 @@ def _cost_panel(cost: dict) -> str:
     )
 
 
-def _window_panel(report: dict) -> str:
+def _window_panel(report: JsonObject) -> str:
     rows = []
     quota = report["claude"].get("quota") if isinstance(report["claude"], dict) else None
     if isinstance(quota, dict):
@@ -316,9 +320,9 @@ def _window_panel(report: dict) -> str:
     )
 
 
-def _tickets_panel(report: dict) -> str:
+def _tickets_panel(report: JsonObject) -> str:
     rows = []
-    by_ticket: dict = {}
+    by_ticket: JsonObject = {}
     for entry in report["volume"]["entries"]:
         if entry.get("status") != "ok":
             continue
@@ -351,7 +355,7 @@ def _tickets_panel(report: dict) -> str:
     )
 
 
-def _session_stats_panel(claude: dict) -> str:
+def _session_stats_panel(claude: JsonObject) -> str:
     if claude.get("status") != "ok" or not claude.get("session_stats"):
         return ""
     stats = claude["session_stats"]
@@ -367,7 +371,7 @@ def _session_stats_panel(claude: dict) -> str:
     )
 
 
-def _orchestration_panel(orchestration: Any) -> str:
+def _orchestration_panel(orchestration: object) -> str:
     if not isinstance(orchestration, dict) or orchestration.get("status") != "ok":
         reason = orchestration.get("reason", MISSING) if isinstance(orchestration, dict) else MISSING
         return _panel("Оркестрация", f'<p class="missing">{_esc(reason)}</p>')
@@ -397,7 +401,7 @@ def _orchestration_panel(orchestration: Any) -> str:
     )
 
 
-def build_html(report: dict) -> str:
+def build_html(report: JsonObject) -> str:
     totals = report["volume"]["totals"]
     claude, codex = report["claude"], report["codex"]
     comparison_panel = _comparison_panel(report.get("comparison"))
@@ -457,7 +461,7 @@ def build_html(report: dict) -> str:
     )
 
 
-def write_dashboard(report: dict, destination: Path) -> Path:
+def write_dashboard(report: JsonObject, destination: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(build_html(report), encoding="utf-8", newline="\n")
     return destination
