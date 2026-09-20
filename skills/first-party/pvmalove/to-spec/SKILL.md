@@ -30,7 +30,7 @@ You must execute this skill in two distinct phases to ensure the user agrees wit
 2. **Publish to Tracker:** Publish the issue using the CLI: `gh issue create --body-file <path>`.
     - **CRITICAL:** Do NOT use an inline `--body` heredoc. Spec bodies contain characters (nested quotes, backticks, etc.) that break heredoc quoting. Always use `--body-file`.
 3. **Apply Labels:** This published issue acts as the feature's **epic**. Apply the following labels (see `docs/agents/triage-labels.md` for the full taxonomy):
-    - `bug` OR `enhancement`
+    - `type::bug` OR `type::feature`
     - `status::specs` (Do NOT use `status::ready` as it requires decomposition first).
     - `task-report::required` (unless told to skip).
     - *Note:* Do NOT create ad-hoc `epic::<slug>` labels. `/to-tickets` will handle linking sub-tasks natively later, as GitHub sub-issues — see `docs/agents/issue-tracker.md#wayfinding-operations` for the mechanism.
