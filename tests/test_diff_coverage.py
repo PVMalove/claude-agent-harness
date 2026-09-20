@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import subprocess
 import tempfile
 import types
 import unittest
@@ -147,6 +148,33 @@ class MainCoverageRunTests(unittest.TestCase):
         self.assertEqual(exit_code, 3)
         command = run.call_args.args[0]
         self.assertIn(f"--source={','.join(diff_coverage.source_dirs(changed))}", command)
+
+
+class ChangedLinesTests(unittest.TestCase):
+    def _git(self, root: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            check=True, capture_output=True, text=True, encoding="utf-8",
+        ).stdout.strip()
+
+    def test_a_file_renamed_to_py_counts_only_its_real_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._git(root, "init", "-q")
+            (root / "tool").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+            base = self._git(root, "rev-parse", "HEAD")
+            self._git(root, "mv", "tool", "tool.py")
+            (root / "tool.py").write_text("a = 1\nb = 20\nc = 3\n", encoding="utf-8")
+            (root / "notes.txt").write_text("not python\n", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "rename")
+
+            with mock.patch.object(diff_coverage, "ROOT", root):
+                changed = diff_coverage._changed_lines(base)
+
+        self.assertEqual(changed, {"tool.py": {2}})
 
 
 if __name__ == "__main__":

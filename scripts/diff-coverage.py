@@ -57,9 +57,12 @@ _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 def _changed_lines(base: str) -> dict[str, set[int]]:
-    """Return {repo-relative posix path: {added line numbers}} for *.py files changed since base."""
+    """Return {repo-relative posix path: {added line numbers}} for *.py files changed since base.
+
+    The diff is not narrowed by a ``*.py`` pathspec: that would hide the old name of a file renamed
+    to ``.py`` and turn the whole file into added lines instead of only its real changes."""
     diff = subprocess.run(
-        ["git", "-C", str(ROOT), "diff", "--unified=0", "--no-color", base, "--", "*.py"],
+        ["git", "-C", str(ROOT), "diff", "--find-renames", "--unified=0", "--no-color", base],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -73,7 +76,8 @@ def _changed_lines(base: str) -> dict[str, set[int]]:
     for line in diff.stdout.splitlines():
         if line.startswith("+++ "):
             path = line[len("+++ ") :]
-            current_path = None if path == "/dev/null" else path.removeprefix("b/")
+            path = path.removeprefix("b/")
+            current_path = path if path.endswith(".py") else None
             continue
         if line.startswith("@@"):
             match = _HUNK_RE.match(line)
