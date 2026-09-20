@@ -430,3 +430,32 @@ context_limit` и доли `context_warn_ratio` (по умолчанию `0.8`) 
 остаётся coordinator-ом, как и для любого сигнала, кроме auto-resume по recognized rate limit.
 _Avoid_: Continuation authorization (это авторизует `dispatch resume`, context advisory ничего не
 авторизует), скрытый лимит вместо baseline-ориентира.
+
+**Context pressure** (`context_pressure`, `coordinator.py dispatch context-pressure`):
+Записанное в batch наблюдение `observed_tokens`/`context_limit`/`warning_threshold`/`level`
+(`ok`/`warning`/`critical`)/`recorded_at` для одного dispatch. Источник — только provider или runtime
+(`probe`, `provider-usage`, `runtime-adapter`), никогда self-report модели. Чистое наблюдение: не
+меняет `next_action`, не создаёт retry и не снимает approval; при `critical` требует от worker-а
+checkpoint на зелёной границе TDD или structured blocker. Даёт единственное основание для категории
+retry `context-pressure`.
+_Avoid_: Context advisory (расчёт на чтении из telemetry, без записи и без обязанности worker-а),
+самооценка контекста моделью.
+
+**Transition digest** (`transition_digest`, `coordinator.py dispatch propose`):
+SHA-256 канонического перехода: batch, предыдущий dispatch и роль, reason category, следующая
+роль/действие, candidate SHA, base SHA, review scope, verification commands, Context Package ID,
+required gates. Хранится в approval и immutable brief; явное approval действует только для точно
+этого digest.
+_Avoid_: подпись brief (`brief_sha256` защищает целостность записи, digest — соответствие
+одобренному переходу).
+
+**Attention state** (`needs_attention`, `batch attention check`/`resolve`):
+Флаг batch, а не lifecycle-состояние: поднимается на unknown-reason retry, повторных operational
+retry, долго стоящем retry, устаревшем Context Package/base и stale dispatch. Пока он стоит, следующий
+dispatch не создаётся; evidence и candidate не трогаются. Снимает его только человек.
+_Avoid_: `blocked` (терминальное состояние), автоматический сброс по таймауту.
+
+**Retry idempotency key** (`retry_idempotency_key`):
+SHA-256 от роли, candidate SHA, base SHA, review scope, reason category и digest verification commands
+для `architect`/`code-review`/`qa`/publish. Два активных dispatch с одним ключом запрещены; завершённый
+retry не мешает новому dispatch с новым immutable ID.

@@ -1049,12 +1049,29 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 "--expected-service", "backend",
                 "--expected-changed-lines", "10",
             ])
-        return subprocess.run(
-            [sys.executable, str(coordinator_path), "--repo", str(orchestration_project), *arguments],
-            capture_output=True,
-            text=True,
-            env=coordinator_env,
-        )
+        def run_once(command_arguments):
+            return subprocess.run(
+                [sys.executable, str(coordinator_path), "--repo", str(orchestration_project), *command_arguments],
+                capture_output=True,
+                text=True,
+                env=coordinator_env,
+            )
+
+        # An explicit approval is bound to the transition it was shown: mirror the operator, who runs
+        # `dispatch propose` with the same arguments and approves the digest it prints.
+        creates = [i for i, item in enumerate(arguments[:-1]) if item == "dispatch" and arguments[i + 1] == "create"]
+        if creates and "--approved-by" in arguments and "--transition-digest" not in arguments:
+            proposal_arguments = list(arguments)
+            proposal_arguments[creates[0] + 1] = "propose"
+            for flag in ("--approved-by", "--approved-at"):
+                if flag in proposal_arguments:
+                    position = proposal_arguments.index(flag)
+                    del proposal_arguments[position:position + 2]
+            proposal = run_once(proposal_arguments)
+            if proposal.returncode != 0:
+                return proposal  # the same refusal a create would give, before anything is approved
+            arguments.extend(["--transition-digest", json.loads(proposal.stdout)["transition_digest"]])
+        return run_once(arguments)
 
     def sync_origin_base(ref: str = "main") -> None:
         """Push local HEAD to origin's tracked ref so `batch create`'s mandatory fetch sees a

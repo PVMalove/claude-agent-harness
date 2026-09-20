@@ -21,9 +21,11 @@ import subprocess
 import tempfile
 import unittest
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
-from harness.orchestration import contract, coordinator, coordinator_cli, qa_lane
+from harness.orchestration import contract, coordinator, coordinator_cli, extensions, operational_guards, qa_lane
 from harness.orchestration.ledger import BatchRecord, DispatchStatusRecord, LifecycleLedger
 
 ORCHESTRATION_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
@@ -109,11 +111,15 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         ))
 
     def _create_architect_dispatch(self, batch_id: str) -> dict:
-        return coordinator.create_dispatch(_ns(
+        fields = dict(
             repo=str(self.repo), state_dir=str(self.state_dir),
             batch=batch_id, role="architect", runtime="claude", purpose="work",
             candidate_commit=None, delta_review_of=None, model="sonnet", effort="high",
-            approved_by="Malove", approved_at="2026-09-17T00:00:00+00:00",
+        )
+        proposal = coordinator.create_dispatch(_ns(propose=True, **fields))
+        return coordinator.create_dispatch(_ns(
+            transition_digest=proposal["transition_digest"],
+            approved_by="Malove", approved_at="2026-09-17T00:00:00+00:00", **fields,
         ))
 
     def _telemetry_payload(
@@ -621,6 +627,45 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
                     any(problem.startswith("orchestration tool_policy") for problem in problems), problems,
                 )
 
+    def _operational_health(self, **sections: object) -> list[str]:
+        path = self.tmp / "orchestration.json"
+        path.write_text(json.dumps({
+            "provider_profiles": {}, "assignment_plans": {}, "backend_zones": {}, "concurrency_budget": 1,
+            "verification_commands": [], **sections,
+        }), encoding="utf-8")
+        return contract.health_problems(path, ORCHESTRATION_ROOT / "roles")
+
+    def test_health_accepts_the_operational_policy_sections(self) -> None:
+        self.assertEqual(self._operational_health(
+            attention_policy={"retry_queue_seconds": 60, "max_infrastructure_retries": 0, "stale_dispatch_seconds": 30},
+            approval_ttl_seconds=600,
+            extensions={"human_notifier": "my_pkg.notify:build", "transport_health": "none"},
+        ), [])
+
+    def test_health_rejects_invalid_operational_policy_sections(self) -> None:
+        invalid = {
+            "attention_policy_type": {"attention_policy": ["x"]},
+            "attention_policy_field": {"attention_policy": {"retry_queue_seconds": 0}},
+            "attention_policy_unknown": {"attention_policy": {"speed": 1}},
+            "attention_policy_negative": {"attention_policy": {"max_infrastructure_retries": -1}},
+            "ttl_zero": {"approval_ttl_seconds": 0}, "ttl_bool": {"approval_ttl_seconds": True},
+            "extensions_list": {"extensions": ["none"]}, "extensions_kind": {"extensions": {"prompt_rewriter": "none"}},
+            "extensions_name": {"extensions": {"human_notifier": "not a name"}},
+            "extensions_type": {"extensions": {"human_notifier": 3}},
+        }
+        for label, sections in invalid.items():
+            with self.subTest(label):
+                self.assertTrue(self._operational_health(**sections), label)
+
+    def test_the_seeded_project_template_is_healthy_and_selects_only_inert_extensions(self) -> None:
+        template = json.loads((ORCHESTRATION_ROOT.parent / "project" / "orchestration.json.tmpl").read_text(encoding="utf-8"))
+        template.pop("$schema", None)
+        self.assertEqual(self._operational_health(**{k: v for k, v in template.items() if k not in {
+            "provider_profiles", "assignment_plans", "backend_zones", "concurrency_budget", "verification_commands",
+        }}), [])
+        self.assertEqual(set(template["extensions"].values()), {"none"})
+        self.assertEqual(coordinator._attention_policy(template), template["attention_policy"])
+
     def test_persist_report_takes_an_explicit_ledger_instead_of_sniffing_the_path(self) -> None:
         """``_persist_report`` (the one write path with no Value Object -- no ``ReportRecord``
         exists) still uses the bare ``Path``+``dict`` primitives, but takes its ``LifecycleLedger``
@@ -831,11 +876,26 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.batch_id = batch["batch_id"]
         return batch
 
-    def _dispatch(self, batch_id: str, role: str, *, purpose: str = "work", candidate: str | None = None) -> dict:
-        return coordinator.create_dispatch(self._args(
+    def _proposal_fields(self, batch_id: str, role: str, purpose: str, candidate: str | None) -> dict:
+        return dict(
             batch=batch_id, role=role, runtime="claude", purpose=purpose, candidate_commit=candidate,
-            delta_review_of=None, model="sonnet", effort="high", **self._approval(),
+            delta_review_of=None, model="sonnet", effort="high",
+        )
+
+    def _propose(self, batch_id: str, role: str, *, purpose: str = "work", candidate: str | None = None) -> dict:
+        """The dry run a human approves: the canonical transition and its digest, no brief written."""
+        return coordinator.create_dispatch(self._args(
+            propose=True, **self._proposal_fields(batch_id, role, purpose, candidate),
         ))
+
+    def _dispatch(
+        self, batch_id: str, role: str, *, purpose: str = "work", candidate: str | None = None,
+        digest: str | None = None,
+    ) -> dict:
+        fields = self._proposal_fields(batch_id, role, purpose, candidate)
+        if digest is None:
+            digest = self._propose(batch_id, role, purpose=purpose, candidate=candidate)["transition_digest"]
+        return coordinator.create_dispatch(self._args(transition_digest=digest, **fields, **self._approval()))
 
     def _start(self, dispatch_id: str, *, checkout: Path | None = None) -> None:
         coordinator.send_dispatch(self._args(
@@ -1215,6 +1275,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._assert_route(decided, role="architect", action="architect", category="unknown", candidate=None)
         with self.assertRaises(coordinator.CoordinatorError):
             self._dispatch(batch["batch_id"], "developer")
+        self.assertTrue(decided["needs_attention"])  # an unknown reason halts automatic dispatch (issue #250)
+        self._resolve_attention(batch["batch_id"])
         self.assertNotEqual(self._dispatch(batch["batch_id"], "architect")["dispatch_id"], brief["dispatch_id"])
 
     def test_developer_retry_after_review_needs_a_new_candidate_and_never_reuses_the_reviewed_one(self) -> None:
@@ -1385,6 +1447,551 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertIsNone(decided["abandoned"]["last_accepted"])
 
 
+    # -- operational guards (issue #250) -------------------------------------------------------
+
+    def _patch_config(self, **policy: object) -> None:
+        """Layer project policy over the zero-config defaults for the rest of the test."""
+        original = coordinator._config
+        patcher = mock.patch.object(coordinator, "_config", lambda repo: {**original(repo), **policy})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _later(seconds: int) -> str:
+        return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+    def _attention(self, batch_id: str, *, after: int = 0) -> dict:
+        with mock.patch.object(coordinator, "_now", return_value=self._later(after)):
+            return coordinator.attention_check(self._args(batch=batch_id))
+
+    def _resolve_attention(self, batch_id: str) -> dict:
+        return coordinator.attention_resolve(self._args(batch=batch_id, note="reviewed by the operator", **self._approval()))
+
+    def _evidence(self, dispatch_id: str) -> list[bytes]:
+        records = self._records()
+        return [
+            (records / "dispatches" / f"{dispatch_id}.json").read_bytes(),
+            (records / "reports" / f"{dispatch_id}.json").read_bytes(),
+            (records / "reports" / f"{dispatch_id}.md").read_bytes(),
+        ]
+
+    def _pressure(self, dispatch_id: str, observed: int, source: str = "provider-usage") -> dict:
+        return coordinator.record_context_pressure(self._args(dispatch=dispatch_id, observed_tokens=observed, source=source))
+
+    def _infra_blocked_and_retried(self, batch_id: str, candidate: str, category: str = "verification-infrastructure") -> dict:
+        first = self._infra_review(batch_id, candidate)
+        self._decide(batch_id, "retry", reason_category=category)
+        return first
+
+    def _edit_batch(self, batch_id: str, **fields: object) -> None:
+        root = coordinator._state_root(self._args(), self.repo)
+        ledger = LifecycleLedger(root)
+        with coordinator._ledger_lock(ledger):
+            batch = coordinator._load_batch(root, batch_id)
+            batch.update(fields)
+            coordinator._replace_record(ledger, BatchRecord.from_dict(batch))
+
+    def _age_heartbeat(self, dispatch_id: str, seconds: int) -> None:
+        root = coordinator._state_root(self._args(), self.repo)
+        ledger = LifecycleLedger(root)
+        with coordinator._ledger_lock(ledger):
+            status = coordinator._load_dispatch_status(root, dispatch_id)
+            old = self._later(-seconds)
+            status.update({"heartbeat_at": old, "updated_at": old})
+            coordinator._replace_record(ledger, DispatchStatusRecord.from_dict(status))
+
+    def _live_architect(self, batch_id: str) -> dict:
+        brief = self._dispatch(batch_id, "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        return brief
+
+    # 1. context pressure
+
+    def test_critical_context_pressure_asks_for_a_checkpoint_but_never_changes_routing(self) -> None:
+        batch = self._create_batch()
+        brief = self._live_architect(batch["batch_id"])
+        before = self._batch_record(batch["batch_id"])
+        brief_bytes = (self._records() / "dispatches" / f"{brief['dispatch_id']}.json").read_bytes()
+
+        ok = self._pressure(brief["dispatch_id"], 100_000)
+        warning = self._pressure(brief["dispatch_id"], 130_000)
+        critical = self._pressure(brief["dispatch_id"], 160_000)
+
+        self.assertEqual([item["level"] for item in (ok, warning, critical)], ["ok", "warning", "critical"])
+        self.assertEqual(
+            {key: critical[key] for key in ("observed_tokens", "context_limit", "warning_threshold", "level")},
+            {"observed_tokens": 160_000, "context_limit": brief["context_budget"], "warning_threshold": 120_000, "level": "critical"},
+        )
+        self.assertTrue(critical["recorded_at"].strip())
+        self.assertTrue(critical["action_required"])
+        self.assertFalse(ok["action_required"])
+        after = self._batch_record(batch["batch_id"])
+        self.assertEqual(len(after["context_pressure"]), 3)
+        for field in ("state", "next_action", "required_next_role", "coordinator_decisions", "dispatches", "coordinator_approval"):
+            self.assertEqual(after.get(field), before.get(field), field)
+        self.assertFalse(after.get("needs_attention", False))
+        self.assertEqual((self._records() / "dispatches" / f"{brief['dispatch_id']}.json").read_bytes(), brief_bytes)
+
+    def test_context_pressure_never_accepts_a_model_self_report_as_telemetry(self) -> None:
+        batch = self._create_batch()
+        brief = self._live_architect(batch["batch_id"])
+
+        for source in ("model-self-report", "self-report", "estimate", ""):
+            with self.subTest(source=source), self.assertRaises(coordinator.CoordinatorError):
+                self._pressure(brief["dispatch_id"], 160_000, source)
+
+        self.assertNotIn("context_pressure", self._batch_record(batch["batch_id"]))
+
+    def test_context_pressure_is_read_from_the_configured_telemetry_provider_when_no_count_is_given(self) -> None:
+        batch = self._create_batch()
+        brief = self._live_architect(batch["batch_id"])
+
+        class Provider:
+            def observe(self, dispatch_id: str) -> extensions.ContextObservation | None:
+                return extensions.ContextObservation(155_000, "runtime-adapter")
+
+        extensions.register("context_telemetry_provider", "test-provider", Provider())
+        self.addCleanup(extensions.unregister, "context_telemetry_provider", "test-provider")
+        self._patch_config(extensions={"context_telemetry_provider": "test-provider"})
+
+        entry = coordinator.record_context_pressure(self._args(dispatch=brief["dispatch_id"], observed_tokens=None, source=None))
+
+        self.assertEqual((entry["observed_tokens"], entry["level"], entry["source"]), (155_000, "critical", "runtime-adapter"))
+
+    def test_continuation_after_critical_pressure_needs_a_checkpoint_and_a_new_model_attestation(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        self._pressure(brief["dispatch_id"], 170_000)
+        resume = dict(
+            dispatch=brief["dispatch_id"], termination_reason="rate_limit", trigger=None, measured_value=None,
+            file=None, note=None, approved_by=None, approved_at=None,
+        )
+
+        with self.assertRaises(coordinator.CoordinatorError):  # pressure alone is not a continuation
+            coordinator.resume_dispatch(self._args(**resume))
+
+        candidate, changed = self._developer_commit("pressure")
+        package_id = self._batch_record(batch["batch_id"])["context_packages"][-1]["context_package_id"]
+        checkpoint = coordinator._prepare_agent_inbox(self.repo) / f"checkpoint-{brief['dispatch_id']}.json"
+        checkpoint.write_text(json.dumps({
+            "dispatch_id": brief["dispatch_id"], "commit_sha": candidate, "changed_files": changed,
+            "remaining_definition_of_done": [], "passing_checks": self._checks(brief), "risks": "none",
+            "blockers": "none", "context_package_id": package_id,
+        }), encoding="utf-8")
+        coordinator.checkpoint_dispatch(self._args(file=str(checkpoint)))
+        coordinator.resume_dispatch(self._args(**resume))
+
+        status = coordinator._load_dispatch_status(coordinator._state_root(self._args(), self.repo), brief["dispatch_id"])
+        self.assertNotIn("model_self_report", status)  # a new session must attest its model again
+        path = coordinator._prepare_agent_inbox(self.repo) / f"{brief['dispatch_id']}.json"
+        path.write_text(json.dumps(self._developer_report(brief, candidate, changed)), encoding="utf-8")
+        with self.assertRaises(coordinator.CoordinatorError):
+            coordinator.submit_report(self._args(file=str(path)))
+        coordinator.self_report_dispatch(self._args(dispatch=brief["dispatch_id"], model="sonnet", worktree=None))
+        self.assertEqual(self._submit(brief["dispatch_id"], self._developer_report(brief, candidate, changed))["state"], "reported")
+
+    def test_context_pressure_retry_needs_a_recorded_critical_observation(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        review = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)["brief"]
+        self._start(review["dispatch_id"], checkout=self.worktree)
+        self._pressure(review["dispatch_id"], 152_000)
+        self._submit(review["dispatch_id"], self._base_report(
+            review, "code-review", outcome="blocked", blockers="context window exhausted",
+            checks_run=self._checks(review, "not-run"),
+            review={"candidate_commit": candidate, "scope": review["review_scope"], **self._axes(("none", []), ("none", []))},
+        ))
+
+        decided = self._decide(batch["batch_id"], "retry", reason_category="context-pressure")
+
+        self._assert_route(decided, role="code-review", action="code-review", category="context-pressure", candidate=candidate)
+        self.assertFalse(decided.get("needs_attention", False))
+
+    # 2. attention state
+
+    def test_a_long_queued_infrastructure_retry_sets_needs_attention_and_blocks_dispatch(self) -> None:
+        self._patch_config(attention_policy={"retry_queue_seconds": 3600})
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        first = self._infra_blocked_and_retried(batch["batch_id"], candidate)
+        evidence = self._evidence(first["dispatch_id"])
+        routed = self._routing(self._batch_record(batch["batch_id"]))
+
+        self.assertFalse(self._attention(batch["batch_id"])["needs_attention"])
+        flagged = self._attention(batch["batch_id"], after=7200)
+
+        self.assertTrue(flagged["needs_attention"])
+        record = self._batch_record(batch["batch_id"])
+        self.assertEqual(record["attention_reason"], "retry-queued-too-long")
+        for field in ("attention_since", "last_safe_action", "recommended_human_action"):
+            self.assertTrue(record[field].strip(), field)
+        self.assertEqual((record["state"], record["next_action"]), ("awaiting-approval", "code-review"))
+        self.assertEqual(self._routing(record), routed)  # the candidate and the route are untouched
+        self.assertEqual(self._evidence(first["dispatch_id"]), evidence)
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+        self.assertIn("attention", caught.exception.message.lower())
+        self.assertEqual(len(self._batch_record(batch["batch_id"])["dispatches"]), len(record["dispatches"]))
+
+        self._resolve_attention(batch["batch_id"])
+
+        self.assertFalse(self._batch_record(batch["batch_id"])["needs_attention"])
+        self.assertFalse(self._attention(batch["batch_id"], after=7200)["needs_attention"])  # acknowledged, not re-raised
+        self.assertNotEqual(self._dispatch(batch["batch_id"], "code-review", candidate=candidate)["dispatch_id"], first["dispatch_id"])
+        self.assertEqual(self._evidence(first["dispatch_id"]), evidence)
+
+    def test_repeated_infrastructure_retries_set_needs_attention(self) -> None:
+        self._patch_config(attention_policy={"max_infrastructure_retries": 1})
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._infra_blocked_and_retried(batch["batch_id"], candidate, "transport")
+        self.assertFalse(self._batch_record(batch["batch_id"]).get("needs_attention", False))
+
+        self._infra_blocked_and_retried(batch["batch_id"], candidate, "transport")
+
+        record = self._batch_record(batch["batch_id"])
+        self.assertTrue(record["needs_attention"])
+        self.assertEqual(record["attention_reason"], "infrastructure-retry-repeated")
+        self.assertEqual(record["state"], "awaiting-approval")
+        with self.assertRaises(coordinator.CoordinatorError):
+            self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+
+    def test_an_unknown_retry_reason_sets_needs_attention_and_notifies_the_human_adapter(self) -> None:
+        class Recorder:
+            def __init__(self) -> None:
+                self.events: list[extensions.AttentionEvent] = []
+
+            def notify(self, event: extensions.AttentionEvent) -> None:
+                self.events.append(event)
+
+        recorder = Recorder()
+        extensions.register("human_notifier", "test-recorder", recorder)
+        self.addCleanup(extensions.unregister, "human_notifier", "test-recorder")
+        self._patch_config(extensions={"human_notifier": "test-recorder"})
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._infra_review(batch["batch_id"], candidate)
+
+        decided = self._decide(batch["batch_id"], "retry")
+
+        self._assert_route(decided, role="developer", action="developer-retry", category="unknown", candidate=candidate)
+        self.assertTrue(decided["needs_attention"])
+        self.assertEqual(decided["attention_reason"], "unknown-reason")
+        self.assertEqual([(event.batch_id, event.reason) for event in recorder.events], [(batch["batch_id"], "unknown-reason")])
+        with self.assertRaises(coordinator.CoordinatorError):
+            self._dispatch(batch["batch_id"], "developer")
+        self._resolve_attention(batch["batch_id"])
+        self.assertEqual(self._dispatch(batch["batch_id"], "developer")["brief"]["role"], "developer")
+
+    def test_a_broken_notification_adapter_never_blocks_the_attention_state(self) -> None:
+        class Broken:
+            def notify(self, event: extensions.AttentionEvent) -> None:
+                raise RuntimeError("chat is down")
+
+        extensions.register("human_notifier", "test-broken", Broken())
+        self.addCleanup(extensions.unregister, "human_notifier", "test-broken")
+        self._patch_config(extensions={"human_notifier": "test-broken"})
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._infra_review(batch["batch_id"], candidate)
+
+        decided = self._decide(batch["batch_id"], "retry")
+
+        self.assertTrue(decided["needs_attention"])
+        self.assertEqual(decided["attention_events"][-1]["notification"]["status"], "failed")
+
+    def test_a_stale_dispatch_sets_needs_attention_without_touching_its_brief_or_report(self) -> None:
+        batch = self._create_batch()
+        brief = self._live_architect(batch["batch_id"])
+        brief_bytes = (self._records() / "dispatches" / f"{brief['dispatch_id']}.json").read_bytes()
+        self._age_heartbeat(brief["dispatch_id"], 7200)
+
+        flagged = self._attention(batch["batch_id"])
+
+        self.assertTrue(flagged["needs_attention"])
+        record = self._batch_record(batch["batch_id"])
+        self.assertEqual(record["attention_reason"], "stale-dispatch")
+        self.assertEqual(record["state"], "active")
+        self.assertEqual(record["dispatches"][0]["state"], "dispatched")
+        self.assertEqual((self._records() / "dispatches" / f"{brief['dispatch_id']}.json").read_bytes(), brief_bytes)
+        self._submit(brief["dispatch_id"], self._base_report(brief, "architect"))  # the worker may still report
+        self.assertEqual(self._batch_record(batch["batch_id"])["dispatches"][0]["state"], "reported")
+
+    def test_a_pinned_context_package_that_went_stale_sets_needs_attention(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._dispatch(batch["batch_id"], "code-review", candidate=candidate)  # approved, not yet sent
+        self.assertFalse(self._attention(batch["batch_id"])["needs_attention"])
+
+        self._edit_batch(batch["batch_id"], integration_base_commit="f" * 40)
+        flagged = self._attention(batch["batch_id"])
+
+        self.assertTrue(flagged["needs_attention"])
+        self.assertEqual(self._batch_record(batch["batch_id"])["attention_reason"], "stale-evidence")
+
+    def test_a_stale_wait_event_also_sets_needs_attention(self) -> None:
+        batch = self._create_batch()
+        brief = self._live_architect(batch["batch_id"])
+        self._age_heartbeat(brief["dispatch_id"], 7200)
+
+        event = coordinator.wait_dispatch(self._args(dispatch=brief["dispatch_id"], timeout=1, poll_interval=1, stale_after=900))
+
+        self.assertEqual(event["event"], "stale")
+        record = self._batch_record(batch["batch_id"])
+        self.assertEqual((record["needs_attention"], record["attention_reason"], record["state"]), (True, "stale-dispatch", "active"))
+
+    # 3. approvals bound to the transition digest
+
+    def test_the_proposal_is_a_dry_run_that_binds_the_canonical_transition(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        dispatches = self._dispatch_ids(batch["batch_id"])
+
+        proposal = self._propose(batch["batch_id"], "code-review", candidate=candidate)
+
+        self.assertEqual(self._dispatch_ids(batch["batch_id"]), dispatches)  # nothing was created
+        transition = proposal["transition"]
+        self.assertEqual(set(transition), set(operational_guards.TRANSITION_FIELDS))
+        self.assertEqual(proposal["transition_digest"], operational_guards.transition_digest(transition))
+        self.assertEqual(
+            (transition["batch_id"], transition["previous_role"], transition["next_role"], transition["candidate_sha"]),
+            (batch["batch_id"], "developer", "code-review", candidate),
+        )
+        created = self._dispatch(batch["batch_id"], "code-review", candidate=candidate, digest=proposal["transition_digest"])
+        brief = created["brief"]
+        self.assertEqual(brief["transition_digest"], proposal["transition_digest"])
+        self.assertEqual(brief["coordinator_approval"]["transition_digest"], proposal["transition_digest"])
+        self.assertEqual(brief["transition"], transition)
+        self.assertEqual(brief["transition"]["context_package_id"], brief["context_package_id"])
+
+    def test_an_approval_is_valid_only_for_the_exact_transition_digest(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        proposal = self._propose(batch["batch_id"], "code-review", candidate=candidate)
+        changes = {
+            "batch_id": "batch-other", "previous_dispatch_id": "dispatch-other", "previous_role": "qa",
+            "reason_category": "transport", "next_role": "qa", "next_action": "qa", "purpose": "publish",
+            "candidate_sha": "e" * 40, "base_sha": "d" * 40, "review_scope": ["services/other.py"],
+            "verification_commands": ["make anything-else"], "context_package_id": "context-package-other",
+            "required_gates": ["everything"],
+        }
+
+        for field, value in changes.items():
+            altered = operational_guards.transition_digest({**proposal["transition"], field: value})
+            with self.subTest(field=field), self.assertRaises(coordinator.CoordinatorError) as caught:
+                self._dispatch(batch["batch_id"], "code-review", candidate=candidate, digest=altered)
+            self.assertIn("digest", caught.exception.message.lower())
+
+        self.assertEqual(len(self._batch_record(batch["batch_id"])["dispatches"]), 2)  # architect + developer only
+
+    def test_an_explicit_approval_without_a_digest_is_rejected(self) -> None:
+        batch = self._create_batch()
+        fields = self._proposal_fields(batch["batch_id"], "architect", "work", None)
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator.create_dispatch(self._args(transition_digest=None, **fields, **self._approval()))
+
+        self.assertIn("digest", caught.exception.message.lower())
+        self.assertEqual(self._dispatch_ids(batch["batch_id"]), [])
+
+    def test_a_policy_approval_is_bound_to_its_own_transition_digest(self) -> None:
+        self._patch_config(approval_policy="milestone")
+        batch = self._create_batch()
+        fields = self._proposal_fields(batch["batch_id"], "architect", "work", None)
+
+        brief = coordinator.create_dispatch(self._args(transition_digest=None, **fields))["brief"]
+
+        self.assertEqual(brief["coordinator_approval"]["approved_by"], "policy:milestone")
+        self.assertEqual(brief["coordinator_approval"]["transition_digest"], brief["transition_digest"])
+
+    def test_an_expired_or_future_dated_approval_fails_closed(self) -> None:
+        batch = self._create_batch()  # its own approval predates the TTL policy set below
+        self._patch_config(approval_ttl_seconds=600)
+        proposal = self._propose(batch["batch_id"], "architect")
+        fields = self._proposal_fields(batch["batch_id"], "architect", "work", None)
+
+        for label, approved_at in (("expired", self.APPROVED_AT), ("future", self._later(7200))):
+            with self.subTest(label), self.assertRaises(coordinator.CoordinatorError) as caught:
+                coordinator.create_dispatch(self._args(
+                    transition_digest=proposal["transition_digest"], approved_by="Malove", approved_at=approved_at, **fields,
+                ))
+            self.assertIn("approval", caught.exception.message.lower())
+
+        self.assertEqual(self._dispatch_ids(batch["batch_id"]), [])
+        fresh = coordinator.create_dispatch(self._args(
+            transition_digest=proposal["transition_digest"], approved_by="Malove", approved_at=self._later(-30), **fields,
+        ))
+        self.assertEqual(fresh["state"], "approved")
+
+    def test_a_denied_terminal_approval_is_not_retried_and_advances_nothing(self) -> None:
+        batch = self._create_batch()
+        self._patch_config(human_approval_gate="tty")  # after the batch: approving it would prompt a real terminal
+        proposal = self._propose(batch["batch_id"], "architect")
+        fields = self._proposal_fields(batch["batch_id"], "architect", "work", None)
+        denied = coordinator.CoordinatorError("human approval was not confirmed on the terminal", remedy="ask again")
+
+        with mock.patch.object(coordinator, "_confirm_on_terminal", side_effect=denied) as confirm:
+            with self.assertRaises(coordinator.CoordinatorError):
+                coordinator.create_dispatch(self._args(
+                    transition_digest=proposal["transition_digest"], **fields, **self._approval(),
+                ))
+
+        self.assertEqual(confirm.call_count, 1)
+        self.assertEqual(self._dispatch_ids(batch["batch_id"]), [])
+
+    def test_a_new_candidate_cannot_reuse_an_old_approval_context_package_or_review_evidence(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        first_candidate = self._accepted_candidate(batch["batch_id"], "a")
+        first_proposal = self._propose(batch["batch_id"], "code-review", candidate=first_candidate)
+        blocker = {"severity": "blocker", "summary": "wrong", "evidence": "a.py:1"}
+        first = self._dispatch(batch["batch_id"], "code-review", candidate=first_candidate, digest=first_proposal["transition_digest"])["brief"]
+        self._start(first["dispatch_id"], checkout=self.worktree)
+        self._submit(first["dispatch_id"], self._base_report(
+            first, "code-review", outcome="blocked", blockers="fix needed", checks_run=self._checks(first, "not-run"),
+            review={"candidate_commit": first_candidate, "scope": first["review_scope"], **self._axes(("none", []), ("blocker", [blocker]))},
+        ))
+        self._decide(batch["batch_id"], "retry")
+        retry = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(retry["dispatch_id"])
+        second_candidate, changed = self._developer_commit("b")
+        self._submit(retry["dispatch_id"], self._developer_report(retry, second_candidate, changed))
+        self._decide(batch["batch_id"], "accept")
+        self._assess(batch["batch_id"], second_candidate, changed)
+
+        with self.assertRaises(coordinator.CoordinatorError):
+            self._dispatch(batch["batch_id"], "code-review", candidate=second_candidate, digest=first_proposal["transition_digest"])
+        second_proposal = self._propose(batch["batch_id"], "code-review", candidate=second_candidate)
+        second = self._dispatch(batch["batch_id"], "code-review", candidate=second_candidate, digest=second_proposal["transition_digest"])["brief"]
+
+        self.assertNotEqual(second_proposal["transition_digest"], first_proposal["transition_digest"])
+        self.assertNotEqual(second["context_package_id"], first["context_package_id"])
+        self.assertNotEqual(second["risk_assessment_id"], first["risk_assessment_id"])
+        self.assertNotEqual(second["retry_idempotency_key"], first["retry_idempotency_key"])
+        self.assertEqual((second["transition"]["previous_role"], second["transition"]["reason_category"]), ("developer", None))
+
+    # 4. read-only retry idempotency
+
+    def test_the_brief_records_an_idempotency_key_only_for_read_only_roles_and_publish(self) -> None:
+        batch = self._create_batch()
+        architect = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(architect["dispatch_id"])
+        self._submit(architect["dispatch_id"], self._base_report(architect, "architect"))
+        self._decide(batch["batch_id"], "accept")
+        developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+
+        self.assertRegex(architect["retry_idempotency_key"], r"^[0-9a-f]{64}$")
+        self.assertIsNone(developer["retry_idempotency_key"])
+
+    def test_an_active_read_only_dispatch_with_the_same_idempotency_key_is_rejected(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._infra_blocked_and_retried(batch["batch_id"], candidate)
+        active = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)["brief"]
+        self._edit_batch(batch["batch_id"], state="awaiting-approval")  # e.g. a coordinator that lost track of it
+        dispatches = self._dispatch_ids(batch["batch_id"])
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+
+        self.assertIn("idempotency", caught.exception.message.lower())
+        self.assertIn(active["dispatch_id"], caught.exception.message)
+        self.assertEqual(self._dispatch_ids(batch["batch_id"]), dispatches)
+
+    def test_a_completed_infrastructure_retry_allows_a_new_dispatch_with_a_new_immutable_id(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        first = self._infra_blocked_and_retried(batch["batch_id"], candidate, "transport")
+        evidence = self._evidence(first["dispatch_id"])
+
+        second = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)["brief"]
+
+        self.assertNotEqual(second["dispatch_id"], first["dispatch_id"])
+        self.assertEqual(second["candidate_commit"], candidate)
+        self.assertEqual(second["transition"]["previous_dispatch_id"], first["dispatch_id"])
+        self.assertEqual(second["transition"]["reason_category"], "transport")
+        self.assertEqual(self._evidence(first["dispatch_id"]), evidence)  # never edited, never replaced
+
+    # 6. the narrow waist: the selected policy is frozen in the brief
+
+    def test_the_brief_freezes_the_selected_policy_and_adds_no_model_tool(self) -> None:
+        batch = self._create_batch()
+        self._patch_config(
+            attention_policy={"retry_queue_seconds": 1800, "max_infrastructure_retries": 3, "stale_dispatch_seconds": 600},
+            approval_ttl_seconds=900,
+            extensions={"transport_health": "none"},
+        )
+        proposal = self._propose(batch["batch_id"], "architect")
+
+        brief = coordinator.create_dispatch(self._args(
+            transition_digest=proposal["transition_digest"], approved_by="Malove", approved_at=self._later(-5),
+            **self._proposal_fields(batch["batch_id"], "architect", "work", None),
+        ))["brief"]
+
+        policy = brief["orchestration_policy"]
+        self.assertEqual(policy["attention"], {"retry_queue_seconds": 1800, "max_infrastructure_retries": 3, "stale_dispatch_seconds": 600})
+        self.assertEqual(policy["approval_ttl_seconds"], 900)
+        self.assertEqual(policy["context_pressure"], {"context_limit": 150_000, "warning_ratio": 0.8})
+        self.assertEqual(policy["extensions"], {kind: "none" for kind in extensions.EXTENSION_KINDS})
+        self.assertEqual(brief["allowed_tools"], ["Read", "Grep", "Glob", "Bash"])  # no capability adds a model tool
+
+    # 9. ledger integrity of every new record
+
+    def test_new_records_pass_ledger_and_batch_integrity_validation(self) -> None:
+        self._patch_config(attention_policy={"retry_queue_seconds": 3600})
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        review = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)["brief"]
+        self._start(review["dispatch_id"], checkout=self.worktree)
+        self._pressure(review["dispatch_id"], 160_000)
+        self._age_heartbeat(review["dispatch_id"], 7200)
+        self._attention(batch["batch_id"])
+        root = coordinator._state_root(self._args(), self.repo)
+
+        LifecycleLedger(root).records_root()  # full generation validation
+        current = coordinator._load_batch(root, batch["batch_id"])
+        coordinator._validate_batch_integrity(root, current)
+        coordinator._validate_dispatch(
+            self.repo, coordinator._config(self.repo), root, current, coordinator._load_dispatch(root, review["dispatch_id"]),
+        )
+
+        tampered = {
+            "context level does not match its numbers": {"context_pressure": [{**current["context_pressure"][0], "level": "ok"}]},
+            "context record was edited": {"context_pressure": [{**current["context_pressure"][0], "observed_tokens": 1}]},
+            "attention without a reason": {"needs_attention": True, "attention_reason": ""},
+            "attention flag is not a boolean": {"needs_attention": "yes"},
+        }
+        for label, fields in tampered.items():
+            with self.subTest(label), self.assertRaises(coordinator.CoordinatorError):
+                coordinator._validate_batch_integrity(root, {**current, **fields})
+
+    def test_a_brief_whose_digest_does_not_match_its_transition_is_rejected(self) -> None:
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        root = coordinator._state_root(self._args(), self.repo)
+        current = coordinator._load_batch(root, batch["batch_id"])
+        forged = {**coordinator._load_dispatch(root, brief["dispatch_id"]), "transition_digest": "0" * 64}
+        current["dispatches"][0]["brief_sha256"] = hashlib.sha256(coordinator._canonical(forged).encode("utf-8")).hexdigest()
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._validate_dispatch(self.repo, coordinator._config(self.repo), root, current, forged)
+
+        self.assertIn("digest", caught.exception.message.lower())
+
+
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     """The pure routing table: structured evidence in, one routing record out (no I/O)."""
 
@@ -1451,6 +2058,38 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 self.assertEqual(routing["previous_role"], stage)
                 self.assertTrue(routing["rationale"].strip())
                 self.assertEqual(routing["candidate_commit"], None if moved else self.CANDIDATE)
+
+    def test_the_reason_categories_are_exactly_the_documented_seven(self) -> None:
+        self.assertEqual(
+            set(coordinator.RETRY_REASON_CATEGORIES),
+            {"code", "requirements", "candidate-change", "verification-infrastructure", "transport", "context-pressure", "unknown"},
+        )
+
+    def test_context_pressure_needs_a_recorded_observation_and_routes_like_an_operational_cause(self) -> None:
+        finding = [{"severity": "warning", "summary": "s", "evidence": "e"}]
+        for stage in ("code-review", "qa", "publish"):
+            report = self._report(standards=("none", []) if stage == "code-review" else None)
+            with self.subTest(stage=stage):
+                proven = coordinator._retry_routing(
+                    stage, report, dispatch_candidate=self.CANDIDATE, current_candidate=self.CANDIDATE,
+                    explicit_category="context-pressure", pressure_recorded=True,
+                )
+                unproven = coordinator._retry_routing(
+                    stage, report, dispatch_candidate=self.CANDIDATE, current_candidate=self.CANDIDATE,
+                    explicit_category="context-pressure", pressure_recorded=False,
+                )
+                self.assertEqual((proven["reason_category"], proven["next_role"], proven["next_action"]), ("context-pressure", stage, stage))
+                self.assertEqual((unproven["reason_category"], unproven["next_role"], unproven["next_action"]), ("unknown", "developer", "developer-retry"))
+        flagged = coordinator._retry_routing(
+            "code-review", self._report(standards=("warning", finding)), dispatch_candidate=self.CANDIDATE,
+            current_candidate=self.CANDIDATE, explicit_category="context-pressure", pressure_recorded=True,
+        )
+        self.assertEqual((flagged["reason_category"], flagged["next_action"]), ("code", "developer-retry"))
+        moved = coordinator._retry_routing(
+            "qa", self._report(standards=None), dispatch_candidate=self.CANDIDATE, current_candidate="d" * 40,
+            explicit_category="context-pressure", pressure_recorded=True,
+        )
+        self.assertEqual((moved["reason_category"], moved["next_action"]), ("candidate-change", "developer-retry"))
 
     def test_an_unlisted_category_is_rejected(self) -> None:
         with self.assertRaises(coordinator.CoordinatorError):
@@ -1527,6 +2166,28 @@ class CoordinatorCliParserTests(unittest.TestCase):
         args = coordinator.parser().parse_args(["dispatch", "status"])
 
         self.assertIs(args.handler, coordinator.dispatch_status)
+
+    def test_operational_guard_commands_resolve_to_their_handlers(self) -> None:
+        parse = coordinator.parser().parse_args
+        approval = ["--approved-by", "Malove", "--approved-at", "2026-09-17T00:01:00+00:00"]
+
+        propose = parse(["dispatch", "propose", "--batch", "batch-1", "--role", "code-review", "--candidate-commit", "abc1234"])
+        create = parse(["dispatch", "create", "--batch", "batch-1", "--transition-digest", "f" * 64, *approval])
+        pressure = parse(["dispatch", "context-pressure", "--dispatch", "dispatch-1", "--observed-tokens", "5", "--source", "provider-usage"])
+
+        self.assertIs(propose.handler, coordinator.create_dispatch)
+        self.assertTrue(propose.propose)
+        self.assertFalse(create.propose)
+        self.assertEqual(create.transition_digest, "f" * 64)
+        self.assertIs(pressure.handler, coordinator.record_context_pressure)
+        self.assertIs(parse(["batch", "attention", "check", "--batch", "batch-1"]).handler, coordinator.attention_check)
+        self.assertIs(
+            parse(["batch", "attention", "resolve", "--batch", "batch-1", "--note", "reviewed", *approval]).handler,
+            coordinator.attention_resolve,
+        )
+        with self.assertRaises(SystemExit):  # a role's own claim is never a telemetry source
+            parse(["dispatch", "context-pressure", "--dispatch", "dispatch-1", "--observed-tokens", "5", "--source", "self-report"])
+        self.assertIn("context-pressure", parse(["batch", "decide", "--batch", "b", "--decision", "retry", "--reason-category", "context-pressure", *approval]).reason_category)
 
     def test_batch_not_required_resolves_to_its_handler(self) -> None:
         args = coordinator.parser().parse_args([

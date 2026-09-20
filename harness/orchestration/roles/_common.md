@@ -47,6 +47,13 @@ commits, and requests a checkpoint instead of continuing in a bloated session. A
 its own output bounded by the same means above and, if genuinely exceeded, escalates a blocker
 instead.
 
+Context pressure is measured by the provider or runtime, never by your own estimate. When the
+coordinator records a `critical` observation for your dispatch, a write role finishes the current TDD
+cycle to a green boundary (every approved verification command passing), commits and requests a
+checkpoint; a role that cannot reach one returns a structured blocker (`outcome: blocked`) that names
+the context pressure. A continuation starts only from that checkpoint, in a new session that attests
+its model again. Recording pressure changes no routing or approval by itself.
+
 Write work happens only on the handoff's issue branch and isolated worktree, only inside the declared
 zone. Protected branches and `integration/*` are never direct write targets. A batch has one active
 writer; role handoffs are sequential. A commit is evidence only after the required checks pass and its

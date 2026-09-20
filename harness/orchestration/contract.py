@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+from .extensions import DEFAULT_EXTENSION, EXTENSION_KINDS, EXTENSION_NAME
 
 
 ROLE_MODES = {"write", "read-only"}
@@ -34,6 +35,7 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "adaptive_continuation_policy", "approval_policy", "low_risk_zones", "context_package_policy",
     "continuation_policy", "retry_policy", "preflight_policy", "worker_attestation_required",
     "communication_policy", "human_approval_gate", "tool_policy",
+    "attention_policy", "approval_ttl_seconds", "extensions",
 }
 # The working set a brief records for a role when the project states no `tool_policy`. It is the
 # role's own set, not a deny-list: global runtime tools stay available whatever a brief records.
@@ -280,9 +282,11 @@ def validate_brief_policy(
     """Validate the policy-owned portion of an approved immutable handoff brief."""
     reject_sensitive(brief, "dispatch brief")
     approval = brief.get("coordinator_approval")
-    if not isinstance(approval, dict) or set(approval) != {"approved_by", "approved_at"} or not all(
-        non_empty(value) for value in approval.values()
-    ):
+    # `transition_digest` binds the approval to the exact transition it was given for; a brief
+    # written before that field existed carries the historical two-field approval.
+    if not isinstance(approval, dict) or set(approval) not in (
+        {"approved_by", "approved_at"}, {"approved_by", "approved_at", "transition_digest"},
+    ) or not all(non_empty(value) for value in approval.values()):
         raise ContractError(
             "dispatch brief requires coordinator_approval with approved_by and approved_at",
             remedy="have the coordinator record coordinator_approval.approved_by and .approved_at before this brief is used",
@@ -431,6 +435,44 @@ def _tool_policy_problems(config: dict[str, Any], role_names: set[str]) -> list[
                 problems.append(
                     f"orchestration tool_policy.{section}.{name} must be a non-empty list of unique tool names"
                 )
+    return problems
+
+
+ATTENTION_POLICY_FIELDS = {"retry_queue_seconds": 1, "max_infrastructure_retries": 0, "stale_dispatch_seconds": 1}
+
+
+def _operational_policy_problems(config: dict[str, Any]) -> list[str]:
+    """`attention_policy`, `approval_ttl_seconds` and `extensions`: the operational-loop policy of issue #250."""
+    problems: list[str] = []
+    attention = config.get("attention_policy")
+    if attention is not None:
+        if not isinstance(attention, dict):
+            problems.append("orchestration attention_policy must be an object")
+        else:
+            unknown = sorted(set(attention) - set(ATTENTION_POLICY_FIELDS))
+            if unknown:
+                problems.append(f"orchestration attention_policy has unknown field(s): {', '.join(unknown)}")
+            for field, minimum in ATTENTION_POLICY_FIELDS.items():
+                value = attention.get(field)
+                if field in attention and (isinstance(value, bool) or not isinstance(value, int) or value < minimum):
+                    qualifier = "a non-negative integer" if minimum == 0 else "a positive integer"
+                    problems.append(f"orchestration attention_policy.{field} must be {qualifier}")
+    ttl = config.get("approval_ttl_seconds")
+    if ttl is not None and (isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 1):
+        problems.append("orchestration approval_ttl_seconds must be a positive integer")
+    selected = config.get("extensions")
+    if selected is not None:
+        if not isinstance(selected, dict):
+            problems.append("orchestration extensions must be an object")
+        else:
+            unknown = sorted(set(selected) - set(EXTENSION_KINDS))
+            if unknown:
+                problems.append(f"orchestration extensions has unknown interface(s): {', '.join(unknown)}")
+            for kind, name in selected.items():
+                if kind in EXTENSION_KINDS and (
+                    not isinstance(name, str) or (name != DEFAULT_EXTENSION and EXTENSION_NAME.fullmatch(name) is None)
+                ):
+                    problems.append(f"orchestration extensions.{kind} must be 'none' or a name like 'module:factory'")
     return problems
 
 
@@ -663,6 +705,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         elif communication_policy["coordinator_report_language"] != "ru":
             problems.append("orchestration communication_policy coordinator_report_language must be ru")
     problems.extend(_tool_policy_problems(config, set(roles)))
+    problems.extend(_operational_policy_problems(config))
     problems.extend(_policy_problem(
         config,
         "context_package_policy",
