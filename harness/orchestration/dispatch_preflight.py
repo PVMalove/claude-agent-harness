@@ -10,10 +10,11 @@ from __future__ import annotations
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Mapping
 
 from ..errors import HarnessError
-from .contract import ContractError, resolve_runtime_name
+from .contract import ContractError, resolve_runtime_name, string_list
+from .ledger import JsonObject, JsonValue
 
 
 class PreflightError(HarnessError):
@@ -32,11 +33,11 @@ class PreparedDispatch:
     worktree_sha: str
     runtime: str
     mandatory_checks: list[str]
-    context_package: dict[str, Any]
-    preview_brief: dict[str, Any]
-    decision_packet: dict[str, Any]
+    context_package: JsonObject
+    preview_brief: JsonObject
+    decision_packet: JsonObject
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> JsonObject:
         return asdict(self)
 
 
@@ -71,14 +72,14 @@ def _worktree_paths(repo: Path) -> set[Path]:
     return paths
 
 
-def _role_context(role: str, state: Mapping[str, Any], snapshot: str) -> dict[str, Any]:
+def _role_context(role: str, state: Mapping[str, JsonValue], snapshot: str) -> JsonObject:
     """Compact, role-specific context pointer metadata; package contents remain ledger-owned."""
     keys = {
         "architect": ("contracts", "neighbour_tickets", "starting_files"),
         "developer": ("architecture_decision", "affected_symbols", "related_tests", "starting_files"),
         "code-review": ("pinned_diff", "prior_findings", "verification_commands", "starting_files"),
     }.get(role, ("starting_files",))
-    included: dict[str, Any] = {"snapshot_sha": snapshot, "role": role}
+    included: JsonObject = {"snapshot_sha": snapshot, "role": role}
     for key in keys:
         value = state.get(key)
         if value not in (None, [], ""):
@@ -86,7 +87,7 @@ def _role_context(role: str, state: Mapping[str, Any], snapshot: str) -> dict[st
     return included
 
 
-def prepare(ticket: str, role: str, project_state: Mapping[str, Any]) -> PreparedDispatch:
+def prepare(ticket: str, role: str, project_state: Mapping[str, JsonValue]) -> PreparedDispatch:
     """Resolve and validate one potential dispatch without creating it.
 
     ``project_state`` is intentionally plain data so a CLI, adapter, or test can call the same
@@ -106,12 +107,12 @@ def prepare(ticket: str, role: str, project_state: Mapping[str, Any]) -> Prepare
             "project_state config must be an object", remedy="set project_state['config'] to a JSON object"
         )
     plans = config.get("assignment_plans")
-    if not isinstance(plans, dict) or not isinstance(plans.get(role), dict):
+    plan = plans.get(role) if isinstance(plans, dict) else None
+    if not isinstance(plan, dict):
         raise PreflightError(
             f"project_state has no assignment plan for role {role!r}",
             remedy=f"add an assignment_plans[{role!r}] object to the project config",
         )
-    plan = plans[role]
     try:
         runtime = resolve_runtime_name(plan, project_state.get("runtime"))
     except ContractError as exc:
@@ -120,9 +121,8 @@ def prepare(ticket: str, role: str, project_state: Mapping[str, Any]) -> Prepare
     branch = _text(project_state.get("branch"), "branch")
     worktree = Path(_text(project_state.get("worktree"), "worktree")).resolve()
     base_sha = _text(project_state.get("base_sha"), "base_sha")
-    candidate = project_state.get("candidate_sha")
-    if candidate is not None:
-        candidate = _text(candidate, "candidate_sha")
+    raw_candidate = project_state.get("candidate_sha")
+    candidate = None if raw_candidate is None else _text(raw_candidate, "candidate_sha")
     integration_ref = _text(project_state.get("integration_ref") or "base", "integration_ref")
     if worktree not in _worktree_paths(repo):
         raise PreflightError(
@@ -147,13 +147,13 @@ def prepare(ticket: str, role: str, project_state: Mapping[str, Any]) -> Prepare
         )
 
     checks = project_state.get("mandatory_checks", [])
-    if not isinstance(checks, list) or not all(isinstance(item, str) and item.strip() for item in checks):
+    if not string_list(checks):
         raise PreflightError(
             "project_state mandatory_checks must be a list of commands",
             remedy="set project_state['mandatory_checks'] to a list of non-empty command strings",
         )
     package = _role_context(role, project_state, expected_sha)
-    preview = {
+    preview: JsonObject = {
         "ticket": ticket,
         "role": role,
         "branch": branch,
@@ -164,9 +164,9 @@ def prepare(ticket: str, role: str, project_state: Mapping[str, Any]) -> Prepare
         "snapshot_commit": expected_sha,
         "candidate_commit": candidate,
         "context_package": package,
-        "verification_commands": checks,
+        "verification_commands": list(checks),
     }
-    packet = {
+    packet: JsonObject = {
         "action": f"create and send {role} dispatch",
         "branch": branch,
         "worktree": str(worktree),
@@ -174,7 +174,7 @@ def prepare(ticket: str, role: str, project_state: Mapping[str, Any]) -> Prepare
         "base_sha": base_sha,
         "snapshot_sha": expected_sha,
         "candidate_sha": candidate,
-        "checks": checks,
+        "checks": list(checks),
         "context_package": package,
         "approval_reason": "the immutable brief will bind this exact runtime, worktree and snapshot",
         "options": ["accept", "retry", "block", "full review", "delta-review"],
