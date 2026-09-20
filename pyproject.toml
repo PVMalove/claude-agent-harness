@@ -27,7 +27,6 @@ files = ["harness"]
 [[tool.mypy.overrides]]
 module = [
     "harness.orchestration.qa_lane",
-    "harness.orchestration.orca_adapter",
     "harness.reporting.delivery_stats",
 ]
 disallow_any_explicit = false

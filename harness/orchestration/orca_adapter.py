@@ -15,9 +15,10 @@ import re
 import subprocess
 import sys
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TypeGuard
 
 # `harness/bin/harness`'s package_files() copies this file verbatim into target projects as
 # `.harness/orchestration/orca_adapter.py` -- a different directory name than the source tree's
@@ -39,7 +40,7 @@ if _HARNESS_ROOT.name != "harness":
     _spec.loader.exec_module(_pkg)
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError, print_and_exit
-from harness.orchestration.contract import ContractError, validate_brief_policy
+from harness.orchestration.contract import ContractError, JsonObject, validate_brief_policy
 
 
 SENSITIVE_KEY = re.compile(
@@ -68,7 +69,7 @@ class OrcaLaunchRejected(DispatchError):
         self.safe_to_fallback = safe_to_fallback
 
 
-def _read_json(path: Path, label: str) -> dict[str, Any]:
+def _read_json(path: Path, label: str) -> JsonObject:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -78,7 +79,7 @@ def _read_json(path: Path, label: str) -> dict[str, Any]:
     return data
 
 
-def _non_empty_string(value: object) -> bool:
+def _non_empty_string(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and bool(value.strip())
 
 
@@ -156,7 +157,7 @@ def _is_ancestor(repo: Path, base: str, candidate: str) -> bool:
     return result.returncode == 0
 
 
-def _reject_sensitive_keys(value: Any, location: str) -> None:
+def _reject_sensitive_keys(value: object, location: str) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             if not isinstance(key, str):
@@ -172,7 +173,9 @@ def _reject_sensitive_keys(value: Any, location: str) -> None:
             _reject_sensitive_keys(child, f"{location}[{index}]")
 
 
-def _validate_brief(brief: dict[str, Any], repo: Path, config: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _validate_brief(
+    brief: Mapping[str, object], repo: Path, config: Mapping[str, object]
+) -> tuple[JsonObject, JsonObject]:
     try:
         role, assignment = validate_brief_policy(
             brief,
@@ -186,15 +189,16 @@ def _validate_brief(brief: dict[str, Any], repo: Path, config: dict[str, Any]) -
 
     candidate = brief.get("candidate_commit")
     role_name = brief["role"]
-    if role_name in {"code-review", "qa"} and candidate is None:
-        raise DispatchError(f"{role_name} dispatch must pin candidate_commit", remedy=f"set candidate_commit before dispatching the {role_name} role")
-    if candidate is not None:
-        candidate = _resolved_commit(repo, candidate)
-        if candidate != brief["candidate_commit"]:
-            raise DispatchError(
-                "dispatch brief candidate_commit must be the full resolved commit SHA",
-                remedy=f"set the brief's candidate_commit to its full resolved SHA {candidate}",
-            )
+    if candidate is None:
+        if role_name in {"code-review", "qa"}:
+            raise DispatchError(f"{role_name} dispatch must pin candidate_commit", remedy=f"set candidate_commit before dispatching the {role_name} role")
+        return role, assignment["runtime_plan"]
+    pinned = _resolved_commit(repo, candidate)
+    if pinned != candidate:
+        raise DispatchError(
+            "dispatch brief candidate_commit must be the full resolved commit SHA",
+            remedy=f"set the brief's candidate_commit to its full resolved SHA {pinned}",
+        )
     if role_name == "code-review":
         scope = brief.get("review_scope")
         if not isinstance(scope, list) or not scope or not all(_non_empty_string(item) for item in scope):
@@ -204,24 +208,25 @@ def _validate_brief(brief: dict[str, Any], repo: Path, config: dict[str, Any]) -
         base = brief.get("review_base")
         if base is not None:
             base = _resolved_commit(repo, base)
-            if not _is_ancestor(repo, base, candidate):
+            if not _is_ancestor(repo, base, pinned):
                 raise DispatchError(
-                    "review_base must be an ancestor of candidate_commit", remedy=f"pass a review_base that is an ancestor of {candidate}"
+                    "review_base must be an ancestor of candidate_commit", remedy=f"pass a review_base that is an ancestor of {pinned}"
                 )
-        if _candidate_files(repo, candidate, base) != scope:
+        if _candidate_files(repo, pinned, base) != scope:
             raise DispatchError(
                 "code-review review_scope does not match the pinned candidate diff",
-                remedy=f"regenerate review_scope from the actual diff between {base!r} and {candidate}",
+                remedy=f"regenerate review_scope from the actual diff between {base!r} and {pinned}",
             )
     return role, assignment["runtime_plan"]
 
 
 
 def _candidate_profiles(
-    config: dict[str, Any], plan: dict[str, Any], role: dict[str, Any], preferred: object = None
+    config: Mapping[str, object], plan: Mapping[str, object], role: Mapping[str, object], preferred: object = None
 ) -> list[tuple[str, str, str | None]]:
     profiles = config.get("provider_profiles")
-    if not isinstance(profiles, dict) or not isinstance(plan.get("profiles"), list):
+    plan_profiles = plan.get("profiles")
+    if not isinstance(profiles, dict) or not isinstance(plan_profiles, list):
         raise DispatchError(
             "project orchestration config has no valid provider profiles",
             remedy="set provider_profiles to an object and the assignment plan's profiles to a list",
@@ -263,7 +268,7 @@ def _candidate_profiles(
         for fallback_id in fallback:
             add(fallback_id)
 
-    profile_ids = [preferred] if preferred is not None else plan["profiles"]
+    profile_ids = [preferred] if preferred is not None else plan_profiles
     for profile_id in profile_ids:
         add(profile_id)
     if not candidates:
@@ -280,7 +285,7 @@ def _orca_command(orca_bin: str, args: list[str]) -> list[str]:
     return [orca_bin, *args]
 
 
-def _run_orca(orca_bin: str, args: list[str]) -> dict[str, Any]:
+def _run_orca(orca_bin: str, args: list[str]) -> JsonObject:
     result = subprocess.run(
         _orca_command(orca_bin, args), capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
@@ -302,7 +307,7 @@ def _run_orca(orca_bin: str, args: list[str]) -> dict[str, Any]:
     return payload
 
 
-def _active_workers(payload: dict[str, Any]) -> int:
+def _active_workers(payload: Mapping[str, object]) -> int:
     result = payload.get("result", payload)
     workers = result.get("workers", []) if isinstance(result, dict) else []
     if not isinstance(workers, list):
@@ -310,8 +315,8 @@ def _active_workers(payload: dict[str, Any]) -> int:
     return len(workers)
 
 
-def _result_id(payload: dict[str, Any], keys: tuple[str, ...]) -> str | None:
-    value: Any = payload.get("result", payload)
+def _result_id(payload: Mapping[str, object], keys: tuple[str, ...]) -> str | None:
+    value: object = payload.get("result", payload)
     for key in keys:
         if isinstance(value, dict):
             value = value.get(key)
@@ -320,7 +325,7 @@ def _result_id(payload: dict[str, Any], keys: tuple[str, ...]) -> str | None:
     return value if _non_empty_string(value) else None
 
 
-def _write_record(records_dir: Path, record: dict[str, Any]) -> Path:
+def _write_record(records_dir: Path, record: Mapping[str, object]) -> Path:
     records_dir.mkdir(parents=True, exist_ok=True)
     path = records_dir / f"{record['dispatch_id']}.json"
     try:
@@ -334,7 +339,7 @@ def _write_record(records_dir: Path, record: dict[str, Any]) -> Path:
     return path
 
 
-def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) -> dict[str, Any]:
+def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) -> dict[str, str | None]:
     config = _read_json(repo / ".harness" / "orchestration.json", "project orchestration config")
     brief = _read_json(Path(args.brief), "dispatch brief")
     _reject_sensitive_keys(config, "project orchestration config")
@@ -428,7 +433,7 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
     ) from last_error
 
 
-def dispatch(args: argparse.Namespace) -> dict[str, Any]:
+def dispatch(args: argparse.Namespace) -> dict[str, str | None]:
     repo = Path(args.repo).resolve()
     records_dir = Path(args.records_dir).resolve() if args.records_dir else repo / ".harness" / "orca-dispatches"
     records_dir.mkdir(parents=True, exist_ok=True)
