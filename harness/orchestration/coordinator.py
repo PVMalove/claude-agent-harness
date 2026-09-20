@@ -59,7 +59,7 @@ from harness.orchestration.ledger import (
     LedgerError, LedgerRecordVO, LifecycleLedger, PlanRecord, RiskAssessmentRecord,
 )
 from harness.orchestration.coordinator_cli import build_parser
-from harness.orchestration import qa_lane
+from harness.orchestration import extensions, operational_guards, qa_lane
 from harness.orchestration.runtime_attestation import AttestationError, attest as attest_runtime_worktree
 
 JsonObject = dict[str, Any]  # type: ignore[explicit-any]  # dynamic JSON boundary: ledger/config/report payloads are json.loads output validated at runtime by the *_FIELDS sets
@@ -76,7 +76,7 @@ TERMINAL_BATCH_STATES = {"completed", "failed", "blocked", "not-required", "aban
 # Why a role stopped, as the coordinator records it. Only the first two are operational evidence:
 # they never change what a role would conclude, so they alone may re-run a read-only role (or the
 # publish boundary) on the same candidate. Everything else, or anything unclear, needs a developer.
-OPERATIONAL_REASON_CATEGORIES = ("verification-infrastructure", "transport")
+OPERATIONAL_REASON_CATEGORIES = ("verification-infrastructure", "transport", "context-pressure")
 DEVELOPER_REASON_CATEGORIES = ("code", "requirements", "candidate-change")
 RETRY_REASON_CATEGORIES = (*OPERATIONAL_REASON_CATEGORIES, *DEVELOPER_REASON_CATEGORIES, "unknown")
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
@@ -120,7 +120,10 @@ DISPATCH_FIELDS = {
     "snapshot_commit",
     "report_staging_path",
     "allowed_tools", "context_budget",
+    "transition", "transition_digest", "retry_idempotency_key", "orchestration_policy",
 }
+# The four fields of the transition-bound approval contract (issue #250) are all present or all absent.
+POLICY_BRIEF_FIELDS = frozenset({"transition", "transition_digest", "retry_idempotency_key", "orchestration_policy"})
 DEFAULT_TEST_PATH_PATTERNS = ("tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py")
 REPORT_FIELDS = {
     "dispatch_id",
@@ -185,6 +188,22 @@ DEFAULT_PREFLIGHT_POLICY = {
     "max_expected_changed_lines": 800,
     "max_expected_context_tokens": 80_000,
 }
+DEFAULT_ATTENTION_POLICY = {
+    "retry_queue_seconds": 3_600,
+    "max_infrastructure_retries": 2,
+    "stale_dispatch_seconds": DEFAULT_STALE_AFTER_SECONDS,
+}
+# Policy fields where zero is a meaningful "tolerate none"; every other numeric policy value is positive.
+ZERO_ALLOWED_POLICY_FIELDS = {("retry_policy", "max_developer_retries"), ("attention_policy", "max_infrastructure_retries")}
+APPROVAL_CLOCK_SKEW_SECONDS = 300
+# Only a value the provider or runtime observed is context telemetry; a model's own claim never is.
+CONTEXT_TELEMETRY_SOURCES = ("probe", "provider-usage", "runtime-adapter")
+CONTEXT_PRESSURE_FIELDS = {
+    "pressure_id", "dispatch_id", "observed_tokens", "context_limit", "warning_threshold", "level", "recorded_at",
+    "source", "action_required", "required_worker_action", "record_sha256",
+}
+ATTENTION_EVENT_KINDS = {"raised", "resolved"}
+ATTENTION_STATE_FIELDS = ("attention_reason", "attention_since", "last_safe_action", "recommended_human_action")
 DEFAULT_RATE_LIMIT_RETRY_SECONDS = 60
 MAX_CHECK_EVIDENCE_CHARS = 1_600
 CONTINUATION_FACTS_FIELDS = {"dispatch_id", "remaining_definition_of_done", "risks", "dependencies"}
@@ -483,7 +502,7 @@ def _numeric_policy(config: JsonObject, key: str, defaults: dict[str, int]) -> d
         return resolved
     for name, default in defaults.items():
         value = configured.get(name)
-        minimum = 0 if key == "retry_policy" and name == "max_developer_retries" else 1
+        minimum = 0 if (key, name) in ZERO_ALLOWED_POLICY_FIELDS else 1
         if isinstance(value, int) and not isinstance(value, bool) and value >= minimum:
             resolved[name] = value
     return resolved
@@ -505,6 +524,35 @@ def _continuation_policy(config: JsonObject) -> dict[str, int]:
 
 def _retry_policy(config: JsonObject) -> dict[str, int]:
     return _numeric_policy(config, "retry_policy", DEFAULT_RETRY_POLICY)
+
+
+def _attention_policy(config: JsonObject) -> dict[str, int]:
+    return _numeric_policy(config, "attention_policy", DEFAULT_ATTENTION_POLICY)
+
+
+def _approval_ttl(config: JsonObject) -> int | None:
+    """Seconds an explicit approval stays valid; ``None`` (the default) means it does not expire."""
+    value = config.get("approval_ttl_seconds")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else None
+
+
+def _extension_names(config: JsonObject) -> dict[str, str]:
+    try:
+        return extensions.selected(config)
+    except extensions.ExtensionError as exc:
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+
+
+def _orchestration_policy(config: JsonObject) -> JsonObject:
+    """The operational policy this brief runs under. Recorded in the immutable brief so a later edit
+    to `.harness/orchestration.json` never changes what an in-flight dispatch was approved under."""
+    adaptive = _adaptive_continuation_policy(config)
+    return {
+        "approval_ttl_seconds": _approval_ttl(config),
+        "attention": dict(_attention_policy(config)),
+        "context_pressure": {"context_limit": adaptive["context_limit"], "warning_ratio": adaptive["context_warn_ratio"]},
+        "extensions": _extension_names(config),
+    }
 
 
 def _preflight_policy(config: JsonObject) -> JsonObject:
@@ -1189,7 +1237,66 @@ def clean_ledger(args: argparse.Namespace) -> JsonObject:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
+def _validate_operational_batch_fields(batch: JsonObject) -> None:
+    """Shape and integrity of the batch-level records issue #250 added. Every field is optional, so a
+    batch written before them stays valid; one that carries them must carry them well-formed."""
+    for entry in batch.get("context_pressure", []):
+        if not isinstance(entry, dict) or set(entry) != CONTEXT_PRESSURE_FIELDS:
+            raise CoordinatorError("batch context_pressure record schema mismatch", remedy="the batch context_pressure record is malformed -- " + INTERNAL_INVARIANT_REMEDY)
+        body = {key: value for key, value in entry.items() if key != "record_sha256"}
+        if entry["record_sha256"] != hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest():
+            raise CoordinatorError("batch context_pressure record failed immutable integrity check", remedy="a context_pressure record was modified after its hash was recorded -- " + INTERNAL_INVARIANT_REMEDY)
+        numbers = (entry["observed_tokens"], entry["context_limit"], entry["warning_threshold"])
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in numbers) or entry["warning_threshold"] > entry["context_limit"]:
+            raise CoordinatorError("batch context_pressure record has invalid token numbers", remedy="the context_pressure record numbers are malformed -- " + INTERNAL_INVARIANT_REMEDY)
+        if entry["level"] != operational_guards.level_for(*numbers) or entry["source"] not in CONTEXT_TELEMETRY_SOURCES:
+            raise CoordinatorError("batch context_pressure level or source does not match its record", remedy="the context_pressure level or source is inconsistent -- " + INTERNAL_INVARIANT_REMEDY)
+    if "needs_attention" in batch:
+        flag = batch["needs_attention"]
+        if not isinstance(flag, bool):
+            raise CoordinatorError("batch needs_attention must be a boolean", remedy="the batch needs_attention flag is malformed -- " + INTERNAL_INVARIANT_REMEDY)
+        if flag and (
+            not all(_non_empty(batch.get(field)) for field in ATTENTION_STATE_FIELDS)
+            or batch["attention_reason"] not in operational_guards.ATTENTION_REASONS
+        ):
+            raise CoordinatorError("a batch that needs attention must record its reason, time, last safe action and recommended human action", remedy="the batch attention state is incomplete -- " + INTERNAL_INVARIANT_REMEDY)
+    for event in batch.get("attention_events", []):
+        if not isinstance(event, dict) or event.get("event") not in ATTENTION_EVENT_KINDS or not _non_empty(event.get("at")):
+            raise CoordinatorError("batch attention_events entry is malformed", remedy="an attention event is malformed -- " + INTERNAL_INVARIANT_REMEDY)
+    for field in ("attention_open_keys", "attention_acknowledged"):
+        if field in batch and not (isinstance(batch[field], list) and all(_non_empty(item) for item in batch[field])):
+            raise CoordinatorError(f"batch {field} must be a list of keys", remedy=f"the batch {field} is malformed -- " + INTERNAL_INVARIANT_REMEDY)
+
+
+def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> None:
+    """The brief's transition, digest, approval, idempotency key and policy agree with one another
+    and with the brief's own fields; the brief hash already proves none of them was edited alone."""
+    transition = dispatch["transition"]
+    if not isinstance(transition, dict) or set(transition) != set(operational_guards.TRANSITION_FIELDS):
+        raise CoordinatorError("dispatch transition schema mismatch", remedy="the dispatch transition is malformed -- " + INTERNAL_INVARIANT_REMEDY)
+    digest = operational_guards.transition_digest(transition)
+    approval = dispatch.get("coordinator_approval")
+    if dispatch["transition_digest"] != digest or not isinstance(approval, dict) or approval.get("transition_digest") != digest:
+        raise CoordinatorError(
+            "dispatch transition digest does not match its transition and approval",
+            remedy="the dispatch transition digest diverged from its transition or approval -- " + INTERNAL_INVARIANT_REMEDY,
+        )
+    bound = {
+        "batch_id": batch.get("batch_id"), "next_role": dispatch["role"], "purpose": dispatch["purpose"],
+        "candidate_sha": dispatch.get("candidate_commit"), "verification_commands": dispatch["verification_commands"],
+        "context_package_id": dispatch.get("context_package_id"), "required_gates": dispatch["required_gates"],
+    }
+    if any(transition[field] != value for field, value in bound.items()):
+        raise CoordinatorError("dispatch transition does not match its brief", remedy="the dispatch transition diverged from its brief -- " + INTERNAL_INVARIANT_REMEDY)
+    if dispatch["retry_idempotency_key"] != _transition_idempotency_key(dispatch["role"], dispatch["purpose"], transition):
+        raise CoordinatorError("dispatch retry idempotency key does not match its transition", remedy="the dispatch retry idempotency key diverged from its transition -- " + INTERNAL_INVARIANT_REMEDY)
+    policy = dispatch["orchestration_policy"]
+    if not isinstance(policy, dict) or set(policy) != {"approval_ttl_seconds", "attention", "context_pressure", "extensions"}:
+        raise CoordinatorError("dispatch orchestration_policy is malformed", remedy="the dispatch orchestration_policy is malformed -- " + INTERNAL_INVARIANT_REMEDY)
+
+
 def _validate_batch_integrity(root: Path, batch: JsonObject) -> None:
+    _validate_operational_batch_fields(batch)
     plan = _read_object(
         _records_root(root) / "plans" / f"{_safe_id(batch.get('batch_id'), 'batch')}.json", "immutable batch plan",
     )
@@ -1237,6 +1344,8 @@ def _validate_dispatch(repo: Path, config: JsonObject, root: Path, batch: JsonOb
     accepted |= {fields - {"report_staging_path"} for fields in set(accepted)}
     # The role tool policy and context budget were added together, so a brief holds both or neither.
     accepted |= {fields - {"allowed_tools", "context_budget"} for fields in set(accepted)}
+    # The transition-bound approval contract (issue #250) was added as one group as well.
+    accepted |= {fields - POLICY_BRIEF_FIELDS for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError("dispatch record schema mismatch", remedy="the dispatch record schema is malformed -- " + INTERNAL_INVARIANT_REMEDY)
     if dispatch.get("state") != "approved":
@@ -1267,6 +1376,8 @@ def _validate_dispatch(repo: Path, config: JsonObject, root: Path, batch: JsonOb
     entry = next((item for item in batch.get("dispatches", []) if item.get("dispatch_id") == dispatch.get("dispatch_id")), None)
     if not entry or entry.get("brief_sha256") != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest():
         raise CoordinatorError("dispatch record failed immutable brief integrity check", remedy="the dispatch record was modified after its brief integrity hash was recorded -- " + INTERNAL_INVARIANT_REMEDY)
+    if "transition" in dispatch:
+        _validate_transition_binding(dispatch, batch)
     for field in ("ticket", "branch", "worktree", "zone", "definition_of_done", "prohibited_changes", "required_gates", "dependencies"):
         if dispatch[field] != batch[field]:
             raise CoordinatorError(f"dispatch record {field} does not match its batch", remedy=f"the dispatch record's {field} does not match its batch -- " + INTERNAL_INVARIANT_REMEDY)
@@ -1360,7 +1471,7 @@ def _human_approval_gate(config: JsonObject) -> str:
     return cast(str, gate)
 
 
-def _confirm_on_terminal(approved_by: str) -> None:
+def _confirm_on_terminal(approved_by: str, transition_digest: str | None = None) -> None:
     """Take the approval from the controlling terminal instead of from the calling session.
 
     `--approved-by` and `--approved-at` are only claims: a coordinator session holding a shell can
@@ -1368,7 +1479,8 @@ def _confirm_on_terminal(approved_by: str) -> None:
     decision packet. A line read from the real terminal cannot be produced by a non-interactive
     tool call, so under this gate the approval is the operator's or it does not happen.
     """
-    prompt = f"Type 'approve' to record this decision as {approved_by}: "
+    bound = f" (transition {transition_digest[:12]})" if transition_digest else ""
+    prompt = f"Type 'approve' to record this decision as {approved_by}{bound}: "
     try:
         if os.name == "nt":
             stream = open("CONIN$", "r", encoding="utf-8")  # noqa: SIM115 - closed below
@@ -1394,7 +1506,24 @@ def _confirm_on_terminal(approved_by: str) -> None:
         raise CoordinatorError("human approval was not confirmed on the terminal", remedy="run this same decision command in a real interactive terminal so it can prompt for confirmation")
 
 
-def _approval(args: argparse.Namespace) -> dict[str, str]:
+def _require_current_approval(approved_at: str, config: JsonObject) -> None:
+    """Fail closed on an approval outside its window; nothing here ever re-asks or re-uses one."""
+    ttl = _approval_ttl(config)
+    if ttl is None:
+        return
+    age = (datetime.now(timezone.utc) - _moment(approved_at, "approved-at")).total_seconds()
+    if age > ttl:
+        raise CoordinatorError(
+            f"approval expired: approved-at is {int(age)}s old and approval_ttl_seconds is {ttl}",
+            remedy="obtain a fresh human approval for the current transition; an expired approval is never reused",
+        )
+    if age < -APPROVAL_CLOCK_SKEW_SECONDS:
+        raise CoordinatorError(
+            "approval is dated in the future", remedy="pass the real time of the approval in --approved-at",
+        )
+
+
+def _approval(args: argparse.Namespace, transition_digest: str | None = None) -> dict[str, str]:
     approved_by = getattr(args, "approved_by", None)
     approved_at = getattr(args, "approved_at", None)
     if not _non_empty(approved_by) or not _non_empty(approved_at):
@@ -1405,8 +1534,9 @@ def _approval(args: argparse.Namespace) -> dict[str, str]:
         config = _config(_repo(args))
     except CoordinatorError:
         config = {}
+    _require_current_approval(result["approved_at"], config)
     if _human_approval_gate(config) == "tty":
-        _confirm_on_terminal(result["approved_by"])
+        _confirm_on_terminal(result["approved_by"], transition_digest)
     return result
 
 
@@ -1417,13 +1547,16 @@ def _approval_policy(config: JsonObject) -> str:
     return cast(str, policy)
 
 
-def _dispatch_approval(
+def _dispatch_approval_mode(
     args: argparse.Namespace, batch: JsonObject, config: JsonObject, role: str,
     purpose: str, risk: JsonObject | None,
-) -> dict[str, str]:
-    """Apply a project-approved continuation only outside the preserved risk milestones."""
+) -> str:
+    """How this dispatch is approved: ``explicit`` (a human) or ``policy:<name>``.
+
+    A project-approved continuation is allowed only outside the preserved risk milestones.
+    """
     if _non_empty(getattr(args, "approved_by", None)) or _non_empty(getattr(args, "approved_at", None)):
-        return _approval(args)
+        return "explicit"
     policy = batch.get("approval_policy", _approval_policy(config))
     risk_triggered = bool(risk and risk.get("matched_triggers"))
     milestone = purpose == "publish" or role == "qa" or risk_triggered or batch.get("risk_reassessment_required")
@@ -1433,7 +1566,31 @@ def _dispatch_approval(
         zones = config.get("low_risk_zones", [])
         if batch["zone"] not in zones:
             raise CoordinatorError("low_risk continuation requires the batch zone in low_risk_zones", remedy="add the batch's zone to low_risk_zones in the project orchestration config, or use a different approval_policy")
-    return {"approved_by": f"policy:{policy}", "approved_at": _now()}
+    return f"policy:{policy}"
+
+
+def _bind_dispatch_approval(args: argparse.Namespace, mode: str, digest: str) -> dict[str, str]:
+    """Record the approval bound to the exact transition it was given for.
+
+    An explicit approval must name the digest the human saw in the proposal; a different digest --
+    any change of scope, candidate, role, verification command, reason category or Context Package
+    -- means it approved another transition, and nothing is created. A policy approval is derived
+    from the very transition being created, so it binds to its own digest.
+    """
+    if mode != "explicit":
+        return {"approved_by": mode, "approved_at": _now(), "transition_digest": digest}
+    supplied = getattr(args, "transition_digest", None)
+    if not _non_empty(supplied):
+        raise CoordinatorError(
+            "an explicit approval must name the transition digest it approves",
+            remedy=f"run 'dispatch propose' with the same arguments and pass its transition_digest as --transition-digest (currently {digest})",
+        )
+    if supplied.strip() != digest:
+        raise CoordinatorError(
+            f"approval digest does not match the proposed transition: approved {supplied.strip()}, proposed {digest}",
+            remedy="a changed scope, candidate, role, verification command, reason category or Context Package needs a new approval: run 'dispatch propose' again and approve its digest",
+        )
+    return {**_approval(args, digest), "transition_digest": digest}
 
 
 def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
@@ -1507,6 +1664,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                 "snapshot_sha": batch["base_commit"], "candidate_sha": None, "changed_files": [], "checks": [], "risks": "not assessed yet",
                 "blockers": "none", "report": None, "diff": None,
                 "worker_attestation_required": _worker_attestation_required(_config(repo)),
+                "needs_attention": bool(batch.get("needs_attention", False)),
                 "approval_reason": "the next immutable dispatch has not been created",
                 "options": ["accept", "block", "full review"],
             }
@@ -1523,6 +1681,8 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             "snapshot_sha": dispatch.get("snapshot_commit", batch["base_commit"]), "candidate_sha": candidate, "changed_files": changed,
             "scope": dispatch["write_paths"] or dispatch.get("review_scope", []),
             "worker_attestation_required": dispatch.get("worker_attestation_required", False),
+            "needs_attention": bool(batch.get("needs_attention", False)),
+            "transition_digest": dispatch.get("transition_digest"),
             "summary": report.get("output") if report else "immutable brief prepared",
             "checks": report.get("checks_run", []) if report else [
                 {"command": command, "result": "pending"} for command in dispatch["verification_commands"]
@@ -1965,6 +2125,7 @@ def _retry_routing(
     dispatch_candidate: str | None,
     current_candidate: str | None,
     explicit_category: str | None,
+    pressure_recorded: bool = False,
 ) -> JsonObject:
     """Decide where a ``retry`` goes, from structured report data only (no I/O).
 
@@ -1972,7 +2133,9 @@ def _retry_routing(
     publish. A read-only stage (or the publish boundary) is re-run on the *same* candidate only
     when the report was blocked and nothing but an operational reason -- verification
     infrastructure or transport -- explains it. Any finding, failed check, moved candidate or
-    unclear reason routes to a developer retry, which is always the safe route.
+    unclear reason routes to a developer retry, which is always the safe route. ``context-pressure``
+    is operational only when a critical ``context_pressure`` observation was recorded for the reported
+    dispatch (``pressure_recorded``); a claim without that observation is ``unknown``.
     """
     if explicit_category is not None and explicit_category not in RETRY_REASON_CATEGORIES:
         raise CoordinatorError(
@@ -1987,6 +2150,9 @@ def _retry_routing(
         category, basis = explicit_category, "the approver named this reason category"
     elif structured is not None:
         category, basis = structured
+    elif explicit_category == "context-pressure" and not pressure_recorded:
+        category = "unknown"
+        basis = "context-pressure was named, but no critical context_pressure observation exists for the reported dispatch"
     elif explicit_category in OPERATIONAL_REASON_CATEGORIES and outcome == "blocked":
         category = explicit_category
         basis = f"the report is blocked with no finding, no failed check and an unchanged candidate, and the approver named {category}"
@@ -2083,7 +2249,8 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             raise CoordinatorError("batch has no single completion report awaiting a coordinator decision", remedy="wait for exactly one completion report to be awaiting a coordinator decision on this batch")
         report = _pending_report(root, batch, pending[0])
         dispatch = _load_dispatch(root, pending[0]["dispatch_id"])
-        _validate_dispatch(repo, _config(repo), root, batch, dispatch)
+        config = _config(repo)
+        _validate_dispatch(repo, config, root, batch, dispatch)
         _validate_report(report, dispatch, _role(repo, dispatch["role"]), repo, batch.get("base_commit"))
         if report.get("outcome") != "completed" and args.decision in {"accept", "override-warning"}:
             raise CoordinatorError("a non-completed role report cannot be accepted or warning-overridden", remedy="only accept or warning-override a completed role report")
@@ -2104,6 +2271,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         routing: JsonObject | None = None
         if args.decision == "retry":
             routing = _decide_retry_route(repo, root, batch, dispatch, report, args)
+            routing["decided_at"] = _now()
             if routing["next_action"] == "developer-retry":
                 retry_policy = _retry_policy(_config(repo))
                 if _developer_retry_count(batch) >= retry_policy["max_developer_retries"]:
@@ -2152,6 +2320,9 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 batch["next_action"] = "qa"
             elif report["role"] == "qa":
                 batch["next_action"] = "publish"
+        if args.decision == "retry":
+            # A retry that cannot be trusted to loop safely halts automatic dispatch creation for a human.
+            _apply_attention(config, batch, _attention_findings(repo, root, config, batch, _now()), _now())
         abandoned: list[str] = []
         if args.decision in {"block", "fail", "abandon"}:
             # A terminal decision starts nothing: no next action is left behind to be picked up.
@@ -2189,17 +2360,385 @@ def _decide_retry_route(
         current_candidate: str | None = _latest_developer_candidate(repo, root, batch)
     except CoordinatorError:
         current_candidate = None
+    stage = "publish" if dispatch.get("purpose") == "publish" else cast(str, report["role"])
+    explicit_category = getattr(args, "reason_category", None)
+    hint = _classifier_hint(_config(repo), dispatch, stage, report) if explicit_category is None else None
     routing = _retry_routing(
-        "publish" if dispatch.get("purpose") == "publish" else cast(str, report["role"]), report,
-        dispatch_candidate=dispatch.get("candidate_commit"), current_candidate=current_candidate,
-        explicit_category=getattr(args, "reason_category", None),
+        stage, report, dispatch_candidate=dispatch.get("candidate_commit"), current_candidate=current_candidate,
+        explicit_category=hint.category if hint is not None else explicit_category,
+        pressure_recorded=any(
+            item.get("dispatch_id") == dispatch["dispatch_id"] and item.get("level") == "critical"
+            for item in batch.get("context_pressure", [])
+        ),
     )
+    if hint is not None:
+        routing["classifier_hint"] = {"category": hint.category, "basis": hint.basis}
     if forced == "developer" and routing["next_action"] != "developer-retry":
         routing = {
             **routing, "next_role": "developer", "next_action": "developer-retry",
             "rationale": f"{routing['rationale']} The approver forced a developer retry with --retry-role developer.",
         }
     return routing
+
+
+def _classifier_hint(
+    config: JsonObject, dispatch: JsonObject, stage: str, report: JsonObject,
+) -> extensions.ReasonHint | None:
+    """Ask the configured retry-reason classifier for a hint from structured runtime facts.
+
+    The hint is only a proposed category: it goes through the same routing guards as one an
+    approver names, so a plugin can never route around a finding, a failed check or a moved candidate.
+    """
+    names = _extension_names(config)
+    try:
+        facts = extensions.ClassificationFacts(
+            stage=stage, outcome=str(report.get("outcome")),
+            transport=extensions.transport_health(names["transport_health"]).probe(dispatch["dispatch_id"]),
+            verification=extensions.verification_environment_health(names["verification_environment_health"]).probe(dispatch["dispatch_id"]),
+        )
+        hint = extensions.retry_reason_classifier(names["retry_reason_classifier"]).classify(facts)
+    except extensions.ExtensionError as exc:
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+    if hint is not None and hint.category not in RETRY_REASON_CATEGORIES:
+        raise CoordinatorError(
+            f"the retry reason classifier proposed an unknown category {hint.category!r}",
+            remedy=f"fix the classifier to return one of: {', '.join(RETRY_REASON_CATEGORIES)}",
+        )
+    return hint
+
+
+def _effective_base(batch: JsonObject) -> str:
+    return cast(str, batch.get("integration_base_commit") or batch["base_commit"])
+
+
+def _proposed_transition(
+    batch: JsonObject, next_action: object, role_name: str, purpose: str, candidate: str | None,
+    risk: JsonObject | None, verification_commands: list[str], context_package: JsonObject | None,
+) -> JsonObject:
+    """The canonical transition an approval binds: what came before, and exactly what is about to run.
+
+    "What came before" is the newest dispatch a human decided on, so a brief that was created but is
+    still unsent (or was cancelled) does not change the transition it was created for."""
+    previous = next((item for item in reversed(batch.get("dispatches", [])) if isinstance(item.get("decision"), dict)), None)
+    decision = previous.get("decision") if previous else None
+    routing = decision.get("routing") if isinstance(decision, dict) else None
+    return operational_guards.build_transition(
+        batch_id=batch["batch_id"],
+        previous_dispatch_id=previous["dispatch_id"] if previous else None,
+        previous_role=previous["role"] if previous else None,
+        reason_category=routing.get("reason_category") if isinstance(routing, dict) else None,
+        next_role=role_name, next_action=str(next_action or "initial"), purpose=purpose, candidate_sha=candidate,
+        base_sha=_effective_base(batch), review_scope=list(risk["review_scope"]) if risk else [],
+        verification_commands=verification_commands,
+        context_package_id=context_package["context_package_id"] if context_package else None,
+        required_gates=batch["required_gates"],
+    )
+
+
+def _transition_idempotency_key(role: str, purpose: str, transition: JsonObject) -> str | None:
+    keyed = operational_guards.keyed_role(role, purpose)
+    if keyed is None:
+        return None
+    return operational_guards.retry_idempotency_key(
+        role=keyed, candidate_sha=transition["candidate_sha"], base_sha=transition["base_sha"],
+        review_scope=transition["review_scope"], reason_category=transition["reason_category"] or "none",
+        verification_commands=transition["verification_commands"],
+    )
+
+
+def _reject_active_duplicate(root: Path, batch: JsonObject, key: str) -> None:
+    """At most one active read-only dispatch per idempotency key. A settled dispatch (decided,
+    cancelled or abandoned) never blocks a new one, which always gets a new immutable ID."""
+    for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
+        other = _read_object(path, "batch record")
+        if other.get("batch_id") == batch.get("batch_id"):
+            other = batch
+        elif other.get("state") in TERMINAL_BATCH_STATES:
+            continue
+        for entry in other.get("dispatches", []):
+            if _settled(entry):
+                continue
+            if _load_dispatch(root, entry["dispatch_id"]).get("retry_idempotency_key") == key:
+                raise CoordinatorError(
+                    f"an active dispatch with the same retry idempotency key already exists: {entry['dispatch_id']}",
+                    remedy=f"let {entry['dispatch_id']} settle or cancel it before creating another dispatch for the same role, candidate, base, scope, reason and verification",
+                )
+
+
+def _short(value: object) -> str:
+    return value[:12] if isinstance(value, str) and value else "none"
+
+
+def _pinned_package_stale(repo: Path, root: Path, batch: JsonObject, dispatch: JsonObject) -> bool:
+    """Whether the Context Package a not-yet-finished brief pinned no longer matches the batch's
+    current base or latest accepted candidate."""
+    package_id = dispatch.get("context_package_id")
+    if not isinstance(package_id, str):
+        return False
+    package = _load_context_package(root, package_id)
+    try:
+        current_candidate: str | None = _latest_developer_candidate(repo, root, batch)
+    except CoordinatorError:
+        current_candidate = None
+    return package["base_commit"] != _effective_base(batch) or (
+        current_candidate is not None and package["candidate_commit"] != current_candidate
+    )
+
+
+def _stale_dispatch_finding(dispatch_id: str, silent: int) -> dict[str, str]:
+    return operational_guards.attention_finding(
+        "stale-dispatch", dispatch_id,
+        last_safe_action=f"dispatch {dispatch_id} has been silent for {silent}s; its brief and any report stay as immutable evidence and nothing was cancelled",
+        recommended_human_action="decide whether to keep waiting, cancel the unsent brief, or abandon the batch; then resolve this attention",
+    )
+
+
+def _attention_findings(repo: Path, root: Path, config: JsonObject, batch: JsonObject, moment: str) -> list[dict[str, str]]:
+    """Every reason the batch currently needs a human, from ledger facts only. Nothing here changes
+    the lifecycle, deletes evidence or touches the candidate."""
+    policy = _attention_policy(config)
+    now = _moment(moment, "attention moment")
+    findings: list[dict[str, str]] = []
+    entries = batch.get("dispatches", [])
+    last = entries[-1] if entries else None
+    decision = last.get("decision") if last else None
+    routing = decision.get("routing") if isinstance(decision, dict) else None
+    if last and isinstance(routing, dict):
+        subject = last["dispatch_id"]
+        category = routing.get("reason_category")
+        candidate = routing.get("candidate_commit")
+        kept = f"the {routing.get('previous_role')} brief and report of {subject} stay as immutable evidence, candidate {_short(candidate)} is unchanged and no dispatch was created"
+        if category == "unknown":
+            findings.append(operational_guards.attention_finding(
+                "unknown-reason", subject, last_safe_action=kept,
+                recommended_human_action="establish why the role stopped from its structured evidence, then resolve this attention so a developer retry can be approved",
+            ))
+        if category in OPERATIONAL_REASON_CATEGORIES and isinstance(candidate, str):
+            repeated = sum(
+                1 for item in batch.get("coordinator_decisions", [])
+                if isinstance(item.get("routing"), dict)
+                and item["routing"].get("reason_category") in OPERATIONAL_REASON_CATEGORIES
+                and item["routing"].get("candidate_commit") == candidate
+            )
+            if repeated > policy["max_infrastructure_retries"]:
+                findings.append(operational_guards.attention_finding(
+                    "infrastructure-retry-repeated", subject, last_safe_action=kept,
+                    recommended_human_action=f"{repeated} operational retries ran for candidate {_short(candidate)}; verify the transport and verification environment before another re-run, then resolve this attention",
+                ))
+        queued_at = routing.get("decided_at")
+        if batch.get("state") == "awaiting-approval" and isinstance(queued_at, str):
+            waited = (now - _moment(queued_at, "retry decision time")).total_seconds()
+            if waited > policy["retry_queue_seconds"]:
+                findings.append(operational_guards.attention_finding(
+                    "retry-queued-too-long", subject, last_safe_action=kept,
+                    recommended_human_action=f"the {routing.get('next_action')} retry has waited {int(waited)}s; confirm it is still wanted and its evidence fresh, then resolve this attention and approve a new proposal",
+                ))
+    for entry in entries:
+        if _settled(entry):
+            continue
+        dispatch = _load_dispatch(root, entry["dispatch_id"])
+        if entry.get("state") != "reported" and _pinned_package_stale(repo, root, batch, dispatch):
+            findings.append(operational_guards.attention_finding(
+                "stale-evidence", entry["dispatch_id"],
+                last_safe_action=f"dispatch {entry['dispatch_id']} pins a Context Package older than the batch's base or accepted candidate; the brief is unchanged",
+                recommended_human_action="cancel the unsent brief and propose a new dispatch so a fresh Context Package is pinned; then resolve this attention",
+            ))
+        status = _load_dispatch_status(root, entry["dispatch_id"])
+        frozen = dispatch.get("orchestration_policy", {}).get("attention", {}) if isinstance(dispatch.get("orchestration_policy"), dict) else {}
+        threshold = frozen.get("stale_dispatch_seconds", policy["stale_dispatch_seconds"])
+        if status.get("state") in LIVE_DISPATCH_STATES and _silent_seconds(status) >= threshold:
+            findings.append(_stale_dispatch_finding(entry["dispatch_id"], _silent_seconds(status)))
+    return findings
+
+
+def _notify_attention(config: JsonObject, batch: JsonObject, finding: dict[str, str], moment: str) -> JsonObject:
+    """Tell the configured human-notification adapter. Telling a human is best effort by design: a
+    broken adapter is recorded as failed and never prevents the attention state from being set."""
+    name = extensions.DEFAULT_EXTENSION
+    try:
+        name = extensions.selected(config)["human_notifier"]
+        if name == extensions.DEFAULT_EXTENSION:
+            return {"status": "skipped"}
+        extensions.human_notifier(name).notify(extensions.AttentionEvent(
+            batch["batch_id"], finding["reason"], moment, finding["last_safe_action"], finding["recommended_human_action"],
+        ))
+    except Exception as exc:  # an adapter may fail in any way; the attention state must still be recorded
+        return {"status": "failed", "adapter": name, "error": _sanitise(str(exc))[:200]}
+    return {"status": "sent", "adapter": name}
+
+
+def _apply_attention(config: JsonObject, batch: JsonObject, findings: list[dict[str, str]], moment: str) -> bool:
+    """Mark the batch as needing attention for every finding not already acknowledged by a human.
+
+    Only the in-memory batch changes and the caller persists it, so the flag rides in the same
+    ledger transition as whatever caused it. ``needs_attention`` is a flag on a batch, never a
+    lifecycle state: ``state``, ``next_action`` and every dispatch stay exactly as they were.
+    """
+    acknowledged = set(batch.get("attention_acknowledged", []))
+    fresh = [finding for finding in findings if finding["key"] not in acknowledged]
+    if not fresh:
+        return False
+    previous_keys: list[str] = batch.get("attention_open_keys", [])
+    open_keys = sorted(set(previous_keys) | {finding["key"] for finding in fresh})
+    batch["attention_open_keys"] = open_keys
+    if batch.get("needs_attention") is True:
+        return open_keys != previous_keys
+    top = operational_guards.top_finding(fresh)
+    batch.update({
+        "needs_attention": True, "attention_reason": top["reason"], "attention_since": moment,
+        "last_safe_action": top["last_safe_action"], "recommended_human_action": top["recommended_human_action"],
+    })
+    batch.setdefault("attention_events", []).append({
+        "event": "raised", "reason": top["reason"], "keys": open_keys, "at": moment,
+        "notification": _notify_attention(config, batch, top, moment),
+    })
+    return True
+
+
+def _require_no_attention(ledger: LifecycleLedger, repo: Path, root: Path, config: JsonObject, batch: JsonObject) -> None:
+    """A batch that needs a human never gets its next dispatch created, automatically or otherwise,
+    until a human resolves the attention. Evidence and the candidate stay untouched."""
+    if _apply_attention(config, batch, _attention_findings(repo, root, config, batch, _now()), _now()):
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
+    if batch.get("needs_attention") is True:
+        raise CoordinatorError(
+            f"the batch needs human attention ({batch['attention_reason']}); no next dispatch is created until it is resolved",
+            remedy=str(batch["recommended_human_action"]) + "; resolve it with 'batch attention resolve'",
+        )
+
+
+def _flag_stale_dispatch(ledger: LifecycleLedger, repo: Path, root: Path, dispatch: JsonObject, silent: int) -> None:
+    batch = _load_batch(root, dispatch["batch_id"])
+    if _apply_attention(_config(repo), batch, [_stale_dispatch_finding(dispatch["dispatch_id"], silent)], _now()):
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
+
+
+def _attention_view(batch: JsonObject, findings: list[dict[str, str]]) -> JsonObject:
+    return {
+        "batch_id": batch["batch_id"], "state": batch["state"],
+        "needs_attention": bool(batch.get("needs_attention", False)),
+        **{field: batch.get(field) for field in ATTENTION_STATE_FIELDS},
+        "findings": [finding["key"] for finding in findings],
+    }
+
+
+def attention_check(args: argparse.Namespace) -> JsonObject:
+    """Evaluate a batch's operational loops and persist ``needs_attention`` when one needs a human."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    config = _config(repo)
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
+        batch = _load_batch(root, args.batch)
+        _validate_batch_integrity(root, batch)
+        moment = _now()
+        findings = [] if batch.get("state") in TERMINAL_BATCH_STATES else _attention_findings(repo, root, config, batch, moment)
+        if _apply_attention(config, batch, findings, moment):
+            _safe_id(batch["batch_id"], "batch")
+            _replace_record(ledger, BatchRecord.from_dict(batch))
+    return _attention_view(batch, findings)
+
+
+def attention_resolve(args: argparse.Namespace) -> JsonObject:
+    """A human acknowledges the open findings; the flag is cleared, no evidence is touched."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    note = args.note.strip() if _non_empty(args.note) else ""
+    if not note:
+        raise CoordinatorError("resolving attention requires a recorded note", remedy="pass --note describing what was checked")
+    _reject_sensitive({"note": note}, "attention resolution note")
+    approval = _approval(args)
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
+        batch = _load_batch(root, args.batch)
+        _validate_batch_integrity(root, batch)
+        if batch.get("needs_attention") is not True:
+            raise CoordinatorError("this batch does not need attention", remedy="there is nothing to resolve; check 'batch attention check' first")
+        keys = list(batch.get("attention_open_keys", []))
+        batch["attention_acknowledged"] = sorted(set(batch.get("attention_acknowledged", [])) | set(keys))
+        batch["attention_open_keys"] = []
+        batch.setdefault("attention_events", []).append({
+            "event": "resolved", "at": _now(), "keys": keys, "note": note, **approval,
+        })
+        batch["needs_attention"] = False
+        for field in ATTENTION_STATE_FIELDS:
+            batch.pop(field, None)
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
+    return _attention_view(batch, [])
+
+
+def _pressure_action(level: str, writes: bool) -> tuple[bool, str | None]:
+    if level == "critical" and writes:
+        return True, (
+            "Create a checkpoint at the next green TDD boundary (every approved verification command passing) or return a "
+            "structured blocker; continue only from that checkpoint, in a new session that attests its model again."
+        )
+    if level == "critical":
+        return True, (
+            "Return a structured blocker now (outcome blocked); a read-only role never checkpoints, and a new "
+            "independent dispatch on the same candidate re-runs it."
+        )
+    if level == "warning":
+        return False, "Reach the next green TDD boundary; a checkpoint is not required yet."
+    return False, None
+
+
+def record_context_pressure(args: argparse.Namespace) -> JsonObject:
+    """Record one provider/runtime-observed context measurement for a dispatch.
+
+    The record is observation only. It never changes ``next_action``, creates a retry, moves a
+    dispatch or revokes an approval; at ``critical`` it states what the worker must do. A model's
+    own claim about its context is not telemetry and is rejected as a source.
+    """
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    config = _config(repo)
+    observed, source = args.observed_tokens, args.source
+    if observed is None:
+        try:
+            observation = extensions.context_telemetry_provider(_extension_names(config)["context_telemetry_provider"]).observe(args.dispatch)
+        except extensions.ExtensionError as exc:
+            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+        if observation is None:
+            raise CoordinatorError("no context observation is available for this dispatch", remedy="pass --observed-tokens with --source, or select a context_telemetry_provider extension that observes it")
+        observed, source = observation.observed_tokens, observation.source
+    if isinstance(observed, bool) or not isinstance(observed, int) or observed < 0:
+        raise CoordinatorError("observed tokens must be a non-negative integer", remedy="pass --observed-tokens as a non-negative integer")
+    if source not in CONTEXT_TELEMETRY_SOURCES:
+        raise CoordinatorError(
+            f"context telemetry source must be provider- or runtime-observed, one of: {', '.join(CONTEXT_TELEMETRY_SOURCES)}",
+            remedy="record the token count the provider or runtime reported; a model's self-report is never telemetry",
+        )
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
+        dispatch = _load_dispatch(root, args.dispatch)
+        batch = _load_batch(root, dispatch["batch_id"])
+        _validate_batch_integrity(root, batch)
+        entry = next((item for item in batch.get("dispatches", []) if item["dispatch_id"] == dispatch["dispatch_id"]), None)
+        if entry is None or entry.get("state") in {"abandoned", "cancelled"}:
+            raise CoordinatorError("context pressure can only be recorded for a live dispatch of this batch", remedy="record context pressure for a dispatch that was sent and not abandoned or cancelled")
+        # The brief froze the limit and warning ratio the dispatch runs under; a later config edit
+        # must not move its thresholds. A brief written before that falls back to the current policy.
+        frozen = dispatch.get("orchestration_policy", {}).get("context_pressure") if isinstance(dispatch.get("orchestration_policy"), dict) else None
+        adaptive = _adaptive_continuation_policy(config)
+        limit = dispatch.get("context_budget") or (frozen or {}).get("context_limit") or adaptive["context_limit"]
+        ratio = (frozen or {}).get("warning_ratio") or adaptive["context_warn_ratio"]
+        warning_threshold, level = operational_guards.pressure_level(observed, limit, ratio)
+        action_required, action = _pressure_action(level, _role(repo, dispatch["role"])["mode"] == "write")
+        record: JsonObject = {
+            "pressure_id": f"pressure-{uuid.uuid4()}", "dispatch_id": dispatch["dispatch_id"],
+            "observed_tokens": observed, "context_limit": limit, "warning_threshold": warning_threshold,
+            "level": level, "recorded_at": _now(), "source": source, "action_required": action_required,
+            "required_worker_action": action,
+        }
+        record["record_sha256"] = hashlib.sha256(_canonical(record).encode("utf-8")).hexdigest()
+        batch.setdefault("context_pressure", []).append(record)
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
+    return record
 
 
 def _settled(entry: JsonObject) -> bool:
@@ -2466,9 +3005,16 @@ def _delta_review_eligibility(
 
 
 def create_dispatch(args: argparse.Namespace) -> JsonObject:
+    """Create one approved immutable dispatch brief, or, with ``propose``, render its transition.
+
+    A proposal is the dry run a human approves: it registers the shared Context Package the brief
+    would pin and returns the canonical transition with its digest, but writes no brief. Creation
+    then requires the same digest, so an approval is valid for exactly the transition it was shown.
+    """
     repo = _repo(args)
     root = _state_root(args, repo)
     config = _config(repo)
+    propose = bool(getattr(args, "propose", False))
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
@@ -2479,6 +3025,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         if pending_report:
             raise CoordinatorError("the previous completion report requires an explicit coordinator decision", remedy="decide (accept/override-warning/retry/block/fail) the previous completion report before continuing")
         _check_batch_conflicts(root, config, batch)
+        if not propose:
+            _require_no_attention(ledger, repo, root, config, batch)
         # Existing packages are recorded as audit evidence. A fresh role-specific package is
         # registered below before the immutable brief is written, so a stale snapshot cannot be
         # silently reused by a new role.
@@ -2575,7 +3123,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         required_role = batch.get("required_next_role")
         if required_role and role_name != required_role:
             raise CoordinatorError(f"the coordinator requires a new {required_role} dispatch before this role", remedy=f"dispatch a new {required_role} role before this one")
-        approval = _dispatch_approval(args, batch, config, role_name, purpose, risk)
+        approval_mode = None if propose else _dispatch_approval_mode(args, batch, config, role_name, purpose, risk)
         context_package = None
         if role_name in {"architect", "developer", "code-review"}:
             snapshot = candidate
@@ -2600,6 +3148,24 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             if role_name == "developer" and purpose == "work"
             else batch["verification_commands"]
         )
+        transition = _proposed_transition(
+            batch, next_action, role_name, purpose, candidate, risk, dispatch_commands, context_package,
+        )
+        digest = operational_guards.transition_digest(transition)
+        idempotency_key = _transition_idempotency_key(role_name, purpose, transition)
+        if idempotency_key is not None:
+            _reject_active_duplicate(root, batch, idempotency_key)
+        if propose:
+            _safe_id(batch["batch_id"], "batch")
+            _replace_record(ledger, BatchRecord.from_dict(batch))
+            return {
+                "batch_id": batch["batch_id"], "state": "proposed", "transition": transition,
+                "transition_digest": digest, "retry_idempotency_key": idempotency_key,
+                "needs_attention": bool(batch.get("needs_attention", False)),
+                "context_package_freshness": context_package_freshness,
+            }
+        assert approval_mode is not None  # only a proposal skips the approval mode
+        approval = _bind_dispatch_approval(args, approval_mode, digest)
         brief: JsonObject = {
             "dispatch_id": dispatch_id,
             "batch_id": batch["batch_id"],
@@ -2642,6 +3208,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             # Absolute, so a role never resolves a relative reporting path against a guessed
             # current directory and never invents a home-directory folder of its own.
             "report_staging_path": str(_agent_inbox(repo) / f"{dispatch_id}.json"),
+            "transition": transition,
+            "transition_digest": digest,
+            "retry_idempotency_key": idempotency_key,
+            "orchestration_policy": _orchestration_policy(config),
         }
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the
@@ -2950,6 +3520,7 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
             if state in {"failed", "abandoned", "cancelled"}:
                 return {"dispatch_id": dispatch["dispatch_id"], "event": "failed", "state": state}
             if state in LIVE_DISPATCH_STATES and _silent_seconds(status) >= threshold:
+                _flag_stale_dispatch(ledger, repo, root, dispatch, _silent_seconds(status))
                 return {"dispatch_id": dispatch["dispatch_id"], "event": "stale", "silent_seconds": _silent_seconds(status)}
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -3274,6 +3845,7 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                 if record.get("dispatch_id") == dispatch["dispatch_id"]
             ]
             latest_telemetry = max(telemetry, key=lambda record: record["recorded_at"], default=None)
+            pressure = [item for item in batch.get("context_pressure", []) if item.get("dispatch_id") == dispatch["dispatch_id"]]
             live = status.get("state") in LIVE_DISPATCH_STATES
             silent = _silent_seconds(status) if live else 0
             entries.append({
@@ -3291,6 +3863,8 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                 "silent_seconds": silent,
                 "stale": live and silent >= threshold,
                 "telemetry": latest_telemetry,
+                "context_pressure": pressure[-1] if pressure else None,
+                "needs_attention": bool(batch.get("needs_attention", False)),
                 "context_advisory": _context_advisory(
                     config, latest_telemetry["max_context_tokens"] if latest_telemetry else None,
                 ),

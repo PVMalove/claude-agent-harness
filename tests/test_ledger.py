@@ -357,5 +357,53 @@ class ReadRecordLenientTests(unittest.TestCase):
             self.assertIsNone(LifecycleLedger.read_record_lenient(path))
 
 
+class OperationalRecordMigrationTests(unittest.TestCase):
+    """Issue #250: batch-level context pressure and attention records survive an explicit migration
+    verbatim, keep passing the coordinator's own integrity validation, and need no schema bump."""
+
+    def _pressure(self) -> dict:
+        import hashlib
+
+        from harness.orchestration import coordinator
+
+        record = {
+            "pressure_id": "pressure-1", "dispatch_id": "dispatch-1", "observed_tokens": 160_000,
+            "context_limit": 150_000, "warning_threshold": 120_000, "level": "critical",
+            "recorded_at": "2026-09-20T00:00:00+00:00", "source": "provider-usage", "action_required": True,
+            "required_worker_action": "Return a structured blocker now.",
+        }
+        record["record_sha256"] = hashlib.sha256(coordinator._canonical(record).encode("utf-8")).hexdigest()
+        return record
+
+    def test_a_pre_ledger_batch_with_the_operational_fields_migrates_and_stays_valid(self) -> None:
+        from harness.orchestration import coordinator
+
+        batch = {
+            "batch_id": "batch-1", "state": "awaiting-approval", "dispatches": [],
+            "coordinator_approval": {"approved_by": "Malove", "approved_at": "2026-09-20T00:00:00+00:00"},
+            "context_pressure": [self._pressure()],
+            "needs_attention": True, "attention_reason": "retry-queued-too-long",
+            "attention_since": "2026-09-20T01:00:00+00:00", "last_safe_action": "evidence kept",
+            "recommended_human_action": "confirm the retry is still wanted",
+            "attention_events": [{"event": "raised", "at": "2026-09-20T01:00:00+00:00", "keys": ["retry-queued-too-long:d"]}],
+            "attention_open_keys": ["retry-queued-too-long:d"],
+        }
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            root = Path(temporary)
+            for directory, record in (("batches", batch), ("plans", {"batch_id": "batch-1"})):
+                (root / directory).mkdir()
+                (root / directory / "batch-1.json").write_text(json.dumps(record), encoding="utf-8")
+            ledger = LifecycleLedger(root)
+
+            result = ledger.migrate()
+
+            self.assertTrue(result["migrated"])
+            migrated = json.loads((ledger.records_root() / "batches" / "batch-1.json").read_text(encoding="utf-8"))
+            self.assertEqual(migrated, batch)
+            coordinator._validate_operational_batch_fields(migrated)
+            self.assertEqual(ledger.status()["version"], 3)
+            self.assertFalse(ledger.migrate()["migrated"])  # already current: the schema version did not change
+
+
 if __name__ == "__main__":
     unittest.main()
