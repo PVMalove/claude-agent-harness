@@ -77,6 +77,30 @@ class RuntimeAttestationTests(unittest.TestCase):
             with self.assertRaisesRegex(AttestationError, "not registered"):
                 attest(repo, dispatch, str(worktree / "nested"))
 
+    def test_write_role_rejects_a_missing_or_non_string_issue_branch(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            _git(repo, "init", "-q")
+            _git(repo, "config", "user.email", "test@example.invalid")
+            _git(repo, "config", "user.name", "Attestation Test")
+            (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+            _git(repo, "add", "tracked.txt")
+            _git(repo, "commit", "-qm", "test: base")
+            snapshot = _git(repo, "rev-parse", "HEAD")
+            branch = "feature/issue-227-attested"
+            _git(repo, "branch", branch)
+            worktree = Path(temporary) / "issue-227"
+            _git(repo, "worktree", "add", "-q", str(worktree), branch)
+
+            for pinned in ({}, {"branch": None}, {"branch": 7}, {"branch": "feature/issue-other"}):
+                with self.subTest(pinned=pinned):
+                    dispatch = {"role": "developer", "snapshot_commit": snapshot, **pinned}
+                    with self.assertRaises(AttestationError) as raised:
+                        attest(repo, dispatch, str(worktree))
+                    self.assertIn("does not match the immutable issue branch", str(raised.exception))
+                    self.assertTrue(raised.exception.remedy)
+
     def test_review_role_requires_the_pinned_candidate(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             repo = Path(temporary) / "repo"
