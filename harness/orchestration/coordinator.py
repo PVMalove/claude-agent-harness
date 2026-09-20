@@ -71,8 +71,19 @@ SENSITIVE_KEY = re.compile(
     re.IGNORECASE,
 )
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
-DECISIONS = {"accept", "override-warning", "retry", "block", "fail"}
-TERMINAL_BATCH_STATES = {"completed", "failed", "blocked", "not-required"}
+DECISIONS = {"accept", "override-warning", "retry", "block", "fail", "abandon"}
+TERMINAL_BATCH_STATES = {"completed", "failed", "blocked", "not-required", "abandoned"}
+# Why a role stopped, as the coordinator records it. Only the first two are operational evidence:
+# they never change what a role would conclude, so they alone may re-run a read-only role (or the
+# publish boundary) on the same candidate. Everything else, or anything unclear, needs a developer.
+OPERATIONAL_REASON_CATEGORIES = ("verification-infrastructure", "transport")
+DEVELOPER_REASON_CATEGORIES = ("code", "requirements", "candidate-change")
+RETRY_REASON_CATEGORIES = (*OPERATIONAL_REASON_CATEGORIES, *DEVELOPER_REASON_CATEGORIES, "unknown")
+# The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
+NEXT_ACTION_DISPATCH_ROLE = {
+    "architect": "architect", "developer-retry": "developer", "code-review": "code-review", "qa": "qa",
+    "publish": "developer",
+}
 DISPATCH_PURPOSES = {"work", "publish"}
 ROLE_TRANSPORTS = {"orca", "in-process"}
 DEFAULT_ZONE = "repository"
@@ -1510,7 +1521,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             "report": str(_records_root(root) / entry["report"]) if report else None,
             "diff": f"git diff {batch['base_commit']}..{candidate}" if candidate else None,
             "approval_reason": "a human decision is required before the ledger may advance this gate",
-            "options": ["accept", "retry", "block", "full review", "delta-review"],
+            "options": ["accept", "retry", "block", "abandon", "full review", "delta-review"],
         }
 
 
@@ -1915,6 +1926,140 @@ def _review_severity(review: JsonObject) -> dict[str, str]:
     return {axis: review[axis]["severity"] for axis in ("standards", "spec")}
 
 
+def _retry_evidence(report: JsonObject, candidate_moved: bool) -> tuple[str, str] | None:
+    """The reason category a report's structured data dictates by itself, and what showed it.
+
+    Findings, a warning/blocker severity on either review axis, a failed check and a moved
+    candidate all mean the work itself has to change. Free text (``blockers``, ``output``) is never
+    consulted: a sentence that merely mentions infrastructure proves nothing.
+    """
+    review = report.get("review")
+    if isinstance(review, dict):
+        for axis in ("standards", "spec"):
+            evidence = review.get(axis)
+            if isinstance(evidence, dict) and (evidence.get("findings") or evidence.get("severity") in {"warning", "blocker"}):
+                return ("requirements" if axis == "spec" else "code"), f"the {axis} axis carries a finding or a warning/blocker severity"
+    checks = report.get("checks_run")
+    if isinstance(checks, list) and any(isinstance(check, dict) and check.get("result") == "fail" for check in checks):
+        return "code", "a verification check failed"
+    if candidate_moved:
+        return "candidate-change", "the candidate changed after the dispatch was pinned"
+    return None
+
+
+def _retry_routing(
+    stage: str,
+    report: JsonObject,
+    *,
+    dispatch_candidate: str | None,
+    current_candidate: str | None,
+    explicit_category: str | None,
+) -> JsonObject:
+    """Decide where a ``retry`` goes, from structured report data only (no I/O).
+
+    ``stage`` is the pipeline stage that reported: architect, developer, code-review, qa or
+    publish. A read-only stage (or the publish boundary) is re-run on the *same* candidate only
+    when the report was blocked and nothing but an operational reason -- verification
+    infrastructure or transport -- explains it. Any finding, failed check, moved candidate or
+    unclear reason routes to a developer retry, which is always the safe route.
+    """
+    if explicit_category is not None and explicit_category not in RETRY_REASON_CATEGORIES:
+        raise CoordinatorError(
+            f"unknown retry reason category {explicit_category!r}",
+            remedy=f"pass --reason-category as one of: {', '.join(RETRY_REASON_CATEGORIES)}",
+        )
+    candidate_bound = stage in {"code-review", "qa", "publish"}
+    unchanged = dispatch_candidate is not None and dispatch_candidate == current_candidate
+    outcome = report.get("outcome")
+    structured = _retry_evidence(report, candidate_bound and not unchanged)
+    if explicit_category in DEVELOPER_REASON_CATEGORIES:
+        category, basis = explicit_category, "the approver named this reason category"
+    elif structured is not None:
+        category, basis = structured
+    elif explicit_category in OPERATIONAL_REASON_CATEGORIES and outcome == "blocked":
+        category = explicit_category
+        basis = f"the report is blocked with no finding, no failed check and an unchanged candidate, and the approver named {category}"
+    elif explicit_category in OPERATIONAL_REASON_CATEGORIES:
+        category = "unknown"
+        basis = f"the approver named {explicit_category}, but outcome={outcome} does not show a blocked run"
+    else:
+        category, basis = "unknown", "no structured evidence classifies the cause"
+    if stage == "architect":
+        next_action = "architect"
+        outcome_sentence = "a new architect dispatch runs; no developer starts before an architect report is accepted"
+    elif candidate_bound and category in OPERATIONAL_REASON_CATEGORIES:
+        next_action = stage
+        outcome_sentence = (
+            f"a new independent {stage} dispatch runs on the unchanged candidate; "
+            "the earlier brief, report and blocker stay as audit evidence"
+        )
+    else:
+        next_action = "developer-retry"
+        outcome_sentence = "a developer retry must produce a new candidate commit, which needs a new risk assessment"
+    return {
+        "previous_role": stage,
+        "reason_category": category,
+        "next_role": "developer" if next_action == "developer-retry" else next_action,
+        "next_action": next_action,
+        "rationale": f"{stage} reported outcome={outcome}: {basis}; {outcome_sentence}.",
+        "candidate_commit": dispatch_candidate if unchanged else None,
+    }
+
+
+def _abandon_open_dispatches(ledger: LifecycleLedger, root: Path, batch: JsonObject, moment: str) -> list[str]:
+    """Mark every dispatch that can no longer settle as ``abandoned``; nothing is deleted."""
+    abandoned = []
+    for entry in batch.get("dispatches", []):
+        if _settled(entry):
+            continue
+        entry["state"] = "abandoned"
+        abandoned.append(entry["dispatch_id"])
+        status_path = _records_root(root) / DispatchStatusRecord.directory / f"{_safe_id(entry['dispatch_id'], 'dispatch')}.json"
+        if status_path.exists():
+            status = _load_dispatch_status(root, entry["dispatch_id"])
+            status.update({"state": "abandoned", "updated_at": moment})
+            _replace_record(ledger, DispatchStatusRecord.from_dict(status))
+    return abandoned
+
+
+def _discard_batch_leftovers(repo: Path, ledger: LifecycleLedger, batch: JsonObject, abandoned: list[str]) -> list[str]:
+    """Delete what an abandoned batch left behind that is not audit evidence.
+
+    That is the staged copy of each report in the agent inbox (the immutable, hash-checked report
+    lives in the ledger) and the QA queue entry of a dispatch that will never run, which would
+    otherwise hold every later QA run behind it. Briefs, reports, Context Packages, the worktree
+    and the candidate are never touched.
+    """
+    inbox = _agent_inbox(repo)
+    removed = []
+    for entry in batch.get("dispatches", []):
+        staged = inbox / f"{_safe_id(entry['dispatch_id'], 'dispatch')}.json"
+        if staged.is_file():
+            staged.unlink()
+            removed.append(staged.name)
+    removed.extend(qa_lane.release_queue(ledger, abandoned, sys.modules[__name__]))
+    return removed
+
+
+def _last_accepted(repo: Path, root: Path, batch: JsonObject) -> JsonObject | None:
+    """The newest accepted stage of a batch: the point a fresh batch can be built from."""
+    entry = next(
+        (
+            item for item in reversed(batch.get("dispatches", []))
+            if item.get("state") == "reported" and isinstance(item.get("decision"), dict)
+            and item["decision"].get("decision") in {"accept", "override-warning"}
+        ),
+        None,
+    )
+    if entry is None:
+        return None
+    try:
+        candidate: str | None = _latest_developer_candidate(repo, root, batch)
+    except CoordinatorError:
+        candidate = None
+    return {"dispatch_id": entry["dispatch_id"], "role": entry["role"], "candidate_commit": candidate}
+
+
 def decide_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -1934,7 +2079,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         if report.get("role") == "code-review":
             severities = _review_severity(report["review"])
             if any(value == "blocker" for value in severities.values()):
-                if args.decision != "retry":
+                if args.decision not in {"retry", "abandon"}:
                     raise CoordinatorError("a review blocker requires a new developer retry", remedy="start a new developer retry dispatch to address the review blocker")
             elif any(value == "warning" for value in severities.values()):
                 if args.decision == "accept":
@@ -1945,29 +2090,40 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 raise CoordinatorError("override-warning requires a review warning", remedy="only use override-warning to resolve a recorded review warning")
         elif args.decision == "override-warning":
             raise CoordinatorError("only a recorded review warning can be overridden", remedy="only override a recorded review warning")
-        retry_role = getattr(args, "retry_role", "developer")
-        if args.decision == "retry" and retry_role == "developer":
-            retry_policy = _retry_policy(_config(repo))
-            if _developer_retry_count(batch) >= retry_policy["max_developer_retries"]:
-                raise CoordinatorError(
-                    "developer retry budget is exhausted for this batch; split, block, or re-plan instead of starting another worker",
-                    remedy="split, block, or re-plan this batch instead of starting another developer retry",
-                )
+        routing: JsonObject | None = None
+        if args.decision == "retry":
+            routing = _decide_retry_route(repo, root, batch, dispatch, report, args)
+            if routing["next_action"] == "developer-retry":
+                retry_policy = _retry_policy(_config(repo))
+                if _developer_retry_count(batch) >= retry_policy["max_developer_retries"]:
+                    raise CoordinatorError(
+                        "developer retry budget is exhausted for this batch; split, block, or re-plan instead of starting another worker",
+                        remedy="split, block, or re-plan this batch instead of starting another developer retry",
+                    )
+        abandon_reason = ""
+        if args.decision == "abandon":
+            abandon_reason = args.reason.strip() if _non_empty(getattr(args, "reason", None)) else ""
+            if not abandon_reason:
+                raise CoordinatorError("abandoning a batch requires a recorded reason", remedy="pass --reason explaining why this batch is abandoned")
+            _reject_sensitive({"reason": abandon_reason}, "abandon reason")
+        approval = _approval(args)
         decision = {
             "decision": args.decision,
-            "approved_by": _approval(args)["approved_by"],
-            "approved_at": _approval(args)["approved_at"],
-            "note": args.note.strip() if _non_empty(args.note) else "none",
+            "approved_by": approval["approved_by"],
+            "approved_at": approval["approved_at"],
+            "note": abandon_reason or (args.note.strip() if _non_empty(args.note) else "none"),
         }
+        if routing is not None:
+            decision["routing"] = routing
         pending[0]["decision"] = decision
         decision_entry = {"dispatch_id": pending[0]["dispatch_id"], **decision}
-        if args.decision == "retry":
-            decision_entry["next_role"] = retry_role
+        if routing is not None:
+            decision_entry["next_role"] = routing["next_role"]
         batch.setdefault("coordinator_decisions", []).append(decision_entry)
-        if args.decision == "retry":
-            batch["required_next_role"] = retry_role
-            batch["retry_candidate_required"] = (retry_role == "developer")
-            batch["next_action"] = "developer-retry" if retry_role == "developer" else retry_role
+        if routing is not None:
+            batch["required_next_role"] = NEXT_ACTION_DISPATCH_ROLE[routing["next_action"]]
+            batch["retry_candidate_required"] = routing["next_action"] == "developer-retry"
+            batch["next_action"] = routing["next_action"]
         elif args.decision in {"accept", "override-warning"}:
             if report["role"] == "developer":
                 if batch.get("base_rebase_required"):
@@ -1985,16 +2141,54 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 batch["next_action"] = "qa"
             elif report["role"] == "qa":
                 batch["next_action"] = "publish"
-        if args.decision == "block":
-            batch["state"] = "blocked"
-        elif args.decision == "fail":
+        abandoned: list[str] = []
+        if args.decision in {"block", "fail", "abandon"}:
+            # A terminal decision starts nothing: no next action is left behind to be picked up.
             batch.pop("next_action", None)
-            batch["state"] = "failed"
+            batch.pop("required_next_role", None)
+            batch["state"] = {"block": "blocked", "fail": "failed", "abandon": "abandoned"}[args.decision]
         elif batch.get("state") != "completed":
             batch["state"] = "awaiting-approval"
+        if args.decision == "abandon":
+            moment = _now()
+            abandoned = _abandon_open_dispatches(ledger, root, batch, moment)
+            batch["abandoned"] = {
+                "approved_by": approval["approved_by"],
+                "approved_at": approval["approved_at"],
+                "abandoned_at": moment,
+                "reason": abandon_reason,
+                "open_dispatches": abandoned,
+                "last_accepted": _last_accepted(repo, root, batch),
+            }
         _safe_id(batch["batch_id"], "batch")
         _replace_record(ledger, BatchRecord.from_dict(batch))
+        if args.decision == "abandon":
+            _discard_batch_leftovers(repo, ledger, batch, abandoned)
     return batch
+
+
+def _decide_retry_route(
+    repo: Path, root: Path, batch: JsonObject, dispatch: JsonObject, report: JsonObject, args: argparse.Namespace,
+) -> JsonObject:
+    """Where the batch goes after a ``retry`` decision on the pending report."""
+    forced = getattr(args, "retry_role", None)
+    if forced not in {None, "developer"}:
+        raise CoordinatorError("--retry-role only accepts developer", remedy="omit --retry-role to let the coordinator route the retry, or pass developer to force a developer retry")
+    try:
+        current_candidate: str | None = _latest_developer_candidate(repo, root, batch)
+    except CoordinatorError:
+        current_candidate = None
+    routing = _retry_routing(
+        "publish" if dispatch.get("purpose") == "publish" else cast(str, report["role"]), report,
+        dispatch_candidate=dispatch.get("candidate_commit"), current_candidate=current_candidate,
+        explicit_category=getattr(args, "reason_category", None),
+    )
+    if forced == "developer" and routing["next_action"] != "developer-retry":
+        routing = {
+            **routing, "next_role": "developer", "next_action": "developer-retry",
+            "rationale": f"{routing['rationale']} The approver forced a developer retry with --retry-role developer.",
+        }
+    return routing
 
 
 def _settled(entry: JsonObject) -> bool:
@@ -2072,15 +2266,7 @@ def abandon_batch(args: argparse.Namespace) -> JsonObject:
         # without closing what it held, and that dispatch would otherwise be surfaced as live for
         # ever. Closing the remainder is exactly this command's job.
         moment = _now()
-        for entry in batch.get("dispatches", []):
-            if _settled(entry):
-                continue
-            entry["state"] = "abandoned"
-            status_path = _records_root(root) / DispatchStatusRecord.directory / f"{_safe_id(entry['dispatch_id'], 'dispatch')}.json"
-            if status_path.exists():
-                status = _load_dispatch_status(root, entry["dispatch_id"])
-                status.update({"state": "abandoned", "updated_at": moment})
-                _replace_record(ledger, DispatchStatusRecord.from_dict(status))
+        _abandon_open_dispatches(ledger, root, batch, moment)
         batch["state"] = "failed"
         batch.pop("next_action", None)
         batch.pop("required_next_role", None)
@@ -2299,6 +2485,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "qa": {("qa", "work"), ("code-review", "work")},
             "publish": {("developer", "publish")},
             "developer-retry": {("developer", "work")},
+            # A retried architect report gets a new architect, never a developer.
+            "architect": {("architect", "work")},
         }
         if next_action == "risk-assessment":
             raise CoordinatorError("risk assessment must prepare the next dispatch before another role starts", remedy="register a risk assessment for this candidate before dispatching another role")

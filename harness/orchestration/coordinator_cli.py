@@ -101,7 +101,15 @@ def build_parser(handlers: types.ModuleType, defaults: types.ModuleType) -> argp
     decide.add_argument("--approved-by", required=True)
     decide.add_argument("--approved-at", required=True)
     decide.add_argument("--note", default="none")
-    decide.add_argument("--retry-role", default="developer", help="role to route to on retry (default: developer)")
+    decide.add_argument("--reason", help="required for abandon: why the batch is abandoned")
+    decide.add_argument(
+        "--reason-category", choices=defaults.RETRY_REASON_CATEGORIES,
+        help="why the reporting role stopped, for retry; structured report data overrides an unsupported claim",
+    )
+    decide.add_argument(
+        "--retry-role", choices=["developer"],
+        help="force a developer retry where the coordinator would re-run the same candidate",
+    )
     decide.set_defaults(handler=handlers.decide_batch)
     packet = batch_commands.add_parser("decision-packet", help="render concise evidence required for an approval")
     _common(packet)

@@ -234,6 +234,27 @@ class StructuralValidationCharacterizationTests(unittest.TestCase):
             with self.assertRaises(LedgerError):
                 ledger.replace(batch_path, {**batch, "state": "awaiting-approval"})
 
+    def test_abandoned_is_reachable_only_after_a_report_and_is_terminal(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            ledger = LifecycleLedger(Path(temporary) / "state")
+            ledger.ensure()
+            generation = ledger.records_root()
+            batch = {"batch_id": "batch-1", "state": "planned", "dispatches": []}
+            ledger.write_immutable(generation / "plans" / "batch-1.json", {"batch_id": "batch-1"})
+            batch_path = generation / "batches" / "batch-1.json"
+            ledger.write_immutable(batch_path, batch)
+
+            with self.assertRaises(LedgerError):
+                ledger.replace(batch_path, {**batch, "state": "abandoned"})  # nothing to abandon before approval
+
+            approved = {**batch, "state": "awaiting-approval", "coordinator_approval": {"approved_by": "a", "approved_at": "b"}}
+            ledger.replace(batch_path, approved)
+            ledger.replace(batch_path, {**approved, "state": "abandoned"})
+
+            for target in ("awaiting-approval", "active", "failed", "completed"):
+                with self.assertRaises(LedgerError, msg=target):
+                    ledger.replace(batch_path, {**approved, "state": target})
+
 
 class RecordsRootLenientTests(unittest.TestCase):
     def test_returns_none_on_empty_root_with_no_pointer_and_no_legacy_records(self) -> None:

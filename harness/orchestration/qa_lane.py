@@ -132,6 +132,19 @@ def _enqueue(ledger: LifecycleLedger, dispatch_id: str, ops: Any) -> tuple[Path,
     return path, entry
 
 
+def release_queue(ledger: LifecycleLedger, dispatch_ids: list[str], ops: Any) -> list[str]:
+    """Drop the queue entries of dispatches that will never run, so they cannot hold up the lane.
+
+    Only queue entries go: a lease is left to ``clear_stale_lease``, which refuses a live one.
+    """
+    released = []
+    for path, entry in _queue_entries(ledger, ops):
+        if entry["dispatch_id"] in dispatch_ids:
+            _delete_record(ledger, ops, path, reason="release abandoned QA queue entry")
+            released.append(entry["dispatch_id"])
+    return released
+
+
 def _lease(ledger: LifecycleLedger, ops: Any) -> dict[str, Any] | None:
     path = _lane_path(ledger, ops)
     if not path.exists():
