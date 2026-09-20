@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar, Iterator, Protocol, TypeAlias, cast
 
-from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+from ...errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 
 
 LEDGER_VERSION = 3

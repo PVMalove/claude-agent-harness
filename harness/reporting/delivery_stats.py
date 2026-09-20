@@ -760,8 +760,8 @@ def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple[Optiona
 
 
 def _load_ledger_class(repo: Path) -> Optional[LedgerClass]:
-    """Import LifecycleLedger from the analyzed repo's own .harness/orchestration/ledger.py, when
-    present there.
+    """Import LifecycleLedger from the analyzed repo's own .harness/orchestration/ledger/lifecycle.py
+    (or the pre-package .harness/orchestration/ledger.py), when present there.
 
     backend-orchestration is an optional capability, independent of this reporting module (which
     ships in the always-installed base suite): the repository this delivery_stats.py copy is
@@ -780,8 +780,14 @@ def _load_ledger_class(repo: Path) -> Optional[LedgerClass]:
     ``exec_module``: ledger.py declares several ``@dataclass`` records, and the dataclass machinery
     looks its own module up via ``sys.modules[cls.__module__]`` while processing the class body, so
     an unregistered module fails with an unrelated-looking AttributeError."""
-    ledger_path = repo / ".harness" / "orchestration" / "ledger.py"
-    if not ledger_path.is_file():
+    orchestration = repo / ".harness" / "orchestration"
+    # ledger.py became the ledger/ package's lifecycle.py; a project installed from an older
+    # harness still carries the flat module, so accept either layout.
+    ledger_path = next(
+        (path for path in (orchestration / "ledger" / "lifecycle.py", orchestration / "ledger.py") if path.is_file()),
+        None,
+    )
+    if ledger_path is None:
         return None
     module_name = f"_delivery_stats_ledger_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, ledger_path)

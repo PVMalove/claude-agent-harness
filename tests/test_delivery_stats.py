@@ -21,14 +21,15 @@ ORCHESTRATION_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestr
 
 
 def _install_ledger_source(repo: Path) -> None:
-    """Copy this repository's own harness/orchestration/ledger.py into <repo>/.harness/orchestration/,
+    """Copy this repository's own harness/orchestration/ledger/lifecycle.py into
+    <repo>/.harness/orchestration/ledger/,
     mirroring a real deployed project that has the optional backend-orchestration capability
-    installed. delivery_stats.py resolves ledger.py relative to the analyzed --repo, not relative
+    installed. delivery_stats.py resolves lifecycle.py relative to the analyzed --repo, not relative
     to its own installation, so the fixture has to look like a real deployment, not just call
     LifecycleLedger directly."""
-    destination = repo / ".harness" / "orchestration"
+    destination = repo / ".harness" / "orchestration" / "ledger"
     destination.mkdir(parents=True, exist_ok=True)
-    shutil.copy(ORCHESTRATION_ROOT / "ledger.py", destination / "ledger.py")
+    shutil.copy(ORCHESTRATION_ROOT / "ledger" / "lifecycle.py", destination / "lifecycle.py")
 
 
 class OrchestrationMetricsLenientReadTests(unittest.TestCase):

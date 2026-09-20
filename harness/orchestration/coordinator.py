@@ -73,9 +73,8 @@ from harness.orchestration.core.constants import (
     MAX_CHECK_EVIDENCE_CHARS, NEXT_ACTION_DISPATCH_ROLE, NON_ENGLISH_BRIEF_PATTERN, OPERATIONAL_REASON_CATEGORIES,
     PLANNED_TRIGGER_KINDS, PLANNED_TRIGGER_THRESHOLD_KEY, PLAN_FIELDS, POLICY_BRIEF_FIELDS,
     PRE_APPROVAL_LEGACY_PLAN_FIELDS, RATE_LIMIT_TERMINATION_REASONS, REPORT_FIELDS, REPORT_OPTIONAL_FIELDS,
-    REPORT_OUTCOMES, RETRY_REASON_CATEGORIES, REVIEW_SEVERITIES, RISK_ASSESSMENT_FIELDS, ROLE_TRANSPORTS,
-    QA_LEASE_FIELDS as QA_LEASE_FIELDS, QA_QUEUE_FIELDS as QA_QUEUE_FIELDS,
-    SENSITIVE_KEY, STATE_REL as STATE_REL, TELEMETRY_FIELDS, TERMINAL_BATCH_STATES, ZERO_ALLOWED_POLICY_FIELDS,
+    QA_LEASE_FIELDS as QA_LEASE_FIELDS, QA_QUEUE_FIELDS as QA_QUEUE_FIELDS, REPORT_OUTCOMES,
+    RETRY_REASON_CATEGORIES, REVIEW_SEVERITIES, RISK_ASSESSMENT_FIELDS, ROLE_TRANSPORTS, SENSITIVE_KEY, STATE_REL as STATE_REL, TELEMETRY_FIELDS, TERMINAL_BATCH_STATES, ZERO_ALLOWED_POLICY_FIELDS,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError as CoordinatorError, JsonObject, _canonical, _non_empty as _non_empty, _now as _now,
@@ -92,43 +91,15 @@ from harness.orchestration.core.config import (
     _preflight_policy, _project, _reject_sensitive, _retry_policy, _role as _role, _test_path_patterns,
     _verification_commands, _worker_attestation_required,
 )
-
-
-def _write_exclusive(ledger: LifecycleLedger, path: Path, value: JsonObject) -> None:
-    try:
-        ledger.write_immutable(path, value)
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
-
-
-def _write_text_exclusive(ledger: LifecycleLedger, path: Path, value: str) -> None:
-    try:
-        ledger.write_artifact(path, value)
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
-
-
-def _write_record(ledger: LifecycleLedger, record: LedgerRecordVO) -> None:
-    try:
-        ledger.write_record(record)
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
-
-
-def _replace_record(ledger: LifecycleLedger, record: LedgerRecordVO) -> None:
-    try:
-        ledger.replace_record(record)
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+from harness.orchestration.ledger.ledger_ops import (
+    _ledger_lock, _load_batch as _load_batch, _load_checkpoint, _load_context_package,
+    _load_dispatch as _load_dispatch, _load_dispatch_status as _load_dispatch_status, _load_risk, _records_root,
+    _replace_record, _state_root, _write_exclusive, _write_record, _write_text_exclusive,
+)
 
 
 def _repo(args: argparse.Namespace) -> Path:
     return Path(getattr(args, "repo", ".")).resolve()
-
-
-def _state_root(args: argparse.Namespace, repo: Path) -> Path:
-    supplied = getattr(args, "state_dir", None)
-    return (Path(supplied).resolve() if supplied else repo / STATE_REL).resolve()
 
 
 def _agent_inbox(repo: Path) -> Path:
@@ -198,27 +169,6 @@ def _agent_authored_file(repo: Path, value: str, label: str) -> Path:
         f"use the canonical staging path {_agent_inbox(repo)}",
         remedy=f"write role-authored files under the repository or one of its worktrees, e.g. {_agent_inbox(repo)}",
     )
-
-
-def _records_root(root: Path) -> Path:
-    try:
-        return LifecycleLedger(root).records_root()
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
-
-
-@contextmanager
-def _ledger_lock(ledger: LifecycleLedger) -> Iterator[None]:
-    """Exclusive lock through ``LifecycleLedger.lock()``, translating ``LedgerError`` to
-    ``CoordinatorError`` for this call site -- the same translation ``_write_exclusive`` and
-    ``_replace_record`` already apply on every write.  Centralising the translation here (rather than
-    repeating a ``try/except`` at every one of this module's lock sites) removes the risk of a lock
-    site forgetting it and leaking an uncaught ``LedgerError`` into the CLI."""
-    try:
-        with ledger.lock():
-            yield
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _runtime_snapshot_root(repo: Path) -> Path:
@@ -461,22 +411,6 @@ def _concise_evidence(text: str) -> str:
     return concise_evidence(text)
 
 
-def _load_batch(root: Path, batch_id: str) -> JsonObject:
-    return _read_object(_records_root(root) / BatchRecord.directory / f"{_safe_id(batch_id, 'batch')}.json", "batch record")
-
-
-def _load_dispatch(root: Path, dispatch_id: str) -> JsonObject:
-    return _read_object(_records_root(root) / DispatchRecord.directory / f"{_safe_id(dispatch_id, 'dispatch')}.json", "dispatch record")
-
-
-def _load_dispatch_status(root: Path, dispatch_id: str) -> JsonObject:
-    return _read_object(_records_root(root) / DispatchStatusRecord.directory / f"{_safe_id(dispatch_id, 'dispatch')}.json", "dispatch status")
-
-
-def _load_risk(root: Path, risk_id: str) -> JsonObject:
-    return _read_object(_records_root(root) / RiskAssessmentRecord.directory / f"{_safe_id(risk_id, 'risk assessment')}.json", "risk assessment")
-
-
 def _validate_risk(root: Path, batch: JsonObject, risk: JsonObject) -> None:
     _reject_sensitive(risk, "risk assessment")
     if set(risk) != RISK_ASSESSMENT_FIELDS:
@@ -517,10 +451,6 @@ def _risk_for_candidate(root: Path, batch: JsonObject, candidate: str) -> JsonOb
     return risk
 
 
-def _load_checkpoint(root: Path, checkpoint_id: str) -> JsonObject:
-    return _read_object(_records_root(root) / CheckpointRecord.directory / f"{_safe_id(checkpoint_id, 'checkpoint')}.json", "checkpoint")
-
-
 def _latest_checkpoint_for_dispatch(root: Path, batch: JsonObject, dispatch_id: str) -> JsonObject:
     entries = [item for item in batch.get("checkpoints", []) if item.get("dispatch_id") == dispatch_id]
     if not entries:
@@ -530,10 +460,6 @@ def _latest_checkpoint_for_dispatch(root: Path, batch: JsonObject, dispatch_id: 
     if entries[-1].get("record_sha256") != expected:
         raise CoordinatorError("checkpoint failed immutable record integrity check", remedy="the checkpoint record was modified after its integrity hash was recorded -- " + INTERNAL_INVARIANT_REMEDY)
     return checkpoint
-
-
-def _load_context_package(root: Path, package_id: str) -> JsonObject:
-    return _read_object(_records_root(root) / ContextPackageRecord.directory / f"{_safe_id(package_id, 'context package')}.json", "context package")
 
 
 def _validate_context_package(root: Path, batch: JsonObject, package: JsonObject) -> None:

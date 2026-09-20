@@ -28,6 +28,7 @@ from unittest import mock
 
 from harness.orchestration import contract, coordinator, coordinator_cli, extensions, operational_guards, qa_lane
 from harness.orchestration.core import config, constants, git_utils, utils
+from harness.orchestration.ledger import ledger_ops
 from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.ledger import BatchRecord, DispatchStatusRecord, LifecycleLedger
 
@@ -90,7 +91,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _records_root(self) -> Path:
-        root = coordinator._state_root(_ns(repo=str(self.repo), state_dir=str(self.state_dir)), self.repo)
+        root = ledger_ops._state_root(_ns(repo=str(self.repo), state_dir=str(self.state_dir)), self.repo)
         return LifecycleLedger(root).records_root()
 
     def _create_batch(self, ticket: str = "#195", branch: str = "feature/issue-195-thing") -> JsonObject:
@@ -499,11 +500,11 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
     ) -> None:
         """Rewrite a stored brief the way an older coordinator wrote it (fields dropped or replaced, integrity
         hash recomputed) and run the real `_validate_dispatch` against it."""
-        root = coordinator._state_root(_ns(repo=str(self.repo), state_dir=str(self.state_dir)), self.repo)
+        root = ledger_ops._state_root(_ns(repo=str(self.repo), state_dir=str(self.state_dir)), self.repo)
         record = coordinator._read_object(self._records_root() / "dispatches" / f"{dispatch_id}.json", "dispatch")
         brief = {key: value for key, value in record.items() if key not in drop}
         brief.update(replace)
-        batch = coordinator._load_batch(root, batch_id)
+        batch = ledger_ops._load_batch(root, batch_id)
         entry = next(item for item in batch["dispatches"] if item["dispatch_id"] == dispatch_id)
         entry["brief_sha256"] = hashlib.sha256(utils._canonical(brief).encode("utf-8")).hexdigest()
         coordinator._validate_dispatch(self.repo, coordinator._config(self.repo), root, batch, brief)
@@ -681,7 +682,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         )
 
     def _ledger(self) -> LifecycleLedger:
-        return LifecycleLedger(coordinator._state_root(_ns(repo=str(self.repo), state_dir=str(self.state_dir)), self.repo))
+        return LifecycleLedger(ledger_ops._state_root(_ns(repo=str(self.repo), state_dir=str(self.state_dir)), self.repo))
 
     def test_write_record_maps_a_ledger_refusal_to_a_coordinator_error(self) -> None:
         batch = self._create_batch()
@@ -689,7 +690,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         record = BatchRecord.from_dict(batch)
 
         with self.assertRaises(coordinator.CoordinatorError) as caught:
-            coordinator._write_record(ledger, record)
+            ledger_ops._write_record(ledger, record)
 
         self.assertEqual(caught.exception.message, f"refusing to overwrite immutable record: {batch['batch_id']}.json")
         self.assertIn("use a different record id", caught.exception.remedy)
@@ -700,7 +701,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         missing = BatchRecord(batch_id="batch-0000", state="planned", dispatches=[], coordinator_approval=None)
 
         with self.assertRaises(coordinator.CoordinatorError) as caught:
-            coordinator._replace_record(ledger, missing)
+            ledger_ops._replace_record(ledger, missing)
 
         self.assertEqual(caught.exception.message, "ledger transition targets a missing record: batches/batch-0000.json")
         self.assertIn("write the record at", caught.exception.remedy)
@@ -860,7 +861,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         return {"approved_by": "Malove", "approved_at": self.APPROVED_AT}
 
     def _records(self) -> Path:
-        return LifecycleLedger(coordinator._state_root(self._args(), self.repo)).records_root()
+        return LifecycleLedger(ledger_ops._state_root(self._args(), self.repo)).records_root()
 
     def _batch_record(self, batch_id: str) -> JsonObject:
         return coordinator._read_object(self._records() / "batches" / f"{batch_id}.json", "batch")
@@ -992,21 +993,21 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
     def _stage_report(self, batch_id: str, dispatch_id: str, report: JsonObject, *, via_qa_lane: bool) -> None:
         """Persist a report for a role that never runs as a worker session in this suite."""
-        root = coordinator._state_root(self._args(), self.repo)
+        root = ledger_ops._state_root(self._args(), self.repo)
         ledger = LifecycleLedger(root)
-        with coordinator._ledger_lock(ledger):
-            batch = coordinator._load_batch(root, batch_id)
+        with ledger_ops._ledger_lock(ledger):
+            batch = ledger_ops._load_batch(root, batch_id)
             entry = next(item for item in batch["dispatches"] if item["dispatch_id"] == dispatch_id)
             entry["state"] = "dispatched"
-            coordinator._replace_record(ledger, BatchRecord.from_dict(batch))
-            status = coordinator._load_dispatch_status(root, dispatch_id)
+            ledger_ops._replace_record(ledger, BatchRecord.from_dict(batch))
+            status = ledger_ops._load_dispatch_status(root, dispatch_id)
             status.update({"state": "working" if via_qa_lane else "dispatched", "updated_at": coordinator._now()})
-            coordinator._replace_record(ledger, DispatchStatusRecord.from_dict(status))
-            dispatch = coordinator._load_dispatch(root, dispatch_id)
+            ledger_ops._replace_record(ledger, DispatchStatusRecord.from_dict(status))
+            dispatch = ledger_ops._load_dispatch(root, dispatch_id)
             if via_qa_lane:
                 qa_lane._record_report(ledger, root, self.repo, dispatch, report, coordinator)
             else:
-                coordinator._persist_report(ledger, root, coordinator._load_batch(root, batch_id), dispatch, report)
+                coordinator._persist_report(ledger, root, ledger_ops._load_batch(root, batch_id), dispatch, report)
 
     def _reported_qa(self, batch_id: str, candidate: str, *, outcome: str = "completed", check_result: str = "pass") -> JsonObject:
         brief: JsonObject = self._dispatch(batch_id, "qa", candidate=candidate)["brief"]
@@ -1404,15 +1405,15 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._accepted_architect(batch["batch_id"])
         candidate = self._accepted_candidate(batch["batch_id"])
         review = self._infra_review(batch["batch_id"], candidate)
-        root = coordinator._state_root(self._args(), self.repo)
+        root = ledger_ops._state_root(self._args(), self.repo)
         ledger = LifecycleLedger(root)
         open_id = f"dispatch-{uuid.uuid4()}"
-        with coordinator._ledger_lock(ledger):
+        with ledger_ops._ledger_lock(ledger):
             qa_lane._enqueue(ledger, open_id, coordinator)
-            record = coordinator._load_batch(root, batch["batch_id"])
+            record = ledger_ops._load_batch(root, batch["batch_id"])
             record["dispatches"].append({"dispatch_id": open_id, "role": "qa", "state": "approved", "brief_sha256": "0" * 64})
-            coordinator._replace_record(ledger, BatchRecord.from_dict(record))
-            coordinator._write_record(ledger, DispatchStatusRecord.from_dict(
+            ledger_ops._replace_record(ledger, BatchRecord.from_dict(record))
+            ledger_ops._write_record(ledger, DispatchStatusRecord.from_dict(
                 {"dispatch_id": open_id, "state": "approved", "updated_at": coordinator._now()},
             ))
 
@@ -1488,21 +1489,21 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         return first
 
     def _edit_batch(self, batch_id: str, **fields: object) -> None:
-        root = coordinator._state_root(self._args(), self.repo)
+        root = ledger_ops._state_root(self._args(), self.repo)
         ledger = LifecycleLedger(root)
-        with coordinator._ledger_lock(ledger):
-            batch = coordinator._load_batch(root, batch_id)
+        with ledger_ops._ledger_lock(ledger):
+            batch = ledger_ops._load_batch(root, batch_id)
             batch.update(fields)
-            coordinator._replace_record(ledger, BatchRecord.from_dict(batch))
+            ledger_ops._replace_record(ledger, BatchRecord.from_dict(batch))
 
     def _age_heartbeat(self, dispatch_id: str, seconds: int) -> None:
-        root = coordinator._state_root(self._args(), self.repo)
+        root = ledger_ops._state_root(self._args(), self.repo)
         ledger = LifecycleLedger(root)
-        with coordinator._ledger_lock(ledger):
-            status = coordinator._load_dispatch_status(root, dispatch_id)
+        with ledger_ops._ledger_lock(ledger):
+            status = ledger_ops._load_dispatch_status(root, dispatch_id)
             old = self._later(-seconds)
             status.update({"heartbeat_at": old, "updated_at": old})
-            coordinator._replace_record(ledger, DispatchStatusRecord.from_dict(status))
+            ledger_ops._replace_record(ledger, DispatchStatusRecord.from_dict(status))
 
     def _live_architect(self, batch_id: str) -> JsonObject:
         brief: JsonObject = self._dispatch(batch_id, "architect")["brief"]
@@ -1587,7 +1588,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         coordinator.checkpoint_dispatch(self._args(file=str(checkpoint)))
         coordinator.resume_dispatch(self._args(**resume))
 
-        status = coordinator._load_dispatch_status(coordinator._state_root(self._args(), self.repo), brief["dispatch_id"])
+        status = ledger_ops._load_dispatch_status(ledger_ops._state_root(self._args(), self.repo), brief["dispatch_id"])
         self.assertNotIn("model_self_report", status)  # a new session must attest its model again
         path = coordinator._prepare_agent_inbox(self.repo) / f"{brief['dispatch_id']}.json"
         path.write_text(json.dumps(self._developer_report(brief, candidate, changed)), encoding="utf-8")
@@ -1963,13 +1964,13 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._pressure(review["dispatch_id"], 160_000)
         self._age_heartbeat(review["dispatch_id"], 7200)
         self._attention(batch["batch_id"])
-        root = coordinator._state_root(self._args(), self.repo)
+        root = ledger_ops._state_root(self._args(), self.repo)
 
         LifecycleLedger(root).records_root()  # full generation validation
-        current = coordinator._load_batch(root, batch["batch_id"])
+        current = ledger_ops._load_batch(root, batch["batch_id"])
         coordinator._validate_batch_integrity(root, current)
         coordinator._validate_dispatch(
-            self.repo, coordinator._config(self.repo), root, current, coordinator._load_dispatch(root, review["dispatch_id"]),
+            self.repo, coordinator._config(self.repo), root, current, ledger_ops._load_dispatch(root, review["dispatch_id"]),
         )
 
         tampered: dict[str, JsonObject] = {
@@ -1985,9 +1986,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def test_a_brief_whose_digest_does_not_match_its_transition_is_rejected(self) -> None:
         batch = self._create_batch()
         brief = self._dispatch(batch["batch_id"], "architect")["brief"]
-        root = coordinator._state_root(self._args(), self.repo)
-        current = coordinator._load_batch(root, batch["batch_id"])
-        forged = {**coordinator._load_dispatch(root, brief["dispatch_id"]), "transition_digest": "0" * 64}
+        root = ledger_ops._state_root(self._args(), self.repo)
+        current = ledger_ops._load_batch(root, batch["batch_id"])
+        forged = {**ledger_ops._load_dispatch(root, brief["dispatch_id"]), "transition_digest": "0" * 64}
         current["dispatches"][0]["brief_sha256"] = hashlib.sha256(utils._canonical(forged).encode("utf-8")).hexdigest()
 
         with self.assertRaises(coordinator.CoordinatorError) as caught:
