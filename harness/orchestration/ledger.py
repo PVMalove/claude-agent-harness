@@ -624,12 +624,13 @@ class LifecycleLedger:
         target = after.get("state")
         allowed = {
             "planned": {"planned", "awaiting-approval", "blocked", "failed", "not-required"},
-            "awaiting-approval": {"awaiting-approval", "active", "completed", "blocked", "failed", "not-required"},
+            "awaiting-approval": {"awaiting-approval", "active", "completed", "blocked", "failed", "not-required", "abandoned"},
             "active": {"active", "awaiting-approval", "blocked", "failed", "not-required"},
             "blocked": {"blocked", "failed"},
             "failed": {"failed"},
             "completed": {"completed", "failed"},
             "not-required": {"not-required"},
+            "abandoned": {"abandoned"},
         }
         if not isinstance(previous, str) or not isinstance(target, str) or previous not in allowed or target not in allowed[previous]:
             allowed_targets = sorted(allowed.get(previous, ())) if isinstance(previous, str) else []

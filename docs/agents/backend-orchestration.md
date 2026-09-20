@@ -376,6 +376,53 @@ risks, blockers и следующее решение coordinator-а. Для read
 изменились scope, zone, DoD, assignment или proof, текущий dispatch заканчивается и создаётся новый.
 Повтор после `blocked` или `failed` — тоже новый dispatch с новым ID и brief.
 
+### Маршрутизация `retry` и решение `abandon`
+
+`batch decide --decision retry` больше не означает «снова developer». Coordinator сохраняет на
+решении routing record: `previous_role`, `reason_category`, `next_role`, `next_action`,
+`rationale` и `candidate_commit` (пока он не изменился). Причина определяется только по
+структурированным данным report: outcome, findings, severity осей Standards/Spec, failed checks и
+тому, изменился ли candidate. Свободный текст `blockers`/`output` не классифицируется. Явную причину
+можно передать через `--reason-category` (`code`, `requirements`, `candidate-change`,
+`verification-infrastructure`, `transport`, `unknown`), но она не отменяет найденный finding.
+Rate limit, compaction, context limit, недоступный Bash/WSL wrapper и transport failure — это
+operational evidence (`verification-infrastructure` или `transport`), а не code finding.
+
+| Стадия отчёта | `accept` | `retry` | `block` / `fail` | `abandon` |
+| --- | --- | --- | --- | --- |
+| architect | developer | новый architect | terminal | `abandoned` |
+| developer | risk assessment | `developer-retry`: новый candidate и новая risk assessment | terminal | `abandoned` |
+| code-review | qa | новый code-review на том же `candidate_commit`, если report `blocked`, причина — `verification-infrastructure`/`transport`, findings пусты, обе оси без findings, нет failed check и candidate не менялся; иначе `developer-retry` | terminal | `abandoned` |
+| qa | publish | новый qa на том же SHA при том же условии (QA остаётся read-only); defect или новый candidate — `developer-retry` | terminal | `abandoned` |
+| publish | `completed` | новый publish на том же принятом SHA при `verification-infrastructure`/`transport`; `developer-retry`, если candidate должен измениться | terminal | `abandoned` |
+
+`unknown`, противоречивая или неподтверждённая причина всегда даёт безопасный маршрут
+`developer-retry`. Повтор на том же SHA — это новый immutable dispatch: новый dispatch ID, повторная
+проверка base-commit gate и свежести Context Package и собственное явное approval при `manual_all`.
+Прежние brief, report и blocker остаются audit evidence. Фиктивные и пустые commit не
+используются; новый candidate всегда требует новой risk assessment; `block` и `fail` сами retry не
+запускают. `--retry-role developer` принудительно выбирает developer retry там, где coordinator
+иначе повторил бы ту же роль на том же SHA.
+
+Решение `abandon` доступно после любого completion report. Оно требует явного approval и непустого
+`--reason`, переводит batch в терминальный `abandoned` и помечает незакрытые dispatch как
+`abandoned`:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch decide \
+  --batch <batch-id> --decision abandon --approved-by 'имя утверждающего' \
+  --approved-at 2026-09-20T09:00:00Z --reason 'план заменён, начинаем новый batch'
+```
+
+`abandon` не удаляет worktree, candidate, brief, report, Context Package и audit evidence, не
+закрывает issue и не создаёт PR. Убирается только то, что не является evidence: staged-копии report в
+agent inbox и записи QA-очереди dispatch, которые уже не запустятся (живой QA lease по-прежнему
+снимается только `qa clear-stale-lease`). Batch записывает `abandoned.last_accepted` — последний принятый
+этап и его candidate, — от которого можно создать свежий batch на той же ветке и том же candidate.
+`abandon` никогда не является автоматическим fallback для `block`, `fail` или `retry`. Команда
+`batch abandon` для batch, у которого не будет ни одного report, остаётся прежней и завершает его
+в `failed`.
+
 ### Инвентарь и закрытие тупикового batch
 
 Посмотреть, что вообще заведено и что не закрыто:
@@ -449,7 +496,8 @@ write-роли либо pinned SHA review-роли; расхождение не�
 
 Для architect/developer `worker_attestation_required` также требует, чтобы Git-worktree HEAD в момент
 `self-report` буквально совпадал с immutable `snapshot_commit` из brief. После `batch decide --decision
-retry` (например, developer-retry после code-review blocker) новый developer dispatch **всегда** пинит
+retry`, маршрутизированного в `developer-retry` (например, после code-review blocker; повтор на том же
+SHA developer dispatch не создаёт), новый developer dispatch **всегда** пинит
 `snapshot_commit` обратно на `base_commit` batch-а, а не на отклонённый кандидатный коммит — чтобы retry
 не мог молча унаследовать состояние отклонённого коммита. Это значит, что coordinator обязан сам
 привести worktree к этому состоянию **до** `dispatch send`, иначе первый же `dispatch self-report`

@@ -27,17 +27,57 @@ the gitignored `.harness/orchestration/state/` directory.
 | State | Coordinator action and entry condition | Allowed next state |
 | --- | --- | --- |
 | `planned` | Ticket, backend zone, issue branch/worktree, DoD, prohibitions, and verification commands are drafted. | `awaiting-approval`, `blocked` |
-| `awaiting-approval` | The coordinator is waiting for the next explicit human decision: first the role dispatch, and later acceptance of a report. | `active`, `blocked`, `completed`, `failed` |
+| `awaiting-approval` | The coordinator is waiting for the next explicit human decision: first the role dispatch, and later acceptance of a report. | `active`, `blocked`, `completed`, `failed`, `abandoned` |
 | `active` | An approved dispatch has been handed to the runtime adapter; the role is executing only within its immutable brief. | `awaiting-approval`, `blocked`, `failed` |
 | `completed` | All required role reports, commit proof, verification evidence, and risk gates are accepted. | terminal |
 | `blocked` | An external dependency, missing authority, overlapping zone, or unavailable proof prevents safe continuation. | terminal |
 | `failed` | The dispatch attempted work but could not produce an acceptable result. | terminal |
+| `abandoned` | A human explicitly gave up on the batch after a completion report, with a recorded reason. | terminal |
 
 `reported` is a terminal outcome for one role dispatch but remains pending coordinator decision. The
-batch returns to `awaiting-approval` until the coordinator accepts, blocks, fails, or creates a new
-dispatch. `completed`, `blocked`, and `failed` are terminal outcomes for that dispatch. A retry is a new
-dispatch with a new brief and a new dispatch ID; it is never a transition from `blocked` or
-`failed` back to `working`, and the old brief is never edited.
+batch returns to `awaiting-approval` until the coordinator accepts, retries, blocks, fails, abandons,
+or creates a new dispatch. `completed`, `blocked`, and `failed` are terminal outcomes for that
+dispatch. A retry is a new dispatch with a new brief and a new dispatch ID; it is never a transition
+from `blocked` or `failed` back to `working`, and the old brief is never edited.
+
+## Retry routing and abandon
+
+`batch decide --decision retry` does not always mean "ask a developer again". The coordinator
+stores a routing record on the decision (`previous_role`, `reason_category`, `next_role`,
+`next_action`, `rationale`, and the `candidate_commit` when it has not changed) and derives the
+reason from structured report data only: outcome, review findings, Standards/Spec severity, failed
+checks, and whether the candidate moved. Free text in `blockers` or `output` is never classified. An
+approver may pass `--reason-category` (`code`, `requirements`, `candidate-change`,
+`verification-infrastructure`, `transport`, `unknown`); it can only narrow a route toward a
+same-candidate re-run when the structured data agrees, and it never overrides a finding.
+Rate limits, compaction, context limits, an unavailable Bash/WSL wrapper and transport failures are
+operational evidence: record them as `verification-infrastructure` or `transport`, never as a code
+finding.
+
+| Reporting stage | `accept` | `retry` | `block` / `fail` | `abandon` |
+| --- | --- | --- | --- | --- |
+| architect | developer | new architect | terminal | `abandoned` |
+| developer | risk assessment | `developer-retry` (new candidate, then a new risk assessment) | terminal | `abandoned` |
+| code-review | qa | new code-review on the same candidate only if the report is `blocked`, the reason is `verification-infrastructure` or `transport`, there is no finding on either axis, no failed check and the candidate is unchanged; otherwise `developer-retry` | terminal | `abandoned` |
+| qa | publish | new qa on the same candidate under the same conditions (QA stays read-only); a defect or a new candidate means `developer-retry` | terminal | `abandoned` |
+| publish | completed | new publish on the same accepted SHA for `verification-infrastructure` or `transport`; `developer-retry` when the candidate must change | terminal | `abandoned` |
+
+An `unknown`, contradictory or unsupported reason always takes the safe route, `developer-retry`.
+A same-candidate retry is a new immutable dispatch: it gets a new dispatch ID, re-checks the
+base-commit gate and Context Package freshness, and needs its own explicit human approval under
+`manual_all`. The earlier brief, report and blocker stay untouched as audit evidence. A retry never
+uses an empty or fictitious commit, a changed candidate always needs a new risk assessment before
+review or QA, and `block` or `fail` never start a retry by themselves. `--retry-role developer`
+forces a developer retry where a same-candidate re-run would otherwise be routed.
+
+`abandon` is a fifth decision on a completion report. It needs explicit approval and a non-empty
+`--reason`, moves the batch to the terminal `abandoned` state and marks unfinished dispatches
+`abandoned`. It keeps the worktree, candidate, briefs, reports, Context Packages and audit records,
+closes no issue and opens no PR. It removes only leftovers that are not evidence: the staged
+copies of reports in the agent inbox and the QA queue entries of dispatches that will never run.
+The batch records `abandoned.last_accepted` (the newest accepted stage and candidate), so a fresh
+batch can be created on the same branch and candidate. It is never a fallback for `block`, `fail`
+or `retry`.
 
 ## Versioned lifecycle ledger
 
