@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -89,6 +90,50 @@ def _changed_lines(base: str) -> dict[str, set[int]]:
     return changed
 
 
+def _repo_relative(path: str) -> str:
+    """Normalize a coverage.json file key to a repo-relative forward-slash path: keys are OS-native
+    (backslashes on Windows) and absolute when coverage ran with --source directories."""
+    normalized = path.replace("\\", "/")
+    root_prefix = ROOT.as_posix().rstrip("/") + "/"
+    return normalized[len(root_prefix) :] if normalized.startswith(root_prefix) else normalized
+
+
+def source_dirs(changed: Mapping[str, set[int]]) -> list[str]:
+    """Directories of the changed files, passed to ``coverage run --source`` so a changed file no test
+    imports still appears in the report (with every statement missing) instead of being skipped."""
+    return sorted({str(ROOT / Path(rel_path).parent) for rel_path in changed})
+
+
+def summarize_coverage(
+    changed: Mapping[str, set[int]], files: Mapping[str, Mapping[str, Sequence[int]]]
+) -> tuple[int, int, list[str]]:
+    """Count covered/total changed *statements*; blank, comment and continuation lines are never
+    coverable, so they stay out of the denominator. A changed file missing from the report has no
+    statement data, so every one of its changed lines counts as uncovered."""
+    total = 0
+    covered = 0
+    uncovered: list[str] = []
+    for rel_path, lines in sorted(changed.items()):
+        file_report = files.get(rel_path)
+        if file_report is None:
+            executed: set[int] = set()
+            relevant = set(lines)
+        else:
+            executed = set(file_report["executed_lines"])
+            relevant = lines & (executed | set(file_report["missing_lines"]))
+        total += len(relevant)
+        for lineno in sorted(relevant):
+            if lineno in executed:
+                covered += 1
+            else:
+                uncovered.append(f"{rel_path}:{lineno}")
+    return covered, total, uncovered
+
+
+def meets_threshold(covered: int, total: int) -> bool:
+    return covered * 100 >= total * THRESHOLD_PERCENT
+
+
 def main() -> int:
     os.environ["PYTHONPATH"] = str(ROOT)
     base = _merge_base()
@@ -99,7 +144,18 @@ def main() -> int:
 
     COVERAGE_DATA_FILE.unlink(missing_ok=True)
     run = subprocess.run(
-        [sys.executable, "-m", "coverage", "run", "-m", "unittest", "discover", "-s", str(ROOT / "tests")],
+        [
+            sys.executable,
+            "-m",
+            "coverage",
+            "run",
+            f"--source={','.join(source_dirs(changed))}",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            str(ROOT / "tests"),
+        ],
         cwd=ROOT,
     )
     if run.returncode != 0:
@@ -118,24 +174,11 @@ def main() -> int:
     report = json.loads(COVERAGE_JSON_FILE.read_text(encoding="utf-8"))
     # coverage.json keys files by OS-native path (backslashes on Windows); git diff paths are
     # always forward-slash. Normalize both sides to match regardless of platform.
-    files = {key.replace("\\", "/"): value for key, value in report.get("files", {}).items()}
+    files = {_repo_relative(key): value for key, value in report.get("files", {}).items()}
     COVERAGE_DATA_FILE.unlink(missing_ok=True)
     COVERAGE_JSON_FILE.unlink(missing_ok=True)
 
-    total_changed = 0
-    total_covered = 0
-    uncovered: list[str] = []
-    for rel_path, lines in sorted(changed.items()):
-        file_report = files.get(rel_path)
-        executed = set(file_report["executed_lines"]) if file_report else set()
-        excluded = set(file_report["excluded_lines"]) if file_report else set()
-        relevant = lines - excluded
-        total_changed += len(relevant)
-        for lineno in sorted(relevant):
-            if lineno in executed:
-                total_covered += 1
-            else:
-                uncovered.append(f"{rel_path}:{lineno}")
+    total_covered, total_changed, uncovered = summarize_coverage(changed, files)
 
     if total_changed == 0:
         print(f"diff-coverage: no coverable changed lines since {base}")
@@ -143,7 +186,7 @@ def main() -> int:
 
     percent = 100.0 * total_covered / total_changed
     print(f"diff-coverage: {total_covered}/{total_changed} changed lines covered ({percent:.1f}%)")
-    if percent < THRESHOLD_PERCENT:
+    if not meets_threshold(total_covered, total_changed):
         print(f"diff-coverage: below the {THRESHOLD_PERCENT:.0f}% threshold; uncovered changed lines:")
         for entry in uncovered:
             print(f"  {entry}")

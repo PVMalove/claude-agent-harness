@@ -6,6 +6,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -219,7 +220,7 @@ class ContextBuilderTests(ContextBuilderFixture):
 
     def test_every_raise_path_is_a_harness_error_with_a_message_and_a_remedy(self) -> None:
         repo, base, candidate = self.repo, self.base_commit, self.candidate_commit
-        cases = (
+        cases: tuple[tuple[str, str, Callable[[], object]], ...] = (
             ("git diff", "git diff", lambda: build_context_package(repo, base, "0" * 40)),
             (
                 "direct import-graph neighbours",

@@ -7,10 +7,15 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Protocol, cast
 from unittest.mock import patch
 
 from harness.orchestration import runtime_attestation
 from harness.orchestration.runtime_attestation import AttestationError, attest
+
+
+class _RunFn(Protocol):
+    def __call__(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]: ...
 
 
 def _git(path: Path, *arguments: str) -> str:
@@ -35,19 +40,14 @@ class RuntimeAttestationTests(unittest.TestCase):
             worktree = Path(temporary) / "issue-240"
             _git(repo, "worktree", "add", "-q", str(worktree), branch)
             dispatch = {"role": "developer", "branch": branch, "candidate_commit": None, "snapshot_commit": snapshot}
-            real_run = runtime_attestation.subprocess.run
+            real_run = cast(_RunFn, subprocess.run)
 
-            def windows_git_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-                command = args[0]
-                if (
-                    isinstance(command, list)
-                    and command[-3:] == ["worktree", "list", "--porcelain"]
-                    and kwargs.get("encoding") == "utf-8"
-                ):
+            def windows_git_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                if command[-3:] == ["worktree", "list", "--porcelain"] and kwargs.get("encoding") == "utf-8":
                     raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
-                return real_run(*args, **kwargs)  # type: ignore[arg-type, no-any-return]
+                return real_run(command, **kwargs)
 
-            with patch.object(runtime_attestation.subprocess, "run", side_effect=windows_git_run):
+            with patch.object(subprocess, "run", side_effect=windows_git_run):
                 proof = attest(repo, dispatch, str(worktree))
 
             self.assertEqual(proof["worktree"], str(worktree.resolve()))

@@ -12,12 +12,13 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import ModuleType
 
 
 COUNT_RE = re.compile(r"(?P<count>\d+)\s+(?P<kind>passed|failed|errors?|skipped|xfailed|xpassed)\b")
 DURATION_RE = re.compile(r"\bin\s+(?P<duration>[0-9.]+s)\b")
 FAILURE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(?P<nodeid>.+?)(?:\s+-\s+.*)?$")
-_GATE_RUNNER = None
+_GATE_RUNNER: ModuleType | None = None
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -38,10 +39,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def redact(line: str) -> str:
-    return _gate_runner().sanitise(line)
+    return str(_gate_runner().sanitise(line))
 
 
-def _gate_runner():
+def _gate_runner() -> ModuleType:
     """Load the managed shared runner without assuming a Python package install.
 
     gate_runner.py is an ordinary submodule of the ``harness``/``.harness`` package (it does

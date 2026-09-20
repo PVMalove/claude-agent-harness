@@ -1523,7 +1523,7 @@ def _require_current_approval(approved_at: str, config: JsonObject) -> None:
         )
 
 
-def _approval(args: argparse.Namespace, transition_digest: str | None = None) -> dict[str, str]:
+def _approval(args: argparse.Namespace, transition_digest: str | None = None) -> JsonObject:
     approved_by = getattr(args, "approved_by", None)
     approved_at = getattr(args, "approved_at", None)
     if not _non_empty(approved_by) or not _non_empty(approved_at):
@@ -2004,7 +2004,7 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
     _reject_non_english(dod, "definition_of_done")
     _reject_non_english(prohibited, "prohibited_changes")
     scope_preflight = _scope_preflight(config, ticket.strip(), zone.strip(), dod, dependencies, args)
-    record = {
+    record: JsonObject = {
         "batch_id": f"batch-{uuid.uuid4()}",
         "created_at": _now(),
         "base_commit": pinned_base,

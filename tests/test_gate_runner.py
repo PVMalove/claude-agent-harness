@@ -8,11 +8,16 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Protocol, cast
 from unittest import mock
 
 
 from harness.errors import HarnessError
 from harness.gate_runner.gate_runner import CleanRoomPolicy, GateRunnerError, LocalPolicy, run_gate
+
+
+class _RunFn(Protocol):
+    def __call__(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]: ...
 
 
 class GateRunnerTests(unittest.TestCase):
@@ -100,13 +105,13 @@ class GateRunnerTests(unittest.TestCase):
             candidate_commit = subprocess.run(
                 ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
             ).stdout.strip()
-            real_run = subprocess.run
+            real_run = cast(_RunFn, subprocess.run)
 
-            def fake_status(status_result):
-                def run(command, *args, **kwargs):
+            def fake_status(status_result: subprocess.CompletedProcess[str]) -> _RunFn:
+                def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
                     if "status" in command:
                         return status_result
-                    return real_run(command, *args, **kwargs)
+                    return real_run(command, **kwargs)
 
                 return run
 

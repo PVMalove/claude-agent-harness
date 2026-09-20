@@ -23,6 +23,7 @@ import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import cast
 from unittest import mock
 
 from harness.orchestration import contract, coordinator, coordinator_cli, extensions, operational_guards, qa_lane
@@ -90,7 +91,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         root = coordinator._state_root(_ns(repo=str(self.repo), state_dir=str(self.state_dir)), self.repo)
         return LifecycleLedger(root).records_root()
 
-    def _create_batch(self, ticket: str = "#195", branch: str = "feature/issue-195-thing") -> dict:
+    def _create_batch(self, ticket: str = "#195", branch: str = "feature/issue-195-thing") -> coordinator.JsonObject:
         worktree_path = self.tmp / "worktree"
         if not worktree_path.exists():
             _git(self.repo, "worktree", "add", "-b", branch, str(worktree_path), "master")
@@ -104,13 +105,13 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         )
         return coordinator.create_batch(args)
 
-    def _approve_batch(self, batch_id: str) -> dict:
+    def _approve_batch(self, batch_id: str) -> coordinator.JsonObject:
         return coordinator.approve_batch(_ns(
             repo=str(self.repo), state_dir=str(self.state_dir),
             batch=batch_id, approved_by="Malove", approved_at="2026-09-17T00:00:00+00:00",
         ))
 
-    def _create_architect_dispatch(self, batch_id: str) -> dict:
+    def _create_architect_dispatch(self, batch_id: str) -> coordinator.JsonObject:
         fields = dict(
             repo=str(self.repo), state_dir=str(self.state_dir),
             batch=batch_id, role="architect", runtime="claude", purpose="work",
@@ -125,7 +126,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
     def _telemetry_payload(
         self, dispatch_id: str, *, max_context_tokens: int | None = None,
         recorded_at: str = "2026-09-18T00:00:00+00:00", session_kind: str = "worker",
-    ) -> dict:
+    ) -> coordinator.JsonObject:
         return {
             "dispatch_id": dispatch_id, "session_kind": session_kind,
             "input_tokens": 100, "output_tokens": 50, "cache_read_tokens": 0, "cache_write_tokens": 0,
@@ -133,7 +134,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "poll_turns": 1, "restart_reason": "none", "recorded_at": recorded_at,
         }
 
-    def _record_telemetry(self, payload: dict) -> dict:
+    def _record_telemetry(self, payload: coordinator.JsonObject) -> coordinator.JsonObject:
         path = self.tmp / f"telemetry-{uuid.uuid4()}.json"
         path.write_text(json.dumps(payload), encoding="utf-8")
         return coordinator.record_telemetry(_ns(
@@ -616,11 +617,12 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         )
 
     def test_health_rejects_an_invalid_tool_policy(self) -> None:
-        for invalid in (
+        invalid_policies: tuple[object, ...] = (
             ["Read"], {"other": {}}, {"modes": ["Read"]}, {"modes": {"admin": ["Read"]}},
             {"roles": {"no-such-role": ["Read"]}}, {"roles": {"qa": []}}, {"roles": {"qa": ["Read", ""]}},
             {"roles": {"qa": ["Read", "Read"]}}, {"roles": {"qa": "Read"}},
-        ):
+        )
+        for invalid in invalid_policies:
             with self.subTest(tool_policy=invalid):
                 problems = self._tool_policy_health(invalid)
                 self.assertTrue(
@@ -643,7 +645,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         ), [])
 
     def test_health_rejects_invalid_operational_policy_sections(self) -> None:
-        invalid = {
+        invalid: dict[str, coordinator.JsonObject] = {
             "attention_policy_type": {"attention_policy": ["x"]},
             "attention_policy_field": {"attention_policy": {"retry_queue_seconds": 0}},
             "attention_policy_unknown": {"attention_policy": {"speed": 1}},
@@ -761,14 +763,14 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             caught.exception.remedy, "pass --delta-review-of naming a code-review dispatch that was actually retried",
         )
 
-    def _self_report(self, dispatch_id: str, **overrides: object) -> dict:
+    def _self_report(self, dispatch_id: str, **overrides: object) -> coordinator.JsonObject:
         values: dict[str, object] = dict(
             repo=str(self.repo), state_dir=str(self.state_dir), dispatch=dispatch_id, model="sonnet", worktree=None,
         )
         values.update(overrides)
         return coordinator.self_report_dispatch(_ns(**values))
 
-    def _approved_architect_dispatch(self) -> dict:
+    def _approved_architect_dispatch(self) -> coordinator.JsonObject:
         batch = self._create_batch()
         self._approve_batch(batch["batch_id"])
         dispatch = self._create_architect_dispatch(batch["batch_id"])
@@ -852,16 +854,16 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def _args(self, **values: object) -> argparse.Namespace:
         return _ns(repo=str(self.repo), state_dir=str(self.state_dir), **values)
 
-    def _approval(self) -> dict:
+    def _approval(self) -> coordinator.JsonObject:
         return {"approved_by": "Malove", "approved_at": self.APPROVED_AT}
 
     def _records(self) -> Path:
         return LifecycleLedger(coordinator._state_root(self._args(), self.repo)).records_root()
 
-    def _batch_record(self, batch_id: str) -> dict:
+    def _batch_record(self, batch_id: str) -> coordinator.JsonObject:
         return coordinator._read_object(self._records() / "batches" / f"{batch_id}.json", "batch")
 
-    def _batch_plan(self) -> dict:
+    def _batch_plan(self) -> coordinator.JsonObject:
         return dict(
             ticket="#244", branch=self.branch, worktree=str(self.worktree), zone="repository",
             integration_ref="master", definition_of_done=["route retries by cause"], prohibited_change=["secrets"],
@@ -869,20 +871,20 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             expected_changed_lines=10, expected_context_tokens=None,
         )
 
-    def _create_batch(self) -> dict:
+    def _create_batch(self) -> coordinator.JsonObject:
         _git(self.repo, "worktree", "add", "-b", self.branch, str(self.worktree), "master")
         batch = coordinator.create_batch(self._args(**self._batch_plan()))
         coordinator.approve_batch(self._args(batch=batch["batch_id"], **self._approval()))
         self.batch_id = batch["batch_id"]
         return batch
 
-    def _proposal_fields(self, batch_id: str, role: str, purpose: str, candidate: str | None) -> dict:
+    def _proposal_fields(self, batch_id: str, role: str, purpose: str, candidate: str | None) -> coordinator.JsonObject:
         return dict(
             batch=batch_id, role=role, runtime="claude", purpose=purpose, candidate_commit=candidate,
             delta_review_of=None, model="sonnet", effort="high",
         )
 
-    def _propose(self, batch_id: str, role: str, *, purpose: str = "work", candidate: str | None = None) -> dict:
+    def _propose(self, batch_id: str, role: str, *, purpose: str = "work", candidate: str | None = None) -> coordinator.JsonObject:
         """The dry run a human approves: the canonical transition and its digest, no brief written."""
         return coordinator.create_dispatch(self._args(
             propose=True, **self._proposal_fields(batch_id, role, purpose, candidate),
@@ -891,7 +893,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def _dispatch(
         self, batch_id: str, role: str, *, purpose: str = "work", candidate: str | None = None,
         digest: str | None = None,
-    ) -> dict:
+    ) -> coordinator.JsonObject:
         fields = self._proposal_fields(batch_id, role, purpose, candidate)
         if digest is None:
             digest = self._propose(batch_id, role, purpose=purpose, candidate=candidate)["transition_digest"]
@@ -903,15 +905,15 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         ))
         coordinator.self_report_dispatch(self._args(dispatch=dispatch_id, model="sonnet", worktree=None))
 
-    def _submit(self, dispatch_id: str, report: dict) -> dict:
+    def _submit(self, dispatch_id: str, report: coordinator.JsonObject) -> coordinator.JsonObject:
         path = coordinator._prepare_agent_inbox(self.repo) / f"{dispatch_id}.json"
         path.write_text(json.dumps(report), encoding="utf-8")
         return coordinator.submit_report(self._args(file=str(path)))
 
-    def _checks(self, brief: dict, result: str = "pass") -> list[dict]:
+    def _checks(self, brief: coordinator.JsonObject, result: str = "pass") -> list[coordinator.JsonObject]:
         return [{"command": command, "result": result, "evidence": "n/a"} for command in brief["verification_commands"]]
 
-    def _base_report(self, brief: dict, role: str, **overrides: object) -> dict:
+    def _base_report(self, brief: coordinator.JsonObject, role: str, **overrides: object) -> coordinator.JsonObject:
         report = {
             "dispatch_id": brief["dispatch_id"], "ticket": brief["ticket"], "role": role,
             "outcome": "completed", "output": "done", "commit_sha": "not applicable — read-only role",
@@ -921,7 +923,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         report.update(overrides)
         return report
 
-    def _decide(self, batch_id: str, decision: str, **extra: object) -> dict:
+    def _decide(self, batch_id: str, decision: str, **extra: object) -> coordinator.JsonObject:
         return coordinator.decide_batch(self._args(
             batch=batch_id, decision=decision, note=None, **{**self._approval(), **extra},
         ))
@@ -942,7 +944,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         base = self._batch_record(self.batch_id)["base_commit"]
         return candidate, coordinator._changed_files_between(self.repo, base, candidate)
 
-    def _developer_report(self, brief: dict, candidate: str, changed: list[str], **overrides: object) -> dict:
+    def _developer_report(self, brief: coordinator.JsonObject, candidate: str, changed: list[str], **overrides: object) -> coordinator.JsonObject:
         return self._base_report(brief, "developer", commit_sha=candidate, changed_files=changed, **overrides)
 
     def _accepted_candidate(self, batch_id: str, name: str = "x") -> str:
@@ -961,7 +963,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             developer_trigger=["transactions"],
         ))
 
-    def _axes(self, standards: tuple[str, list[dict]], spec: tuple[str, list[dict]]) -> dict[str, dict]:
+    def _axes(self, standards: tuple[str, list[coordinator.JsonObject]], spec: tuple[str, list[coordinator.JsonObject]]) -> dict[str, coordinator.JsonObject]:
         return {
             axis: {"severity": severity, "findings": findings, "risks": "none", "blockers": "none"}
             for axis, (severity, findings) in (("standards", standards), ("spec", spec))
@@ -969,9 +971,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
     def _reported_review(
         self, batch_id: str, candidate: str, *, outcome: str = "completed", blockers: str = "none",
-        standards: tuple[str, list[dict]] = ("clean", []), spec: tuple[str, list[dict]] = ("clean", []),
-    ) -> dict:
-        brief = self._dispatch(batch_id, "code-review", candidate=candidate)["brief"]
+        standards: tuple[str, list[coordinator.JsonObject]] = ("clean", []), spec: tuple[str, list[coordinator.JsonObject]] = ("clean", []),
+    ) -> coordinator.JsonObject:
+        brief: coordinator.JsonObject = self._dispatch(batch_id, "code-review", candidate=candidate)["brief"]
         self._start(brief["dispatch_id"], checkout=self.worktree)
         self._submit(brief["dispatch_id"], self._base_report(
             brief, "code-review", outcome=outcome, blockers=blockers,
@@ -980,13 +982,13 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         ))
         return brief
 
-    def _infra_review(self, batch_id: str, candidate: str) -> dict:
+    def _infra_review(self, batch_id: str, candidate: str) -> coordinator.JsonObject:
         return self._reported_review(
             batch_id, candidate, outcome="blocked", blockers="Bash/WSL wrapper unavailable; checks could not run",
             standards=("none", []), spec=("none", []),
         )
 
-    def _stage_report(self, batch_id: str, dispatch_id: str, report: dict, *, via_qa_lane: bool) -> None:
+    def _stage_report(self, batch_id: str, dispatch_id: str, report: coordinator.JsonObject, *, via_qa_lane: bool) -> None:
         """Persist a report for a role that never runs as a worker session in this suite."""
         root = coordinator._state_root(self._args(), self.repo)
         ledger = LifecycleLedger(root)
@@ -1004,16 +1006,16 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             else:
                 coordinator._persist_report(ledger, root, coordinator._load_batch(root, batch_id), dispatch, report)
 
-    def _reported_qa(self, batch_id: str, candidate: str, *, outcome: str = "completed", check_result: str = "pass") -> dict:
-        brief = self._dispatch(batch_id, "qa", candidate=candidate)["brief"]
+    def _reported_qa(self, batch_id: str, candidate: str, *, outcome: str = "completed", check_result: str = "pass") -> coordinator.JsonObject:
+        brief: coordinator.JsonObject = self._dispatch(batch_id, "qa", candidate=candidate)["brief"]
         self._stage_report(batch_id, brief["dispatch_id"], self._base_report(
             brief, "qa", outcome=outcome, checks_run=self._checks(brief, check_result),
             blockers="none" if outcome == "completed" else "QA could not complete",
         ), via_qa_lane=True)
         return brief
 
-    def _reported_publish(self, batch_id: str, candidate: str, blockers: str) -> dict:
-        brief = self._dispatch(batch_id, "developer", purpose="publish", candidate=candidate)["brief"]
+    def _reported_publish(self, batch_id: str, candidate: str, blockers: str) -> coordinator.JsonObject:
+        brief: coordinator.JsonObject = self._dispatch(batch_id, "developer", purpose="publish", candidate=candidate)["brief"]
         base = self._batch_record(batch_id)["base_commit"]
         self._stage_report(batch_id, brief["dispatch_id"], self._developer_report(
             brief, candidate, coordinator._changed_files_between(self.repo, base, candidate),
@@ -1030,10 +1032,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def _dispatch_ids(self, batch_id: str) -> list[str]:
         return [item["dispatch_id"] for item in self._batch_record(batch_id)["dispatches"]]
 
-    def _routing(self, batch: dict) -> dict:
-        return batch["coordinator_decisions"][-1]["routing"]
+    def _routing(self, batch: coordinator.JsonObject) -> coordinator.JsonObject:
+        return cast(coordinator.JsonObject, batch["coordinator_decisions"][-1]["routing"])
 
-    def _assert_route(self, batch: dict, *, role: str, action: str, category: str, candidate: str | None) -> dict:
+    def _assert_route(self, batch: coordinator.JsonObject, *, role: str, action: str, category: str, candidate: str | None) -> coordinator.JsonObject:
         routing = self._routing(batch)
         self.assertEqual(
             (routing["next_role"], routing["next_action"], routing["reason_category"], routing["candidate_commit"]),
@@ -1106,7 +1108,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         warning = {"severity": "warning", "summary": "off-by-one", "evidence": "x.py:3"}
         blocker = {"severity": "blocker", "summary": "data loss", "evidence": "x.py:9"}
         info = {"severity": "info", "summary": "naming", "evidence": "x.py:1"}
-        cases = {  # the full matrix lives in CoordinatorRetryRoutingTableTests; these prove the wiring
+        cases: dict[str, tuple[dict[str, tuple[str, list[coordinator.JsonObject]]], str | None]] = {  # the full matrix lives in CoordinatorRetryRoutingTableTests; these prove the wiring
             "standards blocker finding": ({"standards": ("blocker", [blocker])}, "verification-infrastructure"),
             "spec warning finding": ({"spec": ("warning", [warning])}, "transport"),
             "spec warning severity alone": ({"spec": ("warning", [])}, "transport"),
@@ -1460,11 +1462,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def _later(seconds: int) -> str:
         return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
 
-    def _attention(self, batch_id: str, *, after: int = 0) -> dict:
+    def _attention(self, batch_id: str, *, after: int = 0) -> coordinator.JsonObject:
         with mock.patch.object(coordinator, "_now", return_value=self._later(after)):
             return coordinator.attention_check(self._args(batch=batch_id))
 
-    def _resolve_attention(self, batch_id: str) -> dict:
+    def _resolve_attention(self, batch_id: str) -> coordinator.JsonObject:
         return coordinator.attention_resolve(self._args(batch=batch_id, note="reviewed by the operator", **self._approval()))
 
     def _evidence(self, dispatch_id: str) -> list[bytes]:
@@ -1475,10 +1477,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             (records / "reports" / f"{dispatch_id}.md").read_bytes(),
         ]
 
-    def _pressure(self, dispatch_id: str, observed: int, source: str = "provider-usage") -> dict:
+    def _pressure(self, dispatch_id: str, observed: int, source: str = "provider-usage") -> coordinator.JsonObject:
         return coordinator.record_context_pressure(self._args(dispatch=dispatch_id, observed_tokens=observed, source=source))
 
-    def _infra_blocked_and_retried(self, batch_id: str, candidate: str, category: str = "verification-infrastructure") -> dict:
+    def _infra_blocked_and_retried(self, batch_id: str, candidate: str, category: str = "verification-infrastructure") -> coordinator.JsonObject:
         first = self._infra_review(batch_id, candidate)
         self._decide(batch_id, "retry", reason_category=category)
         return first
@@ -1500,8 +1502,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             status.update({"heartbeat_at": old, "updated_at": old})
             coordinator._replace_record(ledger, DispatchStatusRecord.from_dict(status))
 
-    def _live_architect(self, batch_id: str) -> dict:
-        brief = self._dispatch(batch_id, "architect")["brief"]
+    def _live_architect(self, batch_id: str) -> coordinator.JsonObject:
+        brief: coordinator.JsonObject = self._dispatch(batch_id, "architect")["brief"]
         self._start(brief["dispatch_id"])
         return brief
 
@@ -1968,7 +1970,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self.repo, coordinator._config(self.repo), root, current, coordinator._load_dispatch(root, review["dispatch_id"]),
         )
 
-        tampered = {
+        tampered: dict[str, coordinator.JsonObject] = {
             "context level does not match its numbers": {"context_pressure": [{**current["context_pressure"][0], "level": "ok"}]},
             "context record was edited": {"context_pressure": [{**current["context_pressure"][0], "observed_tokens": 1}]},
             "attention without a reason": {"needs_attention": True, "attention_reason": ""},
@@ -1998,10 +2000,10 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     CANDIDATE = "c" * 40
 
     def _report(
-        self, outcome: str = "blocked", *, standards: tuple[str, list] | None = ("none", []),
-        spec: tuple[str, list] = ("none", []), failed_check: bool = False,
-    ) -> dict:
-        report: dict = {
+        self, outcome: str = "blocked", *, standards: tuple[str, list[coordinator.JsonObject]] | None = ("none", []),
+        spec: tuple[str, list[coordinator.JsonObject]] = ("none", []), failed_check: bool = False,
+    ) -> coordinator.JsonObject:
+        report: coordinator.JsonObject = {
             "outcome": outcome,
             "checks_run": [{"command": "true", "result": "fail" if failed_check else "not-run", "evidence": "e"}],
             "blockers": "Bash/WSL wrapper unavailable",
@@ -2013,7 +2015,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
             }
         return report
 
-    def _route(self, stage: str, report: dict, category: str | None, *, moved: bool = False) -> dict:
+    def _route(self, stage: str, report: coordinator.JsonObject, category: str | None, *, moved: bool = False) -> coordinator.JsonObject:
         return coordinator._retry_routing(
             stage, report, dispatch_candidate=self.CANDIDATE,
             current_candidate="d" * 40 if moved else self.CANDIDATE, explicit_category=category,

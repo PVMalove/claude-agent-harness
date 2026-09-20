@@ -108,7 +108,7 @@ class ResolveRuntimeNameTests(unittest.TestCase):
         self.assertEqual(contract.resolve_runtime_name({"runtimes": {"claude": {}}}, None), "claude")
 
     def test_explicit_request_is_stripped(self) -> None:
-        plan = {"runtimes": {"claude": {}, "codex": {}}}
+        plan: contract.JsonObject = {"runtimes": {"claude": {}, "codex": {}}}
         self.assertEqual(contract.resolve_runtime_name(plan, " codex "), "codex")
 
     def test_unknown_explicit_request(self) -> None:
@@ -130,7 +130,7 @@ class ResolveRuntimeNameTests(unittest.TestCase):
             self.assertIn("claude, codex", ctx.exception.remedy)
 
 
-def _config() -> dict[str, object]:
+def _config() -> contract.JsonObject:
     return {
         "provider_profiles": {"p": {"capabilities": ["backend-development"]}},
         "backend_zones": {"z": {"paths": ["src/**"]}},

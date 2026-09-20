@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import unittest
 import unittest.mock
+from collections.abc import Mapping
 from pathlib import Path
 
 from harness.errors import HarnessError
@@ -192,7 +193,7 @@ class CandidateProfileTests(unittest.TestCase):
             }
         }
 
-    def _candidates(self, plan: dict[str, object], preferred: object = None) -> list[tuple[str, str, str | None]]:
+    def _candidates(self, plan: Mapping[str, object], preferred: object = None) -> list[tuple[str, str, str | None]]:
         return adapter._candidate_profiles(self._config(), plan, self.ROLE, preferred)
 
     def test_fallback_chain_is_flattened_without_duplicates(self) -> None:
@@ -204,7 +205,7 @@ class CandidateProfileTests(unittest.TestCase):
         self.assertEqual(self._candidates(plan, "b")[0][0], "b")
 
     def test_invalid_plans_are_rejected(self) -> None:
-        cases = {
+        cases: dict[str, dict[str, object]] = {
             "profiles is not a list": {"model": "m", "effort": "x", "profiles": "a"},
             "blank effort": {"model": "m", "effort": " ", "profiles": ["a"]},
             "unknown profile": {"model": "m", "effort": "x", "profiles": ["zzz"]},

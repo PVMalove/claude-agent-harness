@@ -8,10 +8,12 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import cast
 
 from harness.errors import HarnessError
 from harness.orchestration import dispatch_preflight
 from harness.orchestration.dispatch_preflight import PreflightError, prepare
+from harness.orchestration.ledger import JsonObject
 
 
 def _git(path: Path, *args: str) -> str:
@@ -95,8 +97,8 @@ class PrepareTests(unittest.TestCase):
         data = prepared.to_dict()
         self.assertEqual(data["integration_ref"], "integration/x")
         self.assertEqual(data["mandatory_checks"], ["pytest"])
-        self.assertEqual(data["preview_brief"]["verification_commands"], ["pytest"])
-        self.assertEqual(data["decision_packet"]["checks"], ["pytest"])
+        self.assertEqual(cast(JsonObject, data["preview_brief"])["verification_commands"], ["pytest"])
+        self.assertEqual(cast(JsonObject, data["decision_packet"])["checks"], ["pytest"])
         self.assertEqual(data["context_package"], prepared.context_package)
 
     def test_context_package_keeps_only_role_keys_with_values(self) -> None:
@@ -110,7 +112,7 @@ class PrepareTests(unittest.TestCase):
         )
 
     def test_unknown_role_context_is_starting_files_only(self) -> None:
-        config = {"assignment_plans": {"qa": {"runtimes": {"claude": {}}}}}
+        config: JsonObject = {"assignment_plans": {"qa": {"runtimes": {"claude": {}}}}}
         prepared = self._prepare("qa", config=config, starting_files=["a.txt"], pinned_diff="d")
         self.assertEqual(
             prepared.context_package, {"snapshot_sha": self.sha, "role": "qa", "starting_files": ["a.txt"]}
@@ -123,7 +125,7 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(prepared.context_package["snapshot_sha"], self.sha)
 
     def test_review_role_does_not_require_the_issue_branch(self) -> None:
-        config = {"assignment_plans": {"code-review": {"runtimes": {"claude": {}}}}}
+        config: JsonObject = {"assignment_plans": {"code-review": {"runtimes": {"claude": {}}}}}
         prepared = self._prepare("code-review", config=config, branch="feature/other")
         self.assertEqual(prepared.issue_branch, "feature/other")
 
