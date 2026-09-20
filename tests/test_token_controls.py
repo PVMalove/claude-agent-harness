@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 from harness.orchestration import contract, coordinator
-from harness.orchestration.core import constants
+from harness.orchestration.core import config, constants
 from harness.orchestration.ledger import LifecycleLedger
 
 
@@ -58,19 +58,19 @@ class TokenControlTests(unittest.TestCase):
         self.assertEqual(coordinator._continuation_counts(batch, "dispatch-a"), (2, 1))
 
     def test_context_package_policy_defaults_symbol_graph_depth_to_two(self) -> None:
-        self.assertEqual(coordinator._context_package_policy({})["symbol_graph_depth"], 2)
+        self.assertEqual(config._context_package_policy({})["symbol_graph_depth"], 2)
 
     def test_context_package_policy_honours_a_configured_symbol_graph_depth(self) -> None:
-        policy = coordinator._context_package_policy(
+        policy = config._context_package_policy(
             {"context_package_policy": {"symbol_graph_depth": 4}}
         )
         self.assertEqual(policy["symbol_graph_depth"], 4)
 
     def test_context_package_policy_defaults_max_related_tests_to_twenty_five(self) -> None:
-        self.assertEqual(coordinator._context_package_policy({})["max_related_tests"], 25)
+        self.assertEqual(config._context_package_policy({})["max_related_tests"], 25)
 
     def test_context_package_policy_honours_a_configured_max_related_tests(self) -> None:
-        policy = coordinator._context_package_policy(
+        policy = config._context_package_policy(
             {"context_package_policy": {"max_related_tests": 10}}
         )
         self.assertEqual(policy["max_related_tests"], 10)
@@ -102,11 +102,11 @@ class TokenControlTests(unittest.TestCase):
 
     def test_communication_policy_defaults_to_english_protocol_and_russian_reports(self) -> None:
         self.assertEqual(
-            coordinator._communication_policy({}),
+            config._communication_policy({}),
             {"agent_to_agent_language": "en", "coordinator_report_language": "ru"},
         )
         with self.assertRaisesRegex(coordinator.CoordinatorError, "English.*Russian"):
-            coordinator._communication_policy(
+            config._communication_policy(
                 {"communication_policy": {"agent_to_agent_language": "ru", "coordinator_report_language": "en"}},
             )
 

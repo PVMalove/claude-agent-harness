@@ -27,7 +27,7 @@ from typing import cast
 from unittest import mock
 
 from harness.orchestration import contract, coordinator, coordinator_cli, extensions, operational_guards, qa_lane
-from harness.orchestration.core import constants, git_utils, utils
+from harness.orchestration.core import config, constants, git_utils, utils
 from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.ledger import BatchRecord, DispatchStatusRecord, LifecycleLedger
 
@@ -294,21 +294,21 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             )
 
     def test_adaptive_continuation_policy_resolves_context_warn_ratio(self) -> None:
-        self.assertEqual(coordinator._adaptive_continuation_policy({})["context_warn_ratio"], 0.8)
+        self.assertEqual(config._adaptive_continuation_policy({})["context_warn_ratio"], 0.8)
         self.assertEqual(
-            coordinator._adaptive_continuation_policy(
+            config._adaptive_continuation_policy(
                 {"adaptive_continuation_policy": {"context_warn_ratio": 0.5}}
             )["context_warn_ratio"],
             0.5,
         )
         self.assertEqual(
-            coordinator._adaptive_continuation_policy(
+            config._adaptive_continuation_policy(
                 {"adaptive_continuation_policy": {"context_warn_ratio": 1}}
             )["context_warn_ratio"],
             1,
         )
         for invalid in (0, 1.5, "0.5", True, -0.1):
-            resolved = coordinator._adaptive_continuation_policy(
+            resolved = config._adaptive_continuation_policy(
                 {"adaptive_continuation_policy": {"context_warn_ratio": invalid}}
             )
             self.assertEqual(resolved["context_warn_ratio"], 0.8, f"{invalid!r} should fall back to default")
@@ -668,7 +668,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "provider_profiles", "assignment_plans", "backend_zones", "concurrency_budget", "verification_commands",
         }}), [])
         self.assertEqual(set(template["extensions"].values()), {"none"})
-        self.assertEqual(coordinator._attention_policy(template), template["attention_policy"])
+        self.assertEqual(config._attention_policy(template), template["attention_policy"])
 
     def test_persist_report_takes_an_explicit_ledger_instead_of_sniffing_the_path(self) -> None:
         """``_persist_report`` (the one write path with no Value Object -- no ``ReportRecord``
@@ -2112,25 +2112,25 @@ class CoordinatorGuardHelperTests(unittest.TestCase):
     """Direct-call pins for the config/brief guards whose parameters accept arbitrary JSON."""
 
     def test_reject_sensitive_accepts_plain_nested_json(self) -> None:
-        coordinator._reject_sensitive({"a": [{"b": 1}, "text", None]}, "config")
+        config._reject_sensitive({"a": [{"b": 1}, "text", None]}, "config")
 
     def test_reject_sensitive_rejects_a_non_string_key(self) -> None:
         with self.assertRaises(coordinator.CoordinatorError) as caught:
-            coordinator._reject_sensitive({1: "x"}, "config")
+            config._reject_sensitive({1: "x"}, "config")
 
         self.assertEqual(caught.exception.message, "config contains a non-string key")
         self.assertEqual(caught.exception.remedy, "use only string keys in config")
 
     def test_reject_sensitive_rejects_a_secret_shaped_key(self) -> None:
         with self.assertRaises(coordinator.CoordinatorError) as caught:
-            coordinator._reject_sensitive({"api_key": "x"}, "config")
+            config._reject_sensitive({"api_key": "x"}, "config")
 
         self.assertEqual(caught.exception.message, "config contains secret-shaped field 'api_key'")
         self.assertIn("remove the secret-shaped field 'api_key' from config", caught.exception.remedy)
 
     def test_reject_sensitive_descends_into_lists_with_an_indexed_location(self) -> None:
         with self.assertRaises(coordinator.CoordinatorError) as caught:
-            coordinator._reject_sensitive({"items": [{"ok": 1}, {"password": "x"}]}, "config")
+            config._reject_sensitive({"items": [{"ok": 1}, {"password": "x"}]}, "config")
 
         self.assertEqual(caught.exception.message, "config.items[1] contains secret-shaped field 'password'")
 
