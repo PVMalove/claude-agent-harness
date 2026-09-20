@@ -99,6 +99,12 @@ It must contain, at minimum:
 - `role`: selected role manifest and its read-only or write mode;
 - `resolved provider profile` and `model`: the project-owned assignment actually selected, including
   the fallback used if the default was unavailable;
+- `allowed tools` and `context budget`: the role's working tool set and its token budget, both chosen
+  from the project's `.harness/orchestration.json`. `allowed_tools` defaults from the role manifest's
+  mode (read-only roles get no edit tools) and a project may override it with `tool_policy`;
+  `context_budget` is `adaptive_continuation_policy.context_limit`. The tool list is the role's
+  working set, never a deny-list: a brief does not disable the runtime's global tools. A brief
+  created before these fields existed stays valid;
 - `zone IDs` and allowed paths: the exact backend zones the role may read or write;
 - `branch/worktree`: issue branch and isolated worktree; protected branches and `integration/*`
   are never write targets;
@@ -124,6 +130,8 @@ A minimal brief can be rendered as:
 - Role: <manifest-name> (<write|read-only>)
 - Resolved provider profile: <profile-id>
 - Model: <resolved-model>
+- Allowed tools: <role working set from tool_policy or the mode default>
+- Context budget: <tokens from adaptive_continuation_policy.context_limit>
 - Zone IDs: <zone-id>, ...
 - Allowed paths: <declared paths>
 - Branch/worktree: <issue branch> / <isolated worktree>

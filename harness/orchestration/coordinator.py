@@ -36,7 +36,7 @@ if str(CONTEXT_BUILDER_ROOT) not in sys.path:
     sys.path.insert(0, str(CONTEXT_BUILDER_ROOT))
 from contract import (
     COMMUNICATION_POLICY_FIELDS, ContractError, health_problems, load_role_manifest,
-    resolve_assignment, resolve_runtime_name, validate_brief_policy,
+    resolve_allowed_tools, resolve_assignment, resolve_runtime_name, validate_brief_policy,
 )
 from context_builder import ContextPackageError, build_context_package
 from dispatch_preflight import PreflightError, prepare as prepare_dispatch
@@ -93,6 +93,7 @@ DISPATCH_FIELDS = {
     "communication_policy",
     "snapshot_commit",
     "report_staging_path",
+    "allowed_tools", "context_budget",
 }
 DEFAULT_TEST_PATH_PATTERNS = ("tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py")
 REPORT_FIELDS = {
@@ -1197,6 +1198,8 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
         frozenset(fields) for fields in (DISPATCH_FIELDS, pre_summary_fields, legacy_fields)
     }
     accepted |= {fields - {"report_staging_path"} for fields in set(accepted)}
+    # The role tool policy and context budget were added together, so a brief holds both or neither.
+    accepted |= {fields - {"allowed_tools", "context_budget"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError("dispatch record schema mismatch")
     if dispatch.get("state") != "approved":
@@ -1267,6 +1270,11 @@ def _validate_dispatch(repo: Path, config: dict[str, Any], root: Path, batch: di
         expected_paths = zone["paths"] if role["mode"] == "write" else []
         if dispatch["write_paths"] != expected_paths:
             raise CoordinatorError("dispatch record write paths do not match the role boundary")
+    if "allowed_tools" in dispatch:
+        if dispatch["allowed_tools"] != resolve_allowed_tools(config, dispatch["role"], dispatch["access"]):
+            raise CoordinatorError("dispatch record allowed_tools do not match the project tool policy")
+        if dispatch["context_budget"] != _adaptive_continuation_policy(config)["context_limit"]:
+            raise CoordinatorError("dispatch record context_budget does not match the project context limit")
     candidate = dispatch.get("candidate_commit")
     if dispatch["role"] in {"code-review", "qa"} and not isinstance(candidate, str):
         raise CoordinatorError("review and QA dispatches must pin a candidate commit")
@@ -2324,6 +2332,8 @@ def create_dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "resolved_model": model,
             "resolved_effort": effort,
             "resolved_transport": transport,
+            "allowed_tools": resolve_allowed_tools(config, role_name, role["mode"]),
+            "context_budget": _adaptive_continuation_policy(config)["context_limit"],
             "coordinator_approval": approval,
             "candidate_commit": candidate,
             "review_base": risk["base_commit"] if risk else None,

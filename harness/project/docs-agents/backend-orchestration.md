@@ -230,6 +230,35 @@ Context Package переиспользуется всеми role sessions на �
 resume) и `retry_policy` (один developer retry) делают циклы конечными. Все поля проверяются
 `harness health`; effort допускает только документированные уровни (`none`…`ultra`).
 
+### Tool policy и context budget в brief
+
+Кроме model/effort и `verification_commands`, каждый immutable brief явно записывает два значения,
+выбранных из `.harness/orchestration.json`, а не из чата:
+
+- `allowed_tools` — рабочий набор инструментов именно этой роли. Без `tool_policy` берётся дефолт по
+  режиму manifest: `read-only` (architect, code-review, qa) — `Read`, `Grep`, `Glob`, `Bash`, без
+  `Edit`/`Write`; `write` — те же плюс `Edit` и `Write`. Read-only роль работает по Context Package,
+  не сканирует весь репозиторий и не подгружает нерелевантные инструменты. Список — рабочий набор
+  роли, а не deny-list: brief не отключает глобальные инструменты runtime.
+- `context_budget` — токены из `adaptive_continuation_policy.context_limit` (по умолчанию 150000):
+  тот же порог, от которого считается `context_advisory`.
+
+Проект переопределяет набор необязательным `tool_policy`; запись роли важнее записи режима, а она —
+встроенного дефолта:
+
+```json
+"tool_policy": {
+  "modes": {"read-only": ["Read", "Grep", "Glob"]},
+  "roles": {"qa": ["Read", "Grep", "Glob", "Bash"]}
+}
+```
+
+`harness health` принимает только ключи `modes` (`read-only`/`write`) и `roles` (имена из role
+manifests), а значением — непустой список уникальных строк. Brief без этих двух полей (созданный до
+их появления) остаётся валидным; brief с одним из двух отклоняется. Значения проверяются против
+текущего конфига так же, как model/effort, поэтому смена `tool_policy` или `context_limit` при уже
+созданном dispatch требует нового brief.
+
 ### Discovery Context и Context Package
 
 Discovery Pipeline переносит проверенный контекст от проектирования к dispatch. `/grilling` ведёт
@@ -674,6 +703,8 @@ isolated worker. Он не выбирает scope, не запускает check
   "resolved_provider_profile": "backend-primary",
   "resolved_model": "project-developer-model",
   "resolved_effort": "xhigh",
+  "allowed_tools": ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
+  "context_budget": 150000,
   "coordinator_approval": {
     "approved_by": "имя утверждающего",
     "approved_at": "2026-09-09T12:00:00Z"

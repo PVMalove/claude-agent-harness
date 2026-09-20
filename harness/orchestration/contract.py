@@ -31,8 +31,15 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "$schema", "developer_verification_commands", "test_path_patterns",
     "adaptive_continuation_policy", "approval_policy", "low_risk_zones", "context_package_policy",
     "continuation_policy", "retry_policy", "preflight_policy", "worker_attestation_required",
-    "communication_policy", "human_approval_gate",
+    "communication_policy", "human_approval_gate", "tool_policy",
 }
+# The working set a brief records for a role when the project states no `tool_policy`. It is the
+# role's own set, not a deny-list: global runtime tools stay available whatever a brief records.
+DEFAULT_ALLOWED_TOOLS = {
+    "read-only": ("Read", "Grep", "Glob", "Bash"),
+    "write": ("Read", "Grep", "Glob", "Bash", "Edit", "Write"),
+}
+TOOL_POLICY_SECTIONS = ("modes", "roles")
 APPROVAL_POLICIES = {"manual_all", "milestone", "low_risk"}
 HUMAN_APPROVAL_GATES = {"trusted", "tty"}
 COMMUNICATION_POLICY_FIELDS = frozenset({"agent_to_agent_language", "coordinator_report_language"})
@@ -303,6 +310,46 @@ def _policy_problem(
     return problems
 
 
+def resolve_allowed_tools(config: dict[str, Any], role_name: str, mode: str) -> list[str]:
+    """Tools a dispatch brief records for a role: the project's per-role entry, else its per-mode
+    entry, else the built-in default for the role's manifest mode. `harness health` has already
+    validated the shape of `tool_policy` for a configured project."""
+    policy = config.get("tool_policy")
+    if isinstance(policy, dict):
+        for section, key in (("roles", role_name), ("modes", mode)):
+            entries = policy.get(section)
+            if isinstance(entries, dict) and key in entries:
+                return list(entries[key])
+    return list(DEFAULT_ALLOWED_TOOLS[mode])
+
+
+def _tool_policy_problems(config: dict[str, Any], role_names: set[str]) -> list[str]:
+    if "tool_policy" not in config:
+        return []
+    policy = config["tool_policy"]
+    if not isinstance(policy, dict):
+        return ["orchestration tool_policy must be an object"]
+    problems: list[str] = []
+    unknown = sorted(set(policy) - set(TOOL_POLICY_SECTIONS))
+    if unknown:
+        problems.append(f"orchestration tool_policy has unknown field(s): {', '.join(unknown)}")
+    for section, known in (("modes", ROLE_MODES), ("roles", role_names)):
+        if section not in policy:
+            continue
+        entries = policy[section]
+        if not isinstance(entries, dict):
+            problems.append(f"orchestration tool_policy.{section} must be an object")
+            continue
+        for name, tools in entries.items():
+            if name not in known:
+                problems.append(f"orchestration tool_policy.{section} names unknown entry {name!r}")
+            if not string_list(tools) or not tools or len(set(tools)) != len(tools):
+                problems.append(
+                    f"orchestration tool_policy.{section}.{name} must be a non-empty list of unique tool names"
+                )
+    return problems
+
+
 def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     """Return health diagnostics without changing project state."""
     problems: list[str] = []
@@ -531,6 +578,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
             problems.append("orchestration communication_policy agent_to_agent_language must be en")
         elif communication_policy["coordinator_report_language"] != "ru":
             problems.append("orchestration communication_policy coordinator_report_language must be ru")
+    problems.extend(_tool_policy_problems(config, set(roles)))
     problems.extend(_policy_problem(
         config,
         "context_package_policy",
