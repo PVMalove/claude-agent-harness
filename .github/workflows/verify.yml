@@ -32,6 +32,11 @@ jobs:
         run: |
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
           python scripts/check-public-metadata.py --commit-range "$COMMIT_RANGE" --pr-body-file "$RUNNER_TEMP/pr-body.md"
+      - name: Diff coverage of changed Python lines
+        if: github.event_name == 'pull_request'
+        env:
+          DIFF_COVERAGE_BASE: ${{ github.event.pull_request.base.sha }}
+        run: python scripts/diff-coverage
 
   verify-windows:
     runs-on: windows-latest
