@@ -11,6 +11,8 @@ import argparse
 from harness.orchestration.core.utils import CoordinatorError, JsonObject, _repo
 from harness.orchestration.ledger.ledger_ops import _ledger_lock, _state_root
 from harness.orchestration.ledger.lifecycle import LedgerError, LifecycleLedger
+
+
 def ledger_status(args: argparse.Namespace) -> JsonObject:
     """Report the selected lifecycle-ledger generation without changing it."""
     repo = _repo(args)

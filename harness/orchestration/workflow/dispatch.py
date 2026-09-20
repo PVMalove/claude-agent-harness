@@ -81,6 +81,8 @@ from harness.orchestration.workflow.decisions import (
 from harness.orchestration.workflow.batch import (
     _check_batch_conflicts,
 )
+
+
 def _enforce_base_freshness(repo: Path, root: Path, ledger: LifecycleLedger, batch: JsonObject) -> None:
     """Mandatory re-check, immediately before a review or publish dispatch: the batch's pinned
     integration base must still be the integration ref's current tip. A stale base is cleared only

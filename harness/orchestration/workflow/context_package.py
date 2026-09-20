@@ -32,6 +32,8 @@ from harness.orchestration.ledger.ledger_ops import (
 from harness.orchestration.workflow.history import (
     _latest_developer_candidate, _reusable_context_package, _validate_batch_integrity,
 )
+
+
 def _persist_context_package(
     repo: Path,
     root: Path,

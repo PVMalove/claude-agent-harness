@@ -31,6 +31,8 @@ from harness.orchestration.ledger.ledger_ops import (
 from harness.orchestration.workflow.history import (
     _latest_developer_candidate, _validate_batch_integrity,
 )
+
+
 def _risk_triggers(repo: Path) -> list[str]:
     role = _role(repo, "code-review")
     triggers = role.get("risk_triggers")

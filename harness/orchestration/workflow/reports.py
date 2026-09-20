@@ -57,6 +57,8 @@ from harness.orchestration.workflow.approval import (
 from harness.orchestration.workflow.risk import (
     _risk_triggers, _validate_trigger_names,
 )
+
+
 def _continuation_counts(batch: JsonObject, dispatch_id: str) -> tuple[int, int]:
     decisions = [
         decision for decision in batch.get("coordinator_decisions", [])

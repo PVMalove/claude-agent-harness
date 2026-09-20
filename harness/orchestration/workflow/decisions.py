@@ -52,6 +52,8 @@ from harness.orchestration.workflow.attention import (
 from harness.orchestration.workflow.reports import (
     _validate_report,
 )
+
+
 def decision_packet(args: argparse.Namespace) -> JsonObject:
     """Return concise approval evidence, with immutable report and diff paths kept in the ledger."""
     repo = _repo(args)

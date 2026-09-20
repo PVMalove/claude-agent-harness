@@ -47,6 +47,8 @@ from harness.orchestration.workflow.approval import (
 from harness.orchestration.workflow.decisions import (
     _abandon_open_dispatches,
 )
+
+
 def _check_batch_conflicts(root: Path, config: JsonObject, batch: JsonObject) -> None:
     budget = config.get("concurrency_budget")
     if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
