@@ -133,6 +133,24 @@
         }
       }
     },
+    "tool_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional override of the allowed_tools list each dispatch brief records. A role's own entry wins over its mode's entry, which wins over the built-in default for that mode (read-only: Read, Grep, Glob, Bash; write: those plus Edit, Write). The list is the role's working set recorded in the brief; it never disables the runtime's global tools.",
+      "properties": {
+        "modes": {
+          "type": "object",
+          "propertyNames": { "enum": ["read-only", "write"] },
+          "additionalProperties": { "$ref": "#/definitions/toolList" },
+          "description": "Tools for every role of a manifest mode."
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/toolList" },
+          "description": "Tools for one role, keyed by its manifest name; each name must match a role manifest."
+        }
+      }
+    },
     "context_package_policy": {
       "type": "object",
       "additionalProperties": false,
@@ -274,6 +292,15 @@
         },
         "model": {"type": "string", "minLength": 1},
         "effort": {"type": "string", "minLength": 1}
+      }
+    },
+    "toolList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
       }
     },
     "backendZone": {

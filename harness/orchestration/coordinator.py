@@ -49,7 +49,7 @@ if _HARNESS_ROOT.name != "harness":
 from harness.errors import HarnessError, INTERNAL_INVARIANT_REMEDY, print_and_exit
 from harness.orchestration.contract import (
     COMMUNICATION_POLICY_FIELDS, ContractError, health_problems, load_role_manifest,
-    resolve_assignment, resolve_runtime_name, validate_brief_policy,
+    resolve_allowed_tools, resolve_assignment, resolve_runtime_name, valid_tool_list, validate_brief_policy,
 )
 from harness.context_builder.context_builder import ContextPackageError, build_context_package
 from harness.orchestration.dispatch_preflight import PreflightError, prepare as prepare_dispatch
@@ -119,6 +119,7 @@ DISPATCH_FIELDS = {
     "communication_policy",
     "snapshot_commit",
     "report_staging_path",
+    "allowed_tools", "context_budget",
 }
 DEFAULT_TEST_PATH_PATTERNS = ("tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py")
 REPORT_FIELDS = {
@@ -1234,6 +1235,8 @@ def _validate_dispatch(repo: Path, config: JsonObject, root: Path, batch: JsonOb
         frozenset(fields) for fields in (DISPATCH_FIELDS, pre_summary_fields, legacy_fields)
     }
     accepted |= {fields - {"report_staging_path"} for fields in set(accepted)}
+    # The role tool policy and context budget were added together, so a brief holds both or neither.
+    accepted |= {fields - {"allowed_tools", "context_budget"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError("dispatch record schema mismatch", remedy="the dispatch record schema is malformed -- " + INTERNAL_INVARIANT_REMEDY)
     if dispatch.get("state") != "approved":
@@ -1304,6 +1307,14 @@ def _validate_dispatch(repo: Path, config: JsonObject, root: Path, batch: JsonOb
         expected_paths = zone["paths"] if role["mode"] == "write" else []
         if dispatch["write_paths"] != expected_paths:
             raise CoordinatorError("dispatch record write paths do not match the role boundary", remedy="the dispatch record write paths do not match the role boundary -- " + INTERNAL_INVARIANT_REMEDY)
+    # Only the shape is checked: the brief is the immutable record of what was selected at approval,
+    # so a later project edit to `tool_policy` or `context_limit` must not invalidate it in flight.
+    if "allowed_tools" in dispatch:
+        if not valid_tool_list(dispatch["allowed_tools"]):
+            raise CoordinatorError("dispatch record allowed_tools must be a non-empty list of unique tool names", remedy="the dispatch record allowed_tools is malformed -- " + INTERNAL_INVARIANT_REMEDY)
+        budget = dispatch["context_budget"]
+        if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
+            raise CoordinatorError("dispatch record context_budget must be a positive integer", remedy="the dispatch record context_budget is malformed -- " + INTERNAL_INVARIANT_REMEDY)
     candidate = dispatch.get("candidate_commit")
     if dispatch["role"] in {"code-review", "qa"} and not isinstance(candidate, str):
         raise CoordinatorError("review and QA dispatches must pin a candidate commit", remedy="pass --candidate-commit for a review or QA dispatch")
@@ -2609,6 +2620,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "resolved_model": model,
             "resolved_effort": effort,
             "resolved_transport": transport,
+            "allowed_tools": resolve_allowed_tools(config, role_name, role["mode"]),
+            "context_budget": _adaptive_continuation_policy(config)["context_limit"],
             "coordinator_approval": approval,
             "candidate_commit": candidate,
             "review_base": risk["base_commit"] if risk else None,

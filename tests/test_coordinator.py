@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import inspect
 import io
 import json
@@ -22,7 +23,7 @@ import unittest
 import uuid
 from pathlib import Path
 
-from harness.orchestration import coordinator, coordinator_cli, qa_lane
+from harness.orchestration import contract, coordinator, coordinator_cli, qa_lane
 from harness.orchestration.ledger import BatchRecord, DispatchStatusRecord, LifecycleLedger
 
 ORCHESTRATION_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
@@ -456,6 +457,169 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
                 repo=str(self.repo), state_dir=str(self.state_dir), dispatch=dispatch_id, note=None,
                 context_tokens=None, context_source="probe",
             ))
+
+    def _configure_project(self, **extra: object) -> None:
+        """Turn the zero-config test repository into a configured one: a real `.harness/orchestration.json`
+        (architect + the mandatory code-review assignment) plus the role manifests it validates against."""
+        roles_dir = self.repo / ".harness" / "orchestration" / "roles"
+        (roles_dir / "code-review.md").write_text(
+            (ORCHESTRATION_ROOT / "roles" / "code-review.md").read_text(encoding="utf-8"), encoding="utf-8",
+        )
+        runtime = {"claude": {"profiles": ["p"], "model": "sonnet", "effort": "high"}}
+        config = {
+            "provider_profiles": {"p": {
+                "capabilities": ["architecture-analysis", "code-review"], "agent": "claude",
+                "fallback": [], "known_limitations": ["none"],
+            }},
+            "assignment_plans": {
+                "architect": {"zone": "repository", "runtimes": runtime},
+                "code-review": {"zone": "repository", "runtimes": runtime},
+            },
+            "backend_zones": {"repository": {"paths": ["**"]}},
+            "concurrency_budget": 1,
+            "verification_commands": ["true"],
+            **extra,
+        }
+        (self.repo / ".harness" / "orchestration.json").write_text(json.dumps(config), encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-m", "configure orchestration")
+        _git(self.repo, "push", "origin", "master")
+
+    def _rewritten_brief_validation(
+        self, batch_id: str, dispatch_id: str, drop: set[str], **replace: object,
+    ) -> None:
+        """Rewrite a stored brief the way an older coordinator wrote it (fields dropped or replaced, integrity
+        hash recomputed) and run the real `_validate_dispatch` against it."""
+        root = coordinator._state_root(_ns(repo=str(self.repo), state_dir=str(self.state_dir)), self.repo)
+        record = coordinator._read_object(self._records_root() / "dispatches" / f"{dispatch_id}.json", "dispatch")
+        brief = {key: value for key, value in record.items() if key not in drop}
+        brief.update(replace)
+        batch = coordinator._load_batch(root, batch_id)
+        entry = next(item for item in batch["dispatches"] if item["dispatch_id"] == dispatch_id)
+        entry["brief_sha256"] = hashlib.sha256(coordinator._canonical(brief).encode("utf-8")).hexdigest()
+        coordinator._validate_dispatch(self.repo, coordinator._config(self.repo), root, batch, brief)
+
+    def test_dispatch_brief_records_default_tool_policy_and_context_budget(self) -> None:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+
+        expected_tools = list(contract.DEFAULT_ALLOWED_TOOLS["read-only"])
+        self.assertEqual(dispatch["brief"]["allowed_tools"], expected_tools)
+        self.assertEqual(dispatch["brief"]["context_budget"], 150_000)
+        on_disk = coordinator._read_object(
+            self._records_root() / "dispatches" / f"{dispatch['dispatch_id']}.json", "dispatch",
+        )
+        self.assertEqual(on_disk["allowed_tools"], expected_tools)
+        self.assertEqual(on_disk["context_budget"], 150_000)
+
+    def test_dispatch_brief_takes_tool_policy_and_context_budget_from_project_config(self) -> None:
+        self._configure_project(
+            adaptive_continuation_policy={"context_limit": 90_000},
+            tool_policy={"roles": {"architect": ["Read", "Grep"]}},
+        )
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+
+        self.assertEqual(dispatch["brief"]["allowed_tools"], ["Read", "Grep"])
+        self.assertEqual(dispatch["brief"]["context_budget"], 90_000)
+
+    def test_only_write_mode_default_tools_include_edit_tools(self) -> None:
+        for name in ("Edit", "Write"):
+            self.assertNotIn(name, contract.DEFAULT_ALLOWED_TOOLS["read-only"])
+            self.assertIn(name, contract.DEFAULT_ALLOWED_TOOLS["write"])
+
+    def test_resolve_allowed_tools_prefers_role_then_mode_then_default(self) -> None:
+        policy = {"tool_policy": {"modes": {"write": ["Read", "Edit"]}, "roles": {"qa": ["Read", "Bash"]}}}
+
+        self.assertEqual(contract.resolve_allowed_tools(policy, "qa", "read-only"), ["Read", "Bash"])
+        self.assertEqual(contract.resolve_allowed_tools(policy, "developer", "write"), ["Read", "Edit"])
+        self.assertEqual(
+            contract.resolve_allowed_tools(policy, "architect", "read-only"),
+            list(contract.DEFAULT_ALLOWED_TOOLS["read-only"]),
+        )
+        self.assertEqual(
+            contract.resolve_allowed_tools({}, "developer", "write"), list(contract.DEFAULT_ALLOWED_TOOLS["write"]),
+        )
+
+    def test_brief_created_before_tool_policy_fields_stays_valid(self) -> None:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+
+        self._rewritten_brief_validation(
+            batch["batch_id"], dispatch["dispatch_id"], {"allowed_tools", "context_budget"},
+        )
+        self._rewritten_brief_validation(
+            batch["batch_id"], dispatch["dispatch_id"],
+            {"allowed_tools", "context_budget", "report_staging_path"},
+        )
+
+    def test_brief_with_only_one_tool_policy_field_is_rejected(self) -> None:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+
+        for dropped in ("allowed_tools", "context_budget"):
+            with self.assertRaisesRegex(coordinator.CoordinatorError, "schema mismatch"):
+                self._rewritten_brief_validation(batch["batch_id"], dispatch["dispatch_id"], {dropped})
+
+    def test_brief_with_malformed_tool_policy_fields_is_rejected(self) -> None:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+
+        for tools in ([], ["Read", "Read"], ["Read", ""], "Read"):
+            with self.subTest(allowed_tools=tools), self.assertRaisesRegex(coordinator.CoordinatorError, "allowed_tools"):
+                self._rewritten_brief_validation(
+                    batch["batch_id"], dispatch["dispatch_id"], set(), allowed_tools=tools,
+                )
+        for budget in (0, -1, True, "big"):
+            with self.subTest(context_budget=budget), self.assertRaisesRegex(coordinator.CoordinatorError, "context_budget"):
+                self._rewritten_brief_validation(
+                    batch["batch_id"], dispatch["dispatch_id"], set(), context_budget=budget,
+                )
+
+    def test_brief_stays_valid_when_the_project_edits_tool_policy_or_context_limit_in_flight(self) -> None:
+        self._configure_project()
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+        config_path = self.repo / ".harness" / "orchestration.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["adaptive_continuation_policy"] = {"context_limit": 500}
+        config["tool_policy"] = {"roles": {"architect": ["Read"]}}
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+
+        self._rewritten_brief_validation(batch["batch_id"], dispatch["dispatch_id"], set())
+
+    def _tool_policy_health(self, tool_policy: object) -> list[str]:
+        path = self.tmp / "orchestration.json"
+        path.write_text(json.dumps({
+            "provider_profiles": {}, "assignment_plans": {}, "backend_zones": {}, "concurrency_budget": 1,
+            "verification_commands": [], "tool_policy": tool_policy,
+        }), encoding="utf-8")
+        return contract.health_problems(path, ORCHESTRATION_ROOT / "roles")
+
+    def test_health_accepts_a_valid_tool_policy(self) -> None:
+        self.assertEqual(
+            self._tool_policy_health({"modes": {"read-only": ["Read"]}, "roles": {"qa": ["Read", "Bash"]}}), [],
+        )
+
+    def test_health_rejects_an_invalid_tool_policy(self) -> None:
+        for invalid in (
+            ["Read"], {"other": {}}, {"modes": ["Read"]}, {"modes": {"admin": ["Read"]}},
+            {"roles": {"no-such-role": ["Read"]}}, {"roles": {"qa": []}}, {"roles": {"qa": ["Read", ""]}},
+            {"roles": {"qa": ["Read", "Read"]}}, {"roles": {"qa": "Read"}},
+        ):
+            with self.subTest(tool_policy=invalid):
+                problems = self._tool_policy_health(invalid)
+                self.assertTrue(
+                    any(problem.startswith("orchestration tool_policy") for problem in problems), problems,
+                )
 
     def test_persist_report_takes_an_explicit_ledger_instead_of_sniffing_the_path(self) -> None:
         """``_persist_report`` (the one write path with no Value Object -- no ``ReportRecord``
