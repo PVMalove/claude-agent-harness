@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-MIN_PYTHON = (3, 9)
+MIN_PYTHON = (3, 12)
 if sys.version_info < MIN_PYTHON:
     sys.stderr.write(
         "[ERROR] verify requires Python %s+ (found %s).\n"
