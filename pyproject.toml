@@ -10,6 +10,12 @@ dev = [
     "coverage==7.16.1",
 ]
 
+[tool.setuptools]
+# The repository is a toolkit, not an installable distribution: `pip install .[dev]` exists only to
+# get the dev tools, so opt out of setuptools' flat-layout auto-discovery (it rejects several
+# top-level directories).
+py-modules = []
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
