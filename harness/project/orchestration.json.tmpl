@@ -24,6 +24,19 @@
   "retry_policy": {
     "max_developer_retries": 1
   },
+  "attention_policy": {
+    "retry_queue_seconds": 3600,
+    "max_infrastructure_retries": 2,
+    "stale_dispatch_seconds": 900
+  },
+  "approval_ttl_seconds": 3600,
+  "extensions": {
+    "transport_health": "none",
+    "verification_environment_health": "none",
+    "retry_reason_classifier": "none",
+    "context_telemetry_provider": "none",
+    "human_notifier": "none"
+  },
   "preflight_policy": {
     "require_estimates": true,
     "max_definition_of_done_items": 5,

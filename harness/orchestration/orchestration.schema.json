@@ -133,6 +133,24 @@
         }
       }
     },
+    "tool_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional override of the allowed_tools list each dispatch brief records. A role's own entry wins over its mode's entry, which wins over the built-in default for that mode (read-only: Read, Grep, Glob, Bash; write: those plus Edit, Write). The list is the role's working set recorded in the brief; it never disables the runtime's global tools.",
+      "properties": {
+        "modes": {
+          "type": "object",
+          "propertyNames": { "enum": ["read-only", "write"] },
+          "additionalProperties": { "$ref": "#/definitions/toolList" },
+          "description": "Tools for every role of a manifest mode."
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/toolList" },
+          "description": "Tools for one role, keyed by its manifest name; each name must match a role manifest."
+        }
+      }
+    },
     "context_package_policy": {
       "type": "object",
       "additionalProperties": false,
@@ -171,6 +189,27 @@
       "properties": {
         "max_developer_retries": {"type": "integer", "minimum": 0, "default": 1}
       }
+    },
+    "attention_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "When a batch is flagged needs_attention -- a batch-level flag, not a lifecycle state. While it is set no next dispatch is created; evidence and the candidate are never touched. A human clears it with `batch attention resolve`. Any field left out keeps its default; the resolved values are frozen into every brief as orchestration_policy.attention.",
+      "properties": {
+        "retry_queue_seconds": {"type": "integer", "minimum": 1, "default": 3600, "description": "How long a decided retry may wait for its next dispatch before the batch needs attention."},
+        "max_infrastructure_retries": {"type": "integer", "minimum": 0, "default": 2, "description": "Operational retries (verification-infrastructure, transport, context-pressure) tolerated for one candidate; one more needs attention."},
+        "stale_dispatch_seconds": {"type": "integer", "minimum": 1, "default": 900, "description": "Silence after which a live dispatch is stale and the batch needs attention."}
+      }
+    },
+    "approval_ttl_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "How long an explicit --approved-at stays valid. An older, or future-dated, approval is rejected and never reused. Absent means an approval does not expire."
+    },
+    "extensions": {
+      "type": "object",
+      "propertyNames": {"enum": ["transport_health", "verification_environment_health", "retry_reason_classifier", "context_telemetry_provider", "human_notifier"]},
+      "additionalProperties": {"type": "string", "pattern": "^(none|[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_]*)?)$"},
+      "description": "Pluggable operational interfaces kept out of the coordinator core. Each value is 'none' (the default, inert), a name a host registered, or 'module:factory' naming a zero-argument factory in an importable module. The selection is frozen into every brief; no extension adds a model tool or changes a prompt."
     },
     "preflight_policy": {
       "type": "object",
@@ -274,6 +313,15 @@
         },
         "model": {"type": "string", "minLength": 1},
         "effort": {"type": "string", "minLength": 1}
+      }
+    },
+    "toolList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
       }
     },
     "backendZone": {

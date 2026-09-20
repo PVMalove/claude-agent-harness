@@ -14,8 +14,7 @@ from pathlib import Path
 
 MODULE_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
 MODULE_PATH = MODULE_ROOT / "advisory.py"
-sys.path.insert(0, str(MODULE_ROOT))
-from advisory import classify_risk, rank_files, summarize_log
+from harness.orchestration.advisory import classify_risk, rank_files, summarize_log
 
 
 def _imported_module_names(path: Path) -> set[str]:
@@ -76,7 +75,7 @@ class ClassifyRiskTests(unittest.TestCase):
 
 class AdvisoryCliTests(unittest.TestCase):
     def test_output_is_ephemeral_json_and_writes_no_state(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             before = sorted(Path(temporary).rglob("*"))
             result = subprocess.run(
                 [sys.executable, str(MODULE_PATH), "rank-files", "--keyword", "payments", "a.py", "services/payments/x.py"],

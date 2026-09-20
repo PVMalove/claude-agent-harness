@@ -4,12 +4,14 @@ clean-room test-clean-room run."""
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
-MIN_PYTHON = (3, 9)
+MIN_PYTHON = (3, 12)
 if sys.version_info < MIN_PYTHON:
     sys.stderr.write(
         "[ERROR] verify requires Python %s+ (found %s).\n"
@@ -20,25 +22,31 @@ if sys.version_info < MIN_PYTHON:
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def run_ok(cmd, **kwargs):
+def run_ok(
+    cmd: list[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    stdout: int | None = None,
+    cwd: Path | None = None,
+) -> None:
     """Run a command that must succeed; propagate its real exit code (and its own stderr) on
     failure, matching `set -e` instead of dumping a CalledProcessError traceback."""
-    result = subprocess.run(cmd, **kwargs)
+    result = subprocess.run(cmd, env=env, stdout=stdout, cwd=cwd)
     if result.returncode != 0:
         sys.exit(result.returncode)
 
 
-def grep_line(path: Path, exact_line: str):
+def grep_line(path: Path, exact_line: str) -> None:
     if exact_line not in path.read_text(encoding="utf-8").splitlines():
         sys.exit(f"{path}: expected line {exact_line!r} not found")
 
 
-def grep_contains(path: Path, substring: str):
+def grep_contains(path: Path, substring: str) -> None:
     if substring not in path.read_text(encoding="utf-8"):
         sys.exit(f"{path}: expected text {substring!r} not found")
 
 
-def check_no_todo(base: Path):
+def check_no_todo(base: Path) -> None:
     found = []
     for path in sorted(base.rglob("*")):
         if not path.is_file():
@@ -60,7 +68,7 @@ def _normalized_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
 
 
-def check_docs_agents_mirror():
+def check_docs_agents_mirror() -> None:
     """docs/agents/*.md is this repo's own copy of the files harness/project/docs-agents/*.md
     scaffolds into every pvmalove-suite project (scaffold_pvmalove_extras in harness/bin/
     harness). Both are maintained by hand - catch prose drift between them here instead of
@@ -73,7 +81,7 @@ def check_docs_agents_mirror():
             sys.exit(f"docs/agents/{template.name} has drifted from harness/project/docs-agents/{template.name}")
 
 
-def check_docs_agents_enumeration():
+def check_docs_agents_enumeration() -> None:
     """README.md and harness-guide.md each spell out, by hand, the docs/agents/{...}.md
     brace-list scaffold_pvmalove_extras deploys. Catch a file added to (or removed from)
     harness/project/docs-agents/ without updating both listings - this shipped once already:
@@ -92,7 +100,7 @@ def check_docs_agents_enumeration():
             )
 
 
-def check_pvmalove_override_docs_sync():
+def check_pvmalove_override_docs_sync() -> None:
     """CAPABILITIES.json's pvmalove-suite.overrides is the source of truth for which skills are
     locally customized; docs/agents/harness-guide.md section 7 restates the same set by hand,
     with the *why* prose CAPABILITIES.json doesn't carry. Catch the two falling out of sync -
@@ -113,7 +121,7 @@ def check_pvmalove_override_docs_sync():
         )
 
 
-def check_pvmalove_additions_docs_sync():
+def check_pvmalove_additions_docs_sync() -> None:
     """CAPABILITIES.json's pvmalove-suite.additions is the source of truth for first-party-only
     skills; docs/agents/harness-guide.md section 12's project-specific table restates the same
     set by hand. Catch the two falling out of sync - this exact drift shipped once already:
@@ -135,7 +143,7 @@ def check_pvmalove_additions_docs_sync():
         )
 
 
-def check_pvmalove_suite_summary_sync():
+def check_pvmalove_suite_summary_sync() -> None:
     """README.md and CONTEXT.md each restate pvmalove-suite's overrides/additions by name in
     prose, next to the same counts harness-guide.md's tables already get checked against above.
     Catch the same drift class there too - this exact drift shipped once already: stale '5
@@ -170,7 +178,7 @@ def check_pvmalove_suite_summary_sync():
             )
 
 
-def check_vendor_pin():
+def check_vendor_pin() -> None:
     plugin = json.loads((ROOT / "third_party" / "mattpocock-skills" / "plugin.json").read_text(encoding="utf-8"))
     capabilities = json.loads((ROOT / "harness" / "CAPABILITIES.json").read_text(encoding="utf-8"))
     expected = [entry.removeprefix("./skills/") for entry in plugin["skills"]]
@@ -207,7 +215,7 @@ _DISPATCH_ID_RE = re.compile(r"\b(?:batch|dispatch)-[0-9a-fA-F][0-9a-fA-F-]{5,}\
 _HEX_TOKEN_RE = re.compile(r"\b[0-9a-fA-F]{7,40}\b")
 
 
-def check_no_dispatch_specific_data_in_always_sent_files():
+def check_no_dispatch_specific_data_in_always_sent_files() -> None:
     """The instruction files sent with every dispatch (system instructions, role manifests, the
     playbook) must stay a stable, cacheable prefix. Per-dispatch data (commit SHA, timestamp,
     batch/dispatch ID) belongs only in the immutable brief, never here."""
@@ -227,7 +235,7 @@ def check_no_dispatch_specific_data_in_always_sent_files():
         )
 
 
-def main():
+def main() -> None:
     run_ok(
         [sys.executable, "-m", "json.tool", str(ROOT / "harness" / "CAPABILITIES.json")],
         stdout=subprocess.DEVNULL,
@@ -238,10 +246,10 @@ def main():
             "-m",
             "py_compile",
             str(ROOT / "harness" / "bin" / "harness"),
-            str(ROOT / "scripts" / "build-registry"),
+            str(ROOT / "scripts" / "build-registry.py"),
             str(ROOT / "bin" / "install-global"),
-            str(ROOT / "scripts" / "verify"),
-            str(ROOT / "scripts" / "test-clean-room"),
+            str(ROOT / "scripts" / "verify.py"),
+            str(ROOT / "scripts" / "test-clean-room.py"),
         ]
     )
 
@@ -256,7 +264,7 @@ def main():
     grep_contains(ROOT / "docs" / "skills" / "implement.md", "module-owned guidance")
     grep_contains(ROOT / "docs" / "skills" / "pilot.md", "самоотчёт роли не является token telemetry")
 
-    run_ok([sys.executable, str(ROOT / "scripts" / "build-registry")])
+    run_ok([sys.executable, str(ROOT / "scripts" / "build-registry.py")])
     run_ok(["git", "-C", str(ROOT), "diff", "--exit-code", "--", "skills/REGISTRY.md"])
 
     check_docs_agents_mirror()
@@ -267,8 +275,12 @@ def main():
     check_vendor_pin()
     check_no_dispatch_specific_data_in_always_sent_files()
 
-    run_ok([sys.executable, "-m", "unittest", "discover", "-s", str(ROOT / "tests")])
-    run_ok([sys.executable, str(ROOT / "scripts" / "test-clean-room")])
+    run_ok([sys.executable, "-m", "mypy"], cwd=ROOT)
+
+    unittest_env = dict(os.environ)
+    unittest_env["PYTHONPATH"] = str(ROOT)
+    run_ok([sys.executable, "-m", "unittest", "discover", "-s", str(ROOT / "tests")], env=unittest_env)
+    run_ok([sys.executable, str(ROOT / "scripts" / "test-clean-room.py")])
 
     print("agent-harness verification passed")
 

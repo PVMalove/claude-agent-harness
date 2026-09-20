@@ -27,17 +27,131 @@ the gitignored `.harness/orchestration/state/` directory.
 | State | Coordinator action and entry condition | Allowed next state |
 | --- | --- | --- |
 | `planned` | Ticket, backend zone, issue branch/worktree, DoD, prohibitions, and verification commands are drafted. | `awaiting-approval`, `blocked` |
-| `awaiting-approval` | The coordinator is waiting for the next explicit human decision: first the role dispatch, and later acceptance of a report. | `active`, `blocked`, `completed`, `failed` |
+| `awaiting-approval` | The coordinator is waiting for the next explicit human decision: first the role dispatch, and later acceptance of a report. | `active`, `blocked`, `completed`, `failed`, `abandoned` |
 | `active` | An approved dispatch has been handed to the runtime adapter; the role is executing only within its immutable brief. | `awaiting-approval`, `blocked`, `failed` |
 | `completed` | All required role reports, commit proof, verification evidence, and risk gates are accepted. | terminal |
 | `blocked` | An external dependency, missing authority, overlapping zone, or unavailable proof prevents safe continuation. | terminal |
 | `failed` | The dispatch attempted work but could not produce an acceptable result. | terminal |
+| `abandoned` | A human explicitly gave up on the batch after a completion report, with a recorded reason. | terminal |
 
 `reported` is a terminal outcome for one role dispatch but remains pending coordinator decision. The
-batch returns to `awaiting-approval` until the coordinator accepts, blocks, fails, or creates a new
-dispatch. `completed`, `blocked`, and `failed` are terminal outcomes for that dispatch. A retry is a new
-dispatch with a new brief and a new dispatch ID; it is never a transition from `blocked` or
-`failed` back to `working`, and the old brief is never edited.
+batch returns to `awaiting-approval` until the coordinator accepts, retries, blocks, fails, abandons,
+or creates a new dispatch. `completed`, `blocked`, and `failed` are terminal outcomes for that
+dispatch. A retry is a new dispatch with a new brief and a new dispatch ID; it is never a transition
+from `blocked` or `failed` back to `working`, and the old brief is never edited.
+
+`needs_attention` is not a lifecycle state. It is a flag on a batch (see "Attention state" below)
+that halts creation of the next dispatch without changing `state`, `next_action`, the candidate or
+any evidence.
+
+## Retry routing and abandon
+
+`batch decide --decision retry` does not always mean "ask a developer again". The coordinator
+stores a routing record on the decision (`previous_role`, `reason_category`, `next_role`,
+`next_action`, `rationale`, and the `candidate_commit` when it has not changed) and derives the
+reason from structured report data only: outcome, review findings, Standards/Spec severity, failed
+checks, and whether the candidate moved. Free text in `blockers` or `output` is never classified. An
+approver may pass `--reason-category` (`code`, `requirements`, `candidate-change`,
+`verification-infrastructure`, `transport`, `context-pressure`, `unknown`); it can only narrow a
+route toward a same-candidate re-run when the structured data agrees, and it never overrides a
+finding. Rate limits, an unavailable Bash/WSL wrapper and transport failures are operational
+evidence: record them as `verification-infrastructure` or `transport`, never as a code finding. A
+context limit is `context-pressure` only when a critical `context_pressure` observation was recorded
+for the reported dispatch; the claim alone is `unknown`.
+
+| Reporting stage | `accept` | `retry` | `block` / `fail` | `abandon` |
+| --- | --- | --- | --- | --- |
+| architect | developer | new architect | terminal | `abandoned` |
+| developer | risk assessment | `developer-retry` (new candidate, then a new risk assessment) | terminal | `abandoned` |
+| code-review | qa | new code-review on the same candidate only if the report is `blocked`, the reason is `verification-infrastructure`, `transport` or `context-pressure`, there is no finding on either axis, no failed check and the candidate is unchanged; otherwise `developer-retry` | terminal | `abandoned` |
+| qa | publish | new qa on the same candidate under the same conditions (QA stays read-only); a defect or a new candidate means `developer-retry` | terminal | `abandoned` |
+| publish | completed | new publish on the same accepted SHA for `verification-infrastructure`, `transport` or `context-pressure`; `developer-retry` when the candidate must change | terminal | `abandoned` |
+
+`code`, `requirements`, `candidate-change` and `unknown` always route to `developer-retry`; only the
+three operational categories may re-run a read-only stage on the same SHA, and only with empty
+findings, an unchanged candidate and no scope or requirement blocker. A contradictory or unsupported
+reason always takes the safe route, `developer-retry`.
+A same-candidate retry is a new immutable dispatch: it gets a new dispatch ID, re-checks the
+base-commit gate and Context Package freshness, and needs its own explicit human approval under
+`manual_all`. The earlier brief, report and blocker stay untouched as audit evidence. A retry never
+uses an empty or fictitious commit, a changed candidate always needs a new risk assessment before
+review or QA, and `block` or `fail` never start a retry by themselves. `--retry-role developer`
+forces a developer retry where a same-candidate re-run would otherwise be routed.
+
+`abandon` is a fifth decision on a completion report. It needs explicit approval and a non-empty
+`--reason`, moves the batch to the terminal `abandoned` state and marks unfinished dispatches
+`abandoned`. It keeps the worktree, candidate, briefs, reports, Context Packages and audit records,
+closes no issue and opens no PR. It removes only leftovers that are not evidence: the staged
+copies of reports in the agent inbox and the QA queue entries of dispatches that will never run.
+The batch records `abandoned.last_accepted` (the newest accepted stage and candidate), so a fresh
+batch can be created on the same branch and candidate. It is never a fallback for `block`, `fail`
+or `retry`.
+
+## Approvals bound to the transition digest
+
+Before any dispatch exists, `dispatch propose` renders the canonical transition and its
+`transition_digest` (SHA-256 of: batch ID, previous dispatch ID and role, reason category, next
+role/action and purpose, candidate SHA, base SHA, review scope, verification commands, Context
+Package ID and required gates) and writes no brief. It registers the shared Context Package the brief
+would pin, so the package ID is part of what the human sees. `dispatch create` with an explicit
+approval must pass that digest as `--transition-digest`; the coordinator recomputes the transition
+from the ledger and refuses on any difference, so a changed scope, candidate, role, verification
+command, reason category or Context Package needs a new proposal and a new approval. The digest is
+stored in the approval and in the immutable brief, together with the transition itself, and ledger
+validation re-derives it. A policy approval (`milestone`, `low_risk`) is derived from the transition
+being created and binds to its own digest.
+
+With `approval_ttl_seconds` set, an `--approved-at` older than that (or dated in the future) is
+rejected. A denied terminal confirmation (`human_approval_gate: "tty"`) or an expired approval fails
+closed: the coordinator never repeats the call and never falls back to an older approval.
+
+## Read-only retry idempotency
+
+Every `architect`, `code-review`, `qa` and `publish` brief records
+`retry_idempotency_key = sha256(role + candidate SHA + base SHA + review scope + reason category +
+verification-command digest)`. Creating a dispatch is refused while any active (not decided,
+cancelled or abandoned) dispatch of an open batch carries the same key. A completed retry never
+blocks a new dispatch on the same candidate, which always receives a new immutable ID; a changed
+candidate always yields a different key, and a re-run never edits an earlier brief or report.
+
+## Context pressure
+
+`dispatch context-pressure` records `observed_tokens`, `context_limit`, `warning_threshold`, `level`
+(`ok`, `warning`, `critical`) and `recorded_at` for one dispatch. The count must come from the
+provider or runtime (`--source probe|provider-usage|runtime-adapter`, or a configured
+`context_telemetry_provider`); a model's self-report is rejected. The limit and warning ratio are the
+values frozen into the brief. The record is observation only: it never changes `next_action`, starts
+a retry or revokes an approval. At `critical` it states the worker's obligation: a write role
+checkpoints at the next green TDD boundary or returns a structured blocker; a read-only role returns
+the blocker. A continuation exists only from a checkpoint, in a new session that must attest its
+model again. A `context-pressure` retry needs a critical record for the reported dispatch.
+
+## Attention state
+
+The coordinator sets `needs_attention` (with `attention_reason`, `attention_since`,
+`last_safe_action`, `recommended_human_action`) when: a retry has waited longer than
+`attention_policy.retry_queue_seconds`; operational retries of one candidate exceed
+`max_infrastructure_retries`; a retry's reason is `unknown`; a dispatch's pinned Context Package no
+longer matches the batch base or accepted candidate; or a live dispatch is silent past
+`stale_dispatch_seconds`. It is evaluated by `batch attention check`, by `batch decide --decision
+retry` and by `dispatch wait`. While it is set no next dispatch is created; nothing is deleted and
+the candidate is not touched. `batch attention resolve` (approval and note required) acknowledges the
+open findings, so the same occurrence is not raised again.
+
+## Pluggable operational interfaces
+
+The core keeps lifecycle transitions, the ledger, routing, approval validation, the
+candidate/base/Context Package invariants and idempotency validation. Transport health, verification
+environment health, the retry reason classifier, the context telemetry provider and the
+human-notification adapter are interfaces (`extensions.py`) selected under `extensions` in
+`.harness/orchestration.json`; each defaults to an inert `none`. A classifier only proposes a category
+that still passes the routing rules above. A failing notification adapter is recorded and never blocks
+the attention state. None of them adds a model tool or edits a prompt, and the selected names, the
+attention thresholds and the approval TTL are frozen in each brief as `orchestration_policy`.
+
+Records written before these fields existed stay valid: every new batch field and the four brief
+fields (`transition`, `transition_digest`, `retry_idempotency_key`, `orchestration_policy`, all
+present or all absent) are optional, and no ledger migration is required.
 
 ## Versioned lifecycle ledger
 
@@ -89,6 +203,13 @@ The brief remains immutable evidence, its batch returns to `awaiting-approval`, 
 creates a new approved brief only after the corrected assignment is reviewed. `batch abandon` is for
 a dispatch that cannot report, not for an unsent configuration mistake.
 
+When the pinned snapshot already satisfies every Definition of Done, use `batch not-required` with
+explicit approval and evidence instead of manufacturing a write-role commit. It terminally records
+`not-required`, cancels any open dispatches, and returns the tracker recommendation
+`resolution::wontfix`. This is not a successful implementation and must not weaken ordinary
+write-role report validation: a normal write report still requires a real commit and exact changed
+files.
+
 ## Immutable handoff brief
 
 The coordinator creates the brief before dispatch and stores the exact version sent to the role.
@@ -99,6 +220,12 @@ It must contain, at minimum:
 - `role`: selected role manifest and its read-only or write mode;
 - `resolved provider profile` and `model`: the project-owned assignment actually selected, including
   the fallback used if the default was unavailable;
+- `allowed tools` and `context budget`: the role's working tool set and its token budget, both chosen
+  from the project's `.harness/orchestration.json`. `allowed_tools` defaults from the role manifest's
+  mode (read-only roles get no edit tools) and a project may override it with `tool_policy`;
+  `context_budget` is `adaptive_continuation_policy.context_limit`. The tool list is the role's
+  working set, never a deny-list: a brief does not disable the runtime's global tools. A brief
+  created before these fields existed stays valid;
 - `zone IDs` and allowed paths: the exact backend zones the role may read or write;
 - `branch/worktree`: issue branch and isolated worktree; protected branches and `integration/*`
   are never write targets;
@@ -124,6 +251,8 @@ A minimal brief can be rendered as:
 - Role: <manifest-name> (<write|read-only>)
 - Resolved provider profile: <profile-id>
 - Model: <resolved-model>
+- Allowed tools: <role working set from tool_policy or the mode default>
+- Context budget: <tokens from adaptive_continuation_policy.context_limit>
 - Zone IDs: <zone-id>, ...
 - Allowed paths: <declared paths>
 - Branch/worktree: <issue branch> / <isolated worktree>

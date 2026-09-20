@@ -8,16 +8,21 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Protocol, cast
+from unittest import mock
 
 
-MODULE_ROOT = Path(__file__).resolve().parents[1] / "harness" / "gate_runner"
-sys.path.insert(0, str(MODULE_ROOT))
-from gate_runner import CleanRoomPolicy, LocalPolicy, run_gate
+from harness.errors import HarnessError
+from harness.gate_runner.gate_runner import CleanRoomPolicy, GateRunnerError, LocalPolicy, run_gate
+
+
+class _RunFn(Protocol):
+    def __call__(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]: ...
 
 
 class GateRunnerTests(unittest.TestCase):
     def test_local_and_clean_room_return_the_same_sanitised_evidence_shape(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             root = Path(temporary)
             repo = root / "repo"
             repo.mkdir()
@@ -48,7 +53,7 @@ class GateRunnerTests(unittest.TestCase):
             self.assertNotIn("token=visible", result.checks[0]["evidence"])
 
     def test_stops_at_first_failure_when_the_policy_requests_it(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             root = Path(temporary)
             failed = f'{sys.executable} -c "import sys; print(\'password=visible\'); sys.exit(7)"'
             skipped = f'{sys.executable} -c "print(\'must not run\')"'
@@ -58,6 +63,68 @@ class GateRunnerTests(unittest.TestCase):
         self.assertEqual(result.checks[0]["result"], "fail")
         self.assertIn("password=<redacted>", result.artifact)
         self.assertNotIn("password=visible", result.artifact)
+
+    def test_clean_room_failures_raise_a_harness_error_with_message_and_remedy(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Gate Runner Test"], cwd=repo, check=True)
+            (repo / "candidate.txt").write_text("candidate\n", encoding="utf-8")
+            subprocess.run(["git", "add", "candidate.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "test: pin candidate"], cwd=repo, check=True)
+            candidate_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+            ).stdout.strip()
+            unknown_commit = "0" * 40
+            abbreviated_commit = candidate_commit[:12]
+
+            for candidate, expected_message in (
+                (unknown_commit, "could not create clean QA worktree"),
+                (abbreviated_commit, "does not match the pinned candidate commit"),
+            ):
+                with self.subTest(candidate=candidate):
+                    with self.assertRaises(GateRunnerError) as raised:
+                        run_gate(["true"], CleanRoomPolicy(repo, candidate), stop_on_failure=True)
+                    self.assertIsInstance(raised.exception, HarnessError)
+                    self.assertIn(expected_message, raised.exception.message)
+                    self.assertIn(candidate, raised.exception.remedy)
+
+
+    def test_dirty_clean_room_worktree_raises_with_a_status_specific_remedy(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Gate Runner Test"], cwd=repo, check=True)
+            (repo / "candidate.txt").write_text("candidate\n", encoding="utf-8")
+            subprocess.run(["git", "add", "candidate.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "test: pin candidate"], cwd=repo, check=True)
+            candidate_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+            ).stdout.strip()
+            real_run = cast(_RunFn, subprocess.run)
+
+            def fake_status(status_result: subprocess.CompletedProcess[str]) -> _RunFn:
+                def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                    if "status" in command:
+                        return status_result
+                    return real_run(command, **kwargs)
+
+                return run
+
+            for status_result, expected_remedy in (
+                (subprocess.CompletedProcess([], 128, stdout="", stderr="fatal"), "inspect the 'git status' error"),
+                (subprocess.CompletedProcess([], 0, stdout="?? stray.txt\n", stderr=""), "internal invariant violated"),
+            ):
+                with self.subTest(returncode=status_result.returncode):
+                    with mock.patch("subprocess.run", side_effect=fake_status(status_result)):
+                        with self.assertRaises(GateRunnerError) as raised:
+                            run_gate(["true"], CleanRoomPolicy(repo, candidate_commit), stop_on_failure=True)
+                    self.assertIn("contains mutable files", raised.exception.message)
+                    self.assertIn(expected_remedy, raised.exception.remedy)
 
 
 if __name__ == "__main__":

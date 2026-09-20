@@ -83,7 +83,7 @@ test-only diff и всегда является новым независимы�
 - [capability dataflow](./docs/diagrams/capability-delivery.dataflow.html), [skill contract](./docs/diagrams/skill-contract-fill.workflow.html).
 
 Правится только `*.json`; после изменения запускаются `validate`, `deliver` и `visual-check`. Код
-проверяется `scripts/test-clean-room`, unit-тестами и командами из `.harness/project.json`. Для
+проверяется `scripts/test-clean-room.py`, unit-тестами и командами из `.harness/project.json`. Для
 telemetry `delivery-stats` сохраняет cache read/write tokens, worker sessions/restart reasons,
 review diff scope excess и QA failure rate только при наличии наблюдаемого источника; отсутствующие
 значения остаются `нет данных`.

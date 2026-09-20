@@ -15,7 +15,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-MIN_PYTHON = (3, 9)
+MIN_PYTHON = (3, 12)
 if sys.version_info < MIN_PYTHON:
     sys.stderr.write(
         "[ERROR] test-clean-room requires Python %s+ (found %s).\n"
@@ -840,12 +840,16 @@ else:
             sys.executable,
             "-c",
             (
-                "import copy, importlib.util, json, sys\n"
+                "import copy, importlib, importlib.util, json, sys\n"
                 "from pathlib import Path\n"
-                "spec = importlib.util.spec_from_file_location('contract', sys.argv[1])\n"
-                "contract = importlib.util.module_from_spec(spec)\n"
-                "sys.modules[spec.name] = contract\n"
-                "spec.loader.exec_module(contract)\n"
+                "harness_root = Path(sys.argv[1]).parent.parent\n"
+                "sys.path.insert(0, str(harness_root.parent))\n"
+                "spec = importlib.util.spec_from_file_location(\n"
+                "  'harness', harness_root / '__init__.py', submodule_search_locations=[str(harness_root)])\n"
+                "package = importlib.util.module_from_spec(spec)\n"
+                "sys.modules['harness'] = package\n"
+                "spec.loader.exec_module(package)\n"
+                "contract = importlib.import_module('harness.orchestration.contract')\n"
                 "config = json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))\n"
                 "role = contract.load_role_manifest(Path(sys.argv[3]))\n"
                 "for mutate in (\n"
@@ -1045,12 +1049,29 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 "--expected-service", "backend",
                 "--expected-changed-lines", "10",
             ])
-        return subprocess.run(
-            [sys.executable, str(coordinator_path), "--repo", str(orchestration_project), *arguments],
-            capture_output=True,
-            text=True,
-            env=coordinator_env,
-        )
+        def run_once(command_arguments):
+            return subprocess.run(
+                [sys.executable, str(coordinator_path), "--repo", str(orchestration_project), *command_arguments],
+                capture_output=True,
+                text=True,
+                env=coordinator_env,
+            )
+
+        # An explicit approval is bound to the transition it was shown: mirror the operator, who runs
+        # `dispatch propose` with the same arguments and approves the digest it prints.
+        creates = [i for i, item in enumerate(arguments[:-1]) if item == "dispatch" and arguments[i + 1] == "create"]
+        if creates and "--approved-by" in arguments and "--transition-digest" not in arguments:
+            proposal_arguments = list(arguments)
+            proposal_arguments[creates[0] + 1] = "propose"
+            for flag in ("--approved-by", "--approved-at"):
+                if flag in proposal_arguments:
+                    position = proposal_arguments.index(flag)
+                    del proposal_arguments[position:position + 2]
+            proposal = run_once(proposal_arguments)
+            if proposal.returncode != 0:
+                return proposal  # the same refusal a create would give, before anything is approved
+            arguments.extend(["--transition-digest", json.loads(proposal.stdout)["transition_digest"]])
+        return run_once(arguments)
 
     def sync_origin_base(ref: str = "main") -> None:
         """Push local HEAD to origin's tracked ref so `batch create`'s mandatory fetch sees a

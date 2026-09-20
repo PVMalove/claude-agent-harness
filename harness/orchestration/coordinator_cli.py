@@ -7,7 +7,7 @@ injected by :mod:`coordinator`, keeping parser changes from coupling to ledger t
 from __future__ import annotations
 
 import argparse
-from typing import Any
+import types
 
 
 def _common(parser: argparse.ArgumentParser) -> None:
@@ -15,7 +15,7 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--state-dir", default=argparse.SUPPRESS, help="coordinator state directory")
 
 
-def build_parser(handlers: Any, defaults: Any) -> argparse.ArgumentParser:
+def build_parser(handlers: types.ModuleType, defaults: types.ModuleType) -> argparse.ArgumentParser:
     """Build the stable public CLI using an injected coordinator handler facade."""
     root = argparse.ArgumentParser(description="Coordinate approved backend role dispatches.")
     root.add_argument("--repo", default=".", help="target project root")
@@ -85,6 +85,15 @@ def build_parser(handlers: Any, defaults: Any) -> argparse.ArgumentParser:
     batch_abandon.add_argument("--approved-at", required=True)
     batch_abandon.add_argument("--reason", required=True, help="why this batch can no longer be decided")
     batch_abandon.set_defaults(handler=handlers.abandon_batch)
+    batch_not_required = batch_commands.add_parser(
+        "not-required", help="record that the pinned snapshot needs no implementation",
+    )
+    _common(batch_not_required)
+    batch_not_required.add_argument("--batch", required=True)
+    batch_not_required.add_argument("--approved-by", required=True)
+    batch_not_required.add_argument("--approved-at", required=True)
+    batch_not_required.add_argument("--reason", required=True, help="evidence that no implementation is required")
+    batch_not_required.set_defaults(handler=handlers.mark_batch_not_required)
     decide = batch_commands.add_parser("decide")
     _common(decide)
     decide.add_argument("--batch", required=True)
@@ -92,7 +101,29 @@ def build_parser(handlers: Any, defaults: Any) -> argparse.ArgumentParser:
     decide.add_argument("--approved-by", required=True)
     decide.add_argument("--approved-at", required=True)
     decide.add_argument("--note", default="none")
+    decide.add_argument("--reason", help="required for abandon: why the batch is abandoned")
+    decide.add_argument(
+        "--reason-category", choices=defaults.RETRY_REASON_CATEGORIES,
+        help="why the reporting role stopped, for retry; structured report data overrides an unsupported claim",
+    )
+    decide.add_argument(
+        "--retry-role", choices=["developer"],
+        help="force a developer retry where the coordinator would re-run the same candidate",
+    )
     decide.set_defaults(handler=handlers.decide_batch)
+    attention = batch_commands.add_parser("attention", help="operational-loop attention state of a batch")
+    attention_commands = attention.add_subparsers(dest="attention_command", required=True)
+    attention_check_command = attention_commands.add_parser("check", help="evaluate the batch and persist needs_attention when a human is needed")
+    _common(attention_check_command)
+    attention_check_command.add_argument("--batch", required=True)
+    attention_check_command.set_defaults(handler=handlers.attention_check)
+    attention_resolve_command = attention_commands.add_parser("resolve", help="a human acknowledges the open findings and lets dispatching resume")
+    _common(attention_resolve_command)
+    attention_resolve_command.add_argument("--batch", required=True)
+    attention_resolve_command.add_argument("--note", required=True, help="what was checked before resuming")
+    attention_resolve_command.add_argument("--approved-by", required=True)
+    attention_resolve_command.add_argument("--approved-at", required=True)
+    attention_resolve_command.set_defaults(handler=handlers.attention_resolve)
     packet = batch_commands.add_parser("decision-packet", help="render concise evidence required for an approval")
     _common(packet)
     packet.add_argument("--batch", required=True)
@@ -142,19 +173,28 @@ def build_parser(handlers: Any, defaults: Any) -> argparse.ArgumentParser:
     preflight.add_argument("--runtime")
     preflight.add_argument("--candidate-commit")
     preflight.set_defaults(handler=handlers.preflight_dispatch)
+    dispatch_propose = dispatch_commands.add_parser(
+        "propose", help="render the canonical transition and its digest for approval; writes no brief",
+    )
     dispatch_create = dispatch_commands.add_parser("create", aliases=["approve"])
-    _common(dispatch_create)
-    dispatch_create.add_argument("--batch", required=True)
-    dispatch_create.add_argument("--role", default="developer")
-    dispatch_create.add_argument("--runtime", help="named runtime from the role assignment plan; required when a multi-runtime role has no default_runtime")
-    dispatch_create.add_argument("--purpose", choices=sorted(defaults.DISPATCH_PURPOSES), default="work")
-    dispatch_create.add_argument("--candidate-commit")
-    dispatch_create.add_argument("--delta-review-of", help="prior retried code-review dispatch id this test-only fix delta-reviews; code-review role only")
-    dispatch_create.add_argument("--model", help="session model, used only without .harness/orchestration.json")
-    dispatch_create.add_argument("--effort", help="session effort, used only without .harness/orchestration.json")
+    for dispatch_shape in (dispatch_propose, dispatch_create):
+        _common(dispatch_shape)
+        dispatch_shape.add_argument("--batch", required=True)
+        dispatch_shape.add_argument("--role", default="developer")
+        dispatch_shape.add_argument("--runtime", help="named runtime from the role assignment plan; required when a multi-runtime role has no default_runtime")
+        dispatch_shape.add_argument("--purpose", choices=sorted(defaults.DISPATCH_PURPOSES), default="work")
+        dispatch_shape.add_argument("--candidate-commit")
+        dispatch_shape.add_argument("--delta-review-of", help="prior retried code-review dispatch id this test-only fix delta-reviews; code-review role only")
+        dispatch_shape.add_argument("--model", help="session model, used only without .harness/orchestration.json")
+        dispatch_shape.add_argument("--effort", help="session effort, used only without .harness/orchestration.json")
+    dispatch_propose.set_defaults(handler=handlers.create_dispatch, propose=True, transition_digest=None, approved_by=None, approved_at=None)
     dispatch_create.add_argument("--approved-by", help="required by manual_all and risk milestones")
     dispatch_create.add_argument("--approved-at", help="required by manual_all and risk milestones")
-    dispatch_create.set_defaults(handler=handlers.create_dispatch)
+    dispatch_create.add_argument(
+        "--transition-digest",
+        help="the transition_digest 'dispatch propose' printed for exactly this dispatch; required with --approved-by, so an approval is valid only for the transition it was shown",
+    )
+    dispatch_create.set_defaults(handler=handlers.create_dispatch, propose=False)
     dispatch_send = dispatch_commands.add_parser("send")
     _common(dispatch_send)
     dispatch_send.add_argument("--dispatch", required=True)
@@ -204,6 +244,14 @@ def build_parser(handlers: Any, defaults: Any) -> argparse.ArgumentParser:
     dispatch_wait.add_argument("--poll-interval", type=int, default=5)
     dispatch_wait.add_argument("--stale-after", type=int, default=defaults.DEFAULT_STALE_AFTER_SECONDS)
     dispatch_wait.set_defaults(handler=handlers.wait_dispatch)
+    dispatch_pressure = dispatch_commands.add_parser(
+        "context-pressure", help="record a provider/runtime-observed context measurement; observation only, never a routing input",
+    )
+    _common(dispatch_pressure)
+    dispatch_pressure.add_argument("--dispatch", required=True)
+    dispatch_pressure.add_argument("--observed-tokens", type=int, help="tokens the provider or runtime observed; omit to ask the configured context_telemetry_provider")
+    dispatch_pressure.add_argument("--source", choices=defaults.CONTEXT_TELEMETRY_SOURCES, help="who observed --observed-tokens; a model's self-report is never accepted")
+    dispatch_pressure.set_defaults(handler=handlers.record_context_pressure)
     dispatch_telemetry = dispatch_commands.add_parser("telemetry", help="record source-observed worker or coordinator metrics")
     _common(dispatch_telemetry)
     dispatch_telemetry.add_argument("--file", required=True)

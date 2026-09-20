@@ -230,6 +230,66 @@ Context Package переиспользуется всеми role sessions на �
 resume) и `retry_policy` (один developer retry) делают циклы конечными. Все поля проверяются
 `harness health`; effort допускает только документированные уровни (`none`…`ultra`).
 
+### Tool policy и context budget в brief
+
+Кроме model/effort и `verification_commands`, каждый immutable brief явно записывает два значения,
+выбранных из `.harness/orchestration.json`, а не из чата:
+
+- `allowed_tools` — рабочий набор инструментов именно этой роли. Без `tool_policy` берётся дефолт по
+  режиму manifest: `read-only` (architect, code-review, qa) — `Read`, `Grep`, `Glob`, `Bash`, без
+  `Edit`/`Write`; `write` — те же плюс `Edit` и `Write`. Read-only роль работает по Context Package,
+  не сканирует весь репозиторий и не подгружает нерелевантные инструменты. Список — рабочий набор
+  роли, а не deny-list: brief не отключает глобальные инструменты runtime.
+- `context_budget` — токены из `adaptive_continuation_policy.context_limit` (по умолчанию 150000):
+  тот же порог, от которого считается `context_advisory`.
+
+Проект переопределяет набор необязательным `tool_policy`; запись роли важнее записи режима, а она —
+встроенного дефолта:
+
+```json
+"tool_policy": {
+  "modes": {"read-only": ["Read", "Grep", "Glob"]},
+  "roles": {"qa": ["Read", "Grep", "Glob", "Bash"]}
+}
+```
+
+`harness health` принимает только ключи `modes` (`read-only`/`write`) и `roles` (имена из role
+manifests), а значением — непустой список уникальных строк. Brief без этих двух полей (созданный до
+их появления) остаётся валидным; brief с одним из двух или с некорректной формой значений
+отклоняется. Brief — неизменяемая запись выбора на момент approval, поэтому позднейшая правка
+`tool_policy` или `context_limit` не делает уже созданный dispatch невалидным: новые значения
+попадут только в следующие brief.
+
+### Политика операционных циклов: attention, approval TTL и extensions
+
+Три необязательных раздела `.harness/orchestration.json` управляют тем, как coordinator останавливает
+зацикленные retry и как проверяет approval. Пропущенное поле берёт дефолт; resolved-значения
+записываются в каждый brief как `orchestration_policy`, поэтому правка файла посреди dispatch не
+меняет то, под чем он был утверждён:
+
+```json
+"attention_policy": {"retry_queue_seconds": 3600, "max_infrastructure_retries": 2, "stale_dispatch_seconds": 900},
+"approval_ttl_seconds": 3600,
+"extensions": {"transport_health": "none", "verification_environment_health": "none",
+               "retry_reason_classifier": "none", "context_telemetry_provider": "none", "human_notifier": "none"}
+```
+
+- `attention_policy` — пороги флага `needs_attention` (см. ниже): сколько принятый retry может ждать
+  своего dispatch, сколько operational retry (`verification-infrastructure`, `transport`,
+  `context-pressure`) допустимо на один candidate (`0` — ни одного) и после какого молчания живой
+  dispatch считается stale.
+- `approval_ttl_seconds` — срок жизни явного `--approved-at`. Более старое (или датированное в
+  будущем) approval отклоняется и не используется повторно. Без поля approval не истекает; шаблон
+  `harness init` задаёт `3600`.
+- `extensions` — подключаемые интерфейсы вне ядра coordinator: `transport_health`,
+  `verification_environment_health`, `retry_reason_classifier`, `context_telemetry_provider`,
+  `human_notifier`. Значение — `none` (инертный дефолт), имя, зарегистрированное хост-процессом, или
+  `module:factory` (вызываемая без аргументов фабрика в импортируемом модуле). Неизвестное имя —
+  fail-closed. Ни один extension не добавляет model tool и не меняет system prompt.
+
+`harness health` проверяет форму всех трёх разделов. Пока у проекта нет `backend_zones`/
+`assignment_plans`, coordinator работает на встроенных дефолтах и эти значения не читает.
+
 ### Discovery Context и Context Package
 
 Discovery Pipeline переносит проверенный контекст от проектирования к dispatch. `/grilling` ведёт
@@ -330,9 +390,13 @@ batch в `awaiting-approval` и оставляет dispatch в `reported` до �
    brief до передачи:
 
    ```bash
+   # сначала dry run: показывает канонический переход и его digest, brief не пишет
+   python .harness/orchestration/coordinator.py --repo . dispatch propose \
+     --batch <batch-id> --role developer --runtime codex
+   # approval действует только для показанного digest
    python .harness/orchestration/coordinator.py --repo . dispatch create \
     --batch <batch-id> --role developer --runtime codex --approved-by 'имя утверждающего' \
-     --approved-at 2026-09-09T12:01:00Z
+     --approved-at 2026-09-09T12:01:00Z --transition-digest <transition_digest>
    python .harness/orchestration/coordinator.py --repo . dispatch send \
      --dispatch <dispatch-id> --adapter .harness/orchestration/orca_adapter.py \
      --adapter-arg=--run --adapter-arg=<orca-run-id>
@@ -376,6 +440,125 @@ risks, blockers и следующее решение coordinator-а. Для read
 изменились scope, zone, DoD, assignment или proof, текущий dispatch заканчивается и создаётся новый.
 Повтор после `blocked` или `failed` — тоже новый dispatch с новым ID и brief.
 
+### Маршрутизация `retry` и решение `abandon`
+
+`batch decide --decision retry` больше не означает «снова developer». Coordinator сохраняет на
+решении routing record: `previous_role`, `reason_category`, `next_role`, `next_action`,
+`rationale` и `candidate_commit` (пока он не изменился). Причина определяется только по
+структурированным данным report: outcome, findings, severity осей Standards/Spec, failed checks и
+тому, изменился ли candidate. Свободный текст `blockers`/`output` не классифицируется. Явную причину
+можно передать через `--reason-category` (`code`, `requirements`, `candidate-change`,
+`verification-infrastructure`, `transport`, `context-pressure`, `unknown`), но она не отменяет
+найденный finding. Rate limit, недоступный Bash/WSL wrapper и transport failure — это operational
+evidence (`verification-infrastructure` или `transport`), а не code finding. Context limit —
+`context-pressure` только если для отчитавшегося dispatch записано `critical`-наблюдение
+`context_pressure` (см. ниже); голое утверждение даёт `unknown`.
+
+| Стадия отчёта | `accept` | `retry` | `block` / `fail` | `abandon` |
+| --- | --- | --- | --- | --- |
+| architect | developer | новый architect | terminal | `abandoned` |
+| developer | risk assessment | `developer-retry`: новый candidate и новая risk assessment | terminal | `abandoned` |
+| code-review | qa | новый code-review на том же `candidate_commit`, если report `blocked`, причина — `verification-infrastructure`/`transport`/`context-pressure`, findings пусты, обе оси без findings, нет failed check и candidate не менялся; иначе `developer-retry` | terminal | `abandoned` |
+| qa | publish | новый qa на том же SHA при том же условии (QA остаётся read-only); defect или новый candidate — `developer-retry` | terminal | `abandoned` |
+| publish | `completed` | новый publish на том же принятом SHA при `verification-infrastructure`/`transport`/`context-pressure`; `developer-retry`, если candidate должен измениться | terminal | `abandoned` |
+
+`code`, `requirements`, `candidate-change` и `unknown` всегда ведут в `developer-retry`; только три
+operational-категории могут повторить read-only стадию на том же SHA — и лишь при пустых findings,
+неизменном candidate и отсутствии scope/requirement blocker. Противоречивая или неподтверждённая
+причина всегда даёт безопасный маршрут `developer-retry`. Повтор на том же SHA — это новый immutable dispatch: новый dispatch ID, повторная
+проверка base-commit gate и свежести Context Package и собственное явное approval при `manual_all`.
+Прежние brief, report и blocker остаются audit evidence. Фиктивные и пустые commit не
+используются; новый candidate всегда требует новой risk assessment; `block` и `fail` сами retry не
+запускают. `--retry-role developer` принудительно выбирает developer retry там, где coordinator
+иначе повторил бы ту же роль на том же SHA.
+
+Решение `abandon` доступно после любого completion report. Оно требует явного approval и непустого
+`--reason`, переводит batch в терминальный `abandoned` и помечает незакрытые dispatch как
+`abandoned`:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch decide \
+  --batch <batch-id> --decision abandon --approved-by 'имя утверждающего' \
+  --approved-at 2026-09-20T09:00:00Z --reason 'план заменён, начинаем новый batch'
+```
+
+`abandon` не удаляет worktree, candidate, brief, report, Context Package и audit evidence, не
+закрывает issue и не создаёт PR. Убирается только то, что не является evidence: staged-копии report в
+agent inbox и записи QA-очереди dispatch, которые уже не запустятся (живой QA lease по-прежнему
+снимается только `qa clear-stale-lease`). Batch записывает `abandoned.last_accepted` — последний принятый
+этап и его candidate, — от которого можно создать свежий batch на той же ветке и том же candidate.
+`abandon` никогда не является автоматическим fallback для `block`, `fail` или `retry`. Команда
+`batch abandon` для batch, у которого не будет ни одного report, остаётся прежней и завершает его
+в `failed`.
+
+### Approval, привязанный к digest перехода
+
+`dispatch propose` принимает те же аргументы, что и `dispatch create`, но brief не пишет: он
+регистрирует shared Context Package, который brief закрепит, и возвращает канонический переход и его
+`transition_digest` — SHA-256 от batch ID, ID и роли предыдущего dispatch, reason category,
+следующей роли/действия и purpose, candidate SHA, base SHA, review scope, verification commands,
+Context Package ID и required gates. `dispatch create` с явным approval обязан получить этот digest в
+`--transition-digest`: coordinator пересчитывает переход из ledger и отклоняет любое расхождение, так что
+изменение scope, candidate, роли, verification command, reason category или Context Package требует
+нового `propose` и нового approval. Digest сохраняется в approval и в immutable brief вместе с самим
+переходом; ledger-валидация пересчитывает его. Policy approval (`milestone`, `low_risk`) выводится из
+создаваемого перехода и привязан к его собственному digest. При `human_approval_gate: "tty"` digest
+показывается в запросе подтверждения.
+
+Просроченное (`approval_ttl_seconds`) или отклонённое в терминале approval — fail-closed: coordinator
+не повторяет вызов сам и не подставляет более старое approval.
+
+### Idempotency read-only retry
+
+Brief ролей `architect`, `code-review`, `qa` и publish хранит
+`retry_idempotency_key = sha256(role + candidate SHA + base SHA + review scope + reason category +
+digest verification commands)`. Пока в открытом batch есть активный (не решённый, не cancelled, не
+abandoned) dispatch с тем же ключом, новый dispatch отклоняется. Завершённый retry не мешает новому
+dispatch на том же candidate — он получает новый immutable ID; смена candidate всегда меняет ключ;
+повторный review/QA никогда не правит прежние report и brief.
+
+### Context pressure
+
+`dispatch context-pressure --dispatch <id> --observed-tokens <N> --source probe|provider-usage|
+runtime-adapter` пишет наблюдение `observed_tokens`, `context_limit`, `warning_threshold`, `level`
+(`ok`/`warning`/`critical`) и `recorded_at`. Без `--observed-tokens` число берёт настроенный
+`context_telemetry_provider`. Источник — только provider/runtime: self-report модели отклоняется.
+Лимит и доля предупреждения — значения, зафиксированные в brief. Запись — чистое наблюдение: она не
+меняет `next_action`, не создаёт retry и не снимает approval. При `critical` она сообщает обязанность
+worker-а: write-роль создаёт checkpoint на ближайшей зелёной границе TDD либо возвращает structured
+blocker, read-only роль возвращает blocker. Continuation создаётся только из checkpoint и только с
+новым model self-report. Категория `context-pressure` у retry требует такой `critical`-записи для
+отчитавшегося dispatch.
+
+### Attention state
+
+`needs_attention` — флаг batch, а не lifecycle-состояние: он не меняет `state`, `next_action`,
+candidate и evidence, но запрещает создание следующего dispatch. Поля: `needs_attention`,
+`attention_reason`, `attention_since`, `last_safe_action`, `recommended_human_action`. Причины:
+
+| `attention_reason` | Когда |
+| --- | --- |
+| `unknown-reason` | retry с причиной `unknown` |
+| `infrastructure-retry-repeated` | operational retry одного candidate больше `max_infrastructure_retries` |
+| `retry-queued-too-long` | принятый retry ждёт dispatch дольше `retry_queue_seconds` |
+| `stale-evidence` | закреплённый в незавершённом dispatch Context Package расходится с base или принятым candidate |
+| `stale-dispatch` | живой dispatch молчит дольше `stale_dispatch_seconds` |
+
+Флаг ставят `batch decide --decision retry`, `dispatch wait` (событие `stale`) и
+`batch attention check --batch <id>`; последняя команда просто оценивает batch сейчас. Снимает его
+только человек: `batch attention resolve --batch <id> --note '…' --approved-by … --approved-at …`
+подтверждает открытые findings (то же событие повторно не поднимается) и пишет событие в
+`attention_events`. Если настроен `human_notifier`, он вызывается при постановке флага; сбой адаптера
+записывается как `failed` и флаг не отменяет.
+
+### Совместимость и миграция
+
+Все новые поля batch и четыре поля brief (`transition`, `transition_digest`, `retry_idempotency_key`,
+`orchestration_policy`; либо все, либо ни одного) необязательны: записи, созданные раньше, остаются
+валидными, версия ledger не меняется и `ledger migrate` не нужен. Новые записи проходят ту же
+целостностную проверку (`context_pressure` с hash, форма attention-полей, согласованность brief).
+Изменилось поведение CLI: `dispatch create` с `--approved-by` теперь требует `--transition-digest`.
+
 ### Инвентарь и закрытие тупикового batch
 
 Посмотреть, что вообще заведено и что не закрыто:
@@ -400,6 +583,19 @@ python .harness/orchestration/coordinator.py --repo . batch abandon \
 dispatch как `abandoned` и записывает решение рядом с остальными. **Она ничего не удаляет**: immutable
 brief, отчёты и QA-артефакты остаются на месте. Повторно применить её к уже терминальному batch
 нельзя.
+
+Если pinned snapshot уже удовлетворяет всем пунктам DoD, не создавайте фиктивный commit ради
+write-role отчёта и не используйте `abandon`. Зафиксируйте отдельное терминальное решение:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch not-required \
+  --batch <batch-id> --approved-by 'имя утверждающего' --approved-at 2026-09-11T06:00:00Z \
+  --reason 'pinned snapshot already satisfies every definition-of-done item'
+```
+
+Команда оставляет audit evidence, отменяет незакрытые dispatch, переводит batch в `not-required` и
+возвращает рекомендацию закрыть связанный issue с меткой `resolution::wontfix`. Обычный write-role
+report по-прежнему обязан содержать реальный commit и exact changed files.
 
 Если ошибка найдена **до** передачи brief runtime-у, не abandon batch. Отмените только этот
 неотправленный dispatch: immutable brief останется в audit trail, а batch вернётся в
@@ -436,7 +632,8 @@ write-роли либо pinned SHA review-роли; расхождение не�
 
 Для architect/developer `worker_attestation_required` также требует, чтобы Git-worktree HEAD в момент
 `self-report` буквально совпадал с immutable `snapshot_commit` из brief. После `batch decide --decision
-retry` (например, developer-retry после code-review blocker) новый developer dispatch **всегда** пинит
+retry`, маршрутизированного в `developer-retry` (например, после code-review blocker; повтор на том же
+SHA developer dispatch не создаёт), новый developer dispatch **всегда** пинит
 `snapshot_commit` обратно на `base_commit` batch-а, а не на отклонённый кандидатный коммит — чтобы retry
 не мог молча унаследовать состояние отклонённого коммита. Это значит, что coordinator обязан сам
 привести worktree к этому состоянию **до** `dispatch send`, иначе первый же `dispatch self-report`
@@ -674,6 +871,8 @@ isolated worker. Он не выбирает scope, не запускает check
   "resolved_provider_profile": "backend-primary",
   "resolved_model": "project-developer-model",
   "resolved_effort": "xhigh",
+  "allowed_tools": ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
+  "context_budget": 150000,
   "coordinator_approval": {
     "approved_by": "имя утверждающего",
     "approved_at": "2026-09-09T12:00:00Z"

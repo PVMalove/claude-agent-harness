@@ -4,15 +4,15 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 
 
 MODULE_ROOT = Path(__file__).resolve().parents[1] / "harness" / "context_builder"
-sys.path.insert(0, str(MODULE_ROOT))
-from context_builder import (  # noqa: E402
+from harness.errors import HarnessError
+from harness.context_builder.context_builder import (
     ContextPackageError,
     build_context_package,
     estimate_tokens,
@@ -33,7 +33,7 @@ class ContextBuilderFixture(unittest.TestCase):
     """Build a small real repository: a package with an import edge, its test, and an ADR."""
 
     def setUp(self) -> None:
-        self._temporary = tempfile.TemporaryDirectory()
+        self._temporary = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.repo = Path(self._temporary.name) / "repo"
         self.repo.mkdir()
         _run("init", "-q", cwd=self.repo)
@@ -217,6 +217,51 @@ class ContextBuilderTests(ContextBuilderFixture):
         # instead of drifting toward double.
         diff_only_estimate = estimate_tokens(package.diff)
         self.assertLess(package.estimated_tokens, diff_only_estimate * 1.5)
+
+    def test_every_raise_path_is_a_harness_error_with_a_message_and_a_remedy(self) -> None:
+        repo, base, candidate = self.repo, self.base_commit, self.candidate_commit
+        cases: tuple[tuple[str, str, Callable[[], object]], ...] = (
+            ("git diff", "git diff", lambda: build_context_package(repo, base, "0" * 40)),
+            (
+                "direct import-graph neighbours",
+                "lower min_starting_files below 5",
+                lambda: build_context_package(repo, base, candidate, min_starting_files=5),
+            ),
+            (
+                "must be >=1",
+                "got min=3, max=2",
+                lambda: build_context_package(repo, base, candidate, min_starting_files=3, max_starting_files=2),
+            ),
+            (
+                "static starting file",
+                f"seed_paths that exist at {candidate}",
+                lambda: build_context_package(
+                    repo, candidate, candidate, min_starting_files=999, max_starting_files=1000
+                ),
+            ),
+            (
+                "max_related_tests=0",
+                "max_related_tests above 1",
+                lambda: build_context_package(repo, base, candidate, min_starting_files=1, max_related_tests=0),
+            ),
+            (
+                "max_package_size_bytes=1",
+                "raise max_package_size_bytes above",
+                lambda: build_context_package(repo, base, candidate, min_starting_files=1, max_package_size_bytes=1),
+            ),
+            (
+                "max_package_tokens=1",
+                "max_package_tokens above",
+                lambda: build_context_package(repo, base, candidate, min_starting_files=1, max_package_tokens=1),
+            ),
+        )
+        for expected_message, expected_remedy, build in cases:
+            with self.subTest(expected_message=expected_message):
+                with self.assertRaises(ContextPackageError) as raised:
+                    build()
+                self.assertIsInstance(raised.exception, HarnessError)
+                self.assertIn(expected_message, raised.exception.message)
+                self.assertIn(expected_remedy, raised.exception.remedy)
 
     def test_makes_no_model_call_and_stays_pure_python_over_git_plumbing(self) -> None:
         module_source = (MODULE_ROOT / "context_builder.py").read_text(encoding="utf-8")
