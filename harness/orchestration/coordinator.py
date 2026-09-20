@@ -65,10 +65,13 @@ from harness.orchestration.workflow.context_package import (
 from harness.orchestration.workflow.decisions import (
     decide_batch as decide_batch, decision_packet as decision_packet,
 )
+from harness.orchestration.workflow.delivery import (
+    dispatch_status as dispatch_status, publish_dispatch as publish_dispatch,
+    send_dispatch as send_dispatch, wait_dispatch as wait_dispatch,
+)
 from harness.orchestration.workflow.dispatch import (
     cancel_dispatch as cancel_dispatch, create_dispatch as create_dispatch,
-    dispatch_status as dispatch_status, preflight_dispatch as preflight_dispatch,
-    publish_dispatch as publish_dispatch, send_dispatch as send_dispatch, wait_dispatch as wait_dispatch,
+    preflight_dispatch as preflight_dispatch,
 )
 from harness.orchestration.workflow.qa_integration import (
     clear_qa_lease as clear_qa_lease, qa_evidence as qa_evidence, qa_status as qa_status, run_qa as run_qa,

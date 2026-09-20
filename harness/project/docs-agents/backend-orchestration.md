@@ -38,7 +38,7 @@ Role self-report, completion report и оценка coordinator-а не явля
 - `.harness/orchestration/coordinator.py` — runtime-neutral CLI для batch, approval, dispatch и report;
   сам файл — только фасад: разбор аргументов, роутинг и вывод JSON. Сам lifecycle лежит рядом в
   `core/` (константы, конфигурация, git, workspace), `ledger/` (persistence) и `workflow/`
-  (по модулю на стадию batch'а);
+  (по модулю на стадию batch'а: планирование, бриф, доставка, решение, отчёт);
 - `.harness/orchestration/orca_adapter.py` — необязательная runtime-граница для Orca;
 - `.harness/orchestration.json` — project-owned конфигурация назначений, зон и проверок.
 
