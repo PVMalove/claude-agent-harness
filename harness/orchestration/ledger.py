@@ -15,10 +15,10 @@ import os
 import shutil
 import uuid
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, ClassVar, Iterator, Protocol
+from typing import ClassVar, Iterator, Protocol, TypeAlias, cast
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 
@@ -31,6 +31,12 @@ RECORD_DIRECTORIES = (
     "batches", "plans", "dispatches", "dispatch-status", "risk-assessments", "context-packages",
     "checkpoints", "reports", "qa-lane", "qa-artifacts", "audit",
 )
+
+# Ledger records are persisted JSON.  Keep the dynamic boundary at ``_read`` explicit while
+# preserving arbitrary, forward-compatible JSON in each record's ``extra`` fields.
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject: TypeAlias = dict[str, JsonValue]
 
 
 class LedgerError(HarnessError):
@@ -45,28 +51,27 @@ class BatchRecord:
 
     batch_id: str
     state: str
-    dispatches: list[Any]
-    coordinator_approval: dict[str, Any] | None
-    extra: dict[str, Any] = field(default_factory=dict)
+    dispatches: list[JsonValue]
+    coordinator_approval: JsonObject | None
+    extra: JsonObject = field(default_factory=dict)
 
     @property
     def record_id(self) -> str:
         return self.batch_id
 
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        extra = data.pop("extra")
-        return {**extra, **data}
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "batch_id": self.batch_id, "state": self.state,
+                "dispatches": self.dispatches, "coordinator_approval": self.coordinator_approval}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "BatchRecord":
+    def from_dict(cls, data: JsonObject) -> "BatchRecord":
         known = ("batch_id", "state", "dispatches", "coordinator_approval")
         extra = {key: value for key, value in data.items() if key not in known}
         return cls(
-            batch_id=data.get("batch_id"),
-            state=data.get("state"),
-            dispatches=data.get("dispatches"),
-            coordinator_approval=data.get("coordinator_approval"),
+            batch_id=cast(str, data.get("batch_id")),
+            state=cast(str, data.get("state")),
+            dispatches=cast(list[JsonValue], data.get("dispatches")),
+            coordinator_approval=cast(JsonObject | None, data.get("coordinator_approval")),
             extra=extra,
         )
 
@@ -78,22 +83,20 @@ class PlanRecord:
     directory: ClassVar[str] = "plans"
 
     batch_id: str
-    extra: dict[str, Any] = field(default_factory=dict)
+    extra: JsonObject = field(default_factory=dict)
 
     @property
     def record_id(self) -> str:
         return self.batch_id
 
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        extra = data.pop("extra")
-        return {**extra, **data}
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "batch_id": self.batch_id}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "PlanRecord":
+    def from_dict(cls, data: JsonObject) -> "PlanRecord":
         known = ("batch_id",)
         extra = {key: value for key, value in data.items() if key not in known}
-        return cls(batch_id=data.get("batch_id"), extra=extra)
+        return cls(batch_id=cast(str, data.get("batch_id")), extra=extra)
 
 
 @dataclass(frozen=True)
@@ -105,27 +108,26 @@ class DispatchRecord:
     dispatch_id: str
     batch_id: str
     state: str
-    coordinator_approval: dict[str, Any] | None
-    extra: dict[str, Any] = field(default_factory=dict)
+    coordinator_approval: JsonObject | None
+    extra: JsonObject = field(default_factory=dict)
 
     @property
     def record_id(self) -> str:
         return self.dispatch_id
 
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        extra = data.pop("extra")
-        return {**extra, **data}
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "dispatch_id": self.dispatch_id, "batch_id": self.batch_id,
+                "state": self.state, "coordinator_approval": self.coordinator_approval}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "DispatchRecord":
+    def from_dict(cls, data: JsonObject) -> "DispatchRecord":
         known = ("dispatch_id", "batch_id", "state", "coordinator_approval")
         extra = {key: value for key, value in data.items() if key not in known}
         return cls(
-            dispatch_id=data.get("dispatch_id"),
-            batch_id=data.get("batch_id"),
-            state=data.get("state"),
-            coordinator_approval=data.get("coordinator_approval"),
+            dispatch_id=cast(str, data.get("dispatch_id")),
+            batch_id=cast(str, data.get("batch_id")),
+            state=cast(str, data.get("state")),
+            coordinator_approval=cast(JsonObject | None, data.get("coordinator_approval")),
             extra=extra,
         )
 
@@ -138,22 +140,20 @@ class DispatchStatusRecord:
 
     dispatch_id: str
     state: str
-    extra: dict[str, Any] = field(default_factory=dict)
+    extra: JsonObject = field(default_factory=dict)
 
     @property
     def record_id(self) -> str:
         return self.dispatch_id
 
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        extra = data.pop("extra")
-        return {**extra, **data}
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "dispatch_id": self.dispatch_id, "state": self.state}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "DispatchStatusRecord":
+    def from_dict(cls, data: JsonObject) -> "DispatchStatusRecord":
         known = ("dispatch_id", "state")
         extra = {key: value for key, value in data.items() if key not in known}
-        return cls(dispatch_id=data.get("dispatch_id"), state=data.get("state"), extra=extra)
+        return cls(dispatch_id=cast(str, data.get("dispatch_id")), state=cast(str, data.get("state")), extra=extra)
 
 
 @dataclass(frozen=True)
@@ -163,22 +163,20 @@ class RiskAssessmentRecord:
     directory: ClassVar[str] = "risk-assessments"
 
     risk_assessment_id: str
-    extra: dict[str, Any] = field(default_factory=dict)
+    extra: JsonObject = field(default_factory=dict)
 
     @property
     def record_id(self) -> str:
         return self.risk_assessment_id
 
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        extra = data.pop("extra")
-        return {**extra, **data}
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "risk_assessment_id": self.risk_assessment_id}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "RiskAssessmentRecord":
+    def from_dict(cls, data: JsonObject) -> "RiskAssessmentRecord":
         known = ("risk_assessment_id",)
         extra = {key: value for key, value in data.items() if key not in known}
-        return cls(risk_assessment_id=data.get("risk_assessment_id"), extra=extra)
+        return cls(risk_assessment_id=cast(str, data.get("risk_assessment_id")), extra=extra)
 
 
 @dataclass(frozen=True)
@@ -188,22 +186,20 @@ class ContextPackageRecord:
     directory: ClassVar[str] = "context-packages"
 
     context_package_id: str
-    extra: dict[str, Any] = field(default_factory=dict)
+    extra: JsonObject = field(default_factory=dict)
 
     @property
     def record_id(self) -> str:
         return self.context_package_id
 
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        extra = data.pop("extra")
-        return {**extra, **data}
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "context_package_id": self.context_package_id}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ContextPackageRecord":
+    def from_dict(cls, data: JsonObject) -> "ContextPackageRecord":
         known = ("context_package_id",)
         extra = {key: value for key, value in data.items() if key not in known}
-        return cls(context_package_id=data.get("context_package_id"), extra=extra)
+        return cls(context_package_id=cast(str, data.get("context_package_id")), extra=extra)
 
 
 @dataclass(frozen=True)
@@ -213,22 +209,20 @@ class CheckpointRecord:
     directory: ClassVar[str] = "checkpoints"
 
     checkpoint_id: str
-    extra: dict[str, Any] = field(default_factory=dict)
+    extra: JsonObject = field(default_factory=dict)
 
     @property
     def record_id(self) -> str:
         return self.checkpoint_id
 
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        extra = data.pop("extra")
-        return {**extra, **data}
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "checkpoint_id": self.checkpoint_id}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "CheckpointRecord":
+    def from_dict(cls, data: JsonObject) -> "CheckpointRecord":
         known = ("checkpoint_id",)
         extra = {key: value for key, value in data.items() if key not in known}
-        return cls(checkpoint_id=data.get("checkpoint_id"), extra=extra)
+        return cls(checkpoint_id=cast(str, data.get("checkpoint_id")), extra=extra)
 
 
 class LedgerRecordVO(Protocol):
@@ -241,25 +235,27 @@ class LedgerRecordVO(Protocol):
     @property
     def record_id(self) -> str: ...
 
-    def to_dict(self) -> dict[str, Any]: ...
+    def to_dict(self) -> JsonObject: ...
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _canonical(value: dict[str, Any]) -> str:
+def _canonical(value: JsonObject) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
-def _read(path: Path, label: str) -> dict[str, Any]:
+def _read(path: Path, label: str) -> JsonObject:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value: object = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise LedgerError(f"{label} is not valid JSON: {path.name}", remedy=f"fix the JSON syntax in {path}") from exc
     if not isinstance(value, dict):
         raise LedgerError(f"{label} must be a JSON object: {path.name}", remedy=f"rewrite {path} as a JSON object")
-    return value
+    # json.loads is a dynamic boundary; after confirming the top-level object, JSON itself
+    # guarantees string object keys and recursive JSON-compatible values.
+    return cast(JsonObject, value)
 
 
 def _digest(path: Path) -> str:
@@ -299,7 +295,7 @@ class LifecycleLedger:
     def pointer_path(self) -> Path:
         return self.root / POINTER_NAME
 
-    def pointer(self) -> dict[str, Any] | None:
+    def pointer(self) -> JsonObject | None:
         if not self.pointer_path.exists():
             return None
         pointer = _read(self.pointer_path, "ledger pointer")
@@ -308,17 +304,27 @@ class LifecycleLedger:
                 "ledger pointer has an invalid schema",
                 remedy=f"fix or remove the corrupted pointer at {self.pointer_path} (it must have exactly version, generation and selected_at)",
             )
-        if pointer["version"] not in SUPPORTED_LEDGER_VERSIONS or not isinstance(pointer["generation"], str):
+        version = pointer["version"]
+        generation = pointer["generation"]
+        selected_at = pointer["selected_at"]
+        if not isinstance(version, int) or version not in SUPPORTED_LEDGER_VERSIONS or not isinstance(generation, str):
             raise LedgerError(
                 "ledger pointer has an unsupported version or generation",
                 remedy=f"fix {self.pointer_path}: version must be one of {SUPPORTED_LEDGER_VERSIONS} and generation a string",
             )
-        if not pointer["generation"].startswith("generation-") or not isinstance(pointer["selected_at"], str):
+        if not generation.startswith("generation-") or not isinstance(selected_at, str):
             raise LedgerError(
                 "ledger pointer has an invalid generation",
                 remedy=f"fix {self.pointer_path}: generation must start with 'generation-' and selected_at must be a string",
             )
         return pointer
+
+    @staticmethod
+    def _pointer_generation(pointer: JsonObject) -> str:
+        """Narrow a generation selected by ``pointer()``, which already validates this field."""
+        generation = pointer["generation"]
+        assert isinstance(generation, str)
+        return generation
 
     def records_root(self) -> Path:
         """Return the selected generation; legacy state is readable only by ``migrate``."""
@@ -332,9 +338,9 @@ class LifecycleLedger:
         if pointer["version"] != LEDGER_VERSION:
             raise LedgerError(
                 "ledger generation requires an explicit ledger migrate to the current schema version",
-                remedy=f"run 'coordinator.py ledger migrate' to move generation {pointer['generation']!r} to version {LEDGER_VERSION}",
+                remedy=f"run 'coordinator.py ledger migrate' to move generation {self._pointer_generation(pointer)!r} to version {LEDGER_VERSION}",
             )
-        generation = self.root / GENERATIONS / pointer["generation"]
+        generation = self.root / GENERATIONS / self._pointer_generation(pointer)
         # A coordinator operation may create an immutable dispatch and its status record in two
         # writes under one state lock.  Validate the container and audit here; validate the full
         # cross-record graph before a migration/selects a generation.
@@ -362,7 +368,7 @@ class LifecycleLedger:
         return candidate if candidate.is_dir() else None
 
     @staticmethod
-    def read_record_lenient(path: Path) -> dict[str, Any] | None:
+    def read_record_lenient(path: Path) -> JsonObject | None:
         """Read one record file, returning ``None`` instead of raising for any of: a missing
         file, unparseable JSON, or JSON that does not parse to an object."""
         try:
@@ -370,14 +376,14 @@ class LifecycleLedger:
         except LedgerError:
             return None
 
-    def ensure(self) -> dict[str, Any]:
+    def ensure(self) -> JsonObject:
         """Create the first empty generation; never reinterpret legacy records implicitly."""
         pointer = self.pointer()
         if pointer is not None:
             if pointer["version"] != LEDGER_VERSION:
                 raise LedgerError(
                     "ledger generation requires an explicit ledger migrate to the current schema version",
-                    remedy=f"run 'coordinator.py ledger migrate' to move generation {pointer['generation']!r} to version {LEDGER_VERSION}",
+                    remedy=f"run 'coordinator.py ledger migrate' to move generation {self._pointer_generation(pointer)!r} to version {LEDGER_VERSION}",
                 )
             return pointer
         if self._legacy_records_present():
@@ -387,7 +393,7 @@ class LifecycleLedger:
         generation = self._new_generation("initialize")
         return self._select(generation)
 
-    def status(self) -> dict[str, Any]:
+    def status(self) -> JsonObject:
         pointer = self.pointer()
         if pointer is None:
             return {"version": 0, "generation": None, "legacy": self._legacy_records_present()}
@@ -404,7 +410,7 @@ class LifecycleLedger:
             "audit_records": len(list((root / "audit").glob("*.json"))),
         }
 
-    def migrate(self) -> dict[str, Any]:
+    def migrate(self) -> JsonObject:
         """Explicitly select a current-schema generation, from legacy (pre-ledger) state or from an
         older-schema generation already selected by an earlier harness version.  Either source is
         validated tolerantly (its own, possibly incomplete, set of record directories); the new
@@ -418,11 +424,11 @@ class LifecycleLedger:
         if pointer is None:
             source_root = self.root
             purpose = "migration"
-            audit_details: dict[str, Any] = {}
+            audit_details: JsonObject = {}
         else:
-            source_root = self.root / GENERATIONS / pointer["generation"]
+            source_root = self.root / GENERATIONS / self._pointer_generation(pointer)
             purpose = "schema-upgrade"
-            audit_details = {"previous_generation": pointer["generation"], "previous_version": pointer["version"]}
+            audit_details = {"previous_generation": self._pointer_generation(pointer), "previous_version": pointer["version"]}
         self._validate_legacy(source_root)
         generation = self._new_generation(purpose)
         for directory in RECORD_DIRECTORIES:
@@ -430,7 +436,7 @@ class LifecycleLedger:
             if source.exists():
                 shutil.copytree(source, generation / directory, dirs_exist_ok=True)
         self._validate_generation(generation)
-        imported = {
+        imported: JsonObject = {
             path.relative_to(source_root).as_posix(): _digest(path)
             for directory in RECORD_DIRECTORIES
             for path in sorted((source_root / directory).rglob("*"))
@@ -441,7 +447,7 @@ class LifecycleLedger:
         pointer = self._select(generation)
         return {"version": pointer["version"], "generation": pointer["generation"], "migrated": True}
 
-    def reset(self, confirmation: str) -> dict[str, Any]:
+    def reset(self, confirmation: str) -> JsonObject:
         if confirmation != "RESET":
             raise LedgerError(
                 "ledger reset requires --confirm RESET", remedy="pass --confirm RESET (the literal string) to acknowledge the reset"
@@ -466,16 +472,16 @@ class LifecycleLedger:
         pointer = self._select(generation)
         return {"version": pointer["version"], "generation": pointer["generation"], "reset": True}
 
-    def clean(self) -> dict[str, Any]:
+    def clean(self) -> JsonObject:
         """Remove orphaned dispatch evidence from the current generation or legacy state."""
         pointer = self.pointer()
         if pointer is not None:
             if pointer["version"] != LEDGER_VERSION:
                 raise LedgerError(
                     "ledger generation requires an explicit ledger migrate before cleaning",
-                    remedy=f"run 'coordinator.py ledger migrate' to move generation {pointer['generation']!r} to version {LEDGER_VERSION}",
+                    remedy=f"run 'coordinator.py ledger migrate' to move generation {self._pointer_generation(pointer)!r} to version {LEDGER_VERSION}",
                 )
-            root = self.root / GENERATIONS / pointer["generation"]
+            root = self.root / GENERATIONS / self._pointer_generation(pointer)
         else:
             root = self.root
             if not self._legacy_records_present():
@@ -489,7 +495,9 @@ class LifecycleLedger:
                 if isinstance(entries, list):
                     for entry in entries:
                         if isinstance(entry, dict) and isinstance(entry.get("dispatch_id"), str):
-                            referenced.add(entry["dispatch_id"])
+                            dispatch_id = entry["dispatch_id"]
+                            assert isinstance(dispatch_id, str)
+                            referenced.add(dispatch_id)
             except LedgerError:
                 continue
 
@@ -528,7 +536,7 @@ class LifecycleLedger:
         """Persist a Value-Object-backed record transition, deriving its path from the record."""
         self.replace(self._record_path(record), record.to_dict())
 
-    def write_immutable(self, path: Path, value: dict[str, Any], *, artifact: bool = False) -> None:
+    def write_immutable(self, path: Path, value: JsonObject, *, artifact: bool = False) -> None:
         generation, relative = self._selected_path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -557,7 +565,7 @@ class LifecycleLedger:
                 ) from exc
         self._append_audit(generation, "immutable-artifact", {"path": relative, "sha256": _digest(path)})
 
-    def replace(self, path: Path, value: dict[str, Any]) -> None:
+    def replace(self, path: Path, value: JsonObject) -> None:
         """Atomically persist one allowed record transition and append its immutable audit event."""
         generation, relative = self._selected_path(path)
         if not path.is_file():
@@ -565,7 +573,7 @@ class LifecycleLedger:
                 f"ledger transition targets a missing record: {relative}", remedy=f"write the record at {path} before transitioning it"
             )
         before = _read(path, "current lifecycle record")
-        transition: dict[str, Any] = {"path": relative, "before_sha256": _digest(path)}
+        transition: JsonObject = {"path": relative, "before_sha256": _digest(path)}
         if relative.startswith("batches/"):
             self._validate_batch_transition(generation, before, value)
             transition.update({"from": before.get("state"), "to": value.get("state")})
@@ -599,7 +607,7 @@ class LifecycleLedger:
         return generation, relative
 
     @staticmethod
-    def _atomic_write(path: Path, value: dict[str, Any]) -> None:
+    def _atomic_write(path: Path, value: JsonObject) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         try:
@@ -611,7 +619,7 @@ class LifecycleLedger:
             except FileNotFoundError:
                 pass
 
-    def _validate_batch_transition(self, generation: Path, before: dict[str, Any], after: dict[str, Any]) -> None:
+    def _validate_batch_transition(self, generation: Path, before: JsonObject, after: JsonObject) -> None:
         previous = before.get("state")
         target = after.get("state")
         allowed = {
@@ -623,14 +631,17 @@ class LifecycleLedger:
             "completed": {"completed", "failed"},
             "not-required": {"not-required"},
         }
-        if previous not in allowed or target not in allowed[previous]:
+        if not isinstance(previous, str) or not isinstance(target, str) or previous not in allowed or target not in allowed[previous]:
+            allowed_targets = sorted(allowed.get(previous, ())) if isinstance(previous, str) else []
             raise LedgerError(
                 f"ledger rejects batch transition {previous!r} -> {target!r}",
-                remedy=f"transition through one of the allowed states for {previous!r}: {sorted(allowed.get(previous, ()))}",
+                remedy=f"transition through one of the allowed states for {previous!r}: {allowed_targets}",
             )
         if previous == "planned" and target == "awaiting-approval":
             approval = after.get("coordinator_approval")
-            if not isinstance(approval, dict) or not all(isinstance(approval.get(key), str) and approval[key].strip() for key in ("approved_by", "approved_at")):
+            if not isinstance(approval, dict) or not all(
+                isinstance(value := approval.get(key), str) and value.strip() for key in ("approved_by", "approved_at")
+            ):
                 raise LedgerError(
                     "ledger requires recorded coordinator approval before a batch awaits dispatch",
                     remedy="set coordinator_approval.approved_by and .approved_at before moving the batch to awaiting-approval",
@@ -671,9 +682,9 @@ class LifecycleLedger:
         self._append_audit(generation, "generation-created", {"purpose": purpose})
         return generation
 
-    def _select(self, generation: Path) -> dict[str, Any]:
+    def _select(self, generation: Path) -> JsonObject:
         self._validate_generation(generation)
-        pointer = {"version": LEDGER_VERSION, "generation": generation.name, "selected_at": _now()}
+        pointer: JsonObject = {"version": LEDGER_VERSION, "generation": generation.name, "selected_at": _now()}
         temporary = self.pointer_path.with_name(f".{POINTER_NAME}.{uuid.uuid4().hex}.tmp")
         try:
             temporary.write_text(_canonical(pointer), encoding="utf-8", newline="\n")
@@ -685,8 +696,8 @@ class LifecycleLedger:
                 pass
         return pointer
 
-    def _append_audit(self, generation: Path, action: str, details: dict[str, Any]) -> None:
-        audit = {
+    def _append_audit(self, generation: Path, action: str, details: JsonObject) -> None:
+        audit: JsonObject = {
             "audit_id": f"audit-{uuid.uuid4()}",
             "at": _now(),
             "action": action,
@@ -776,6 +787,7 @@ class LifecycleLedger:
                         remedy=f"fix {batch_path.name} so each dispatches entry is an object with a string dispatch_id",
                     )
                 dispatch_id = entry["dispatch_id"]
+                assert isinstance(dispatch_id, str)
                 referenced.add(dispatch_id)
                 dispatch_path = dispatches.get(dispatch_id)
                 status_path = statuses.get(dispatch_id)

@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from harness.errors import HarnessError
 from harness.orchestration.ledger import (
     BatchRecord,
     CheckpointRecord,
@@ -45,6 +46,17 @@ class ValueObjectRoundTripTests(unittest.TestCase):
 
             restored = BatchRecord.from_dict(on_disk)
             self.assertEqual(restored, original)
+
+    def test_batch_record_round_trips_nested_json_dispatch_and_approval(self) -> None:
+        """The ledger preserves nested JSON at its unvalidated record boundary."""
+        original = BatchRecord(
+            batch_id="batch-1",
+            state="planned",
+            dispatches=[{"dispatch_id": "dispatch-1", "metadata": {"attempt": 1, "tags": ["typed"]}}],
+            coordinator_approval={"approved_by": "Malove", "approved_at": "2026-09-19T00:00:00Z"},
+        )
+
+        self.assertEqual(BatchRecord.from_dict(original.to_dict()), original)
 
     def test_dispatch_record_round_trip(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
@@ -161,6 +173,12 @@ class RecordApiTests(unittest.TestCase):
 
 
 class LockTests(unittest.TestCase):
+    def test_ledger_error_is_a_harness_error_with_a_remedy(self) -> None:
+        error = LedgerError("cannot persist", remedy="repair the lifecycle record")
+
+        self.assertIsInstance(error, HarnessError)
+        self.assertEqual(error.remedy, "repair the lifecycle record")
+
     def test_lock_raises_ledger_error_on_contention_and_is_reacquirable_after_release(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             state_root = Path(temporary) / "state"
@@ -168,9 +186,10 @@ class LockTests(unittest.TestCase):
             second = LifecycleLedger(state_root)
 
             with first.lock():
-                with self.assertRaises(LedgerError):
+                with self.assertRaises(LedgerError) as raised:
                     with second.lock():
                         pass
+                self.assertTrue(raised.exception.remedy)
 
             with second.lock():
                 pass
@@ -289,6 +308,18 @@ class ReadRecordLenientTests(unittest.TestCase):
             path.write_text("[1, 2, 3]", encoding="utf-8")
 
             self.assertIsNone(LifecycleLedger.read_record_lenient(path))
+
+    def test_read_rejects_json_array_with_a_remedy(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            path = Path(temporary) / "array.json"
+            path.write_text("[1, 2, 3]", encoding="utf-8")
+
+            with self.assertRaises(LedgerError) as raised:
+                ledger = LifecycleLedger(path.parent)
+                path.replace(ledger.pointer_path)
+                ledger.pointer()
+
+            self.assertTrue(raised.exception.remedy)
 
     def test_returns_parsed_dict_for_a_valid_record(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
