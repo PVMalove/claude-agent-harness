@@ -7,7 +7,7 @@ injected by :mod:`coordinator`, keeping parser changes from coupling to ledger t
 from __future__ import annotations
 
 import argparse
-from typing import Any
+import types
 
 
 def _common(parser: argparse.ArgumentParser) -> None:
@@ -15,7 +15,7 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--state-dir", default=argparse.SUPPRESS, help="coordinator state directory")
 
 
-def build_parser(handlers: Any, defaults: Any) -> argparse.ArgumentParser:
+def build_parser(handlers: types.ModuleType, defaults: types.ModuleType) -> argparse.ArgumentParser:
     """Build the stable public CLI using an injected coordinator handler facade."""
     root = argparse.ArgumentParser(description="Coordinate approved backend role dispatches.")
     root.add_argument("--repo", default=".", help="target project root")
@@ -85,6 +85,15 @@ def build_parser(handlers: Any, defaults: Any) -> argparse.ArgumentParser:
     batch_abandon.add_argument("--approved-at", required=True)
     batch_abandon.add_argument("--reason", required=True, help="why this batch can no longer be decided")
     batch_abandon.set_defaults(handler=handlers.abandon_batch)
+    batch_not_required = batch_commands.add_parser(
+        "not-required", help="record that the pinned snapshot needs no implementation",
+    )
+    _common(batch_not_required)
+    batch_not_required.add_argument("--batch", required=True)
+    batch_not_required.add_argument("--approved-by", required=True)
+    batch_not_required.add_argument("--approved-at", required=True)
+    batch_not_required.add_argument("--reason", required=True, help="evidence that no implementation is required")
+    batch_not_required.set_defaults(handler=handlers.mark_batch_not_required)
     decide = batch_commands.add_parser("decide")
     _common(decide)
     decide.add_argument("--batch", required=True)
@@ -92,6 +101,15 @@ def build_parser(handlers: Any, defaults: Any) -> argparse.ArgumentParser:
     decide.add_argument("--approved-by", required=True)
     decide.add_argument("--approved-at", required=True)
     decide.add_argument("--note", default="none")
+    decide.add_argument("--reason", help="required for abandon: why the batch is abandoned")
+    decide.add_argument(
+        "--reason-category", choices=defaults.RETRY_REASON_CATEGORIES,
+        help="why the reporting role stopped, for retry; structured report data overrides an unsupported claim",
+    )
+    decide.add_argument(
+        "--retry-role", choices=["developer"],
+        help="force a developer retry where the coordinator would re-run the same candidate",
+    )
     decide.set_defaults(handler=handlers.decide_batch)
     packet = batch_commands.add_parser("decision-packet", help="render concise evidence required for an approval")
     _common(packet)

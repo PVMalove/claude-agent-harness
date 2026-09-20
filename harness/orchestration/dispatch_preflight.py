@@ -12,10 +12,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from contract import ContractError, resolve_runtime_name
+from ..errors import HarnessError
+from .contract import ContractError, resolve_runtime_name
 
 
-class PreflightError(Exception):
+class PreflightError(HarnessError):
     """A dispatch cannot safely be prepared from the supplied project state."""
 
 
@@ -41,7 +42,10 @@ class PreparedDispatch:
 
 def _text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise PreflightError(f"project_state requires a non-empty {label}")
+        raise PreflightError(
+            f"project_state requires a non-empty {label}",
+            remedy=f"set project_state[{label!r}] to a non-empty string",
+        )
     return value.strip()
 
 
@@ -51,7 +55,10 @@ def _git(path: Path, *args: str) -> str:
     )
     if result.returncode:
         detail = (result.stderr or result.stdout).strip()
-        raise PreflightError(f"git {' '.join(args)} failed: {detail or 'unknown error'}")
+        raise PreflightError(
+            f"git {' '.join(args)} failed: {detail or 'unknown error'}",
+            remedy=f"inspect the git error above and fix the repository/worktree state before retrying 'git {' '.join(args)}'",
+        )
     return result.stdout.strip()
 
 
@@ -90,18 +97,25 @@ def prepare(ticket: str, role: str, project_state: Mapping[str, Any]) -> Prepare
     role = _text(role, "role")
     repo = Path(_text(project_state.get("repo"), "repo")).resolve()
     if not repo.is_dir():
-        raise PreflightError("project_state repo does not exist")
+        raise PreflightError(
+            "project_state repo does not exist", remedy="point project_state['repo'] at an existing directory"
+        )
     config = project_state.get("config")
     if not isinstance(config, dict):
-        raise PreflightError("project_state config must be an object")
+        raise PreflightError(
+            "project_state config must be an object", remedy="set project_state['config'] to a JSON object"
+        )
     plans = config.get("assignment_plans")
     if not isinstance(plans, dict) or not isinstance(plans.get(role), dict):
-        raise PreflightError(f"project_state has no assignment plan for role {role!r}")
+        raise PreflightError(
+            f"project_state has no assignment plan for role {role!r}",
+            remedy=f"add an assignment_plans[{role!r}] object to the project config",
+        )
     plan = plans[role]
     try:
         runtime = resolve_runtime_name(plan, project_state.get("runtime"))
     except ContractError as exc:
-        raise PreflightError(str(exc)) from exc
+        raise PreflightError(str(exc), remedy="fix the runtime/provider selection reported above in the assignment plan or project_state['runtime']") from exc
 
     branch = _text(project_state.get("branch"), "branch")
     worktree = Path(_text(project_state.get("worktree"), "worktree")).resolve()
@@ -111,21 +125,33 @@ def prepare(ticket: str, role: str, project_state: Mapping[str, Any]) -> Prepare
         candidate = _text(candidate, "candidate_sha")
     integration_ref = _text(project_state.get("integration_ref") or "base", "integration_ref")
     if worktree not in _worktree_paths(repo):
-        raise PreflightError("worktree is not registered by git worktree")
+        raise PreflightError(
+            "worktree is not registered by git worktree",
+            remedy=f"run 'git worktree add' for {worktree} or point project_state['worktree'] at a registered worktree",
+        )
     if _git(worktree, "rev-parse", "--is-inside-work-tree") != "true":
-        raise PreflightError("worktree is not a Git worktree")
+        raise PreflightError(
+            "worktree is not a Git worktree", remedy=f"point project_state['worktree'] at a real Git worktree, not {worktree}"
+        )
     worktree_sha = _git(worktree, "rev-parse", "--verify", "HEAD^{commit}")
     expected_sha = candidate or _text(project_state.get("snapshot_sha") or base_sha, "snapshot_sha")
     if worktree_sha != expected_sha:
         raise PreflightError(
-            f"worktree is pinned to {worktree_sha}, expected snapshot {expected_sha}"
+            f"worktree is pinned to {worktree_sha}, expected snapshot {expected_sha}",
+            remedy=f"checkout {expected_sha} in the worktree, or update snapshot_sha/candidate_sha to match {worktree_sha}",
         )
     if role in {"architect", "developer"} and _git(worktree, "branch", "--show-current") != branch:
-        raise PreflightError("write/planning worktree is not on the resolved issue branch")
+        raise PreflightError(
+            "write/planning worktree is not on the resolved issue branch",
+            remedy=f"checkout branch {branch!r} in the worktree before dispatching this role",
+        )
 
     checks = project_state.get("mandatory_checks", [])
     if not isinstance(checks, list) or not all(isinstance(item, str) and item.strip() for item in checks):
-        raise PreflightError("project_state mandatory_checks must be a list of commands")
+        raise PreflightError(
+            "project_state mandatory_checks must be a list of commands",
+            remedy="set project_state['mandatory_checks'] to a list of non-empty command strings",
+        )
     package = _role_context(role, project_state, expected_sha)
     preview = {
         "ticket": ticket,

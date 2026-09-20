@@ -7,20 +7,14 @@ from __future__ import annotations
 
 import json
 import shutil
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+from harness.orchestration.ledger import LifecycleLedger
+from harness.reporting import delivery_stats
 
 ORCHESTRATION_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
-REPORTING_ROOT = Path(__file__).resolve().parents[1] / "harness" / "reporting"
-sys.path.insert(0, str(ORCHESTRATION_ROOT))
-sys.path.insert(0, str(REPORTING_ROOT))
-
-from ledger import LifecycleLedger  # noqa: E402
-
-import delivery_stats  # noqa: E402
 
 
 def _install_ledger_source(repo: Path) -> None:
@@ -39,7 +33,7 @@ class OrchestrationMetricsLenientReadTests(unittest.TestCase):
     one dispatch record file on disk to prove the lenient read API contains the damage."""
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.tmp = Path(self._tmp.name)
         self.repo = self.tmp / "repo"
         self.repo.mkdir()
@@ -114,7 +108,7 @@ class OrchestrationMetricsWithoutBackendOrchestrationTests(unittest.TestCase):
     degrade the orchestration metric to missing, not crash the whole report."""
 
     def test_reports_missing_when_the_analyzed_repo_has_no_ledger_module(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             repo = Path(temporary) / "repo"
             repo.mkdir()
 
@@ -126,7 +120,7 @@ class OrchestrationMetricsWithoutBackendOrchestrationTests(unittest.TestCase):
         """Mirrors scripts/test-clean-room's synthetic-ledger fixture: state files written by
         hand, in a repo with no .harness/orchestration/ledger.py at all (legacy layout: no
         pointer file, records directly under the state root)."""
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             repo = Path(temporary) / "repo"
             state = repo / ".harness" / "orchestration" / "state"
             (state / "batches").mkdir(parents=True)
@@ -150,7 +144,7 @@ class OrchestrationMetricsWithoutBackendOrchestrationTests(unittest.TestCase):
         self.assertEqual(ticket["qa_failure_rate"], 0.0)
 
     def test_corrupted_record_degrades_gracefully_with_no_ledger_module_present(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             repo = Path(temporary) / "repo"
             state = repo / ".harness" / "orchestration" / "state"
             (state / "batches").mkdir(parents=True)
@@ -200,7 +194,7 @@ class OrchestrationMetricsIncompatibleLedgerModuleTests(unittest.TestCase):
     the lenient read API. delivery_stats.py must not assume a loaded module is compatible."""
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.tmp = Path(self._tmp.name)
         self.repo = self.tmp / "repo"
         self.repo.mkdir()
@@ -258,7 +252,7 @@ class ClaudeUsageSubagentTranscriptTests(unittest.TestCase):
     though the subagent transcript's own "sessionId" field replays the *parent's* session id."""
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.tmp = Path(self._tmp.name)
         self.project = self.tmp / "project"
         self.project.mkdir()
@@ -313,7 +307,7 @@ class LiveProbeTests(unittest.TestCase):
     claude_usage()'s post-epic report."""
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.tmp = Path(self._tmp.name)
         self.project = self.tmp / "project2"
         self.project.mkdir()

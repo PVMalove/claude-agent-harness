@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-MIN_PYTHON = (3, 9)  # nothing here needs newer; deliberately not tied to pyproject.toml
+MIN_PYTHON = (3, 12)  # same floor as pyproject.toml, harness/bin/harness, scripts/test-clean-room
 if sys.version_info < MIN_PYTHON:
     sys.stderr.write(
         "[ERROR] install-global requires Python %s+ (found %s).\n"

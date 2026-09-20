@@ -34,6 +34,12 @@ the candidate. Reserve a retry for a deviation that changes behaviour, scope or 
 the batch a developer-retry budget and, once the candidate is rebuilt, can land on a larger and
 less reviewable diff than the one it replaced.
 
+When the approved verification cannot run at all (unavailable Bash/WSL wrapper, transport failure,
+rate limit, context limit), report `outcome: blocked` with empty `findings` and severity `none` on
+both axes, and state the operational cause in `blockers`. Never invent a finding to explain an
+infrastructure stop: the coordinator routes such a report to a new review of the same candidate, and
+routes any finding, warning or blocker severity to a developer retry.
+
 The coordinator must not mark a high-risk batch complete until both the Standards and Spec reports
 are present; a missing report is a blocker for the batch.
 

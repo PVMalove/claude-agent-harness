@@ -4,6 +4,7 @@ clean-room test-clean-room run."""
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -267,7 +268,9 @@ def main():
     check_vendor_pin()
     check_no_dispatch_specific_data_in_always_sent_files()
 
-    run_ok([sys.executable, "-m", "unittest", "discover", "-s", str(ROOT / "tests")])
+    unittest_env = dict(os.environ)
+    unittest_env["PYTHONPATH"] = str(ROOT)
+    run_ok([sys.executable, "-m", "unittest", "discover", "-s", str(ROOT / "tests")], env=unittest_env)
     run_ok([sys.executable, str(ROOT / "scripts" / "test-clean-room")])
 
     print("agent-harness verification passed")

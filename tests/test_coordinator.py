@@ -12,23 +12,21 @@ raw-path builder or a bare ``Path``+``dict`` write adapter.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import inspect
+import io
 import json
 import subprocess
-import sys
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
 
+from harness.orchestration import contract, coordinator, coordinator_cli, qa_lane
+from harness.orchestration.ledger import BatchRecord, DispatchStatusRecord, LifecycleLedger
 
 ORCHESTRATION_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
-sys.path.insert(0, str(ORCHESTRATION_ROOT))
-
-import contract  # noqa: E402
-import coordinator  # noqa: E402
-from ledger import LifecycleLedger  # noqa: E402
 
 
 def _git(repo: Path, *arguments: str) -> str:
@@ -78,7 +76,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
     """TDD seeds for the #195 migration, run against real git + a real LifecycleLedger."""
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.tmp = Path(self._tmp.name)
         self.repo = _init_repo(self.tmp)
         self.state_dir = self.tmp / "state"
@@ -226,6 +224,35 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             self._records_root() / "dispatch-status" / f"{dispatch_id}.json", "status",
         )
         self.assertEqual(on_disk_status["state"], "reported")
+
+    def test_mark_batch_not_required_is_terminal_and_recommends_wontfix(self) -> None:
+        batch = self._create_batch(ticket="#238")
+        self._approve_batch(batch["batch_id"])
+
+        resolved = coordinator.mark_batch_not_required(_ns(
+            repo=str(self.repo), state_dir=str(self.state_dir), batch=batch["batch_id"],
+            approved_by="Malove", approved_at="2026-09-17T00:01:00+00:00",
+            reason="The pinned snapshot already satisfies every definition-of-done item.",
+        ))
+
+        self.assertEqual(resolved["state"], "not-required")
+        self.assertEqual(resolved["tracker_resolution"], "resolution::wontfix")
+        listed = coordinator.list_batches(_ns(repo=str(self.repo), state_dir=str(self.state_dir), ticket="#238", state=None, open=True))
+        self.assertEqual(listed["batches"], [])
+
+    def test_ordinary_write_report_still_rejects_an_empty_diff(self) -> None:
+        report = {
+            "dispatch_id": "dispatch-123", "ticket": "#238", "role": "developer",
+            "outcome": "completed", "output": "no change", "commit_sha": "not applicable",
+            "changed_files": [], "checks_run": [{"command": "true", "result": "pass", "evidence": "passed"}],
+            "risks": "none", "blockers": "none", "next_coordinator_action": "accept", "report_language": "ru",
+        }
+        dispatch = {"dispatch_id": "dispatch-123", "ticket": "#238", "role": "developer", "verification_commands": ["true"], "write_paths": ["**"]}
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._validate_report(report, dispatch, {"mode": "write"})
+
+        self.assertEqual(caught.exception.message, "write-role completion reports require commit_sha and changed_files")
 
     def test_qa_lane_bridge_surface_has_no_path_builders(self) -> None:
         """``qa_lane.py`` constructs its own ``LifecycleLedger`` and Value Objects directly (issue
@@ -603,6 +630,925 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             list(inspect.signature(coordinator._persist_report).parameters),
             ["ledger", "root", "batch", "dispatch", "report"],
         )
+
+    def _ledger(self) -> LifecycleLedger:
+        return LifecycleLedger(coordinator._state_root(_ns(repo=str(self.repo), state_dir=str(self.state_dir)), self.repo))
+
+    def test_write_record_maps_a_ledger_refusal_to_a_coordinator_error(self) -> None:
+        batch = self._create_batch()
+        ledger = self._ledger()
+        record = BatchRecord.from_dict(batch)
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._write_record(ledger, record)
+
+        self.assertEqual(caught.exception.message, f"refusing to overwrite immutable record: {batch['batch_id']}.json")
+        self.assertIn("use a different record id", caught.exception.remedy)
+
+    def test_replace_record_maps_a_ledger_refusal_to_a_coordinator_error(self) -> None:
+        self._create_batch()
+        ledger = self._ledger()
+        missing = BatchRecord(batch_id="batch-0000", state="planned", dispatches=[], coordinator_approval=None)
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._replace_record(ledger, missing)
+
+        self.assertEqual(caught.exception.message, "ledger transition targets a missing record: batches/batch-0000.json")
+        self.assertIn("write the record at", caught.exception.remedy)
+
+    def _create_batch_args(self, **overrides: object) -> argparse.Namespace:
+        values: dict[str, object] = dict(
+            repo=str(self.repo), state_dir=str(self.state_dir),
+            ticket="#195", branch="feature/issue-195-thing", worktree=str(self.tmp / "worktree"), zone="repository",
+            integration_ref="master", definition_of_done=["do the thing"], prohibited_change=["secrets"],
+            required_gate=None, dependency=None,
+            expected_file=["services/x.py"], expected_service=["core"], expected_changed_lines=10,
+            expected_context_tokens=None,
+        )
+        values.update(overrides)
+        return _ns(**values)
+
+    def test_create_batch_rejects_a_missing_branch_or_worktree(self) -> None:
+        with self.assertRaises(coordinator.CoordinatorError) as no_branch:
+            coordinator.create_batch(self._create_batch_args(branch=None))
+        self.assertEqual(no_branch.exception.message, "branch must be a non-empty string")
+        self.assertEqual(no_branch.exception.remedy, "pass a non-empty branch name")
+
+        with self.assertRaises(coordinator.CoordinatorError) as no_worktree:
+            coordinator.create_batch(self._create_batch_args(worktree=None))
+        self.assertEqual(no_worktree.exception.message, "worktree must be a non-empty string")
+        self.assertEqual(no_worktree.exception.remedy, "pass a non-empty worktree path")
+
+    def test_create_batch_rejects_a_missing_ticket_or_zone(self) -> None:
+        for overrides in ({"ticket": None}, {"zone": ""}):
+            with self.subTest(overrides=overrides):
+                with self.assertRaises(coordinator.CoordinatorError) as caught:
+                    coordinator.create_batch(self._create_batch_args(**overrides))
+                self.assertEqual(caught.exception.message, "ticket and zone must be non-empty strings")
+                self.assertEqual(caught.exception.remedy, "pass a non-empty --ticket and --zone")
+
+    def test_prior_review_entry_returns_a_retried_code_review_entry(self) -> None:
+        entry = {"dispatch_id": "dispatch-1", "role": "code-review", "state": "reported", "decision": {"decision": "retry"}}
+        batch = {"dispatches": [{"dispatch_id": "dispatch-0", "role": "developer"}, entry]}
+
+        self.assertIs(coordinator._prior_review_entry(batch, "dispatch-1"), entry)
+
+    def test_prior_review_entry_rejects_a_missing_or_non_review_dispatch(self) -> None:
+        batch = {"dispatches": [{"dispatch_id": "dispatch-0", "role": "developer"}]}
+        for dispatch_id in ("dispatch-9", "dispatch-0"):
+            with self.subTest(dispatch_id=dispatch_id):
+                with self.assertRaises(coordinator.CoordinatorError) as caught:
+                    coordinator._prior_review_entry(batch, dispatch_id)
+                self.assertEqual(caught.exception.message, "delta-review-of must reference a code-review dispatch in this batch")
+                self.assertEqual(
+                    caught.exception.remedy,
+                    "pass --delta-review-of naming a code-review dispatch that belongs to this batch",
+                )
+
+    def test_prior_review_entry_rejects_a_review_that_was_not_retried(self) -> None:
+        entry = {"dispatch_id": "dispatch-1", "role": "code-review", "state": "reported", "decision": {"decision": "accept"}}
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._prior_review_entry({"dispatches": [entry]}, "dispatch-1")
+
+        self.assertEqual(caught.exception.message, "delta-review-of must reference a retried code-review dispatch")
+        self.assertEqual(
+            caught.exception.remedy, "pass --delta-review-of naming a code-review dispatch that was actually retried",
+        )
+
+    def _self_report(self, dispatch_id: str, **overrides: object) -> dict:
+        values: dict[str, object] = dict(
+            repo=str(self.repo), state_dir=str(self.state_dir), dispatch=dispatch_id, model="sonnet", worktree=None,
+        )
+        values.update(overrides)
+        return coordinator.self_report_dispatch(_ns(**values))
+
+    def _approved_architect_dispatch(self) -> dict:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+        status_path = self._records_root() / "dispatch-status" / f"{dispatch['dispatch_id']}.json"
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        status["state"] = "dispatched"
+        status_path.write_text(json.dumps(status), encoding="utf-8")
+        return coordinator._read_object(
+            self._records_root() / "dispatches" / f"{dispatch['dispatch_id']}.json", "dispatch",
+        )
+
+    def test_self_report_dispatch_blocks_a_model_mismatch(self) -> None:
+        dispatch = self._approved_architect_dispatch()
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._self_report(dispatch["dispatch_id"], model="not-the-approved-model")
+
+        self.assertEqual(
+            caught.exception.message,
+            f"dispatch running 'not-the-approved-model' but approved brief resolved {dispatch['resolved_model']!r}; "
+            "the dispatch is blocked and needs a new coordinator decision",
+        )
+        self.assertEqual(
+            caught.exception.remedy,
+            "resolve the listed mismatch(es) and get a fresh coordinator decision before continuing this dispatch",
+        )
+
+    def test_self_report_dispatch_blocks_when_a_required_worktree_attestation_is_missing(self) -> None:
+        dispatch = self._approved_architect_dispatch()
+        path = self._records_root() / "dispatches" / f"{dispatch['dispatch_id']}.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["worker_attestation_required"] = True
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._self_report(dispatch["dispatch_id"], model=dispatch["resolved_model"])
+
+        self.assertEqual(
+            caught.exception.message,
+            "dispatch runtime worktree attestation is required; the dispatch is blocked and needs a new coordinator decision",
+        )
+
+
+class CoordinatorRetryRoutingTests(unittest.TestCase):
+    """``batch decide --decision retry|abandon`` routing, against a real ledger and real git.
+
+    Every stage is reached through the coordinator's public functions (architect -> developer ->
+    risk assessment -> code-review -> QA -> publish). Only the clean-room QA lane and the publish
+    boundary never run as a worker session here, so their reports are staged the way those two
+    components persist them.
+    """
+
+    APPROVED_AT = "2026-09-17T00:00:00+00:00"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.tmp = Path(self._tmp.name)
+        self.repo = _init_repo(self.tmp)
+        roles = self.repo / ".harness" / "orchestration" / "roles"
+        for name in ("developer", "code-review", "qa"):
+            (roles / f"{name}.md").write_text(
+                (ORCHESTRATION_ROOT / "roles" / f"{name}.md").read_text(encoding="utf-8"), encoding="utf-8",
+            )
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-m", "roles")
+        _git(self.repo, "push", "origin", "master")
+        self.state_dir = self.tmp / "state"
+        self.worktree = self.tmp / "worktree"
+        self.branch = "feature/issue-244-routing"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _reset(self) -> None:
+        """A clean repository for the next ``subTest``."""
+        self.tearDown()
+        self.setUp()
+
+    # -- plumbing -----------------------------------------------------------------------------
+
+    def _args(self, **values: object) -> argparse.Namespace:
+        return _ns(repo=str(self.repo), state_dir=str(self.state_dir), **values)
+
+    def _approval(self) -> dict:
+        return {"approved_by": "Malove", "approved_at": self.APPROVED_AT}
+
+    def _records(self) -> Path:
+        return LifecycleLedger(coordinator._state_root(self._args(), self.repo)).records_root()
+
+    def _batch_record(self, batch_id: str) -> dict:
+        return coordinator._read_object(self._records() / "batches" / f"{batch_id}.json", "batch")
+
+    def _batch_plan(self) -> dict:
+        return dict(
+            ticket="#244", branch=self.branch, worktree=str(self.worktree), zone="repository",
+            integration_ref="master", definition_of_done=["route retries by cause"], prohibited_change=["secrets"],
+            required_gate=None, dependency=None, expected_file=["services/x.py"], expected_service=["core"],
+            expected_changed_lines=10, expected_context_tokens=None,
+        )
+
+    def _create_batch(self) -> dict:
+        _git(self.repo, "worktree", "add", "-b", self.branch, str(self.worktree), "master")
+        batch = coordinator.create_batch(self._args(**self._batch_plan()))
+        coordinator.approve_batch(self._args(batch=batch["batch_id"], **self._approval()))
+        self.batch_id = batch["batch_id"]
+        return batch
+
+    def _dispatch(self, batch_id: str, role: str, *, purpose: str = "work", candidate: str | None = None) -> dict:
+        return coordinator.create_dispatch(self._args(
+            batch=batch_id, role=role, runtime="claude", purpose=purpose, candidate_commit=candidate,
+            delta_review_of=None, model="sonnet", effort="high", **self._approval(),
+        ))
+
+    def _start(self, dispatch_id: str, *, checkout: Path | None = None) -> None:
+        coordinator.send_dispatch(self._args(
+            dispatch=dispatch_id, adapter=None, adapter_arg=None, checkout=str(checkout) if checkout else None,
+        ))
+        coordinator.self_report_dispatch(self._args(dispatch=dispatch_id, model="sonnet", worktree=None))
+
+    def _submit(self, dispatch_id: str, report: dict) -> dict:
+        path = coordinator._prepare_agent_inbox(self.repo) / f"{dispatch_id}.json"
+        path.write_text(json.dumps(report), encoding="utf-8")
+        return coordinator.submit_report(self._args(file=str(path)))
+
+    def _checks(self, brief: dict, result: str = "pass") -> list[dict]:
+        return [{"command": command, "result": result, "evidence": "n/a"} for command in brief["verification_commands"]]
+
+    def _base_report(self, brief: dict, role: str, **overrides: object) -> dict:
+        report = {
+            "dispatch_id": brief["dispatch_id"], "ticket": brief["ticket"], "role": role,
+            "outcome": "completed", "output": "done", "commit_sha": "not applicable — read-only role",
+            "changed_files": [], "checks_run": self._checks(brief), "risks": "none", "blockers": "none",
+            "next_coordinator_action": "decide", "report_language": "ru",
+        }
+        report.update(overrides)
+        return report
+
+    def _decide(self, batch_id: str, decision: str, **extra: object) -> dict:
+        return coordinator.decide_batch(self._args(
+            batch=batch_id, decision=decision, note=None, **{**self._approval(), **extra},
+        ))
+
+    def _accepted_architect(self, batch_id: str) -> None:
+        brief = self._dispatch(batch_id, "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        self._submit(brief["dispatch_id"], self._base_report(brief, "architect"))
+        self._decide(batch_id, "accept")
+
+    def _developer_commit(self, name: str) -> tuple[str, list[str]]:
+        path = self.worktree / "services" / f"{name}.py"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(f"VALUE = {name!r}\n", encoding="utf-8")
+        _git(self.worktree, "add", "-A")
+        _git(self.worktree, "commit", "-m", f"feat: {name}")
+        candidate = _git(self.worktree, "rev-parse", "HEAD")
+        base = self._batch_record(self.batch_id)["base_commit"]
+        return candidate, coordinator._changed_files_between(self.repo, base, candidate)
+
+    def _developer_report(self, brief: dict, candidate: str, changed: list[str], **overrides: object) -> dict:
+        return self._base_report(brief, "developer", commit_sha=candidate, changed_files=changed, **overrides)
+
+    def _accepted_candidate(self, batch_id: str, name: str = "x") -> str:
+        """A developer commit that was accepted and risk-assessed as review-required."""
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit(name)
+        self._submit(brief["dispatch_id"], self._developer_report(brief, candidate, changed))
+        self._decide(batch_id, "accept")
+        self._assess(batch_id, candidate, changed)
+        return candidate
+
+    def _assess(self, batch_id: str, candidate: str, changed: list[str]) -> None:
+        coordinator.assess_risk(self._args(
+            batch=batch_id, candidate_commit=candidate, base_commit=None, changed_file=changed,
+            developer_trigger=["transactions"],
+        ))
+
+    def _axes(self, standards: tuple[str, list[dict]], spec: tuple[str, list[dict]]) -> dict[str, dict]:
+        return {
+            axis: {"severity": severity, "findings": findings, "risks": "none", "blockers": "none"}
+            for axis, (severity, findings) in (("standards", standards), ("spec", spec))
+        }
+
+    def _reported_review(
+        self, batch_id: str, candidate: str, *, outcome: str = "completed", blockers: str = "none",
+        standards: tuple[str, list[dict]] = ("clean", []), spec: tuple[str, list[dict]] = ("clean", []),
+    ) -> dict:
+        brief = self._dispatch(batch_id, "code-review", candidate=candidate)["brief"]
+        self._start(brief["dispatch_id"], checkout=self.worktree)
+        self._submit(brief["dispatch_id"], self._base_report(
+            brief, "code-review", outcome=outcome, blockers=blockers,
+            checks_run=self._checks(brief, "pass" if outcome == "completed" else "not-run"),
+            review={"candidate_commit": candidate, "scope": brief["review_scope"], **self._axes(standards, spec)},
+        ))
+        return brief
+
+    def _infra_review(self, batch_id: str, candidate: str) -> dict:
+        return self._reported_review(
+            batch_id, candidate, outcome="blocked", blockers="Bash/WSL wrapper unavailable; checks could not run",
+            standards=("none", []), spec=("none", []),
+        )
+
+    def _stage_report(self, batch_id: str, dispatch_id: str, report: dict, *, via_qa_lane: bool) -> None:
+        """Persist a report for a role that never runs as a worker session in this suite."""
+        root = coordinator._state_root(self._args(), self.repo)
+        ledger = LifecycleLedger(root)
+        with coordinator._ledger_lock(ledger):
+            batch = coordinator._load_batch(root, batch_id)
+            entry = next(item for item in batch["dispatches"] if item["dispatch_id"] == dispatch_id)
+            entry["state"] = "dispatched"
+            coordinator._replace_record(ledger, BatchRecord.from_dict(batch))
+            status = coordinator._load_dispatch_status(root, dispatch_id)
+            status.update({"state": "working" if via_qa_lane else "dispatched", "updated_at": coordinator._now()})
+            coordinator._replace_record(ledger, DispatchStatusRecord.from_dict(status))
+            dispatch = coordinator._load_dispatch(root, dispatch_id)
+            if via_qa_lane:
+                qa_lane._record_report(ledger, root, self.repo, dispatch, report, coordinator)
+            else:
+                coordinator._persist_report(ledger, root, coordinator._load_batch(root, batch_id), dispatch, report)
+
+    def _reported_qa(self, batch_id: str, candidate: str, *, outcome: str = "completed", check_result: str = "pass") -> dict:
+        brief = self._dispatch(batch_id, "qa", candidate=candidate)["brief"]
+        self._stage_report(batch_id, brief["dispatch_id"], self._base_report(
+            brief, "qa", outcome=outcome, checks_run=self._checks(brief, check_result),
+            blockers="none" if outcome == "completed" else "QA could not complete",
+        ), via_qa_lane=True)
+        return brief
+
+    def _reported_publish(self, batch_id: str, candidate: str, blockers: str) -> dict:
+        brief = self._dispatch(batch_id, "developer", purpose="publish", candidate=candidate)["brief"]
+        base = self._batch_record(batch_id)["base_commit"]
+        self._stage_report(batch_id, brief["dispatch_id"], self._developer_report(
+            brief, candidate, coordinator._changed_files_between(self.repo, base, candidate),
+            outcome="blocked", blockers=blockers, checks_run=self._checks(brief, "not-run"),
+        ), via_qa_lane=False)
+        return brief
+
+    def _accepted_review_and_qa(self, batch_id: str, candidate: str) -> None:
+        self._reported_review(batch_id, candidate)
+        self._decide(batch_id, "accept")
+        self._reported_qa(batch_id, candidate)
+        self._decide(batch_id, "accept")
+
+    def _dispatch_ids(self, batch_id: str) -> list[str]:
+        return [item["dispatch_id"] for item in self._batch_record(batch_id)["dispatches"]]
+
+    def _routing(self, batch: dict) -> dict:
+        return batch["coordinator_decisions"][-1]["routing"]
+
+    def _assert_route(self, batch: dict, *, role: str, action: str, category: str, candidate: str | None) -> dict:
+        routing = self._routing(batch)
+        self.assertEqual(
+            (routing["next_role"], routing["next_action"], routing["reason_category"], routing["candidate_commit"]),
+            (role, action, category, candidate),
+        )
+        self.assertEqual(batch["next_action"], action)
+        self.assertTrue(routing["rationale"].strip())
+        return routing
+
+    # -- code-review ---------------------------------------------------------------------------
+
+    def test_infrastructure_blocked_review_retries_a_new_review_on_the_same_candidate(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        first = self._infra_review(batch["batch_id"], candidate)
+        evidence_files = [
+            self._records() / "dispatches" / f"{first['dispatch_id']}.json",
+            self._records() / "reports" / f"{first['dispatch_id']}.json",
+            self._records() / "reports" / f"{first['dispatch_id']}.md",
+        ]
+        prior_evidence = [path.read_bytes() for path in evidence_files]
+        freshness_checks = len(self._batch_record(batch["batch_id"])["context_package_freshness_checks"])
+
+        decided = self._decide(batch["batch_id"], "retry", reason_category="verification-infrastructure")
+
+        routing = self._assert_route(
+            decided, role="code-review", action="code-review", category="verification-infrastructure", candidate=candidate,
+        )
+        self.assertEqual(routing["previous_role"], "code-review")
+        self.assertFalse(decided.get("retry_candidate_required"))
+        self.assertEqual(decided["state"], "awaiting-approval")
+        with self.assertRaises(coordinator.CoordinatorError):
+            self._dispatch(batch["batch_id"], "developer")
+        with self.assertRaises(coordinator.CoordinatorError):
+            coordinator.create_dispatch(self._args(
+                batch=batch["batch_id"], role="code-review", runtime="claude", purpose="work",
+                candidate_commit=candidate, delta_review_of=None, model="sonnet", effort="high",
+            ))  # manual_all: every dispatch needs its own fresh human approval
+
+        second = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+
+        self.assertNotEqual(second["dispatch_id"], first["dispatch_id"])
+        self.assertEqual(second["brief"]["candidate_commit"], candidate)
+        self.assertEqual(second["brief"]["risk_assessment_id"], first["risk_assessment_id"])
+        self.assertEqual(second["context_package_freshness"]["status"], "fresh")
+        self.assertGreater(
+            len(self._batch_record(batch["batch_id"])["context_package_freshness_checks"]), freshness_checks,
+            "the new review must re-check Context Package freshness",
+        )
+        self.assertEqual([path.read_bytes() for path in evidence_files], prior_evidence)
+
+    def test_infrastructure_retry_still_enforces_the_base_commit_gate(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._infra_review(batch["batch_id"], candidate)
+        self._decide(batch["batch_id"], "retry", reason_category="transport")
+        (self.repo / "later.txt").write_text("integration moved\n", encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-m", "later")
+        _git(self.repo, "push", "origin", "master")
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+
+        self.assertIn("base", caught.exception.message.lower())
+
+    def test_review_code_findings_route_to_developer_retry(self) -> None:
+        warning = {"severity": "warning", "summary": "off-by-one", "evidence": "x.py:3"}
+        blocker = {"severity": "blocker", "summary": "data loss", "evidence": "x.py:9"}
+        info = {"severity": "info", "summary": "naming", "evidence": "x.py:1"}
+        cases = {  # the full matrix lives in CoordinatorRetryRoutingTableTests; these prove the wiring
+            "standards blocker finding": ({"standards": ("blocker", [blocker])}, "verification-infrastructure"),
+            "spec warning finding": ({"spec": ("warning", [warning])}, "transport"),
+            "spec warning severity alone": ({"spec": ("warning", [])}, "transport"),
+            "an info finding still counts as a finding": ({"spec": ("clean", [info])}, None),
+        }
+        for name, (axes, category) in cases.items():
+            with self.subTest(case=name, explicit=category):
+                self._reset()
+                batch = self._create_batch()
+                self._accepted_architect(batch["batch_id"])
+                candidate = self._accepted_candidate(batch["batch_id"])
+                self._reported_review(
+                    batch["batch_id"], candidate, outcome="blocked", blockers="reviewer stopped", **axes,
+                )
+
+                decided = self._decide(batch["batch_id"], "retry", reason_category=category)
+
+                routing = self._routing(decided)
+                self.assertEqual((routing["next_role"], routing["next_action"]), ("developer", "developer-retry"))
+                self.assertIn(routing["reason_category"], {"code", "requirements"})
+                self.assertTrue(decided["retry_candidate_required"])
+
+    def test_unknown_reason_cannot_bypass_developer_retry(self) -> None:
+        for explicit in (None, "unknown"):
+            with self.subTest(explicit=explicit):
+                self._reset()
+                batch = self._create_batch()
+                self._accepted_architect(batch["batch_id"])
+                candidate = self._accepted_candidate(batch["batch_id"])
+                self._infra_review(batch["batch_id"], candidate)
+
+                decided = self._decide(batch["batch_id"], "retry", reason_category=explicit)
+
+                routing = self._assert_route(
+                    decided, role="developer", action="developer-retry", category="unknown", candidate=candidate,
+                )
+                self.assertEqual(routing["previous_role"], "code-review")
+                self.assertTrue(decided["retry_candidate_required"])
+
+    def test_infrastructure_category_is_ignored_when_the_report_is_not_blocked(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._reported_review(batch["batch_id"], candidate)  # completed and clean: nothing was blocked
+
+        decided = self._decide(batch["batch_id"], "retry", reason_category="verification-infrastructure")
+
+        routing = self._routing(decided)
+        self.assertEqual((routing["reason_category"], routing["next_action"]), ("unknown", "developer-retry"))
+
+    def test_changed_candidate_cannot_reuse_prior_review_evidence(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        first_candidate = self._accepted_candidate(batch["batch_id"], "a")
+        blocker = {"severity": "blocker", "summary": "wrong", "evidence": "a.py:1"}
+        first_review = self._reported_review(
+            batch["batch_id"], first_candidate, outcome="blocked", blockers="fix needed", spec=("blocker", [blocker]),
+        )
+        self._decide(batch["batch_id"], "retry")
+        retry = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(retry["dispatch_id"])
+        second_candidate, changed = self._developer_commit("b")
+        self._submit(retry["dispatch_id"], self._developer_report(retry, second_candidate, changed))
+        self._decide(batch["batch_id"], "accept")
+
+        self.assertEqual(self._batch_record(batch["batch_id"])["next_action"], "risk-assessment")
+        with self.assertRaises(coordinator.CoordinatorError):
+            self._dispatch(batch["batch_id"], "code-review", candidate=second_candidate)  # no risk assessment yet
+        self._assess(batch["batch_id"], second_candidate, changed)
+        with self.assertRaises(coordinator.CoordinatorError):
+            self._dispatch(batch["batch_id"], "qa", candidate=second_candidate)  # first candidate's review does not count
+
+        second = self._dispatch(batch["batch_id"], "code-review", candidate=second_candidate)["brief"]
+
+        self.assertEqual(second["candidate_commit"], second_candidate)
+        self.assertNotEqual(second["risk_assessment_id"], first_review["risk_assessment_id"])
+        self.assertNotEqual(second["dispatch_id"], first_review["dispatch_id"])
+
+    def test_routing_rejects_infrastructure_reuse_when_the_candidate_moved(self) -> None:
+        report = {
+            "outcome": "blocked", "checks_run": [], "review": {
+                "standards": {"severity": "none", "findings": []}, "spec": {"severity": "none", "findings": []},
+            },
+        }
+
+        routing = coordinator._retry_routing(
+            "code-review", report, dispatch_candidate="a" * 40, current_candidate="b" * 40,
+            explicit_category="verification-infrastructure",
+        )
+
+        self.assertEqual(
+            (routing["reason_category"], routing["next_role"], routing["next_action"], routing["candidate_commit"]),
+            ("candidate-change", "developer", "developer-retry", None),
+        )
+
+    # -- QA and publish ------------------------------------------------------------------------
+
+    def test_qa_infrastructure_blocker_retries_a_new_qa_on_the_same_candidate(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._reported_review(batch["batch_id"], candidate)
+        self._decide(batch["batch_id"], "accept")
+        first = self._reported_qa(batch["batch_id"], candidate, outcome="blocked", check_result="not-run")
+
+        decided = self._decide(batch["batch_id"], "retry", reason_category="verification-infrastructure")
+
+        self._assert_route(decided, role="qa", action="qa", category="verification-infrastructure", candidate=candidate)
+        second = self._dispatch(batch["batch_id"], "qa", candidate=candidate)
+        self.assertNotEqual(second["dispatch_id"], first["dispatch_id"])
+        self.assertEqual(second["brief"]["candidate_commit"], candidate)
+
+    def test_qa_defect_routes_to_developer_retry_even_with_an_infrastructure_category(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._reported_review(batch["batch_id"], candidate)
+        self._decide(batch["batch_id"], "accept")
+        self._reported_qa(batch["batch_id"], candidate, outcome="failed", check_result="fail")
+
+        decided = self._decide(batch["batch_id"], "retry", reason_category="verification-infrastructure")
+
+        self._assert_route(decided, role="developer", action="developer-retry", category="code", candidate=candidate)
+
+    def test_publish_infrastructure_blocker_retries_a_new_publish_on_the_same_candidate(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._accepted_review_and_qa(batch["batch_id"], candidate)
+        first = self._reported_publish(batch["batch_id"], candidate, "remote unreachable")
+
+        decided = self._decide(batch["batch_id"], "retry", reason_category="transport")
+
+        routing = self._assert_route(decided, role="publish", action="publish", category="transport", candidate=candidate)
+        self.assertEqual(routing["previous_role"], "publish")
+        self.assertFalse(decided.get("retry_candidate_required"))
+        second = self._dispatch(batch["batch_id"], "developer", purpose="publish", candidate=candidate)
+        self.assertNotEqual(second["dispatch_id"], first["dispatch_id"])
+        self.assertEqual(second["brief"]["candidate_commit"], candidate)
+        published = coordinator.publish_dispatch(self._args(dispatch=second["dispatch_id"], remote="origin"))
+        self.assertEqual(published["candidate_commit"], candidate)
+        self.assertEqual(self._decide(batch["batch_id"], "accept")["state"], "completed")
+
+    def test_publish_that_needs_a_new_candidate_routes_to_developer_retry(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._accepted_review_and_qa(batch["batch_id"], candidate)
+        self._reported_publish(batch["batch_id"], candidate, "push rejected: candidate must be rebased")
+
+        decided = self._decide(batch["batch_id"], "retry", reason_category="candidate-change")
+
+        self._assert_route(decided, role="developer", action="developer-retry", category="candidate-change", candidate=candidate)
+        self.assertTrue(decided["retry_candidate_required"])
+
+    # -- architect, developer and terminal decisions ------------------------------------------
+
+    def test_architect_retry_starts_a_new_architect_and_never_a_developer(self) -> None:
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        self._submit(brief["dispatch_id"], self._base_report(brief, "architect", outcome="blocked", blockers="unclear scope"))
+
+        decided = self._decide(batch["batch_id"], "retry")
+
+        self._assert_route(decided, role="architect", action="architect", category="unknown", candidate=None)
+        with self.assertRaises(coordinator.CoordinatorError):
+            self._dispatch(batch["batch_id"], "developer")
+        self.assertNotEqual(self._dispatch(batch["batch_id"], "architect")["dispatch_id"], brief["dispatch_id"])
+
+    def test_developer_retry_after_review_needs_a_new_candidate_and_never_reuses_the_reviewed_one(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        blocker = {"severity": "blocker", "summary": "wrong", "evidence": "x.py:1"}
+        self._reported_review(batch["batch_id"], candidate, outcome="blocked", blockers="fix needed", spec=("blocker", [blocker]))
+
+        decided = self._decide(batch["batch_id"], "retry")
+
+        routing = self._assert_route(decided, role="developer", action="developer-retry", category="requirements", candidate=candidate)
+        self.assertEqual(routing["previous_role"], "code-review")
+        retry = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(retry["dispatch_id"])
+        changed = coordinator._changed_files_between(self.repo, self._batch_record(batch["batch_id"])["base_commit"], candidate)
+        with self.assertRaises(coordinator.CoordinatorError):
+            self._submit(retry["dispatch_id"], self._developer_report(retry, candidate, changed))  # no fictitious re-report
+
+    def test_developer_stage_retry_routes_to_a_developer_retry_with_no_reusable_candidate(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit("x")
+        self._submit(brief["dispatch_id"], self._developer_report(brief, candidate, changed))
+
+        decided = self._decide(batch["batch_id"], "retry", reason_category="verification-infrastructure")
+
+        routing = self._assert_route(decided, role="developer", action="developer-retry", category="unknown", candidate=None)
+        self.assertEqual(routing["previous_role"], "developer")
+        self.assertTrue(decided["retry_candidate_required"])
+
+    def test_block_and_fail_never_create_a_dispatch_automatically(self) -> None:
+        for decision, state in (("block", "blocked"), ("fail", "failed")):
+            with self.subTest(decision=decision):
+                self._reset()
+                batch = self._create_batch()
+                self._accepted_architect(batch["batch_id"])
+                candidate = self._accepted_candidate(batch["batch_id"])
+                self._infra_review(batch["batch_id"], candidate)
+                before = self._dispatch_ids(batch["batch_id"])
+
+                decided = self._decide(batch["batch_id"], decision, reason_category="verification-infrastructure")
+
+                self.assertEqual(decided["state"], state)
+                self.assertNotIn("abandoned", decided)  # abandon is only ever an explicit, reasoned decision
+                self.assertNotIn("next_action", decided)
+                self.assertNotIn("required_next_role", decided)
+                self.assertNotIn("routing", decided["coordinator_decisions"][-1])
+                self.assertEqual(self._dispatch_ids(batch["batch_id"]), before)
+                with self.assertRaises(coordinator.CoordinatorError):
+                    self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+
+    def test_developer_retry_budget_counts_only_developer_retries(self) -> None:
+        legacy = {"decision": "retry", "next_role": "developer"}
+        same_candidate = {"decision": "retry", "next_role": "code-review"}
+        publish = {"decision": "retry", "next_role": "publish"}
+
+        count = coordinator._developer_retry_count({"coordinator_decisions": [legacy, same_candidate, publish]})
+
+        self.assertEqual(count, 1)
+
+    # -- abandon -------------------------------------------------------------------------------
+
+    def test_abandon_requires_explicit_approval_and_a_reason(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._infra_review(batch["batch_id"], candidate)
+
+        for label, extra in (
+            ("no reason", {}),
+            ("blank reason", {"reason": "   "}),
+            ("no approver", {"reason": "superseded", "approved_by": ""}),
+            ("no approval time", {"reason": "superseded", "approved_at": None}),
+        ):
+            with self.subTest(label):
+                with self.assertRaises(coordinator.CoordinatorError):
+                    self._decide(batch["batch_id"], "abandon", **extra)
+                self.assertEqual(self._batch_record(batch["batch_id"])["state"], "awaiting-approval")
+
+    def test_abandon_is_terminal_keeps_all_evidence_and_allows_a_fresh_batch(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        review = self._infra_review(batch["batch_id"], candidate)
+        immutable_before = {
+            path: path.read_bytes()
+            for path in self._records().rglob("*")
+            if path.is_file() and path.parent.name not in {"audit", "batches"}
+        }
+        staged = coordinator._agent_inbox(self.repo) / f"{review['dispatch_id']}.json"
+        self.assertTrue(staged.is_file())
+
+        decided = self._decide(batch["batch_id"], "abandon", reason="superseded by a fresh plan")
+
+        self.assertEqual(decided["state"], "abandoned")
+        self.assertNotIn("next_action", decided)
+        self.assertNotIn("required_next_role", decided)
+        entry = decided["coordinator_decisions"][-1]
+        self.assertEqual((entry["decision"], entry["note"]), ("abandon", "superseded by a fresh plan"))
+        self.assertEqual(entry["approved_by"], "Malove")
+        self.assertEqual(decided["abandoned"]["reason"], "superseded by a fresh plan")
+        self.assertEqual(decided["abandoned"]["last_accepted"]["candidate_commit"], candidate)
+        for path, content in immutable_before.items():
+            self.assertEqual(path.read_bytes(), content, path.name)
+        self.assertTrue(self.worktree.is_dir())
+        self.assertEqual(_git(self.worktree, "rev-parse", "HEAD"), candidate)
+        self.assertTrue((self._records() / "reports" / f"{review['dispatch_id']}.json").is_file())
+        self.assertFalse(staged.exists(), "the staged copy is cleaned up; the immutable report is evidence and stays")
+        with self.assertRaises(coordinator.CoordinatorError):
+            self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+        self.assertEqual(coordinator.list_batches(self._args(ticket="#244", state=None, open=True))["batches"], [])
+        fresh = coordinator.create_batch(self._args(**self._batch_plan()))
+        self.assertNotEqual(fresh["batch_id"], batch["batch_id"])
+        self.assertEqual(fresh["state"], "planned")
+
+    def test_abandon_closes_unreported_dispatches_and_names_them(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        review = self._infra_review(batch["batch_id"], candidate)
+        root = coordinator._state_root(self._args(), self.repo)
+        ledger = LifecycleLedger(root)
+        open_id = f"dispatch-{uuid.uuid4()}"
+        with coordinator._ledger_lock(ledger):
+            qa_lane._enqueue(ledger, open_id, coordinator)
+            record = coordinator._load_batch(root, batch["batch_id"])
+            record["dispatches"].append({"dispatch_id": open_id, "role": "qa", "state": "approved", "brief_sha256": "0" * 64})
+            coordinator._replace_record(ledger, BatchRecord.from_dict(record))
+            coordinator._write_record(ledger, DispatchStatusRecord.from_dict(
+                {"dispatch_id": open_id, "state": "approved", "updated_at": coordinator._now()},
+            ))
+
+        decided = self._decide(batch["batch_id"], "abandon", reason="operator restart")
+
+        states = {item["dispatch_id"]: item["state"] for item in decided["dispatches"]}
+        self.assertEqual(states[open_id], "abandoned")
+        self.assertEqual(states[review["dispatch_id"]], "reported")
+        status = coordinator._read_object(self._records() / "dispatch-status" / f"{open_id}.json", "status")
+        self.assertEqual(status["state"], "abandoned")
+        self.assertEqual(decided["abandoned"]["open_dispatches"], [open_id])
+        self.assertEqual(list((self._records() / "qa-lane" / "queue").glob("*.json")), [], "a dead QA queue entry must not hold the lane")
+
+    def test_legacy_batch_abandon_still_ends_in_failed_and_closes_open_dispatches(self) -> None:
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+
+        result = coordinator.abandon_batch(self._args(
+            batch=batch["batch_id"], reason="worker died before confirming its model", **self._approval(),
+        ))
+
+        self.assertEqual((result["state"], result["abandoned_dispatches"]), ("failed", [brief["dispatch_id"]]))
+        record = self._batch_record(batch["batch_id"])
+        self.assertEqual(record["dispatches"][0]["state"], "abandoned")
+        self.assertEqual(record["abandoned"]["reason"], "worker died before confirming its model")
+
+    def test_abandon_is_valid_before_any_candidate_exists(self) -> None:
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        self._submit(brief["dispatch_id"], self._base_report(brief, "architect"))
+
+        decided = self._decide(batch["batch_id"], "abandon", reason="requirements withdrawn")
+
+        self.assertEqual(decided["state"], "abandoned")
+        self.assertIsNone(decided["abandoned"]["last_accepted"])
+
+
+class CoordinatorRetryRoutingTableTests(unittest.TestCase):
+    """The pure routing table: structured evidence in, one routing record out (no I/O)."""
+
+    CANDIDATE = "c" * 40
+
+    def _report(
+        self, outcome: str = "blocked", *, standards: tuple[str, list] | None = ("none", []),
+        spec: tuple[str, list] = ("none", []), failed_check: bool = False,
+    ) -> dict:
+        report: dict = {
+            "outcome": outcome,
+            "checks_run": [{"command": "true", "result": "fail" if failed_check else "not-run", "evidence": "e"}],
+            "blockers": "Bash/WSL wrapper unavailable",
+        }
+        if standards is not None:
+            report["review"] = {
+                "standards": {"severity": standards[0], "findings": standards[1]},
+                "spec": {"severity": spec[0], "findings": spec[1]},
+            }
+        return report
+
+    def _route(self, stage: str, report: dict, category: str | None, *, moved: bool = False) -> dict:
+        return coordinator._retry_routing(
+            stage, report, dispatch_candidate=self.CANDIDATE,
+            current_candidate="d" * 40 if moved else self.CANDIDATE, explicit_category=category,
+        )
+
+    def test_routing_table(self) -> None:
+        finding = [{"severity": "warning", "summary": "s", "evidence": "e"}]
+        infra, transport = "verification-infrastructure", "transport"
+        review = self._report()
+        no_review = self._report(standards=None)
+        cases = [
+            # stage, report, explicit category, candidate moved -> (reason category, next role, next action)
+            ("code-review", review, infra, False, (infra, "code-review", "code-review")),
+            ("code-review", review, transport, False, (transport, "code-review", "code-review")),
+            ("code-review", review, None, False, ("unknown", "developer", "developer-retry")),
+            ("code-review", review, "unknown", False, ("unknown", "developer", "developer-retry")),
+            ("code-review", review, "code", False, ("code", "developer", "developer-retry")),
+            ("code-review", review, "requirements", False, ("requirements", "developer", "developer-retry")),
+            ("code-review", review, "candidate-change", False, ("candidate-change", "developer", "developer-retry")),
+            ("code-review", self._report(standards=("warning", finding)), transport, False, ("code", "developer", "developer-retry")),
+            ("code-review", self._report(spec=("blocker", finding)), transport, False, ("requirements", "developer", "developer-retry")),
+            ("code-review", self._report(spec=("warning", [])), transport, False, ("requirements", "developer", "developer-retry")),
+            ("code-review", self._report("completed"), transport, False, ("unknown", "developer", "developer-retry")),
+            ("code-review", self._report("failed"), transport, False, ("unknown", "developer", "developer-retry")),
+            ("code-review", review, infra, True, ("candidate-change", "developer", "developer-retry")),
+            ("qa", no_review, infra, False, (infra, "qa", "qa")),
+            ("qa", no_review, None, False, ("unknown", "developer", "developer-retry")),
+            ("qa", self._report("failed", standards=None, failed_check=True), infra, False, ("code", "developer", "developer-retry")),
+            ("publish", no_review, transport, False, (transport, "publish", "publish")),
+            ("publish", no_review, infra, False, (infra, "publish", "publish")),
+            ("publish", no_review, "candidate-change", False, ("candidate-change", "developer", "developer-retry")),
+            ("publish", no_review, None, False, ("unknown", "developer", "developer-retry")),
+            ("developer", no_review, transport, False, (transport, "developer", "developer-retry")),
+            ("developer", self._report("completed", standards=None), transport, False, ("unknown", "developer", "developer-retry")),
+            ("architect", no_review, transport, False, (transport, "architect", "architect")),
+            ("architect", no_review, None, False, ("unknown", "architect", "architect")),
+        ]
+        for stage, report, category, moved, (reason, role, action) in cases:
+            with self.subTest(stage=stage, category=category, moved=moved, outcome=report["outcome"]):
+                routing = self._route(stage, report, category, moved=moved)
+                self.assertEqual((routing["reason_category"], routing["next_role"], routing["next_action"]), (reason, role, action))
+                self.assertEqual(routing["previous_role"], stage)
+                self.assertTrue(routing["rationale"].strip())
+                self.assertEqual(routing["candidate_commit"], None if moved else self.CANDIDATE)
+
+    def test_an_unlisted_category_is_rejected(self) -> None:
+        with self.assertRaises(coordinator.CoordinatorError):
+            self._route("code-review", self._report(), "flaky-network")
+
+    def test_the_reason_is_never_derived_from_free_text(self) -> None:
+        report = self._report()
+        report["blockers"] = "verification-infrastructure: the wrapper is down"
+
+        routing = self._route("code-review", report, None)
+
+        self.assertEqual((routing["reason_category"], routing["next_action"]), ("unknown", "developer-retry"))
+
+
+class CoordinatorGuardHelperTests(unittest.TestCase):
+    """Direct-call pins for the config/brief guards whose parameters accept arbitrary JSON."""
+
+    def test_reject_sensitive_accepts_plain_nested_json(self) -> None:
+        coordinator._reject_sensitive({"a": [{"b": 1}, "text", None]}, "config")
+
+    def test_reject_sensitive_rejects_a_non_string_key(self) -> None:
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._reject_sensitive({1: "x"}, "config")
+
+        self.assertEqual(caught.exception.message, "config contains a non-string key")
+        self.assertEqual(caught.exception.remedy, "use only string keys in config")
+
+    def test_reject_sensitive_rejects_a_secret_shaped_key(self) -> None:
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._reject_sensitive({"api_key": "x"}, "config")
+
+        self.assertEqual(caught.exception.message, "config contains secret-shaped field 'api_key'")
+        self.assertIn("remove the secret-shaped field 'api_key' from config", caught.exception.remedy)
+
+    def test_reject_sensitive_descends_into_lists_with_an_indexed_location(self) -> None:
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator._reject_sensitive({"items": [{"ok": 1}, {"password": "x"}]}, "config")
+
+        self.assertEqual(caught.exception.message, "config.items[1] contains secret-shaped field 'password'")
+
+    def test_reject_non_english_accepts_english_scalars_and_sequences(self) -> None:
+        coordinator._reject_non_english("plain text", "field")
+        coordinator._reject_non_english(["plain", "text"], "field")
+        coordinator._reject_non_english(("plain",), "field")
+        coordinator._reject_non_english(7, "field")
+
+    def test_reject_non_english_rejects_cyrillic_in_a_string_or_a_sequence(self) -> None:
+        for value in ("привет", ["ok", "привет"], ("привет",)):
+            with self.subTest(value=value):
+                with self.assertRaises(coordinator.CoordinatorError) as caught:
+                    coordinator._reject_non_english(value, "purpose")
+
+                self.assertIn("purpose is handed to a role as agent-to-agent protocol text", caught.exception.message)
+                self.assertEqual(
+                    caught.exception.remedy,
+                    "rewrite purpose in English, keeping commands, paths, IDs and quoted evidence verbatim",
+                )
+
+
+class CoordinatorCliParserTests(unittest.TestCase):
+    """coordinator_cli.py has no test coverage of its own (issue #219): a working ArgumentParser
+    that resolves real subcommands to the right handler, seeded here before narrowing
+    build_parser's ``handlers``/``defaults`` parameters off ``Any``."""
+
+    def test_build_parser_resolves_dispatch_status_to_its_handler(self) -> None:
+        parser = coordinator_cli.build_parser(coordinator, coordinator)
+        self.assertIsInstance(parser, argparse.ArgumentParser)
+
+        args = parser.parse_args(["dispatch", "status"])
+
+        self.assertIs(args.handler, coordinator.dispatch_status)
+
+    def test_coordinator_parser_wires_the_same_handler(self) -> None:
+        args = coordinator.parser().parse_args(["dispatch", "status"])
+
+        self.assertIs(args.handler, coordinator.dispatch_status)
+
+    def test_batch_not_required_resolves_to_its_handler(self) -> None:
+        args = coordinator.parser().parse_args([
+            "batch", "not-required", "--batch", "batch-123", "--approved-by", "Malove",
+            "--approved-at", "2026-09-17T00:01:00+00:00", "--reason", "already satisfied",
+        ])
+
+        self.assertIs(args.handler, coordinator.mark_batch_not_required)
+
+    def test_batch_decide_accepts_abandon_with_a_reason_and_a_reason_category(self) -> None:
+        common = ["batch", "decide", "--batch", "batch-123", "--approved-by", "Malove", "--approved-at", "2026-09-17T00:01:00+00:00"]
+
+        abandon = coordinator.parser().parse_args([*common, "--decision", "abandon", "--reason", "superseded"])
+        retry = coordinator.parser().parse_args([*common, "--decision", "retry", "--reason-category", "transport"])
+        default = coordinator.parser().parse_args([*common, "--decision", "retry"])
+
+        self.assertEqual((abandon.decision, abandon.reason), ("abandon", "superseded"))
+        self.assertEqual(retry.reason_category, "transport")
+        self.assertIsNone(default.reason_category)
+        self.assertIsNone(default.retry_role)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            coordinator.parser().parse_args([*common, "--decision", "retry", "--reason-category", "flaky-network"])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 ---
 name: setup-labels
-description: Create or update this repo's GitHub labels (status::*, hitl/afk, task-report::required, out-of-scope, wayfinder:*) to match docs/agents/triage-labels.md. Run once per repo before first use of triage, to-spec, to-tickets, implement, to-guide, or wayfinder.
+description: Create or update this repo's GitHub labels (status::*, hitl/afk, task-report::required, resolution::wontfix, wayfinder:*) to match docs/agents/triage-labels.md. Run once per repo before first use of triage, to-spec, to-tickets, implement, to-guide, or wayfinder.
 disable-model-invocation: true
 ---
 

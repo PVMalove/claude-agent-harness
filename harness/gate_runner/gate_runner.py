@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ContextManager, Iterator, Protocol
 
+from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+
 
 SENSITIVE_OUTPUT = (
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"), "<REDACTED_GITHUB_TOKEN>"),
@@ -24,7 +26,7 @@ SENSITIVE_OUTPUT = (
 )
 
 
-class GateRunnerError(Exception):
+class GateRunnerError(HarnessError):
     """A policy could not prepare the requested checkout safely."""
 
 
@@ -67,7 +69,10 @@ class CleanRoomPolicy:
             )
             if created.returncode != 0:
                 detail = sanitise((created.stderr or created.stdout).strip())
-                raise GateRunnerError(f"could not create clean QA worktree: {detail or 'unknown error'}")
+                raise GateRunnerError(
+                    f"could not create clean QA worktree: {detail or 'unknown error'}",
+                    remedy=f"inspect the git worktree error above and fix the repository/candidate commit {self.candidate_commit} before retrying",
+                )
             resolved = subprocess.run(
                 ["git", "-C", str(checkout), "rev-parse", "--verify", "HEAD^{commit}"],
                 capture_output=True,
@@ -76,7 +81,10 @@ class CleanRoomPolicy:
                 errors="replace",
             )
             if resolved.returncode != 0 or resolved.stdout.strip() != self.candidate_commit:
-                raise GateRunnerError("clean QA worktree HEAD does not match the pinned candidate commit")
+                raise GateRunnerError(
+                    "clean QA worktree HEAD does not match the pinned candidate commit",
+                    remedy=f"verify commit {self.candidate_commit} exists and resolves cleanly, then retry",
+                )
             status = subprocess.run(
                 ["git", "-C", str(checkout), "status", "--porcelain", "--untracked-files=all"],
                 capture_output=True,
@@ -85,7 +93,15 @@ class CleanRoomPolicy:
                 errors="replace",
             )
             if status.returncode != 0 or status.stdout:
-                raise GateRunnerError("clean QA worktree contains mutable files")
+                raise GateRunnerError(
+                    "clean QA worktree contains mutable files",
+                    remedy=(
+                        "inspect the 'git status' error above and fix the worktree/repository before retrying"
+                        if status.returncode != 0
+                        else "the freshly created clean-room worktree should start clean -- "
+                        + INTERNAL_INVARIANT_REMEDY
+                    ),
+                )
             yield checkout
         finally:
             if checkout.exists():
