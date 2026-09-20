@@ -7,7 +7,9 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from harness.orchestration import runtime_attestation
 from harness.orchestration.runtime_attestation import AttestationError, attest
 
 
@@ -17,6 +19,39 @@ def _git(path: Path, *arguments: str) -> str:
 
 
 class RuntimeAttestationTests(unittest.TestCase):
+    def test_write_role_accepts_windows_git_output_without_forcing_utf8(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            _git(repo, "init", "-q")
+            _git(repo, "config", "user.email", "test@example.invalid")
+            _git(repo, "config", "user.name", "Attestation Test")
+            (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+            _git(repo, "add", "tracked.txt")
+            _git(repo, "commit", "-qm", "test: base")
+            snapshot = _git(repo, "rev-parse", "HEAD")
+            branch = "feature/issue-240-attested"
+            _git(repo, "branch", branch)
+            worktree = Path(temporary) / "issue-240"
+            _git(repo, "worktree", "add", "-q", str(worktree), branch)
+            dispatch = {"role": "developer", "branch": branch, "candidate_commit": None, "snapshot_commit": snapshot}
+            real_run = runtime_attestation.subprocess.run
+
+            def windows_git_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+                command = args[0]
+                if (
+                    isinstance(command, list)
+                    and command[-3:] == ["worktree", "list", "--porcelain"]
+                    and kwargs.get("encoding") == "utf-8"
+                ):
+                    raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+                return real_run(*args, **kwargs)  # type: ignore[arg-type, no-any-return]
+
+            with patch.object(runtime_attestation.subprocess, "run", side_effect=windows_git_run):
+                proof = attest(repo, dispatch, str(worktree))
+
+            self.assertEqual(proof["worktree"], str(worktree.resolve()))
+
     def test_write_role_requires_the_registered_issue_worktree(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             repo = Path(temporary) / "repo"

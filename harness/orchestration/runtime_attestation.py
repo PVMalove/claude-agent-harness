@@ -18,7 +18,7 @@ class AttestationError(HarnessError):
 
 
 def _git(path: Path, *arguments: str) -> str:
-    result = subprocess.run(["git", "-C", str(path), *arguments], capture_output=True, text=True, encoding="utf-8")
+    result = subprocess.run(["git", "-C", str(path), *arguments], capture_output=True, text=True)
     if result.returncode:
         detail = (result.stderr or result.stdout).strip()
         raise AttestationError(
