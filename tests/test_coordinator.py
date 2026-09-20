@@ -30,6 +30,8 @@ from harness.orchestration import contract, coordinator, coordinator_cli, extens
 from harness.orchestration.core import config, constants, git_utils, utils
 from harness.orchestration.ledger import ledger_ops
 from harness.orchestration.workflow import approval
+from harness.orchestration.core import workspace
+from harness.orchestration.workflow import batch, decisions, dispatch, reports
 from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.ledger import BatchRecord, DispatchStatusRecord, LifecycleLedger
 
@@ -217,7 +219,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
                 repo=str(self.repo), state_dir=str(self.state_dir), file=str(stray_file),
             ))
 
-        report_file = coordinator._prepare_agent_inbox(self.repo) / f"{dispatch_id}.json"
+        report_file = workspace._prepare_agent_inbox(self.repo) / f"{dispatch_id}.json"
         report_file.write_text(json.dumps(report), encoding="utf-8")
 
         submitted = coordinator.submit_report(_ns(
@@ -742,14 +744,14 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         entry = {"dispatch_id": "dispatch-1", "role": "code-review", "state": "reported", "decision": {"decision": "retry"}}
         batch = {"dispatches": [{"dispatch_id": "dispatch-0", "role": "developer"}, entry]}
 
-        self.assertIs(coordinator._prior_review_entry(batch, "dispatch-1"), entry)
+        self.assertIs(dispatch._prior_review_entry(batch, "dispatch-1"), entry)
 
     def test_prior_review_entry_rejects_a_missing_or_non_review_dispatch(self) -> None:
         batch = {"dispatches": [{"dispatch_id": "dispatch-0", "role": "developer"}]}
         for dispatch_id in ("dispatch-9", "dispatch-0"):
             with self.subTest(dispatch_id=dispatch_id):
                 with self.assertRaises(coordinator.CoordinatorError) as caught:
-                    coordinator._prior_review_entry(batch, dispatch_id)
+                    dispatch._prior_review_entry(batch, dispatch_id)
                 self.assertEqual(caught.exception.message, "delta-review-of must reference a code-review dispatch in this batch")
                 self.assertEqual(
                     caught.exception.remedy,
@@ -760,7 +762,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         entry = {"dispatch_id": "dispatch-1", "role": "code-review", "state": "reported", "decision": {"decision": "accept"}}
 
         with self.assertRaises(coordinator.CoordinatorError) as caught:
-            coordinator._prior_review_entry({"dispatches": [entry]}, "dispatch-1")
+            dispatch._prior_review_entry({"dispatches": [entry]}, "dispatch-1")
 
         self.assertEqual(caught.exception.message, "delta-review-of must reference a retried code-review dispatch")
         self.assertEqual(
@@ -910,7 +912,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         coordinator.self_report_dispatch(self._args(dispatch=dispatch_id, model="sonnet", worktree=None))
 
     def _submit(self, dispatch_id: str, report: JsonObject) -> JsonObject:
-        path = coordinator._prepare_agent_inbox(self.repo) / f"{dispatch_id}.json"
+        path = workspace._prepare_agent_inbox(self.repo) / f"{dispatch_id}.json"
         path.write_text(json.dumps(report), encoding="utf-8")
         return coordinator.submit_report(self._args(file=str(path)))
 
@@ -1198,7 +1200,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             },
         }
 
-        routing = coordinator._retry_routing(
+        routing = decisions._retry_routing(
             "code-review", report, dispatch_candidate="a" * 40, current_candidate="b" * 40,
             explicit_category="verification-infrastructure",
         )
@@ -1342,7 +1344,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         same_candidate = {"decision": "retry", "next_role": "code-review"}
         publish = {"decision": "retry", "next_role": "publish"}
 
-        count = coordinator._developer_retry_count({"coordinator_decisions": [legacy, same_candidate, publish]})
+        count = decisions._developer_retry_count({"coordinator_decisions": [legacy, same_candidate, publish]})
 
         self.assertEqual(count, 1)
 
@@ -1375,7 +1377,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             for path in self._records().rglob("*")
             if path.is_file() and path.parent.name not in {"audit", "batches"}
         }
-        staged = coordinator._agent_inbox(self.repo) / f"{review['dispatch_id']}.json"
+        staged = workspace._agent_inbox(self.repo) / f"{review['dispatch_id']}.json"
         self.assertTrue(staged.is_file())
 
         decided = self._decide(batch["batch_id"], "abandon", reason="superseded by a fresh plan")
@@ -1580,7 +1582,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         candidate, changed = self._developer_commit("pressure")
         package_id = self._batch_record(batch["batch_id"])["context_packages"][-1]["context_package_id"]
-        checkpoint = coordinator._prepare_agent_inbox(self.repo) / f"checkpoint-{brief['dispatch_id']}.json"
+        checkpoint = workspace._prepare_agent_inbox(self.repo) / f"checkpoint-{brief['dispatch_id']}.json"
         checkpoint.write_text(json.dumps({
             "dispatch_id": brief["dispatch_id"], "commit_sha": candidate, "changed_files": changed,
             "remaining_definition_of_done": [], "passing_checks": self._checks(brief), "risks": "none",
@@ -1591,7 +1593,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         status = ledger_ops._load_dispatch_status(ledger_ops._state_root(self._args(), self.repo), brief["dispatch_id"])
         self.assertNotIn("model_self_report", status)  # a new session must attest its model again
-        path = coordinator._prepare_agent_inbox(self.repo) / f"{brief['dispatch_id']}.json"
+        path = workspace._prepare_agent_inbox(self.repo) / f"{brief['dispatch_id']}.json"
         path.write_text(json.dumps(self._developer_report(brief, candidate, changed)), encoding="utf-8")
         with self.assertRaises(coordinator.CoordinatorError):
             coordinator.submit_report(self._args(file=str(path)))
@@ -2020,7 +2022,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
         return report
 
     def _route(self, stage: str, report: JsonObject, category: str | None, *, moved: bool = False) -> JsonObject:
-        return coordinator._retry_routing(
+        return decisions._retry_routing(
             stage, report, dispatch_candidate=self.CANDIDATE,
             current_candidate="d" * 40 if moved else self.CANDIDATE, explicit_category=category,
         )
@@ -2076,22 +2078,22 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
         for stage in ("code-review", "qa", "publish"):
             report = self._report(standards=("none", []) if stage == "code-review" else None)
             with self.subTest(stage=stage):
-                proven = coordinator._retry_routing(
+                proven = decisions._retry_routing(
                     stage, report, dispatch_candidate=self.CANDIDATE, current_candidate=self.CANDIDATE,
                     explicit_category="context-pressure", pressure_recorded=True,
                 )
-                unproven = coordinator._retry_routing(
+                unproven = decisions._retry_routing(
                     stage, report, dispatch_candidate=self.CANDIDATE, current_candidate=self.CANDIDATE,
                     explicit_category="context-pressure", pressure_recorded=False,
                 )
                 self.assertEqual((proven["reason_category"], proven["next_role"], proven["next_action"]), ("context-pressure", stage, stage))
                 self.assertEqual((unproven["reason_category"], unproven["next_role"], unproven["next_action"]), ("unknown", "developer", "developer-retry"))
-        flagged = coordinator._retry_routing(
+        flagged = decisions._retry_routing(
             "code-review", self._report(standards=("warning", finding)), dispatch_candidate=self.CANDIDATE,
             current_candidate=self.CANDIDATE, explicit_category="context-pressure", pressure_recorded=True,
         )
         self.assertEqual((flagged["reason_category"], flagged["next_action"]), ("code", "developer-retry"))
-        moved = coordinator._retry_routing(
+        moved = decisions._retry_routing(
             "qa", self._report(standards=None), dispatch_candidate=self.CANDIDATE, current_candidate="d" * 40,
             explicit_category="context-pressure", pressure_recorded=True,
         )
@@ -2137,16 +2139,16 @@ class CoordinatorGuardHelperTests(unittest.TestCase):
         self.assertEqual(caught.exception.message, "config.items[1] contains secret-shaped field 'password'")
 
     def test_reject_non_english_accepts_english_scalars_and_sequences(self) -> None:
-        coordinator._reject_non_english("plain text", "field")
-        coordinator._reject_non_english(["plain", "text"], "field")
-        coordinator._reject_non_english(("plain",), "field")
-        coordinator._reject_non_english(7, "field")
+        workspace._reject_non_english("plain text", "field")
+        workspace._reject_non_english(["plain", "text"], "field")
+        workspace._reject_non_english(("plain",), "field")
+        workspace._reject_non_english(7, "field")
 
     def test_reject_non_english_rejects_cyrillic_in_a_string_or_a_sequence(self) -> None:
         for value in ("привет", ["ok", "привет"], ("привет",)):
             with self.subTest(value=value):
                 with self.assertRaises(coordinator.CoordinatorError) as caught:
-                    coordinator._reject_non_english(value, "purpose")
+                    workspace._reject_non_english(value, "purpose")
 
                 self.assertIn("purpose is handed to a role as agent-to-agent protocol text", caught.exception.message)
                 self.assertEqual(

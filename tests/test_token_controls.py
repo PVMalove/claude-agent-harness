@@ -11,6 +11,7 @@ from pathlib import Path
 
 from harness.orchestration import contract, coordinator
 from harness.orchestration.core import config, constants
+from harness.orchestration.workflow import batch, context_package, reports
 from harness.orchestration.ledger import LifecycleLedger
 
 
@@ -26,7 +27,7 @@ class TokenControlTests(unittest.TestCase):
         return argparse.Namespace(**values)
 
     def test_preflight_accepts_a_bounded_ticket_and_records_conservative_context_floor(self) -> None:
-        result = coordinator._scope_preflight(
+        result = batch._scope_preflight(
             {}, "#1", "orders", ["protect checkout lock"], ["none"], self._scope_args(),
         )
 
@@ -35,14 +36,14 @@ class TokenControlTests(unittest.TestCase):
 
     def test_preflight_rejects_a_ticket_that_exceeds_file_budget_before_dispatch(self) -> None:
         with self.assertRaisesRegex(coordinator.CoordinatorError, "expected_files=13 exceeds 12"):
-            coordinator._scope_preflight(
+            batch._scope_preflight(
                 {}, "#372", "orders", ["one"], ["none"],
                 self._scope_args(expected_file=[f"services/orders/file-{index}.py" for index in range(13)]),
             )
 
     def test_preflight_requires_declared_scope_estimates_by_default(self) -> None:
         with self.assertRaisesRegex(coordinator.CoordinatorError, "--expected-file"):
-            coordinator._scope_preflight(
+            batch._scope_preflight(
                 {}, "#1", "orders", ["one"], ["none"],
                 self._scope_args(expected_file=[], expected_service=[], expected_changed_lines=None),
             )
@@ -55,7 +56,7 @@ class TokenControlTests(unittest.TestCase):
                 {"dispatch_id": "dispatch-b", "decision": "continue-automatic"},
             ]
         }
-        self.assertEqual(coordinator._continuation_counts(batch, "dispatch-a"), (2, 1))
+        self.assertEqual(reports._continuation_counts(batch, "dispatch-a"), (2, 1))
 
     def test_context_package_policy_defaults_symbol_graph_depth_to_two(self) -> None:
         self.assertEqual(config._context_package_policy({})["symbol_graph_depth"], 2)
@@ -87,7 +88,7 @@ class TokenControlTests(unittest.TestCase):
             batch = {"batch_id": "batch-1", "base_commit": "0" * 40, "context_packages": []}
             above_default_policy = constants.DEFAULT_CONTEXT_PACKAGE_POLICY["max_tokens"] + 1
             with self.assertRaisesRegex(coordinator.CoordinatorError, "exceeds the configured"):
-                coordinator._persist_context_package(
+                context_package._persist_context_package(
                     repo, repo, LifecycleLedger(repo), batch, role="shared", snapshot="1" * 40,
                     inclusion_reason="test", max_package_tokens=above_default_policy,
                 )

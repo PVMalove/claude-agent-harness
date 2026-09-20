@@ -18,11 +18,12 @@ from typing import cast
 from harness.orchestration import extensions
 from harness.orchestration.contract import (
     COMMUNICATION_POLICY_FIELDS, ContractError, health_problems, load_role_manifest,
+    resolve_assignment, resolve_runtime_name,
 )
 from harness.orchestration.core.constants import (
     DEFAULT_ADAPTIVE_CONTINUATION_POLICY, DEFAULT_ATTENTION_POLICY, DEFAULT_COMMUNICATION_POLICY,
     DEFAULT_CONTEXT_PACKAGE_POLICY, DEFAULT_CONTINUATION_POLICY, DEFAULT_PREFLIGHT_POLICY, DEFAULT_RETRY_POLICY,
-    DEFAULT_TEST_PATH_PATTERNS, DEFAULT_ZONE, SENSITIVE_KEY, ZERO_ALLOWED_POLICY_FIELDS,
+    DEFAULT_PROFILE, DEFAULT_TEST_PATH_PATTERNS, DEFAULT_ZONE, SENSITIVE_KEY, ZERO_ALLOWED_POLICY_FIELDS,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError, JsonObject, _non_empty, _read_object, _strings,
@@ -283,3 +284,43 @@ def _approval_policy(config: JsonObject) -> str:
     if policy not in {"manual_all", "milestone", "low_risk"}:
         raise CoordinatorError("approval_policy must be manual_all, milestone or low_risk", remedy="set approval_policy to 'manual_all', 'milestone' or 'low_risk' in the project orchestration config")
     return cast(str, policy)
+
+
+def _resolve_assignment(
+    repo: Path,
+    config: JsonObject,
+    role_name: str,
+    zone_name: str,
+    runtime_name: str,
+    *,
+    session_model: object = None,
+    session_effort: object = None,
+) -> tuple[JsonObject, JsonObject, str, str, str, str, str]:
+    role = _role(repo, role_name)
+    if not _configured(repo):
+        if zone_name != DEFAULT_ZONE:
+            raise CoordinatorError(
+                f"without .harness/orchestration.json the only backend zone is {DEFAULT_ZONE!r}",
+                remedy=f"create .harness/orchestration.json to declare backend zones other than {DEFAULT_ZONE!r}",
+            )
+        if not _non_empty(session_model) or not _non_empty(session_effort):
+            raise CoordinatorError(
+                "without .harness/orchestration.json the invoking session must supply --model and --effort",
+                remedy="pass --model and --effort explicitly, or create .harness/orchestration.json with an assignment plan",
+            )
+        # No project-owned provider profile exists, so the only honest transport is the invoking
+        # session itself; an Orca worker would have no agent to start.
+        return (
+            role, {"paths": ["**"]}, DEFAULT_PROFILE, session_model.strip(), session_effort.strip(),
+            "in-process", runtime_name.strip() if _non_empty(runtime_name) else "session",
+        )
+    try:
+        plan = config.get("assignment_plans", {}).get(role_name)
+        resolved_runtime = resolve_runtime_name(plan, runtime_name) if isinstance(plan, dict) else ""
+        assignment = resolve_assignment(config, role, role_name, zone_name, resolved_runtime)
+    except ContractError as exc:
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+    return (
+        assignment["role"], assignment["zone"], assignment["profile_id"], assignment["model"],
+        assignment["effort"], assignment["transport"], resolved_runtime,
+    )
