@@ -199,7 +199,7 @@ python harness\bin\harness list C:\path\to\repository
 текстовое verify-действие и имена секретных env-переменных, но никогда сами секреты.
 
 `skills/REGISTRY.md` — отдельный сгенерированный каталог исходников этого репозитория,
-обновляемый через `scripts/build-registry`; его не следует путать с runtime-реестром
+обновляемый через `scripts/build-registry.py`; его не следует путать с runtime-реестром
 `.harness/skills/REGISTRY.md` в целевом проекте.
 
 ## Политика репозитория
@@ -212,13 +212,13 @@ python harness\bin\harness list C:\path\to\repository
   [`docs/adr/template.md`](./docs/adr/template.md). Номер всегда следующий после наибольшего в
   каталоге; язык совпадает с языком репозитория.
 - `third_party/mattpocock-skills/UPSTREAM.lock` может отстать от реального апстрима незаметно —
-  `scripts/check-upstream-drift` (сеть, читает только) сверяет пин с последним тегом на
+  `scripts/check-upstream-drift.py` (сеть, читает только) сверяет пин с последним тегом на
   `mattpocock/skills` и раскладывает реальные изменения на «можно тянуть не глядя» (скиллы вне
   `pvmalove-suite.overrides`) и «сверить руками перед ресинком» (см. [ADR 0001](./docs/adr/0001-portable-capability-snapshots.md)). Гоняется вручную или
   еженедельно через `.github/workflows/upstream-drift.yml` (`workflow_dispatch` — можно и по
   требованию); падает (exit 1) только когда апстрим реально ушёл вперёд, не блокирует обычные PR.
 - `docs/agents/*.md` и `harness/project/docs-agents/*.md` — одно и то же по смыслу в двух местах
-  (вторая копия — то, что `pvmalove-suite` реально разворачивает в целевые проекты); `scripts/verify`
+  (вторая копия — то, что `pvmalove-suite` реально разворачивает в целевые проекты); `scripts/verify.py`
   сверяет обе копии по содержимому (без учёта BOM/CRLF) и не даст молча разойтись.
 - `harness update` по умолчанию не перезаписывает изменённые managed files и seed-файлы.
   `--force-managed-files` обновляет только managed snapshot, `--force-seed-files` — только seed,
