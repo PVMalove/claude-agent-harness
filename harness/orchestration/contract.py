@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard, cast
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from .extensions import DEFAULT_EXTENSION, EXTENSION_KINDS, EXTENSION_NAME
@@ -60,15 +61,24 @@ class ContractError(HarnessError):
     """A manifest, assignment or immutable brief violates portable role policy."""
 
 
-def non_empty(value: object) -> bool:
+# Role manifests and resolved assignments are dynamic, JSON-shaped documents that the coordinator and
+# adapters consume as ``dict[str, Any]``; this is the one intentional dynamic boundary of the module.
+JsonObject = dict[str, Any]  # type: ignore[explicit-any]
+
+
+def non_empty(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and bool(value.strip())
 
 
-def string_list(value: object) -> bool:
+def string_list(value: object) -> TypeGuard[list[str]]:
     return isinstance(value, list) and all(non_empty(item) for item in value)
 
 
-def reject_sensitive(value: Any, location: str) -> None:
+def _is_int(value: object) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def reject_sensitive(value: object, location: str) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             if not isinstance(key, str):
@@ -84,7 +94,7 @@ def reject_sensitive(value: Any, location: str) -> None:
             reject_sensitive(child, f"{location}[{index}]")
 
 
-def load_role_manifest(path: Path) -> dict[str, Any]:
+def load_role_manifest(path: Path) -> JsonObject:
     """Parse the deliberately small role frontmatter without a YAML dependency."""
     try:
         text = path.read_text(encoding="utf-8")
@@ -98,7 +108,7 @@ def load_role_manifest(path: Path) -> dict[str, Any]:
             f"role manifest {path.name!r} has no valid frontmatter",
             remedy=f"start {path.name} with a '---'-delimited YAML-like frontmatter block",
         )
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, str | list[str]] = {}
     current: str | None = None
     for line in match.group("body").splitlines():
         if not line.strip():
@@ -110,7 +120,7 @@ def load_role_manifest(path: Path) -> dict[str, Any]:
                     f"role manifest {path.name!r} has an orphan list item",
                     remedy=f"in {path.name}, put each '- item' line under a preceding 'key:' line",
                 )
-            metadata.setdefault(current, []).append(item.group(1))
+            cast(list[str], metadata.setdefault(current, [])).append(item.group(1))
             continue
         field = re.fullmatch(r"([a-z_]+):\s*(.*?)\s*", line)
         if not field:
@@ -147,7 +157,7 @@ def _valid_effort(value: object) -> str:
     return value.strip()
 
 
-def resolve_runtime_name(plan: dict[str, Any], requested: object) -> str:
+def resolve_runtime_name(plan: Mapping[str, object], requested: object) -> str:
     """Resolve a role runtime without a global, hidden provider default.
 
     A one-runtime plan is unambiguous. A multi-runtime plan must either name its project-owned
@@ -168,7 +178,7 @@ def resolve_runtime_name(plan: dict[str, Any], requested: object) -> str:
             )
         return runtime
     if len(runtimes) == 1:
-        return next(iter(runtimes))
+        return cast(str, next(iter(runtimes)))
     default = plan.get("default_runtime")
     if not non_empty(default) or default.strip() not in runtimes:
         raise ContractError(
@@ -179,8 +189,9 @@ def resolve_runtime_name(plan: dict[str, Any], requested: object) -> str:
 
 
 def resolve_assignment(
-    config: dict[str, Any], role: dict[str, Any], role_name: str, zone_name: str, runtime_name: str,
-) -> dict[str, Any]:
+    config: Mapping[str, object], role: Mapping[str, object], role_name: str, zone_name: object,
+    runtime_name: object,
+) -> JsonObject:
     """Resolve one configured role assignment while preserving manifest authority."""
     assignments = config.get("assignment_plans")
     zones = config.get("backend_zones")
@@ -276,9 +287,9 @@ def resolve_assignment(
 
 
 def validate_brief_policy(
-    brief: dict[str, Any], project: dict[str, Any], config: dict[str, Any], roles_root: Path,
+    brief: Mapping[str, object], project: Mapping[str, object], config: Mapping[str, object], roles_root: Path,
     *, expected_transport: str | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[JsonObject, JsonObject]:
     """Validate the policy-owned portion of an approved immutable handoff brief."""
     reject_sensitive(brief, "dispatch brief")
     approval = brief.get("coordinator_approval")
@@ -323,7 +334,8 @@ def validate_brief_policy(
     if not isinstance(brief["prohibited_changes"], list) or not all(non_empty(item) for item in brief["prohibited_changes"]):
         raise ContractError("dispatch brief prohibited_changes must be a non-empty list of strings", remedy=INTERNAL_INVARIANT_REMEDY)
     for field in ("verification_commands", "required_gates", "dependencies"):
-        if not isinstance(brief[field], list) or not all(non_empty(item) for item in brief[field]):
+        entries = brief[field]
+        if not isinstance(entries, list) or not all(non_empty(item) for item in entries):
             raise ContractError(f"dispatch brief {field} must be a list of strings", remedy=INTERNAL_INVARIANT_REMEDY)
     expected_commands = config.get("developer_verification_commands", config.get("verification_commands")) \
         if brief.get("role") == "developer" and brief.get("purpose") == "work" else config.get("verification_commands")
@@ -368,7 +380,7 @@ def validate_brief_policy(
 
 
 def _policy_problem(
-    config: dict[str, Any], key: str, fields: set[str], *, booleans: set[str] | None = None,
+    config: Mapping[str, object], key: str, fields: set[str], *, booleans: set[str] | None = None,
     minimum: int = 1,
 ) -> list[str]:
     """Validate small numeric policy maps without a JSON-schema runtime dependency."""
@@ -394,7 +406,7 @@ def _policy_problem(
     return problems
 
 
-def resolve_allowed_tools(config: dict[str, Any], role_name: str, mode: str) -> list[str]:
+def resolve_allowed_tools(config: Mapping[str, object], role_name: str, mode: str) -> list[str]:
     """Tools a dispatch brief records for a role: the project's per-role entry, else its per-mode
     entry, else the built-in default for the role's manifest mode. `harness health` has already
     validated the shape of `tool_policy` for a configured project."""
@@ -407,11 +419,11 @@ def resolve_allowed_tools(config: dict[str, Any], role_name: str, mode: str) -> 
     return list(DEFAULT_ALLOWED_TOOLS[mode])
 
 
-def valid_tool_list(value: object) -> bool:
+def valid_tool_list(value: object) -> TypeGuard[list[str]]:
     return string_list(value) and bool(value) and len(set(value)) == len(value)
 
 
-def _tool_policy_problems(config: dict[str, Any], role_names: set[str]) -> list[str]:
+def _tool_policy_problems(config: Mapping[str, object], role_names: set[str]) -> list[str]:
     if "tool_policy" not in config:
         return []
     policy = config["tool_policy"]
@@ -441,7 +453,7 @@ def _tool_policy_problems(config: dict[str, Any], role_names: set[str]) -> list[
 ATTENTION_POLICY_FIELDS = {"retry_queue_seconds": 1, "max_infrastructure_retries": 0, "stale_dispatch_seconds": 1}
 
 
-def _operational_policy_problems(config: dict[str, Any]) -> list[str]:
+def _operational_policy_problems(config: Mapping[str, object]) -> list[str]:
     """`attention_policy`, `approval_ttl_seconds` and `extensions`: the operational-loop policy of issue #250."""
     problems: list[str] = []
     attention = config.get("attention_policy")
@@ -500,7 +512,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     extra = sorted(set(config) - CONFIG_ALLOWED_FIELDS)
     if extra:
         problems.append(f"{config_path.as_posix()} has unknown field(s): {', '.join(extra)}")
-    roles: dict[str, dict[str, Any]] = {}
+    roles: dict[str, JsonObject] = {}
     if not roles_root.is_dir():
         problems.append("missing .harness/orchestration/roles")
     else:
@@ -716,7 +728,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         maximum = context_policy.get("max_tokens")
         window = context_policy.get("context_window_tokens")
         reserve = context_policy.get("reserved_prompt_tokens")
-        if all(isinstance(item, int) and not isinstance(item, bool) for item in (maximum, window, reserve)) and maximum > window - reserve:
+        if _is_int(maximum) and _is_int(window) and _is_int(reserve) and maximum > window - reserve:
             problems.append("orchestration context_package_policy.max_tokens must fit inside context_window_tokens minus reserved_prompt_tokens")
     problems.extend(_policy_problem(
         config, "continuation_policy", {"max_continuations", "max_rate_limit_resumes"},
