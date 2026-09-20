@@ -74,7 +74,12 @@ def attest(repo: Path, dispatch: Mapping[str, object], worktree: str) -> dict[st
     branch = _git(checkout, "branch", "--show-current")
     if role in {"architect", "developer"}:
         expected_branch = dispatch.get("branch")
-        if not isinstance(expected_branch, str) or branch != expected_branch:
+        if not isinstance(expected_branch, str):
+            raise AttestationError(
+                "runtime worktree branch does not match the immutable issue branch",
+                remedy=f"pin a string issue branch in the dispatch (got {expected_branch!r}) before dispatching this role",
+            )
+        if branch != expected_branch:
             raise AttestationError(
                 "runtime worktree branch does not match the immutable issue branch",
                 remedy=f"checkout branch {expected_branch!r} in {checkout} before dispatching this role",

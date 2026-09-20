@@ -99,7 +99,10 @@ class RuntimeAttestationTests(unittest.TestCase):
                     with self.assertRaises(AttestationError) as raised:
                         attest(repo, dispatch, str(worktree))
                     self.assertIn("does not match the immutable issue branch", str(raised.exception))
-                    self.assertTrue(raised.exception.remedy)
+                    if isinstance(dispatch.get("branch", None), str):
+                        self.assertIn("checkout branch", raised.exception.remedy)
+                    else:
+                        self.assertIn("pin a string issue branch", raised.exception.remedy)
 
     def test_review_role_requires_the_pinned_candidate(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
