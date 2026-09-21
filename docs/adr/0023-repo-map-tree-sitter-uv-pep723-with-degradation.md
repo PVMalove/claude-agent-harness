@@ -1,6 +1,6 @@
 # Repo Map: offline parser bundle, stdlib Python и policy-управляемая деградация
 
-Статус: proposed (черновик; принимается вместе со спекой, коммитится тикетом реализации).
+Статус: accepted.
 
 ## Контекст системы
 
@@ -16,39 +16,44 @@ stdlib `ast` (`harness/context_builder/context_builder.py`); для осталь
 - **Repo Map** — чистая функция `(pinned commit, normalized seeds, budget, parser provenance,
   ignore policy, token-estimator version)`. Представление не хранится в ledger. Локальный
   content-addressed cache по этому ключу неавторитетен, проверяется хешем и очищается без
-  lifecycle-эффекта. Авторитетной записью остаётся immutable Context Package с hash каждого файла;
-  его regex-граф и `_extract_python_signatures` удаляются без дублирующей реализации.
+  lifecycle-эффекта. В поставке #266 это standalone CLI; переход Context Package на этот ресурс и
+  удаление его regex-графа с `_extract_python_signatures` выполняются отдельной миграцией.
 - **Ранжирование** без LLM: без seeds — по in-degree, с seeds — по BFS-дистанции, ничья решается по
-  пути; отсечение по токен-бюджету. Рёбра — импорты плюс сопоставление def/ref по имени
-  (приближение, не call graph: разрешение типов вне scope). Каждое ребро имеет `kind` и
-  `confidence`: import сильное, unique-name-ref среднее, ambiguous-name-ref низкое и не ранжирует
+  пути; отсечение по токен-бюджету. Текущий `ast-only` режим строит сильные import-рёбра с `kind` и
+  `confidence`. Полный режим добавляет сопоставление def/ref по имени (приближение, не call graph:
+  разрешение типов вне scope): unique-name-ref среднее, ambiguous-name-ref низкое и не ранжирует
   файл самостоятельно.
 - **Поставка парсеров** — Python всегда разбирается встроенным `ast`; tree-sitter нужен только для
   TS/JS, Go, Java и C#. Dispatch и `context_builder` никогда не разрешают зависимости через сеть.
   Полный режим получает проверенный parser bundle из lock+hash артефактов, локального cache или
   разрешённого внутреннего registry. Bundle релиза формирует SBOM и проходит CVE-проверку; PEP 723/
   `uv run` допустимы лишь как developer bootstrap вне dispatch hot path. `.venv`,
-  `requirements.txt` и `uv add` в целевом проекте не создаются.
+  `requirements.txt` и `uv add` в целевом проекте не создаются. `uv run` применяется только при
+  developer bootstrap вне dispatch hot path.
 - **Уровни качества и data policy:** `full` содержит parser-backed сигнатуры и связи поддержанных
   языков; `reduced` — Python `ast` и path-only сведения прочих; `minimal` — только
   policy-approved Path inventory. До сериализации применяются project-owned allowlist/denylist,
-  path/symbol redaction и пределы длины; комментарии и тела функций не включаются. Portable-профиль
-  предупреждает, а enterprise policy может потребовать уровень для роли или запретить dispatch.
+  path/symbol redaction и пределы длины; комментарии и тела функций не включаются. По умолчанию
+  поведение portable. Enterprise-ограничения задаёт `repo_map_policy` в `orchestration.json`;
+  отдельной сущности «профиль» нет. Policy применяет allowlist/denylist/redaction и лимиты числа
+  файлов, размера blob, времени Git-вызова и token budget до сериализации.
 - **Provenance и health:** Context Package получает совместимое структурированное
   `parser_provenance`: версии и хеши bundle/грамматик, ABI, hash скрипта, token-estimator version,
   quality tier и причина деградации. `harness health` показывает уровень и offline remedy, не
   скачивает зависимости и сообщает применимую policy.
-- **Граница capability.** Модуль — новый ресурс `pvmalove-suite` (его вызывают `/grilling` и
-  `/to-tickets`); `context_builder` из `backend-orchestration` вызывает его подпроцессом, а не
-  импортирует. Встроенный `ast` собирает Python всегда; установленный bundle разбирает остальные
-  языки с ограничением времени и размера вывода. При отсутствии bundle CLI возвращает валидный
-  деградированный JSON без сетевого вызова. Скрипт читает pinned commit через git, а не рабочее
-  дерево. Бюджет токенов: константа по умолчанию, флаг `--max-tokens`, переопределение из
-  `.harness/orchestration.json`, только если файл есть.
+- **Граница capability.** Модуль — новый ресурс `pvmalove-suite`. Поставка #266 предоставляет
+  standalone CLI; последующая интеграция `/grilling`, `/to-tickets` и `context_builder` вызывает
+  его подпроцессом, а не импортирует. Встроенный `ast` собирает Python всегда; установленный bundle
+  разбирает остальные языки с ограничением времени и размера вывода. При отсутствии bundle CLI
+  возвращает валидный деградированный JSON без сетевого вызова. Скрипт читает pinned commit через
+  git, а не рабочее дерево. Бюджет токенов: константа по умолчанию, флаг `--max-tokens` и верхняя
+  граница из `.harness/orchestration.json`. В output попадают hash policy, применённые лимиты и
+  структурированные диагностики неразбираемых или слишком больших policy-approved файлов.
 - **Типизация** ([ADR 0020](0020-mypy-strict-disallow-any-explicit.md)): типы tree-sitter не
-  пересекают границу процесса; `context_builder` валидирует типизированный JSON-контракт скрипта.
-  Python fallback тестируется всегда, bundle-путь — в изолированной CI-задаче с проверенным offline
-  артефактом; policy, redaction и отказ bundle с неверным hash имеют отдельные контрактные тесты.
+  пересекают границу процесса. Интеграция `context_builder` валидирует типизированный JSON-контракт
+  скрипта. JSON Schema поставляется рядом с CLI. Python fallback, policy, redaction и лимиты имеют
+  контрактные тесты; bundle-путь тестируется в изолированной CI-задаче с проверенным offline
+  артефактом.
 
 Состав bundle, пины, матрица wheels, формат поставки, правила SBOM/CVE и typed-граница уточнены
 [ADR 0024](0024-repo-map-parser-bundle-composition-and-delivery.md).

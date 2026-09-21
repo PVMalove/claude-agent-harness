@@ -44,6 +44,7 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "approval_policy",
     "low_risk_zones",
     "context_package_policy",
+    "repo_map_policy",
     "continuation_policy",
     "retry_policy",
     "preflight_policy",
@@ -547,6 +548,38 @@ def _policy_problem(
     return problems
 
 
+def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
+    """Validate the Repo Map policy without importing its base-capability resource."""
+    value = config.get("repo_map_policy")
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        return ["orchestration repo_map_policy must be an object"]
+    numeric = {"max_files", "max_file_bytes", "timeout_seconds", "max_tokens"}
+    patterns = {"allow_paths", "deny_paths", "redact_paths"}
+    unknown = sorted(set(value) - numeric - patterns)
+    problems: list[str] = []
+    if unknown:
+        problems.append(
+            f"orchestration repo_map_policy has unknown field(s): {', '.join(unknown)}"
+        )
+    for field in numeric:
+        if field in value and not _is_int(value[field]):
+            problems.append(
+                f"orchestration repo_map_policy.{field} must be a positive integer"
+            )
+    for field in patterns:
+        item = value.get(field)
+        if item is not None and (
+            not isinstance(item, list)
+            or any(not isinstance(entry, str) or not entry for entry in item)
+        ):
+            problems.append(
+                f"orchestration repo_map_policy.{field} must be a list of non-empty path globs"
+            )
+    return problems
+
+
 def resolve_allowed_tools(
     config: Mapping[str, object], role_name: str, mode: str
 ) -> list[str]:
@@ -1026,6 +1059,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
             },
         )
     )
+    problems.extend(_repo_map_policy_problems(config))
     context_policy = config.get("context_package_policy")
     if isinstance(context_policy, dict):
         maximum = context_policy.get("max_tokens")

@@ -291,6 +291,51 @@ def _run(test_root: Path):
     )
     fill_agents(pv_project)
     run_ok(HARNESS + ["health", str(pv_project)])
+    repo_map_cli = pv_project / ".harness" / "repo_map" / "repo_map.py"
+    if (
+        not repo_map_cli.is_file()
+        or not (pv_project / ".harness" / "token_estimator.py").is_file()
+        or not (pv_project / ".harness" / "repo_map" / "repo_map.schema.json").is_file()
+    ):
+        sys.exit("pvmalove-suite Repo Map resource missing")
+    map_project = test_root / "map_project"
+    map_project.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=map_project, check=True)
+    (map_project / "mapped.py").write_text(
+        "def mapped(value: int = 1) -> int:\n    return value\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "mapped.py"], cwd=map_project, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=map_project,
+        check=True,
+    )
+    mapped_commit = capture(
+        ["git", "-C", str(map_project), "rev-parse", "HEAD"]
+    ).strip()
+    mapped = json.loads(
+        capture(
+            [
+                sys.executable,
+                str(repo_map_cli),
+                "--repo",
+                str(map_project),
+                "--commit",
+                mapped_commit,
+            ]
+        )
+    )
+    if not any(item["path"] == "mapped.py" for item in mapped["files"]):
+        sys.exit("installed Repo Map did not read the pinned commit")
 
     pv_skill_count = count_skill_files(pv_project / ".harness" / "skills")
     if pv_skill_count != 31:

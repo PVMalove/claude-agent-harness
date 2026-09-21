@@ -106,7 +106,9 @@ def check_no_retired_path_inventory_term() -> None:
             if path.is_file() and RETIRED_PATH_INVENTORY_TERM.search(
                 path.read_text(encoding="utf-8", errors="replace")
             ):
-                sys.exit(f'{path}: retired term "filtered Repo Map"; use "Path inventory"')
+                sys.exit(
+                    f'{path}: retired term "filtered Repo Map"; use "Path inventory"'
+                )
 
 
 def check_docs_agents_enumeration() -> None:
@@ -366,7 +368,9 @@ def main() -> None:
 
     test_env = dict(os.environ)
     test_env["PYTHONPATH"] = str(ROOT)
-    run_ok([sys.executable, "-m", "pytest", "-n", "4", str(ROOT / "tests")], env=test_env)
+    run_ok(
+        [sys.executable, "-m", "pytest", "-n", "4", str(ROOT / "tests")], env=test_env
+    )
     run_ok([sys.executable, str(ROOT / "scripts" / "test_clean_room.py")])
 
     print("agent-harness verification passed")

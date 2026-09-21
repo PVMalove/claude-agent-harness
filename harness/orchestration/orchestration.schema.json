@@ -173,6 +173,20 @@
         }
       }
     },
+    "repo_map_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional enterprise policy for the portable Repo Map CLI. All paths are repository-relative globs; redact_paths excludes both the path and its source from output.",
+      "properties": {
+        "allow_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "deny_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "redact_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "max_files": {"type": "integer", "minimum": 1, "default": 10000},
+        "max_file_bytes": {"type": "integer", "minimum": 1, "default": 2000000},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "default": 10},
+        "max_tokens": {"type": "integer", "minimum": 1}
+      }
+    },
     "continuation_policy": {
       "type": "object",
       "additionalProperties": false,

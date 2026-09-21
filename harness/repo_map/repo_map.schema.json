@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent Harness Repo Map",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "commit",
+    "tier",
+    "parser",
+    "degradation_reason",
+    "token_estimator_version",
+    "parser_provenance",
+    "files",
+    "edges",
+    "diagnostics",
+    "estimated_tokens"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "commit": {"type": "string", "minLength": 40},
+    "tier": {"const": "reduced"},
+    "parser": {"const": "ast-only"},
+    "degradation_reason": {"type": "string"},
+    "token_estimator_version": {"type": "string"},
+    "parser_provenance": {
+      "type": "object",
+      "required": ["policy_mode", "policy_sha256", "max_file_bytes", "max_files"],
+      "properties": {
+        "policy_mode": {"enum": ["portable", "enforced"]},
+        "policy_sha256": {"type": ["string", "null"]},
+        "max_file_bytes": {"type": "integer", "minimum": 1},
+        "max_files": {"type": "integer", "minimum": 1}
+      }
+    },
+    "files": {"type": "array"},
+    "edges": {"type": "array"},
+    "diagnostics": {"type": "array"},
+    "estimated_tokens": {"type": "integer", "minimum": 0}
+  }
+}

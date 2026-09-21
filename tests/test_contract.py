@@ -335,6 +335,41 @@ class PolicyProblemTests(unittest.TestCase):
         )
 
 
+class RepoMapPolicyProblemTests(unittest.TestCase):
+    def test_valid_policy_and_invalid_values(self) -> None:
+        self.assertEqual(
+            contract._repo_map_policy_problems(
+                {
+                    "repo_map_policy": {
+                        "allow_paths": ["src/**"],
+                        "max_files": 10,
+                        "max_file_bytes": 1024,
+                        "timeout_seconds": 5,
+                    }
+                }
+            ),
+            [],
+        )
+        self.assertEqual(
+            sorted(
+                contract._repo_map_policy_problems(
+                    {
+                        "repo_map_policy": {
+                            "allow_paths": [""],
+                            "max_files": False,
+                            "unknown": 1,
+                        }
+                    }
+                )
+            ),
+            [
+                "orchestration repo_map_policy has unknown field(s): unknown",
+                "orchestration repo_map_policy.allow_paths must be a list of non-empty path globs",
+                "orchestration repo_map_policy.max_files must be a positive integer",
+            ],
+        )
+
+
 class ContextWindowPolicyTests(unittest.TestCase):
     def _problems(self, policy: dict[str, object]) -> list[str]:
         directory = Path(tempfile.mkdtemp())
