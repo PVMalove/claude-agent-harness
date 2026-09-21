@@ -650,6 +650,7 @@ def _run(test_root: Path):
         "developer.md",
         "messaging-integration.md",
         "qa.md",
+        "verification.md",
     }
     actual_role_files = {
         path.name
