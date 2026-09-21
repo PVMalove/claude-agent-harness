@@ -295,6 +295,7 @@ def _run(test_root: Path):
     if (
         not repo_map_cli.is_file()
         or not (pv_project / ".harness" / "token_estimator.py").is_file()
+        or not (pv_project / ".harness" / "repo_map" / "repo_map.schema.json").is_file()
     ):
         sys.exit("pvmalove-suite Repo Map resource missing")
     map_project = test_root / "map_project"

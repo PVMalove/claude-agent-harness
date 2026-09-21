@@ -70,8 +70,8 @@ def test_repo_map_reads_commit_and_is_deterministic(tmp_path: Path) -> None:
         and b"leaked" not in first
     )
 
-    bounded = json.loads(subprocess.check_output(command + ["--max-tokens", "180"]))
-    assert bounded["estimated_tokens"] <= 180
+    bounded = json.loads(subprocess.check_output(command + ["--max-tokens", "500"]))
+    assert bounded["estimated_tokens"] <= 500
     assert bounded["files"] == [] or bounded["files"][0]["path"] == "helper.py"
 
 
@@ -100,3 +100,113 @@ def test_repo_map_resolves_relative_package_imports(tmp_path: Path) -> None:
         "kind": "import",
         "confidence": "high",
     } in result["edges"]
+
+
+def test_repo_map_enforces_project_policy_and_records_provenance(tmp_path: Path) -> None:
+    repo = tmp_path / "project"
+    (repo / "src").mkdir(parents=True)
+    (repo / "private").mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "src" / "public.py").write_text("def public() -> None: pass\n")
+    (repo / "private" / "hidden.py").write_text("def hidden() -> None: pass\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "fixture")
+    commit = _git(repo, "rev-parse", "HEAD")
+    policy = tmp_path / "orchestration.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "repo_map_policy": {
+                    "allow_paths": ["src/**", "private/**"],
+                    "redact_paths": ["private/**"],
+                    "max_file_bytes": 1024,
+                    "max_files": 10,
+                    "timeout_seconds": 5,
+                    "max_tokens": 500,
+                }
+            }
+        )
+    )
+
+    result = json.loads(
+        subprocess.check_output(
+            [
+                sys.executable,
+                str(CLI),
+                "--repo",
+                str(repo),
+                "--commit",
+                commit,
+                "--policy",
+                str(policy),
+            ]
+        )
+    )
+    assert [item["path"] for item in result["files"]] == ["src/public.py"]
+    assert result["parser_provenance"]["policy_sha256"]
+    assert result["parser_provenance"]["policy_mode"] == "enforced"
+    assert result["estimated_tokens"] <= 500
+
+
+def test_repo_map_reports_unparseable_and_oversized_approved_files(tmp_path: Path) -> None:
+    repo = tmp_path / "project"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "broken.py").write_text("def broken(:\n")
+    (repo / "large.py").write_text("x = '" + "a" * 200 + "'\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "fixture")
+    commit = _git(repo, "rev-parse", "HEAD")
+    policy = tmp_path / "orchestration.json"
+    policy.write_text(json.dumps({"repo_map_policy": {"max_file_bytes": 40}}))
+
+    result = json.loads(
+        subprocess.check_output(
+            [
+                sys.executable,
+                str(CLI),
+                "--repo",
+                str(repo),
+                "--commit",
+                commit,
+                "--policy",
+                str(policy),
+            ]
+        )
+    )
+    statuses = {item["path"]: item["parser_status"] for item in result["files"]}
+    assert statuses == {"broken.py": "syntax_error", "large.py": "too_large"}
+    assert result["diagnostics"] == [
+        {"code": "syntax_error", "path": "broken.py"},
+        {"code": "file_too_large", "path": "large.py"},
+    ]
+
+
+def test_repo_map_uses_project_orchestration_policy_when_present(tmp_path: Path) -> None:
+    repo = tmp_path / "project"
+    (repo / "src").mkdir(parents=True)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "src" / "safe.py").write_text("def safe() -> None: pass\n")
+    (repo / "outside.py").write_text("def outside() -> None: pass\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "fixture")
+    commit = _git(repo, "rev-parse", "HEAD")
+    harness_dir = repo / ".harness"
+    harness_dir.mkdir()
+    (harness_dir / "orchestration.json").write_text(
+        json.dumps({"repo_map_policy": {"allow_paths": ["src/**"]}})
+    )
+
+    result = json.loads(
+        subprocess.check_output(
+            [sys.executable, str(CLI), "--repo", str(repo), "--commit", commit]
+        )
+    )
+    assert [item["path"] for item in result["files"]] == ["src/safe.py"]
+    assert result["parser_provenance"]["policy_mode"] == "enforced"

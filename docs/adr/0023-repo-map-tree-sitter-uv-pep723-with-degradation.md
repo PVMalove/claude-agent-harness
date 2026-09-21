@@ -34,8 +34,9 @@ stdlib `ast` (`harness/context_builder/context_builder.py`); для осталь
   языков; `reduced` — Python `ast` и path-only сведения прочих; `minimal` — только
   policy-approved Path inventory. До сериализации применяются project-owned allowlist/denylist,
   path/symbol redaction и пределы длины; комментарии и тела функций не включаются. По умолчанию
-  поведение portable. Enterprise-ограничения задаёт наличие policy в `orchestration.json`; отдельной
-  сущности «профиль» нет. Policy может потребовать уровень для роли или запретить dispatch.
+  поведение portable. Enterprise-ограничения задаёт `repo_map_policy` в `orchestration.json`;
+  отдельной сущности «профиль» нет. Policy применяет allowlist/denylist/redaction и лимиты числа
+  файлов, размера blob, времени Git-вызова и token budget до сериализации.
 - **Provenance и health:** Context Package получает совместимое структурированное
   `parser_provenance`: версии и хеши bundle/грамматик, ABI, hash скрипта, token-estimator version,
   quality tier и причина деградации. `harness health` показывает уровень и offline remedy, не
@@ -45,13 +46,14 @@ stdlib `ast` (`harness/context_builder/context_builder.py`); для осталь
   его подпроцессом, а не импортирует. Встроенный `ast` собирает Python всегда; установленный bundle
   разбирает остальные языки с ограничением времени и размера вывода. При отсутствии bundle CLI
   возвращает валидный деградированный JSON без сетевого вызова. Скрипт читает pinned commit через
-  git, а не рабочее дерево. Бюджет токенов: константа по умолчанию и флаг `--max-tokens`;
-  переопределение из `.harness/orchestration.json` добавляется вместе с интеграцией.
+  git, а не рабочее дерево. Бюджет токенов: константа по умолчанию, флаг `--max-tokens` и верхняя
+  граница из `.harness/orchestration.json`. В output попадают hash policy, применённые лимиты и
+  структурированные диагностики неразбираемых или слишком больших policy-approved файлов.
 - **Типизация** ([ADR 0020](0020-mypy-strict-disallow-any-explicit.md)): типы tree-sitter не
   пересекают границу процесса. Интеграция `context_builder` валидирует типизированный JSON-контракт
-  скрипта. Python fallback тестируется всегда, bundle-путь — в изолированной CI-задаче с проверенным
-  offline артефактом; policy, redaction и отказ bundle с неверным hash получают контрактные тесты
-  вместе с соответствующей интеграцией.
+  скрипта. JSON Schema поставляется рядом с CLI. Python fallback, policy, redaction и лимиты имеют
+  контрактные тесты; bundle-путь тестируется в изолированной CI-задаче с проверенным offline
+  артефактом.
 
 Состав bundle, пины, матрица wheels, формат поставки, правила SBOM/CVE и typed-граница уточнены
 [ADR 0024](0024-repo-map-parser-bundle-composition-and-delivery.md).
