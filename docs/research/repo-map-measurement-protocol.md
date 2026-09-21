@@ -57,3 +57,21 @@
 
 ## 8. Baseline „до“
 *(заполняется после замера, протокол выше не правится)*
+- **Монолит SHA**: `19f5027` (из описания тикета, для `claude-agent-harness`)
+- **Харнесс SHA**: `501712d4eeec85e49edf2be534be6461fa2d7cc7`
+- **Запуски**: 36 (из них failed: 3, missing values: 0)
+- **Токены (prompt input)**:
+  - Discovery median: 49210.5
+  - Discovery p95: 57320.4
+  - Total median: 66316.0
+  - Total p95: 75301.1
+- **Latency (сек)**:
+  - Total median: 159.0
+  - Total p95: 168.9
+- **Cache Hit Rate**: 33.98%
+- **Quality Guard**:
+  - Completion Rate: 72.22%
+  - Median defects: 0.0
+  - Median out of scope files: 0.0
+
+*Все исходные данные анонимизированы и сохранены локально в t01...t12.*
