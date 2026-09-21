@@ -8,18 +8,20 @@ import shutil
 import subprocess
 import tempfile
 import time
-from contextlib import contextmanager
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ContextManager, Iterator, Protocol
+from typing import Protocol
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
-
 
 SENSITIVE_OUTPUT = (
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"), "<REDACTED_GITHUB_TOKEN>"),
     (
-        re.compile(r"(?i)(\b(?:api[_-]?key|credential|token|password|secret)\s*(?:[:=]|is)\s*)\S+"),
+        re.compile(
+            r"(?i)(\b(?:api[_-]?key|credential|token|password|secret)\s*(?:[:=]|is)\s*)\S+"
+        ),
         r"\1<redacted>",
     ),
     (re.compile(r"(?i)(\bauthorization\s*:\s*(?:bearer\s+)?)\S+"), r"\1<redacted>"),
@@ -33,8 +35,7 @@ class GateRunnerError(HarnessError):
 class ExecutionPolicy(Protocol):
     """Select the checkout and isolation boundary for one gate execution."""
 
-    def checkout(self) -> ContextManager[Path]:
-        ...
+    def checkout(self) -> AbstractContextManager[Path]: ...
 
 
 @dataclass(frozen=True)
@@ -61,11 +62,21 @@ class CleanRoomPolicy:
         checkout = worktree_root / "checkout"
         try:
             created = subprocess.run(
-                ["git", "-C", str(self.repository), "worktree", "add", "--detach", str(checkout), self.candidate_commit],
+                [
+                    "git",
+                    "-C",
+                    str(self.repository),
+                    "worktree",
+                    "add",
+                    "--detach",
+                    str(checkout),
+                    self.candidate_commit,
+                ],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                check=False,
             )
             if created.returncode != 0:
                 detail = sanitise((created.stderr or created.stdout).strip())
@@ -79,18 +90,30 @@ class CleanRoomPolicy:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                check=False,
             )
-            if resolved.returncode != 0 or resolved.stdout.strip() != self.candidate_commit:
+            if (
+                resolved.returncode != 0
+                or resolved.stdout.strip() != self.candidate_commit
+            ):
                 raise GateRunnerError(
                     "clean QA worktree HEAD does not match the pinned candidate commit",
                     remedy=f"verify commit {self.candidate_commit} exists and resolves cleanly, then retry",
                 )
             status = subprocess.run(
-                ["git", "-C", str(checkout), "status", "--porcelain", "--untracked-files=all"],
+                [
+                    "git",
+                    "-C",
+                    str(checkout),
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                ],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                check=False,
             )
             if status.returncode != 0 or status.stdout:
                 raise GateRunnerError(
@@ -106,11 +129,20 @@ class CleanRoomPolicy:
         finally:
             if checkout.exists():
                 subprocess.run(
-                    ["git", "-C", str(self.repository), "worktree", "remove", "--force", str(checkout)],
+                    [
+                        "git",
+                        "-C",
+                        str(self.repository),
+                        "worktree",
+                        "remove",
+                        "--force",
+                        str(checkout),
+                    ],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
+                    check=False,
                 )
             shutil.rmtree(worktree_root, ignore_errors=True)
 
@@ -140,14 +172,20 @@ def concise_evidence(text: str) -> str:
     return lines[0][:240] if lines else "no output"
 
 
-def run_gate(commands: list[str | list[str]], policy: ExecutionPolicy, *, stop_on_failure: bool) -> GateResult:
+def run_gate(
+    commands: list[str | list[str]], policy: ExecutionPolicy, *, stop_on_failure: bool
+) -> GateResult:
     """Run configured commands and return one sanitised, policy-independent result shape."""
     checks: list[dict[str, str]] = []
     outputs: list[str] = []
     started = time.monotonic()
     with policy.checkout() as checkout:
         for command in commands:
-            command_text = command if isinstance(command, str) else subprocess.list2cmdline(command)
+            command_text = (
+                command
+                if isinstance(command, str)
+                else subprocess.list2cmdline(command)
+            )
             result = subprocess.run(
                 command,
                 cwd=checkout,
@@ -156,9 +194,16 @@ def run_gate(commands: list[str | list[str]], policy: ExecutionPolicy, *, stop_o
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                check=False,
             )
-            combined = sanitise((result.stdout or "") + ("\n" if result.stdout and result.stderr else "") + (result.stderr or ""))
-            outputs.append(f"$ {sanitise(command_text)}\nexit_code={result.returncode}\n{combined}\n")
+            combined = sanitise(
+                (result.stdout or "")
+                + ("\n" if result.stdout and result.stderr else "")
+                + (result.stderr or "")
+            )
+            outputs.append(
+                f"$ {sanitise(command_text)}\nexit_code={result.returncode}\n{combined}\n"
+            )
             checks.append(
                 {
                     "command": command_text,
@@ -168,4 +213,8 @@ def run_gate(commands: list[str | list[str]], policy: ExecutionPolicy, *, stop_o
             )
             if result.returncode != 0 and stop_on_failure:
                 break
-    return GateResult(checks=checks, artifact="\n".join(outputs), duration_seconds=time.monotonic() - started)
+    return GateResult(
+        checks=checks,
+        artifact="\n".join(outputs),
+        duration_seconds=time.monotonic() - started,
+    )

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for scripts/diff-coverage.py: only executable statements count toward the gate, files nobody
+"""Tests for scripts/diff_coverage.py: only executable statements count toward the gate, files nobody
 imports still appear in the coverage run, and the 70% threshold is exact (issue #231)."""
 
 from __future__ import annotations
@@ -13,11 +13,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "diff-coverage.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "diff_coverage.py"
 
 
 def _load() -> types.ModuleType:
-    loader = importlib.machinery.SourceFileLoader("diff_coverage_under_test", str(SCRIPT))
+    loader = importlib.machinery.SourceFileLoader(
+        "diff_coverage_under_test", str(SCRIPT)
+    )
     spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
@@ -56,7 +58,9 @@ class SummarizeCoverageTests(unittest.TestCase):
         changed = {"pkg/mod.py": {2}}
         files = {"pkg/mod.py": _file(executed=[1, 3], missing=[2])}
 
-        self.assertEqual(diff_coverage.summarize_coverage(changed, files), (0, 1, ["pkg/mod.py:2"]))
+        self.assertEqual(
+            diff_coverage.summarize_coverage(changed, files), (0, 1, ["pkg/mod.py:2"])
+        )
 
     def test_a_changed_file_never_imported_counts_as_uncovered(self) -> None:
         # coverage run --source lists a never-imported file with every statement missing.
@@ -68,7 +72,9 @@ class SummarizeCoverageTests(unittest.TestCase):
         self.assertEqual((covered, total), (0, 3))
 
     def test_a_changed_file_absent_from_the_report_is_fully_uncovered(self) -> None:
-        covered, total, uncovered = diff_coverage.summarize_coverage({"x/unmeasured.py": {3, 4}}, {})
+        covered, total, uncovered = diff_coverage.summarize_coverage(
+            {"x/unmeasured.py": {3, 4}}, {}
+        )
 
         self.assertEqual((covered, total), (0, 2))
         self.assertEqual(uncovered, ["x/unmeasured.py:3", "x/unmeasured.py:4"])
@@ -111,7 +117,10 @@ class SourceDirsTests(unittest.TestCase):
             sorted(
                 {
                     str(diff_coverage.ROOT / "harness"),
-                    str(diff_coverage.ROOT / "skills/first-party/pvmalove/qa-gate/scripts"),
+                    str(
+                        diff_coverage.ROOT
+                        / "skills/first-party/pvmalove/qa-gate/scripts"
+                    ),
                 }
             ),
         )
@@ -127,34 +136,56 @@ class RepoRelativeTests(unittest.TestCase):
         self.assertEqual(diff_coverage._repo_relative("harness\\a.py"), "harness/a.py")
 
     def test_absolute_path_outside_the_root_is_left_absolute(self) -> None:
-        self.assertEqual(diff_coverage._repo_relative("/elsewhere/a.py"), "/elsewhere/a.py")
+        self.assertEqual(
+            diff_coverage._repo_relative("/elsewhere/a.py"), "/elsewhere/a.py"
+        )
 
 
 class MainCoverageRunTests(unittest.TestCase):
-    def test_coverage_run_is_given_the_changed_file_directories_as_sources(self) -> None:
+    def test_coverage_run_is_given_the_changed_file_directories_as_sources(
+        self,
+    ) -> None:
         changed = {"harness/a.py": {1}, "scripts/tool.py": {2}}
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
-            with (
-                mock.patch.object(diff_coverage, "_merge_base", return_value="base"),
-                mock.patch.object(diff_coverage, "_changed_lines", return_value=changed),
-                mock.patch.object(diff_coverage, "COVERAGE_DATA_FILE", Path(temporary) / ".coverage"),
-                mock.patch.dict(diff_coverage.os.environ, {}),
-                mock.patch.object(
-                    diff_coverage.subprocess, "run", return_value=types.SimpleNamespace(returncode=3)
-                ) as run,
-            ):
-                exit_code = diff_coverage.main()
+        with (
+            tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary,
+            mock.patch.object(diff_coverage, "_merge_base", return_value="base"),
+            mock.patch.object(diff_coverage, "_changed_lines", return_value=changed),
+            mock.patch.object(
+                diff_coverage, "COVERAGE_DATA_FILE", Path(temporary) / ".coverage"
+            ),
+            mock.patch.dict(diff_coverage.os.environ, {}),
+            mock.patch.object(
+                diff_coverage.subprocess,
+                "run",
+                return_value=types.SimpleNamespace(returncode=3),
+            ) as run,
+        ):
+            exit_code = diff_coverage.main()
 
         self.assertEqual(exit_code, 3)
         command = run.call_args.args[0]
-        self.assertIn(f"--source={','.join(diff_coverage.source_dirs(changed))}", command)
+        self.assertIn(
+            f"--source={','.join(diff_coverage.source_dirs(changed))}", command
+        )
 
 
 class ChangedLinesTests(unittest.TestCase):
     def _git(self, root: Path, *args: str) -> str:
         return subprocess.run(
-            ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", *args],
-            check=True, capture_output=True, text=True, encoding="utf-8",
+            [
+                "git",
+                "-C",
+                str(root),
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                *args,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
         ).stdout.strip()
 
     def test_a_file_renamed_to_py_counts_only_its_real_changes(self) -> None:

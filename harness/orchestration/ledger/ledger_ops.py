@@ -8,15 +8,27 @@ layer can leak a ledger error into the CLI boundary, which only catches the coor
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from harness.orchestration.core.constants import STATE_REL
-from harness.orchestration.core.utils import CoordinatorError, JsonObject, _read_object, _safe_id
+from harness.orchestration.core.utils import (
+    CoordinatorError,
+    JsonObject,
+    _read_object,
+    _safe_id,
+)
 from harness.orchestration.ledger.lifecycle import (
-    BatchRecord, CheckpointRecord, ContextPackageRecord, DispatchRecord, DispatchStatusRecord,
-    LedgerError, LedgerRecordVO, LifecycleLedger, RiskAssessmentRecord,
+    BatchRecord,
+    CheckpointRecord,
+    ContextPackageRecord,
+    DispatchRecord,
+    DispatchStatusRecord,
+    LedgerError,
+    LedgerRecordVO,
+    LifecycleLedger,
+    RiskAssessmentRecord,
 )
 
 
@@ -75,24 +87,54 @@ def _ledger_lock(ledger: LifecycleLedger) -> Iterator[None]:
 
 
 def _load_batch(root: Path, batch_id: str) -> JsonObject:
-    return _read_object(_records_root(root) / BatchRecord.directory / f"{_safe_id(batch_id, 'batch')}.json", "batch record")
+    return _read_object(
+        _records_root(root)
+        / BatchRecord.directory
+        / f"{_safe_id(batch_id, 'batch')}.json",
+        "batch record",
+    )
 
 
 def _load_dispatch(root: Path, dispatch_id: str) -> JsonObject:
-    return _read_object(_records_root(root) / DispatchRecord.directory / f"{_safe_id(dispatch_id, 'dispatch')}.json", "dispatch record")
+    return _read_object(
+        _records_root(root)
+        / DispatchRecord.directory
+        / f"{_safe_id(dispatch_id, 'dispatch')}.json",
+        "dispatch record",
+    )
 
 
 def _load_dispatch_status(root: Path, dispatch_id: str) -> JsonObject:
-    return _read_object(_records_root(root) / DispatchStatusRecord.directory / f"{_safe_id(dispatch_id, 'dispatch')}.json", "dispatch status")
+    return _read_object(
+        _records_root(root)
+        / DispatchStatusRecord.directory
+        / f"{_safe_id(dispatch_id, 'dispatch')}.json",
+        "dispatch status",
+    )
 
 
 def _load_risk(root: Path, risk_id: str) -> JsonObject:
-    return _read_object(_records_root(root) / RiskAssessmentRecord.directory / f"{_safe_id(risk_id, 'risk assessment')}.json", "risk assessment")
+    return _read_object(
+        _records_root(root)
+        / RiskAssessmentRecord.directory
+        / f"{_safe_id(risk_id, 'risk assessment')}.json",
+        "risk assessment",
+    )
 
 
 def _load_checkpoint(root: Path, checkpoint_id: str) -> JsonObject:
-    return _read_object(_records_root(root) / CheckpointRecord.directory / f"{_safe_id(checkpoint_id, 'checkpoint')}.json", "checkpoint")
+    return _read_object(
+        _records_root(root)
+        / CheckpointRecord.directory
+        / f"{_safe_id(checkpoint_id, 'checkpoint')}.json",
+        "checkpoint",
+    )
 
 
 def _load_context_package(root: Path, package_id: str) -> JsonObject:
-    return _read_object(_records_root(root) / ContextPackageRecord.directory / f"{_safe_id(package_id, 'context package')}.json", "context package")
+    return _read_object(
+        _records_root(root)
+        / ContextPackageRecord.directory
+        / f"{_safe_id(package_id, 'context package')}.json",
+        "context package",
+    )

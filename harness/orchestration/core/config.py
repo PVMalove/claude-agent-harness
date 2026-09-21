@@ -17,16 +17,33 @@ from typing import cast
 
 from harness.orchestration import extensions
 from harness.orchestration.contract import (
-    COMMUNICATION_POLICY_FIELDS, ContractError, health_problems, load_role_manifest,
-    resolve_assignment, resolve_runtime_name,
+    COMMUNICATION_POLICY_FIELDS,
+    ContractError,
+    health_problems,
+    load_role_manifest,
+    resolve_assignment,
+    resolve_runtime_name,
 )
 from harness.orchestration.core.constants import (
-    DEFAULT_ADAPTIVE_CONTINUATION_POLICY, DEFAULT_ATTENTION_POLICY, DEFAULT_COMMUNICATION_POLICY,
-    DEFAULT_CONTEXT_PACKAGE_POLICY, DEFAULT_CONTINUATION_POLICY, DEFAULT_PREFLIGHT_POLICY, DEFAULT_RETRY_POLICY,
-    DEFAULT_PROFILE, DEFAULT_TEST_PATH_PATTERNS, DEFAULT_ZONE, SENSITIVE_KEY, ZERO_ALLOWED_POLICY_FIELDS,
+    DEFAULT_ADAPTIVE_CONTINUATION_POLICY,
+    DEFAULT_ATTENTION_POLICY,
+    DEFAULT_COMMUNICATION_POLICY,
+    DEFAULT_CONTEXT_PACKAGE_POLICY,
+    DEFAULT_CONTINUATION_POLICY,
+    DEFAULT_PREFLIGHT_POLICY,
+    DEFAULT_PROFILE,
+    DEFAULT_RETRY_POLICY,
+    DEFAULT_TEST_PATH_PATTERNS,
+    DEFAULT_ZONE,
+    SENSITIVE_KEY,
+    ZERO_ALLOWED_POLICY_FIELDS,
 )
 from harness.orchestration.core.utils import (
-    CoordinatorError, JsonObject, _non_empty, _read_object, _strings,
+    CoordinatorError,
+    JsonObject,
+    _non_empty,
+    _read_object,
+    _strings,
 )
 
 
@@ -34,9 +51,15 @@ def _reject_sensitive(value: object, location: str) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             if not isinstance(key, str):
-                raise CoordinatorError(f"{location} contains a non-string key", remedy=f"use only string keys in {location}")
+                raise CoordinatorError(
+                    f"{location} contains a non-string key",
+                    remedy=f"use only string keys in {location}",
+                )
             if SENSITIVE_KEY.search(key):
-                raise CoordinatorError(f"{location} contains secret-shaped field {key!r}", remedy=f"remove the secret-shaped field {key!r} from {location}; credentials never belong in this config")
+                raise CoordinatorError(
+                    f"{location} contains secret-shaped field {key!r}",
+                    remedy=f"remove the secret-shaped field {key!r} from {location}; credentials never belong in this config",
+                )
             _reject_sensitive(child, f"{location}.{key}")
     elif isinstance(value, list):
         for index, child in enumerate(value):
@@ -87,11 +110,18 @@ def _default_config(repo: Path) -> JsonObject:
 def _config(repo: Path) -> JsonObject:
     if not _configured(repo):
         return _default_config(repo)
-    value = _read_object(repo / ".harness/orchestration.json", "project orchestration config")
+    value = _read_object(
+        repo / ".harness/orchestration.json", "project orchestration config"
+    )
     _reject_sensitive(value, "project orchestration config")
-    problems = health_problems(repo / ".harness/orchestration.json", repo / ".harness/orchestration/roles")
+    problems = health_problems(
+        repo / ".harness/orchestration.json", repo / ".harness/orchestration/roles"
+    )
     if problems:
-        raise CoordinatorError("invalid project orchestration config: " + "; ".join(problems), remedy="fix the listed project orchestration config problem(s) before retrying")
+        raise CoordinatorError(
+            "invalid project orchestration config: " + "; ".join(problems),
+            remedy="fix the listed project orchestration config problem(s) before retrying",
+        )
     return value
 
 
@@ -111,7 +141,8 @@ def _adaptive_continuation_policy(config: JsonObject) -> JsonObject:
                 resolved[key] = value
         ratio = policy.get("context_warn_ratio")
         if (
-            isinstance(ratio, (int, float)) and not isinstance(ratio, bool)
+            isinstance(ratio, (int, float))
+            and not isinstance(ratio, bool)
             and 0 < ratio <= 1
         ):
             resolved["context_warn_ratio"] = ratio
@@ -133,7 +164,9 @@ def _context_advisory(config: JsonObject, observed: int | None) -> JsonObject:
     return {"level": level, "limit": limit, "warn_at": warn_at, "observed": observed}
 
 
-def _numeric_policy(config: JsonObject, key: str, defaults: dict[str, int]) -> dict[str, int]:
+def _numeric_policy(
+    config: JsonObject, key: str, defaults: dict[str, int]
+) -> dict[str, int]:
     """Resolve a small project policy after config validation, retaining safe defaults.
 
     This second guard makes direct coordinator use safe even if a caller bypasses ``harness
@@ -144,7 +177,7 @@ def _numeric_policy(config: JsonObject, key: str, defaults: dict[str, int]) -> d
     configured = config.get(key)
     if not isinstance(configured, dict):
         return resolved
-    for name, default in defaults.items():
+    for name in defaults:
         value = configured.get(name)
         minimum = 0 if (key, name) in ZERO_ALLOWED_POLICY_FIELDS else 1
         if isinstance(value, int) and not isinstance(value, bool) and value >= minimum:
@@ -153,12 +186,20 @@ def _numeric_policy(config: JsonObject, key: str, defaults: dict[str, int]) -> d
 
 
 def _context_package_policy(config: JsonObject) -> dict[str, int]:
-    policy = _numeric_policy(config, "context_package_policy", DEFAULT_CONTEXT_PACKAGE_POLICY)
+    policy = _numeric_policy(
+        config, "context_package_policy", DEFAULT_CONTEXT_PACKAGE_POLICY
+    )
     if policy["reserved_prompt_tokens"] >= policy["context_window_tokens"]:
-        raise CoordinatorError("context_package_policy reserved_prompt_tokens must be below context_window_tokens", remedy="lower context_package_policy.reserved_prompt_tokens below context_window_tokens")
+        raise CoordinatorError(
+            "context_package_policy reserved_prompt_tokens must be below context_window_tokens",
+            remedy="lower context_package_policy.reserved_prompt_tokens below context_window_tokens",
+        )
     available = policy["context_window_tokens"] - policy["reserved_prompt_tokens"]
     if policy["max_tokens"] > available:
-        raise CoordinatorError("context_package_policy max_tokens exceeds available context after prompt headroom", remedy="lower context_package_policy.max_tokens so it fits inside context_window_tokens minus reserved_prompt_tokens")
+        raise CoordinatorError(
+            "context_package_policy max_tokens exceeds available context after prompt headroom",
+            remedy="lower context_package_policy.max_tokens so it fits inside context_window_tokens minus reserved_prompt_tokens",
+        )
     return policy
 
 
@@ -177,7 +218,11 @@ def _attention_policy(config: JsonObject) -> dict[str, int]:
 def _approval_ttl(config: JsonObject) -> int | None:
     """Seconds an explicit approval stays valid; ``None`` (the default) means it does not expire."""
     value = config.get("approval_ttl_seconds")
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else None
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 1
+        else None
+    )
 
 
 def _extension_names(config: JsonObject) -> dict[str, str]:
@@ -194,7 +239,10 @@ def _orchestration_policy(config: JsonObject) -> JsonObject:
     return {
         "approval_ttl_seconds": _approval_ttl(config),
         "attention": dict(_attention_policy(config)),
-        "context_pressure": {"context_limit": adaptive["context_limit"], "warning_ratio": adaptive["context_warn_ratio"]},
+        "context_pressure": {
+            "context_limit": adaptive["context_limit"],
+            "warning_ratio": adaptive["context_warn_ratio"],
+        },
         "extensions": _extension_names(config),
     }
 
@@ -204,7 +252,7 @@ def _preflight_policy(config: JsonObject) -> JsonObject:
     configured = config.get("preflight_policy")
     if not isinstance(configured, dict):
         return policy
-    for name, default in DEFAULT_PREFLIGHT_POLICY.items():
+    for name in DEFAULT_PREFLIGHT_POLICY:
         value = configured.get(name)
         if name == "require_estimates":
             if isinstance(value, bool):
@@ -216,7 +264,11 @@ def _preflight_policy(config: JsonObject) -> JsonObject:
 
 def _test_path_patterns(config: JsonObject) -> list[str]:
     patterns = config.get("test_path_patterns")
-    if isinstance(patterns, list) and patterns and all(_non_empty(item) for item in patterns):
+    if (
+        isinstance(patterns, list)
+        and patterns
+        and all(_non_empty(item) for item in patterns)
+    ):
         return list(patterns)
     return list(DEFAULT_TEST_PATH_PATTERNS)
 
@@ -253,7 +305,10 @@ def _developer_verification_commands(config: JsonObject) -> list[str]:
 def _worker_attestation_required(config: JsonObject) -> bool:
     value = config.get("worker_attestation_required", False)
     if not isinstance(value, bool):
-        raise CoordinatorError("worker_attestation_required must be a boolean", remedy="set worker_attestation_required to true or false in the project orchestration config")
+        raise CoordinatorError(
+            "worker_attestation_required must be a boolean",
+            remedy="set worker_attestation_required to true or false in the project orchestration config",
+        )
     return value
 
 
@@ -275,14 +330,20 @@ def _communication_policy(config: JsonObject) -> dict[str, str]:
 def _human_approval_gate(config: JsonObject) -> str:
     gate = config.get("human_approval_gate", "trusted")
     if gate not in {"trusted", "tty"}:
-        raise CoordinatorError("human_approval_gate must be trusted or tty", remedy="set human_approval_gate to 'trusted' or 'tty' in the project orchestration config")
+        raise CoordinatorError(
+            "human_approval_gate must be trusted or tty",
+            remedy="set human_approval_gate to 'trusted' or 'tty' in the project orchestration config",
+        )
     return cast(str, gate)
 
 
 def _approval_policy(config: JsonObject) -> str:
     policy = config.get("approval_policy", "manual_all")
     if policy not in {"manual_all", "milestone", "low_risk"}:
-        raise CoordinatorError("approval_policy must be manual_all, milestone or low_risk", remedy="set approval_policy to 'manual_all', 'milestone' or 'low_risk' in the project orchestration config")
+        raise CoordinatorError(
+            "approval_policy must be manual_all, milestone or low_risk",
+            remedy="set approval_policy to 'manual_all', 'milestone' or 'low_risk' in the project orchestration config",
+        )
     return cast(str, policy)
 
 
@@ -311,16 +372,30 @@ def _resolve_assignment(
         # No project-owned provider profile exists, so the only honest transport is the invoking
         # session itself; an Orca worker would have no agent to start.
         return (
-            role, {"paths": ["**"]}, DEFAULT_PROFILE, session_model.strip(), session_effort.strip(),
-            "in-process", runtime_name.strip() if _non_empty(runtime_name) else "session",
+            role,
+            {"paths": ["**"]},
+            DEFAULT_PROFILE,
+            session_model.strip(),
+            session_effort.strip(),
+            "in-process",
+            runtime_name.strip() if _non_empty(runtime_name) else "session",
         )
     try:
         plan = config.get("assignment_plans", {}).get(role_name)
-        resolved_runtime = resolve_runtime_name(plan, runtime_name) if isinstance(plan, dict) else ""
-        assignment = resolve_assignment(config, role, role_name, zone_name, resolved_runtime)
+        resolved_runtime = (
+            resolve_runtime_name(plan, runtime_name) if isinstance(plan, dict) else ""
+        )
+        assignment = resolve_assignment(
+            config, role, role_name, zone_name, resolved_runtime
+        )
     except ContractError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
     return (
-        assignment["role"], assignment["zone"], assignment["profile_id"], assignment["model"],
-        assignment["effort"], assignment["transport"], resolved_runtime,
+        assignment["role"],
+        assignment["zone"],
+        assignment["profile_id"],
+        assignment["model"],
+        assignment["effort"],
+        assignment["transport"],
+        resolved_runtime,
     )

@@ -73,7 +73,7 @@ clean-room QA для того же SHA. Report остаётся `reported` до 
 |---|---|---|
 | Когда | Апстримный pipeline устраивает без изменений | Нужны свои правки — лейблы, языки, доп. скиллы |
 | Механизм | `--capability mattpocock-suite` напрямую | `extends`/`overrides`/`additions` в `harness/CAPABILITIES.json`, полные first-party файлы и проверяемый snapshot ([ADR 0001](../adr/0001-portable-capability-snapshots.md)) |
-| Апдейт апстрима | `harness update` подтягивает всё как есть | Унаследованное подтягивается тем же `update`; за переопределёнными скиллами следите вручную — `scripts/check-upstream-drift` (см. «Политика репозитория» в README харнесса) показывает, что из них реально поменялось выше по течению |
+| Апдейт апстрима | `harness update` подтягивает всё как есть | Унаследованное подтягивается тем же `update`; за переопределёнными скиллами следите вручную — `scripts/check_upstream_drift` (см. «Политика репозитория» в README харнесса) показывает, что из них реально поменялось выше по течению |
 
 **`init` — первая установка в проект, где харнесса ещё нет.** Требует, чтобы `<repo>` уже был git-репозиторием; падает с «already exists; use update», если `.harness/harness.lock` уже есть.
 
@@ -753,7 +753,7 @@ coordinator-recorded причину compaction/restart, долю review diff в�
 
 ### Атрибуция коммитов
 
-`.claude/settings.local.json` оставляет встроенную атрибуцию пустой. Это дополнительный слой; фактический запрет обеспечивают `block-public-attribution.sh` до команды и `scripts/check-public-metadata.py` в CI.
+`.claude/settings.local.json` оставляет встроенную атрибуцию пустой. Это дополнительный слой; фактический запрет обеспечивают `block-public-attribution.sh` до команды и `scripts/check_public_metadata.py` в CI.
 
 Hook строго разбирает JSON payload и рассматривает только `tool_input.command`. В `git commit` он
 проверяет `-m`/`--message`/`--trailer` и содержимое `-F`/`--file`; в `gh pr` и `glab mr`

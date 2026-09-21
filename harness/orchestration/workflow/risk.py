@@ -14,22 +14,42 @@ import uuid
 from pathlib import Path
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
-from harness.orchestration.core import config as core_config, utils
-from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger, RiskAssessmentRecord
-from harness.orchestration.core.utils import (
-    CoordinatorError, JsonObject, _canonical, _non_empty, _repo, _safe_id, _strings,
+from harness.orchestration.core import utils
+from harness.orchestration.core.config import (
+    _reject_sensitive,
+    _role,
 )
 from harness.orchestration.core.git_utils import (
-    _candidate_commit, _changed_files_between, _commit_changed_files, _commit_evidence, _git_is_ancestor,
+    _candidate_commit,
+    _changed_files_between,
+    _commit_changed_files,
+    _commit_evidence,
+    _git_is_ancestor,
 )
-from harness.orchestration.core.config import (
-    _reject_sensitive, _role,
+from harness.orchestration.core.utils import (
+    CoordinatorError,
+    JsonObject,
+    _canonical,
+    _non_empty,
+    _repo,
+    _safe_id,
+    _strings,
 )
 from harness.orchestration.ledger.ledger_ops import (
-    _ledger_lock, _load_batch, _replace_record, _state_root, _write_record,
+    _ledger_lock,
+    _load_batch,
+    _replace_record,
+    _state_root,
+    _write_record,
+)
+from harness.orchestration.ledger.lifecycle import (
+    BatchRecord,
+    LifecycleLedger,
+    RiskAssessmentRecord,
 )
 from harness.orchestration.workflow.history import (
-    _latest_developer_candidate, _validate_batch_integrity,
+    _latest_developer_candidate,
+    _validate_batch_integrity,
 )
 
 
@@ -37,15 +57,23 @@ def _risk_triggers(repo: Path) -> list[str]:
     role = _role(repo, "code-review")
     triggers = role.get("risk_triggers")
     if not isinstance(triggers, list) or not all(_non_empty(item) for item in triggers):
-        raise CoordinatorError("code-review role has no valid risk triggers", remedy="add the code-review role's required risk triggers to its role manifest")
+        raise CoordinatorError(
+            "code-review role has no valid risk triggers",
+            remedy="add the code-review role's required risk triggers to its role manifest",
+        )
     return list(triggers)
 
 
-def _validate_trigger_names(triggers: object, label: str, known: list[str]) -> list[str]:
+def _validate_trigger_names(
+    triggers: object, label: str, known: list[str]
+) -> list[str]:
     values = _strings(triggers, label, allow_empty=True)
     unknown = [trigger for trigger in values if trigger not in known]
     if unknown:
-        raise CoordinatorError(f"{label} contains unknown risk triggers: {unknown}", remedy=f"remove the unknown trigger(s) from {label}, or add them to the project's known risk triggers")
+        raise CoordinatorError(
+            f"{label} contains unknown risk triggers: {unknown}",
+            remedy=f"remove the unknown trigger(s) from {label}, or add them to the project's known risk triggers",
+        )
     return list(dict.fromkeys(values))
 
 
@@ -55,7 +83,10 @@ def _matching_triggers(text: str, known: list[str]) -> list[str]:
         trigger
         for trigger in known
         if trigger in normalized
-        or any(re.search(pattern, normalized, re.IGNORECASE) for pattern in _trigger_patterns(trigger))
+        or any(
+            re.search(pattern, normalized, re.IGNORECASE)
+            for pattern in _trigger_patterns(trigger)
+        )
     ]
 
 
@@ -92,26 +123,50 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
     root = _state_root(args, repo)
     known = _risk_triggers(repo)
     candidate = _candidate_commit(repo, args.candidate_commit)
-    changed_files = [item.replace("\\", "/") for item in _strings(args.changed_file, "changed_files")]
-    developer_triggers = _validate_trigger_names(args.developer_trigger or [], "developer_triggers", known)
+    changed_files = [
+        item.replace("\\", "/") for item in _strings(args.changed_file, "changed_files")
+    ]
+    developer_triggers = _validate_trigger_names(
+        args.developer_trigger or [], "developer_triggers", known
+    )
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         if batch.get("state") != "awaiting-approval":
-            raise CoordinatorError("risk assessment requires a batch awaiting coordinator approval", remedy="move the batch to awaiting coordinator approval before registering a risk assessment")
+            raise CoordinatorError(
+                "risk assessment requires a batch awaiting coordinator approval",
+                remedy="move the batch to awaiting coordinator approval before registering a risk assessment",
+            )
         base = batch.get("base_commit")
         if args.base_commit:
             requested_base = _candidate_commit(repo, args.base_commit)
             if requested_base != base:
-                raise CoordinatorError("risk assessment base must match the batch-captured base commit", remedy="the risk assessment base does not match the batch-captured base commit -- " + INTERNAL_INVARIANT_REMEDY)
+                raise CoordinatorError(
+                    "risk assessment base must match the batch-captured base commit",
+                    remedy="the risk assessment base does not match the batch-captured base commit -- "
+                    + INTERNAL_INVARIANT_REMEDY,
+                )
         if base and not _git_is_ancestor(repo, base, candidate):
-            raise CoordinatorError("risk assessment base must be an ancestor of the candidate commit", remedy="pass a risk assessment base that is an ancestor of candidate_commit")
-        actual_files = _changed_files_between(repo, base, candidate) if base else _commit_changed_files(repo, candidate)
+            raise CoordinatorError(
+                "risk assessment base must be an ancestor of the candidate commit",
+                remedy="pass a risk assessment base that is an ancestor of candidate_commit",
+            )
+        actual_files = (
+            _changed_files_between(repo, base, candidate)
+            if base
+            else _commit_changed_files(repo, candidate)
+        )
         if actual_files != changed_files:
-            raise CoordinatorError("changed_files must exactly match the candidate diff", remedy="regenerate changed_files from the actual diff for candidate_commit")
+            raise CoordinatorError(
+                "changed_files must exactly match the candidate diff",
+                remedy="regenerate changed_files from the actual diff for candidate_commit",
+            )
         if _latest_developer_candidate(repo, root, batch) != candidate:
-            raise CoordinatorError("candidate commit does not match the accepted developer report", remedy="pass the candidate_commit from the accepted developer report")
+            raise CoordinatorError(
+                "candidate commit does not match the accepted developer report",
+                remedy="pass the candidate_commit from the accepted developer report",
+            )
         inherited_triggers = {
             trigger
             for escalation in batch.get("risk_escalations", [])
@@ -121,7 +176,11 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
         for trigger in sorted(inherited_triggers):
             if trigger not in developer_triggers:
                 developer_triggers.append(trigger)
-        evidence = " ".join(batch["definition_of_done"] + changed_files) + "\n" + _commit_evidence(repo, base, candidate)
+        evidence = (
+            " ".join(batch["definition_of_done"] + changed_files)
+            + "\n"
+            + _commit_evidence(repo, base, candidate)
+        )
         matched = _matching_triggers(evidence, known)
         for trigger in developer_triggers:
             if trigger not in matched:
@@ -147,7 +206,9 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
                 "candidate_commit": candidate,
                 "matched_triggers": matched,
                 "review_required": risk["review_required"],
-                "record_sha256": hashlib.sha256(_canonical(risk).encode("utf-8")).hexdigest(),
+                "record_sha256": hashlib.sha256(
+                    _canonical(risk).encode("utf-8")
+                ).hexdigest(),
             }
         )
         pending_candidate = batch.get("risk_reassessment_candidate")

@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import html
 import json
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any
 
 # Dynamic JSON boundary: the report is the output of delivery_stats' json-derived builders, its shape
 # validated at runtime, not statically.
@@ -18,7 +19,11 @@ JsonObject = dict[str, Any]  # type: ignore[explicit-any]
 
 MISSING = "нет данных"
 
-CLAUDE_INPUT_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+CLAUDE_INPUT_FIELDS = (
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
 
 STYLE = """
 :root{--bg:#0d0f12;--panel:#14171c;--line:#2a2f38;--ink:#e8e6e1;--dim:#8b93a1;
@@ -92,7 +97,10 @@ def _compact(value: object) -> str:
         return _esc(value)
     for limit, suffix in ((1_000_000_000, "млрд"), (1_000_000, "млн"), (1_000, "тыс")):
         if value >= limit:
-            return f"{value / limit:.2f}".rstrip("0").rstrip(".").replace(".", ",") + f" {suffix}"
+            return (
+                f"{value / limit:.2f}".rstrip("0").rstrip(".").replace(".", ",")
+                + f" {suffix}"
+            )
     return str(value)
 
 
@@ -133,18 +141,28 @@ def _hero(report: JsonObject) -> str:
     total = 0
     parts = []
     if claude.get("status") == "ok":
-        value = sum(_claude_input(b) + int(b["output_tokens"]) for b in claude["models"].values())
+        value = sum(
+            _claude_input(b) + int(b["output_tokens"])
+            for b in claude["models"].values()
+        )
         total += value
         parts.append(f"Claude — {_compact(value)}")
     if codex.get("status") == "ok":
-        value = sum(int(b["input_tokens"]) + int(b["output_tokens"]) for b in codex["models"].values())
+        value = sum(
+            int(b["input_tokens"]) + int(b["output_tokens"])
+            for b in codex["models"].values()
+        )
         total += value
         parts.append(f"Codex — {_compact(value)} (оценка)")
     figure = _compact(total) if total else '<span class="missing">нет данных</span>'
     epic = report["epic"]
     lede = (
         f"Тикетов закрыто: {report['tickets_closed']} из {report['tickets_total']}. "
-        + ("Из них: " + ", ".join(parts) + "." if parts else "Данных сессий по этим веткам нет.")
+        + (
+            "Из них: " + ", ".join(parts) + "."
+            if parts
+            else "Данных сессий по этим веткам нет."
+        )
     )
     return (
         '<div class="hero"><div>'
@@ -152,16 +170,28 @@ def _hero(report: JsonObject) -> str:
         '<div class="figure-note">токенов на эпик и его тикеты</div>'
         "</div>"
         f'<div class="lede">{_esc(lede)}<br><br>'
-        f'Эпик #{_esc(epic["number"])} — {_esc(epic["title"])}</div></div>'
+        f"Эпик #{_esc(epic['number'])} — {_esc(epic['title'])}</div></div>"
     )
 
 
-def _models_panel(title: str, usage: JsonObject, input_of: Callable[[JsonObject], int], css: str) -> str:
+def _models_panel(
+    title: str, usage: JsonObject, input_of: Callable[[JsonObject], int], css: str
+) -> str:
     if usage.get("status") != "ok":
-        return _panel(title, f'<p class="missing">{_esc(usage.get("reason", MISSING))}</p>')
+        return _panel(
+            title, f'<p class="missing">{_esc(usage.get("reason", MISSING))}</p>'
+        )
     rows = []
-    for model, bucket in sorted(usage["models"].items(), key=lambda kv: -int(kv[1]["output_tokens"])):
-        rows.append((model, int(bucket["output_tokens"]), _compact(int(bucket["output_tokens"]))))
+    for model, bucket in sorted(
+        usage["models"].items(), key=lambda kv: -int(kv[1]["output_tokens"])
+    ):
+        rows.append(
+            (
+                model,
+                int(bucket["output_tokens"]),
+                _compact(int(bucket["output_tokens"])),
+            )
+        )
     note = ""
     if usage.get("attribution") == "estimated":
         note = f'<p class="note"><span class="tag est">оценка</span> {_esc(usage.get("attribution_note", ""))}</p>'
@@ -169,7 +199,9 @@ def _models_panel(title: str, usage: JsonObject, input_of: Callable[[JsonObject]
         f"<tr><td>{_esc(model)}</td><td class='num'>{_compact(input_of(bucket))}</td>"
         f"<td class='num'>{_compact(int(bucket['output_tokens']))}</td>"
         f"<td class='num'>{_thousands(int(bucket['turns']))}</td></tr>"
-        for model, bucket in sorted(usage["models"].items(), key=lambda kv: -int(kv[1]["output_tokens"]))
+        for model, bucket in sorted(
+            usage["models"].items(), key=lambda kv: -int(kv[1]["output_tokens"])
+        )
     )
     return _panel(
         title,
@@ -186,7 +218,11 @@ def _comparison_panel(comparison: object) -> str:
     baseline = comparison.get("baseline")
     current = comparison.get("current")
     deltas = comparison.get("delta", {}).get("providers", {})
-    if not isinstance(baseline, dict) or not isinstance(current, dict) or not isinstance(deltas, dict):
+    if (
+        not isinstance(baseline, dict)
+        or not isinstance(current, dict)
+        or not isinstance(deltas, dict)
+    ):
         return ""
     rows = []
     for provider, label in (("claude", "Claude"), ("codex", "Codex")):
@@ -196,12 +232,14 @@ def _comparison_panel(comparison: object) -> str:
 
         def shown(value: object) -> str:
             if not isinstance(value, dict) or value.get("status") != "ok":
-                reason = value.get("reason", MISSING) if isinstance(value, dict) else MISSING
+                reason = (
+                    value.get("reason", MISSING) if isinstance(value, dict) else MISSING
+                )
                 return f'<span class="missing">{_esc(reason)}</span>'
             attribution = value.get("attribution", MISSING)
             tag = "est" if attribution == "estimated" else ""
             return (
-                f'{_thousands(value.get("total_tokens"))} '
+                f"{_thousands(value.get('total_tokens'))} "
                 f'<span class="tag {tag}">{_esc(attribution)}</span>'
             )
 
@@ -220,7 +258,9 @@ def _comparison_panel(comparison: object) -> str:
                 return f'<span class="missing">{_esc(MISSING)}</span>'
             return f"{value:+,}".replace(",", " ")
 
-        if isinstance(delta, dict) and ("cache_write_tokens" in delta or "cache_read_tokens" in delta):
+        if isinstance(delta, dict) and (
+            "cache_write_tokens" in delta or "cache_read_tokens" in delta
+        ):
             rows.append(
                 f"<tr><td colspan='3'>{label} · кеш (запись / чтение)</td>"
                 f"<td class='num'>{cache_delta_text(delta.get('cache_write_tokens'))} / "
@@ -240,8 +280,14 @@ def _comparison_panel(comparison: object) -> str:
 
 def _cache_panel(cache: object) -> str:
     if not isinstance(cache, dict):
-        return _panel("Из чего состоял вход Claude", f'<p class="missing">{_esc(MISSING)}</p>')
-    read, write, fresh = cache["cache_read_percent"], cache["cache_write_percent"], cache["fresh_percent"]
+        return _panel(
+            "Из чего состоял вход Claude", f'<p class="missing">{_esc(MISSING)}</p>'
+        )
+    read, write, fresh = (
+        cache["cache_read_percent"],
+        cache["cache_write_percent"],
+        cache["fresh_percent"],
+    )
     bar = (
         '<div class="split">'
         f'<span style="width:{max(read, 0.4):.3f}%;background:var(--accent)"></span>'
@@ -268,11 +314,17 @@ def _cache_panel(cache: object) -> str:
 
 def _cost_panel(cost: JsonObject) -> str:
     if cost.get("status") != "ok":
-        return _panel("Деньги", f'<p class="missing">{_esc(cost.get("reason", MISSING))}</p>')
+        return _panel(
+            "Деньги", f'<p class="missing">{_esc(cost.get("reason", MISSING))}</p>'
+        )
     currency = cost["currency"]
     rows = [
         ("как вышло", cost["total"], f"{_decimal(cost['total'])} {currency}"),
-        ("без кеша", cost["uncached_total"], f"{_decimal(cost['uncached_total'])} {currency}"),
+        (
+            "без кеша",
+            cost["uncached_total"],
+            f"{_decimal(cost['uncached_total'])} {currency}",
+        ),
     ]
     per_model = "".join(
         f"<tr><td>{_esc(item['model'])}</td>"
@@ -284,7 +336,7 @@ def _cost_panel(cost: JsonObject) -> str:
     if cost["unpriced_models"]:
         unpriced = (
             f'<p class="note">Нет ставок в тарифе, поэтому не посчитаны: '
-            f'{_esc(", ".join(cost["unpriced_models"]))}</p>'
+            f"{_esc(', '.join(cost['unpriced_models']))}</p>"
         )
     return _panel(
         f"Деньги — экономия на кеше {_decimal(cost['cache_saving'])} {currency}",
@@ -299,10 +351,18 @@ def _cost_panel(cost: JsonObject) -> str:
 
 def _window_panel(report: JsonObject) -> str:
     rows = []
-    quota = report["claude"].get("quota") if isinstance(report["claude"], dict) else None
+    quota = (
+        report["claude"].get("quota") if isinstance(report["claude"], dict) else None
+    )
     if isinstance(quota, dict):
-        rows.append(f"<tr><td>Claude</td><td class='num'>{_esc(json.dumps(quota, ensure_ascii=False)[:120])}</td></tr>")
-    limits = report["codex"].get("rate_limits") if isinstance(report["codex"], dict) else None
+        rows.append(
+            f"<tr><td>Claude</td><td class='num'>{_esc(json.dumps(quota, ensure_ascii=False)[:120])}</td></tr>"
+        )
+    limits = (
+        report["codex"].get("rate_limits")
+        if isinstance(report["codex"], dict)
+        else None
+    )
     if isinstance(limits, dict):
         primary = limits.get("primary") or {}
         if isinstance(primary, dict) and primary.get("used_percent") is not None:
@@ -312,7 +372,9 @@ def _window_panel(report: JsonObject) -> str:
                 f"<tr><td>Codex ({_esc(label)})</td><td class='num'>{_decimal(primary['used_percent'], 1)} %</td></tr>"
             )
     if not rows:
-        return _panel("Съедено окон подписки", f'<p class="missing">{_esc(MISSING)}</p>')
+        return _panel(
+            "Съедено окон подписки", f'<p class="missing">{_esc(MISSING)}</p>'
+        )
     return _panel(
         "Съедено окон подписки",
         f"<div class='scroll'><table><tbody>{''.join(rows)}</tbody></table></div>"
@@ -326,7 +388,9 @@ def _tickets_panel(report: JsonObject) -> str:
     for entry in report["volume"]["entries"]:
         if entry.get("status") != "ok":
             continue
-        bucket = by_ticket.setdefault(entry.get("ticket"), {"insertions": 0, "deletions": 0, "commits": 0})
+        bucket = by_ticket.setdefault(
+            entry.get("ticket"), {"insertions": 0, "deletions": 0, "commits": 0}
+        )
         for field in bucket:
             bucket[field] += int(entry.get(field, 0))
     for ticket in report["tickets"]:
@@ -362,7 +426,9 @@ def _session_stats_panel(claude: JsonObject) -> str:
     rows = []
     for s in stats:
         kind = "Подагент" if s.get("kind", "main") == "subagent" else "Основная"
-        rows.append(f"<tr><td>{_esc(s['branch'])}</td><td>{_esc(kind)}</td><td class='num'>{s['turns']}</td><td class='num'>{_thousands(s['max_input'])}</td><td class='num'>{_thousands(s['total_input'])}</td></tr>")
+        rows.append(
+            f"<tr><td>{_esc(s['branch'])}</td><td>{_esc(kind)}</td><td class='num'>{s['turns']}</td><td class='num'>{_thousands(s['max_input'])}</td><td class='num'>{_thousands(s['total_input'])}</td></tr>"
+        )
     return _panel(
         "Самые затратные сессии",
         "<div class='table-wrap'><table>"
@@ -373,19 +439,32 @@ def _session_stats_panel(claude: JsonObject) -> str:
 
 def _orchestration_panel(orchestration: object) -> str:
     if not isinstance(orchestration, dict) or orchestration.get("status") != "ok":
-        reason = orchestration.get("reason", MISSING) if isinstance(orchestration, dict) else MISSING
+        reason = (
+            orchestration.get("reason", MISSING)
+            if isinstance(orchestration, dict)
+            else MISSING
+        )
         return _panel("Оркестрация", f'<p class="missing">{_esc(reason)}</p>')
     rows = []
     for number, ticket in sorted(orchestration["tickets"].items()):
         for session in ticket["worker_sessions"]:
-            restarts = "; ".join(f"{r['decision']}: {r['reason']}" for r in session["restarts"]) or "—"
+            restarts = (
+                "; ".join(
+                    f"{r['decision']}: {r['reason']}" for r in session["restarts"]
+                )
+                or "—"
+            )
             rows.append(
                 f"<tr><td>#{_esc(number)}</td><td>{_esc(session['role'])}</td>"
                 f"<td class='num'>{_thousands(session['sessions'])}</td><td>{_esc(restarts)}</td></tr>"
             )
         rate = ticket["qa_failure_rate"]
-        rate_text = f"{_decimal(rate * 100, 1)} %" if isinstance(rate, float) else _esc(rate)
-        rows.append(f"<tr><td>#{_esc(number)}</td><td colspan='2'>QA failure rate</td><td>{rate_text}</td></tr>")
+        rate_text = (
+            f"{_decimal(rate * 100, 1)} %" if isinstance(rate, float) else _esc(rate)
+        )
+        rows.append(
+            f"<tr><td>#{_esc(number)}</td><td colspan='2'>QA failure rate</td><td>{rate_text}</td></tr>"
+        )
         scope = ticket["review_scope"]
         if isinstance(scope, list):
             for entry in scope:
@@ -413,23 +492,39 @@ def build_html(report: JsonObject) -> str:
     body = [
         '<div class="wrap">',
         '<div class="eyebrow">Статистика доставки</div>',
-        f'<h1>{_esc(report["repository"])} · эпик #{_esc(report["epic"]["number"])}</h1>',
-        f'<p class="sub">Отчёт собран {_esc(report["generated_at"][:19].replace("T", " "))} UTC '
-        "по локальным логам сессий и истории git.</p>",
+        f"<h1>{_esc(report['repository'])} · эпик #{_esc(report['epic']['number'])}</h1>",
+        (
+            f'<p class="sub">Отчёт собран {_esc(report["generated_at"][:19].replace("T", " "))} UTC '
+            "по локальным логам сессий и истории git.</p>"
+        ),
         _hero(report),
         '<div class="grid g3">',
-        _stat("строк вставлено", _thousands(totals["insertions"]), f"удалено {_thousands(totals['deletions'])}"),
-        _stat("файлов затронуто", _thousands(totals["files"]), f"{_thousands(totals['commits'])} коммитов"),
+        _stat(
+            "строк вставлено",
+            _thousands(totals["insertions"]),
+            f"удалено {_thousands(totals['deletions'])}",
+        ),
+        _stat(
+            "файлов затронуто",
+            _thousands(totals["files"]),
+            f"{_thousands(totals['commits'])} коммитов",
+        ),
         _stat(
             "тикетов закрыто",
             f"{report['tickets_closed']}",
             f"из {report['tickets_total']}"
-            + (f", ADR {report['adr_added']}" if isinstance(report["adr_added"], int) else ""),
+            + (
+                f", ADR {report['adr_added']}"
+                if isinstance(report["adr_added"], int)
+                else ""
+            ),
         ),
         "</div>",
         '<div class="grid g2">',
         _models_panel("Claude · по моделям", claude, _claude_input, ""),
-        _models_panel("Codex · по моделям", codex, lambda b: int(b["input_tokens"]), "b"),
+        _models_panel(
+            "Codex · по моделям", codex, lambda b: int(b["input_tokens"]), "b"
+        ),
         "</div>",
         f'<div class="grid">{comparison_panel}</div>' if comparison_panel else "",
         '<div class="grid">',
@@ -448,13 +543,15 @@ def build_html(report: JsonObject) -> str:
         '<div class="grid">',
         _orchestration_panel(report.get("orchestration")),
         "</div>",
-        f'<footer>Сессий учтено: {sessions}. Claude приписан к эпику точно — по ветке каждой записи. '
-        "Codex приписан оценочно — по репозиторию и временному окну, потому что в его логах ветки нет. "
-        "Всё, что не удалось получить, помечено как «нет данных», а не занулено.</footer>",
+        (
+            f"<footer>Сессий учтено: {sessions}. Claude приписан к эпику точно — по ветке каждой записи. "
+            "Codex приписан оценочно — по репозиторию и временному окну, потому что в его логах ветки нет. "
+            "Всё, что не удалось получить, помечено как «нет данных», а не занулено.</footer>"
+        ),
         "</div>",
     ]
     return (
-        "<!doctype html>\n<html lang=\"ru\"><head><meta charset=\"utf-8\">"
+        '<!doctype html>\n<html lang="ru"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>{_esc(report['repository'])} · эпик #{_esc(report['epic']['number'])}</title>"
         f"<style>{STYLE}</style></head><body>{''.join(body)}</body></html>\n"

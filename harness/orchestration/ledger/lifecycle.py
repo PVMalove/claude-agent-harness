@@ -14,29 +14,38 @@ import json
 import os
 import shutil
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import ClassVar, Iterator, Protocol, TypeAlias, cast
+from typing import ClassVar, Protocol, cast
 
 from ...errors import INTERNAL_INVARIANT_REMEDY, HarnessError
-
 
 LEDGER_VERSION = 3
 SUPPORTED_LEDGER_VERSIONS = (1, 2, 3)
 POINTER_NAME = "ledger.json"
 GENERATIONS = "generations"
 RECORD_DIRECTORIES = (
-    "batches", "plans", "dispatches", "dispatch-status", "risk-assessments", "context-packages",
-    "checkpoints", "reports", "qa-lane", "qa-artifacts", "audit",
+    "batches",
+    "plans",
+    "dispatches",
+    "dispatch-status",
+    "risk-assessments",
+    "context-packages",
+    "checkpoints",
+    "reports",
+    "qa-lane",
+    "qa-artifacts",
+    "audit",
 )
 
 # Ledger records are persisted JSON.  Keep the dynamic boundary at ``_read`` explicit while
 # preserving arbitrary, forward-compatible JSON in each record's ``extra`` fields.
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
-JsonObject: TypeAlias = dict[str, JsonValue]
+type JsonScalar = str | int | float | bool | None
+type JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+type JsonObject = dict[str, JsonValue]
 
 
 class LedgerError(HarnessError):
@@ -60,18 +69,25 @@ class BatchRecord:
         return self.batch_id
 
     def to_dict(self) -> JsonObject:
-        return {**self.extra, "batch_id": self.batch_id, "state": self.state,
-                "dispatches": self.dispatches, "coordinator_approval": self.coordinator_approval}
+        return {
+            **self.extra,
+            "batch_id": self.batch_id,
+            "state": self.state,
+            "dispatches": self.dispatches,
+            "coordinator_approval": self.coordinator_approval,
+        }
 
     @classmethod
-    def from_dict(cls, data: JsonObject) -> "BatchRecord":
+    def from_dict(cls, data: JsonObject) -> BatchRecord:
         known = ("batch_id", "state", "dispatches", "coordinator_approval")
         extra = {key: value for key, value in data.items() if key not in known}
         return cls(
             batch_id=cast(str, data.get("batch_id")),
             state=cast(str, data.get("state")),
             dispatches=cast(list[JsonValue], data.get("dispatches")),
-            coordinator_approval=cast(JsonObject | None, data.get("coordinator_approval")),
+            coordinator_approval=cast(
+                JsonObject | None, data.get("coordinator_approval")
+            ),
             extra=extra,
         )
 
@@ -93,7 +109,7 @@ class PlanRecord:
         return {**self.extra, "batch_id": self.batch_id}
 
     @classmethod
-    def from_dict(cls, data: JsonObject) -> "PlanRecord":
+    def from_dict(cls, data: JsonObject) -> PlanRecord:
         known = ("batch_id",)
         extra = {key: value for key, value in data.items() if key not in known}
         return cls(batch_id=cast(str, data.get("batch_id")), extra=extra)
@@ -116,18 +132,25 @@ class DispatchRecord:
         return self.dispatch_id
 
     def to_dict(self) -> JsonObject:
-        return {**self.extra, "dispatch_id": self.dispatch_id, "batch_id": self.batch_id,
-                "state": self.state, "coordinator_approval": self.coordinator_approval}
+        return {
+            **self.extra,
+            "dispatch_id": self.dispatch_id,
+            "batch_id": self.batch_id,
+            "state": self.state,
+            "coordinator_approval": self.coordinator_approval,
+        }
 
     @classmethod
-    def from_dict(cls, data: JsonObject) -> "DispatchRecord":
+    def from_dict(cls, data: JsonObject) -> DispatchRecord:
         known = ("dispatch_id", "batch_id", "state", "coordinator_approval")
         extra = {key: value for key, value in data.items() if key not in known}
         return cls(
             dispatch_id=cast(str, data.get("dispatch_id")),
             batch_id=cast(str, data.get("batch_id")),
             state=cast(str, data.get("state")),
-            coordinator_approval=cast(JsonObject | None, data.get("coordinator_approval")),
+            coordinator_approval=cast(
+                JsonObject | None, data.get("coordinator_approval")
+            ),
             extra=extra,
         )
 
@@ -150,10 +173,14 @@ class DispatchStatusRecord:
         return {**self.extra, "dispatch_id": self.dispatch_id, "state": self.state}
 
     @classmethod
-    def from_dict(cls, data: JsonObject) -> "DispatchStatusRecord":
+    def from_dict(cls, data: JsonObject) -> DispatchStatusRecord:
         known = ("dispatch_id", "state")
         extra = {key: value for key, value in data.items() if key not in known}
-        return cls(dispatch_id=cast(str, data.get("dispatch_id")), state=cast(str, data.get("state")), extra=extra)
+        return cls(
+            dispatch_id=cast(str, data.get("dispatch_id")),
+            state=cast(str, data.get("state")),
+            extra=extra,
+        )
 
 
 @dataclass(frozen=True)
@@ -173,10 +200,12 @@ class RiskAssessmentRecord:
         return {**self.extra, "risk_assessment_id": self.risk_assessment_id}
 
     @classmethod
-    def from_dict(cls, data: JsonObject) -> "RiskAssessmentRecord":
+    def from_dict(cls, data: JsonObject) -> RiskAssessmentRecord:
         known = ("risk_assessment_id",)
         extra = {key: value for key, value in data.items() if key not in known}
-        return cls(risk_assessment_id=cast(str, data.get("risk_assessment_id")), extra=extra)
+        return cls(
+            risk_assessment_id=cast(str, data.get("risk_assessment_id")), extra=extra
+        )
 
 
 @dataclass(frozen=True)
@@ -196,10 +225,12 @@ class ContextPackageRecord:
         return {**self.extra, "context_package_id": self.context_package_id}
 
     @classmethod
-    def from_dict(cls, data: JsonObject) -> "ContextPackageRecord":
+    def from_dict(cls, data: JsonObject) -> ContextPackageRecord:
         known = ("context_package_id",)
         extra = {key: value for key, value in data.items() if key not in known}
-        return cls(context_package_id=cast(str, data.get("context_package_id")), extra=extra)
+        return cls(
+            context_package_id=cast(str, data.get("context_package_id")), extra=extra
+        )
 
 
 @dataclass(frozen=True)
@@ -219,7 +250,7 @@ class CheckpointRecord:
         return {**self.extra, "checkpoint_id": self.checkpoint_id}
 
     @classmethod
-    def from_dict(cls, data: JsonObject) -> "CheckpointRecord":
+    def from_dict(cls, data: JsonObject) -> CheckpointRecord:
         known = ("checkpoint_id",)
         extra = {key: value for key, value in data.items() if key not in known}
         return cls(checkpoint_id=cast(str, data.get("checkpoint_id")), extra=extra)
@@ -239,7 +270,7 @@ class LedgerRecordVO(Protocol):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _canonical(value: JsonObject) -> str:
@@ -250,9 +281,15 @@ def _read(path: Path, label: str) -> JsonObject:
     try:
         value: object = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise LedgerError(f"{label} is not valid JSON: {path.name}", remedy=f"fix the JSON syntax in {path}") from exc
+        raise LedgerError(
+            f"{label} is not valid JSON: {path.name}",
+            remedy=f"fix the JSON syntax in {path}",
+        ) from exc
     if not isinstance(value, dict):
-        raise LedgerError(f"{label} must be a JSON object: {path.name}", remedy=f"rewrite {path} as a JSON object")
+        raise LedgerError(
+            f"{label} must be a JSON object: {path.name}",
+            remedy=f"rewrite {path} as a JSON object",
+        )
     # json.loads is a dynamic boundary; after confirming the top-level object, JSON itself
     # guarantees string object keys and recursive JSON-compatible values.
     return cast(JsonObject, value)
@@ -307,7 +344,11 @@ class LifecycleLedger:
         version = pointer["version"]
         generation = pointer["generation"]
         selected_at = pointer["selected_at"]
-        if not isinstance(version, int) or version not in SUPPORTED_LEDGER_VERSIONS or not isinstance(generation, str):
+        if (
+            not isinstance(version, int)
+            or version not in SUPPORTED_LEDGER_VERSIONS
+            or not isinstance(generation, str)
+        ):
             raise LedgerError(
                 "ledger pointer has an unsupported version or generation",
                 remedy=f"fix {self.pointer_path}: version must be one of {SUPPORTED_LEDGER_VERSIONS} and generation a string",
@@ -332,7 +373,8 @@ class LifecycleLedger:
         if pointer is None:
             if self._legacy_records_present():
                 raise LedgerError(
-                    "legacy lifecycle state requires an explicit ledger migrate", remedy="run 'coordinator.py ledger migrate' once"
+                    "legacy lifecycle state requires an explicit ledger migrate",
+                    remedy="run 'coordinator.py ledger migrate' once",
                 )
             return self.root
         if pointer["version"] != LEDGER_VERSION:
@@ -388,7 +430,8 @@ class LifecycleLedger:
             return pointer
         if self._legacy_records_present():
             raise LedgerError(
-                "legacy lifecycle state requires an explicit ledger migrate", remedy="run 'coordinator.py ledger migrate' once"
+                "legacy lifecycle state requires an explicit ledger migrate",
+                remedy="run 'coordinator.py ledger migrate' once",
             )
         generation = self._new_generation("initialize")
         return self._select(generation)
@@ -396,10 +439,16 @@ class LifecycleLedger:
     def status(self) -> JsonObject:
         pointer = self.pointer()
         if pointer is None:
-            return {"version": 0, "generation": None, "legacy": self._legacy_records_present()}
+            return {
+                "version": 0,
+                "generation": None,
+                "legacy": self._legacy_records_present(),
+            }
         if pointer["version"] != LEDGER_VERSION:
             return {
-                "version": pointer["version"], "generation": pointer["generation"], "legacy": False,
+                "version": pointer["version"],
+                "generation": pointer["generation"],
+                "legacy": False,
                 "stale_schema": True,
             }
         root = self.records_root()
@@ -418,7 +467,11 @@ class LifecycleLedger:
         its pointer is switched."""
         pointer = self.pointer()
         if pointer is not None and pointer["version"] == LEDGER_VERSION:
-            return {"version": pointer["version"], "generation": pointer["generation"], "migrated": False}
+            return {
+                "version": pointer["version"],
+                "generation": pointer["generation"],
+                "migrated": False,
+            }
         if pointer is None and not self._legacy_records_present():
             return {"version": 0, "generation": None, "migrated": False}
         if pointer is None:
@@ -428,7 +481,10 @@ class LifecycleLedger:
         else:
             source_root = self.root / GENERATIONS / self._pointer_generation(pointer)
             purpose = "schema-upgrade"
-            audit_details = {"previous_generation": self._pointer_generation(pointer), "previous_version": pointer["version"]}
+            audit_details = {
+                "previous_generation": self._pointer_generation(pointer),
+                "previous_version": pointer["version"],
+            }
         self._validate_legacy(source_root)
         generation = self._new_generation(purpose)
         for directory in RECORD_DIRECTORIES:
@@ -442,15 +498,22 @@ class LifecycleLedger:
             for path in sorted((source_root / directory).rglob("*"))
             if path.is_file()
         }
-        self._append_audit(generation, purpose, {**audit_details, "legacy_records": imported})
+        self._append_audit(
+            generation, purpose, {**audit_details, "legacy_records": imported}
+        )
         self._validate_generation(generation)
         pointer = self._select(generation)
-        return {"version": pointer["version"], "generation": pointer["generation"], "migrated": True}
+        return {
+            "version": pointer["version"],
+            "generation": pointer["generation"],
+            "migrated": True,
+        }
 
     def reset(self, confirmation: str) -> JsonObject:
         if confirmation != "RESET":
             raise LedgerError(
-                "ledger reset requires --confirm RESET", remedy="pass --confirm RESET (the literal string) to acknowledge the reset"
+                "ledger reset requires --confirm RESET",
+                remedy="pass --confirm RESET (the literal string) to acknowledge the reset",
             )
         current = self.records_root()
         active = []
@@ -460,17 +523,26 @@ class LifecycleLedger:
                 active.append(batch.get("batch_id", path.stem))
         if active:
             raise LedgerError(
-                "ledger reset is refused while batches are active: " + ", ".join(map(str, active)),
+                "ledger reset is refused while batches are active: "
+                + ", ".join(map(str, active)),
                 remedy="decide (complete or abandon) the listed active batches before resetting the ledger",
             )
         previous = self.pointer()
         generation = self._new_generation("reset")
-        self._append_audit(generation, "reset", {
-            "previous_generation": previous["generation"] if previous else None,
-            "confirmation": "RESET",
-        })
+        self._append_audit(
+            generation,
+            "reset",
+            {
+                "previous_generation": previous["generation"] if previous else None,
+                "confirmation": "RESET",
+            },
+        )
         pointer = self._select(generation)
-        return {"version": pointer["version"], "generation": pointer["generation"], "reset": True}
+        return {
+            "version": pointer["version"],
+            "generation": pointer["generation"],
+            "reset": True,
+        }
 
     def clean(self) -> JsonObject:
         """Remove orphaned dispatch evidence from the current generation or legacy state."""
@@ -494,7 +566,9 @@ class LifecycleLedger:
                 entries = batch.get("dispatches", [])
                 if isinstance(entries, list):
                     for entry in entries:
-                        if isinstance(entry, dict) and isinstance(entry.get("dispatch_id"), str):
+                        if isinstance(entry, dict) and isinstance(
+                            entry.get("dispatch_id"), str
+                        ):
                             dispatch_id = entry["dispatch_id"]
                             assert isinstance(dispatch_id, str)
                             referenced.add(dispatch_id)
@@ -513,7 +587,7 @@ class LifecycleLedger:
         return {
             "version": pointer["version"] if pointer else 0,
             "generation": pointer["generation"] if pointer else None,
-            "cleaned": removed
+            "cleaned": removed,
         }
 
     def _record_path(self, record: LedgerRecordVO) -> Path:
@@ -522,10 +596,16 @@ class LifecycleLedger:
 
     @staticmethod
     def _check_record_id(record_id: object) -> None:
-        if not isinstance(record_id, str) or not record_id or "/" in record_id or "\\" in record_id \
-                or record_id in {".", ".."}:
+        if (
+            not isinstance(record_id, str)
+            or not record_id
+            or "/" in record_id
+            or "\\" in record_id
+            or record_id in {".", ".."}
+        ):
             raise LedgerError(
-                "record id is not a valid path segment", remedy="use a non-empty record id with no path separators and not '.' or '..'"
+                "record id is not a valid path segment",
+                remedy="use a non-empty record id with no path separators and not '.' or '..'",
             )
 
     def write_record(self, record: LedgerRecordVO) -> None:
@@ -536,7 +616,9 @@ class LifecycleLedger:
         """Persist a Value-Object-backed record transition, deriving its path from the record."""
         self.replace(self._record_path(record), record.to_dict())
 
-    def write_immutable(self, path: Path, value: JsonObject, *, artifact: bool = False) -> None:
+    def write_immutable(
+        self, path: Path, value: JsonObject, *, artifact: bool = False
+    ) -> None:
         generation, relative = self._selected_path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -547,9 +629,14 @@ class LifecycleLedger:
                 f"refusing to overwrite immutable record: {path.name}",
                 remedy=f"use a different record id, or 'ledger clean'/inspect {path} if it is orphaned evidence",
             ) from exc
-        self._append_audit(generation, "immutable-artifact" if artifact else "immutable-record", {
-            "path": relative, "sha256": _digest(path),
-        })
+        self._append_audit(
+            generation,
+            "immutable-artifact" if artifact else "immutable-record",
+            {
+                "path": relative,
+                "sha256": _digest(path),
+            },
+        )
 
     def write_artifact(self, path: Path, value: str) -> None:
         generation, relative = self._selected_path(path)
@@ -563,14 +650,19 @@ class LifecycleLedger:
                     f"refusing to overwrite immutable artifact: {path.name}",
                     remedy=f"write a new artifact under a different name instead of overwriting {path}",
                 ) from exc
-        self._append_audit(generation, "immutable-artifact", {"path": relative, "sha256": _digest(path)})
+        self._append_audit(
+            generation,
+            "immutable-artifact",
+            {"path": relative, "sha256": _digest(path)},
+        )
 
     def replace(self, path: Path, value: JsonObject) -> None:
         """Atomically persist one allowed record transition and append its immutable audit event."""
         generation, relative = self._selected_path(path)
         if not path.is_file():
             raise LedgerError(
-                f"ledger transition targets a missing record: {relative}", remedy=f"write the record at {path} before transitioning it"
+                f"ledger transition targets a missing record: {relative}",
+                remedy=f"write the record at {path} before transitioning it",
             )
         before = _read(path, "current lifecycle record")
         transition: JsonObject = {"path": relative, "before_sha256": _digest(path)}
@@ -586,11 +678,16 @@ class LifecycleLedger:
         generation, relative = self._selected_path(path)
         if not path.is_file():
             raise LedgerError(
-                f"ledger deletion targets a missing record: {relative}", remedy=f"verify {path} exists before deleting it"
+                f"ledger deletion targets a missing record: {relative}",
+                remedy=f"verify {path} exists before deleting it",
             )
         previous = _digest(path)
         path.unlink()
-        self._append_audit(generation, "deletion", {"path": relative, "sha256": previous, "reason": reason})
+        self._append_audit(
+            generation,
+            "deletion",
+            {"path": relative, "sha256": previous, "reason": reason},
+        )
 
     def _selected_path(self, path: Path) -> tuple[Path, str]:
         generation = self.records_root()
@@ -598,11 +695,13 @@ class LifecycleLedger:
             relative = path.resolve().relative_to(generation).as_posix()
         except ValueError as exc:
             raise LedgerError(
-                "lifecycle record escapes the selected generation", remedy=f"pass a path inside the selected generation {generation}"
+                "lifecycle record escapes the selected generation",
+                remedy=f"pass a path inside the selected generation {generation}",
             ) from exc
         if relative.startswith("audit/"):
             raise LedgerError(
-                "lifecycle audit records are append-only", remedy="write a new audit event instead of modifying an existing one"
+                "lifecycle audit records are append-only",
+                remedy="write a new audit event instead of modifying an existing one",
             )
         return generation, relative
 
@@ -619,21 +718,50 @@ class LifecycleLedger:
             except FileNotFoundError:
                 pass
 
-    def _validate_batch_transition(self, generation: Path, before: JsonObject, after: JsonObject) -> None:
+    def _validate_batch_transition(
+        self, generation: Path, before: JsonObject, after: JsonObject
+    ) -> None:
         previous = before.get("state")
         target = after.get("state")
         allowed = {
-            "planned": {"planned", "awaiting-approval", "blocked", "failed", "not-required"},
-            "awaiting-approval": {"awaiting-approval", "active", "completed", "blocked", "failed", "not-required", "abandoned"},
-            "active": {"active", "awaiting-approval", "blocked", "failed", "not-required"},
+            "planned": {
+                "planned",
+                "awaiting-approval",
+                "blocked",
+                "failed",
+                "not-required",
+            },
+            "awaiting-approval": {
+                "awaiting-approval",
+                "active",
+                "completed",
+                "blocked",
+                "failed",
+                "not-required",
+                "abandoned",
+            },
+            "active": {
+                "active",
+                "awaiting-approval",
+                "blocked",
+                "failed",
+                "not-required",
+            },
             "blocked": {"blocked", "failed"},
             "failed": {"failed"},
             "completed": {"completed", "failed"},
             "not-required": {"not-required"},
             "abandoned": {"abandoned"},
         }
-        if not isinstance(previous, str) or not isinstance(target, str) or previous not in allowed or target not in allowed[previous]:
-            allowed_targets = sorted(allowed.get(previous, ())) if isinstance(previous, str) else []
+        if (
+            not isinstance(previous, str)
+            or not isinstance(target, str)
+            or previous not in allowed
+            or target not in allowed[previous]
+        ):
+            allowed_targets = (
+                sorted(allowed.get(previous, ())) if isinstance(previous, str) else []
+            )
             raise LedgerError(
                 f"ledger rejects batch transition {previous!r} -> {target!r}",
                 remedy=f"transition through one of the allowed states for {previous!r}: {allowed_targets}",
@@ -641,7 +769,8 @@ class LifecycleLedger:
         if previous == "planned" and target == "awaiting-approval":
             approval = after.get("coordinator_approval")
             if not isinstance(approval, dict) or not all(
-                isinstance(value := approval.get(key), str) and value.strip() for key in ("approved_by", "approved_at")
+                isinstance(value := approval.get(key), str) and value.strip()
+                for key in ("approved_by", "approved_at")
             ):
                 raise LedgerError(
                     "ledger requires recorded coordinator approval before a batch awaits dispatch",
@@ -651,23 +780,36 @@ class LifecycleLedger:
             dispatches = after.get("dispatches")
             if not isinstance(dispatches, list) or not dispatches:
                 raise LedgerError(
-                    "ledger requires an approved dispatch before activating a batch", remedy="approve a dispatch for this batch before activating it"
+                    "ledger requires an approved dispatch before activating a batch",
+                    remedy="approve a dispatch for this batch before activating it",
                 )
-            dispatch_id = dispatches[-1].get("dispatch_id") if isinstance(dispatches[-1], dict) else None
+            dispatch_id = (
+                dispatches[-1].get("dispatch_id")
+                if isinstance(dispatches[-1], dict)
+                else None
+            )
             if not isinstance(dispatch_id, str):
                 raise LedgerError(
                     "ledger requires a valid approved dispatch ID before activating a batch",
                     remedy="ensure the batch's last dispatch entry has a string dispatch_id before activating it",
                 )
-            dispatch = _read(generation / "dispatches" / f"{dispatch_id}.json", "approved dispatch")
-            if dispatch.get("state") != "approved" or not isinstance(dispatch.get("coordinator_approval"), dict):
+            dispatch = _read(
+                generation / "dispatches" / f"{dispatch_id}.json", "approved dispatch"
+            )
+            if dispatch.get("state") != "approved" or not isinstance(
+                dispatch.get("coordinator_approval"), dict
+            ):
                 raise LedgerError(
                     "ledger requires an immutable approved dispatch before activating a batch",
                     remedy=f"approve dispatch {dispatch_id!r} (state=approved with coordinator_approval) before activating this batch",
                 )
 
     def _legacy_records_present(self) -> bool:
-        return any((self.root / directory).exists() for directory in RECORD_DIRECTORIES if directory != "audit")
+        return any(
+            (self.root / directory).exists()
+            for directory in RECORD_DIRECTORIES
+            if directory != "audit"
+        )
 
     def _new_generation(self, purpose: str) -> Path:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -685,8 +827,14 @@ class LifecycleLedger:
 
     def _select(self, generation: Path) -> JsonObject:
         self._validate_generation(generation)
-        pointer: JsonObject = {"version": LEDGER_VERSION, "generation": generation.name, "selected_at": _now()}
-        temporary = self.pointer_path.with_name(f".{POINTER_NAME}.{uuid.uuid4().hex}.tmp")
+        pointer: JsonObject = {
+            "version": LEDGER_VERSION,
+            "generation": generation.name,
+            "selected_at": _now(),
+        }
+        temporary = self.pointer_path.with_name(
+            f".{POINTER_NAME}.{uuid.uuid4().hex}.tmp"
+        )
         try:
             temporary.write_text(_canonical(pointer), encoding="utf-8", newline="\n")
             os.replace(temporary, self.pointer_path)
@@ -704,7 +852,9 @@ class LifecycleLedger:
             "action": action,
             "details": details,
         }
-        audit["record_sha256"] = hashlib.sha256(_canonical(audit).encode("utf-8")).hexdigest()
+        audit["record_sha256"] = hashlib.sha256(
+            _canonical(audit).encode("utf-8")
+        ).hexdigest()
         path = generation / "audit" / f"{audit['audit_id']}.json"
         path.write_text(_canonical(audit), encoding="utf-8", newline="\n")
 
@@ -716,9 +866,14 @@ class LifecycleLedger:
             if not source.exists():
                 continue
             if not source.is_dir():
-                raise LedgerError(f"legacy lifecycle path is not a directory: {directory}", remedy=f"remove or replace the non-directory at {source}")
+                raise LedgerError(
+                    f"legacy lifecycle path is not a directory: {directory}",
+                    remedy=f"remove or replace the non-directory at {source}",
+                )
             self._validate_json_records(
-                source, "legacy lifecycle record", allow_non_json=directory in {"qa-artifacts", "reports"}
+                source,
+                "legacy lifecycle record",
+                allow_non_json=directory in {"qa-artifacts", "reports"},
             )
         self._validate_batch_plans(root)
         self._validate_record_graph(root)
@@ -726,15 +881,21 @@ class LifecycleLedger:
     def _validate_generation(self, generation: Path, *, complete: bool = True) -> None:
         if not generation.is_dir():
             raise LedgerError(
-                "selected ledger generation is missing", remedy=f"restore or re-migrate the generation directory {generation}"
+                "selected ledger generation is missing",
+                remedy=f"restore or re-migrate the generation directory {generation}",
             )
         for directory in RECORD_DIRECTORIES:
             path = generation / directory
             if not path.is_dir():
                 raise LedgerError(
-                    f"ledger generation is missing {directory}", remedy=f"restore the {directory} directory under {generation}"
+                    f"ledger generation is missing {directory}",
+                    remedy=f"restore the {directory} directory under {generation}",
                 )
-            self._validate_json_records(path, "ledger record", allow_non_json=directory in {"qa-artifacts", "reports"})
+            self._validate_json_records(
+                path,
+                "ledger record",
+                allow_non_json=directory in {"qa-artifacts", "reports"},
+            )
             if directory == "audit":
                 self._validate_audit(path)
         self._validate_batch_plans(generation)
@@ -742,14 +903,19 @@ class LifecycleLedger:
             self._validate_record_graph(generation)
 
     @staticmethod
-    def _validate_json_records(root: Path, label: str, *, allow_non_json: bool = False) -> None:
+    def _validate_json_records(
+        root: Path, label: str, *, allow_non_json: bool = False
+    ) -> None:
         for path in root.rglob("*"):
             if not path.is_file():
                 continue
             if path.suffix != ".json":
                 if allow_non_json:
                     continue
-                raise LedgerError(f"{label} has an unsupported file: {path.name}", remedy=f"remove or rename {path} to end in .json")
+                raise LedgerError(
+                    f"{label} has an unsupported file: {path.name}",
+                    remedy=f"remove or rename {path} to end in .json",
+                )
             _read(path, label)
 
     @staticmethod
@@ -760,7 +926,10 @@ class LifecycleLedger:
             batch = _read(batch_path, "batch record")
             plan_path = plans / batch_path.name
             if not plan_path.is_file():
-                raise LedgerError(f"batch has no immutable plan: {batch_path.name}", remedy=f"restore the missing plan record {plan_path}")
+                raise LedgerError(
+                    f"batch has no immutable plan: {batch_path.name}",
+                    remedy=f"restore the missing plan record {plan_path}",
+                )
             plan = _read(plan_path, "immutable batch plan")
             if any(batch.get(key) != value for key, value in plan.items()):
                 raise LedgerError(
@@ -772,17 +941,22 @@ class LifecycleLedger:
     def _validate_record_graph(root: Path) -> None:
         """Reject syntactically-valid but incomplete or orphaned lifecycle evidence."""
         dispatches = {path.stem: path for path in (root / "dispatches").glob("*.json")}
-        statuses = {path.stem: path for path in (root / "dispatch-status").glob("*.json")}
+        statuses = {
+            path.stem: path for path in (root / "dispatch-status").glob("*.json")
+        }
         referenced: set[str] = set()
         for batch_path in (root / "batches").glob("*.json"):
             batch = _read(batch_path, "batch record")
             entries = batch.get("dispatches", [])
             if not isinstance(entries, list):
                 raise LedgerError(
-                    f"batch dispatches are invalid: {batch_path.name}", remedy=f"fix {batch_path.name} so its dispatches field is a list"
+                    f"batch dispatches are invalid: {batch_path.name}",
+                    remedy=f"fix {batch_path.name} so its dispatches field is a list",
                 )
             for entry in entries:
-                if not isinstance(entry, dict) or not isinstance(entry.get("dispatch_id"), str):
+                if not isinstance(entry, dict) or not isinstance(
+                    entry.get("dispatch_id"), str
+                ):
                     raise LedgerError(
                         f"batch has an invalid dispatch entry: {batch_path.name}",
                         remedy=f"fix {batch_path.name} so each dispatches entry is an object with a string dispatch_id",
@@ -799,31 +973,48 @@ class LifecycleLedger:
                     )
                 dispatch = _read(dispatch_path, "dispatch record")
                 status = _read(status_path, "dispatch status")
-                if dispatch.get("dispatch_id") != dispatch_id or dispatch.get("batch_id") != batch.get("batch_id"):
+                if dispatch.get("dispatch_id") != dispatch_id or dispatch.get(
+                    "batch_id"
+                ) != batch.get("batch_id"):
                     raise LedgerError(
                         f"dispatch does not belong to its batch: {dispatch_id}",
                         remedy=f"fix dispatches/{dispatch_id}.json's dispatch_id/batch_id fields, or remove it from {batch_path.name}",
                     )
-                if status.get("dispatch_id") != dispatch_id or not isinstance(status.get("state"), str):
+                if status.get("dispatch_id") != dispatch_id or not isinstance(
+                    status.get("state"), str
+                ):
                     raise LedgerError(
-                        f"dispatch status is invalid: {dispatch_id}", remedy=f"fix dispatch-status/{dispatch_id}.json's dispatch_id/state fields"
+                        f"dispatch status is invalid: {dispatch_id}",
+                        remedy=f"fix dispatch-status/{dispatch_id}.json's dispatch_id/state fields",
                     )
                 expected_brief = entry.get("brief_sha256")
-                if expected_brief != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest():
+                if (
+                    expected_brief
+                    != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest()
+                ):
                     raise LedgerError(
                         f"dispatch failed immutable brief integrity check: {dispatch_id}",
                         remedy=f"dispatches/{dispatch_id}.json was modified after its brief_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
                     )
                 if entry.get("state") == "reported":
                     report_name = entry.get("report")
-                    if not isinstance(report_name, str) or Path(report_name).is_absolute() or ".." in Path(report_name).parts:
+                    if (
+                        not isinstance(report_name, str)
+                        or Path(report_name).is_absolute()
+                        or ".." in Path(report_name).parts
+                    ):
                         raise LedgerError(
                             f"reported dispatch has an invalid report path: {dispatch_id}",
                             remedy=f"fix {batch_path.name}'s report path for dispatch {dispatch_id} to a relative path inside the generation",
                         )
                     report_path = root / report_name
                     report = _read(report_path, "completion report")
-                    if entry.get("report_sha256") != hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest():
+                    if (
+                        entry.get("report_sha256")
+                        != hashlib.sha256(
+                            _canonical(report).encode("utf-8")
+                        ).hexdigest()
+                    ):
                         raise LedgerError(
                             f"completion report failed immutable integrity check: {dispatch_id}",
                             remedy=f"{report_path} was modified after its report_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",

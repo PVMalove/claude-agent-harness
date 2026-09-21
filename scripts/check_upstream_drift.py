@@ -7,7 +7,6 @@ upstream has moved so a periodic CI run surfaces it as a failed run; exits 0 whe
 
 import json
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,8 +15,9 @@ from pathlib import Path
 MIN_PYTHON = (3, 9)
 if sys.version_info < MIN_PYTHON:
     sys.stderr.write(
-        "[ERROR] check-upstream-drift requires Python %s+ (found %s).\n"
-        % (".".join(map(str, MIN_PYTHON)), sys.version.split()[0])
+        "[ERROR] check-upstream-drift requires Python {}+ (found {}).\n".format(
+            ".".join(map(str, MIN_PYTHON)), sys.version.split()[0]
+        )
     )
     sys.exit(1)
 
@@ -48,6 +48,7 @@ def latest_upstream_tag(repo_url: str) -> tuple[str, str] | None:
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     if result.returncode != 0:
         sys.exit(f"cannot query {repo_url}: {result.stderr.strip()}")
@@ -78,6 +79,7 @@ def diff_skill_names(new_snapshot: Path, skills: list[str]) -> list[str]:
             ["git", "diff", "--no-index", "--quiet", str(old_dir), str(new_dir)],
             capture_output=True,
             timeout=30,
+            check=False,
         )
         if result.returncode != 0:
             changed.append(name)
@@ -98,18 +100,32 @@ def main() -> int:
     latest_tag, latest_sha = latest
 
     if latest_tag == pinned_ref:
-        print(f"up to date: {pinned_ref} ({pinned_revision}) is the latest upstream tag")
+        print(
+            f"up to date: {pinned_ref} ({pinned_revision}) is the latest upstream tag"
+        )
         return 0
 
-    print(f"upstream has moved: pinned {pinned_ref} ({pinned_revision}) -> latest {latest_tag} ({latest_sha})")
+    print(
+        f"upstream has moved: pinned {pinned_ref} ({pinned_revision}) -> latest {latest_tag} ({latest_sha})"
+    )
 
     with tempfile.TemporaryDirectory(prefix="upstream-drift-") as tmp:
         clone_dir = Path(tmp) / "upstream"
         result = subprocess.run(
-            ["git", "clone", "--depth", "1", "--branch", latest_tag, repo_url, str(clone_dir)],
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                latest_tag,
+                repo_url,
+                str(clone_dir),
+            ],
             capture_output=True,
             text=True,
             timeout=120,
+            check=False,
         )
         if result.returncode != 0:
             sys.exit(f"cannot clone {repo_url}@{latest_tag}: {result.stderr.strip()}")
@@ -117,15 +133,21 @@ def main() -> int:
         plugin = json.loads(PLUGIN_FILE.read_text(encoding="utf-8"))
         changed = diff_skill_names(clone_dir, plugin["skills"])
         if not changed:
-            print("no file content changed between the pinned and latest tag - only the tag/revision itself moved")
+            print(
+                "no file content changed between the pinned and latest tag - only the tag/revision itself moved"
+            )
         else:
             capabilities = json.loads(CAPABILITIES_FILE.read_text(encoding="utf-8"))
-            overridden = set(capabilities.get("pvmalove-suite", {}).get("overrides", {}).keys())
+            overridden = set(
+                capabilities.get("pvmalove-suite", {}).get("overrides", {}).keys()
+            )
             safe = sorted(name for name in changed if name not in overridden)
             needs_review = sorted(name for name in changed if name in overridden)
 
             if safe:
-                print(f"\nSafe to resync (not project-owned by any first-party override): {', '.join(safe)}")
+                print(
+                    f"\nSafe to resync (not project-owned by any first-party override): {', '.join(safe)}"
+                )
             if needs_review:
                 print(
                     f"\nNeeds manual review before resync (pvmalove-suite overrides these by name, "

@@ -8,23 +8,30 @@ lifecycle transition that needs a human goes through here.
 from __future__ import annotations
 
 import argparse
-import io
 import os
-import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
+
+from harness.orchestration.core import config as core_config
+from harness.orchestration.core.config import (
+    _approval_ttl,
+    _human_approval_gate,
+    _reject_sensitive,
+)
 from harness.orchestration.core.constants import (
     APPROVAL_CLOCK_SKEW_SECONDS,
 )
 from harness.orchestration.core.utils import (
-    CoordinatorError, JsonObject, _moment, _non_empty, _repo,
-)
-from harness.orchestration.core import config as core_config
-from harness.orchestration.core.config import (
-    _approval_ttl, _human_approval_gate, _reject_sensitive,
+    CoordinatorError,
+    JsonObject,
+    _moment,
+    _non_empty,
+    _repo,
 )
 
 
-def _confirm_on_terminal(approved_by: str, transition_digest: str | None = None) -> None:
+def _confirm_on_terminal(
+    approved_by: str, transition_digest: str | None = None
+) -> None:
     """Take the approval from the controlling terminal instead of from the calling session.
 
     `--approved-by` and `--approved-at` are only claims: a coordinator session holding a shell can
@@ -56,7 +63,10 @@ def _confirm_on_terminal(approved_by: str, transition_digest: str | None = None)
         stream.close()
         sink.close()
     if answer != "approve":
-        raise CoordinatorError("human approval was not confirmed on the terminal", remedy="run this same decision command in a real interactive terminal so it can prompt for confirmation")
+        raise CoordinatorError(
+            "human approval was not confirmed on the terminal",
+            remedy="run this same decision command in a real interactive terminal so it can prompt for confirmation",
+        )
 
 
 def _require_current_approval(approved_at: str, config: JsonObject) -> None:
@@ -64,7 +74,7 @@ def _require_current_approval(approved_at: str, config: JsonObject) -> None:
     ttl = _approval_ttl(config)
     if ttl is None:
         return
-    age = (datetime.now(timezone.utc) - _moment(approved_at, "approved-at")).total_seconds()
+    age = (datetime.now(UTC) - _moment(approved_at, "approved-at")).total_seconds()
     if age > ttl:
         raise CoordinatorError(
             f"approval expired: approved-at is {int(age)}s old and approval_ttl_seconds is {ttl}",
@@ -72,15 +82,21 @@ def _require_current_approval(approved_at: str, config: JsonObject) -> None:
         )
     if age < -APPROVAL_CLOCK_SKEW_SECONDS:
         raise CoordinatorError(
-            "approval is dated in the future", remedy="pass the real time of the approval in --approved-at",
+            "approval is dated in the future",
+            remedy="pass the real time of the approval in --approved-at",
         )
 
 
-def _approval(args: argparse.Namespace, transition_digest: str | None = None) -> JsonObject:
+def _approval(
+    args: argparse.Namespace, transition_digest: str | None = None
+) -> JsonObject:
     approved_by = getattr(args, "approved_by", None)
     approved_at = getattr(args, "approved_at", None)
     if not _non_empty(approved_by) or not _non_empty(approved_at):
-        raise CoordinatorError("explicit coordinator approval requires approved-by and approved-at", remedy="pass --approved-by and --approved-at for this decision")
+        raise CoordinatorError(
+            "explicit coordinator approval requires approved-by and approved-at",
+            remedy="pass --approved-by and --approved-at for this decision",
+        )
     result = {"approved_by": approved_by.strip(), "approved_at": approved_at.strip()}
     _reject_sensitive(result, "coordinator approval")
     try:

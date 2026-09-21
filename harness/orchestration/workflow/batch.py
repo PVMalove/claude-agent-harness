@@ -9,37 +9,60 @@ without a decision (abandon, not-required) live here.
 from __future__ import annotations
 
 import argparse
-import re
 import uuid
 from dataclasses import replace as _vo_replace
 from pathlib import Path
 from typing import cast
 
-from harness.orchestration.core import config as core_config, utils
-from harness.orchestration.ledger.lifecycle import (
-    BatchRecord, DispatchStatusRecord, LedgerError, LifecycleLedger, PlanRecord,
-)
-from harness.orchestration.core.constants import (
-    PLAN_FIELDS, TERMINAL_BATCH_STATES,
-)
-from harness.orchestration.core.utils import (
-    CoordinatorError, JsonObject, _non_empty, _read_object, _repo, _safe_id, _strings,
-)
-from harness.orchestration.core.git_utils import (
-    _fetch_ref_tip, _head_commit,
-)
+from harness.orchestration.core import config as core_config
+from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
-    _approval_policy, _communication_policy, _developer_verification_commands, _preflight_policy, _reject_sensitive,
+    _approval_policy,
+    _communication_policy,
+    _developer_verification_commands,
+    _preflight_policy,
+    _reject_sensitive,
     _verification_commands,
 )
+from harness.orchestration.core.constants import (
+    PLAN_FIELDS,
+    TERMINAL_BATCH_STATES,
+)
+from harness.orchestration.core.git_utils import (
+    _fetch_ref_tip,
+    _head_commit,
+)
+from harness.orchestration.core.utils import (
+    CoordinatorError,
+    JsonObject,
+    _non_empty,
+    _read_object,
+    _repo,
+    _safe_id,
+    _strings,
+)
 from harness.orchestration.core.workspace import (
-    _harness_runtime_sha256, _reject_non_english, _required_base_branch, _validate_branch, _validate_worktree,
+    _harness_runtime_sha256,
+    _reject_non_english,
+    _required_base_branch,
+    _validate_branch,
+    _validate_worktree,
 )
 from harness.orchestration.ledger.ledger_ops import (
-    _ledger_lock, _load_batch, _load_dispatch_status, _records_root, _replace_record, _state_root, _write_record,
+    _ledger_lock,
+    _load_batch,
+    _load_dispatch_status,
+    _records_root,
+    _replace_record,
+    _state_root,
+    _write_record,
 )
-from harness.orchestration.workflow.history import (
-    _settled, _validate_batch_integrity,
+from harness.orchestration.ledger.lifecycle import (
+    BatchRecord,
+    DispatchStatusRecord,
+    LedgerError,
+    LifecycleLedger,
+    PlanRecord,
 )
 from harness.orchestration.workflow.approval import (
     _approval,
@@ -47,22 +70,38 @@ from harness.orchestration.workflow.approval import (
 from harness.orchestration.workflow.decisions import (
     _abandon_open_dispatches,
 )
+from harness.orchestration.workflow.history import (
+    _settled,
+    _validate_batch_integrity,
+)
 
 
 def _check_batch_conflicts(root: Path, config: JsonObject, batch: JsonObject) -> None:
     budget = config.get("concurrency_budget")
     if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
-        raise CoordinatorError("project orchestration config has an invalid concurrency_budget", remedy="set concurrency_budget to a positive integer in the project orchestration config")
+        raise CoordinatorError(
+            "project orchestration config has an invalid concurrency_budget",
+            remedy="set concurrency_budget to a positive integer in the project orchestration config",
+        )
     active = 0
     for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
         other = _read_object(path, "batch record")
-        if other.get("batch_id") == batch.get("batch_id") or other.get("state") not in {"active", "awaiting-approval"}:
+        if other.get("batch_id") == batch.get("batch_id") or other.get("state") not in {
+            "active",
+            "awaiting-approval",
+        }:
             continue
         active += 1
         if other.get("zone") == batch.get("zone"):
-            raise CoordinatorError("another active batch already owns this backend zone", remedy="wait for the other active batch in this backend zone to close before creating a new one")
+            raise CoordinatorError(
+                "another active batch already owns this backend zone",
+                remedy="wait for the other active batch in this backend zone to close before creating a new one",
+            )
     if active >= budget:
-        raise CoordinatorError("concurrency_budget is exhausted", remedy="wait for an active worker to finish, or raise concurrency_budget")
+        raise CoordinatorError(
+            "concurrency_budget is exhausted",
+            remedy="wait for an active worker to finish, or raise concurrency_budget",
+        )
 
 
 def _scope_values(args: argparse.Namespace, name: str) -> list[str]:
@@ -77,12 +116,19 @@ def _expected_positive(args: argparse.Namespace, name: str) -> int | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise CoordinatorError(f"{name.replace('_', '-')} must be a positive integer when provided", remedy=f"pass a positive integer for --{name.replace('_', '-')}")
+        raise CoordinatorError(
+            f"{name.replace('_', '-')} must be a positive integer when provided",
+            remedy=f"pass a positive integer for --{name.replace('_', '-')}",
+        )
     return value
 
 
 def _scope_preflight(
-    config: JsonObject, ticket: str, zone: str, definition_of_done: list[str], dependencies: list[str],
+    config: JsonObject,
+    ticket: str,
+    zone: str,
+    definition_of_done: list[str],
+    dependencies: list[str],
     args: argparse.Namespace,
 ) -> JsonObject:
     """Reject an oversized ticket before a batch, worktree dispatch, or model session exists."""
@@ -102,32 +148,43 @@ def _scope_preflight(
             missing.append("--expected-changed-lines")
     if missing:
         raise CoordinatorError(
-            "batch preflight requires " + ", ".join(missing)
+            "batch preflight requires "
+            + ", ".join(missing)
             + "; split the ticket or declare a bounded expected scope before any model dispatch",
             remedy="split the ticket or declare a bounded expected scope (definition-of-done/expected-files/etc.) before dispatching",
         )
     # A deterministic conservative admission estimate.  It prevents a tiny-looking line count
     # spread across many files from escaping the same context budget.  A caller can supply a
     # stricter observed estimate, but cannot lower this floor.
-    derived_context_tokens = (
-        (expected_changed_lines or 0) * 20 + len(expected_files) * 2_000
-    )
+    derived_context_tokens = (expected_changed_lines or 0) * 20 + len(
+        expected_files
+    ) * 2_000
     expected_context_tokens = max(supplied_context_tokens or 0, derived_context_tokens)
     problems: list[str] = []
     checks = {
-        "definition_of_done_items": (len(definition_of_done), policy["max_definition_of_done_items"]),
+        "definition_of_done_items": (
+            len(definition_of_done),
+            policy["max_definition_of_done_items"],
+        ),
         "dependencies": (len(real_dependencies), policy["max_dependencies"]),
         "expected_files": (len(expected_files), policy["max_expected_files"]),
         "expected_services": (len(expected_services), policy["max_expected_services"]),
-        "expected_changed_lines": (expected_changed_lines or 0, policy["max_expected_changed_lines"]),
-        "expected_context_tokens": (expected_context_tokens, policy["max_expected_context_tokens"]),
+        "expected_changed_lines": (
+            expected_changed_lines or 0,
+            policy["max_expected_changed_lines"],
+        ),
+        "expected_context_tokens": (
+            expected_context_tokens,
+            policy["max_expected_context_tokens"],
+        ),
     }
     for label, (actual, limit) in checks.items():
         if actual > limit:
             problems.append(f"{label}={actual} exceeds {limit}")
     if problems:
         raise CoordinatorError(
-            "batch preflight rejected this ticket: " + "; ".join(problems)
+            "batch preflight rejected this ticket: "
+            + "; ".join(problems)
             + ". Split it with /to-tickets before creating a batch.",
             remedy="split this ticket with /to-tickets before creating a batch",
         )
@@ -152,41 +209,75 @@ def preflight_batch(args: argparse.Namespace) -> JsonObject:
     ticket = getattr(args, "ticket", None)
     zone = getattr(args, "zone", None)
     if not _non_empty(ticket) or not _non_empty(zone):
-        raise CoordinatorError("ticket and zone must be non-empty strings", remedy="pass a non-empty --ticket and --zone")
-    definition_of_done = _strings(getattr(args, "definition_of_done", None), "definition_of_done")
-    dependencies = _strings(getattr(args, "dependency", None) or ["none"], "dependencies")
-    return _scope_preflight(config, ticket.strip(), zone.strip(), definition_of_done, dependencies, args)
+        raise CoordinatorError(
+            "ticket and zone must be non-empty strings",
+            remedy="pass a non-empty --ticket and --zone",
+        )
+    definition_of_done = _strings(
+        getattr(args, "definition_of_done", None), "definition_of_done"
+    )
+    dependencies = _strings(
+        getattr(args, "dependency", None) or ["none"], "dependencies"
+    )
+    return _scope_preflight(
+        config, ticket.strip(), zone.strip(), definition_of_done, dependencies, args
+    )
 
 
 def create_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     config = core_config._config(repo)
     ticket = getattr(args, "ticket", None)
-    branch = cast(str, getattr(args, "branch", None))  # validated non-empty by _validate_branch below
-    worktree = cast(str, getattr(args, "worktree", None))  # validated non-empty by _validate_worktree below
+    branch = cast(
+        str, getattr(args, "branch", None)
+    )  # validated non-empty by _validate_branch below
+    worktree = cast(
+        str, getattr(args, "worktree", None)
+    )  # validated non-empty by _validate_worktree below
     zone = getattr(args, "zone", None)
     integration_ref = getattr(args, "integration_ref", None)
     dod = _strings(getattr(args, "definition_of_done", None), "definition_of_done")
-    prohibited = _strings(getattr(args, "prohibited_change", None), "prohibited_changes")
-    dependencies = _strings(getattr(args, "dependency", None) or ["none"], "dependencies")
+    prohibited = _strings(
+        getattr(args, "prohibited_change", None), "prohibited_changes"
+    )
+    dependencies = _strings(
+        getattr(args, "dependency", None) or ["none"], "dependencies"
+    )
     if not _non_empty(ticket) or not _non_empty(zone):
-        raise CoordinatorError("ticket and zone must be non-empty strings", remedy="pass a non-empty --ticket and --zone")
+        raise CoordinatorError(
+            "ticket and zone must be non-empty strings",
+            remedy="pass a non-empty --ticket and --zone",
+        )
     _validate_branch(repo, branch)
     _validate_worktree(repo, worktree)
-    if not isinstance(config.get("backend_zones"), dict) or zone not in config["backend_zones"]:
-        raise CoordinatorError(f"unknown backend zone {zone!r}", remedy=f"declare backend zone {zone!r} in the project orchestration config, or pass a configured zone")
+    if (
+        not isinstance(config.get("backend_zones"), dict)
+        or zone not in config["backend_zones"]
+    ):
+        raise CoordinatorError(
+            f"unknown backend zone {zone!r}",
+            remedy=f"declare backend zone {zone!r} in the project orchestration config, or pass a configured zone",
+        )
     # Nullable for epic-less tasks: falls back to the project's base_branch, the same field
     # `_validate_branch` falls back to, rather than inventing a second convention.
-    fetch_ref = integration_ref.strip() if _non_empty(integration_ref) else _required_base_branch(repo)
+    fetch_ref = (
+        integration_ref.strip()
+        if _non_empty(integration_ref)
+        else _required_base_branch(repo)
+    )
     pinned_base = _fetch_ref_tip(repo, fetch_ref)
     _reject_non_english(dod, "definition_of_done")
     _reject_non_english(prohibited, "prohibited_changes")
-    scope_preflight = _scope_preflight(config, ticket.strip(), zone.strip(), dod, dependencies, args)
+    scope_preflight = _scope_preflight(
+        config, ticket.strip(), zone.strip(), dod, dependencies, args
+    )
     record: JsonObject = {
         "batch_id": f"batch-{uuid.uuid4()}",
         "created_at": utils._now(),
         "base_commit": pinned_base,
-        "integration_ref": integration_ref.strip() if _non_empty(integration_ref) else None,
+        "integration_ref": integration_ref.strip()
+        if _non_empty(integration_ref)
+        else None,
         "integration_base_commit": pinned_base,
         "branch_start_commit": _head_commit(repo),
         "state": "planned",
@@ -198,7 +289,9 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         "prohibited_changes": prohibited,
         "developer_verification_commands": _developer_verification_commands(config),
         "verification_commands": _verification_commands(config),
-        "required_gates": _strings(getattr(args, "required_gate", None) or ["none"], "required_gates"),
+        "required_gates": _strings(
+            getattr(args, "required_gate", None) or ["none"], "required_gates"
+        ),
         "dependencies": dependencies,
         "approval_policy": _approval_policy(config),
         "communication_policy": _communication_policy(config),
@@ -218,7 +311,10 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         except LedgerError as exc:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
         _safe_id(record["batch_id"], "batch")
-        _write_record(ledger, PlanRecord.from_dict({field: record[field] for field in PLAN_FIELDS}))
+        _write_record(
+            ledger,
+            PlanRecord.from_dict({field: record[field] for field in PLAN_FIELDS}),
+        )
         _write_record(ledger, BatchRecord.from_dict(record))
     return record
 
@@ -231,9 +327,14 @@ def approve_batch(args: argparse.Namespace) -> JsonObject:
         record = _load_batch(root, args.batch)
         _validate_batch_integrity(root, record)
         if record.get("state") != "planned":
-            raise CoordinatorError("only a planned batch can receive its planning approval", remedy="only approve a batch that is still in the planned state")
+            raise CoordinatorError(
+                "only a planned batch can receive its planning approval",
+                remedy="only approve a batch that is still in the planned state",
+            )
         updated = _vo_replace(
-            BatchRecord.from_dict(record), coordinator_approval=_approval(args), state="awaiting-approval",
+            BatchRecord.from_dict(record),
+            coordinator_approval=_approval(args),
+            state="awaiting-approval",
         )
         _safe_id(updated.batch_id, "batch")
         _replace_record(ledger, updated)
@@ -255,7 +356,9 @@ def list_batches(args: argparse.Namespace) -> JsonObject:
         for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
             batch = _read_object(path, "batch record")
             dispatches = batch.get("dispatches", [])
-            open_dispatches = [item["dispatch_id"] for item in dispatches if not _settled(item)]
+            open_dispatches = [
+                item["dispatch_id"] for item in dispatches if not _settled(item)
+            ]
             state = batch.get("state")
             if args.ticket and batch.get("ticket") != args.ticket:
                 continue
@@ -263,18 +366,20 @@ def list_batches(args: argparse.Namespace) -> JsonObject:
                 continue
             if args.open and state in TERMINAL_BATCH_STATES:
                 continue
-            batches.append({
-                "batch_id": batch.get("batch_id"),
-                "ticket": batch.get("ticket"),
-                "branch": batch.get("branch"),
-                "zone": batch.get("zone"),
-                "state": state,
-                "created_at": batch.get("created_at"),
-                "terminal": state in TERMINAL_BATCH_STATES,
-                "dispatches": len(dispatches),
-                "open_dispatches": open_dispatches,
-                "next_action": batch.get("next_action"),
-            })
+            batches.append(
+                {
+                    "batch_id": batch.get("batch_id"),
+                    "ticket": batch.get("ticket"),
+                    "branch": batch.get("branch"),
+                    "zone": batch.get("zone"),
+                    "state": state,
+                    "created_at": batch.get("created_at"),
+                    "terminal": state in TERMINAL_BATCH_STATES,
+                    "dispatches": len(dispatches),
+                    "open_dispatches": open_dispatches,
+                    "next_action": batch.get("next_action"),
+                }
+            )
     return {"batches": batches}
 
 
@@ -292,15 +397,25 @@ def abandon_batch(args: argparse.Namespace) -> JsonObject:
     approval = _approval(args)
     reason = args.reason.strip() if _non_empty(args.reason) else ""
     if not reason:
-        raise CoordinatorError("abandoning a batch requires a recorded reason", remedy="pass --reason explaining why this batch cannot be decided")
+        raise CoordinatorError(
+            "abandoning a batch requires a recorded reason",
+            remedy="pass --reason explaining why this batch cannot be decided",
+        )
     _reject_sensitive({"reason": reason}, "abandon reason")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
-        open_dispatches = [item["dispatch_id"] for item in batch.get("dispatches", []) if not _settled(item)]
+        open_dispatches = [
+            item["dispatch_id"]
+            for item in batch.get("dispatches", [])
+            if not _settled(item)
+        ]
         if batch.get("state") in TERMINAL_BATCH_STATES and not open_dispatches:
-            raise CoordinatorError(f"batch is already {batch['state']} and has nothing open to close", remedy=f"this batch is already {batch['state']!r}; nothing further to close")
+            raise CoordinatorError(
+                f"batch is already {batch['state']} and has nothing open to close",
+                remedy=f"this batch is already {batch['state']!r}; nothing further to close",
+            )
         # A terminal batch that still carries an open dispatch is a repair case: its state was moved
         # without closing what it held, and that dispatch would otherwise be surfaced as live for
         # ever. Closing the remainder is exactly this command's job.
@@ -316,12 +431,14 @@ def abandon_batch(args: argparse.Namespace) -> JsonObject:
             "reason": reason,
             "open_dispatches": open_dispatches,
         }
-        batch.setdefault("coordinator_decisions", []).append({
-            "decision": "abandon",
-            "approved_by": approval["approved_by"],
-            "approved_at": approval["approved_at"],
-            "note": reason,
-        })
+        batch.setdefault("coordinator_decisions", []).append(
+            {
+                "decision": "abandon",
+                "approved_by": approval["approved_by"],
+                "approved_at": approval["approved_at"],
+                "note": reason,
+            }
+        )
         _safe_id(batch["batch_id"], "batch")
         _replace_record(ledger, BatchRecord.from_dict(batch))
     return {
@@ -344,14 +461,20 @@ def mark_batch_not_required(args: argparse.Namespace) -> JsonObject:
     approval = _approval(args)
     reason = args.reason.strip() if _non_empty(args.reason) else ""
     if not reason:
-        raise CoordinatorError("marking a batch not-required requires recorded evidence", remedy="pass --reason stating why the pinned snapshot requires no implementation")
+        raise CoordinatorError(
+            "marking a batch not-required requires recorded evidence",
+            remedy="pass --reason stating why the pinned snapshot requires no implementation",
+        )
     _reject_sensitive({"reason": reason}, "not-required reason")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         if batch.get("state") in TERMINAL_BATCH_STATES:
-            raise CoordinatorError(f"batch is already {batch['state']}", remedy="create a new batch only if a new implementation requirement appears")
+            raise CoordinatorError(
+                f"batch is already {batch['state']}",
+                remedy="create a new batch only if a new implementation requirement appears",
+            )
         moment = utils._now()
         cancelled_dispatches = []
         for entry in batch.get("dispatches", []):
@@ -359,7 +482,11 @@ def mark_batch_not_required(args: argparse.Namespace) -> JsonObject:
                 continue
             entry["state"] = "cancelled"
             cancelled_dispatches.append(entry["dispatch_id"])
-            status_path = _records_root(root) / DispatchStatusRecord.directory / f"{_safe_id(entry['dispatch_id'], 'dispatch')}.json"
+            status_path = (
+                _records_root(root)
+                / DispatchStatusRecord.directory
+                / f"{_safe_id(entry['dispatch_id'], 'dispatch')}.json"
+            )
             if status_path.exists():
                 status = _load_dispatch_status(root, entry["dispatch_id"])
                 status.update({"state": "cancelled", "updated_at": moment})
@@ -375,12 +502,14 @@ def mark_batch_not_required(args: argparse.Namespace) -> JsonObject:
             "tracker_resolution": "resolution::wontfix",
             "cancelled_dispatches": cancelled_dispatches,
         }
-        batch.setdefault("coordinator_decisions", []).append({
-            "decision": "not-required",
-            "approved_by": approval["approved_by"],
-            "approved_at": approval["approved_at"],
-            "note": reason,
-        })
+        batch.setdefault("coordinator_decisions", []).append(
+            {
+                "decision": "not-required",
+                "approved_by": approval["approved_by"],
+                "approved_at": approval["approved_at"],
+                "note": reason,
+            }
+        )
         _replace_record(ledger, BatchRecord.from_dict(batch))
     return {
         "batch_id": batch["batch_id"],

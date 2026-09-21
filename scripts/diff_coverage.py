@@ -47,10 +47,13 @@ def _merge_base() -> str:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            check=False,
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
-    sys.exit(f"diff-coverage: could not resolve a merge-base against {branch!r} or origin/{branch!r}")
+    sys.exit(
+        f"diff-coverage: could not resolve a merge-base against {branch!r} or origin/{branch!r}"
+    )
 
 
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
@@ -62,10 +65,20 @@ def _changed_lines(base: str) -> dict[str, set[int]]:
     The diff is not narrowed by a ``*.py`` pathspec: that would hide the old name of a file renamed
     to ``.py`` and turn the whole file into added lines instead of only its real changes."""
     diff = subprocess.run(
-        ["git", "-C", str(ROOT), "diff", "--find-renames", "--unified=0", "--no-color", base],
+        [
+            "git",
+            "-C",
+            str(ROOT),
+            "diff",
+            "--find-renames",
+            "--unified=0",
+            "--no-color",
+            base,
+        ],
         capture_output=True,
         text=True,
         encoding="utf-8",
+        check=False,
     )
     if diff.returncode != 0:
         sys.exit(f"diff-coverage: git diff failed: {diff.stderr.strip()}")
@@ -99,7 +112,7 @@ def _repo_relative(path: str) -> str:
     (backslashes on Windows) and absolute when coverage ran with --source directories."""
     normalized = path.replace("\\", "/")
     root_prefix = ROOT.as_posix().rstrip("/") + "/"
-    return normalized[len(root_prefix) :] if normalized.startswith(root_prefix) else normalized
+    return normalized.removeprefix(root_prefix)
 
 
 def source_dirs(changed: Mapping[str, set[int]]) -> list[str]:
@@ -161,6 +174,7 @@ def main() -> int:
             str(ROOT / "tests"),
         ],
         cwd=ROOT,
+        check=False,
     )
     if run.returncode != 0:
         return run.returncode
@@ -169,8 +183,18 @@ def main() -> int:
         # --ignore-errors: some tests exec a copy of a module from a temp directory (simulating a
         # deployed .harness/ checkout) that no longer exists by report time -- skip it rather than
         # abort the whole report, since we only care about coverage of files under this repo.
-        [sys.executable, "-m", "coverage", "json", "-o", str(COVERAGE_JSON_FILE), "-q", "--ignore-errors"],
+        [
+            sys.executable,
+            "-m",
+            "coverage",
+            "json",
+            "-o",
+            str(COVERAGE_JSON_FILE),
+            "-q",
+            "--ignore-errors",
+        ],
         cwd=ROOT,
+        check=False,
     )
     if json_run.returncode != 0:
         return json_run.returncode
@@ -178,7 +202,9 @@ def main() -> int:
     report = json.loads(COVERAGE_JSON_FILE.read_text(encoding="utf-8"))
     # coverage.json keys files by OS-native path (backslashes on Windows); git diff paths are
     # always forward-slash. Normalize both sides to match regardless of platform.
-    files = {_repo_relative(key): value for key, value in report.get("files", {}).items()}
+    files = {
+        _repo_relative(key): value for key, value in report.get("files", {}).items()
+    }
     COVERAGE_DATA_FILE.unlink(missing_ok=True)
     COVERAGE_JSON_FILE.unlink(missing_ok=True)
 
@@ -189,9 +215,13 @@ def main() -> int:
         return 0
 
     percent = 100.0 * total_covered / total_changed
-    print(f"diff-coverage: {total_covered}/{total_changed} changed lines covered ({percent:.1f}%)")
+    print(
+        f"diff-coverage: {total_covered}/{total_changed} changed lines covered ({percent:.1f}%)"
+    )
     if not meets_threshold(total_covered, total_changed):
-        print(f"diff-coverage: below the {THRESHOLD_PERCENT:.0f}% threshold; uncovered changed lines:")
+        print(
+            f"diff-coverage: below the {THRESHOLD_PERCENT:.0f}% threshold; uncovered changed lines:"
+        )
         for entry in uncovered:
             print(f"  {entry}")
         return 1

@@ -11,8 +11,8 @@ from pathlib import Path
 
 from harness.orchestration import contract, coordinator
 from harness.orchestration.core import config, constants
-from harness.orchestration.workflow import batch, context_package, reports
 from harness.orchestration.ledger import LifecycleLedger
+from harness.orchestration.workflow import batch, context_package, reports
 
 
 class TokenControlTests(unittest.TestCase):
@@ -26,26 +26,51 @@ class TokenControlTests(unittest.TestCase):
         values.update(overrides)
         return argparse.Namespace(**values)
 
-    def test_preflight_accepts_a_bounded_ticket_and_records_conservative_context_floor(self) -> None:
+    def test_preflight_accepts_a_bounded_ticket_and_records_conservative_context_floor(
+        self,
+    ) -> None:
         result = batch._scope_preflight(
-            {}, "#1", "orders", ["protect checkout lock"], ["none"], self._scope_args(),
+            {},
+            "#1",
+            "orders",
+            ["protect checkout lock"],
+            ["none"],
+            self._scope_args(),
         )
 
         self.assertEqual(result["status"], "pass")
         self.assertGreaterEqual(result["expected_context_tokens"], 4_400)
 
-    def test_preflight_rejects_a_ticket_that_exceeds_file_budget_before_dispatch(self) -> None:
-        with self.assertRaisesRegex(coordinator.CoordinatorError, "expected_files=13 exceeds 12"):
+    def test_preflight_rejects_a_ticket_that_exceeds_file_budget_before_dispatch(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "expected_files=13 exceeds 12"
+        ):
             batch._scope_preflight(
-                {}, "#372", "orders", ["one"], ["none"],
-                self._scope_args(expected_file=[f"services/orders/file-{index}.py" for index in range(13)]),
+                {},
+                "#372",
+                "orders",
+                ["one"],
+                ["none"],
+                self._scope_args(
+                    expected_file=[
+                        f"services/orders/file-{index}.py" for index in range(13)
+                    ]
+                ),
             )
 
     def test_preflight_requires_declared_scope_estimates_by_default(self) -> None:
         with self.assertRaisesRegex(coordinator.CoordinatorError, "--expected-file"):
             batch._scope_preflight(
-                {}, "#1", "orders", ["one"], ["none"],
-                self._scope_args(expected_file=[], expected_service=[], expected_changed_lines=None),
+                {},
+                "#1",
+                "orders",
+                ["one"],
+                ["none"],
+                self._scope_args(
+                    expected_file=[], expected_service=[], expected_changed_lines=None
+                ),
             )
 
     def test_continuation_count_is_scoped_to_one_dispatch(self) -> None:
@@ -61,22 +86,30 @@ class TokenControlTests(unittest.TestCase):
     def test_context_package_policy_defaults_symbol_graph_depth_to_two(self) -> None:
         self.assertEqual(config._context_package_policy({})["symbol_graph_depth"], 2)
 
-    def test_context_package_policy_honours_a_configured_symbol_graph_depth(self) -> None:
+    def test_context_package_policy_honours_a_configured_symbol_graph_depth(
+        self,
+    ) -> None:
         policy = config._context_package_policy(
             {"context_package_policy": {"symbol_graph_depth": 4}}
         )
         self.assertEqual(policy["symbol_graph_depth"], 4)
 
-    def test_context_package_policy_defaults_max_related_tests_to_twenty_five(self) -> None:
+    def test_context_package_policy_defaults_max_related_tests_to_twenty_five(
+        self,
+    ) -> None:
         self.assertEqual(config._context_package_policy({})["max_related_tests"], 25)
 
-    def test_context_package_policy_honours_a_configured_max_related_tests(self) -> None:
+    def test_context_package_policy_honours_a_configured_max_related_tests(
+        self,
+    ) -> None:
         policy = config._context_package_policy(
             {"context_package_policy": {"max_related_tests": 10}}
         )
         self.assertEqual(policy["max_related_tests"], 10)
 
-    def test_persist_context_package_rejects_a_token_override_above_policy(self) -> None:
+    def test_persist_context_package_rejects_a_token_override_above_policy(
+        self,
+    ) -> None:
         """`--max-package-tokens` is documented as a stricter-only ceiling. A caller-supplied
         value above `context_package_policy.max_tokens` must fail loudly instead of silently
         expanding the budget (the retro for issue #373 found a review package pushed against an
@@ -85,12 +118,26 @@ class TokenControlTests(unittest.TestCase):
             repo = Path(tmp)
             (repo / ".harness").mkdir()
             (repo / ".harness" / "project.json").write_text("{}", encoding="utf-8")
-            batch = {"batch_id": "batch-1", "base_commit": "0" * 40, "context_packages": []}
-            above_default_policy = constants.DEFAULT_CONTEXT_PACKAGE_POLICY["max_tokens"] + 1
-            with self.assertRaisesRegex(coordinator.CoordinatorError, "exceeds the configured"):
+            batch = {
+                "batch_id": "batch-1",
+                "base_commit": "0" * 40,
+                "context_packages": [],
+            }
+            above_default_policy = (
+                constants.DEFAULT_CONTEXT_PACKAGE_POLICY["max_tokens"] + 1
+            )
+            with self.assertRaisesRegex(
+                coordinator.CoordinatorError, "exceeds the configured"
+            ):
                 context_package._persist_context_package(
-                    repo, repo, LifecycleLedger(repo), batch, role="shared", snapshot="1" * 40,
-                    inclusion_reason="test", max_package_tokens=above_default_policy,
+                    repo,
+                    repo,
+                    LifecycleLedger(repo),
+                    batch,
+                    role="shared",
+                    snapshot="1" * 40,
+                    inclusion_reason="test",
+                    max_package_tokens=above_default_policy,
                 )
 
     def test_tokens_fields_are_not_secrets_but_session_token_is(self) -> None:
@@ -101,14 +148,21 @@ class TokenControlTests(unittest.TestCase):
         with self.assertRaisesRegex(contract.ContractError, "assignment effort"):
             contract._valid_effort("highда")
 
-    def test_communication_policy_defaults_to_english_protocol_and_russian_reports(self) -> None:
+    def test_communication_policy_defaults_to_english_protocol_and_russian_reports(
+        self,
+    ) -> None:
         self.assertEqual(
             config._communication_policy({}),
             {"agent_to_agent_language": "en", "coordinator_report_language": "ru"},
         )
         with self.assertRaisesRegex(coordinator.CoordinatorError, "English.*Russian"):
             config._communication_policy(
-                {"communication_policy": {"agent_to_agent_language": "ru", "coordinator_report_language": "en"}},
+                {
+                    "communication_policy": {
+                        "agent_to_agent_language": "ru",
+                        "coordinator_report_language": "en",
+                    }
+                },
             )
 
     def test_pre_approval_batch_shape_remains_usable_without_state_edit(self) -> None:
@@ -135,10 +189,12 @@ class TokenControlTests(unittest.TestCase):
             LifecycleLedger(root).ensure()
             records = LifecycleLedger(root).records_root()
             (records / "batches" / f"{batch_id}.json").write_text(
-                json.dumps(legacy_fields), encoding="utf-8",
+                json.dumps(legacy_fields),
+                encoding="utf-8",
             )
             (records / "plans" / f"{batch_id}.json").write_text(
-                json.dumps(legacy_fields), encoding="utf-8",
+                json.dumps(legacy_fields),
+                encoding="utf-8",
             )
 
             coordinator._validate_batch_integrity(root, legacy_fields)
@@ -167,14 +223,20 @@ class TokenControlTests(unittest.TestCase):
             LifecycleLedger(root).ensure()
             records = LifecycleLedger(root).records_root()
             (records / "batches" / f"{batch_id}.json").write_text(
-                json.dumps({**legacy_fields, "approval_policy": "manual_all"}), encoding="utf-8",
+                json.dumps({**legacy_fields, "approval_policy": "manual_all"}),
+                encoding="utf-8",
             )
             (records / "plans" / f"{batch_id}.json").write_text(
-                json.dumps(legacy_fields), encoding="utf-8",
+                json.dumps(legacy_fields),
+                encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(coordinator.CoordinatorError, "batch record is incomplete"):
-                coordinator._validate_batch_integrity(root, {**legacy_fields, "approval_policy": "manual_all"})
+            with self.assertRaisesRegex(
+                coordinator.CoordinatorError, "batch record is incomplete"
+            ):
+                coordinator._validate_batch_integrity(
+                    root, {**legacy_fields, "approval_policy": "manual_all"}
+                )
 
 
 if __name__ == "__main__":
