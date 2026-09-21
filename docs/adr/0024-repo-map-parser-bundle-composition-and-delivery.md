@@ -16,22 +16,23 @@ mypy 2.3.1, pip-audit 2.10.1, cyclonedx-py 7.4.0). Полный режим ос�
 - **Состав и пины** (меняются только релизом харнесса): `tree-sitter==0.26.0`,
   `tree-sitter-typescript==0.23.2` (языки `language_typescript` и `language_tsx`),
   `tree-sitter-javascript==0.25.0`, `tree-sitter-go==0.25.0`, `tree-sitter-java==0.23.5`,
-  `tree-sitter-c-sharp==0.23.5`. Все лицензии — MIT. Хеши в ADR не копируются: источник истины — lock.
+  `tree-sitter-c-sharp==0.23.5`. Все лицензии — MIT. Хеши в ADR не копируются; при расхождении версий или хешей источник истины — lock релиза, ADR фиксирует политику и стартовые пины. Lock и wheelhouse создаёт релизный процесс (#277 — первым языком), они поставляются как release-asset, а не коммитятся в репозиторий.
 - **Wheels.** Только бинарные wheels (`--only-binary=:all:`), сборка из sdist запрещена. Windows
   `win_amd64` и `win_arm64` есть у всех шести пакетов. Ядро собрано отдельным wheel на каждую минорную
   версию Python (`cp312`–`cp314`, не abi3); грамматики — abi3 и не зависят от версии Python. Поэтому
   bundle — матрица, а не один артефакт: Python 3.12, 3.13, 3.14 × `win_amd64`, `linux_x86_64` (manylinux),
-  `macos_arm64`. Расширение матрицы (`win_arm64`, `linux_aarch64`, `macos_x86_64`) — релизное решение,
-  wheels на PyPI для них есть.
+  `macos_arm64`. Расширение матрицы — релизное решение (wheels на PyPI для `win_arm64`, `linux_aarch64`, `macos_x86_64` есть).
 - **ABI.** Диапазон ядра 0.26.0 — 13–15; грамматики: typescript/tsx 14, java 14, javascript 15,
-  go 15, c-sharp 15. Конфликта нет. Версия ABI каждой грамматики и диапазон ядра входят в provenance.
+  go 15, c-sharp 15. Конфликта нет. Версия ABI каждой грамматики и диапазон ядра входят в provenance (вместе с hash скрипта и версией token estimator из ADR 0023 — их добавляет #272).
 - **Формат поставки — вариант A.** Wheelhouse-каталог на каждую пару «Python × платформа» и общий lock
   с хешами (`uv pip compile --generate-hashes`), поставляемые как release-asset харнесса. Загрузчик
   выбирает каталог по интерпретатору, который запускает разбор, и платформе; сверяет sha256 каждого
   wheel с lock и при отсутствии каталога для пары или несовпадении хеша деградирует в `reduced`/`minimal`
-  без сети. Установка в изолированный каталог bundle (`pip install --no-index --find-links
-  --require-hashes --only-binary=:all: --target`), но не в окружение целевого проекта; `.venv`,
-  `requirements.txt` и правка `pyproject.toml` целевого проекта по-прежнему запрещены (ADR 0018).
+  без сети. Wheels распаковываются в изолированный каталог bundle вне целевого проекта (кандидат — `pip install
+  --no-index --find-links --require-hashes --only-binary=:all: --target`, не проверен); момент (при установке
+  харнесса или при первом запуске) и место распаковки определяет #272. Это относится к bundle, а не к пакету
+  харнесса: «пакет без pip-установки» из ADR 0018 сохраняется, `.venv`, `requirements.txt` и правка
+  `pyproject.toml` целевого проекта по-прежнему запрещены.
   Внутренний registry (вариант B) — разрешённый источник для enterprise-профиля с тем же lock; vendoring
   wheels в репозиторий (вариант C) отвергнут.
 - **Typed-граница** ([ADR 0020](0020-mypy-strict-disallow-any-explicit.md)). Во всех шести пакетах есть
@@ -42,17 +43,17 @@ mypy 2.3.1, pip-audit 2.10.1, cyclonedx-py 7.4.0). Полный режим ос�
   установленным bundle. Типы tree-sitter не пересекают границу процесса: `context_builder` видит
   только типизированный JSON-контракт.
 - **SBOM.** Релиз формирует CycloneDX 1.6 (`cyclonedx-py`) по lock/установленному bundle. Инструмент
-  не записывает хеши компонентов, поэтому релизный шаг добавляет sha256 каждого wheel из lock; SBOM входит
+  не записывает хеши компонентов, поэтому релизный шаг добавляет sha256 каждого wheel матрицы из lock (исключая sdist); SBOM входит
   в release-asset рядом с wheelhouse.
 - **CVE-проверка релиза.** `pip-audit -r <lock> --require-hashes --disable-pip` с пустым
   `--cache-dir`; недоступность сети или сервиса — провал релиза (fail-closed), найденная уязвимость без
-  явного задокументированного исключения — тоже провал. Результат входит в release-asset.
+  явного исключения — тоже провал; исключения записываются в PR релиза с обоснованием. Результат входит в release-asset.
 
 ## Операционные последствия
 
-- **Проверено spike:** wheels и их sha256 по PyPI; установка на 3.14 и 3.12 без сборки из sdist; разбор
+- **Проверено spike:** wheels и их sha256 по PyPI; установка `--only-binary` на 3.14 и 3.12 без сборки из sdist; разбор
   TS, TSX, JS, Go, Java, C# без ошибок; `mypy strict` с установленным и без установленного bundle; offline
-  установка из wheelhouse с `--require-hashes`; отклонение подменённого wheel; SBOM и `pip-audit` онлайн;
+  установка из wheelhouse с `--require-hashes` (только Python 3.12, `win_amd64`); отклонение подменённого wheel; SBOM и `pip-audit` онлайн;
   `pip-audit` без сети с пустым кэшем завершается кодом 1.
 - **Не проверено:** Python 3.13 (на машине нет — wheels на PyPI есть, запуск не проверен); установка на
   Linux и macOS (проверены только наличие wheels и, для `linux`, разрешение lock); `win_arm64`;
@@ -71,9 +72,9 @@ mypy 2.3.1, pip-audit 2.10.1, cyclonedx-py 7.4.0). Полный режим ос�
 
 ## Considered Options
 
-- Внутренний registry как единственный источник (вариант B) — сервера в проекте нет; остаётся
+- Вариант B — внутренний registry как единственный источник — сервера в проекте нет; остаётся
   допустимым источником для enterprise при том же lock.
-- Wheels в репозитории по образцу `skills/vendor/` (вариант C) — раздувает git на матрицу каталогов и
+- Вариант C — wheels в репозитории по образцу `skills/vendor/` — раздувает git на матрицу каталогов и
   противоречит духу ADR 0018.
 - `tree-sitter-language-pack` (один abi3-wheel ~2,2 МБ) — не проверялся, другая provenance и заведомо шире
   нужных четырёх языков; расширяет supply-chain perimeter.
