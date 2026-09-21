@@ -34,7 +34,7 @@
     {"id": "artifact", "lane": "approved", "col": 2, "type": "database", "label": "Live Artifact", "sublabel": "пути + контекст решений", "width": 155},
     {"id": "spec", "lane": "planning", "col": 2, "type": "database", "label": "/to-spec", "sublabel": "Relevant Files", "width": 155},
     {"id": "tickets", "lane": "planning", "col": 3, "type": "database", "label": "/to-tickets", "sublabel": "семантическое назначение", "width": 155},
-    {"id": "repo_map", "lane": "approved", "col": 3, "type": "messagebus", "label": "Filtered Repo Map", "sublabel": "только допустимые пути", "width": 155},
+    {"id": "repo_map", "lane": "approved", "col": 3, "type": "messagebus", "label": "Path inventory", "sublabel": "только допустимые пути", "width": 155},
     {"id": "advisory", "lane": "planning", "col": 4, "type": "cloud", "label": "Cheap advisory", "sublabel": "только добавляет зависимости", "tag": "не authority", "width": 155},
     {"id": "package", "lane": "build", "col": 5, "type": "backend", "label": "Context Package", "sublabel": "diff, graph, tests, hashes", "tag": "LLM-free · immutable", "width": 155},
     {"id": "dispatch", "lane": "approved", "col": 5, "type": "messagebus", "label": "Role dispatch", "sublabel": "architect → developer → review", "width": 155}
@@ -51,7 +51,7 @@
     {"from": "package", "to": "dispatch", "label": "переиспользовать по batch", "variant": "emphasis"}
   ],
   "cards": [
-    {"dot": "amber", "title": "Граница доверия", "items": ["Live Artifact меняется только после явного согласия", "Advisory может только добавлять exact Repo Map paths", "Ни advisory, ни роль не авторизуют dispatch"]},
+    {"dot": "amber", "title": "Граница доверия", "items": ["Live Artifact меняется только после явного согласия", "Advisory может только добавлять exact Path inventory paths", "Ни advisory, ни роль не авторизуют dispatch"]},
     {"dot": "emerald", "title": "Экономия контекста", "items": ["Context Package строится без LLM", "Локальные зависимости разворачиваются на один уровень", "Для неизвестного формата используются первые 30 строк"]}
   ]
 }

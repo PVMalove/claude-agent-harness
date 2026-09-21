@@ -86,6 +86,29 @@ def check_docs_agents_mirror() -> None:
             )
 
 
+RETIRED_PATH_INVENTORY_TERM = re.compile(r"filtered\s+Repo\s+Map", re.IGNORECASE)
+PATH_INVENTORY_ROOTS = (
+    ROOT / "skills" / "first-party" / "pvmalove" / "to-tickets",
+    ROOT / "docs" / "agents",
+    DOCS_AGENTS_TEMPLATE,
+    ROOT / "docs" / "skills",
+    ROOT / "docs" / "diagrams",
+    ROOT / "docs" / "ARCHITECTURE.md",
+    ROOT / "README.md",
+)
+
+
+def check_no_retired_path_inventory_term() -> None:
+    """The path-only artifact /to-tickets builds is the "Path inventory"; "Repo Map" belongs only
+    to the semantic map (CONTEXT.md). Catch the retired "filtered Repo Map" name coming back."""
+    for base in PATH_INVENTORY_ROOTS:
+        for path in sorted(base.rglob("*") if base.is_dir() else [base]):
+            if path.is_file() and RETIRED_PATH_INVENTORY_TERM.search(
+                path.read_text(encoding="utf-8", errors="replace")
+            ):
+                sys.exit(f'{path}: retired term "filtered Repo Map"; use "Path inventory"')
+
+
 def check_docs_agents_enumeration() -> None:
     """README.md and harness-guide.md each spell out, by hand, the docs/agents/{...}.md
     brace-list scaffold_pvmalove_extras deploys. Catch a file added to (or removed from)
@@ -327,6 +350,11 @@ def main() -> None:
     run_ok(["git", "-C", str(ROOT), "diff", "--exit-code", "--", "skills/REGISTRY.md"])
 
     check_docs_agents_mirror()
+    check_no_retired_path_inventory_term()
+    grep_contains(
+        ROOT / "skills" / "first-party" / "pvmalove" / "to-tickets" / "SKILL.md",
+        "or symbol signatures",
+    )
     check_docs_agents_enumeration()
     check_pvmalove_override_docs_sync()
     check_pvmalove_additions_docs_sync()

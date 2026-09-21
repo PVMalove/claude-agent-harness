@@ -19,7 +19,7 @@
 
 Discovery Pipeline сохраняет согласованный контекст между сессиями: `/grilling` ведёт `Live Artifact`
 только после explicit opt-in пользователя → `/to-spec` переносит пути в `Relevant Files` →
-`/to-tickets` назначает их тикетам и проверяет filtered Repo Map одним cheap advisory-вызовом →
+`/to-tickets` назначает их тикетам и проверяет Path inventory одним cheap advisory-вызовом →
 `context_builder.py` собирает deterministic Context Package. Advisory может только добавить exact
 dependencies и не имеет полномочий изменять scope или запускать dispatch.
 

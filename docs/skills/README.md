@@ -20,7 +20,7 @@
 ## Связанные документы
 
 - Discovery Context начинается в `/grilling` через opt-in `Live Artifact`, проходит через
-  `Relevant Files` и ticket-specific filtered Repo Map, а backend batch использует LLM-free
+  `Relevant Files` и ticket-specific Path inventory, а backend batch использует LLM-free
   `Context Package`, checkpoint/continuation для write-роли и base-commit gate. Операционные
   правила собраны в [backend-orchestration](../agents/backend-orchestration.md), актуальное
   состояние — в [current-state](../agents/current-state.md), решение записано в

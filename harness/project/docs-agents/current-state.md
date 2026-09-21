@@ -99,8 +99,8 @@ python .harness/orchestration/coordinator.py --repo . batch decide ...
 До реализации curated-контекст проходит отдельный Discovery Pipeline: `/grilling` собирает
 `Live Artifact` только из явно одобренных пользователем путей; `/to-spec` сохраняет их в эпике под
 `## Relevant Files (Discovery Context)`; `/to-tickets` распределяет пути по дочерним тикетам и
-строит filtered Repo Map. Cheap advisory может предложить только дополнительные exact paths из
-этой карты и не получает полномочий менять scope, risk, QA или dispatch.
+строит Path inventory. Cheap advisory может предложить только дополнительные exact paths из
+этого списка и не получает полномочий менять scope, risk, QA или dispatch.
 
 `context_builder.py` — детерминированный LLM-free sibling coordinator-а. Он работает с pinned
 `base_commit`/`candidate_commit`, формирует exact diff, 5–10 стартовых файлов с причинами, bounded
