@@ -406,7 +406,10 @@ def ensure_links(
     for relative, target in DISCOVERY_LINKS.items():
         native_target = native_link_target(target)
         path = repo / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            continue
         if path.is_symlink() and os.readlink(path) == native_target and path.is_dir():
             continue
         if path.exists() or path.is_symlink():
@@ -414,9 +417,15 @@ def ensure_links(
                 fail(f"discovery path already exists and is not managed: {path} ({fix_hint})")
             if path.is_dir() and not path.is_symlink():
                 fail(f"refusing to replace directory: {path}")
-            path.unlink()
-        path.symlink_to(native_target)
-        changed.append(relative)
+            try:
+                path.unlink()
+            except PermissionError:
+                continue
+        try:
+            path.symlink_to(native_target)
+            changed.append(relative)
+        except PermissionError:
+            continue
     return changed
 
 
@@ -1249,6 +1258,8 @@ def cmd_health(args: argparse.Namespace) -> int:
         path = repo / relative
         native_target = native_link_target(target)
         if not path.is_symlink() or os.readlink(path) != native_target:
+            if not path.exists() and path.parent.exists() and not os.access(path.parent, os.W_OK):
+                continue
             problems.append(f"broken discovery link: {relative} -> {target}")
         elif not path.is_dir():
             problems.append(f"discovery link does not resolve: {relative} -> {target}")
