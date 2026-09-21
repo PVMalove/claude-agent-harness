@@ -111,11 +111,11 @@ def attest(repo: Path, dispatch: Mapping[str, object], worktree: str) -> dict[st
                 "runtime worktree HEAD is not reachable from the immutable issue branch",
                 remedy=f"rebase or merge {expected_branch!r} so commit {head} is reachable from it, or dispatch from a worktree that is",
             )
-    elif role == "code-review":
+    elif role in {"verification", "code-review"}:
         candidate = dispatch.get("candidate_commit")
         if head != candidate:
             raise AttestationError(
-                "review runtime worktree HEAD does not match the pinned candidate commit",
-                remedy=f"checkout commit {candidate} in {checkout} before dispatching the code-review role",
+                f"{role} runtime worktree HEAD does not match the pinned candidate commit",
+                remedy=f"checkout commit {candidate} in {checkout} before dispatching the {role} role",
             )
     return {"worktree": str(checkout), "branch": branch, "head_commit": head}
