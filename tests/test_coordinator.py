@@ -1292,7 +1292,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.tmp = Path(self._tmp.name)
         self.repo = _init_repo(self.tmp)
         roles = self.repo / ".harness" / "orchestration" / "roles"
-        for name in ("developer", "code-review", "qa"):
+        for name in ("developer", "verification", "code-review", "qa"):
             (roles / f"{name}.md").write_text(
                 (ORCHESTRATION_ROOT / "roles" / f"{name}.md").read_text(
                     encoding="utf-8"
@@ -1692,6 +1692,85 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         return routing
 
     # -- code-review ---------------------------------------------------------------------------
+
+    def test_infrastructure_blocked_developer_registers_candidate_then_verifies_same_sha(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("infrastructure")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers="verification environment unavailable",
+            ),
+        )
+
+        decided = self._decide(
+            batch["batch_id"], "retry", reason_category="verification-infrastructure"
+        )
+
+        self._assert_route(
+            decided,
+            role="verification",
+            action="verification",
+            category="verification-infrastructure",
+            candidate=candidate,
+        )
+        registration = decided["candidate_registrations"][-1]
+        self.assertEqual(registration["candidate_commit"], candidate)
+        self.assertEqual(registration["source_dispatch_id"], developer["dispatch_id"])
+        self.assertIn("source_report_sha256", registration)
+        verification = self._dispatch(
+            batch["batch_id"], "verification", candidate=candidate
+        )["brief"]
+        self.assertEqual(verification["candidate_commit"], candidate)
+        self.assertEqual(verification["snapshot_commit"], candidate)
+        self.assertEqual(verification["access"], "read-only")
+        self._start(verification["dispatch_id"], checkout=self.worktree)
+        self._submit(
+            verification["dispatch_id"],
+            self._base_report(verification, "verification"),
+        )
+        accepted = self._decide(batch["batch_id"], "accept")
+
+        self.assertEqual(accepted["next_action"], "risk-assessment")
+        self._assess(batch["batch_id"], candidate, changed)
+
+    def test_developer_code_failure_cannot_register_candidate_for_verification(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("failed-check")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers="tests failed",
+                checks_run=self._checks(developer, "fail"),
+            ),
+        )
+
+        decided = self._decide(batch["batch_id"], "retry", reason_category="code")
+
+        self._assert_route(
+            decided,
+            role="developer",
+            action="developer-retry",
+            category="code",
+            candidate=None,
+        )
+        self.assertNotIn("candidate_registrations", decided)
 
     def test_infrastructure_blocked_review_retries_a_new_review_on_the_same_candidate(
         self,

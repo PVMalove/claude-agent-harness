@@ -8,6 +8,7 @@ read-only role on the same candidate; anything about the code itself goes back t
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 from typing import cast
 
@@ -29,6 +30,7 @@ from harness.orchestration.core.constants import (
     RETRY_REASON_CATEGORIES,
 )
 from harness.orchestration.core.git_utils import (
+    _candidate_commit,
     _fetch_ref_tip,
 )
 from harness.orchestration.core.utils import (
@@ -447,6 +449,19 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         if args.decision == "retry":
             routing = _decide_retry_route(repo, root, batch, dispatch, report, args)
             routing["decided_at"] = utils._now()
+            if routing["next_action"] == "verification":
+                report_path = _records_root(root) / pending[0]["report"]
+                batch.setdefault("candidate_registrations", []).append(
+                    {
+                        "candidate_commit": routing["candidate_commit"],
+                        "source_dispatch_id": dispatch["dispatch_id"],
+                        "source_report_sha256": hashlib.sha256(
+                            report_path.read_bytes()
+                        ).hexdigest(),
+                        "reason_category": routing["reason_category"],
+                        "registered_at": routing["decided_at"],
+                    }
+                )
             if routing["next_action"] == "developer-retry":
                 retry_policy = _retry_policy(core_config._config(repo))
                 if (
@@ -504,6 +519,8 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     batch["next_action"] = "risk-assessment"
             elif report["role"] == "architect":
                 batch["next_action"] = "developer"
+            elif report["role"] == "verification":
+                batch["next_action"] = "risk-assessment"
             elif report["role"] == "code-review":
                 batch["next_action"] = "qa"
             elif report["role"] == "qa":
@@ -586,6 +603,22 @@ def _decide_retry_route(
             for item in batch.get("context_pressure", [])
         ),
     )
+    if (
+        stage == "developer"
+        and routing["reason_category"] in OPERATIONAL_REASON_CATEGORIES
+        and report.get("outcome") == "blocked"
+    ):
+        candidate = _candidate_commit(repo, report["commit_sha"])
+        routing = {
+            **routing,
+            "next_role": "verification",
+            "next_action": "verification",
+            "candidate_commit": candidate,
+            "rationale": (
+                f"{routing['rationale']} The blocked developer candidate is registered "
+                "append-only and must pass a new read-only verification dispatch before risk assessment."
+            ),
+        }
     if hint is not None:
         routing["classifier_hint"] = {"category": hint.category, "basis": hint.basis}
     if forced == "developer" and routing["next_action"] != "developer-retry":
