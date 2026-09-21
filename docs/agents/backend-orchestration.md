@@ -298,8 +298,8 @@ manifests), а значением — непустой список уникал
 Discovery Pipeline переносит проверенный контекст от проектирования к dispatch. `/grilling` ведёт
 `Live Artifact` с кандидатными путями, но добавляет путь только после явного согласия пользователя.
 `/to-spec` сохраняет утверждённый список в эпике под `## Relevant Files (Discovery Context)`, а
-`/to-tickets` назначает каждый путь подходящему tracer-bullet тикету и строит path-only filtered Repo
-Map. Один cheap advisory-вызов может добавить только точные зависимости из этого Repo Map; его
+`/to-tickets` назначает каждый путь подходящему tracer-bullet тикету и строит Path
+inventory. Один cheap advisory-вызов может добавить только точные зависимости из этого Path inventory; его
 вывод не является evidence или authority.
 
 Перед первым dispatch coordinator может зарегистрировать детерминированный Context Package в
