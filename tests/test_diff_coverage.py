@@ -207,6 +207,30 @@ class ChangedLinesTests(unittest.TestCase):
 
         self.assertEqual(changed, {"tool.py": {2}})
 
+    def test_the_clean_room_script_is_not_gated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._git(root, "init", "-q")
+            (root / "scripts").mkdir()
+            (root / "scripts" / "test_clean_room.py").write_text(
+                "a = 1\n", encoding="utf-8"
+            )
+            (root / "other.py").write_text("b = 1\n", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+            base = self._git(root, "rev-parse", "HEAD")
+            (root / "scripts" / "test_clean_room.py").write_text(
+                "a = 2\n", encoding="utf-8"
+            )
+            (root / "other.py").write_text("b = 2\n", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "change")
+
+            with mock.patch.object(diff_coverage, "ROOT", root):
+                changed = diff_coverage._changed_lines(base)
+
+        self.assertEqual(changed, {"other.py": {1}})
+
 
 if __name__ == "__main__":
     unittest.main()

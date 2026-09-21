@@ -18,6 +18,9 @@ ROOT = Path(__file__).resolve().parent.parent
 THRESHOLD_PERCENT = 70.0
 COVERAGE_DATA_FILE = ROOT / ".coverage"
 COVERAGE_JSON_FILE = ROOT / ".coverage.diff-coverage.json"
+# Verified by the clean-room run (scripts/verify.py), not by the unittest suite this gate measures, so
+# its changed lines could never count as covered.
+EXCLUDED_FROM_GATE = frozenset({"scripts/test_clean_room.py"})
 
 
 def _base_branch() -> str:
@@ -90,7 +93,8 @@ def _changed_lines(base: str) -> dict[str, set[int]]:
         if line.startswith("+++ "):
             path = line[len("+++ ") :]
             path = path.removeprefix("b/")
-            current_path = path if path.endswith(".py") else None
+            is_gated = path.endswith(".py") and path not in EXCLUDED_FROM_GATE
+            current_path = path if is_gated else None
             continue
         if line.startswith("@@"):
             match = _HUNK_RE.match(line)
