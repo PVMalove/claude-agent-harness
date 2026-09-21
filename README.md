@@ -199,7 +199,7 @@ python harness\bin\harness list C:\path\to\repository
 текстовое verify-действие и имена секретных env-переменных, но никогда сами секреты.
 
 `skills/REGISTRY.md` — отдельный сгенерированный каталог исходников этого репозитория,
-обновляемый через `scripts/build-registry.py`; его не следует путать с runtime-реестром
+обновляемый через `scripts/build_registry.py`; его не следует путать с runtime-реестром
 `.harness/skills/REGISTRY.md` в целевом проекте.
 
 ## Политика репозитория
@@ -212,7 +212,7 @@ python harness\bin\harness list C:\path\to\repository
   [`docs/adr/template.md`](./docs/adr/template.md). Номер всегда следующий после наибольшего в
   каталоге; язык совпадает с языком репозитория.
 - `third_party/mattpocock-skills/UPSTREAM.lock` может отстать от реального апстрима незаметно —
-  `scripts/check-upstream-drift.py` (сеть, читает только) сверяет пин с последним тегом на
+  `scripts/check_upstream_drift.py` (сеть, читает только) сверяет пин с последним тегом на
   `mattpocock/skills` и раскладывает реальные изменения на «можно тянуть не глядя» (скиллы вне
   `pvmalove-suite.overrides`) и «сверить руками перед ресинком» (см. [ADR 0001](./docs/adr/0001-portable-capability-snapshots.md)). Гоняется вручную или
   еженедельно через `.github/workflows/upstream-drift.yml` (`workflow_dispatch` — можно и по

@@ -1,7 +1,7 @@
 # Единая версия Python 3.12 для харнесса, включая отмену развязки в bin/install-global
 
 `MIN_PYTHON = (3, 9)` был продублирован в трёх местах (`harness/bin/harness`,
-`bin/install-global`, `scripts/test-clean-room`), пока `pyproject.toml` объявлял
+`bin/install-global`, `scripts/test_clean_room`), пока `pyproject.toml` объявлял
 `requires-python = ">=3.14"` — планку, которую нигде не проверял ни один рантайм-путь.
 `bin/install-global:12` нёс явный авторский комментарий: «nothing here needs newer; deliberately
 not tied to pyproject.toml» — то есть широкая аудитория конечных пользователей установщика была
@@ -15,7 +15,7 @@ not tied to pyproject.toml» — то есть широкая аудитория
 
 ## Considered Options
 
-- Оставить `bin/install-global`/`scripts/test-clean-room` на 3.9, поднять только
+- Оставить `bin/install-global`/`scripts/test_clean_room` на 3.9, поднять только
   `pyproject.toml`/`harness/bin/harness` — сохраняет совместимость с более старыми Python у
   конечных пользователей, но оставляет разнобой версий внутри одного репозитория.
 - Поднять везде до 3.12 (выбрано) — единая планка, но с прямым риском для конечных пользователей

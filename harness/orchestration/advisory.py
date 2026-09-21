@@ -22,7 +22,8 @@ def rank_files(paths: list[str], keywords: list[str]) -> list[dict[str, object]]
     """Rough relevance ranking by keyword hits in each path. Advisory only."""
     normalized_keywords = [keyword.casefold() for keyword in keywords if keyword]
     scored = [
-        (sum(1 for keyword in normalized_keywords if keyword in path.casefold()), path) for path in paths
+        (sum(1 for keyword in normalized_keywords if keyword in path.casefold()), path)
+        for path in paths
     ]
     scored.sort(key=lambda item: (-item[0], item[1]))
     return [{"path": path, "score": score} for score, path in scored]
@@ -51,13 +52,17 @@ def classify_risk(text: str, known_triggers: list[str]) -> list[str]:
     hits = []
     for trigger in known_triggers:
         words = [word for word in re.split(r"[^a-z0-9]+", trigger.casefold()) if word]
-        if trigger.casefold() in normalized or any(re.search(rf"\b{re.escape(word)}\b", normalized) for word in words):
+        if trigger.casefold() in normalized or any(
+            re.search(rf"\b{re.escape(word)}\b", normalized) for word in words
+        ):
             hits.append(trigger)
     return hits
 
 
 def _emit(kind: str, output: object) -> None:
-    print(json.dumps({"advisory": True, "kind": kind, "output": output}, sort_keys=True))
+    print(
+        json.dumps({"advisory": True, "kind": kind, "output": output}, sort_keys=True)
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -67,15 +72,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    rank = commands.add_parser("rank-files", help="Rough keyword relevance ranking for a list of paths.")
+    rank = commands.add_parser(
+        "rank-files", help="Rough keyword relevance ranking for a list of paths."
+    )
     rank.add_argument("--keyword", action="append", default=[])
     rank.add_argument("path", nargs="+")
 
-    summarize = commands.add_parser("summarize-log", help="Rough summary of a log file.")
+    summarize = commands.add_parser(
+        "summarize-log", help="Rough summary of a log file."
+    )
     summarize.add_argument("--file", required=True)
     summarize.add_argument("--max-lines", type=int, default=20)
 
-    classify = commands.add_parser("classify-risk", help="Rough risk-trigger hint from free text.")
+    classify = commands.add_parser(
+        "classify-risk", help="Rough risk-trigger hint from free text."
+    )
     classify.add_argument("--text", required=True)
     classify.add_argument("--known-trigger", action="append", required=True)
 

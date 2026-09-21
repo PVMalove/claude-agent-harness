@@ -57,7 +57,10 @@ class ContextPackage:
     estimated_tokens: int
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        return (
+            json.dumps(asdict(self), ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n"
+        )
 
 
 def _run_git(repository: Path, *args: str) -> str:
@@ -67,6 +70,7 @@ def _run_git(repository: Path, *args: str) -> str:
         text=True,
         encoding="utf-8",
         errors="replace",
+        check=False,
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
@@ -86,8 +90,12 @@ def _read_file(repository: Path, commit: str, path: str) -> str:
     return _run_git(repository, "show", f"{commit}:{path}")
 
 
-def _changed_files(repository: Path, base_commit: str, candidate_commit: str) -> list[tuple[str, str]]:
-    output = _run_git(repository, "diff", "--name-status", base_commit, candidate_commit)
+def _changed_files(
+    repository: Path, base_commit: str, candidate_commit: str
+) -> list[tuple[str, str]]:
+    output = _run_git(
+        repository, "diff", "--name-status", base_commit, candidate_commit
+    )
     statuses = {"A": "added", "M": "modified", "D": "deleted"}
     changes: list[tuple[str, str]] = []
     for line in output.splitlines():
@@ -111,7 +119,9 @@ def _module_name(path: str) -> str | None:
     return stem.replace("/", ".")
 
 
-def _build_import_graph(repository: Path, commit: str, files: list[str]) -> dict[str, set[str]]:
+def _build_import_graph(
+    repository: Path, commit: str, files: list[str]
+) -> dict[str, set[str]]:
     module_to_path: dict[str, str] = {}
     for path in files:
         name = _module_name(path)
@@ -165,7 +175,10 @@ def _bounded_symbol_graph(
         frontier = list(dict.fromkeys(next_frontier))
 
     return {
-        path: {"imports": sorted(graph.get(path, ())), "imported_by": sorted(imported_by.get(path, ()))}
+        path: {
+            "imports": sorted(graph.get(path, ())),
+            "imported_by": sorted(imported_by.get(path, ())),
+        }
         for path in sorted(visited)
     }
 
@@ -175,7 +188,9 @@ def _fallback_excerpt(text: str) -> list[str]:
     return text.splitlines()[:30]
 
 
-def _signature_for(node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef, lines: list[str]) -> str:
+def _signature_for(
+    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef, lines: list[str]
+) -> str:
     """Extract a definition header selected by the AST, excluding its body."""
     body = node.body
     end_line = body[0].lineno - 1 if body else node.end_lineno
@@ -206,7 +221,12 @@ def _dependency_context(
     """Build context for direct local dependencies only; never traverse a dependency's imports."""
     seed_paths = set(seeds)
     direct_dependencies = sorted(
-        {target for seed in seed_paths for target in import_graph.get(seed, set()) if target not in seed_paths}
+        {
+            target
+            for seed in seed_paths
+            for target in import_graph.get(seed, set())
+            if target not in seed_paths
+        }
     )
     context: dict[str, list[str]] = {}
     for path in direct_dependencies:
@@ -229,11 +249,16 @@ def _select_starting_files(
     min_files: int,
     max_files: int,
 ) -> list[StartingFile]:
-    reasons: dict[str, str] = {path: f"changed in diff ({status})" for path, status in changed}
+    reasons: dict[str, str] = {
+        path: f"changed in diff ({status})" for path, status in changed
+    }
     ordered = sorted(reasons)
 
     if len(ordered) > max_files:
-        return [StartingFile(path=path, reason=reasons[path]) for path in ordered[:max_files]]
+        return [
+            StartingFile(path=path, reason=reasons[path])
+            for path in ordered[:max_files]
+        ]
 
     if len(ordered) >= min_files:
         return [StartingFile(path=path, reason=reasons[path]) for path in ordered]
@@ -276,7 +301,9 @@ def _related_tests(
     related = []
     for path in files:
         name = path.rsplit("/", 1)[-1]
-        is_test_file = "/tests/" in f"/{path}" and (name.startswith("test_") or name.endswith("_test.py"))
+        is_test_file = "/tests/" in f"/{path}" and (
+            name.startswith("test_") or name.endswith("_test.py")
+        )
         if not is_test_file:
             continue
         if import_graph.get(path, set()) & starting_paths:
@@ -284,21 +311,33 @@ def _related_tests(
     return sorted(related)
 
 
-def _precedent_cards(repository: Path, commit: str, files: list[str], keywords: set[str]) -> list[PrecedentCard]:
-    adr_files = sorted(path for path in files if path.startswith("docs/adr/") and path.endswith(".md"))
+def _precedent_cards(
+    repository: Path, commit: str, files: list[str], keywords: set[str]
+) -> list[PrecedentCard]:
+    adr_files = sorted(
+        path for path in files if path.startswith("docs/adr/") and path.endswith(".md")
+    )
     scored: list[tuple[int, str, PrecedentCard]] = []
     for path in adr_files:
         content = _read_file(repository, commit, path)
         haystack = f"{path} {content}".casefold()
-        score = sum(1 for keyword in keywords if keyword and keyword.casefold() in haystack)
+        score = sum(
+            1 for keyword in keywords if keyword and keyword.casefold() in haystack
+        )
         if score <= 0:
             continue
         heading_match = _ADR_HEADING_RE.search(content)
         title = heading_match.group(1).strip() if heading_match else path
-        paragraphs = [block.strip() for block in content.split("\n\n") if block.strip() and not block.strip().startswith("#")]
+        paragraphs = [
+            block.strip()
+            for block in content.split("\n\n")
+            if block.strip() and not block.strip().startswith("#")
+        ]
         summary = (paragraphs[0] if paragraphs else "")[:400]
         stem = path.rsplit("/", 1)[-1].removesuffix(".md")
-        scored.append((score, path, PrecedentCard(id=stem, title=title, summary=summary)))
+        scored.append(
+            (score, path, PrecedentCard(id=stem, title=title, summary=summary))
+        )
     scored.sort(key=lambda entry: (-entry[0], entry[1]))
     return [card for _, _, card in scored]
 
@@ -367,7 +406,11 @@ def build_context_package(
     available_changed = [entry for entry in changed if entry[0] in files]
     if available_changed:
         starting_files = _select_starting_files(
-            available_changed, import_graph, imported_by, min_files=min_starting_files, max_files=max_starting_files
+            available_changed,
+            import_graph,
+            imported_by,
+            min_files=min_starting_files,
+            max_files=max_starting_files,
         )
     else:
         requested = [path for path in (seed_paths or []) if path in files]
@@ -381,20 +424,38 @@ def build_context_package(
                 f"only {len(requested)} static starting file(s) available but min_starting_files={min_starting_files}",
                 remedy=f"lower min_starting_files below {min_starting_files} or pass more seed_paths that exist at {candidate_commit}",
             )
-        starting_files = [StartingFile(path=path, reason="role preflight seed at pinned snapshot") for path in requested]
+        starting_files = [
+            StartingFile(path=path, reason="role preflight seed at pinned snapshot")
+            for path in requested
+        ]
     starting_paths = [item.path for item in starting_files]
 
-    symbol_graph = _bounded_symbol_graph(import_graph, starting_paths, symbol_graph_depth)
+    symbol_graph = _bounded_symbol_graph(
+        import_graph, starting_paths, symbol_graph_depth
+    )
     changed_paths = {path for path, _ in changed}
     dependency_paths = sorted(
-        {target for path in changed_paths for target in import_graph.get(path, set()) if target not in changed_paths}
+        {
+            target
+            for path in changed_paths
+            for target in import_graph.get(path, set())
+            if target not in changed_paths
+        }
     )
-    dependency_files = {path: _read_file(repository, candidate_commit, path) for path in dependency_paths}
-    direct_context = _dependency_context(import_graph, sorted(changed_paths), dependency_files)
+    dependency_files = {
+        path: _read_file(repository, candidate_commit, path)
+        for path in dependency_paths
+    }
+    direct_context = _dependency_context(
+        import_graph, sorted(changed_paths), dependency_files
+    )
     for path, context in direct_context.items():
         symbol_graph.setdefault(
             path,
-            {"imports": sorted(import_graph.get(path, ())), "imported_by": sorted(imported_by.get(path, ()))},
+            {
+                "imports": sorted(import_graph.get(path, ())),
+                "imported_by": sorted(imported_by.get(path, ())),
+            },
         )["context"] = context
 
     related_tests = _related_tests(import_graph, files, set(starting_paths))
@@ -409,10 +470,17 @@ def build_context_package(
     precedent_cards = _precedent_cards(repository, candidate_commit, files, keywords)
 
     included_paths = sorted(
-        set(starting_paths) | set(related_tests) | {f"docs/adr/{card.id}.md" for card in precedent_cards}
+        set(starting_paths)
+        | set(related_tests)
+        | {f"docs/adr/{card.id}.md" for card in precedent_cards}
     )
-    contents = {path: _read_file(repository, candidate_commit, path) for path in included_paths}
-    file_hashes = {path: hashlib.sha256(content.encode("utf-8")).hexdigest() for path, content in contents.items()}
+    contents = {
+        path: _read_file(repository, candidate_commit, path) for path in included_paths
+    }
+    file_hashes = {
+        path: hashlib.sha256(content.encode("utf-8")).hexdigest()
+        for path, content in contents.items()
+    }
 
     # An added file's unified diff already contains 100% of its content as `+` lines, so counting
     # `contents[path]` again for the token/size estimate would double-count the exact same bytes
@@ -423,7 +491,11 @@ def build_context_package(
         [
             diff,
             json.dumps(symbol_graph, ensure_ascii=False, sort_keys=True),
-            json.dumps([asdict(card) for card in precedent_cards], ensure_ascii=False, sort_keys=True),
+            json.dumps(
+                [asdict(card) for card in precedent_cards],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
             *[contents[path] for path in sorted(contents) if path not in added_paths],
         ]
     )

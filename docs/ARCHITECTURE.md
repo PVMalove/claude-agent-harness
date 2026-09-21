@@ -12,7 +12,7 @@ Agent Harness — переносимый runtime-native snapshot skills, пра�
 | Skill packages | `skills/vendor/`, `skills/first-party/` | Инструкции, переводы и overrides; vendor snapshot вручную не редактируется. |
 | Project snapshot | `.harness/skills/`, `harness.lock`, `REGISTRY.md` | Независимая поставка в целевой репозиторий, drift/provenance. |
 | Project contract | `.harness/project.json` | Язык, base branch, branch pattern и QA-команды. |
-| Orchestration core | `contract.py`, `ledger.py`, `coordinator.py` | Policy, approvals, immutable records, lifecycle, audit и dispatch. |
+| Orchestration core | `contract.py`, `core/`, `ledger/`, `workflow/`, `coordinator.py` | Policy, approvals, immutable records, lifecycle, audit и dispatch; `coordinator.py` — только CLI-фасад. |
 | Evidence execution | `gate_runner.py`, `delivery_stats.py` | Проверки, санитизированное evidence и source-backed telemetry. |
 | Runtime boundary | `orca_adapter.py` или `in-process` | Только доставка уже approved brief; не меняет scope и state. |
 
@@ -83,7 +83,7 @@ test-only diff и всегда является новым независимы�
 - [capability dataflow](./docs/diagrams/capability-delivery.dataflow.html), [skill contract](./docs/diagrams/skill-contract-fill.workflow.html).
 
 Правится только `*.json`; после изменения запускаются `validate`, `deliver` и `visual-check`. Код
-проверяется `scripts/test-clean-room.py`, unit-тестами и командами из `.harness/project.json`. Для
+проверяется `scripts/test_clean_room.py`, unit-тестами и командами из `.harness/project.json`. Для
 telemetry `delivery-stats` сохраняет cache read/write tokens, worker sessions/restart reasons,
 review diff scope excess и QA failure rate только при наличии наблюдаемого источника; отсутствующие
 значения остаются `нет данных`.

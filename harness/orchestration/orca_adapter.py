@@ -16,7 +16,7 @@ import subprocess
 import sys
 import uuid
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeGuard
 
@@ -32,7 +32,9 @@ if _HARNESS_ROOT.name != "harness":
     import importlib.util
 
     _spec = importlib.util.spec_from_file_location(
-        "harness", _HARNESS_ROOT / "__init__.py", submodule_search_locations=[str(_HARNESS_ROOT)]
+        "harness",
+        _HARNESS_ROOT / "__init__.py",
+        submodule_search_locations=[str(_HARNESS_ROOT)],
     )
     assert _spec is not None and _spec.loader is not None
     _pkg = importlib.util.module_from_spec(_spec)
@@ -40,8 +42,11 @@ if _HARNESS_ROOT.name != "harness":
     _spec.loader.exec_module(_pkg)
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError, print_and_exit
-from harness.orchestration.contract import ContractError, JsonObject, validate_brief_policy
-
+from harness.orchestration.contract import (
+    ContractError,
+    JsonObject,
+    validate_brief_policy,
+)
 
 SENSITIVE_KEY = re.compile(
     r"(?:api[_-]?key|credential|password|secret|(?:access|auth|refresh|id|bearer)[_-]?token|(?:^|[_-])token(?:$|[_-](?:id|value|secret|key)$))",
@@ -73,9 +78,13 @@ def _read_json(path: Path, label: str) -> JsonObject:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise DispatchError(f"{label} is not valid JSON", remedy=f"fix the JSON syntax in {path}") from exc
+        raise DispatchError(
+            f"{label} is not valid JSON", remedy=f"fix the JSON syntax in {path}"
+        ) from exc
     if not isinstance(data, dict):
-        raise DispatchError(f"{label} must be a JSON object", remedy=f"rewrite {path} as a JSON object")
+        raise DispatchError(
+            f"{label} must be a JSON object", remedy=f"rewrite {path} as a JSON object"
+        )
     return data
 
 
@@ -94,7 +103,10 @@ def _validate_model_id(value: object) -> str:
 
 def _issue_branch_exists(repo: Path, branch: str) -> None:
     for reference in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"):
-        result = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", reference])
+        result = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", reference],
+            check=False,
+        )
         if result.returncode == 0:
             return
     raise DispatchError(
@@ -104,16 +116,28 @@ def _issue_branch_exists(repo: Path, branch: str) -> None:
 
 
 def _resolved_commit(repo: Path, value: object) -> str:
-    if not isinstance(value, str) or re.fullmatch(r"[0-9a-fA-F]{7,64}", value.strip()) is None:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"[0-9a-fA-F]{7,64}", value.strip()) is None
+    ):
         raise DispatchError(
-            "candidate_commit must be a hexadecimal commit SHA", remedy="pass candidate_commit as a 7-64 character hex commit SHA"
+            "candidate_commit must be a hexadecimal commit SHA",
+            remedy="pass candidate_commit as a 7-64 character hex commit SHA",
         )
     result = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--verify", f"{value.strip()}^{{commit}}"],
+        [
+            "git",
+            "-C",
+            str(repo),
+            "rev-parse",
+            "--verify",
+            f"{value.strip()}^{{commit}}",
+        ],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
+        check=False,
     )
     if result.returncode != 0 or result.stdout.strip() != value.strip().lower():
         raise DispatchError(
@@ -125,20 +149,31 @@ def _resolved_commit(repo: Path, value: object) -> str:
 
 def _git_output(repo: Path, arguments: list[str]) -> str:
     result = subprocess.run(
-        ["git", "-C", str(repo), *arguments], capture_output=True, text=True, encoding="utf-8", errors="replace",
+        ["git", "-C", str(repo), *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     if result.returncode != 0:
         raise DispatchError(
-            "cannot inspect the pinned candidate commit", remedy=f"inspect the git error above and fix the repository/commit before retrying 'git {' '.join(arguments)}'"
+            "cannot inspect the pinned candidate commit",
+            remedy=f"inspect the git error above and fix the repository/commit before retrying 'git {' '.join(arguments)}'",
         )
     return result.stdout.strip()
 
 
 def _candidate_files(repo: Path, candidate: str, base: str | None) -> list[str]:
     if base:
-        output = _git_output(repo, ["diff", "--name-only", "--no-renames", base, candidate])
+        output = _git_output(
+            repo, ["diff", "--name-only", "--no-renames", base, candidate]
+        )
     else:
-        output = _git_output(repo, ["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", candidate])
+        output = _git_output(
+            repo,
+            ["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", candidate],
+        )
     return [line.replace("\\", "/") for line in output.splitlines() if line.strip()]
 
 
@@ -149,10 +184,12 @@ def _is_ancestor(repo: Path, base: str, candidate: str) -> bool:
         text=True,
         encoding="utf-8",
         errors="replace",
+        check=False,
     )
     if result.returncode not in {0, 1}:
         raise DispatchError(
-            "cannot verify review_base ancestry", remedy=f"inspect the git merge-base error above for base {base!r} and candidate {candidate!r}"
+            "cannot verify review_base ancestry",
+            remedy=f"inspect the git merge-base error above for base {base!r} and candidate {candidate!r}",
         )
     return result.returncode == 0
 
@@ -161,7 +198,10 @@ def _reject_sensitive_keys(value: object, location: str) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             if not isinstance(key, str):
-                raise DispatchError(f"{location} contains a non-string key", remedy=f"use only string keys in {location}")
+                raise DispatchError(
+                    f"{location} contains a non-string key",
+                    remedy=f"use only string keys in {location}",
+                )
             if SENSITIVE_KEY.search(key):
                 raise DispatchError(
                     f"{location} must not contain secret-shaped field {key!r}",
@@ -191,7 +231,10 @@ def _validate_brief(
     role_name = brief["role"]
     if candidate is None:
         if role_name in {"code-review", "qa"}:
-            raise DispatchError(f"{role_name} dispatch must pin candidate_commit", remedy=f"set candidate_commit before dispatching the {role_name} role")
+            raise DispatchError(
+                f"{role_name} dispatch must pin candidate_commit",
+                remedy=f"set candidate_commit before dispatching the {role_name} role",
+            )
         return role, assignment["runtime_plan"]
     pinned = _resolved_commit(repo, candidate)
     if pinned != candidate:
@@ -201,16 +244,22 @@ def _validate_brief(
         )
     if role_name == "code-review":
         scope = brief.get("review_scope")
-        if not isinstance(scope, list) or not scope or not all(_non_empty_string(item) for item in scope):
+        if (
+            not isinstance(scope, list)
+            or not scope
+            or not all(_non_empty_string(item) for item in scope)
+        ):
             raise DispatchError(
-                "code-review dispatch must declare its immutable review_scope", remedy="set review_scope to the non-empty list of changed files"
+                "code-review dispatch must declare its immutable review_scope",
+                remedy="set review_scope to the non-empty list of changed files",
             )
         base = brief.get("review_base")
         if base is not None:
             base = _resolved_commit(repo, base)
             if not _is_ancestor(repo, base, pinned):
                 raise DispatchError(
-                    "review_base must be an ancestor of candidate_commit", remedy=f"pass a review_base that is an ancestor of {pinned}"
+                    "review_base must be an ancestor of candidate_commit",
+                    remedy=f"pass a review_base that is an ancestor of {pinned}",
                 )
         if _candidate_files(repo, pinned, base) != scope:
             raise DispatchError(
@@ -220,9 +269,11 @@ def _validate_brief(
     return role, assignment["runtime_plan"]
 
 
-
 def _candidate_profiles(
-    config: Mapping[str, object], plan: Mapping[str, object], role: Mapping[str, object], preferred: object = None
+    config: Mapping[str, object],
+    plan: Mapping[str, object],
+    role: Mapping[str, object],
+    preferred: object = None,
 ) -> list[tuple[str, str, str | None]]:
     profiles = config.get("provider_profiles")
     plan_profiles = plan.get("profiles")
@@ -235,7 +286,10 @@ def _candidate_profiles(
     role_model = _validate_model_id(plan.get("model"))
     role_effort = plan.get("effort")
     if not _non_empty_string(role_effort):
-        raise DispatchError("assignment plan effort must be a non-empty string", remedy="set the assignment plan's effort to a non-empty string")
+        raise DispatchError(
+            "assignment plan effort must be a non-empty string",
+            remedy="set the assignment plan's effort to a non-empty string",
+        )
 
     def add(profile_id: object) -> None:
         if not _non_empty_string(profile_id) or profile_id not in profiles:
@@ -248,12 +302,15 @@ def _candidate_profiles(
         profile = profiles[profile_id]
         if not isinstance(profile, dict) or not _non_empty_string(profile.get("agent")):
             raise DispatchError(
-                f"provider profile {profile_id!r} has no valid agent", remedy=f"set provider_profiles[{profile_id!r}].agent to a non-empty string"
+                f"provider profile {profile_id!r} has no valid agent",
+                remedy=f"set provider_profiles[{profile_id!r}].agent to a non-empty string",
             )
         capabilities = profile.get("capabilities")
         required_capabilities = role.get("required_capabilities")
-        if not isinstance(capabilities, list) or not isinstance(required_capabilities, list) or not set(capabilities).intersection(
-            required_capabilities
+        if (
+            not isinstance(capabilities, list)
+            or not isinstance(required_capabilities, list)
+            or not set(capabilities).intersection(required_capabilities)
         ):
             raise DispatchError(
                 f"provider profile {profile_id!r} is incompatible with the requested role",
@@ -263,7 +320,8 @@ def _candidate_profiles(
         fallback = profile.get("fallback")
         if not isinstance(fallback, list):
             raise DispatchError(
-                f"provider profile {profile_id!r} has invalid fallback", remedy=f"set provider_profiles[{profile_id!r}].fallback to a list"
+                f"provider profile {profile_id!r} has invalid fallback",
+                remedy=f"set provider_profiles[{profile_id!r}].fallback to a list",
             )
         for fallback_id in fallback:
             add(fallback_id)
@@ -273,7 +331,8 @@ def _candidate_profiles(
         add(profile_id)
     if not candidates:
         raise DispatchError(
-            "assignment plan has no provider profiles", remedy="add at least one profile ID to the assignment plan's profiles"
+            "assignment plan has no provider profiles",
+            remedy="add at least one profile ID to the assignment plan's profiles",
         )
     return candidates
 
@@ -287,7 +346,12 @@ def _orca_command(orca_bin: str, args: list[str]) -> list[str]:
 
 def _run_orca(orca_bin: str, args: list[str]) -> JsonObject:
     result = subprocess.run(
-        _orca_command(orca_bin, args), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        _orca_command(orca_bin, args),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     try:
         payload = json.loads(result.stdout)
@@ -297,13 +361,21 @@ def _run_orca(orca_bin: str, args: list[str]) -> JsonObject:
                 "Orca returned non-JSON output for a rejected dispatch",
                 remedy="inspect the Orca CLI's raw stderr/stdout to see why the command failed",
             ) from exc
-        raise DispatchError("Orca returned non-JSON output", remedy="check the Orca CLI version and invocation; it should always return JSON") from exc
+        raise DispatchError(
+            "Orca returned non-JSON output",
+            remedy="check the Orca CLI version and invocation; it should always return JSON",
+        ) from exc
     if result.returncode:
         error = payload.get("error") if isinstance(payload, dict) else None
         code = error.get("code") if isinstance(error, dict) else None
-        raise OrcaLaunchRejected(code in {"agent_unavailable", "model_unavailable", "account_unavailable"})
+        raise OrcaLaunchRejected(
+            code in {"agent_unavailable", "model_unavailable", "account_unavailable"}
+        )
     if not isinstance(payload, dict) or payload.get("ok") is False:
-        raise DispatchError("Orca returned an unsuccessful dispatch result", remedy="inspect the Orca response payload for the actual failure reason")
+        raise DispatchError(
+            "Orca returned an unsuccessful dispatch result",
+            remedy="inspect the Orca response payload for the actual failure reason",
+        )
     return payload
 
 
@@ -311,7 +383,10 @@ def _active_workers(payload: Mapping[str, object]) -> int:
     result = payload.get("result", payload)
     workers = result.get("workers", []) if isinstance(result, dict) else []
     if not isinstance(workers, list):
-        raise DispatchError("Orca worker listing is invalid", remedy="check the Orca CLI version; 'worker-list --json' should return a workers list")
+        raise DispatchError(
+            "Orca worker listing is invalid",
+            remedy="check the Orca CLI version; 'worker-list --json' should return a workers list",
+        )
     return len(workers)
 
 
@@ -334,26 +409,56 @@ def _write_record(records_dir: Path, record: Mapping[str, object]) -> Path:
             stream.write("\n")
     except FileExistsError as exc:
         raise DispatchError(
-            "refusing to overwrite an immutable dispatch record", remedy=f"{path} already exists -- {INTERNAL_INVARIANT_REMEDY}"
+            "refusing to overwrite an immutable dispatch record",
+            remedy=f"{path} already exists -- {INTERNAL_INVARIANT_REMEDY}",
         ) from exc
     return path
 
 
-def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) -> dict[str, str | None]:
-    config = _read_json(repo / ".harness" / "orchestration.json", "project orchestration config")
+def _dispatch_locked(
+    args: argparse.Namespace, repo: Path, records_dir: Path
+) -> dict[str, str | None]:
+    config = _read_json(
+        repo / ".harness" / "orchestration.json", "project orchestration config"
+    )
     brief = _read_json(Path(args.brief), "dispatch brief")
     _reject_sensitive_keys(config, "project orchestration config")
     role, plan = _validate_brief(brief, repo, config)
-    candidates = _candidate_profiles(config, plan, role, brief.get("resolved_provider_profile"))
+    candidates = _candidate_profiles(
+        config, plan, role, brief.get("resolved_provider_profile")
+    )
     primary_profile, primary_model, primary_effort = candidates[0]
-    if brief.get("resolved_runtime") not in config.get("assignment_plans", {}).get(brief["role"], {}).get("runtimes", {}):
-        raise DispatchError("dispatch brief runtime does not match the project assignment", remedy=INTERNAL_INVARIANT_REMEDY)
-    if brief.get("resolved_provider_profile") is not None and brief["resolved_provider_profile"] != primary_profile:
-        raise DispatchError("dispatch brief provider profile does not match the project assignment", remedy=INTERNAL_INVARIANT_REMEDY)
-    if brief.get("resolved_model") is not None and brief["resolved_model"] != primary_model:
-        raise DispatchError("dispatch brief model does not match the project assignment", remedy=INTERNAL_INVARIANT_REMEDY)
-    if brief.get("resolved_effort") is not None and brief["resolved_effort"] != primary_effort:
-        raise DispatchError("dispatch brief effort does not match the project assignment", remedy=INTERNAL_INVARIANT_REMEDY)
+    if brief.get("resolved_runtime") not in config.get("assignment_plans", {}).get(
+        brief["role"], {}
+    ).get("runtimes", {}):
+        raise DispatchError(
+            "dispatch brief runtime does not match the project assignment",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
+    if (
+        brief.get("resolved_provider_profile") is not None
+        and brief["resolved_provider_profile"] != primary_profile
+    ):
+        raise DispatchError(
+            "dispatch brief provider profile does not match the project assignment",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
+    if (
+        brief.get("resolved_model") is not None
+        and brief["resolved_model"] != primary_model
+    ):
+        raise DispatchError(
+            "dispatch brief model does not match the project assignment",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
+    if (
+        brief.get("resolved_effort") is not None
+        and brief["resolved_effort"] != primary_effort
+    ):
+        raise DispatchError(
+            "dispatch brief effort does not match the project assignment",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     budget = config.get("concurrency_budget")
     if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
         raise DispatchError(
@@ -363,7 +468,18 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
 
     _issue_branch_exists(repo, brief["branch"])
     active = _active_workers(
-        _run_orca(args.orca_bin, ["orchestration", "worker-list", "--run", args.run, "--terminal-state", "active", "--json"])
+        _run_orca(
+            args.orca_bin,
+            [
+                "orchestration",
+                "worker-list",
+                "--run",
+                args.run,
+                "--terminal-state",
+                "active",
+                "--json",
+            ],
+        )
     )
     if active >= budget:
         raise DispatchError(
@@ -375,14 +491,24 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
     task = _run_orca(
         args.orca_bin,
         [
-            "orchestration", "task-create", "--run", args.run, "--task-title", dispatch_id, "--spec",
-            json.dumps({"dispatch_id": dispatch_id, "brief": brief}, ensure_ascii=False), "--json",
+            "orchestration",
+            "task-create",
+            "--run",
+            args.run,
+            "--task-title",
+            dispatch_id,
+            "--spec",
+            json.dumps(
+                {"dispatch_id": dispatch_id, "brief": brief}, ensure_ascii=False
+            ),
+            "--json",
         ],
     )
     task_id = _result_id(task, ("task", "id")) or _result_id(task, ("id",))
     if task_id is None:
         raise DispatchError(
-            "Orca task creation returned no task ID", remedy="check the Orca CLI version; 'task-create --json' should return a task/id field"
+            "Orca task creation returned no task ID",
+            remedy="check the Orca CLI version; 'task-create --json' should return a task/id field",
         )
 
     profiles = config["provider_profiles"]
@@ -394,12 +520,30 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
             worker = _run_orca(
                 args.orca_bin,
                 [
-                    "orchestration", "worker-start", "--run", args.run, "--task", task_id, "--worktree", "new-top-level", "--repo",
-                    f"path:{repo}", "--base-branch", base_ref, "--name", brief["branch"], "--display-name",
-                    brief["worktree"], "--agent", profile["agent"],
-                    "--model", model,
-                    *( ["--effort", effort] if effort is not None else [] ),
-                    "--setup", "run", "--json",
+                    "orchestration",
+                    "worker-start",
+                    "--run",
+                    args.run,
+                    "--task",
+                    task_id,
+                    "--worktree",
+                    "new-top-level",
+                    "--repo",
+                    f"path:{repo}",
+                    "--base-branch",
+                    base_ref,
+                    "--name",
+                    brief["branch"],
+                    "--display-name",
+                    brief["worktree"],
+                    "--agent",
+                    profile["agent"],
+                    "--model",
+                    model,
+                    *(["--effort", effort] if effort is not None else []),
+                    "--setup",
+                    "run",
+                    "--json",
                 ],
             )
         except OrcaLaunchRejected as exc:
@@ -412,11 +556,23 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
             continue
         record = {
             "dispatch_id": dispatch_id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             "brief": copy.deepcopy(brief),
-            "resolved": {"profile": profile_id, "agent": profile["agent"], "model": model, "effort": effort},
-            "role": {"name": brief["role"], "mode": role["mode"], "zone": brief["zone"]},
-            "orca": {"task_id": task_id, "worker_id": _result_id(worker, ("worker", "id"))},
+            "resolved": {
+                "profile": profile_id,
+                "agent": profile["agent"],
+                "model": model,
+                "effort": effort,
+            },
+            "role": {
+                "name": brief["role"],
+                "mode": role["mode"],
+                "zone": brief["zone"],
+            },
+            "orca": {
+                "task_id": task_id,
+                "worker_id": _result_id(worker, ("worker", "id")),
+            },
             "terminal_outcome": "ready",
         }
         record_path = _write_record(records_dir, record)
@@ -435,7 +591,11 @@ def _dispatch_locked(args: argparse.Namespace, repo: Path, records_dir: Path) ->
 
 def dispatch(args: argparse.Namespace) -> dict[str, str | None]:
     repo = Path(args.repo).resolve()
-    records_dir = Path(args.records_dir).resolve() if args.records_dir else repo / ".harness" / "orca-dispatches"
+    records_dir = (
+        Path(args.records_dir).resolve()
+        if args.records_dir
+        else repo / ".harness" / "orca-dispatches"
+    )
     records_dir.mkdir(parents=True, exist_ok=True)
     lock = records_dir / ".dispatch.lock"
     try:
@@ -452,14 +612,24 @@ def dispatch(args: argparse.Namespace) -> dict[str, str | None]:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(description="Dispatch an approved backend orchestration role through Orca.")
+    root = argparse.ArgumentParser(
+        description="Dispatch an approved backend orchestration role through Orca."
+    )
     commands = root.add_subparsers(dest="command", required=True)
     command = commands.add_parser("dispatch")
     command.add_argument("--repo", default=".", help="target project root")
-    command.add_argument("--brief", required=True, help="immutable, approved dispatch brief JSON")
+    command.add_argument(
+        "--brief", required=True, help="immutable, approved dispatch brief JSON"
+    )
     command.add_argument("--run", required=True, help="coordinator-owned Orca Run ID")
-    command.add_argument("--records-dir", help="project-owned directory for immutable dispatch records")
-    command.add_argument("--orca-bin", default=os.environ.get("ORCA_CLI_COMMAND", "orca"), help="Orca CLI executable")
+    command.add_argument(
+        "--records-dir", help="project-owned directory for immutable dispatch records"
+    )
+    command.add_argument(
+        "--orca-bin",
+        default=os.environ.get("ORCA_CLI_COMMAND", "orca"),
+        help="Orca CLI executable",
+    )
     command.set_defaults(func=dispatch)
     return root
 

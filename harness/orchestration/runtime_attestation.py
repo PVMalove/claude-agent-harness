@@ -18,7 +18,12 @@ class AttestationError(HarnessError):
 
 
 def _git(path: Path, *arguments: str) -> str:
-    result = subprocess.run(["git", "-C", str(path), *arguments], capture_output=True, text=True)
+    result = subprocess.run(
+        ["git", "-C", str(path), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if result.returncode:
         detail = (result.stderr or result.stdout).strip()
         raise AttestationError(
@@ -41,7 +46,8 @@ def attest(repo: Path, dispatch: Mapping[str, object], worktree: str) -> dict[st
     checkout = Path(worktree).resolve()
     if not checkout.is_dir():
         raise AttestationError(
-            "reported worktree does not exist", remedy=f"report the real worktree path instead of {checkout}"
+            "reported worktree does not exist",
+            remedy=f"report the real worktree path instead of {checkout}",
         )
     if checkout not in _registered_worktrees(repo):
         raise AttestationError(
@@ -52,7 +58,8 @@ def attest(repo: Path, dispatch: Mapping[str, object], worktree: str) -> dict[st
         top_level = Path(_git(checkout, "rev-parse", "--show-toplevel")).resolve()
     except AttestationError as exc:
         raise AttestationError(
-            "reported worktree is not a Git worktree", remedy=f"report a directory that is a real Git worktree, not {checkout}"
+            "reported worktree is not a Git worktree",
+            remedy=f"report a directory that is a real Git worktree, not {checkout}",
         ) from exc
     if top_level != checkout:
         raise AttestationError(
@@ -85,10 +92,19 @@ def attest(repo: Path, dispatch: Mapping[str, object], worktree: str) -> dict[st
                 remedy=f"checkout branch {expected_branch!r} in {checkout} before dispatching this role",
             )
         ancestor = subprocess.run(
-            ["git", "-C", str(repo), "merge-base", "--is-ancestor", head, expected_branch],
+            [
+                "git",
+                "-C",
+                str(repo),
+                "merge-base",
+                "--is-ancestor",
+                head,
+                expected_branch,
+            ],
             capture_output=True,
             text=True,
             encoding="utf-8",
+            check=False,
         )
         if ancestor.returncode:
             raise AttestationError(

@@ -11,7 +11,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 MODULE_ROOT = Path(__file__).resolve().parents[1] / "harness" / "orchestration"
 MODULE_PATH = MODULE_ROOT / "advisory.py"
 from harness.orchestration.advisory import classify_risk, rank_files, summarize_log
@@ -34,18 +33,28 @@ class AdvisoryStructureTests(unittest.TestCase):
         self.assertTrue(imports.isdisjoint({"ledger", "contract", "coordinator"}))
 
     def test_coordinator_does_not_import_advisory(self) -> None:
-        self.assertNotIn("advisory", _imported_module_names(MODULE_ROOT / "coordinator.py"))
+        self.assertNotIn(
+            "advisory", _imported_module_names(MODULE_ROOT / "coordinator.py")
+        )
 
 
 class RankFilesTests(unittest.TestCase):
     def test_ranks_by_keyword_hits_then_path(self) -> None:
         ranked = rank_files(
-            ["services/payments/handler.py", "services/payments/tests/test_handler.py", "README.md"],
+            [
+                "services/payments/handler.py",
+                "services/payments/tests/test_handler.py",
+                "README.md",
+            ],
             ["payments", "handler"],
         )
         self.assertEqual(
             [entry["path"] for entry in ranked],
-            ["services/payments/handler.py", "services/payments/tests/test_handler.py", "README.md"],
+            [
+                "services/payments/handler.py",
+                "services/payments/tests/test_handler.py",
+                "README.md",
+            ],
         )
         self.assertEqual(ranked[0]["score"], 2)
         self.assertEqual(ranked[-1]["score"], 0)
@@ -57,7 +66,10 @@ class RankFilesTests(unittest.TestCase):
 
 class SummarizeLogTests(unittest.TestCase):
     def test_flags_failure_lines_and_respects_max_lines(self) -> None:
-        text = "\n".join([f"info line {i}" for i in range(5)] + ["ERROR: boom", "Traceback (most recent call last):"])
+        text = "\n".join(
+            [f"info line {i}" for i in range(5)]
+            + ["ERROR: boom", "Traceback (most recent call last):"]
+        )
         summary = summarize_log(text, max_lines=1)
         self.assertEqual(summary["line_count"], 7)
         self.assertEqual(summary["flagged"], ["ERROR: boom"])
@@ -66,11 +78,15 @@ class SummarizeLogTests(unittest.TestCase):
 
 class ClassifyRiskTests(unittest.TestCase):
     def test_matches_known_triggers_by_word(self) -> None:
-        hits = classify_risk("Add a data migration for the payments schema", ["data-migration", "outbox"])
+        hits = classify_risk(
+            "Add a data migration for the payments schema", ["data-migration", "outbox"]
+        )
         self.assertEqual(hits, ["data-migration"])
 
     def test_no_match_returns_empty(self) -> None:
-        self.assertEqual(classify_risk("Fix a typo in the README", ["data-migration", "outbox"]), [])
+        self.assertEqual(
+            classify_risk("Fix a typo in the README", ["data-migration", "outbox"]), []
+        )
 
 
 class AdvisoryCliTests(unittest.TestCase):
@@ -78,7 +94,15 @@ class AdvisoryCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             before = sorted(Path(temporary).rglob("*"))
             result = subprocess.run(
-                [sys.executable, str(MODULE_PATH), "rank-files", "--keyword", "payments", "a.py", "services/payments/x.py"],
+                [
+                    sys.executable,
+                    str(MODULE_PATH),
+                    "rank-files",
+                    "--keyword",
+                    "payments",
+                    "a.py",
+                    "services/payments/x.py",
+                ],
                 cwd=temporary,
                 check=True,
                 capture_output=True,
@@ -91,7 +115,15 @@ class AdvisoryCliTests(unittest.TestCase):
         self.assertEqual(payload["kind"], "rank-files")
 
     def test_repeated_calls_regenerate_the_same_output(self) -> None:
-        args = [sys.executable, str(MODULE_PATH), "classify-risk", "--text", "schema change", "--known-trigger", "schema-change"]
+        args = [
+            sys.executable,
+            str(MODULE_PATH),
+            "classify-risk",
+            "--text",
+            "schema change",
+            "--known-trigger",
+            "schema-change",
+        ]
         first = subprocess.run(args, check=True, capture_output=True, text=True).stdout
         second = subprocess.run(args, check=True, capture_output=True, text=True).stdout
         self.assertEqual(first, second)

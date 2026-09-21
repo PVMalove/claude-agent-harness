@@ -9,7 +9,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 FORBIDDEN = re.compile(
     r"\bclaude\b|\bopenai\b|\bchatgpt\b|\bgpt[-_ ]?[0-9]|\bcopilot\b|\bgemini\b|\bcodex\b|"
     r"\bco-authored[- ]by\b|\bai[-_ ]?(agent|assistant|generated)\b",
@@ -39,7 +38,9 @@ def main() -> int:
         for commit, message in git_messages(args.commit_range):
             match = FORBIDDEN.search(message)
             if match:
-                violations.append(f"commit {commit}: forbidden metadata near {match.group(0)!r}")
+                violations.append(
+                    f"commit {commit}: forbidden metadata near {match.group(0)!r}"
+                )
     if args.pr_body_file and args.pr_body_file.is_file():
         body = args.pr_body_file.read_text(encoding="utf-8")
         match = FORBIDDEN.search(body)

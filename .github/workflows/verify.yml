@@ -31,10 +31,10 @@ jobs:
           COMMIT_RANGE: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
         run: |
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
-          python scripts/check-public-metadata.py --commit-range "$COMMIT_RANGE" --pr-body-file "$RUNNER_TEMP/pr-body.md"
+          python scripts/check_public_metadata.py --commit-range "$COMMIT_RANGE" --pr-body-file "$RUNNER_TEMP/pr-body.md"
       - name: Diff coverage of changed Python lines
         if: github.event_name == 'pull_request'
-        run: python scripts/diff-coverage.py
+        run: python scripts/diff_coverage.py
 
   verify-windows:
     runs-on: windows-latest

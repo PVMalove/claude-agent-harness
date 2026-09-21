@@ -7,15 +7,15 @@ import argparse
 import importlib.util
 import os
 import re
-import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 from types import ModuleType
 
-
-COUNT_RE = re.compile(r"(?P<count>\d+)\s+(?P<kind>passed|failed|errors?|skipped|xfailed|xpassed)\b")
+COUNT_RE = re.compile(
+    r"(?P<count>\d+)\s+(?P<kind>passed|failed|errors?|skipped|xfailed|xpassed)\b"
+)
 DURATION_RE = re.compile(r"\bin\s+(?P<duration>[0-9.]+s)\b")
 FAILURE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(?P<nodeid>.+?)(?:\s+-\s+.*)?$")
 _GATE_RUNNER: ModuleType | None = None
@@ -54,7 +54,10 @@ def _gate_runner() -> ModuleType:
     if _GATE_RUNNER is not None:
         return _GATE_RUNNER
     for parent in Path(__file__).resolve().parents:
-        for relative in (Path(".harness/gate_runner/gate_runner.py"), Path("harness/gate_runner/gate_runner.py")):
+        for relative in (
+            Path(".harness/gate_runner/gate_runner.py"),
+            Path("harness/gate_runner/gate_runner.py"),
+        ):
             path = parent / relative
             if not path.is_file():
                 continue
@@ -64,7 +67,9 @@ def _gate_runner() -> ModuleType:
                 sys.path.insert(0, str(repo_root))
             if harness_root.name != "harness":
                 spec = importlib.util.spec_from_file_location(
-                    "harness", harness_root / "__init__.py", submodule_search_locations=[str(harness_root)]
+                    "harness",
+                    harness_root / "__init__.py",
+                    submodule_search_locations=[str(harness_root)],
                 )
                 if spec is None or spec.loader is None:
                     break
@@ -87,11 +92,19 @@ def render_counts(counts: dict[str, int]) -> str | None:
 def summarize(command: list[str], log_dir: Path, max_failures: int) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", errors="replace", delete=False, dir=log_dir, prefix=".test-run-", suffix=".tmp"
+        mode="w",
+        encoding="utf-8",
+        errors="replace",
+        delete=False,
+        dir=log_dir,
+        prefix=".test-run-",
+        suffix=".tmp",
     ) as capture:
         temporary_log = Path(capture.name)
         try:
-            result = _gate_runner().run_gate([command], _gate_runner().LocalPolicy(Path.cwd()), stop_on_failure=True)
+            result = _gate_runner().run_gate(
+                [command], _gate_runner().LocalPolicy(Path.cwd()), stop_on_failure=True
+            )
         except (OSError, RuntimeError) as error:
             temporary_log.unlink(missing_ok=True)
             print("=== TEST SUMMARY ===")
@@ -105,7 +118,10 @@ def summarize(command: list[str], log_dir: Path, max_failures: int) -> int:
         for line in result.artifact.splitlines(keepends=True):
             sanitized = redact(line)
             capture.write(sanitized)
-            found = {match.group("kind"): int(match.group("count")) for match in COUNT_RE.finditer(sanitized)}
+            found = {
+                match.group("kind"): int(match.group("count"))
+                for match in COUNT_RE.finditer(sanitized)
+            }
             if found:
                 counts = found
             duration_match = DURATION_RE.search(sanitized)
@@ -116,9 +132,14 @@ def summarize(command: list[str], log_dir: Path, max_failures: int) -> int:
                 failure_count += 1
                 if len(failures) < max_failures:
                     failures.append(failure_match.group("nodeid"))
-        exit_code = 0 if result.passed else next(
-            int(check["evidence"].split(";", 1)[0].removeprefix("exit "))
-            for check in result.checks if check["result"] == "fail"
+        exit_code = (
+            0
+            if result.passed
+            else next(
+                int(check["evidence"].split(";", 1)[0].removeprefix("exit "))
+                for check in result.checks
+                if check["result"] == "fail"
+            )
         )
         elapsed = result.duration_seconds
 

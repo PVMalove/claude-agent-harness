@@ -9,14 +9,13 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 
-
 MODULE_ROOT = Path(__file__).resolve().parents[1] / "harness" / "context_builder"
-from harness.errors import HarnessError
 from harness.context_builder.context_builder import (
     ContextPackageError,
     build_context_package,
     estimate_tokens,
 )
+from harness.errors import HarnessError
 
 
 def _run(*args: str, cwd: Path) -> None:
@@ -49,10 +48,26 @@ class ContextBuilderFixture(unittest.TestCase):
             "def compose(value: int) -> Service:\n    return Service()\n\n"
             "async def fetch() -> None:\n    return None\n",
         )
-        _write(self.repo, "pkg/second_hop.py", "def hidden_detail():\n    return 'not direct'\n")
-        _write(self.repo, "pkg/consumer.py", "from pkg import base\n\ndef use():\n    return base.helper()\n")
-        _write(self.repo, "pkg/indirect.py", "from pkg import consumer\n\ndef call():\n    return consumer.use()\n")
-        _write(self.repo, "tests/test_base.py", "from pkg import base\n\ndef test_helper():\n    assert base.helper() == 1\n")
+        _write(
+            self.repo,
+            "pkg/second_hop.py",
+            "def hidden_detail():\n    return 'not direct'\n",
+        )
+        _write(
+            self.repo,
+            "pkg/consumer.py",
+            "from pkg import base\n\ndef use():\n    return base.helper()\n",
+        )
+        _write(
+            self.repo,
+            "pkg/indirect.py",
+            "from pkg import consumer\n\ndef call():\n    return consumer.use()\n",
+        )
+        _write(
+            self.repo,
+            "tests/test_base.py",
+            "from pkg import base\n\ndef test_helper():\n    assert base.helper() == 1\n",
+        )
         _write(
             self.repo,
             "docs/adr/0001-base-module.md",
@@ -61,7 +76,11 @@ class ContextBuilderFixture(unittest.TestCase):
         _run("add", ".", cwd=self.repo)
         _run("commit", "-qm", "feat: base module and its adr", cwd=self.repo)
         self.base_commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=self.repo, check=True, capture_output=True, text=True
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.repo,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
         _write(
@@ -72,7 +91,11 @@ class ContextBuilderFixture(unittest.TestCase):
         _run("add", ".", cwd=self.repo)
         _run("commit", "-qm", "fix: change base helper return value", cwd=self.repo)
         self.candidate_commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=self.repo, check=True, capture_output=True, text=True
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.repo,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
     def tearDown(self) -> None:
@@ -82,7 +105,11 @@ class ContextBuilderFixture(unittest.TestCase):
 class ContextBuilderTests(ContextBuilderFixture):
     def test_builds_diff_files_graph_tests_cards_and_hashes(self) -> None:
         package = build_context_package(
-            self.repo, self.base_commit, self.candidate_commit, min_starting_files=1, max_starting_files=10
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            max_starting_files=10,
         )
 
         self.assertEqual(package.base_commit, self.base_commit)
@@ -92,11 +119,15 @@ class ContextBuilderTests(ContextBuilderFixture):
 
         paths = {item.path for item in package.starting_files}
         self.assertIn("pkg/base.py", paths)
-        base_reason = next(item.reason for item in package.starting_files if item.path == "pkg/base.py")
+        base_reason = next(
+            item.reason for item in package.starting_files if item.path == "pkg/base.py"
+        )
         self.assertIn("changed in diff", base_reason)
 
         self.assertIn("pkg/base.py", package.symbol_graph)
-        self.assertIn("pkg/consumer.py", package.symbol_graph["pkg/base.py"]["imported_by"])
+        self.assertIn(
+            "pkg/consumer.py", package.symbol_graph["pkg/base.py"]["imported_by"]
+        )
 
         self.assertEqual(package.related_tests, ["tests/test_base.py"])
 
@@ -109,70 +140,129 @@ class ContextBuilderTests(ContextBuilderFixture):
         self.assertGreater(package.size_bytes, 0)
 
     def test_output_is_byte_identical_across_repeated_builds(self) -> None:
-        first = build_context_package(self.repo, self.base_commit, self.candidate_commit, min_starting_files=1)
-        second = build_context_package(self.repo, self.base_commit, self.candidate_commit, min_starting_files=1)
+        first = build_context_package(
+            self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+        )
+        second = build_context_package(
+            self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+        )
 
         self.assertEqual(first.to_json(), second.to_json())
 
     def test_expands_below_minimum_starting_files_via_the_import_graph(self) -> None:
         package = build_context_package(
-            self.repo, self.base_commit, self.candidate_commit, min_starting_files=2, max_starting_files=10
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=2,
+            max_starting_files=10,
         )
 
         paths = {item.path for item in package.starting_files}
         self.assertGreaterEqual(len(paths), 2)
         self.assertIn("pkg/base.py", paths)
         self.assertIn("pkg/consumer.py", paths)
-        consumer_reason = next(item.reason for item in package.starting_files if item.path == "pkg/consumer.py")
+        consumer_reason = next(
+            item.reason
+            for item in package.starting_files
+            if item.path == "pkg/consumer.py"
+        )
         self.assertIn("pkg/base.py", consumer_reason)
 
-    def test_fails_clearly_instead_of_truncating_when_the_size_limit_is_exceeded(self) -> None:
+    def test_fails_clearly_instead_of_truncating_when_the_size_limit_is_exceeded(
+        self,
+    ) -> None:
         with self.assertRaises(ContextPackageError):
             build_context_package(
-                self.repo, self.base_commit, self.candidate_commit, min_starting_files=1, max_package_size_bytes=1
+                self.repo,
+                self.base_commit,
+                self.candidate_commit,
+                min_starting_files=1,
+                max_package_size_bytes=1,
             )
 
     def test_reports_a_deterministic_token_estimate_and_enforces_it(self) -> None:
         package = build_context_package(
-            self.repo, self.base_commit, self.candidate_commit, min_starting_files=1, max_package_tokens=10_000
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            max_package_tokens=10_000,
         )
 
         self.assertGreater(package.estimated_tokens, 0)
         with self.assertRaisesRegex(ContextPackageError, "max_package_tokens"):
             build_context_package(
-                self.repo, self.base_commit, self.candidate_commit, min_starting_files=1, max_package_tokens=1
+                self.repo,
+                self.base_commit,
+                self.candidate_commit,
+                min_starting_files=1,
+                max_package_tokens=1,
             )
 
-    def test_fails_clearly_instead_of_silently_returning_fewer_than_the_minimum_starting_files(self) -> None:
+    def test_fails_clearly_instead_of_silently_returning_fewer_than_the_minimum_starting_files(
+        self,
+    ) -> None:
         with self.assertRaises(ContextPackageError):
-            build_context_package(self.repo, self.base_commit, self.candidate_commit, min_starting_files=5)
+            build_context_package(
+                self.repo, self.base_commit, self.candidate_commit, min_starting_files=5
+            )
 
-    def test_symbol_graph_depth_bounds_how_far_indirect_dependents_are_included(self) -> None:
+    def test_symbol_graph_depth_bounds_how_far_indirect_dependents_are_included(
+        self,
+    ) -> None:
         shallow = build_context_package(
-            self.repo, self.base_commit, self.candidate_commit, min_starting_files=1, symbol_graph_depth=1
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            symbol_graph_depth=1,
         )
         deep = build_context_package(
-            self.repo, self.base_commit, self.candidate_commit, min_starting_files=1, symbol_graph_depth=2
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            symbol_graph_depth=2,
         )
 
         self.assertNotIn("pkg/indirect.py", shallow.symbol_graph)
         self.assertIn("pkg/indirect.py", deep.symbol_graph)
 
-    def test_adds_ast_signatures_for_direct_dependencies_without_following_second_hop(self) -> None:
-        package = build_context_package(self.repo, self.base_commit, self.candidate_commit, min_starting_files=1)
+    def test_adds_ast_signatures_for_direct_dependencies_without_following_second_hop(
+        self,
+    ) -> None:
+        package = build_context_package(
+            self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+        )
 
         self.assertEqual(
             package.symbol_graph["pkg/dependency.py"]["context"],
-            ["module", "class Service:", "def compose(value: int) -> Service:", "async def fetch() -> None:"],
+            [
+                "module",
+                "class Service:",
+                "def compose(value: int) -> Service:",
+                "async def fetch() -> None:",
+            ],
         )
         self.assertNotIn("context", package.symbol_graph["pkg/second_hop.py"])
 
-    def test_uses_first_thirty_lines_for_a_non_python_direct_dependency_from_the_public_builder(self) -> None:
-        _write(self.repo, "pkg/notes.txt", "\n".join(f"line {index}" for index in range(35)))
+    def test_uses_first_thirty_lines_for_a_non_python_direct_dependency_from_the_public_builder(
+        self,
+    ) -> None:
+        _write(
+            self.repo,
+            "pkg/notes.txt",
+            "\n".join(f"line {index}" for index in range(35)),
+        )
         _run("add", ".", cwd=self.repo)
         _run("commit", "-qm", "test: add text dependency", cwd=self.repo)
         base_with_notes = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=self.repo, check=True, capture_output=True, text=True
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.repo,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         _write(
             self.repo,
@@ -182,35 +272,60 @@ class ContextBuilderTests(ContextBuilderFixture):
         _run("add", ".", cwd=self.repo)
         _run("commit", "-qm", "test: import text dependency", cwd=self.repo)
         candidate_with_notes = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=self.repo, check=True, capture_output=True, text=True
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.repo,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
-        package = build_context_package(self.repo, base_with_notes, candidate_with_notes, min_starting_files=1)
+        package = build_context_package(
+            self.repo, base_with_notes, candidate_with_notes, min_starting_files=1
+        )
 
         self.assertEqual(
             package.symbol_graph["pkg/notes.txt"]["context"],
             [f"line {index}" for index in range(30)],
         )
 
-    def test_fails_clearly_instead_of_silently_including_too_many_related_tests(self) -> None:
+    def test_fails_clearly_instead_of_silently_including_too_many_related_tests(
+        self,
+    ) -> None:
         with self.assertRaisesRegex(ContextPackageError, "max_related_tests"):
             build_context_package(
-                self.repo, self.base_commit, self.candidate_commit, min_starting_files=1, max_related_tests=0
+                self.repo,
+                self.base_commit,
+                self.candidate_commit,
+                min_starting_files=1,
+                max_related_tests=0,
             )
 
     def test_added_file_content_is_not_double_counted_against_its_diff(self) -> None:
-        _write(self.repo, "pkg/generated.py", "\n".join(f"VALUE_{index} = {index}" for index in range(400)))
+        _write(
+            self.repo,
+            "pkg/generated.py",
+            "\n".join(f"VALUE_{index} = {index}" for index in range(400)),
+        )
         _run("add", ".", cwd=self.repo)
         _run("commit", "-qm", "feat: add a large generated file", cwd=self.repo)
         candidate_with_addition = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=self.repo, check=True, capture_output=True, text=True
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.repo,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
         package = build_context_package(
-            self.repo, self.candidate_commit, candidate_with_addition, min_starting_files=1
+            self.repo,
+            self.candidate_commit,
+            candidate_with_addition,
+            min_starting_files=1,
         )
 
-        self.assertIn("pkg/generated.py", {item.path for item in package.starting_files})
+        self.assertIn(
+            "pkg/generated.py", {item.path for item in package.starting_files}
+        )
         # A brand-new file's unified diff already contains 100% of its content as `+` lines.
         # Re-reading and re-counting that same content for the token estimate would roughly
         # double it for this dominant file; assert it stays close to the diff-only estimate
@@ -218,41 +333,65 @@ class ContextBuilderTests(ContextBuilderFixture):
         diff_only_estimate = estimate_tokens(package.diff)
         self.assertLess(package.estimated_tokens, diff_only_estimate * 1.5)
 
-    def test_every_raise_path_is_a_harness_error_with_a_message_and_a_remedy(self) -> None:
+    def test_every_raise_path_is_a_harness_error_with_a_message_and_a_remedy(
+        self,
+    ) -> None:
         repo, base, candidate = self.repo, self.base_commit, self.candidate_commit
         cases: tuple[tuple[str, str, Callable[[], object]], ...] = (
-            ("git diff", "git diff", lambda: build_context_package(repo, base, "0" * 40)),
+            (
+                "git diff",
+                "git diff",
+                lambda: build_context_package(repo, base, "0" * 40),
+            ),
             (
                 "direct import-graph neighbours",
                 "lower min_starting_files below 5",
-                lambda: build_context_package(repo, base, candidate, min_starting_files=5),
+                lambda: build_context_package(
+                    repo, base, candidate, min_starting_files=5
+                ),
             ),
             (
                 "must be >=1",
                 "got min=3, max=2",
-                lambda: build_context_package(repo, base, candidate, min_starting_files=3, max_starting_files=2),
+                lambda: build_context_package(
+                    repo, base, candidate, min_starting_files=3, max_starting_files=2
+                ),
             ),
             (
                 "static starting file",
                 f"seed_paths that exist at {candidate}",
                 lambda: build_context_package(
-                    repo, candidate, candidate, min_starting_files=999, max_starting_files=1000
+                    repo,
+                    candidate,
+                    candidate,
+                    min_starting_files=999,
+                    max_starting_files=1000,
                 ),
             ),
             (
                 "max_related_tests=0",
                 "max_related_tests above 1",
-                lambda: build_context_package(repo, base, candidate, min_starting_files=1, max_related_tests=0),
+                lambda: build_context_package(
+                    repo, base, candidate, min_starting_files=1, max_related_tests=0
+                ),
             ),
             (
                 "max_package_size_bytes=1",
                 "raise max_package_size_bytes above",
-                lambda: build_context_package(repo, base, candidate, min_starting_files=1, max_package_size_bytes=1),
+                lambda: build_context_package(
+                    repo,
+                    base,
+                    candidate,
+                    min_starting_files=1,
+                    max_package_size_bytes=1,
+                ),
             ),
             (
                 "max_package_tokens=1",
                 "max_package_tokens above",
-                lambda: build_context_package(repo, base, candidate, min_starting_files=1, max_package_tokens=1),
+                lambda: build_context_package(
+                    repo, base, candidate, min_starting_files=1, max_package_tokens=1
+                ),
             ),
         )
         for expected_message, expected_remedy, build in cases:

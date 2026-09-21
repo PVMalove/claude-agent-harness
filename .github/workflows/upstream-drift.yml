@@ -14,4 +14,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check whether skills/vendor/mattpocock has fallen behind upstream
-        run: python3 scripts/check-upstream-drift.py
+        run: python3 scripts/check_upstream_drift.py

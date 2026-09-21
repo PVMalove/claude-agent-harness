@@ -10,16 +10,19 @@ from pathlib import Path
 from typing import Protocol, cast
 from unittest.mock import patch
 
-from harness.orchestration import runtime_attestation
 from harness.orchestration.runtime_attestation import AttestationError, attest
 
 
 class _RunFn(Protocol):
-    def __call__(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]: ...
+    def __call__(
+        self, command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]: ...
 
 
 def _git(path: Path, *arguments: str) -> str:
-    result = subprocess.run(["git", *arguments], cwd=path, check=True, capture_output=True, text=True)
+    result = subprocess.run(
+        ["git", *arguments], cwd=path, check=True, capture_output=True, text=True
+    )
     return result.stdout.strip()
 
 
@@ -39,12 +42,24 @@ class RuntimeAttestationTests(unittest.TestCase):
             _git(repo, "branch", branch)
             worktree = Path(temporary) / "issue-240"
             _git(repo, "worktree", "add", "-q", str(worktree), branch)
-            dispatch = {"role": "developer", "branch": branch, "candidate_commit": None, "snapshot_commit": snapshot}
+            dispatch = {
+                "role": "developer",
+                "branch": branch,
+                "candidate_commit": None,
+                "snapshot_commit": snapshot,
+            }
             real_run = cast(_RunFn, subprocess.run)
 
-            def windows_git_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-                if command[-3:] == ["worktree", "list", "--porcelain"] and kwargs.get("encoding") == "utf-8":
-                    raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+            def windows_git_run(
+                command: list[str], **kwargs: object
+            ) -> subprocess.CompletedProcess[str]:
+                if (
+                    command[-3:] == ["worktree", "list", "--porcelain"]
+                    and kwargs.get("encoding") == "utf-8"
+                ):
+                    raise UnicodeDecodeError(
+                        "utf-8", b"\xff", 0, 1, "invalid start byte"
+                    )
                 return real_run(command, **kwargs)
 
             with patch.object(subprocess, "run", side_effect=windows_git_run):
@@ -67,7 +82,12 @@ class RuntimeAttestationTests(unittest.TestCase):
             _git(repo, "branch", branch)
             worktree = Path(temporary) / "issue-1"
             _git(repo, "worktree", "add", "-q", str(worktree), branch)
-            dispatch = {"role": "developer", "branch": branch, "candidate_commit": None, "snapshot_commit": snapshot}
+            dispatch = {
+                "role": "developer",
+                "branch": branch,
+                "candidate_commit": None,
+                "snapshot_commit": snapshot,
+            }
 
             proof = attest(repo, dispatch, str(worktree))
 
@@ -93,16 +113,30 @@ class RuntimeAttestationTests(unittest.TestCase):
             worktree = Path(temporary) / "issue-227"
             _git(repo, "worktree", "add", "-q", str(worktree), branch)
 
-            for pinned in ({}, {"branch": None}, {"branch": 7}, {"branch": "feature/issue-other"}):
+            for pinned in (
+                {},
+                {"branch": None},
+                {"branch": 7},
+                {"branch": "feature/issue-other"},
+            ):
                 with self.subTest(pinned=pinned):
-                    dispatch = {"role": "developer", "snapshot_commit": snapshot, **pinned}
+                    dispatch = {
+                        "role": "developer",
+                        "snapshot_commit": snapshot,
+                        **pinned,
+                    }
                     with self.assertRaises(AttestationError) as raised:
                         attest(repo, dispatch, str(worktree))
-                    self.assertIn("does not match the immutable issue branch", str(raised.exception))
+                    self.assertIn(
+                        "does not match the immutable issue branch",
+                        str(raised.exception),
+                    )
                     if isinstance(dispatch.get("branch", None), str):
                         self.assertIn("checkout branch", raised.exception.remedy)
                     else:
-                        self.assertIn("pin a string issue branch", raised.exception.remedy)
+                        self.assertIn(
+                            "pin a string issue branch", raised.exception.remedy
+                        )
 
     def test_review_role_requires_the_pinned_candidate(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
@@ -116,7 +150,16 @@ class RuntimeAttestationTests(unittest.TestCase):
             _git(repo, "commit", "-qm", "test: candidate")
             candidate = _git(repo, "rev-parse", "HEAD")
 
-            proof = attest(repo, {"role": "code-review", "branch": "feature/issue-2-review", "candidate_commit": candidate, "snapshot_commit": candidate}, str(repo))
+            proof = attest(
+                repo,
+                {
+                    "role": "code-review",
+                    "branch": "feature/issue-2-review",
+                    "candidate_commit": candidate,
+                    "snapshot_commit": candidate,
+                },
+                str(repo),
+            )
 
             self.assertEqual(proof["head_commit"], candidate)
 

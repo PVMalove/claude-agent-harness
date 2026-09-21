@@ -36,6 +36,9 @@ Role self-report, completion report и оценка coordinator-а не явля
 - `.harness/orchestration/playbook.md` — полный lifecycle, handoff и правила параллелизма;
 - `.harness/orchestration/pilot.md` — форма наблюдения за первыми batch;
 - `.harness/orchestration/coordinator.py` — runtime-neutral CLI для batch, approval, dispatch и report;
+  сам файл — только фасад: разбор аргументов, роутинг и вывод JSON. Сам lifecycle лежит рядом в
+  `core/` (константы, конфигурация, git, workspace), `ledger/` (persistence) и `workflow/`
+  (по модулю на стадию batch'а: планирование, бриф, доставка, решение, отчёт);
 - `.harness/orchestration/orca_adapter.py` — необязательная runtime-граница для Orca;
 - `.harness/orchestration.json` — project-owned конфигурация назначений, зон и проверок.
 
@@ -824,7 +827,7 @@ batch до старта следующего. Ручной запуск по э�
 `.harness/orchestration/advisory.py` — дешёвый non-role CLI для чисто утилитарных подзадач:
 ранжирование файлов по keyword, сводка лога и грубая риск-подсказка. Он выполняется вне
 brief/report/self-report/heartbeat контракта: не является dispatch, не пишет ledger-запись и не
-импортирует `ledger.py`/`contract.py`/`coordinator.py`. Вывод эфемерен — печатается в stdout и
+импортирует `ledger/`/`contract.py`/`coordinator.py`. Вывод эфемерен — печатается в stdout и
 пересчитывается заново при каждом вызове, нигде не сохраняется как ground truth для другого
 dispatch:
 

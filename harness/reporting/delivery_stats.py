@@ -11,22 +11,22 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import os
 import re
 import subprocess
 import sys
 import uuid
-from datetime import datetime, timezone
+from collections.abc import Iterator
+from datetime import UTC, datetime
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional, Protocol, Union, cast
-
+from typing import Any, Protocol, cast
 
 MIN_PYTHON = (3, 9)
 if sys.version_info < MIN_PYTHON:
     sys.stderr.write(
-        "[ERROR] delivery_stats requires Python %s+ (found %s).\n"
-        % (".".join(map(str, MIN_PYTHON)), sys.version.split()[0])
+        "[ERROR] delivery_stats requires Python {}+ (found {}).\n".format(
+            ".".join(map(str, MIN_PYTHON)), sys.version.split()[0]
+        )
     )
     raise SystemExit(1)
 
@@ -40,7 +40,9 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 if _HARNESS_ROOT.name != "harness":
     _spec = importlib.util.spec_from_file_location(
-        "harness", _HARNESS_ROOT / "__init__.py", submodule_search_locations=[str(_HARNESS_ROOT)]
+        "harness",
+        _HARNESS_ROOT / "__init__.py",
+        submodule_search_locations=[str(_HARNESS_ROOT)],
     )
     assert _spec is not None and _spec.loader is not None
     _pkg = importlib.util.module_from_spec(_spec)
@@ -56,7 +58,7 @@ JsonObject = dict[str, Any]  # type: ignore[explicit-any]
 
 
 class _LedgerInstance(Protocol):
-    def records_root_lenient(self) -> Optional[Path]: ...
+    def records_root_lenient(self) -> Path | None: ...
 
 
 class LedgerClass(Protocol):
@@ -65,13 +67,23 @@ class LedgerClass(Protocol):
 
     def __call__(self, root: Path) -> _LedgerInstance: ...
 
-    def read_record_lenient(self, path: Path) -> Optional[JsonObject]: ...
+    def read_record_lenient(self, path: Path) -> JsonObject | None: ...
 
 
 MISSING = "нет данных"
 BASELINE_SCHEMA_VERSION = 1
-CLAUDE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
-CODEX_FIELDS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens")
+CLAUDE_FIELDS = (
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "output_tokens",
+)
+CODEX_FIELDS = (
+    "input_tokens",
+    "cached_input_tokens",
+    "cache_write_input_tokens",
+    "output_tokens",
+)
 # Pseudo-models the runtime writes for locally generated messages; never billed.
 NON_BILLABLE_MODELS = {"<synthetic>"}
 # Matches coordinator.py's own default STATE_REL: the backend-orchestration ledger this project's
@@ -85,10 +97,15 @@ class StatsError(HarnessError):
     """A request that cannot be answered from local evidence."""
 
 
-def _run(command: list[str], cwd: Optional[Path] = None) -> tuple[int, str, str]:
+def _run(command: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
     try:
         result = subprocess.run(
-            command, cwd=str(cwd) if cwd else None, capture_output=True, text=True, encoding="utf-8"
+            command,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
         )
     except OSError as exc:
         return 127, "", str(exc)
@@ -123,7 +140,7 @@ def _read_jsonl(path: Path) -> Iterator[JsonObject]:
         return
 
 
-def _moment(value: object) -> Optional[datetime]:
+def _moment(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
     text = value.replace("Z", "+00:00")
@@ -131,16 +148,20 @@ def _moment(value: object) -> Optional[datetime]:
         parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def _same_path(recorded: object, repo: Path, _cache: dict[tuple[str, str], bool] = {}) -> bool:
+def _same_path(
+    recorded: object, repo: Path, _cache: dict[tuple[str, str], bool] | None = None
+) -> bool:
     """Whether a recorded working directory is this repository.
 
     A string comparison is not enough: Windows records an 8.3 short path ("RUNNER~1") for the same
     directory the caller resolved, and case differs freely. Resolution is cached because the same
     handful of directories repeat across every record of a session.
     """
+    if _cache is None:
+        _cache = {}
     if not isinstance(recorded, str) or not recorded:
         return False
     key = (recorded, str(repo))
@@ -171,11 +192,14 @@ def _project_config(repo: Path) -> JsonObject:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except ValueError as exc:
-        raise StatsError(".harness/project.json is not valid JSON", remedy="fix the JSON syntax in .harness/project.json") from exc
+        raise StatsError(
+            ".harness/project.json is not valid JSON",
+            remedy="fix the JSON syntax in .harness/project.json",
+        ) from exc
     return value if isinstance(value, dict) else {}
 
 
-def _gh(repo: Path, *arguments: str) -> Union[JsonObject, list[JsonObject], None]:
+def _gh(repo: Path, *arguments: str) -> JsonObject | list[JsonObject] | None:
     code, out, err = _run(["gh", *arguments], cwd=repo)
     if code == 127:
         raise StatsError(
@@ -188,17 +212,18 @@ def _gh(repo: Path, *arguments: str) -> Union[JsonObject, list[JsonObject], None
             remedy=f"inspect the gh error above and fix authentication/permissions before retrying 'gh {' '.join(arguments)}'",
         )
     try:
-        return cast(Union[JsonObject, list[JsonObject]], json.loads(out)) if out else None
+        return cast(JsonObject | list[JsonObject], json.loads(out)) if out else None
     except ValueError as exc:
         raise StatsError(
-            "gh returned output that is not valid JSON", remedy=f"retry 'gh {' '.join(arguments)}'; if it keeps failing, check the gh CLI version"
+            "gh returned output that is not valid JSON",
+            remedy=f"retry 'gh {' '.join(arguments)}'; if it keeps failing, check the gh CLI version",
         ) from exc
 
 
 ISSUE_BRANCH = re.compile(r"^[a-z]+/issue-(\d+)-")
 
 
-def ticket_of_branch(branch: object) -> Optional[int]:
+def ticket_of_branch(branch: object) -> int | None:
     if not isinstance(branch, str):
         return None
     match = ISSUE_BRANCH.match(branch)
@@ -213,15 +238,37 @@ def resolve_scope(repo: Path, epic: int) -> JsonObject:
     the ticket number encoded in a branch name, which survives that deletion in pull requests and in
     session transcripts alike.
     """
-    parent = cast(JsonObject, _gh(repo, "issue", "view", str(epic), "--json", "number,title,state,createdAt,closedAt,url"))
-    children = cast(JsonObject, _gh(repo, "issue", "view", str(epic), "--json", "subIssues") or {})
+    parent = cast(
+        JsonObject,
+        _gh(
+            repo,
+            "issue",
+            "view",
+            str(epic),
+            "--json",
+            "number,title,state,createdAt,closedAt,url",
+        ),
+    )
+    children = cast(
+        JsonObject, _gh(repo, "issue", "view", str(epic), "--json", "subIssues") or {}
+    )
     nodes = ((children.get("subIssues") or {}).get("nodes")) or []
     tickets = [
-        {"number": parent["number"], "title": parent["title"], "state": parent["state"], "role": "epic"}
+        {
+            "number": parent["number"],
+            "title": parent["title"],
+            "state": parent["state"],
+            "role": "epic",
+        }
     ]
     for node in nodes:
         tickets.append(
-            {"number": node["number"], "title": node.get("title", ""), "state": node.get("state", ""), "role": "child"}
+            {
+                "number": node["number"],
+                "title": node.get("title", ""),
+                "state": node.get("state", ""),
+                "role": "child",
+            }
         )
     return {
         "epic": {
@@ -247,15 +294,28 @@ def offline_scope(epic: int, tickets: str) -> JsonObject:
     for chunk in tickets.replace(",", " ").split():
         if not chunk.isdigit():
             raise StatsError(
-                f"--tickets expects issue numbers, got {chunk!r}", remedy="pass --tickets as a comma/space-separated list of issue numbers only"
+                f"--tickets expects issue numbers, got {chunk!r}",
+                remedy="pass --tickets as a comma/space-separated list of issue numbers only",
             )
         numbers.append(int(chunk))
     if epic not in numbers:
         numbers.insert(0, epic)
     return {
-        "epic": {"number": epic, "title": MISSING, "state": MISSING, "url": "", "created_at": None, "closed_at": None},
+        "epic": {
+            "number": epic,
+            "title": MISSING,
+            "state": MISSING,
+            "url": "",
+            "created_at": None,
+            "closed_at": None,
+        },
         "tickets": [
-            {"number": number, "title": MISSING, "state": MISSING, "role": "epic" if number == epic else "child"}
+            {
+                "number": number,
+                "title": MISSING,
+                "state": MISSING,
+                "role": "epic" if number == epic else "child",
+            }
             for number in numbers
         ],
         "numbers": set(numbers),
@@ -269,10 +329,21 @@ def pull_requests(repo: Path, numbers: set[int]) -> list[JsonObject]:
     GitHub keeps a merged pull request's diffstat after its branch is deleted, so this is the
     durable source for code volume; local refs are only a fallback for work with no pull request.
     """
-    listed = cast(list[JsonObject], _gh(
-        repo, "pr", "list", "--state", "all", "--limit", "200", "--json",
-        "number,headRefName,state,additions,deletions,changedFiles,mergedAt,url",
-    ) or [])
+    listed = cast(
+        list[JsonObject],
+        _gh(
+            repo,
+            "pr",
+            "list",
+            "--state",
+            "all",
+            "--limit",
+            "200",
+            "--json",
+            "number,headRefName,state,additions,deletions,changedFiles,mergedAt,url",
+        )
+        or [],
+    )
     matched = []
     for entry in listed:
         ticket = ticket_of_branch(entry.get("headRefName"))
@@ -284,15 +355,26 @@ def pull_requests(repo: Path, numbers: set[int]) -> list[JsonObject]:
 # ------------------------------------------------------------------------------------ git volume
 
 
-def git_volume(repo: Path, prs: list[JsonObject], extra_branches: set[str], base: str) -> JsonObject:
+def git_volume(
+    repo: Path, prs: list[JsonObject], extra_branches: set[str], base: str
+) -> JsonObject:
     """Code volume per ticket, from pull requests first and local refs only where none exists."""
     entries = []
-    totals = {"commits": 0, "insertions": 0, "deletions": 0, "files": 0, "pull_requests": 0}
+    totals = {
+        "commits": 0,
+        "insertions": 0,
+        "deletions": 0,
+        "files": 0,
+        "pull_requests": 0,
+    }
     covered: set[str] = set()
 
     adr: set[str] = set()
     for pr in prs:
-        detail = cast(JsonObject, _gh(repo, "pr", "view", str(pr["number"]), "--json", "commits,files") or {})
+        detail = cast(
+            JsonObject,
+            _gh(repo, "pr", "view", str(pr["number"]), "--json", "commits,files") or {},
+        )
         commit_list = detail.get("commits") or []
         count = len(commit_list)
         oids = {item.get("oid") for item in commit_list if item.get("oid")}
@@ -324,16 +406,34 @@ def git_volume(repo: Path, prs: list[JsonObject], extra_branches: set[str], base
     for branch in sorted(extra_branches - covered):
         ref = branch if _ref_exists(repo, branch) else f"origin/{branch}"
         if not _ref_exists(repo, ref):
-            entries.append({"source": "branch", "branch": branch, "ticket": ticket_of_branch(branch),
-                            "status": MISSING, "reason": "ветка удалена, pull request не найден"})
+            entries.append(
+                {
+                    "source": "branch",
+                    "branch": branch,
+                    "ticket": ticket_of_branch(branch),
+                    "status": MISSING,
+                    "reason": "ветка удалена, pull request не найден",
+                }
+            )
             continue
         try:
             merge_base = _git(repo, "merge-base", base, ref)
             numstat = _git(repo, "diff", "--numstat", merge_base, ref)
-            commits = [line for line in _git(repo, "rev-list", f"{merge_base}..{ref}").splitlines() if line]
+            commits = [
+                line
+                for line in _git(repo, "rev-list", f"{merge_base}..{ref}").splitlines()
+                if line
+            ]
         except StatsError:
-            entries.append({"source": "branch", "branch": branch, "ticket": ticket_of_branch(branch),
-                            "status": MISSING, "reason": "не сравнить с базовой веткой"})
+            entries.append(
+                {
+                    "source": "branch",
+                    "branch": branch,
+                    "ticket": ticket_of_branch(branch),
+                    "status": MISSING,
+                    "reason": "не сравнить с базовой веткой",
+                }
+            )
             continue
         insertions = deletions = 0
         files: set[str] = set()
@@ -363,14 +463,23 @@ def git_volume(repo: Path, prs: list[JsonObject], extra_branches: set[str], base
         totals["files"] += len(files)
         for path in _added_adr(repo, base, ref):
             adr.add(path)
-    return {"base": base, "entries": entries, "totals": totals, "adr_added": sorted(adr)}
+    return {
+        "base": base,
+        "entries": entries,
+        "totals": totals,
+        "adr_added": sorted(adr),
+    }
 
 
 def _is_adr(path: str) -> bool:
-    return path.startswith("docs/adr/") and path.endswith(".md") and not path.endswith("template.md")
+    return (
+        path.startswith("docs/adr/")
+        and path.endswith(".md")
+        and not path.endswith("template.md")
+    )
 
 
-def _added_by(repo: Path, path: str) -> Optional[str]:
+def _added_by(repo: Path, path: str) -> str | None:
     """The commit that first added a path.
 
     A pull request that only edits an existing decision record must not be counted as adding one, so
@@ -381,7 +490,17 @@ def _added_by(repo: Path, path: str) -> Optional[str]:
     # --all: the adding commit may live on a branch that is not the current HEAD, which is the
     # normal case when the epic is measured from a different worktree or before its merge.
     code, out, _ = _run(
-        ["git", "-C", str(repo), "log", "--all", "--diff-filter=A", "--format=%H", "--", path]
+        [
+            "git",
+            "-C",
+            str(repo),
+            "log",
+            "--all",
+            "--diff-filter=A",
+            "--format=%H",
+            "--",
+            path,
+        ]
     )
     if code != 0 or not out:
         return None
@@ -400,16 +519,30 @@ def _added_adr(repo: Path, base: str, ref: str) -> list[str]:
 def _local_issue_branches(repo: Path) -> set[str]:
     names: set[str] = set()
     for scope in ("refs/heads", "refs/remotes/origin"):
-        code, out, _ = _run(["git", "-C", str(repo), "for-each-ref", "--format=%(refname:short)", scope])
+        code, out, _ = _run(
+            ["git", "-C", str(repo), "for-each-ref", "--format=%(refname:short)", scope]
+        )
         if code != 0:
             continue
         for name in out.splitlines():
-            names.add(name.split("origin/", 1)[-1] if scope.endswith("origin") else name)
+            names.add(
+                name.split("origin/", 1)[-1] if scope.endswith("origin") else name
+            )
     return {name for name in names if ticket_of_branch(name) is not None}
 
 
 def _ref_exists(repo: Path, ref: str) -> bool:
-    code, _, _ = _run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
+    code, _, _ = _run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"{ref}^{{commit}}",
+        ]
+    )
     return code == 0
 
 
@@ -439,7 +572,10 @@ def _slug_variants(repo: Path) -> list[str]:
 def _has_transcripts(directory: Path) -> bool:
     """Whether a directory holds session data, rather than only leftovers such as memory/."""
     try:
-        return any(path.is_file() and path.stat().st_size > 0 for path in directory.glob("*.jsonl"))
+        return any(
+            path.is_file() and path.stat().st_size > 0
+            for path in directory.glob("*.jsonl")
+        )
     except OSError:
         return False
 
@@ -451,7 +587,11 @@ def _records_repo(directory: Path, repo: Path) -> bool:
     not on every record, so inspecting only the first one misses it almost always.
     """
     try:
-        transcripts = sorted(directory.glob("*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
+        transcripts = sorted(
+            directory.glob("*.jsonl"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
     except OSError:
         return False
     for transcript in transcripts[:CWD_PROBE_TRANSCRIPTS]:
@@ -515,7 +655,8 @@ def _is_billable_turn(record: JsonObject) -> bool:
 def _usage_complete(usage: object) -> bool:
     """Whether a turn's usage dict has every Claude field, each a real (non-bool) int."""
     return isinstance(usage, dict) and not any(
-        not isinstance(usage.get(field), int) or isinstance(usage.get(field), bool) for field in CLAUDE_FIELDS
+        not isinstance(usage.get(field), int) or isinstance(usage.get(field), bool)
+        for field in CLAUDE_FIELDS
     )
 
 
@@ -526,22 +667,27 @@ def _turn_input(usage: JsonObject) -> int:
 def claude_usage(project_dirs: list[Path], numbers: set[int]) -> JsonObject:
     """Token usage of every Claude Code turn recorded on a branch belonging to a ticket in scope."""
     if not project_dirs:
-        return {"status": MISSING, "reason": "нет транскриптов Claude Code для этого репозитория"}
+        return {
+            "status": MISSING,
+            "reason": "нет транскриптов Claude Code для этого репозитория",
+        }
     branches_seen: set[str] = set()
     models: JsonObject = {}
     sessions: set[str] = set()
     sidechain = {"input_tokens": 0, "output_tokens": 0, "turns": 0}
     thinking = 0
-    first: Optional[datetime] = None
-    last: Optional[datetime] = None
-    quota: Optional[JsonObject] = None
+    first: datetime | None = None
+    last: datetime | None = None
+    quota: JsonObject | None = None
     turns = 0
     synthetic = 0
     incomplete_telemetry = False
 
     session_stats: dict[str, JsonObject] = {}
 
-    transcripts = [entry for directory in project_dirs for entry in _claude_transcripts(directory)]
+    transcripts = [
+        entry for directory in project_dirs for entry in _claude_transcripts(directory)
+    ]
     for transcript, is_subagent in transcripts:
         for record in _read_jsonl(transcript):
             branch = record.get("gitBranch")
@@ -566,25 +712,35 @@ def claude_usage(project_dirs: list[Path], numbers: set[int]) -> JsonObject:
             # record alone cannot identify the subagent. Using the filename (transcript.stem) is the
             # established convention here, as the tool generating the logs (e.g. Claude Code) does not
             # currently emit a distinct subagentId field.
-            session_id = transcript.stem if is_subagent else (record.get("sessionId") or transcript.stem)
+            session_id = (
+                transcript.stem
+                if is_subagent
+                else (record.get("sessionId") or transcript.stem)
+            )
             sessions.add(session_id)
 
             turn_input = _turn_input(usage)
             s_bucket = session_stats.setdefault(
                 session_id,
-                {"branch": branch, "kind": "subagent" if is_subagent else "main", "turns": 0, "total_input": 0, "max_input": 0},
+                {
+                    "branch": branch,
+                    "kind": "subagent" if is_subagent else "main",
+                    "turns": 0,
+                    "total_input": 0,
+                    "max_input": 0,
+                },
             )
             s_bucket["turns"] += 1
             s_bucket["total_input"] += turn_input
-            if turn_input > s_bucket["max_input"]:
-                s_bucket["max_input"] = turn_input
+            s_bucket["max_input"] = max(s_bucket["max_input"], turn_input)
 
             moment = _moment(record.get("timestamp"))
             if moment:
                 first = moment if first is None or moment < first else first
                 last = moment if last is None or moment > last else last
             bucket = models.setdefault(
-                message.get("model") or "unknown", {field: 0 for field in CLAUDE_FIELDS} | {"turns": 0}
+                message.get("model") or "unknown",
+                {field: 0 for field in CLAUDE_FIELDS} | {"turns": 0},
             )
             bucket["turns"] += 1
             for field in CLAUDE_FIELDS:
@@ -594,16 +750,24 @@ def claude_usage(project_dirs: list[Path], numbers: set[int]) -> JsonObject:
                 thinking += _int(details.get("thinking_tokens"))
             if record.get("isSidechain"):
                 sidechain["turns"] += 1
-                sidechain["input_tokens"] += sum(_int(usage.get(f)) for f in CLAUDE_FIELDS[:3])
+                sidechain["input_tokens"] += sum(
+                    _int(usage.get(f)) for f in CLAUDE_FIELDS[:3]
+                )
                 sidechain["output_tokens"] += _int(usage.get("output_tokens"))
             limits = record.get("quotaLimits")
             if isinstance(limits, dict) and limits:
                 quota = limits
 
     if incomplete_telemetry:
-        return {"status": MISSING, "reason": "неполная telemetry Claude Code на ветках этих тикетов"}
+        return {
+            "status": MISSING,
+            "reason": "неполная telemetry Claude Code на ветках этих тикетов",
+        }
     if not turns:
-        return {"status": MISSING, "reason": "нет ходов Claude Code на ветках этих тикетов"}
+        return {
+            "status": MISSING,
+            "reason": "нет ходов Claude Code на ветках этих тикетов",
+        }
     return {
         "status": "ok",
         "attribution": "exact",
@@ -618,7 +782,7 @@ def claude_usage(project_dirs: list[Path], numbers: set[int]) -> JsonObject:
         "session_stats": sorted(
             [{"id": k} | v for k, v in session_stats.items()],
             key=lambda x: x["total_input"],
-            reverse=True
+            reverse=True,
         ),
         "first_activity": first.isoformat() if first else None,
         "last_activity": last.isoformat() if last else None,
@@ -633,7 +797,10 @@ def live_probe(project_dirs: list[Path], branch: str) -> JsonObject:
     "what is active on this branch right now", not "what did a finished epic cost".
     """
     if not project_dirs:
-        return {"status": MISSING, "reason": "нет транскриптов Claude Code для этого репозитория"}
+        return {
+            "status": MISSING,
+            "reason": "нет транскриптов Claude Code для этого репозитория",
+        }
     sessions: dict[str, JsonObject] = {}
     for directory in project_dirs:
         for transcript, is_subagent in _claude_transcripts(directory):
@@ -645,16 +812,24 @@ def live_probe(project_dirs: list[Path], branch: str) -> JsonObject:
                 usage = record["message"].get("usage")
                 if not isinstance(usage, dict) or not _usage_complete(usage):
                     continue
-                session_id = transcript.stem if is_subagent else (record.get("sessionId") or transcript.stem)
+                session_id = (
+                    transcript.stem
+                    if is_subagent
+                    else (record.get("sessionId") or transcript.stem)
+                )
                 turn_input = _turn_input(usage)
                 bucket = sessions.setdefault(
                     session_id,
-                    {"kind": "subagent" if is_subagent else "main", "turns": 0, "max_input": 0, "last_input": 0},
+                    {
+                        "kind": "subagent" if is_subagent else "main",
+                        "turns": 0,
+                        "max_input": 0,
+                        "last_input": 0,
+                    },
                 )
                 bucket["turns"] += 1
                 bucket["last_input"] = turn_input
-                if turn_input > bucket["max_input"]:
-                    bucket["max_input"] = turn_input
+                bucket["max_input"] = max(bucket["max_input"], turn_input)
     if not sessions:
         return {"status": MISSING, "reason": f"нет ходов Claude Code на ветке {branch}"}
     return {
@@ -667,7 +842,11 @@ def live_probe(project_dirs: list[Path], branch: str) -> JsonObject:
 # ---------------------------------------------------------------------------------- codex usage
 
 
-def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple[Optional[datetime], Optional[datetime]]) -> JsonObject:
+def codex_usage(
+    sessions_root: Path | None,
+    repo: Path,
+    window: tuple[datetime | None, datetime | None],
+) -> JsonObject:
     """Codex records no branch, only a working directory and a timestamp.
 
     Work is therefore attributed to the epic by repository plus the activity window of its issue
@@ -677,17 +856,20 @@ def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple[Optiona
         return {"status": MISSING, "reason": "на этой машине нет сессий Codex"}
     start, end = window
     if start is None or end is None:
-        return {"status": MISSING, "reason": "нет окна активности, к которому можно отнести работу Codex"}
+        return {
+            "status": MISSING,
+            "reason": "нет окна активности, к которому можно отнести работу Codex",
+        }
     models: JsonObject = {}
     sessions: set[str] = set()
-    rate_limits: Optional[JsonObject] = None
+    rate_limits: JsonObject | None = None
     turns = 0
     incomplete_telemetry = False
 
     for transcript in sorted(sessions_root.rglob("rollout-*.jsonl")):
         current_model = "unknown"
         in_repo = False
-        counted: set[Union[int, str]] = set()
+        counted: set[int | str] = set()
         pending: list[tuple[str, JsonObject]] = []
         transcript_incomplete = False
         for record in _read_jsonl(transcript):
@@ -712,7 +894,8 @@ def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple[Optiona
             info = info if isinstance(info, dict) else {}
             delta = info.get("last_token_usage")
             if not isinstance(delta, dict) or any(
-                not isinstance(delta.get(field), int) or isinstance(delta.get(field), bool)
+                not isinstance(delta.get(field), int)
+                or isinstance(delta.get(field), bool)
                 for field in CODEX_FIELDS
             ):
                 transcript_incomplete = True
@@ -731,16 +914,28 @@ def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple[Optiona
         sessions.add(transcript.stem)
         for model, delta in pending:
             turns += 1
-            bucket = models.setdefault(model, {field: 0 for field in CODEX_FIELDS} | {"reasoning_output_tokens": 0, "turns": 0})
+            bucket = models.setdefault(
+                model,
+                {field: 0 for field in CODEX_FIELDS}
+                | {"reasoning_output_tokens": 0, "turns": 0},
+            )
             bucket["turns"] += 1
             for field in CODEX_FIELDS:
                 bucket[field] += _int(delta.get(field))
-            bucket["reasoning_output_tokens"] += _int(delta.get("reasoning_output_tokens"))
+            bucket["reasoning_output_tokens"] += _int(
+                delta.get("reasoning_output_tokens")
+            )
 
     if incomplete_telemetry:
-        return {"status": MISSING, "reason": "неполная telemetry Codex по этому репозиторию внутри окна"}
+        return {
+            "status": MISSING,
+            "reason": "неполная telemetry Codex по этому репозиторию внутри окна",
+        }
     if not turns:
-        return {"status": MISSING, "reason": "нет ходов Codex по этому репозиторию внутри окна"}
+        return {
+            "status": MISSING,
+            "reason": "нет ходов Codex по этому репозиторию внутри окна",
+        }
     return {
         "status": "ok",
         "attribution": "estimated",
@@ -759,9 +954,9 @@ def codex_usage(sessions_root: Optional[Path], repo: Path, window: tuple[Optiona
 # --------------------------------------------------------------------------- orchestration ledger
 
 
-def _load_ledger_class(repo: Path) -> Optional[LedgerClass]:
-    """Import LifecycleLedger from the analyzed repo's own .harness/orchestration/ledger.py, when
-    present there.
+def _load_ledger_class(repo: Path) -> LedgerClass | None:
+    """Import LifecycleLedger from the analyzed repo's own .harness/orchestration/ledger/lifecycle.py
+    (or the pre-package .harness/orchestration/ledger.py), when present there.
 
     backend-orchestration is an optional capability, independent of this reporting module (which
     ships in the always-installed base suite): the repository this delivery_stats.py copy is
@@ -780,8 +975,21 @@ def _load_ledger_class(repo: Path) -> Optional[LedgerClass]:
     ``exec_module``: ledger.py declares several ``@dataclass`` records, and the dataclass machinery
     looks its own module up via ``sys.modules[cls.__module__]`` while processing the class body, so
     an unregistered module fails with an unrelated-looking AttributeError."""
-    ledger_path = repo / ".harness" / "orchestration" / "ledger.py"
-    if not ledger_path.is_file():
+    orchestration = repo / ".harness" / "orchestration"
+    # ledger.py became the ledger/ package's lifecycle.py; a project installed from an older
+    # harness still carries the flat module, so accept either layout.
+    ledger_path = next(
+        (
+            path
+            for path in (
+                orchestration / "ledger" / "lifecycle.py",
+                orchestration / "ledger.py",
+            )
+            if path.is_file()
+        ),
+        None,
+    )
+    if ledger_path is None:
         return None
     module_name = f"_delivery_stats_ledger_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, ledger_path)
@@ -791,14 +999,14 @@ def _load_ledger_class(repo: Path) -> Optional[LedgerClass]:
     sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     finally:
         sys.modules.pop(module_name, None)
-    return cast(Optional[LedgerClass], getattr(module, "LifecycleLedger", None))
+    return cast(LedgerClass | None, getattr(module, "LifecycleLedger", None))
 
 
-def _fallback_records_root(root: Path) -> Optional[Path]:
+def _fallback_records_root(root: Path) -> Path | None:
     """LifecycleLedger.records_root_lenient()'s own tolerant pointer-resolution algorithm,
     inlined for the rare case ``_load_ledger_class`` finds no ledger.py module at all. Kept in
     lockstep with the real method (never checks the pointer schema or version, never runs
@@ -818,7 +1026,7 @@ def _fallback_records_root(root: Path) -> Optional[Path]:
     return candidate if candidate.is_dir() else None
 
 
-def _fallback_read_record(path: Path) -> Optional[JsonObject]:
+def _fallback_read_record(path: Path) -> JsonObject | None:
     """LifecycleLedger.read_record_lenient()'s own algorithm, inlined for the same fallback."""
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -827,35 +1035,41 @@ def _fallback_read_record(path: Path) -> Optional[JsonObject]:
     return value if isinstance(value, dict) else None
 
 
-def _lenient_records_root(root: Path, ledger_cls: Optional[LedgerClass]) -> Optional[Path]:
+def _lenient_records_root(root: Path, ledger_cls: LedgerClass | None) -> Path | None:
     if ledger_cls is None:
         return _fallback_records_root(root)
     try:
         return ledger_cls(root).records_root_lenient()
-    except Exception:
+    except Exception:  # noqa: BLE001
         # ledger_cls came from a dynamically loaded module (_load_ledger_class): an incompatible
         # or old LifecycleLedger (e.g. missing records_root_lenient()) must degrade to the same
         # fallback as no module at all, never propagate out of orchestration_metrics().
         return _fallback_records_root(root)
 
 
-def _lenient_read_record(path: Path, ledger_cls: Optional[LedgerClass]) -> Optional[JsonObject]:
+def _lenient_read_record(
+    path: Path, ledger_cls: LedgerClass | None
+) -> JsonObject | None:
     if ledger_cls is None:
         return _fallback_read_record(path)
     try:
         return ledger_cls.read_record_lenient(path)
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Same rationale as _lenient_records_root above.
         return _fallback_read_record(path)
 
 
-def _dispatch_record(root: Path, dispatch_id: object, ledger_cls: Optional[LedgerClass]) -> Optional[JsonObject]:
+def _dispatch_record(
+    root: Path, dispatch_id: object, ledger_cls: LedgerClass | None
+) -> JsonObject | None:
     if not isinstance(dispatch_id, str):
         return None
     return _lenient_read_record(root / "dispatches" / f"{dispatch_id}.json", ledger_cls)
 
 
-def _developer_write_paths(root: Path, batch: JsonObject, ledger_cls: Optional[LedgerClass]) -> Optional[list[str]]:
+def _developer_write_paths(
+    root: Path, batch: JsonObject, ledger_cls: LedgerClass | None
+) -> list[str] | None:
     """The declared zone a code-review diff is checked against: the most recent developer
     dispatch's own recorded write_paths (retries share the same zone, so the latest is enough)."""
     for entry in reversed(batch.get("dispatches", [])):
@@ -869,35 +1083,50 @@ def _developer_write_paths(root: Path, batch: JsonObject, ledger_cls: Optional[L
 
 
 def _empty_ticket_orchestration() -> JsonObject:
-    return {"batches": [], "worker_sessions": [], "qa_decided": 0, "qa_failed": 0, "review_scope": []}
+    return {
+        "batches": [],
+        "worker_sessions": [],
+        "qa_decided": 0,
+        "qa_failed": 0,
+        "review_scope": [],
+    }
 
 
-def _accumulate_batch_orchestration(root: Path, batch: JsonObject, bucket: JsonObject, ledger_cls: Optional[LedgerClass]) -> None:
+def _accumulate_batch_orchestration(
+    root: Path, batch: JsonObject, bucket: JsonObject, ledger_cls: LedgerClass | None
+) -> None:
     bucket["batches"].append(batch.get("batch_id"))
     restarts_by_dispatch: dict[str, list[JsonObject]] = {}
     for decision in batch.get("coordinator_decisions", []):
-        if not isinstance(decision, dict) or decision.get("decision") not in CONTINUATION_DECISIONS:
+        if (
+            not isinstance(decision, dict)
+            or decision.get("decision") not in CONTINUATION_DECISIONS
+        ):
             continue
         dispatch_id = decision.get("dispatch_id")
         if not isinstance(dispatch_id, str):
             continue
-        restarts_by_dispatch.setdefault(dispatch_id, []).append({
-            "decision": decision.get("decision"),
-            "reason": decision.get("note") or MISSING,
-            "approved_at": decision.get("approved_at", MISSING),
-        })
+        restarts_by_dispatch.setdefault(dispatch_id, []).append(
+            {
+                "decision": decision.get("decision"),
+                "reason": decision.get("note") or MISSING,
+                "approved_at": decision.get("approved_at", MISSING),
+            }
+        )
     developer_paths = _developer_write_paths(root, batch, ledger_cls)
     for entry in batch.get("dispatches", []):
         if not isinstance(entry, dict) or not isinstance(entry.get("dispatch_id"), str):
             continue
         dispatch_id = entry["dispatch_id"]
         restarts = restarts_by_dispatch.get(dispatch_id, [])
-        bucket["worker_sessions"].append({
-            "dispatch_id": dispatch_id,
-            "role": entry.get("role", MISSING),
-            "sessions": 1 + len(restarts),
-            "restarts": restarts,
-        })
+        bucket["worker_sessions"].append(
+            {
+                "dispatch_id": dispatch_id,
+                "role": entry.get("role", MISSING),
+                "sessions": 1 + len(restarts),
+                "restarts": restarts,
+            }
+        )
         role = entry.get("role")
         decision = entry.get("decision")
         if role == "qa" and isinstance(decision, dict):
@@ -909,28 +1138,38 @@ def _accumulate_batch_orchestration(root: Path, batch: JsonObject, bucket: JsonO
             scope = dispatch.get("review_scope") if dispatch else None
             if isinstance(scope, list) and scope:
                 out_of_scope = [
-                    path for path in scope
-                    if not any(fnmatchcase(str(path).replace("\\", "/"), pattern) for pattern in developer_paths)
+                    path
+                    for path in scope
+                    if not any(
+                        fnmatchcase(str(path).replace("\\", "/"), pattern)
+                        for pattern in developer_paths
+                    )
                 ]
-                bucket["review_scope"].append({
-                    "dispatch_id": dispatch_id,
-                    "files_total": len(scope),
-                    "files_out_of_scope": len(out_of_scope),
-                    "out_of_scope_files": out_of_scope,
-                    "share": round(len(out_of_scope) / len(scope), 4),
-                })
+                bucket["review_scope"].append(
+                    {
+                        "dispatch_id": dispatch_id,
+                        "files_total": len(scope),
+                        "files_out_of_scope": len(out_of_scope),
+                        "out_of_scope_files": out_of_scope,
+                        "share": round(len(out_of_scope) / len(scope), 4),
+                    }
+                )
 
 
 def _finalize_ticket_orchestration(bucket: JsonObject) -> JsonObject:
     bucket["qa_failure_rate"] = (
-        round(bucket["qa_failed"] / bucket["qa_decided"], 4) if bucket["qa_decided"] else MISSING
+        round(bucket["qa_failed"] / bucket["qa_decided"], 4)
+        if bucket["qa_decided"]
+        else MISSING
     )
     if not bucket["review_scope"]:
         bucket["review_scope"] = MISSING
     return bucket
 
 
-def orchestration_metrics(repo: Path, numbers: set[int], state_dir: Optional[Path] = None) -> JsonObject:
+def orchestration_metrics(
+    repo: Path, numbers: set[int], state_dir: Path | None = None
+) -> JsonObject:
     """Structural metrics from the backend-orchestration ledger, per ticket in scope: worker
     sessions a dispatch spanned with each session's coordinator-recorded compaction/restart reason,
     the share of a code-review diff outside the developer's declared write-path zone, and QA failure
@@ -940,7 +1179,10 @@ def orchestration_metrics(repo: Path, numbers: set[int], state_dir: Optional[Pat
     root_dir = state_dir if state_dir is not None else repo / ORCHESTRATION_STATE_REL
     root = _lenient_records_root(root_dir, ledger_cls)
     if root is None:
-        return {"status": MISSING, "reason": "оркестрационный ledger недоступен для этого репозитория"}
+        return {
+            "status": MISSING,
+            "reason": "оркестрационный ledger недоступен для этого репозитория",
+        }
     batches_dir = root / "batches"
     if not batches_dir.is_dir():
         return {"status": MISSING, "reason": "в ledger нет записей batches"}
@@ -955,8 +1197,17 @@ def orchestration_metrics(repo: Path, numbers: set[int], state_dir: Optional[Pat
         bucket = tickets.setdefault(str(ticket_number), _empty_ticket_orchestration())
         _accumulate_batch_orchestration(root, batch, bucket, ledger_cls)
     if not tickets:
-        return {"status": MISSING, "reason": "в ledger нет batch-записей для тикетов этой области"}
-    return {"status": "ok", "tickets": {number: _finalize_ticket_orchestration(bucket) for number, bucket in tickets.items()}}
+        return {
+            "status": MISSING,
+            "reason": "в ledger нет batch-записей для тикетов этой области",
+        }
+    return {
+        "status": "ok",
+        "tickets": {
+            number: _finalize_ticket_orchestration(bucket)
+            for number, bucket in tickets.items()
+        },
+    }
 
 
 # ----------------------------------------------------------------------------------------- cost
@@ -980,16 +1231,24 @@ def _is_priced(card: object) -> bool:
     return _rate(card, "input") > 0 or _rate(card, "output") > 0
 
 
-def load_rates(path: Optional[Path]) -> JsonObject:
+def load_rates(path: Path | None) -> JsonObject:
     if path is None or not path.is_file():
-        return {"status": MISSING, "reason": f"тариф не настроен: нет файла {path}", "models": {}}
+        return {
+            "status": MISSING,
+            "reason": f"тариф не настроен: нет файла {path}",
+            "models": {},
+        }
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except ValueError as exc:
-        raise StatsError(f"rate card is not valid JSON: {path}", remedy=f"fix the JSON syntax in {path}") from exc
+        raise StatsError(
+            f"rate card is not valid JSON: {path}",
+            remedy=f"fix the JSON syntax in {path}",
+        ) from exc
     if not isinstance(value, dict) or not isinstance(value.get("models"), dict):
         raise StatsError(
-            "rate card must be an object with a models object", remedy=f"set {path} to a JSON object with a top-level 'models' object"
+            "rate card must be an object with a models object",
+            remedy=f"set {path} to a JSON object with a top-level 'models' object",
         )
     if not any(_is_priced(card) for card in value["models"].values()):
         # An untouched template is not a rate card: every price is 0.0. Reporting its total as a
@@ -1003,7 +1262,9 @@ def load_rates(path: Optional[Path]) -> JsonObject:
     return value
 
 
-def estimate_cost(claude: JsonObject, codex: JsonObject, rates: JsonObject) -> JsonObject:
+def estimate_cost(
+    claude: JsonObject, codex: JsonObject, rates: JsonObject
+) -> JsonObject:
     """Cost by the supplied rate card only. No prices are built into this tool."""
     if rates.get("status") != "ok":
         return {"status": MISSING, "reason": rates.get("reason", "тариф не настроен")}
@@ -1013,7 +1274,9 @@ def estimate_cost(claude: JsonObject, codex: JsonObject, rates: JsonObject) -> J
     uncached_total = 0.0
     unpriced = []
 
-    def price(model: str, fresh: int, cache_write: int, cache_read: int, output: int) -> None:
+    def price(
+        model: str, fresh: int, cache_write: int, cache_read: int, output: int
+    ) -> None:
         nonlocal total, uncached_total
         card = table.get(model)
         if not _is_priced(card):
@@ -1034,7 +1297,13 @@ def estimate_cost(claude: JsonObject, codex: JsonObject, rates: JsonObject) -> J
         uncached = (fresh + cache_write + cache_read) * rate_in + output * rate_out
         total += cost
         uncached_total += uncached
-        per_model.append({"model": model, "cost": round(cost, 6), "uncached_cost": round(uncached, 6)})
+        per_model.append(
+            {
+                "model": model,
+                "cost": round(cost, 6),
+                "uncached_cost": round(uncached, 6),
+            }
+        )
 
     if claude.get("status") == "ok":
         for model, bucket in claude["models"].items():
@@ -1072,12 +1341,16 @@ def estimate_cost(claude: JsonObject, codex: JsonObject, rates: JsonObject) -> J
 # -------------------------------------------------------------------------------------- summary
 
 
-def cache_split(claude: JsonObject) -> Union[str, JsonObject]:
+def cache_split(claude: JsonObject) -> str | JsonObject:
     if claude.get("status") != "ok":
         return MISSING
     fresh = sum(bucket["input_tokens"] for bucket in claude["models"].values())
-    write = sum(bucket["cache_creation_input_tokens"] for bucket in claude["models"].values())
-    read = sum(bucket["cache_read_input_tokens"] for bucket in claude["models"].values())
+    write = sum(
+        bucket["cache_creation_input_tokens"] for bucket in claude["models"].values()
+    )
+    read = sum(
+        bucket["cache_read_input_tokens"] for bucket in claude["models"].values()
+    )
     total = fresh + write + read
     if total == 0:
         return MISSING
@@ -1092,23 +1365,36 @@ def cache_split(claude: JsonObject) -> Union[str, JsonObject]:
     }
 
 
-def _cache_tokens(models: JsonObject, write_field: str, read_field: str) -> Optional[JsonObject]:
+def _cache_tokens(
+    models: JsonObject, write_field: str, read_field: str
+) -> JsonObject | None:
     """Cache write/read tokens by the same rule as the input total: only when every model bucket
     carries both fields, never a partial sum presented as complete."""
     if not models or any(
         not isinstance(bucket, dict)
-        or any(not isinstance(bucket.get(field), int) or isinstance(bucket.get(field), bool) for field in (write_field, read_field))
+        or any(
+            not isinstance(bucket.get(field), int)
+            or isinstance(bucket.get(field), bool)
+            for field in (write_field, read_field)
+        )
         for bucket in models.values()
     ):
         return None
     return {
-        "cache_write_tokens": sum(_int(bucket.get(write_field)) for bucket in models.values()),
-        "cache_read_tokens": sum(_int(bucket.get(read_field)) for bucket in models.values()),
+        "cache_write_tokens": sum(
+            _int(bucket.get(write_field)) for bucket in models.values()
+        ),
+        "cache_read_tokens": sum(
+            _int(bucket.get(read_field)) for bucket in models.values()
+        ),
     }
 
 
 def _provider_snapshot(
-    usage: JsonObject, input_fields: tuple[str, ...], *, cache_fields: Optional[tuple[str, str]] = None
+    usage: JsonObject,
+    input_fields: tuple[str, ...],
+    *,
+    cache_fields: tuple[str, str] | None = None,
 ) -> JsonObject:
     """The comparable provider telemetry from one report, without filling absent data with zero."""
     if usage.get("status") != "ok":
@@ -1119,11 +1405,18 @@ def _provider_snapshot(
     fields = (*input_fields, "output_tokens")
     if not models or any(
         not isinstance(bucket, dict)
-        or any(not isinstance(bucket.get(field), int) or isinstance(bucket.get(field), bool) for field in fields)
+        or any(
+            not isinstance(bucket.get(field), int)
+            or isinstance(bucket.get(field), bool)
+            for field in fields
+        )
         for bucket in models.values()
     ):
         return {"status": MISSING, "reason": "в отчёте неполная telemetry по моделям"}
-    input_tokens = sum(sum(_int(bucket.get(field)) for field in input_fields) for bucket in models.values())
+    input_tokens = sum(
+        sum(_int(bucket.get(field)) for field in input_fields)
+        for bucket in models.values()
+    )
     output_tokens = sum(_int(bucket.get("output_tokens")) for bucket in models.values())
     snapshot = {
         "status": "ok",
@@ -1134,7 +1427,9 @@ def _provider_snapshot(
     }
     if cache_fields is not None:
         cache = _cache_tokens(models, *cache_fields)
-        snapshot["cache_write_tokens"] = cache["cache_write_tokens"] if cache else MISSING
+        snapshot["cache_write_tokens"] = (
+            cache["cache_write_tokens"] if cache else MISSING
+        )
         snapshot["cache_read_tokens"] = cache["cache_read_tokens"] if cache else MISSING
     return snapshot
 
@@ -1149,11 +1444,13 @@ def baseline_snapshot(report: JsonObject) -> JsonObject:
         "epic": {"number": epic.get("number"), "title": epic.get("title", MISSING)},
         "providers": {
             "claude": _provider_snapshot(
-                report["claude"], CLAUDE_FIELDS[:3],
+                report["claude"],
+                CLAUDE_FIELDS[:3],
                 cache_fields=("cache_creation_input_tokens", "cache_read_input_tokens"),
             ),
             "codex": _provider_snapshot(
-                report["codex"], ("input_tokens",),
+                report["codex"],
+                ("input_tokens",),
                 cache_fields=("cache_write_input_tokens", "cached_input_tokens"),
             ),
         },
@@ -1164,26 +1461,40 @@ def load_baseline(path: Path) -> JsonObject:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise StatsError(f"не прочитать baseline: {path}: {exc}", remedy=f"fix the file-system error above for {path} and retry") from exc
+        raise StatsError(
+            f"не прочитать baseline: {path}: {exc}",
+            remedy=f"fix the file-system error above for {path} and retry",
+        ) from exc
     except ValueError as exc:
-        raise StatsError(f"baseline не является JSON: {path}", remedy=f"fix the JSON syntax in {path}") from exc
-    if not isinstance(value, dict) or value.get("schema_version") != BASELINE_SCHEMA_VERSION:
+        raise StatsError(
+            f"baseline не является JSON: {path}",
+            remedy=f"fix the JSON syntax in {path}",
+        ) from exc
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != BASELINE_SCHEMA_VERSION
+    ):
         raise StatsError(
             f"baseline имеет неподдерживаемый формат: {path}",
             remedy=f"regenerate {path} with --save-baseline so it matches schema_version={BASELINE_SCHEMA_VERSION}",
         )
-    if not isinstance(value.get("providers"), dict) or not isinstance(value.get("epic"), dict):
+    if not isinstance(value.get("providers"), dict) or not isinstance(
+        value.get("epic"), dict
+    ):
         raise StatsError(
-            f"baseline не содержит providers и epic: {path}", remedy=f"regenerate {path} with --save-baseline so it has providers and epic"
+            f"baseline не содержит providers и epic: {path}",
+            remedy=f"regenerate {path} with --save-baseline so it has providers and epic",
         )
     for provider in ("claude", "codex"):
         telemetry = value["providers"].get(provider)
         if not isinstance(telemetry, dict):
             raise StatsError(
-                f"baseline не содержит telemetry {provider}: {path}", remedy=f"regenerate {path} with --save-baseline so it has {provider} telemetry"
+                f"baseline не содержит telemetry {provider}: {path}",
+                remedy=f"regenerate {path} with --save-baseline so it has {provider} telemetry",
             )
         if telemetry.get("status") == "ok" and any(
-            not isinstance(telemetry.get(field), int) or isinstance(telemetry.get(field), bool)
+            not isinstance(telemetry.get(field), int)
+            or isinstance(telemetry.get(field), bool)
             for field in ("input_tokens", "output_tokens", "total_tokens")
         ):
             raise StatsError(
@@ -1196,21 +1507,33 @@ def load_baseline(path: Path) -> JsonObject:
 def save_baseline(snapshot: JsonObject, path: Path) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        path.write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
     except OSError as exc:
-        raise StatsError(f"не сохранить baseline: {path}: {exc}", remedy=f"fix the file-system error above for {path} and retry") from exc
+        raise StatsError(
+            f"не сохранить baseline: {path}: {exc}",
+            remedy=f"fix the file-system error above for {path} and retry",
+        ) from exc
 
 
-def _cache_delta_field(baseline: JsonObject, current: JsonObject, field: str) -> Union[str, int]:
+def _cache_delta_field(
+    baseline: JsonObject, current: JsonObject, field: str
+) -> str | int:
     """A cache-token delta only when both sides actually carry that field -- one or both of them
     may predate this metric or come from a provider report with incomplete cache telemetry."""
     before, after = baseline.get(field), current.get(field)
-    if not isinstance(before, int) or isinstance(before, bool) or not isinstance(after, int) or isinstance(after, bool):
+    if (
+        not isinstance(before, int)
+        or isinstance(before, bool)
+        or not isinstance(after, int)
+        or isinstance(after, bool)
+    ):
         return MISSING
     return after - before
 
 
-def _provider_delta(baseline: object, current: object) -> Union[str, JsonObject]:
+def _provider_delta(baseline: object, current: object) -> str | JsonObject:
     if not isinstance(baseline, dict) or not isinstance(current, dict):
         return MISSING
     if baseline.get("status") != "ok" or current.get("status") != "ok":
@@ -1233,7 +1556,8 @@ def compare_baseline(baseline: JsonObject, current: JsonObject) -> JsonObject:
         "delta": {
             "providers": {
                 provider: _provider_delta(
-                    baseline.get("providers", {}).get(provider), current.get("providers", {}).get(provider)
+                    baseline.get("providers", {}).get(provider),
+                    current.get("providers", {}).get(provider),
                 )
                 for provider in providers
             }
@@ -1244,7 +1568,10 @@ def compare_baseline(baseline: JsonObject, current: JsonObject) -> JsonObject:
 def build_report(args: argparse.Namespace) -> JsonObject:
     repo = Path(args.repo).resolve()
     if not (repo / ".git").exists():
-        raise StatsError(f"not a git repository: {repo}", remedy="pass --repo pointing at a real Git checkout")
+        raise StatsError(
+            f"not a git repository: {repo}",
+            remedy="pass --repo pointing at a real Git checkout",
+        )
     config = _project_config(repo)
     base = args.base or config.get("base_branch") or "main"
 
@@ -1260,17 +1587,33 @@ def build_report(args: argparse.Namespace) -> JsonObject:
     else:
         project_dirs = claude_project_dirs(home, repo)
     claude = claude_usage(project_dirs, numbers)
-    window = (_moment(claude.get("first_activity")), _moment(claude.get("last_activity")))
-    codex_root = Path(args.codex_sessions) if args.codex_sessions else home / ".codex/sessions"
+    window = (
+        _moment(claude.get("first_activity")),
+        _moment(claude.get("last_activity")),
+    )
+    codex_root = (
+        Path(args.codex_sessions) if args.codex_sessions else home / ".codex/sessions"
+    )
     codex = codex_usage(codex_root, repo, window)
 
-    rates_path = Path(args.rates) if args.rates else repo / ".harness/reporting/rates.json"
+    rates_path = (
+        Path(args.rates) if args.rates else repo / ".harness/reporting/rates.json"
+    )
     cost = estimate_cost(claude, codex, load_rates(rates_path))
 
     prs = [] if scope.get("offline") else pull_requests(repo, numbers)
-    local = {name for name in _local_issue_branches(repo) if ticket_of_branch(name) in numbers}
+    local = {
+        name
+        for name in _local_issue_branches(repo)
+        if ticket_of_branch(name) in numbers
+    }
     volume = git_volume(repo, prs, local | set(claude.get("branches") or []), base)
-    if not prs and volume["totals"]["insertions"] == 0 and claude.get("status") != "ok" and codex.get("status") != "ok":
+    if (
+        not prs
+        and volume["totals"]["insertions"] == 0
+        and claude.get("status") != "ok"
+        and codex.get("status") != "ok"
+    ):
         raise StatsError(
             f"epic #{args.epic}: no pull request, branch or session recorded for it or its sub-issues",
             remedy=f"verify epic #{args.epic}'s sub-issue numbers and that its PRs/branches/session logs exist locally, or pass --tickets explicitly",
@@ -1278,15 +1621,23 @@ def build_report(args: argparse.Namespace) -> JsonObject:
     tickets = scope["tickets"]
     for ticket in tickets:
         ticket["branches"] = sorted(
-            {entry["branch"] for entry in volume["entries"] if entry.get("ticket") == ticket["number"]}
+            {
+                entry["branch"]
+                for entry in volume["entries"]
+                if entry.get("ticket") == ticket["number"]
+            }
         )
-    orchestration_state = Path(args.orchestration_state_dir) if args.orchestration_state_dir else None
+    orchestration_state = (
+        Path(args.orchestration_state_dir) if args.orchestration_state_dir else None
+    )
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "repository": repo.name,
         "epic": scope["epic"],
         "tickets": tickets,
-        "tickets_closed": sum(1 for t in tickets if str(t.get("state", "")).upper() == "CLOSED"),
+        "tickets_closed": sum(
+            1 for t in tickets if str(t.get("state", "")).upper() == "CLOSED"
+        ),
         "tickets_total": len(tickets),
         "claude": claude,
         "codex": codex,
@@ -1312,7 +1663,10 @@ def _compact(value: object) -> str:
         return str(value)
     for limit, suffix in ((1_000_000_000, "млрд"), (1_000_000, "млн"), (1_000, "тыс")):
         if value >= limit:
-            return f"{value / limit:.2f}".rstrip("0").rstrip(".").replace(".", ",") + f" {suffix}"
+            return (
+                f"{value / limit:.2f}".rstrip("0").rstrip(".").replace(".", ",")
+                + f" {suffix}"
+            )
     return str(value)
 
 
@@ -1339,7 +1693,9 @@ def render_terminal(report: JsonObject) -> str:
 
     claude = report["claude"]
     if claude.get("status") == "ok":
-        for model, bucket in sorted(claude["models"].items(), key=lambda kv: -kv[1]["output_tokens"]):
+        for model, bucket in sorted(
+            claude["models"].items(), key=lambda kv: -kv[1]["output_tokens"]
+        ):
             lines.append(
                 f"  Claude {model}: вход {_compact(sum(bucket[f] for f in CLAUDE_FIELDS[:3]))}, "
                 f"выход {_compact(bucket['output_tokens'])}, ходов {bucket['turns']}"
@@ -1348,13 +1704,17 @@ def render_terminal(report: JsonObject) -> str:
         if session_stats:
             lines.append("Топ-3 сессий по объему контекста:")
             for s in session_stats[:3]:
-                lines.append(f"  Ветка {s['branch']}: ходов {s['turns']}, макс. контекст {_compact(s['max_input'])}, всего входных {_compact(s['total_input'])}")
+                lines.append(
+                    f"  Ветка {s['branch']}: ходов {s['turns']}, макс. контекст {_compact(s['max_input'])}, всего входных {_compact(s['total_input'])}"
+                )
     else:
         lines.append(f"  Claude: {claude.get('reason', MISSING)}")
 
     codex = report["codex"]
     if codex.get("status") == "ok":
-        for model, bucket in sorted(codex["models"].items(), key=lambda kv: -kv[1]["output_tokens"]):
+        for model, bucket in sorted(
+            codex["models"].items(), key=lambda kv: -kv[1]["output_tokens"]
+        ):
             lines.append(
                 f"  Codex {model}: вход {_compact(bucket['input_tokens'])}, "
                 f"выход {_compact(bucket['output_tokens'])}, ходов {bucket['turns']} (оценка)"
@@ -1383,10 +1743,20 @@ def render_terminal(report: JsonObject) -> str:
                 after_text = f"{_compact(after.get('total_tokens'))} ({after.get('attribution', MISSING)})"
             else:
                 after_text = MISSING
-            delta_text = _compact(delta.get("total_tokens")) if isinstance(delta, dict) else MISSING
-            lines.append(f"  {label}: {before_text} → {after_text}; разница {delta_text}")
-            cache_write_delta = delta.get("cache_write_tokens") if isinstance(delta, dict) else MISSING
-            cache_read_delta = delta.get("cache_read_tokens") if isinstance(delta, dict) else MISSING
+            delta_text = (
+                _compact(delta.get("total_tokens"))
+                if isinstance(delta, dict)
+                else MISSING
+            )
+            lines.append(
+                f"  {label}: {before_text} → {after_text}; разница {delta_text}"
+            )
+            cache_write_delta = (
+                delta.get("cache_write_tokens") if isinstance(delta, dict) else MISSING
+            )
+            cache_read_delta = (
+                delta.get("cache_read_tokens") if isinstance(delta, dict) else MISSING
+            )
             if isinstance(cache_write_delta, int) or isinstance(cache_read_delta, int):
                 lines.append(
                     f"    кеш: запись {_compact(cache_write_delta) if isinstance(cache_write_delta, int) else MISSING}, "
@@ -1418,11 +1788,17 @@ def render_terminal(report: JsonObject) -> str:
         for number, ticket in sorted(orchestration["tickets"].items()):
             lines.append(f"Оркестрация тикета #{number}:")
             for session in ticket["worker_sessions"]:
-                lines.append(f"  {session['role']} {session['dispatch_id']}: сессий {session['sessions']}")
+                lines.append(
+                    f"  {session['role']} {session['dispatch_id']}: сессий {session['sessions']}"
+                )
                 for restart in session["restarts"]:
-                    lines.append(f"    рестарт ({restart['decision']}): {restart['reason']}")
+                    lines.append(
+                        f"    рестарт ({restart['decision']}): {restart['reason']}"
+                    )
             rate = ticket["qa_failure_rate"]
-            lines.append(f"  QA failure rate: {_ru(rate * 100, 1) + '%' if isinstance(rate, float) else rate}")
+            lines.append(
+                f"  QA failure rate: {_ru(rate * 100, 1) + '%' if isinstance(rate, float) else rate}"
+            )
             scope = ticket["review_scope"]
             if isinstance(scope, list):
                 for entry in scope:
@@ -1453,8 +1829,19 @@ def main_live_probe(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     repo = Path(args.repo).resolve()
     home = Path(args.home).expanduser() if args.home else Path.home()
-    project_dirs = [Path(p) for p in args.claude_projects] if args.claude_projects else claude_project_dirs(home, repo)
-    print(json.dumps(live_probe(project_dirs, args.branch), ensure_ascii=False, indent=2, sort_keys=True))
+    project_dirs = (
+        [Path(p) for p in args.claude_projects]
+        if args.claude_projects
+        else claude_project_dirs(home, repo)
+    )
+    print(
+        json.dumps(
+            live_probe(project_dirs, args.branch),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -1469,15 +1856,22 @@ def main() -> int:
                 pass
     if sys.argv[1:2] == ["live-probe"]:
         return main_live_probe(sys.argv[2:])
-    parser = argparse.ArgumentParser(description="Delivery statistics for one epic and its tickets.")
+    parser = argparse.ArgumentParser(
+        description="Delivery statistics for one epic and its tickets."
+    )
     parser.add_argument("--repo", default=".", help="target project root")
     parser.add_argument("--epic", type=int, required=True, help="epic issue number")
-    parser.add_argument("--base", help="base ref for diffing issue branches; defaults to project base_branch")
+    parser.add_argument(
+        "--base",
+        help="base ref for diffing issue branches; defaults to project base_branch",
+    )
     parser.add_argument(
         "--tickets",
         help="offline mode: comma-separated issue numbers instead of asking the tracker for sub-issues",
     )
-    parser.add_argument("--rates", help="rate card JSON; defaults to .harness/reporting/rates.json")
+    parser.add_argument(
+        "--rates", help="rate card JSON; defaults to .harness/reporting/rates.json"
+    )
     parser.add_argument(
         "--orchestration-state-dir",
         help="backend-orchestration ledger state directory; defaults to .harness/orchestration/state under --repo",
@@ -1489,17 +1883,25 @@ def main() -> int:
         help="explicit transcript directory; repeatable when a project has more than one",
     )
     parser.add_argument("--codex-sessions", help="explicit Codex sessions directory")
-    parser.add_argument("--baseline", help="versioned baseline JSON saved by --save-baseline")
-    parser.add_argument("--save-baseline", help="write this report's comparable baseline JSON to a path")
+    parser.add_argument(
+        "--baseline", help="versioned baseline JSON saved by --save-baseline"
+    )
+    parser.add_argument(
+        "--save-baseline", help="write this report's comparable baseline JSON to a path"
+    )
     parser.add_argument("--html", help="write a standalone HTML dashboard to this path")
-    parser.add_argument("--json", action="store_true", help="print the full report as JSON")
+    parser.add_argument(
+        "--json", action="store_true", help="print the full report as JSON"
+    )
     args = parser.parse_args()
 
     try:
         report = build_report(args)
         current_baseline = baseline_snapshot(report)
         if args.baseline:
-            report["comparison"] = compare_baseline(load_baseline(Path(args.baseline)), current_baseline)
+            report["comparison"] = compare_baseline(
+                load_baseline(Path(args.baseline)), current_baseline
+            )
         if args.save_baseline:
             save_baseline(current_baseline, Path(args.save_baseline))
         if args.html:

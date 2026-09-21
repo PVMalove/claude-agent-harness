@@ -8,9 +8,9 @@ runtime, worktree and snapshot that the resulting dispatch will use.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Mapping
 
 from ..errors import HarnessError
 from .contract import ContractError, resolve_runtime_name, string_list
@@ -52,7 +52,11 @@ def _text(value: object, label: str) -> str:
 
 def _git(path: Path, *args: str) -> str:
     result = subprocess.run(
-        ["git", "-C", str(path), *args], capture_output=True, text=True, encoding="utf-8"
+        ["git", "-C", str(path), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
     )
     if result.returncode:
         detail = (result.stderr or result.stdout).strip()
@@ -72,12 +76,24 @@ def _worktree_paths(repo: Path) -> set[Path]:
     return paths
 
 
-def _role_context(role: str, state: Mapping[str, JsonValue], snapshot: str) -> JsonObject:
+def _role_context(
+    role: str, state: Mapping[str, JsonValue], snapshot: str
+) -> JsonObject:
     """Compact, role-specific context pointer metadata; package contents remain ledger-owned."""
     keys = {
         "architect": ("contracts", "neighbour_tickets", "starting_files"),
-        "developer": ("architecture_decision", "affected_symbols", "related_tests", "starting_files"),
-        "code-review": ("pinned_diff", "prior_findings", "verification_commands", "starting_files"),
+        "developer": (
+            "architecture_decision",
+            "affected_symbols",
+            "related_tests",
+            "starting_files",
+        ),
+        "code-review": (
+            "pinned_diff",
+            "prior_findings",
+            "verification_commands",
+            "starting_files",
+        ),
     }.get(role, ("starting_files",))
     included: JsonObject = {"snapshot_sha": snapshot, "role": role}
     for key in keys:
@@ -87,7 +103,9 @@ def _role_context(role: str, state: Mapping[str, JsonValue], snapshot: str) -> J
     return included
 
 
-def prepare(ticket: str, role: str, project_state: Mapping[str, JsonValue]) -> PreparedDispatch:
+def prepare(
+    ticket: str, role: str, project_state: Mapping[str, JsonValue]
+) -> PreparedDispatch:
     """Resolve and validate one potential dispatch without creating it.
 
     ``project_state`` is intentionally plain data so a CLI, adapter, or test can call the same
@@ -99,12 +117,14 @@ def prepare(ticket: str, role: str, project_state: Mapping[str, JsonValue]) -> P
     repo = Path(_text(project_state.get("repo"), "repo")).resolve()
     if not repo.is_dir():
         raise PreflightError(
-            "project_state repo does not exist", remedy="point project_state['repo'] at an existing directory"
+            "project_state repo does not exist",
+            remedy="point project_state['repo'] at an existing directory",
         )
     config = project_state.get("config")
     if not isinstance(config, dict):
         raise PreflightError(
-            "project_state config must be an object", remedy="set project_state['config'] to a JSON object"
+            "project_state config must be an object",
+            remedy="set project_state['config'] to a JSON object",
         )
     plans = config.get("assignment_plans")
     plan = plans.get(role) if isinstance(plans, dict) else None
@@ -116,14 +136,19 @@ def prepare(ticket: str, role: str, project_state: Mapping[str, JsonValue]) -> P
     try:
         runtime = resolve_runtime_name(plan, project_state.get("runtime"))
     except ContractError as exc:
-        raise PreflightError(str(exc), remedy="fix the runtime/provider selection reported above in the assignment plan or project_state['runtime']") from exc
+        raise PreflightError(
+            str(exc),
+            remedy="fix the runtime/provider selection reported above in the assignment plan or project_state['runtime']",
+        ) from exc
 
     branch = _text(project_state.get("branch"), "branch")
     worktree = Path(_text(project_state.get("worktree"), "worktree")).resolve()
     base_sha = _text(project_state.get("base_sha"), "base_sha")
     raw_candidate = project_state.get("candidate_sha")
     candidate = None if raw_candidate is None else _text(raw_candidate, "candidate_sha")
-    integration_ref = _text(project_state.get("integration_ref") or "base", "integration_ref")
+    integration_ref = _text(
+        project_state.get("integration_ref") or "base", "integration_ref"
+    )
     if worktree not in _worktree_paths(repo):
         raise PreflightError(
             "worktree is not registered by git worktree",
@@ -131,16 +156,22 @@ def prepare(ticket: str, role: str, project_state: Mapping[str, JsonValue]) -> P
         )
     if _git(worktree, "rev-parse", "--is-inside-work-tree") != "true":
         raise PreflightError(
-            "worktree is not a Git worktree", remedy=f"point project_state['worktree'] at a real Git worktree, not {worktree}"
+            "worktree is not a Git worktree",
+            remedy=f"point project_state['worktree'] at a real Git worktree, not {worktree}",
         )
     worktree_sha = _git(worktree, "rev-parse", "--verify", "HEAD^{commit}")
-    expected_sha = candidate or _text(project_state.get("snapshot_sha") or base_sha, "snapshot_sha")
+    expected_sha = candidate or _text(
+        project_state.get("snapshot_sha") or base_sha, "snapshot_sha"
+    )
     if worktree_sha != expected_sha:
         raise PreflightError(
             f"worktree is pinned to {worktree_sha}, expected snapshot {expected_sha}",
             remedy=f"checkout {expected_sha} in the worktree, or update snapshot_sha/candidate_sha to match {worktree_sha}",
         )
-    if role in {"architect", "developer"} and _git(worktree, "branch", "--show-current") != branch:
+    if (
+        role in {"architect", "developer"}
+        and _git(worktree, "branch", "--show-current") != branch
+    ):
         raise PreflightError(
             "write/planning worktree is not on the resolved issue branch",
             remedy=f"checkout branch {branch!r} in the worktree before dispatching this role",
@@ -180,8 +211,17 @@ def prepare(ticket: str, role: str, project_state: Mapping[str, JsonValue]) -> P
         "options": ["accept", "retry", "block", "full review", "delta-review"],
     }
     return PreparedDispatch(
-        ticket=ticket, role=role, integration_ref=integration_ref, base_sha=base_sha,
-        candidate_sha=candidate, issue_branch=branch, worktree=str(worktree),
-        worktree_sha=worktree_sha, runtime=runtime, mandatory_checks=list(checks),
-        context_package=package, preview_brief=preview, decision_packet=packet,
+        ticket=ticket,
+        role=role,
+        integration_ref=integration_ref,
+        base_sha=base_sha,
+        candidate_sha=candidate,
+        issue_branch=branch,
+        worktree=str(worktree),
+        worktree_sha=worktree_sha,
+        runtime=runtime,
+        mandatory_checks=list(checks),
+        context_package=package,
+        preview_brief=preview,
+        decision_packet=packet,
     )

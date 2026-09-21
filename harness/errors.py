@@ -19,7 +19,9 @@ class HarnessError(Exception):
         self.remedy = remedy
 
 
-INTERNAL_INVARIANT_REMEDY = "internal invariant violated -- file a bug report with this traceback"
+INTERNAL_INVARIANT_REMEDY = (
+    "internal invariant violated -- file a bug report with this traceback"
+)
 
 
 def print_and_exit(exc: HarnessError) -> int:
