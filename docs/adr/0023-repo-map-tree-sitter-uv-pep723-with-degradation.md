@@ -50,6 +50,9 @@ stdlib `ast` (`harness/context_builder/context_builder.py`); для осталь
   Python fallback тестируется всегда, bundle-путь — в изолированной CI-задаче с проверенным offline
   артефактом; policy, redaction и отказ bundle с неверным hash имеют отдельные контрактные тесты.
 
+Состав bundle, пины, матрица wheels, формат поставки, правила SBOM/CVE и typed-граница уточнены
+[ADR 0024](0024-repo-map-parser-bundle-composition-and-delivery.md).
+
 Уточняет ADR 0018: пакет остаётся без pip-установки и `[build-system]`; полная карта получает
 релизный offline parser bundle, а не runtime-зависимость через `uv run`. Уточняет
 [ADR 0016](0016-context-package-checkpoint-continuation-and-base-commit-gate.md): Context Package
