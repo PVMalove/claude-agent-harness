@@ -12,11 +12,11 @@ help: ## Показать список команд с описанием
 	@python -c "import re, sys; print('Доступные команды:'); lines = open(sys.argv[1], encoding='utf-8').readlines(); matches = [re.match(r'^([a-zA-Z0-9_-]+):.*?## (.*)$$', line) for line in lines]; [print(f'  {m.group(1):<16} - {m.group(2)}') for m in matches if m]" $(MAKEFILE_LIST)
 
 format: ## Автоформатирование кода (ruff format + ruff check --fix-only)
-	ruff format .
-	ruff check --fix-only .
+	python -m ruff format .
+	python -m ruff check --fix-only .
 
 lint: typecheck ## Линтинг кода (ruff check + mypy)
-	ruff check .
+	python -m ruff check .
 
 verify: ## Запустить полный набор проверок проекта (sanity checks, mypy, tests, clean-room)
 	python scripts/verify.py

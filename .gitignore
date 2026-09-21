@@ -13,3 +13,4 @@ __pycache__/
 /.claude/
 /docs/tasks/
 /docs/reports/
+.venv/

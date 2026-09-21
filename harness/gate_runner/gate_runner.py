@@ -16,7 +16,11 @@ from typing import Protocol
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 
-SENSITIVE_OUTPUT = (
+SENSITIVE_OUTPUT: tuple[
+    tuple[re.Pattern[str], str],
+    tuple[re.Pattern[str], str],
+    tuple[re.Pattern[str], str],
+] = (
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"), "<REDACTED_GITHUB_TOKEN>"),
     (
         re.compile(
@@ -59,9 +63,9 @@ class CleanRoomPolicy:
     @contextmanager
     def checkout(self) -> Iterator[Path]:
         worktree_root = Path(tempfile.mkdtemp(prefix="agent-harness-qa-"))
-        checkout = worktree_root / "checkout"
+        checkout: Path = worktree_root / "checkout"
         try:
-            created = subprocess.run(
+            created: subprocess.CompletedProcess[str] = subprocess.run(
                 [
                     "git",
                     "-C",
@@ -79,12 +83,12 @@ class CleanRoomPolicy:
                 check=False,
             )
             if created.returncode != 0:
-                detail = sanitise((created.stderr or created.stdout).strip())
+                detail: str = sanitise((created.stderr or created.stdout).strip())
                 raise GateRunnerError(
                     f"could not create clean QA worktree: {detail or 'unknown error'}",
                     remedy=f"inspect the git worktree error above and fix the repository/candidate commit {self.candidate_commit} before retrying",
                 )
-            resolved = subprocess.run(
+            resolved: subprocess.CompletedProcess[str] = subprocess.run(
                 ["git", "-C", str(checkout), "rev-parse", "--verify", "HEAD^{commit}"],
                 capture_output=True,
                 text=True,
@@ -100,7 +104,7 @@ class CleanRoomPolicy:
                     "clean QA worktree HEAD does not match the pinned candidate commit",
                     remedy=f"verify commit {self.candidate_commit} exists and resolves cleanly, then retry",
                 )
-            status = subprocess.run(
+            status: subprocess.CompletedProcess[str] = subprocess.run(
                 [
                     "git",
                     "-C",
@@ -168,7 +172,9 @@ def sanitise(text: str) -> str:
 
 
 def concise_evidence(text: str) -> str:
-    lines = [line.strip() for line in sanitise(text).splitlines() if line.strip()]
+    lines: list[str] = [
+        line.strip() for line in sanitise(text).splitlines() if line.strip()
+    ]
     return lines[0][:240] if lines else "no output"
 
 
@@ -178,7 +184,7 @@ def run_gate(
     """Run configured commands and return one sanitised, policy-independent result shape."""
     checks: list[dict[str, str]] = []
     outputs: list[str] = []
-    started = time.monotonic()
+    started: float = time.monotonic()
     with policy.checkout() as checkout:
         for command in commands:
             command_text = (
@@ -186,7 +192,7 @@ def run_gate(
                 if isinstance(command, str)
                 else subprocess.list2cmdline(command)
             )
-            result = subprocess.run(
+            result: subprocess.CompletedProcess[str] = subprocess.run(
                 command,
                 cwd=checkout,
                 shell=isinstance(command, str),
@@ -196,7 +202,7 @@ def run_gate(
                 errors="replace",
                 check=False,
             )
-            combined = sanitise(
+            combined: str = sanitise(
                 (result.stdout or "")
                 + ("\n" if result.stdout and result.stderr else "")
                 + (result.stderr or "")
