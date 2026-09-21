@@ -102,6 +102,7 @@ from harness.orchestration.workflow.history import (
     _effective_base,
     _latest_context_package,
     _latest_developer_candidate,
+    _latest_registered_verification_candidate,
     _pending_report,
     _risk_for_candidate,
     _settled,
@@ -563,6 +564,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "qa": {("qa", "work"), ("code-review", "work")},
             "publish": {("developer", "publish")},
             "developer-retry": {("developer", "work")},
+            "verification": {("verification", "work")},
             # A retried architect report gets a new architect, never a developer.
             "architect": {("architect", "work")},
         }
@@ -606,7 +608,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         requested_delta_review_of = getattr(args, "delta_review_of", None)
         if args.candidate_commit is not None:
             candidate = _candidate_commit(repo, args.candidate_commit)
-        if role_name in {"code-review", "qa"} and candidate is None:
+        if role_name in {"verification", "code-review", "qa"} and candidate is None:
             raise CoordinatorError(
                 f"{role_name} dispatch requires candidate_commit",
                 remedy=f"pass --candidate-commit before dispatching the {role_name} role",
@@ -633,6 +635,12 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             _enforce_base_freshness(repo, root, ledger, batch)
         if candidate is not None:
             risk = _risk_for_candidate(root, batch, candidate)
+        if role_name == "verification":
+            if candidate != _latest_registered_verification_candidate(repo, batch):
+                raise CoordinatorError(
+                    "verification dispatch must pin the registered infrastructure candidate",
+                    remedy="pass the candidate_commit recorded by the infrastructure retry decision",
+                )
         if role_name in {
             "code-review",
             "qa",
@@ -714,7 +722,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             else _dispatch_approval_mode(args, batch, config, role_name, purpose, risk)
         )
         context_package = None
-        if role_name in {"architect", "developer", "code-review"}:
+        if role_name in {"architect", "developer", "verification", "code-review"}:
             snapshot = candidate
             if snapshot is None:
                 try:

@@ -37,11 +37,12 @@ RETRY_REASON_CATEGORIES = (
 NEXT_ACTION_DISPATCH_ROLE = {
     "architect": "architect",
     "developer-retry": "developer",
+    "verification": "verification",
     "code-review": "code-review",
     "qa": "qa",
     "publish": "developer",
 }
-DISPATCH_PURPOSES = {"work", "publish"}
+DISPATCH_PURPOSES = {"work", "verification", "publish"}
 ROLE_TRANSPORTS = {"orca", "in-process"}
 DEFAULT_ZONE = "repository"
 DEFAULT_PROFILE = "session"
