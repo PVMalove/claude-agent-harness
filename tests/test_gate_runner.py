@@ -292,6 +292,23 @@ class GateRunnerTests(unittest.TestCase):
             self.assertNotEqual(result, wrong_python,
                 "must not use root-level .venv — contract is .harness/.venv")
 
+    def test_clean_room_python_resolves_windows_path_under_harness_venv(self) -> None:
+        """On win32 the interpreter lives at .harness/.venv/Scripts/python.exe."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            checkout = Path(temporary) / "checkout"
+            checkout.mkdir()
+
+            win_python = checkout / ".harness" / ".venv" / "Scripts" / "python.exe"
+            win_python.parent.mkdir(parents=True)
+            win_python.write_text("fake", encoding="utf-8")
+
+            with mock.patch("harness.gate_runner.gate_runner.sys") as mock_sys:
+                mock_sys.platform = "win32"
+                mock_sys.executable = "/nonexistent/python3"
+                result = _clean_room_python(checkout)
+
+            self.assertEqual(result, win_python)
+
 
 if __name__ == "__main__":
     unittest.main()
