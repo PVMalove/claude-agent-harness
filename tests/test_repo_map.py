@@ -54,7 +54,10 @@ def test_repo_map_reads_commit_and_is_deterministic(tmp_path: Path) -> None:
     assert result["parser"] == "ast-only"
     assert result["token_estimator_version"] == "utf8-bytes-per-2-v1"
     assert [item["path"] for item in result["files"]] == [
-        "helper.py", "alpha.py", "beta.py", "main.py"
+        "helper.py",
+        "alpha.py",
+        "beta.py",
+        "main.py",
     ]
     assert result["files"][0]["signatures"] == ["def render(value: int) -> str"]
     assert result["edges"] == [
@@ -105,7 +108,9 @@ def test_repo_map_resolves_relative_package_imports(tmp_path: Path) -> None:
     } in result["edges"]
 
 
-def test_repo_map_ranks_normalized_seeds_and_definition_references(tmp_path: Path) -> None:
+def test_repo_map_ranks_normalized_seeds_and_definition_references(
+    tmp_path: Path,
+) -> None:
     repo = tmp_path / "project"
     repo.mkdir()
     _git(repo, "init", "-q")
@@ -128,9 +133,7 @@ def test_repo_map_ranks_normalized_seeds_and_definition_references(tmp_path: Pat
     _git(repo, "commit", "-qm", "fixture")
     commit = _git(repo, "rev-parse", "HEAD")
     policy = tmp_path / "orchestration.json"
-    policy.write_text(
-        json.dumps({"repo_map_policy": {"deny_paths": ["private.py"]}})
-    )
+    policy.write_text(json.dumps({"repo_map_policy": {"deny_paths": ["private.py"]}}))
 
     command = [
         sys.executable,
@@ -157,7 +160,9 @@ def test_repo_map_ranks_normalized_seeds_and_definition_references(tmp_path: Pat
             ]
         )
     )
-    assert normalized == json.loads(subprocess.check_output(command + ["--seed", "seed.py"]))
+    assert normalized == json.loads(
+        subprocess.check_output(command + ["--seed", "seed.py"])
+    )
     assert [item["path"] for item in normalized["files"]] == [
         "seed.py",
         "shared.py",
@@ -210,7 +215,9 @@ def test_repo_map_ranks_normalized_seeds_and_definition_references(tmp_path: Pat
     )
 
 
-def test_repo_map_enforces_project_policy_and_records_provenance(tmp_path: Path) -> None:
+def test_repo_map_enforces_project_policy_and_records_provenance(
+    tmp_path: Path,
+) -> None:
     repo = tmp_path / "project"
     (repo / "src").mkdir(parents=True)
     (repo / "private").mkdir()
@@ -260,7 +267,9 @@ def test_repo_map_enforces_project_policy_and_records_provenance(tmp_path: Path)
     assert result["estimated_tokens"] <= 500
 
 
-def test_repo_map_reports_unparseable_and_oversized_approved_files(tmp_path: Path) -> None:
+def test_repo_map_reports_unparseable_and_oversized_approved_files(
+    tmp_path: Path,
+) -> None:
     repo = tmp_path / "project"
     repo.mkdir()
     _git(repo, "init", "-q")
@@ -296,7 +305,9 @@ def test_repo_map_reports_unparseable_and_oversized_approved_files(tmp_path: Pat
     ]
 
 
-def test_repo_map_uses_project_orchestration_policy_when_present(tmp_path: Path) -> None:
+def test_repo_map_uses_project_orchestration_policy_when_present(
+    tmp_path: Path,
+) -> None:
     repo = tmp_path / "project"
     (repo / "src").mkdir(parents=True)
     _git(repo, "init", "-q")
@@ -490,22 +501,13 @@ def test_repo_map_redacts_signature_names_and_import_edges(tmp_path: Path) -> No
     )
     (repo / "pkg" / "__init__.py").write_text("")
     (repo / "pkg" / "hidden_service.py").write_text(
-        "def run(value: int) -> int:\n"
-        "    return value\n"
+        "def run(value: int) -> int:\n" "    return value\n"
     )
     _git(repo, "add", ".")
     _git(repo, "commit", "-qm", "fixture")
     commit = _git(repo, "rev-parse", "HEAD")
     policy = tmp_path / "orchestration.json"
-    policy.write_text(
-        json.dumps(
-            {
-                "repo_map_policy": {
-                    "redact_symbols": ["hidden_*"]
-                }
-            }
-        )
-    )
+    policy.write_text(json.dumps({"repo_map_policy": {"redact_symbols": ["hidden_*"]}}))
 
     result = json.loads(
         subprocess.check_output(
@@ -523,7 +525,9 @@ def test_repo_map_redacts_signature_names_and_import_edges(tmp_path: Path) -> No
     )
     main_file = next(item for item in result["files"] if item["path"] == "main.py")
     assert main_file["signatures"] == ["def visible(value: int) -> int"]
-    assert not any(edge["target"] == "pkg/hidden_service.py" for edge in result["edges"])
+    assert not any(
+        edge["target"] == "pkg/hidden_service.py" for edge in result["edges"]
+    )
 
 
 def test_repo_map_rejects_malformed_tier_with_remedy(tmp_path: Path) -> None:

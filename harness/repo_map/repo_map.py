@@ -153,7 +153,9 @@ def _git(repo: Path, timeout_seconds: int, *args: str) -> bytes:
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
-        raise ValueError(f"git {' '.join(args)} timed out after {timeout_seconds} seconds") from exc
+        raise ValueError(
+            f"git {' '.join(args)} timed out after {timeout_seconds} seconds"
+        ) from exc
     if result.returncode:
         raise ValueError(result.stderr.decode("utf-8", "replace").strip())
     return result.stdout
@@ -171,9 +173,7 @@ def _allowed(path: str, policy: RepoMapPolicy) -> bool:
     if name in EXCLUDED_NAMES or name.endswith(("~", ".env", ".pem", ".key")):
         return False
     if any(
-        marker in part.casefold()
-        for part in parts
-        for marker in SENSITIVE_PATH_PARTS
+        marker in part.casefold() for part in parts for marker in SENSITIVE_PATH_PARTS
     ):
         return False
     if ".generated." in name.casefold():
@@ -188,7 +188,9 @@ def _allowed(path: str, policy: RepoMapPolicy) -> bool:
 
 
 def _string_patterns(value: object, field: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item for item in value
+    ):
         raise PolicyError(
             f"repo_map_policy.{field} must be a list of non-empty path globs",
             remedy=f"set repo_map_policy.{field} to a list of non-empty glob strings",
@@ -286,7 +288,9 @@ def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
         numeric[field] = _positive_int(value, field)
     max_tokens_value = section.get("max_tokens")
     max_tokens = (
-        _positive_int(max_tokens_value, "max_tokens") if max_tokens_value is not None else None
+        _positive_int(max_tokens_value, "max_tokens")
+        if max_tokens_value is not None
+        else None
     )
     tier = section.get("tier", "reduced")
     if not isinstance(tier, str) or tier not in {"minimal", "reduced"}:
@@ -313,13 +317,14 @@ def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
 
 
 def _symbol_visible(name: str, policy: RepoMapPolicy) -> bool:
-    return (
-        len(name) <= policy.max_symbol_length
-        and not _matches(name, policy.redact_symbols)
+    return len(name) <= policy.max_symbol_length and not _matches(
+        name, policy.redact_symbols
     )
 
 
-def _signature_parts_visible(parts: tuple[ast.AST | None, ...], policy: RepoMapPolicy) -> bool:
+def _signature_parts_visible(
+    parts: tuple[ast.AST | None, ...], policy: RepoMapPolicy
+) -> bool:
     """Reject a signature when any serialized AST name would bypass symbol policy."""
     for part in parts:
         if part is None:
@@ -329,10 +334,14 @@ def _signature_parts_visible(parts: tuple[ast.AST | None, ...], policy: RepoMapP
                 return False
             if isinstance(node, ast.Name) and not _symbol_visible(node.id, policy):
                 return False
-            if isinstance(node, ast.Attribute) and not _symbol_visible(node.attr, policy):
+            if isinstance(node, ast.Attribute) and not _symbol_visible(
+                node.attr, policy
+            ):
                 return False
-            if isinstance(node, ast.keyword) and node.arg is not None and not _symbol_visible(
-                node.arg, policy
+            if (
+                isinstance(node, ast.keyword)
+                and node.arg is not None
+                and not _symbol_visible(node.arg, policy)
             ):
                 return False
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -363,7 +372,9 @@ def _signatures(tree: ast.Module, policy: RepoMapPolicy) -> list[str]:
         elif isinstance(node, ast.ClassDef):
             if not _symbol_visible(node.name, policy):
                 continue
-            if not _signature_parts_visible(tuple(node.bases) + tuple(node.keywords), policy):
+            if not _signature_parts_visible(
+                tuple(node.bases) + tuple(node.keywords), policy
+            ):
                 continue
             bases = ", ".join(ast.unparse(base) for base in node.bases)
             signature = f"class {node.name}({bases})" if bases else f"class {node.name}"
@@ -385,7 +396,8 @@ def _referenced_names(tree: ast.Module, policy: RepoMapPolicy) -> set[str]:
     return {
         node.id
         for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
         and _symbol_visible(node.id, policy)
     }
 
@@ -458,17 +470,28 @@ def build_map(
             "--max-tokens must be positive",
             remedy="pass a positive integer to --max-tokens",
         )
-    if effective_policy.max_tokens is not None and max_tokens > effective_policy.max_tokens:
+    if (
+        effective_policy.max_tokens is not None
+        and max_tokens > effective_policy.max_tokens
+    ):
         raise PolicyError(
             "--max-tokens exceeds repo_map_policy.max_tokens",
             remedy="lower --max-tokens or raise repo_map_policy.max_tokens in the project config",
         )
     pinned = (
-        _git(repo, effective_policy.timeout_seconds, "rev-parse", "--verify", f"{commit}^{{commit}}")
+        _git(
+            repo,
+            effective_policy.timeout_seconds,
+            "rev-parse",
+            "--verify",
+            f"{commit}^{{commit}}",
+        )
         .decode()
         .strip()
     )
-    raw_paths = _git(repo, effective_policy.timeout_seconds, "ls-tree", "-rz", "--name-only", pinned)
+    raw_paths = _git(
+        repo, effective_policy.timeout_seconds, "ls-tree", "-rz", "--name-only", pinned
+    )
     paths = sorted(
         path.decode("utf-8", "surrogateescape")
         for path in raw_paths.split(b"\0")
@@ -491,19 +514,31 @@ def build_map(
             # Git object reads keep the working tree, including untracked files, outside the input.
             object_name = f"{pinned}:{path}"
             size = int(
-                _git(repo, effective_policy.timeout_seconds, "cat-file", "-s", object_name)
+                _git(
+                    repo,
+                    effective_policy.timeout_seconds,
+                    "cat-file",
+                    "-s",
+                    object_name,
+                )
                 .decode()
                 .strip()
             )
             if size > effective_policy.max_file_bytes:
-                files[path] = {"path": path, "signatures": [], "parser_status": "too_large"}
+                files[path] = {
+                    "path": path,
+                    "signatures": [],
+                    "parser_status": "too_large",
+                }
                 diagnostics.append({"code": "file_too_large", "path": path})
                 continue
             content = _git(repo, effective_policy.timeout_seconds, "show", object_name)
             if b"\0" in content:
                 continue
             signatures: list[str] = []
-            parser_status: Literal["ok", "syntax_error", "invalid_encoding", "too_large"] = "ok"
+            parser_status: Literal[
+                "ok", "syntax_error", "invalid_encoding", "too_large"
+            ] = "ok"
             if path.endswith(".py"):
                 try:
                     tree = ast.parse(content.decode("utf-8"), filename=path)
@@ -579,7 +614,10 @@ def build_map(
 
         edges.sort(
             key=lambda edge: (
-                edge["source"], edge["target"], edge["kind"], edge["confidence"]
+                edge["source"],
+                edge["target"],
+                edge["kind"],
+                edge["confidence"],
             )
         )
     else:
@@ -673,7 +711,9 @@ def build_map(
                 if edge["source"] in selected and edge["target"] in selected
             ]
             payload["diagnostics"] = [
-                diagnostic for diagnostic in diagnostics if diagnostic["path"] in selected
+                diagnostic
+                for diagnostic in diagnostics
+                if diagnostic["path"] in selected
             ]
     return encoded
 
@@ -695,7 +735,9 @@ def main() -> int:
             max_tokens = policy.max_tokens
         else:
             max_tokens = DEFAULT_MAX_TOKENS
-        sys.stdout.write(build_map(args.repo, args.commit, max_tokens, args.seed, policy))
+        sys.stdout.write(
+            build_map(args.repo, args.commit, max_tokens, args.seed, policy)
+        )
     except HarnessError as exc:
         return print_and_exit(exc)
     except ValueError as exc:

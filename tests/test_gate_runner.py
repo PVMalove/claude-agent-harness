@@ -3,11 +3,11 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
-import os
 from pathlib import Path
 from typing import Protocol, cast
 from unittest import mock
@@ -44,9 +44,13 @@ class GateRunnerTests(unittest.TestCase):
                 cwd=repo,
                 check=True,
             )
-            (repo / "check.py").write_text("print('valid interpreter')\n", encoding="utf-8")
+            (repo / "check.py").write_text(
+                "print('valid interpreter')\n", encoding="utf-8"
+            )
             subprocess.run(["git", "add", "check.py"], cwd=repo, check=True)
-            subprocess.run(["git", "commit", "-qm", "test: pin candidate"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "commit", "-qm", "test: pin candidate"], cwd=repo, check=True
+            )
             candidate = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=repo,

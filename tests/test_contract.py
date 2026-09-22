@@ -25,13 +25,15 @@ class HarnessEnvironmentContractTests(unittest.TestCase):
     ) -> None:
         requirements = {
             line.strip()
-            for line in (ROOT / "requirements-dev.txt").read_text(
-                encoding="utf-8"
-            ).splitlines()
+            for line in (ROOT / "requirements-dev.txt")
+            .read_text(encoding="utf-8")
+            .splitlines()
             if line.strip() and not line.startswith("#")
         }
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-        self.assertEqual(requirements, set(project["project"]["optional-dependencies"]["dev"]))
+        self.assertEqual(
+            requirements, set(project["project"]["optional-dependencies"]["dev"])
+        )
         lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
         harness_package = next(
             package
@@ -430,7 +432,9 @@ class RepoMapPolicyProblemTests(unittest.TestCase):
             [],
         )
 
-    def test_extended_policy_rejects_invalid_values_with_field_diagnostics(self) -> None:
+    def test_extended_policy_rejects_invalid_values_with_field_diagnostics(
+        self,
+    ) -> None:
         problems = contract._repo_map_policy_problems(
             {
                 "repo_map_policy": {

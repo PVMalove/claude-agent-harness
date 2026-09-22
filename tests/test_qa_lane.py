@@ -585,9 +585,7 @@ class QaLaneRunTests(QaLaneTestCase):
         batch = coordinator._load_batch(self.root, BATCH_ID)
         status = coordinator._load_dispatch_status(self.root, DISPATCH_ID)
         entry = next(
-            item
-            for item in batch["dispatches"]
-            if item["dispatch_id"] == DISPATCH_ID
+            item for item in batch["dispatches"] if item["dispatch_id"] == DISPATCH_ID
         )
         self.assertEqual(entry["state"], "approved")
         self.assertEqual(status["state"], "approved")

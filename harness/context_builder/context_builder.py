@@ -415,9 +415,7 @@ def build_context_package(
     else:
         requested = [path for path in (seed_paths or []) if path in files]
         if not requested:
-            requested = [
-                path for path in ("AGENTS.md", "README.md") if path in files
-            ]
+            requested = [path for path in ("AGENTS.md", "README.md") if path in files]
         if not requested:
             requested = files[:max_starting_files]
         requested = list(dict.fromkeys(requested))[:max_starting_files]

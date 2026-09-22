@@ -87,7 +87,9 @@ class ImmutableReportPersistenceTests(unittest.TestCase):
             ):
                 reports._persist_report(ledger, root, batch, dispatch, report)
 
-            report_path = ledger.records_root() / "reports" / "dispatch-0123456789abcdef.json"
+            report_path = (
+                ledger.records_root() / "reports" / "dispatch-0123456789abcdef.json"
+            )
             self.assertFalse(report_path.exists())
 
 
@@ -1787,7 +1789,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(accepted["next_action"], "risk-assessment")
         self._assess(batch["batch_id"], candidate, changed)
 
-    def test_developer_code_failure_cannot_register_candidate_for_verification(self) -> None:
+    def test_developer_code_failure_cannot_register_candidate_for_verification(
+        self,
+    ) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])
         developer = self._dispatch(batch["batch_id"], "developer")["brief"]

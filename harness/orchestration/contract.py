@@ -582,9 +582,8 @@ def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
     for field in patterns:
         if field in value:
             item = value[field]
-            if (
-                not isinstance(item, list)
-                or any(not isinstance(entry, str) or not entry for entry in item)
+            if not isinstance(item, list) or any(
+                not isinstance(entry, str) or not entry for entry in item
             ):
                 problems.append(
                     f"orchestration repo_map_policy.{field} must be a list of non-empty path globs"
