@@ -28,6 +28,15 @@ If the command is unavailable or cannot read its state, stop and tell the develo
 Do not infer or repair an opt-in capability. Process one ticket to a terminal batch state before
 beginning another.
 
+If another batch blocks the ticket or zone, inspect `batch list --open`, the conflicting dispatch,
+and its decision packet. Tell the developer which batch is blocking and how to finish it normally.
+If its worker can no longer produce a report, show a copyable `batch abandon` command with the
+actual batch ID, the verified operator name, `--approved-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`,
+and a reason grounded in the observed failure. Present this as an operator action requiring their
+explicit approval; never supply `--approved-by` as though they already approved, or execute the
+command for them without that approval. `ledger clean` only removes orphaned evidence, and
+`ledger reset` does not clear an active batch.
+
 ## Coordinator contract
 
 Resolve the tracker ticket, issue branch and blockers without opening a second batch for the same
