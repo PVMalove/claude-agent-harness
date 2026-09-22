@@ -7,6 +7,7 @@ import argparse
 import ast
 import copy
 import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
@@ -16,13 +17,33 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Literal, TypedDict
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from token_estimator import TOKEN_ESTIMATOR_VERSION, estimate_tokens
+# `harness/bin/harness` copies this file verbatim into target projects as
+# `.harness/repo_map/repo_map.py`. Alias `harness` to whichever of the two this
+# file actually lives under so this standalone CLI has the same imports in both
+# source and installed layouts. See docs/adr/0018.
+_HARNESS_ROOT: Path = Path(__file__).resolve().parents[1]
+_REPO_ROOT: Path = _HARNESS_ROOT.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+if _HARNESS_ROOT.name != "harness":
+    _spec = importlib.util.spec_from_file_location(
+        "harness",
+        _HARNESS_ROOT / "__init__.py",
+        submodule_search_locations=[str(_HARNESS_ROOT)],
+    )
+    assert _spec is not None and _spec.loader is not None
+    _pkg = importlib.util.module_from_spec(_spec)
+    sys.modules["harness"] = _pkg
+    _spec.loader.exec_module(_pkg)
+
+from harness.token_estimator import TOKEN_ESTIMATOR_VERSION, estimate_tokens
 
 DEFAULT_MAX_TOKENS = 4000
 DEFAULT_MAX_FILES = 10_000
 DEFAULT_MAX_FILE_BYTES = 2_000_000
 DEFAULT_TIMEOUT_SECONDS = 10
+# Names defined in this many files are too common to provide useful references.
+DEFINITION_FILE_FANOUT_THRESHOLD = 5
 EXCLUDED_DIRS = frozenset(
     {
         ".git",
@@ -242,6 +263,22 @@ def _signatures(tree: ast.Module) -> list[str]:
     return found
 
 
+def _defined_names(tree: ast.Module) -> set[str]:
+    return {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+
+
+def _referenced_names(tree: ast.Module) -> set[str]:
+    return {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+
+
 def _module_paths(paths: set[str]) -> dict[str, str]:
     modules: dict[str, str] = {}
     for path in paths:
@@ -322,6 +359,7 @@ def build_map(
     files: dict[str, FileRecord] = {}
     edges: list[EdgeRecord] = []
     diagnostics: list[Diagnostic] = []
+    parsed_trees: dict[str, ast.Module] = {}
     for path in paths:
         # Git object reads keep the working tree, including untracked files, outside the input.
         object_name = f"{pinned}:{path}"
@@ -349,34 +387,75 @@ def build_map(
                 parser_status = "syntax_error"
                 diagnostics.append({"code": "syntax_error", "path": path})
             else:
+                parsed_trees[path] = tree
                 signatures = _signatures(tree)
                 current_module = path.removesuffix(".py").replace("/", ".")
                 for node in ast.walk(tree):
+                    if not isinstance(node, ast.stmt):
+                        continue
                     for imported_module in _import_modules(node, current_module):
                         target = module_paths.get(imported_module)
                         if target and target != path:
-                            edge: EdgeRecord = {
+                            import_edge: EdgeRecord = {
                                 "source": path,
                                 "target": target,
                                 "kind": "import",
                                 "confidence": "high",
                             }
-                            if edge not in edges:
-                                edges.append(edge)
+                            if import_edge not in edges:
+                                edges.append(import_edge)
         files[path] = {"path": path, "signatures": signatures, "parser_status": parser_status}
 
-    edges.sort(key=lambda edge: (edge["source"], edge["target"], edge["kind"]))
+    definitions: dict[str, set[str]] = {}
+    for path, tree in parsed_trees.items():
+        for name in _defined_names(tree):
+            definitions.setdefault(name, set()).add(path)
+    for path, tree in parsed_trees.items():
+        for name in _referenced_names(tree):
+            definition_paths = definitions.get(name, set())
+            if len(definition_paths) >= DEFINITION_FILE_FANOUT_THRESHOLD:
+                continue
+            targets = sorted(definition_paths - {path})
+            if not targets:
+                continue
+            kind: Literal["unique-name-ref", "ambiguous-name-ref"]
+            confidence: Literal["medium", "low"]
+            kind, confidence = (
+                ("unique-name-ref", "medium")
+                if len(targets) == 1
+                else ("ambiguous-name-ref", "low")
+            )
+            for target in targets:
+                reference_edge: EdgeRecord = {
+                    "source": path,
+                    "target": target,
+                    "kind": kind,
+                    "confidence": confidence,
+                }
+                if reference_edge not in edges:
+                    edges.append(reference_edge)
+
+    edges.sort(
+        key=lambda edge: (
+            edge["source"], edge["target"], edge["kind"], edge["confidence"]
+        )
+    )
     indegree = {path: 0 for path in files}
     for edge in edges:
-        if edge["target"] in indegree:
+        if edge["confidence"] != "low" and edge["target"] in indegree:
             indegree[edge["target"]] += 1
+    effective_seeds = sorted(set(seeds) & files.keys())
     distances: dict[str, int] = {}
-    queue = deque(sorted(set(seeds) & files.keys()))
+    queue = deque(effective_seeds)
     for path in queue:
         distances[path] = 0
     neighbors: dict[str, set[str]] = {path: set() for path in files}
     for edge in edges:
-        if edge["source"] in neighbors and edge["target"] in neighbors:
+        if (
+            edge["confidence"] != "low"
+            and edge["source"] in neighbors
+            and edge["target"] in neighbors
+        ):
             neighbors[edge["source"]].add(edge["target"])
             neighbors[edge["target"]].add(edge["source"])
     while queue:
@@ -388,7 +467,7 @@ def build_map(
     ordered = sorted(
         files,
         key=(lambda path: (distances.get(path, 10**9), path))
-        if seeds
+        if effective_seeds
         else (lambda path: (-indegree[path], path)),
     )
     payload: dict[str, object] = {

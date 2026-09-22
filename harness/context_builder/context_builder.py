@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from ..errors import HarnessError
-from ..token_estimator import estimate_tokens
+from ..token_estimator import estimate_tokens as estimate_tokens
 
 
 class ContextPackageError(HarnessError):
@@ -415,7 +415,7 @@ def build_context_package(
     else:
         requested = [path for path in (seed_paths or []) if path in files]
         if not requested:
-            requested: list[str] = [
+            requested = [
                 path for path in ("AGENTS.md", "README.md") if path in files
             ]
         if not requested:

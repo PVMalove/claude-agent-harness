@@ -102,6 +102,111 @@ def test_repo_map_resolves_relative_package_imports(tmp_path: Path) -> None:
     } in result["edges"]
 
 
+def test_repo_map_ranks_normalized_seeds_and_definition_references(tmp_path: Path) -> None:
+    repo = tmp_path / "project"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "seed.py").write_text("from shared import target\n\ntarget()\n")
+    (repo / "shared.py").write_text("def target() -> None: pass\n")
+    (repo / "medium_user.py").write_text("target()\n")
+    (repo / "first.py").write_text("def ambiguous() -> None: pass\n")
+    (repo / "second.py").write_text("def ambiguous() -> None: pass\n")
+    (repo / "low_user.py").write_text("ambiguous()\n")
+    for index in range(5):
+        source = "def common() -> None: pass\n"
+        if index == 0:
+            source += "common()\n"
+        (repo / f"common_{index}.py").write_text(source)
+    (repo / "common_user.py").write_text("common()\n")
+    (repo / "private.py").write_text("def hidden() -> None: pass\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "fixture")
+    commit = _git(repo, "rev-parse", "HEAD")
+    policy = tmp_path / "orchestration.json"
+    policy.write_text(
+        json.dumps({"repo_map_policy": {"deny_paths": ["private.py"]}})
+    )
+
+    command = [
+        sys.executable,
+        str(CLI),
+        "--repo",
+        str(repo),
+        "--commit",
+        commit,
+        "--policy",
+        str(policy),
+    ]
+    normalized = json.loads(
+        subprocess.check_output(
+            command
+            + [
+                "--seed",
+                "missing.py",
+                "--seed",
+                "seed.py",
+                "--seed",
+                "seed.py",
+                "--seed",
+                "private.py",
+            ]
+        )
+    )
+    assert normalized == json.loads(subprocess.check_output(command + ["--seed", "seed.py"]))
+    assert [item["path"] for item in normalized["files"]] == [
+        "seed.py",
+        "shared.py",
+        "medium_user.py",
+        "common_0.py",
+        "common_1.py",
+        "common_2.py",
+        "common_3.py",
+        "common_4.py",
+        "common_user.py",
+        "first.py",
+        "low_user.py",
+        "second.py",
+    ]
+    assert normalized["edges"] == [
+        {
+            "source": "low_user.py",
+            "target": "first.py",
+            "kind": "ambiguous-name-ref",
+            "confidence": "low",
+        },
+        {
+            "source": "low_user.py",
+            "target": "second.py",
+            "kind": "ambiguous-name-ref",
+            "confidence": "low",
+        },
+        {
+            "source": "medium_user.py",
+            "target": "shared.py",
+            "kind": "unique-name-ref",
+            "confidence": "medium",
+        },
+        {
+            "source": "seed.py",
+            "target": "shared.py",
+            "kind": "import",
+            "confidence": "high",
+        },
+        {
+            "source": "seed.py",
+            "target": "shared.py",
+            "kind": "unique-name-ref",
+            "confidence": "medium",
+        },
+    ]
+    assert not any(
+        edge["source"] == "common_0.py" and edge["kind"].endswith("name-ref")
+        for edge in normalized["edges"]
+    )
+
+
 def test_repo_map_enforces_project_policy_and_records_provenance(tmp_path: Path) -> None:
     repo = tmp_path / "project"
     (repo / "src").mkdir(parents=True)
