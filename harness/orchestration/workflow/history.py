@@ -300,11 +300,9 @@ def _context_package_freshness(
 def _latest_developer_candidate(repo: Path, root: Path, batch: JsonObject) -> str:
     candidates: list[str] = []
     for item in batch.get("dispatches", []):
-        if (
-            item.get("state") != "reported"
-            or item.get("decision", {}).get("decision")
-            not in {"accept", "override-warning"}
-        ):
+        if item.get("state") != "reported" or item.get("decision", {}).get(
+            "decision"
+        ) not in {"accept", "override-warning"}:
             continue
         # Legacy dispatch ledger entries predate the explicit ``purpose`` field.
         # They are developer work dispatches unless they explicitly identify another
@@ -325,9 +323,7 @@ def _latest_developer_candidate(repo: Path, root: Path, batch: JsonObject) -> st
     return candidates[-1]
 
 
-def _latest_registered_verification_candidate(
-    repo: Path, batch: JsonObject
-) -> str:
+def _latest_registered_verification_candidate(repo: Path, batch: JsonObject) -> str:
     """Return the append-only candidate awaiting its read-only verification dispatch."""
     registrations = batch.get("candidate_registrations", [])
     if not isinstance(registrations, list):
@@ -898,7 +894,9 @@ def _validate_dispatch(
                 + INTERNAL_INVARIANT_REMEDY,
             )
     candidate = dispatch.get("candidate_commit")
-    if dispatch["role"] in {"verification", "code-review", "qa"} and not isinstance(candidate, str):
+    if dispatch["role"] in {"verification", "code-review", "qa"} and not isinstance(
+        candidate, str
+    ):
         raise CoordinatorError(
             "review and QA dispatches must pin a candidate commit",
             remedy="pass --candidate-commit for a review or QA dispatch",

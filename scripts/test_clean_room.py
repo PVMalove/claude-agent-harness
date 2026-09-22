@@ -2723,7 +2723,9 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     ):
         sys.exit("QA evidence artifact is not immutable and checksum-addressed")
     artifact_text = artifact.read_text(encoding="utf-8")
-    if not artifact_text.startswith(f"$ {sys.executable} qa_baseline.py\nexit_code=0\n"):
+    if not artifact_text.startswith(
+        f"$ {sys.executable} qa_baseline.py\nexit_code=0\n"
+    ):
         sys.exit("QA evidence artifact does not contain the full gate output")
     if "token=visible" in artifact_text or "token=<redacted>" not in artifact_text:
         sys.exit("QA evidence artifact was not sanitised")

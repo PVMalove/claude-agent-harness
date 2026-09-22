@@ -364,7 +364,9 @@ def main() -> None:
     check_vendor_pin()
     check_no_dispatch_specific_data_in_always_sent_files()
 
-    mypy_check = subprocess.run([sys.executable, "-m", "mypy", "--version"], capture_output=True)
+    mypy_check = subprocess.run(
+        [sys.executable, "-m", "mypy", "--version"], capture_output=True
+    )
     if mypy_check.returncode == 0:
         run_ok([sys.executable, "-m", "mypy"], cwd=ROOT)
     else:

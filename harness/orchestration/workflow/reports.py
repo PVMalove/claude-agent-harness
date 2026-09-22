@@ -78,6 +78,7 @@ from harness.orchestration.ledger.lifecycle import (
     BatchRecord,
     CheckpointRecord,
     DispatchStatusRecord,
+    LedgerError,
     LifecycleLedger,
 )
 from harness.orchestration.runtime_attestation import (
@@ -804,6 +805,10 @@ def _persist_report(
     try:
         _write_text_exclusive(ledger, report_md, _report_markdown(report))
     except CoordinatorError as exc:
+        try:
+            ledger.delete(report_json, reason="discard incomplete immutable report")
+        except LedgerError as cleanup:
+            raise CoordinatorError(cleanup.message, remedy=cleanup.remedy) from exc
         raise CoordinatorError(
             "refusing to overwrite immutable Markdown report",
             remedy=f"a Markdown report already exists at this immutable path -- {INTERNAL_INVARIANT_REMEDY}",

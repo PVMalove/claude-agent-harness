@@ -18,12 +18,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install dev dependencies
-        run: pip install -r requirements-dev.txt
+      - name: Bootstrap harness environment
+        run: make bootstrap
       - name: Make script executable
         run: chmod +x scripts/verify.py
       - name: Verify harness and clean-room install
-        run: python scripts/verify.py
+        run: make verify
       - name: Check public Git metadata
         if: github.event_name == 'pull_request'
         env:
@@ -31,10 +31,12 @@ jobs:
           COMMIT_RANGE: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
         run: |
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
-          python scripts/check_public_metadata.py --commit-range "$COMMIT_RANGE" --pr-body-file "$RUNNER_TEMP/pr-body.md"
+          .harness/.venv/bin/python scripts/check_public_metadata.py --commit-range "$COMMIT_RANGE" --pr-body-file "$RUNNER_TEMP/pr-body.md"
       - name: Diff coverage of changed Python lines
         if: github.event_name == 'pull_request'
-        run: python scripts/diff_coverage.py
+        env:
+          DIFF_COVERAGE_BASE: ${{ github.event.pull_request.base.sha }}
+        run: .harness/.venv/bin/python scripts/diff_coverage.py
 
   verify-windows:
     runs-on: windows-latest
@@ -43,7 +45,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install dev dependencies
-        run: pip install -r requirements-dev.txt
+      - name: Bootstrap harness environment
+        run: make bootstrap
       - name: Verify harness and clean-room install
-        run: python scripts/verify.py
+        run: make verify

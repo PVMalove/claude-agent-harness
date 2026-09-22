@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Iterator
@@ -164,6 +166,45 @@ class GateResult:
         return all(check["result"] == "pass" for check in self.checks)
 
 
+def _clean_room_python(checkout: Path) -> Path:
+    """Choose a deterministic interpreter without consulting PATH."""
+    venv_python = (
+        checkout / ".harness" / ".venv" / "Scripts" / "python.exe"
+        if sys.platform == "win32"
+        else checkout / ".harness" / ".venv" / "bin" / "python"
+    )
+    if venv_python.is_file():
+        return venv_python
+    interpreter = Path(sys.executable)
+    if interpreter.is_file():
+        return interpreter
+    raise GateRunnerError(
+        "clean-room QA has no usable explicit Python interpreter",
+        remedy="create the project's .harness/.venv before QA or run the coordinator with a valid Python interpreter",
+    )
+
+
+def _prepared_command(
+    command: str | list[str], checkout: Path
+) -> tuple[str | list[str], bool]:
+    """Replace a bare Python launcher before invoking a clean-room command."""
+    original = command
+    if isinstance(command, str):
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            return command, True
+        if not tokens:
+            return command, True
+        command = tokens
+    if not command:
+        return command, isinstance(command, str)
+    launcher = Path(command[0]).name.lower()
+    if launcher not in {"python", "python3", "py"}:
+        return original, isinstance(original, str)
+    return [str(_clean_room_python(checkout)), *command[1:]], False
+
+
 def sanitise(text: str) -> str:
     """Redact secret-shaped values before they enter an evidence artifact."""
     for pattern, replacement in SENSITIVE_OUTPUT:
@@ -187,15 +228,16 @@ def run_gate(
     started: float = time.monotonic()
     with policy.checkout() as checkout:
         for command in commands:
+            prepared, shell = _prepared_command(command, checkout)
             command_text = (
-                command
-                if isinstance(command, str)
-                else subprocess.list2cmdline(command)
+                prepared
+                if isinstance(prepared, str)
+                else subprocess.list2cmdline(prepared)
             )
             result: subprocess.CompletedProcess[str] = subprocess.run(
-                command,
+                prepared,
                 cwd=checkout,
-                shell=isinstance(command, str),
+                shell=shell,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
