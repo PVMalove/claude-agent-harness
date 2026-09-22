@@ -750,6 +750,18 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
 
 ORCHESTRATION_CONFIG_REL = Path(".harness/orchestration.json")
 ORCHESTRATION_SCHEMA_REL = Path(".harness/orchestration/orchestration.schema.json")
+
+
+def _health_remedy(problem: str) -> str | None:
+    """Add an actionable hint for policy diagnostics without echoing policy contents."""
+    if problem.startswith("orchestration repo_map_policy"):
+        return (
+            "fix the repo_map_policy value in .harness/orchestration.json "
+            "according to .harness/orchestration/orchestration.schema.json, then rerun harness health"
+        )
+    return None
+
+
 def _non_empty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value)
 
@@ -1284,6 +1296,9 @@ def cmd_health(args: argparse.Namespace) -> int:
     if problems:
         for problem in problems:
             print(f"ERROR {problem}")
+            remedy = _health_remedy(problem)
+            if remedy:
+                print(f"REMEDY {remedy}")
         return 1
     skill_count = len(skill_inventory(repo))
     print(f"files: healthy ({skill_count} skills, {integration_count} integrations): {repo}")
