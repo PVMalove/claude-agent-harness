@@ -176,15 +176,20 @@
     "repo_map_policy": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Optional enterprise policy for the portable Repo Map CLI. All paths are repository-relative globs; redact_paths excludes both the path and its source from output.",
+      "description": "Optional enterprise policy for the portable Repo Map CLI. All paths are repository-relative globs; path and symbol redactions are applied before parsing and serialization, and policy contents never appear in Repo Map provenance.",
       "properties": {
         "allow_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "deny_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "redact_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "redact_symbols": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "max_files": {"type": "integer", "minimum": 1, "default": 10000},
         "max_file_bytes": {"type": "integer", "minimum": 1, "default": 2000000},
+        "max_path_length": {"type": "integer", "minimum": 1, "default": 4096},
+        "max_symbol_length": {"type": "integer", "minimum": 1, "default": 256},
+        "max_signature_length": {"type": "integer", "minimum": 1, "default": 2048},
         "timeout_seconds": {"type": "integer", "minimum": 1, "default": 10},
-        "max_tokens": {"type": "integer", "minimum": 1}
+        "max_tokens": {"type": "integer", "minimum": 1},
+        "tier": {"enum": ["minimal", "reduced"], "default": "reduced"}
       }
     },
     "continuation_policy": {

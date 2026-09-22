@@ -555,27 +555,47 @@ def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
         return []
     if not isinstance(value, dict):
         return ["orchestration repo_map_policy must be an object"]
-    numeric = {"max_files", "max_file_bytes", "timeout_seconds", "max_tokens"}
-    patterns = {"allow_paths", "deny_paths", "redact_paths"}
-    unknown = sorted(set(value) - numeric - patterns)
+    numeric = {
+        "max_files",
+        "max_file_bytes",
+        "max_path_length",
+        "max_symbol_length",
+        "max_signature_length",
+        "timeout_seconds",
+        "max_tokens",
+    }
+    patterns = {"allow_paths", "deny_paths", "redact_paths", "redact_symbols"}
+    enum_values = {"tier": {"minimal", "reduced"}}
+    unknown = sorted(set(value) - numeric - patterns - set(enum_values))
     problems: list[str] = []
     if unknown:
         problems.append(
             f"orchestration repo_map_policy has unknown field(s): {', '.join(unknown)}"
         )
     for field in numeric:
-        if field in value and not _is_int(value[field]):
+        if field in value and (
+            not _is_int(value[field]) or cast(int, value[field]) < 1
+        ):
             problems.append(
                 f"orchestration repo_map_policy.{field} must be a positive integer"
             )
     for field in patterns:
-        item = value.get(field)
-        if item is not None and (
-            not isinstance(item, list)
-            or any(not isinstance(entry, str) or not entry for entry in item)
+        if field in value:
+            item = value[field]
+            if (
+                not isinstance(item, list)
+                or any(not isinstance(entry, str) or not entry for entry in item)
+            ):
+                problems.append(
+                    f"orchestration repo_map_policy.{field} must be a list of non-empty path globs"
+                )
+    for field, choices in enum_values.items():
+        if field in value and (
+            not isinstance(value[field], str) or value[field] not in choices
         ):
             problems.append(
-                f"orchestration repo_map_policy.{field} must be a list of non-empty path globs"
+                f"orchestration repo_map_policy.{field} must be one of: "
+                + ", ".join(sorted(choices))
             )
     return problems
 
