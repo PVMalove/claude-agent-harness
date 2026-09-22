@@ -1,4 +1,4 @@
-# Repo Map: offline parser bundle, stdlib Python и policy-управляемая деградация
+# Repo Map: offline parser bundle, изолированное Python-окружение и policy-управляемая деградация
 
 Статус: accepted.
 
@@ -8,8 +8,10 @@
 `rg` и чтение, а Context Package раскрывает только Python-импорты на один уровень через regex и
 stdlib `ast` (`harness/context_builder/context_builder.py`); для остальных языков берутся первые
 30 строк. Обзора всего репозитория за несколько тысяч токенов нет. Целевые монолиты написаны не
-только на Python, а `pyproject.toml` держит `dependencies = []`, и [ADR 0018](0018-harness-as-importable-package-without-pip-install.md)
-отказался от pip-инфраструктуры. Сравнение с Aider/Cursor: Repo Map строится парсером, а не regex.
+только на Python. Харнесс может использовать сторонние Python-библиотеки во всех своих Python-путях;
+прямые зависимости перечислены в `requirements-dev.txt`, а `uv.lock` фиксирует их разрешённый граф.
+[ADR 0018](0018-harness-as-importable-package-without-pip-install.md) по-прежнему запрещает
+упаковывать сам харнесс в wheel. Сравнение с Aider/Cursor: Repo Map строится парсером, а не regex.
 
 ## Действующий контракт
 
@@ -26,10 +28,12 @@ stdlib `ast` (`harness/context_builder/context_builder.py`); для осталь
 - **Поставка парсеров** — Python всегда разбирается встроенным `ast`; tree-sitter нужен только для
   TS/JS, Go, Java и C#. Dispatch и `context_builder` никогда не разрешают зависимости через сеть.
   Полный режим получает проверенный parser bundle из lock+hash артефактов, локального cache или
-  разрешённого внутреннего registry. Bundle релиза формирует SBOM и проходит CVE-проверку; PEP 723/
-  `uv run` допустимы лишь как developer bootstrap вне dispatch hot path. `.venv`,
-  `requirements.txt` и `uv add` в целевом проекте не создаются. `uv run` применяется только при
-  developer bootstrap вне dispatch hot path.
+  разрешённого внутреннего registry. Bundle релиза формирует SBOM и проходит CVE-проверку.
+  Харнесс использует полноценное Python-окружение со сторонними библиотеками из
+  `requirements-dev.txt`; оно создаётся только в `.harness/.venv` командой `make bootstrap`.
+  Разрешение и установка зависимостей происходят при bootstrap, а не во время Dispatch или Context
+  Package: эти пути не обращаются к сети и не создают `.venv`, `requirements.txt` или `uv add` в
+  корне целевого проекта.
 - **Уровни качества и data policy:** `full` содержит parser-backed сигнатуры и связи поддержанных
   языков; `reduced` — Python `ast` и path-only сведения прочих; `minimal` — только
   policy-approved Path inventory. До сериализации применяются project-owned allowlist/denylist,
@@ -58,8 +62,9 @@ stdlib `ast` (`harness/context_builder/context_builder.py`); для осталь
 Состав bundle, пины, матрица wheels, формат поставки, правила SBOM/CVE и typed-граница уточнены
 [ADR 0024](0024-repo-map-parser-bundle-composition-and-delivery.md).
 
-Уточняет ADR 0018: пакет остаётся без pip-установки и `[build-system]`; полная карта получает
-релизный offline parser bundle, а не runtime-зависимость через `uv run`. Уточняет
+Уточняет ADR 0018: пакет остаётся без установки в wheel и `[build-system]`, но харнесс может
+использовать сторонние библиотеки из собственного `.harness/.venv`; полная карта получает релизный
+offline parser bundle, а не runtime-зависимость через `uv run`. Уточняет
 [ADR 0016](0016-context-package-checkpoint-continuation-and-base-commit-gate.md): Context Package
 получает `parser_provenance` и quality tier, а граф символов строится из Repo Map.
 
@@ -68,9 +73,9 @@ stdlib `ast` (`harness/context_builder/context_builder.py`); для осталь
 - Tree-sitter как обязательная online-зависимость с fail-fast — один путь кода, но ломает Context
   Package в проектах без установки и расширяет supply-chain perimeter на каждый dispatch.
 - `harness parsers install` с настраиваемой командой по стеку — `uv add {packages}` правит
-  `pyproject.toml`, `uv.lock` и создаёт `.venv` в целевом проекте (в не-Python монолите — Python-
-  проект с нуля); в `project.json` нет `stack`, нужны новые поля и синхронная правка схемы,
-  валидатора, шаблона и guide.
+  `pyproject.toml` и lock целевого проекта, хотя зависимости харнесса должны оставаться в его
+  собственном manifest и `.harness/.venv`; в `project.json` нет `stack`, нужны новые поля и
+  синхронная правка схемы, валидатора, шаблона и guide.
 - universal-ctags/ast-grep — не Python-зависимость, но нужен бинарь в PATH, а ctags почти не даёт
   ссылок.
 - Только stdlib (`ast` + regex) — нулевые зависимости, но качество для не-Python языков низкое.
@@ -80,6 +85,7 @@ stdlib `ast` (`harness/context_builder/context_builder.py`); для осталь
 
 - Полная карта требует установленного проверенного bundle, а не `uv`; portable runtime безопасно
   возвращает `reduced`/`minimal`, enterprise policy принимает или ограничивает dispatch.
+- Окружение харнесса — только `.harness/.venv`; корневая `.venv` не создаётся и не используется.
 - Пины, hashes, SBOM и CVE-статус меняются только осознанным релизом харнесса и входят в provenance.
 - Польза измеряется на фиксированном наборе задач, одинаковых моделях и commit. Считаются все
   prompt input tokens (включая карту, повторные чтения, retry и failed sessions), latency, cache

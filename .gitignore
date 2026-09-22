@@ -14,3 +14,6 @@ __pycache__/
 /docs/tasks/
 /docs/reports/
 .venv/
+venv/
+*.egg-info/
+build/

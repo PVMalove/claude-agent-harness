@@ -955,7 +955,7 @@ def _run(test_root: Path):
         "backend_zones": {"backend": {"paths": ["services/**"]}},
         "concurrency_budget": 2,
         "developer_verification_commands": ["python developer_check.py"],
-        "verification_commands": ["python qa_baseline.py"],
+        "verification_commands": [f"{sys.executable} qa_baseline.py"],
     }
     orchestration_config.write_text(
         json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8"
@@ -1051,7 +1051,7 @@ else:
         "resolved_runtime": "codex",
         "definition_of_done": ["produce the requested backend change"],
         "prohibited_changes": ["no merge or production operations"],
-        "verification_commands": ["python qa_baseline.py"],
+        "verification_commands": [f"{sys.executable} qa_baseline.py"],
         "required_gates": ["code review"],
         "dependencies": ["approved project config"],
         "coordinator_approval": {
@@ -2056,7 +2056,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "changed_files": [],
         "checks_run": [
             {
-                "command": "python qa_baseline.py",
+                "command": f"{sys.executable} qa_baseline.py",
                 "result": "pass",
                 "evidence": "repository evidence inspected",
             }
@@ -2512,7 +2512,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "changed_files": [],
         "checks_run": [
             {
-                "command": "python qa_baseline.py",
+                "command": f"{sys.executable} qa_baseline.py",
                 "result": "pass",
                 "evidence": "review scope inspected",
             }
@@ -2723,7 +2723,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     ):
         sys.exit("QA evidence artifact is not immutable and checksum-addressed")
     artifact_text = artifact.read_text(encoding="utf-8")
-    if not artifact_text.startswith("$ python qa_baseline.py\nexit_code=0\n"):
+    if not artifact_text.startswith(f"$ {sys.executable} qa_baseline.py\nexit_code=0\n"):
         sys.exit("QA evidence artifact does not contain the full gate output")
     if "token=visible" in artifact_text or "token=<redacted>" not in artifact_text:
         sys.exit("QA evidence artifact was not sanitised")
@@ -3206,7 +3206,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
-                    else "python qa_baseline.py",
+                    else f"{sys.executable} qa_baseline.py",
                     "result": "pass",
                     "evidence": "1 passed",
                 }
@@ -3369,7 +3369,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "changed_files": [],
         "checks_run": [
             {
-                "command": "python qa_baseline.py",
+                "command": f"{sys.executable} qa_baseline.py",
                 "result": "pass",
                 "evidence": "review scope inspected",
             }
@@ -3603,7 +3603,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "changed_files": [],
         "checks_run": [
             {
-                "command": "python qa_baseline.py",
+                "command": f"{sys.executable} qa_baseline.py",
                 "result": "pass",
                 "evidence": "fix diff inspected",
             }
@@ -3817,7 +3817,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
-                    else "python qa_baseline.py",
+                    else f"{sys.executable} qa_baseline.py",
                     "result": "pass",
                     "evidence": "1 passed",
                 }
@@ -4038,7 +4038,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
-                    else "python qa_baseline.py",
+                    else f"{sys.executable} qa_baseline.py",
                     "result": "pass",
                     "evidence": "1 passed",
                 }
@@ -4291,7 +4291,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "changed_files": [],
         "checks_run": [
             {
-                "command": "python qa_baseline.py",
+                "command": f"{sys.executable} qa_baseline.py",
                 "result": "pass",
                 "evidence": "review scope inspected",
             }
@@ -4552,7 +4552,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
-                    else "python qa_baseline.py",
+                    else f"{sys.executable} qa_baseline.py",
                     "result": "pass",
                     "evidence": "1 passed",
                 }
@@ -5447,7 +5447,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
-                    else "python qa_baseline.py",
+                    else f"{sys.executable} qa_baseline.py",
                     "result": "pass",
                     "evidence": "1 passed",
                 }

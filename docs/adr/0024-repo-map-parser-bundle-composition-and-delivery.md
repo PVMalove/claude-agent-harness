@@ -31,15 +31,16 @@ mypy 2.3.1, pip-audit 2.10.1, cyclonedx-py 7.4.0). Полный режим ос�
   без сети. Wheels распаковываются в изолированный каталог bundle вне целевого проекта (кандидат — `pip install
   --no-index --find-links --require-hashes --only-binary=:all: --target`, не проверен); момент (при установке
   харнесса или при первом запуске) и место распаковки определяет #272. Это относится к bundle, а не к пакету
-  харнесса: «пакет без pip-установки» из ADR 0018 сохраняется, `.venv`, `requirements.txt` и правка
-  `pyproject.toml` целевого проекта по-прежнему запрещены.
+  харнесса: «пакет без pip-установки» из ADR 0018 сохраняется. Харнесс использует собственное
+  окружение `.harness/.venv` и зависимости из `requirements-dev.txt`; `.venv`, `requirements.txt`
+  и правка `pyproject.toml` целевого проекта по-прежнему запрещены.
   Внутренний registry (вариант B) — разрешённый источник для enterprise-профиля с тем же lock; vendoring
   wheels в репозиторий (вариант C) отвергнут.
 - **Typed-граница** ([ADR 0020](0020-mypy-strict-disallow-any-explicit.md)). Во всех шести пакетах есть
   `py.typed` и `.pyi`; код разбора проходит `mypy --strict --disallow-any-explicit` (`Node.text` —
   `bytes | None`, проверка на `None` обязательна). Без установленного bundle те же импорты дают
   `import-not-found`, поэтому модуль с `import tree_sitter*` не входит в `files` основного mypy-прогона
-  (в CI ставится только `.[dev]`); он проверяется отдельным mypy-прогоном в изолированной CI-задаче с
+  (в CI ставится `requirements-dev.txt`); он проверяется отдельным mypy-прогоном в изолированной CI-задаче с
   установленным bundle. Типы tree-sitter не пересекают границу процесса: `context_builder` видит
   только типизированный JSON-контракт.
 - **SBOM.** Релиз формирует CycloneDX 1.6 (`cyclonedx-py`) по lock/установленному bundle. Инструмент
