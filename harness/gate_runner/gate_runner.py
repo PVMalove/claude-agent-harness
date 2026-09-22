@@ -169,9 +169,9 @@ class GateResult:
 def _clean_room_python(checkout: Path) -> Path:
     """Choose a deterministic interpreter without consulting PATH."""
     venv_python = (
-        checkout / ".venv" / "Scripts" / "python.exe"
+        checkout / ".harness" / ".venv" / "Scripts" / "python.exe"
         if sys.platform == "win32"
-        else checkout / ".venv" / "bin" / "python"
+        else checkout / ".harness" / ".venv" / "bin" / "python"
     )
     if venv_python.is_file():
         return venv_python
@@ -180,7 +180,7 @@ def _clean_room_python(checkout: Path) -> Path:
         return interpreter
     raise GateRunnerError(
         "clean-room QA has no usable explicit Python interpreter",
-        remedy="create the project's .venv before QA or run the coordinator with a valid Python interpreter",
+        remedy="create the project's .harness/.venv before QA or run the coordinator with a valid Python interpreter",
     )
 
 

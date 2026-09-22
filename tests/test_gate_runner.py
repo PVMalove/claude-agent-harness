@@ -17,6 +17,7 @@ from harness.gate_runner.gate_runner import (
     CleanRoomPolicy,
     GateRunnerError,
     LocalPolicy,
+    _clean_room_python,
     run_gate,
 )
 
@@ -258,6 +259,38 @@ class GateRunnerTests(unittest.TestCase):
                         )
                     self.assertIn("contains mutable files", raised.exception.message)
                     self.assertIn(expected_remedy, raised.exception.remedy)
+
+    def test_clean_room_python_prefers_harness_venv_over_root_venv(self) -> None:
+        """Regression: the contract is .harness/.venv, not <checkout>/.venv."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            checkout = Path(temporary) / "checkout"
+            checkout.mkdir()
+
+            # Create .harness/.venv/bin/python (the contract path)
+            harness_python = checkout / ".harness" / ".venv" / "bin" / "python"
+            harness_python.parent.mkdir(parents=True)
+            harness_python.write_text("#!/bin/sh\necho harness-venv\n", encoding="utf-8")
+            harness_python.chmod(0o755)
+
+            result = _clean_room_python(checkout)
+            self.assertEqual(result, harness_python)
+
+    def test_clean_room_python_does_not_use_root_level_venv(self) -> None:
+        """The function must NOT look for .venv in the checkout root."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            checkout = Path(temporary) / "checkout"
+            checkout.mkdir()
+
+            # Create ONLY root-level .venv (the WRONG path)
+            wrong_python = checkout / ".venv" / "bin" / "python"
+            wrong_python.parent.mkdir(parents=True)
+            wrong_python.write_text("#!/bin/sh\necho wrong\n", encoding="utf-8")
+            wrong_python.chmod(0o755)
+
+            # With no .harness/.venv, should fall back to sys.executable, not root .venv
+            result = _clean_room_python(checkout)
+            self.assertNotEqual(result, wrong_python,
+                "must not use root-level .venv — contract is .harness/.venv")
 
 
 if __name__ == "__main__":
