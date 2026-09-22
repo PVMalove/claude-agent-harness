@@ -7,7 +7,21 @@ python .harness/repo_map/repo_map.py --repo . --commit "$(git rev-parse HEAD)"
 ```
 
 The JSON output conforms to `repo_map.schema.json`. It includes parser provenance, the policy hash,
-selected files, import edges, diagnostics, and a conservative token estimate.
+selected files, dependency edges, diagnostics, and a conservative token estimate.
+
+`--seed` accepts repository-relative paths. The CLI keeps only existing, policy-approved seeds,
+then deduplicates and sorts them. With effective seeds, files are ordered by their breadth-first
+distance through high- and medium-confidence edges, then by path. Without effective seeds, files
+are ordered by high- and medium-confidence in-degree, then by path.
+
+Edges are deterministic and sorted by source, target, kind, and confidence:
+
+- `import` / `high` for resolved Python imports;
+- `unique-name-ref` / `medium` when an AST name reference has one definition in another file;
+- `ambiguous-name-ref` / `low` when it has two through four definitions in other files.
+
+Names defined in five or more files are ignored. Low-confidence edges remain in the output but do
+not affect file ranking.
 
 ## Enterprise policy
 

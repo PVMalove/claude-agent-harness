@@ -33,7 +33,21 @@
       }
     },
     "files": {"type": "array"},
-    "edges": {"type": "array"},
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "target", "kind", "confidence"],
+        "properties": {
+          "source": {"type": "string"},
+          "target": {"type": "string"},
+          "kind": {
+            "enum": ["import", "unique-name-ref", "ambiguous-name-ref"]
+          },
+          "confidence": {"enum": ["high", "medium", "low"]}
+        }
+      }
+    },
     "diagnostics": {"type": "array"},
     "estimated_tokens": {"type": "integer", "minimum": 0}
   }
