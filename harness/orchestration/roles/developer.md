@@ -23,3 +23,8 @@ error only. Keep full output in its local artifact path, never in the handoff or
 
 Locate the seam through the Context Package's `starting_files` and `symbol_graph` before searching
 the repository; a failing test is re-run by its node id through the bounded wrapper, not the full suite.
+
+Follow the immutable brief's ordered commit plan. Each commit implements one independently
+reviewable logical change and is reported against its plan entry with the files it contains. A single
+commit is valid only when the plan records one inseparable unit. For recovery, retain the accepted
+plan or stop for a newly approved replacement before creating an affected commit.

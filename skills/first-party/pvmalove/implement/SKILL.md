@@ -41,6 +41,14 @@ guess where its report belongs writes it outside the project. The coordinator ne
 evidence, not permission to advance. Architect precedes developer; accepted candidate proceeds
 through the required review/QA/publish gates.
 
+Before every write-role dispatch, record an ordered commit plan in the immutable brief. Each entry
+names one independently reviewable logical change and its expected files; use one entry only when
+the entire approved change is inseparable. A recovery preserves the accepted plan, or replaces it
+with a newly approved plan that explains the changed boundary. The developer's completion report
+maps every created commit to exactly one entry and explains any approved deviation. Do not collapse
+unrelated implementation, tests, documentation, or type-only repairs into a recovery commit merely
+because they are staged together.
+
 Every transition needs explicit approval, and approval means the operator answered — not that this
 session concluded the next step was obvious. Never write `--approved-by` on the operator's behalf,
 and never narrate a decision they did not make: show the decision packet, ask, and wait. An accepted
