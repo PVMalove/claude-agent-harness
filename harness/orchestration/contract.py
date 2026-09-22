@@ -590,7 +590,9 @@ def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
                     f"orchestration repo_map_policy.{field} must be a list of non-empty path globs"
                 )
     for field, choices in enum_values.items():
-        if field in value and value[field] not in choices:
+        if field in value and (
+            not isinstance(value[field], str) or value[field] not in choices
+        ):
             problems.append(
                 f"orchestration repo_map_policy.{field} must be one of: "
                 + ", ".join(sorted(choices))

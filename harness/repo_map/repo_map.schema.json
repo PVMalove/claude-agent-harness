@@ -25,7 +25,14 @@
     "parser_provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["policy_mode", "policy_sha256", "max_file_bytes", "max_files"],
+      "required": [
+        "policy_mode",
+        "policy_sha256",
+        "max_file_bytes",
+        "max_files",
+        "timeout_seconds",
+        "max_tokens"
+      ],
       "properties": {
         "policy_mode": {"enum": ["portable", "enforced"]},
         "policy_sha256": {"type": ["string", "null"]},
@@ -34,7 +41,9 @@
         "max_files": {"type": "integer", "minimum": 1},
         "max_path_length": {"type": "integer", "minimum": 1},
         "max_symbol_length": {"type": "integer", "minimum": 1},
-        "max_signature_length": {"type": "integer", "minimum": 1}
+        "max_signature_length": {"type": "integer", "minimum": 1},
+        "timeout_seconds": {"type": "integer", "minimum": 1},
+        "max_tokens": {"type": "integer", "minimum": 1}
       }
     },
     "files": {

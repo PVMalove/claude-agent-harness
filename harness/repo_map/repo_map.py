@@ -15,7 +15,7 @@ from collections import deque
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, cast
 
 # `harness/bin/harness` copies this file verbatim into target projects as
 # `.harness/repo_map/repo_map.py`. Alias `harness` to whichever of the two this
@@ -289,11 +289,12 @@ def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
         _positive_int(max_tokens_value, "max_tokens") if max_tokens_value is not None else None
     )
     tier = section.get("tier", "reduced")
-    if tier not in {"minimal", "reduced"}:
+    if not isinstance(tier, str) or tier not in {"minimal", "reduced"}:
         raise _policy_error(
             "repo_map_policy.tier must be one of: minimal, reduced",
             "set repo_map_policy.tier to 'minimal' or 'reduced'",
         )
+    tier = cast(Literal["minimal", "reduced"], tier)
     return RepoMapPolicy(
         allow_paths=patterns["allow_paths"],
         deny_paths=patterns["deny_paths"],
@@ -318,6 +319,28 @@ def _symbol_visible(name: str, policy: RepoMapPolicy) -> bool:
     )
 
 
+def _signature_parts_visible(parts: tuple[ast.AST | None, ...], policy: RepoMapPolicy) -> bool:
+    """Reject a signature when any serialized AST name would bypass symbol policy."""
+    for part in parts:
+        if part is None:
+            continue
+        for node in ast.walk(part):
+            if isinstance(node, ast.arg) and not _symbol_visible(node.arg, policy):
+                return False
+            if isinstance(node, ast.Name) and not _symbol_visible(node.id, policy):
+                return False
+            if isinstance(node, ast.Attribute) and not _symbol_visible(node.attr, policy):
+                return False
+            if isinstance(node, ast.keyword) and node.arg is not None and not _symbol_visible(
+                node.arg, policy
+            ):
+                return False
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if not _symbol_visible(node.value, policy):
+                    return False
+    return True
+
+
 def _signatures(tree: ast.Module, policy: RepoMapPolicy) -> list[str]:
     found: list[str] = []
     for node in tree.body:
@@ -332,11 +355,15 @@ def _signatures(tree: ast.Module, policy: RepoMapPolicy) -> list[str]:
                 ast.Constant(value=Ellipsis) if item is not None else None
                 for item in args.kw_defaults
             ]
+            if not _signature_parts_visible((args, node.returns), policy):
+                continue
             signature = f"{prefix} {node.name}({ast.unparse(args)}){annotation}"
             if len(signature) <= policy.max_signature_length:
                 found.append(signature)
         elif isinstance(node, ast.ClassDef):
             if not _symbol_visible(node.name, policy):
+                continue
+            if not _signature_parts_visible(tuple(node.bases) + tuple(node.keywords), policy):
                 continue
             bases = ", ".join(ast.unparse(base) for base in node.bases)
             signature = f"class {node.name}({bases})" if bases else f"class {node.name}"
@@ -388,6 +415,14 @@ def _import_modules(node: ast.stmt, module: str) -> list[str]:
             f"{base}.{alias.name}" for alias in node.names if alias.name != "*"
         )
     return candidates
+
+
+def _module_visible(module: str, policy: RepoMapPolicy) -> bool:
+    """Apply symbol length/redaction to a dotted import before exposing its edge."""
+    parts = tuple(part for part in module.split(".") if part)
+    return _symbol_visible(module, policy) and all(
+        _symbol_visible(part, policy) for part in parts
+    )
 
 
 def _encode(payload: dict[str, object]) -> str:
@@ -486,8 +521,19 @@ def build_map(
                         if not isinstance(node, ast.stmt):
                             continue
                         for imported_module in _import_modules(node, current_module):
+                            if not _module_visible(imported_module, effective_policy):
+                                continue
                             target = module_paths.get(imported_module)
-                            if target and target != path:
+                            target_module = (
+                                target.removesuffix(".py").replace("/", ".")
+                                if target
+                                else ""
+                            )
+                            if (
+                                target
+                                and target != path
+                                and _module_visible(target_module, effective_policy)
+                            ):
                                 import_edge: EdgeRecord = {
                                     "source": path,
                                     "target": target,
@@ -589,6 +635,8 @@ def build_map(
             "max_path_length": effective_policy.max_path_length,
             "max_symbol_length": effective_policy.max_symbol_length,
             "max_signature_length": effective_policy.max_signature_length,
+            "timeout_seconds": effective_policy.timeout_seconds,
+            "max_tokens": max_tokens,
         },
         "files": [],
         "edges": [],

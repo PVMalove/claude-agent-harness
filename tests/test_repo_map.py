@@ -255,6 +255,8 @@ def test_repo_map_enforces_project_policy_and_records_provenance(tmp_path: Path)
     assert [item["path"] for item in result["files"]] == ["src/public.py"]
     assert result["parser_provenance"]["policy_sha256"]
     assert result["parser_provenance"]["policy_mode"] == "enforced"
+    assert result["parser_provenance"]["timeout_seconds"] == 5
+    assert result["parser_provenance"]["max_tokens"] == 500
     assert result["estimated_tokens"] <= 500
 
 
@@ -471,3 +473,66 @@ def test_repo_map_invalid_policy_is_a_harness_error_with_remedy(tmp_path: Path) 
         assert exc.remedy
     else:
         raise AssertionError("invalid Repo Map policy was accepted")
+
+
+def test_repo_map_redacts_signature_names_and_import_edges(tmp_path: Path) -> None:
+    repo = tmp_path / "project"
+    (repo / "pkg").mkdir(parents=True)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "main.py").write_text(
+        "import pkg.hidden_service\n\n"
+        "def visible(value: int) -> int:\n"
+        "    return value\n\n"
+        "def public(hidden_arg: int) -> int:\n"
+        "    return hidden_service.run(hidden_arg)\n"
+    )
+    (repo / "pkg" / "__init__.py").write_text("")
+    (repo / "pkg" / "hidden_service.py").write_text(
+        "def run(value: int) -> int:\n"
+        "    return value\n"
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "fixture")
+    commit = _git(repo, "rev-parse", "HEAD")
+    policy = tmp_path / "orchestration.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "repo_map_policy": {
+                    "redact_symbols": ["hidden_*"]
+                }
+            }
+        )
+    )
+
+    result = json.loads(
+        subprocess.check_output(
+            [
+                sys.executable,
+                str(CLI),
+                "--repo",
+                str(repo),
+                "--commit",
+                commit,
+                "--policy",
+                str(policy),
+            ]
+        )
+    )
+    main_file = next(item for item in result["files"] if item["path"] == "main.py")
+    assert main_file["signatures"] == ["def visible(value: int) -> int"]
+    assert not any(edge["target"] == "pkg/hidden_service.py" for edge in result["edges"])
+
+
+def test_repo_map_rejects_malformed_tier_with_remedy(tmp_path: Path) -> None:
+    policy = tmp_path / "orchestration.json"
+    policy.write_text(json.dumps({"repo_map_policy": {"tier": ["minimal"]}}))
+    try:
+        repo_map.load_policy(policy, explicit=True)
+    except HarnessError as exc:
+        assert exc.message.endswith("must be one of: minimal, reduced")
+        assert exc.remedy
+    else:
+        raise AssertionError("malformed tier was accepted")

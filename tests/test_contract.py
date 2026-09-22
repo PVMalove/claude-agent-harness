@@ -411,6 +411,15 @@ class RepoMapPolicyProblemTests(unittest.TestCase):
             ],
         )
 
+    def test_malformed_tier_type_has_actionable_diagnostic(self) -> None:
+        problems = contract._repo_map_policy_problems(
+            {"repo_map_policy": {"tier": ["minimal"]}}
+        )
+        self.assertEqual(
+            problems,
+            ["orchestration repo_map_policy.tier must be one of: minimal, reduced"],
+        )
+
 
 class ContextWindowPolicyTests(unittest.TestCase):
     def _problems(self, policy: dict[str, object]) -> list[str]:
