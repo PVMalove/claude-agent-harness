@@ -369,6 +369,48 @@ class RepoMapPolicyProblemTests(unittest.TestCase):
             ],
         )
 
+    def test_extended_policy_redaction_limits_and_tier_are_valid(self) -> None:
+        self.assertEqual(
+            contract._repo_map_policy_problems(
+                {
+                    "repo_map_policy": {
+                        "allow_paths": ["src/**"],
+                        "deny_paths": ["src/legacy/**"],
+                        "redact_paths": ["src/private/**"],
+                        "redact_symbols": ["customer_*"],
+                        "max_path_length": 4096,
+                        "max_symbol_length": 256,
+                        "max_signature_length": 2048,
+                        "tier": "minimal",
+                    }
+                }
+            ),
+            [],
+        )
+
+    def test_extended_policy_rejects_invalid_values_with_field_diagnostics(self) -> None:
+        problems = contract._repo_map_policy_problems(
+            {
+                "repo_map_policy": {
+                    "redact_symbols": [""],
+                    "max_path_length": 0,
+                    "max_symbol_length": False,
+                    "max_signature_length": -1,
+                    "tier": "full",
+                }
+            }
+        )
+        self.assertEqual(
+            sorted(problems),
+            [
+                "orchestration repo_map_policy.max_path_length must be a positive integer",
+                "orchestration repo_map_policy.max_signature_length must be a positive integer",
+                "orchestration repo_map_policy.max_symbol_length must be a positive integer",
+                "orchestration repo_map_policy.redact_symbols must be a list of non-empty path globs",
+                "orchestration repo_map_policy.tier must be one of: minimal, reduced",
+            ],
+        )
+
 
 class ContextWindowPolicyTests(unittest.TestCase):
     def _problems(self, policy: dict[str, object]) -> list[str]:

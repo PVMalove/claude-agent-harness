@@ -5,6 +5,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from harness.errors import HarnessError
+from harness.repo_map import repo_map
+
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "harness" / "repo_map" / "repo_map.py"
 
@@ -315,3 +318,156 @@ def test_repo_map_uses_project_orchestration_policy_when_present(tmp_path: Path)
     )
     assert [item["path"] for item in result["files"]] == ["src/safe.py"]
     assert result["parser_provenance"]["policy_mode"] == "enforced"
+
+
+def test_repo_map_budget_prefers_cli_then_policy_then_default(tmp_path: Path) -> None:
+    repo = tmp_path / "project"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "main.py").write_text("def main() -> None: pass\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "fixture")
+    commit = _git(repo, "rev-parse", "HEAD")
+    policy = tmp_path / "orchestration.json"
+    policy.write_text(json.dumps({"repo_map_policy": {"max_tokens": 500}}))
+    command = [
+        sys.executable,
+        str(CLI),
+        "--repo",
+        str(repo),
+        "--commit",
+        commit,
+        "--policy",
+        str(policy),
+    ]
+
+    policy_result = json.loads(subprocess.check_output(command))
+    cli_result = json.loads(subprocess.check_output(command + ["--max-tokens", "300"]))
+    assert policy_result["estimated_tokens"] <= 500
+    assert cli_result["estimated_tokens"] <= 300
+
+    invalid = subprocess.run(
+        command + ["--max-tokens", "0"], capture_output=True, text=True
+    )
+    assert invalid.returncode != 0
+    assert "REMEDY:" in invalid.stderr
+
+
+def test_repo_map_applies_symbol_and_length_redaction_before_serialization(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "project"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "public.py").write_text(
+        "# this comment must not be emitted\n"
+        "def visible(value: int) -> int:\n"
+        "    return value + 1\n"
+        "\n"
+        "def hidden_symbol(value: int) -> int:\n"
+        "    return value + 2\n"
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "fixture")
+    commit = _git(repo, "rev-parse", "HEAD")
+    policy = tmp_path / "orchestration.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "repo_map_policy": {
+                    "redact_symbols": ["hidden_*"],
+                    "max_path_length": 20,
+                    "max_symbol_length": 32,
+                    "max_signature_length": 40,
+                }
+            }
+        )
+    )
+    result = json.loads(
+        subprocess.check_output(
+            [
+                sys.executable,
+                str(CLI),
+                "--repo",
+                str(repo),
+                "--commit",
+                commit,
+                "--policy",
+                str(policy),
+            ]
+        )
+    )
+    assert result["files"][0]["signatures"] == ["def visible(value: int) -> int"]
+    encoded = json.dumps(result, ensure_ascii=False)
+    assert "hidden_symbol" not in encoded
+    assert "this comment" not in encoded
+    assert all(len(item["path"]) <= 20 for item in result["files"])
+    assert all(
+        len(signature) <= 40
+        for item in result["files"]
+        for signature in item["signatures"]
+    )
+
+
+def test_repo_map_minimal_tier_is_path_only_and_policy_filtered(tmp_path: Path) -> None:
+    repo = tmp_path / "project"
+    (repo / "src").mkdir(parents=True)
+    (repo / "private").mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "src" / "safe.py").write_text("def safe() -> None: pass\n")
+    (repo / "private" / "hidden.py").write_text("def hidden() -> None: pass\n")
+    (repo / "outside.py").write_text("def outside() -> None: pass\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "fixture")
+    commit = _git(repo, "rev-parse", "HEAD")
+    policy = tmp_path / "orchestration.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "repo_map_policy": {
+                    "tier": "minimal",
+                    "allow_paths": ["src/**", "private/**"],
+                    "redact_paths": ["private/**"],
+                }
+            }
+        )
+    )
+    result = json.loads(
+        subprocess.check_output(
+            [
+                sys.executable,
+                str(CLI),
+                "--repo",
+                str(repo),
+                "--commit",
+                commit,
+                "--policy",
+                str(policy),
+            ]
+        )
+    )
+    assert result["tier"] == "minimal"
+    assert result["degradation_reason"]
+    assert result["files"] == [{"path": "src/safe.py"}]
+    assert result["edges"] == []
+    assert result["diagnostics"] == []
+    assert "private" not in json.dumps(result)
+    assert "allow_paths" not in json.dumps(result)
+
+
+def test_repo_map_invalid_policy_is_a_harness_error_with_remedy(tmp_path: Path) -> None:
+    policy = tmp_path / "orchestration.json"
+    policy.write_text(json.dumps({"repo_map_policy": {"max_files": 0}}))
+    try:
+        repo_map.load_policy(policy, explicit=True)
+    except HarnessError as exc:
+        assert exc.message.endswith("must be a positive integer")
+        assert exc.remedy
+    else:
+        raise AssertionError("invalid Repo Map policy was accepted")
