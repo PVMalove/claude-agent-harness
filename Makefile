@@ -4,15 +4,13 @@
 ifeq ($(OS),Windows_NT)
 SHELL := cmd.exe
 .SHELLFLAGS := /C
-endif
-
-HARNESS_VENV := .harness/.venv
-HARNESS_ENV_STAMP := $(HARNESS_VENV)/.requirements-installed
-
-ifeq ($(OS),Windows_NT)
+HARNESS_VENV := .harness\.venv
+HARNESS_ENV_STAMP := $(HARNESS_VENV)\.requirements-installed
 PYTHON_BOOTSTRAP ?= python
 HARNESS_PYTHON := $(HARNESS_VENV)\Scripts\python.exe
 else
+HARNESS_VENV := .harness/.venv
+HARNESS_ENV_STAMP := $(HARNESS_VENV)/.requirements-installed
 PYTHON_BOOTSTRAP ?= python3
 HARNESS_PYTHON := $(HARNESS_VENV)/bin/python
 endif
