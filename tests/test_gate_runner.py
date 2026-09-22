@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import os
 from pathlib import Path
 from typing import Protocol, cast
 from unittest import mock
@@ -27,6 +28,58 @@ class _RunFn(Protocol):
 
 
 class GateRunnerTests(unittest.TestCase):
+    def test_clean_room_python_command_ignores_a_broken_path_launcher(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            root = Path(temporary)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "test@example.invalid"],
+                cwd=repo,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Gate Runner Test"],
+                cwd=repo,
+                check=True,
+            )
+            (repo / "check.py").write_text("print('valid interpreter')\n", encoding="utf-8")
+            subprocess.run(["git", "add", "check.py"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "test: pin candidate"], cwd=repo, check=True)
+            candidate = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            broken_bin = root / "broken-bin"
+            broken_bin.mkdir()
+            broken_python = broken_bin / "python"
+            broken_python.write_text("#!/bin/sh\nexit 73\n", encoding="utf-8")
+            broken_python.chmod(0o755)
+            original_path = os.environ["PATH"]
+            self.addCleanup(os.environ.__setitem__, "PATH", original_path)
+            os.environ["PATH"] = f"{broken_bin}{os.pathsep}{original_path}"
+
+            result = run_gate(
+                [["python", "check.py"]],
+                CleanRoomPolicy(repo, candidate),
+                stop_on_failure=True,
+            )
+            string_result = run_gate(
+                ["python check.py"],
+                CleanRoomPolicy(repo, candidate),
+                stop_on_failure=True,
+            )
+
+        self.assertEqual(result.checks[0]["result"], "pass")
+        self.assertIn("valid interpreter", result.artifact)
+        self.assertNotIn("$ python check.py", result.artifact)
+        self.assertEqual(string_result.checks[0]["result"], "pass")
+        self.assertNotIn("$ python check.py", string_result.artifact)
+
     def test_local_and_clean_room_return_the_same_sanitised_evidence_shape(
         self,
     ) -> None:

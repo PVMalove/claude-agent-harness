@@ -417,7 +417,11 @@ class QaLaneRunTests(QaLaneTestCase):
             {"dispatch_id": DISPATCH_ID, "state": status_state, "updated_at": "now"},
         )
 
-    def _ops(self, persisted: list[dict[str, object]] | None = None) -> CoordinatorOps:
+    def _ops(
+        self,
+        persisted: list[dict[str, object]] | None = None,
+        report_error: coordinator.CoordinatorError | None = None,
+    ) -> CoordinatorOps:
         def persist(
             ledger: LifecycleLedger,
             root: Path,
@@ -425,6 +429,8 @@ class QaLaneRunTests(QaLaneTestCase):
             dispatch: object,
             report: dict[str, object],
         ) -> Path:
+            if report_error is not None:
+                raise report_error
             if persisted is not None:
                 persisted.append(report)
             return root / "report.json"
@@ -511,6 +517,7 @@ class QaLaneRunTests(QaLaneTestCase):
             (caught.exception.message, caught.exception.remedy),
             ("checkout failed", "fix the candidate commit"),
         )
+        self._assert_transient_failure_released()
 
     def test_evidence_persist_failure_is_rejected_with_a_remedy(self) -> None:
         self._seed()
@@ -528,6 +535,66 @@ class QaLaneRunTests(QaLaneTestCase):
 
         self.assertRemedy(caught)
         self.assertIs(caught.exception.__cause__, broken)
+        self._assert_transient_failure_released()
+
+    def test_retry_after_transient_gate_failure_reports_without_manual_state_edits(
+        self,
+    ) -> None:
+        self._seed()
+        failure = GateRunnerError("checkout failed", remedy="fix the candidate commit")
+        gate = GateResult(
+            checks=[{"result": "pass", "command": "true"}],
+            artifact="all green",
+            duration_seconds=0.0,
+        )
+
+        with (
+            mock.patch.object(qa_lane, "run_gate", side_effect=failure),
+            self.assertRaises(coordinator.CoordinatorError),
+        ):
+            qa_lane.run(self.args, self._ops())
+
+        with mock.patch.object(qa_lane, "run_gate", return_value=gate):
+            result = qa_lane.run(self.args, self._ops())
+
+        self.assertEqual(result["state"], "reported")
+
+    def test_report_persist_failure_releases_the_dispatch_for_retry(self) -> None:
+        self._seed()
+        gate = GateResult(
+            checks=[{"result": "pass", "command": "true"}],
+            artifact="all green",
+            duration_seconds=0.0,
+        )
+        broken = coordinator.CoordinatorError("report disk full", remedy="free space")
+
+        with (
+            mock.patch.object(qa_lane, "run_gate", return_value=gate),
+            self.assertRaises(coordinator.CoordinatorError) as caught,
+        ):
+            qa_lane.run(
+                self.args,
+                self._ops(report_error=broken),
+            )
+
+        self.assertRemedy(caught)
+        self.assertIs(caught.exception, broken)
+        self._assert_transient_failure_released()
+
+    def _assert_transient_failure_released(self) -> None:
+        batch = coordinator._load_batch(self.root, BATCH_ID)
+        status = coordinator._load_dispatch_status(self.root, DISPATCH_ID)
+        entry = next(
+            item
+            for item in batch["dispatches"]
+            if item["dispatch_id"] == DISPATCH_ID
+        )
+        self.assertEqual(entry["state"], "approved")
+        self.assertEqual(status["state"], "approved")
+        self.assertIsNone(qa_lane._lease(self.ledger, coordinator))
+        self.assertEqual(qa_lane._queue_entries(self.ledger, coordinator), [])
+        attempts = list((self.lane / "attempts").glob("*.json"))
+        self.assertEqual(len(attempts), 1)
 
     def test_report_requires_a_running_dispatch(self) -> None:
         self._seed(batch_state="approved", status_state="approved")

@@ -54,5 +54,5 @@ registry: $(HARNESS_ENV_STAMP) ## Пересобрать skills/REGISTRY.md (п�
 test-clean-room: $(HARNESS_ENV_STAMP) ## Запустить clean-room тесты
 	$(HARNESS_PYTHON) scripts/test-clean-room.py
 
-clean: ## Удалить временные файлы, стейт оркестратора, кэши и .pyc
-	python -c "import shutil, os, glob; [shutil.rmtree(p, ignore_errors=True) for p in ['.mypy_cache', '.pytest_cache', '.harness/orchestration/state', '.harness/scratch', '.claude/worktrees', 'htmlcov'] if os.path.exists(p)]; [os.remove(f) for f in glob.glob('**/*.pyc', recursive=True)]"
+clean: $(HARNESS_ENV_STAMP) ## Удалить временные файлы, стейт оркестратора, кэши и .pyc
+	$(HARNESS_PYTHON) -c "import shutil, os, glob; [shutil.rmtree(p, ignore_errors=True) for p in ['.mypy_cache', '.pytest_cache', '.harness/orchestration/state', '.harness/scratch', '.claude/worktrees', 'htmlcov'] if os.path.exists(p)]; [os.remove(f) for f in glob.glob('**/*.pyc', recursive=True)]"

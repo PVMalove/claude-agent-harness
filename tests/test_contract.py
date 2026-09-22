@@ -7,12 +7,54 @@ import ast
 import json
 import shutil
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from typing import ClassVar
 
 from harness.errors import HarnessError
 from harness.orchestration import contract
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class HarnessEnvironmentContractTests(unittest.TestCase):
+    def test_dev_manifest_and_execution_paths_share_the_harness_environment(
+        self,
+    ) -> None:
+        requirements = {
+            line.strip()
+            for line in (ROOT / "requirements-dev.txt").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line.strip() and not line.startswith("#")
+        }
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        self.assertEqual(requirements, set(project["project"]["optional-dependencies"]["dev"]))
+        lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+        harness_package = next(
+            package
+            for package in lock["package"]
+            if package["name"] == "claude-agent-harness"
+        )
+        locked_requirements = {
+            f"{item['name']}{item['specifier']}"
+            for item in harness_package["metadata"]["requires-dist"]
+            if item.get("marker") == "extra == 'dev'"
+        }
+        self.assertEqual(requirements, locked_requirements)
+
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("HARNESS_VENV := .harness/.venv", makefile)
+        self.assertIn("$(HARNESS_PYTHON) -c", makefile)
+        self.assertNotIn("\n\tpython -c", makefile)
+
+        workflow = (ROOT / ".github/workflows/verify.yml").read_text(encoding="utf-8")
+        self.assertNotIn("pip install -r requirements-dev.txt", workflow)
+        self.assertNotIn("run: python scripts/verify.py", workflow)
+        self.assertEqual(workflow.count("run: make bootstrap"), 2)
+        self.assertEqual(workflow.count("run: make verify"), 2)
 
 
 class ContractErrorInvariantTests(unittest.TestCase):
