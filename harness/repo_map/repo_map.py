@@ -36,11 +36,15 @@ if _HARNESS_ROOT.name != "harness":
     sys.modules["harness"] = _pkg
     _spec.loader.exec_module(_pkg)
 
+from harness.errors import HarnessError, PolicyError, print_and_exit
 from harness.token_estimator import TOKEN_ESTIMATOR_VERSION, estimate_tokens
 
 DEFAULT_MAX_TOKENS = 4000
 DEFAULT_MAX_FILES = 10_000
 DEFAULT_MAX_FILE_BYTES = 2_000_000
+DEFAULT_MAX_PATH_LENGTH = 4_096
+DEFAULT_MAX_SYMBOL_LENGTH = 256
+DEFAULT_MAX_SIGNATURE_LENGTH = 2_048
 DEFAULT_TIMEOUT_SECONDS = 10
 # Names defined in this many files are too common to provide useful references.
 DEFINITION_FILE_FANOUT_THRESHOLD = 5
@@ -124,10 +128,15 @@ class RepoMapPolicy:
     allow_paths: tuple[str, ...] = ()
     deny_paths: tuple[str, ...] = ()
     redact_paths: tuple[str, ...] = ()
+    redact_symbols: tuple[str, ...] = ()
     max_files: int = DEFAULT_MAX_FILES
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
+    max_path_length: int = DEFAULT_MAX_PATH_LENGTH
+    max_symbol_length: int = DEFAULT_MAX_SYMBOL_LENGTH
+    max_signature_length: int = DEFAULT_MAX_SIGNATURE_LENGTH
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     max_tokens: int | None = None
+    tier: Literal["minimal", "reduced"] = "reduced"
     sha256: str | None = None
 
     @property
@@ -169,6 +178,8 @@ def _allowed(path: str, policy: RepoMapPolicy) -> bool:
         return False
     if ".generated." in name.casefold():
         return False
+    if len(path) > policy.max_path_length:
+        return False
     if policy.allow_paths and not _matches(path, policy.allow_paths):
         return False
     if _matches(path, policy.deny_paths) or _matches(path, policy.redact_paths):
@@ -178,50 +189,97 @@ def _allowed(path: str, policy: RepoMapPolicy) -> bool:
 
 def _string_patterns(value: object, field: str) -> tuple[str, ...]:
     if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
-        raise ValueError(f"repo_map_policy.{field} must be a list of non-empty path globs")
+        raise PolicyError(
+            f"repo_map_policy.{field} must be a list of non-empty path globs",
+            remedy=f"set repo_map_policy.{field} to a list of non-empty glob strings",
+        )
     return tuple(sorted(set(value)))
 
 
 def _positive_int(value: object, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ValueError(f"repo_map_policy.{field} must be a positive integer")
+        raise PolicyError(
+            f"repo_map_policy.{field} must be a positive integer",
+            remedy=f"set repo_map_policy.{field} to a positive integer in the project orchestration config",
+        )
     return value
+
+
+def _policy_error(message: str, remedy: str) -> PolicyError:
+    return PolicyError(message, remedy=remedy)
 
 
 def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
     if path is None or not path.is_file():
         if explicit:
-            raise ValueError(f"policy file does not exist: {path}")
+            raise _policy_error(
+                f"policy file does not exist: {path}",
+                "create the policy file or omit --policy to use portable defaults",
+            )
         return RepoMapPolicy()
-    raw = path.read_bytes()
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise _policy_error(
+            f"policy file cannot be read: {path}",
+            "fix the policy file permissions or path, then retry",
+        ) from exc
     try:
         decoded: object = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid policy JSON: {exc.msg}") from exc
+        raise _policy_error(
+            f"invalid policy JSON: {exc.msg}",
+            "fix the JSON syntax in the policy file and retry",
+        ) from exc
     if not isinstance(decoded, dict):
-        raise ValueError("policy JSON must be an object")
+        raise _policy_error(
+            "policy JSON must be an object",
+            "rewrite the policy file as a JSON object containing repo_map_policy",
+        )
     section = decoded.get("repo_map_policy")
     if section is None:
         if explicit:
-            raise ValueError("policy JSON must define repo_map_policy")
+            raise _policy_error(
+                "policy JSON must define repo_map_policy",
+                "add a repo_map_policy object or omit --policy to use portable defaults",
+            )
         return RepoMapPolicy()
     if not isinstance(section, dict):
-        raise ValueError("repo_map_policy must be an object")
+        raise _policy_error(
+            "repo_map_policy must be an object",
+            "set repo_map_policy to an object that follows orchestration.schema.json",
+        )
     allowed = {
-        "allow_paths", "deny_paths", "redact_paths", "max_files", "max_file_bytes",
-        "timeout_seconds", "max_tokens",
+        "allow_paths",
+        "deny_paths",
+        "redact_paths",
+        "redact_symbols",
+        "max_files",
+        "max_file_bytes",
+        "max_path_length",
+        "max_symbol_length",
+        "max_signature_length",
+        "timeout_seconds",
+        "max_tokens",
+        "tier",
     }
     unknown = sorted(str(key) for key in section.keys() - allowed)
     if unknown:
-        raise ValueError(f"repo_map_policy has unknown fields: {', '.join(unknown)}")
+        raise _policy_error(
+            f"repo_map_policy has unknown fields: {', '.join(unknown)}",
+            "remove unknown repo_map_policy fields and follow orchestration.schema.json",
+        )
     patterns: dict[str, tuple[str, ...]] = {}
-    for field in ("allow_paths", "deny_paths", "redact_paths"):
+    for field in ("allow_paths", "deny_paths", "redact_paths", "redact_symbols"):
         value = section.get(field, [])
         patterns[field] = _string_patterns(value, field)
     numeric: dict[str, int] = {}
     for field, default in (
         ("max_files", DEFAULT_MAX_FILES),
         ("max_file_bytes", DEFAULT_MAX_FILE_BYTES),
+        ("max_path_length", DEFAULT_MAX_PATH_LENGTH),
+        ("max_symbol_length", DEFAULT_MAX_SYMBOL_LENGTH),
+        ("max_signature_length", DEFAULT_MAX_SIGNATURE_LENGTH),
         ("timeout_seconds", DEFAULT_TIMEOUT_SECONDS),
     ):
         value = section.get(field, default)
@@ -230,22 +288,42 @@ def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
     max_tokens = (
         _positive_int(max_tokens_value, "max_tokens") if max_tokens_value is not None else None
     )
+    tier = section.get("tier", "reduced")
+    if tier not in {"minimal", "reduced"}:
+        raise _policy_error(
+            "repo_map_policy.tier must be one of: minimal, reduced",
+            "set repo_map_policy.tier to 'minimal' or 'reduced'",
+        )
     return RepoMapPolicy(
         allow_paths=patterns["allow_paths"],
         deny_paths=patterns["deny_paths"],
         redact_paths=patterns["redact_paths"],
+        redact_symbols=patterns["redact_symbols"],
         max_files=numeric["max_files"],
         max_file_bytes=numeric["max_file_bytes"],
+        max_path_length=numeric["max_path_length"],
+        max_symbol_length=numeric["max_symbol_length"],
+        max_signature_length=numeric["max_signature_length"],
         timeout_seconds=numeric["timeout_seconds"],
         max_tokens=max_tokens,
+        tier=tier,
         sha256=hashlib.sha256(raw).hexdigest(),
     )
 
 
-def _signatures(tree: ast.Module) -> list[str]:
+def _symbol_visible(name: str, policy: RepoMapPolicy) -> bool:
+    return (
+        len(name) <= policy.max_symbol_length
+        and not _matches(name, policy.redact_symbols)
+    )
+
+
+def _signatures(tree: ast.Module, policy: RepoMapPolicy) -> list[str]:
     found: list[str] = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not _symbol_visible(node.name, policy):
+                continue
             prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
             annotation = f" -> {ast.unparse(node.returns)}" if node.returns else ""
             args = copy.deepcopy(node.args)
@@ -254,28 +332,34 @@ def _signatures(tree: ast.Module) -> list[str]:
                 ast.Constant(value=Ellipsis) if item is not None else None
                 for item in args.kw_defaults
             ]
-            found.append(f"{prefix} {node.name}({ast.unparse(args)}){annotation}")
+            signature = f"{prefix} {node.name}({ast.unparse(args)}){annotation}"
+            if len(signature) <= policy.max_signature_length:
+                found.append(signature)
         elif isinstance(node, ast.ClassDef):
+            if not _symbol_visible(node.name, policy):
+                continue
             bases = ", ".join(ast.unparse(base) for base in node.bases)
-            found.append(
-                f"class {node.name}({bases})" if bases else f"class {node.name}"
-            )
+            signature = f"class {node.name}({bases})" if bases else f"class {node.name}"
+            if len(signature) <= policy.max_signature_length:
+                found.append(signature)
     return found
 
 
-def _defined_names(tree: ast.Module) -> set[str]:
+def _defined_names(tree: ast.Module, policy: RepoMapPolicy) -> set[str]:
     return {
         node.name
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and _symbol_visible(node.name, policy)
     }
 
 
-def _referenced_names(tree: ast.Module) -> set[str]:
+def _referenced_names(tree: ast.Module, policy: RepoMapPolicy) -> set[str]:
     return {
         node.id
         for node in ast.walk(tree)
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        and _symbol_visible(node.id, policy)
     }
 
 
@@ -335,9 +419,15 @@ def build_map(
 ) -> str:
     effective_policy = policy or RepoMapPolicy()
     if max_tokens < 1:
-        raise ValueError("--max-tokens must be positive")
+        raise PolicyError(
+            "--max-tokens must be positive",
+            remedy="pass a positive integer to --max-tokens",
+        )
     if effective_policy.max_tokens is not None and max_tokens > effective_policy.max_tokens:
-        raise ValueError("--max-tokens exceeds repo_map_policy.max_tokens")
+        raise PolicyError(
+            "--max-tokens exceeds repo_map_policy.max_tokens",
+            remedy="lower --max-tokens or raise repo_map_policy.max_tokens in the project config",
+        )
     pinned = (
         _git(repo, effective_policy.timeout_seconds, "rev-parse", "--verify", f"{commit}^{{commit}}")
         .decode()
@@ -351,95 +441,103 @@ def build_map(
     )
     paths = [path for path in paths if _allowed(path, effective_policy)]
     if len(paths) > effective_policy.max_files:
-        raise ValueError(
-            f"Repo Map has {len(paths)} policy-approved files, above repo_map_policy.max_files={effective_policy.max_files}"
+        raise PolicyError(
+            f"Repo Map has {len(paths)} policy-approved files, above repo_map_policy.max_files={effective_policy.max_files}",
+            remedy="narrow repo_map_policy.allow_paths or raise repo_map_policy.max_files deliberately",
         )
-    python_paths = {path for path in paths if path.endswith(".py")}
-    module_paths = _module_paths(python_paths)
-    files: dict[str, FileRecord] = {}
+    files: dict[str, dict[str, object]] = {}
     edges: list[EdgeRecord] = []
     diagnostics: list[Diagnostic] = []
     parsed_trees: dict[str, ast.Module] = {}
-    for path in paths:
-        # Git object reads keep the working tree, including untracked files, outside the input.
-        object_name = f"{pinned}:{path}"
-        size = int(
-            _git(repo, effective_policy.timeout_seconds, "cat-file", "-s", object_name)
-            .decode()
-            .strip()
-        )
-        if size > effective_policy.max_file_bytes:
-            files[path] = {"path": path, "signatures": [], "parser_status": "too_large"}
-            diagnostics.append({"code": "file_too_large", "path": path})
-            continue
-        content = _git(repo, effective_policy.timeout_seconds, "show", object_name)
-        if b"\0" in content:
-            continue
-        signatures: list[str] = []
-        parser_status: Literal["ok", "syntax_error", "invalid_encoding", "too_large"] = "ok"
-        if path.endswith(".py"):
-            try:
-                tree = ast.parse(content.decode("utf-8"), filename=path)
-            except UnicodeDecodeError:
-                parser_status = "invalid_encoding"
-                diagnostics.append({"code": "invalid_encoding", "path": path})
-            except SyntaxError:
-                parser_status = "syntax_error"
-                diagnostics.append({"code": "syntax_error", "path": path})
-            else:
-                parsed_trees[path] = tree
-                signatures = _signatures(tree)
-                current_module = path.removesuffix(".py").replace("/", ".")
-                for node in ast.walk(tree):
-                    if not isinstance(node, ast.stmt):
-                        continue
-                    for imported_module in _import_modules(node, current_module):
-                        target = module_paths.get(imported_module)
-                        if target and target != path:
-                            import_edge: EdgeRecord = {
-                                "source": path,
-                                "target": target,
-                                "kind": "import",
-                                "confidence": "high",
-                            }
-                            if import_edge not in edges:
-                                edges.append(import_edge)
-        files[path] = {"path": path, "signatures": signatures, "parser_status": parser_status}
-
-    definitions: dict[str, set[str]] = {}
-    for path, tree in parsed_trees.items():
-        for name in _defined_names(tree):
-            definitions.setdefault(name, set()).add(path)
-    for path, tree in parsed_trees.items():
-        for name in _referenced_names(tree):
-            definition_paths = definitions.get(name, set())
-            if len(definition_paths) >= DEFINITION_FILE_FANOUT_THRESHOLD:
-                continue
-            targets = sorted(definition_paths - {path})
-            if not targets:
-                continue
-            kind: Literal["unique-name-ref", "ambiguous-name-ref"]
-            confidence: Literal["medium", "low"]
-            kind, confidence = (
-                ("unique-name-ref", "medium")
-                if len(targets) == 1
-                else ("ambiguous-name-ref", "low")
+    if effective_policy.tier == "reduced":
+        python_paths = {path for path in paths if path.endswith(".py")}
+        module_paths = _module_paths(python_paths)
+        for path in paths:
+            # Git object reads keep the working tree, including untracked files, outside the input.
+            object_name = f"{pinned}:{path}"
+            size = int(
+                _git(repo, effective_policy.timeout_seconds, "cat-file", "-s", object_name)
+                .decode()
+                .strip()
             )
-            for target in targets:
-                reference_edge: EdgeRecord = {
-                    "source": path,
-                    "target": target,
-                    "kind": kind,
-                    "confidence": confidence,
-                }
-                if reference_edge not in edges:
-                    edges.append(reference_edge)
+            if size > effective_policy.max_file_bytes:
+                files[path] = {"path": path, "signatures": [], "parser_status": "too_large"}
+                diagnostics.append({"code": "file_too_large", "path": path})
+                continue
+            content = _git(repo, effective_policy.timeout_seconds, "show", object_name)
+            if b"\0" in content:
+                continue
+            signatures: list[str] = []
+            parser_status: Literal["ok", "syntax_error", "invalid_encoding", "too_large"] = "ok"
+            if path.endswith(".py"):
+                try:
+                    tree = ast.parse(content.decode("utf-8"), filename=path)
+                except UnicodeDecodeError:
+                    parser_status = "invalid_encoding"
+                    diagnostics.append({"code": "invalid_encoding", "path": path})
+                except SyntaxError:
+                    parser_status = "syntax_error"
+                    diagnostics.append({"code": "syntax_error", "path": path})
+                else:
+                    parsed_trees[path] = tree
+                    signatures = _signatures(tree, effective_policy)
+                    current_module = path.removesuffix(".py").replace("/", ".")
+                    for node in ast.walk(tree):
+                        if not isinstance(node, ast.stmt):
+                            continue
+                        for imported_module in _import_modules(node, current_module):
+                            target = module_paths.get(imported_module)
+                            if target and target != path:
+                                import_edge: EdgeRecord = {
+                                    "source": path,
+                                    "target": target,
+                                    "kind": "import",
+                                    "confidence": "high",
+                                }
+                                if import_edge not in edges:
+                                    edges.append(import_edge)
+            files[path] = {
+                "path": path,
+                "signatures": signatures,
+                "parser_status": parser_status,
+            }
 
-    edges.sort(
-        key=lambda edge: (
-            edge["source"], edge["target"], edge["kind"], edge["confidence"]
+        definitions: dict[str, set[str]] = {}
+        for path, tree in parsed_trees.items():
+            for name in _defined_names(tree, effective_policy):
+                definitions.setdefault(name, set()).add(path)
+        for path, tree in parsed_trees.items():
+            for name in _referenced_names(tree, effective_policy):
+                definition_paths = definitions.get(name, set())
+                if len(definition_paths) >= DEFINITION_FILE_FANOUT_THRESHOLD:
+                    continue
+                targets = sorted(definition_paths - {path})
+                if not targets:
+                    continue
+                kind: Literal["unique-name-ref", "ambiguous-name-ref"]
+                confidence: Literal["medium", "low"]
+                kind, confidence = (
+                    ("unique-name-ref", "medium")
+                    if len(targets) == 1
+                    else ("ambiguous-name-ref", "low")
+                )
+                for target in targets:
+                    reference_edge: EdgeRecord = {
+                        "source": path,
+                        "target": target,
+                        "kind": kind,
+                        "confidence": confidence,
+                    }
+                    if reference_edge not in edges:
+                        edges.append(reference_edge)
+
+        edges.sort(
+            key=lambda edge: (
+                edge["source"], edge["target"], edge["kind"], edge["confidence"]
+            )
         )
-    )
+    else:
+        files = {path: {"path": path} for path in paths}
     indegree = {path: 0 for path in files}
     for edge in edges:
         if edge["confidence"] != "low" and edge["target"] in indegree:
@@ -470,18 +568,27 @@ def build_map(
         if effective_seeds
         else (lambda path: (-indegree[path], path)),
     )
+    tier = effective_policy.tier
     payload: dict[str, object] = {
         "schema_version": 1,
         "commit": pinned,
-        "tier": "reduced",
-        "parser": "ast-only",
-        "degradation_reason": "offline parser bundle unavailable",
+        "tier": tier,
+        "parser": "path-only" if tier == "minimal" else "ast-only",
+        "degradation_reason": (
+            "policy requested minimal tier"
+            if tier == "minimal"
+            else "offline parser bundle unavailable"
+        ),
         "token_estimator_version": TOKEN_ESTIMATOR_VERSION,
         "parser_provenance": {
             "policy_mode": "enforced" if effective_policy.enforced else "portable",
             "policy_sha256": effective_policy.sha256,
+            "policy_tier": tier,
             "max_file_bytes": effective_policy.max_file_bytes,
             "max_files": effective_policy.max_files,
+            "max_path_length": effective_policy.max_path_length,
+            "max_symbol_length": effective_policy.max_symbol_length,
+            "max_signature_length": effective_policy.max_signature_length,
         },
         "files": [],
         "edges": [],
@@ -490,7 +597,10 @@ def build_map(
     }
     encoded, size = _sized(payload)
     if size > max_tokens:
-        raise ValueError("--max-tokens is too small for Repo Map metadata")
+        raise PolicyError(
+            "--max-tokens is too small for Repo Map metadata",
+            remedy="raise --max-tokens or use a smaller policy tier and limits",
+        )
     selected: set[str] = set()
     for path in ordered:
         candidate = selected | {path}
@@ -531,10 +641,22 @@ def main() -> int:
     try:
         policy_path = args.policy or args.repo / ".harness" / "orchestration.json"
         policy = load_policy(policy_path, explicit=args.policy is not None)
-        max_tokens = args.max_tokens or policy.max_tokens or DEFAULT_MAX_TOKENS
+        if args.max_tokens is not None:
+            max_tokens = args.max_tokens
+        elif policy.max_tokens is not None:
+            max_tokens = policy.max_tokens
+        else:
+            max_tokens = DEFAULT_MAX_TOKENS
         sys.stdout.write(build_map(args.repo, args.commit, max_tokens, args.seed, policy))
+    except HarnessError as exc:
+        return print_and_exit(exc)
     except ValueError as exc:
-        parser.error(str(exc))
+        return print_and_exit(
+            PolicyError(
+                str(exc),
+                remedy="inspect the Repo Map input and project policy, then retry",
+            )
+        )
     return 0
 
 
