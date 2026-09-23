@@ -9,9 +9,13 @@ coordinator state; the caller decides how (or whether) to persist the result.
 
 The import/reference graph and per-file signatures are not computed here: they are obtained from
 the Repo Map CLI (`harness/repo_map/repo_map.py`), invoked as a `sys.executable` subprocess so its
-tree-sitter machinery and policy enforcement (allow/deny/redact) never cross the process boundary.
-Only its validated, typed JSON contract (see `harness/repo_map/repo_map.schema.json`) is consumed
-here; a policy-denied path or symbol simply never appears in that JSON.
+tree-sitter machinery never crosses the process boundary; only its validated, typed JSON contract
+(see `harness/repo_map/repo_map.schema.json`) is consumed for the graph and signatures.
+
+`allow_paths`/`deny_paths`/`redact_paths` are whole-path decisions Repo Map already bakes into that
+JSON's `files` list (a denied or redacted path simply never appears there), so every other raw read
+this module does directly via `git diff`/`git show` -- the diff and any dependency fallback excerpt
+-- is restricted to that same `files` slice instead of the full changed-file set.
 """
 
 from __future__ import annotations
@@ -519,9 +523,6 @@ def build_context_package(
             remedy=f"set min_starting_files>=1 and max_starting_files>=min_starting_files (got min={min_starting_files}, max={max_starting_files})",
         )
 
-    diff: str = _run_git(
-        repository, "diff", "--no-color", base_commit, candidate_commit
-    )
     changed: list[tuple[str, str]] = _changed_files(
         repository, base_commit, candidate_commit
     )
@@ -533,6 +534,7 @@ def build_context_package(
         repository, candidate_commit, repo_map_seeds
     )
     files, signatures_by_path = _parse_repo_map_files(repo_map_payload)
+    files_set: set[str] = set(files)
     import_graph, reference_graph = _import_and_reference_graphs(
         repo_map_payload, files
     )
@@ -540,6 +542,25 @@ def build_context_package(
         repo_map_payload
     )
     parser: str = cast(str, parser_provenance["parser"])
+
+    # `deny_paths`/`redact_paths`/`allow_paths` are already baked into `files` above (Repo Map's own
+    # `_allowed()` excludes a denied or redacted path from that list); a path outside it must not
+    # reach `diff` either, or the raw unified-diff hunk for a policy-blocked file would leak its
+    # content even though `starting_files`/`symbol_graph`/`file_hashes` correctly omit it.
+    diff_paths: list[str] = sorted({path for path, _ in changed} & files_set)
+    diff: str = (
+        _run_git(
+            repository,
+            "diff",
+            "--no-color",
+            base_commit,
+            candidate_commit,
+            "--",
+            *diff_paths,
+        )
+        if diff_paths
+        else ""
+    )
 
     imported_by: dict[str, set[str]] = {path: set() for path in import_graph}
     for path, imports in import_graph.items():
@@ -588,7 +609,9 @@ def build_context_package(
             target
             for path in changed_paths
             for target in import_graph.get(path, set())
-            if target not in changed_paths
+            # `target in files_set` keeps this on the same policy-approved slice as `diff` above:
+            # an edge naming a denied/redacted path must not turn into a raw `git show` read.
+            if target not in changed_paths and target in files_set
         }
     )
     dependency_files: dict[str, str] = {

@@ -103,9 +103,14 @@ post-integration defect rate между continuation- и single-session-batch), 
 regex-based import graph и AST-based signature extraction); он получает их из Repo Map CLI —
 sibling-модуля `harness/repo_map/repo_map.py`, — вызывая его подпроцессом через `sys.executable` и
 валидируя типизированный JSON-контракт (`harness/repo_map/repo_map.schema.json`). Через границу
-процесса пересекает только JSON: tree-sitter-типы и enforcement `repo_map_policy`
-(allow/deny/redact) остаются внутри Repo Map, поэтому в пакет попадает только policy-approved срез
-репозитория, а path/symbol, заблокированный политикой, никогда в него не попадает.
+процесса пересекает только JSON; tree-sitter-типы никогда её не пересекают.
+
+`allow_paths`/`deny_paths`/`redact_paths` — это решения на уровне целого пути, которые Repo Map уже
+закладывает в список `files` этого JSON (запрещённый или redact-путь просто никогда там не
+появляется), поэтому любое другое сырое чтение через `git diff`/`git show`, которое делает сам
+`build_context_package` — diff и fallback-excerpt зависимости — дополнительно ограничено тем же
+срезом `files`, а не полным набором изменённых файлов (issue #274, review-finding: `package.diff`
+изначально строился нефильтрованным `git diff` по всем изменённым файлам, независимо от `files`).
 
 `symbol_graph["<path>"]["imports"]`/`["imported_by"]` заполняются только рёбрами `kind == "import"`;
 рёбра `unique-name-ref`/`ambiguous-name-ref` образуют новые аддитивные ключи `["references"]`/
