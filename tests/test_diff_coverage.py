@@ -194,6 +194,31 @@ class MainCoverageRunTests(unittest.TestCase):
             f"--source={','.join(diff_coverage.source_dirs(changed))}", command
         )
 
+    def test_coverage_run_uses_pytest_so_function_style_tests_are_measured(
+        self,
+    ) -> None:
+        changed = {"harness/a.py": {1}}
+        with (
+            tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary,
+            mock.patch.object(diff_coverage, "_merge_base", return_value="base"),
+            mock.patch.object(diff_coverage, "_changed_lines", return_value=changed),
+            mock.patch.object(
+                diff_coverage, "COVERAGE_DATA_FILE", Path(temporary) / ".coverage"
+            ),
+            mock.patch.dict(diff_coverage.os.environ, {}),
+            mock.patch.object(
+                diff_coverage.subprocess,
+                "run",
+                return_value=types.SimpleNamespace(returncode=3),
+            ) as run,
+        ):
+            diff_coverage.main()
+
+        command = run.call_args.args[0]
+        module_index = command.index("-m", command.index("run"))
+        self.assertEqual(command[module_index + 1], "pytest")
+        self.assertEqual(command[-1], str(diff_coverage.ROOT / "tests"))
+
 
 class ChangedLinesTests(unittest.TestCase):
     def _git(self, root: Path, *args: str) -> str:
