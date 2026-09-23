@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -23,6 +24,12 @@ from harness.orchestration.ledger import (
     PlanRecord,
     RiskAssessmentRecord,
 )
+from harness.orchestration.core.constants import (
+    CONTEXT_PACKAGE_FIELDS,
+    LEGACY_CONTEXT_PACKAGE_FIELDS,
+    LEGACY_CONTEXT_PACKAGE_FIELDS_NO_TOKENS,
+)
+from harness.orchestration.core.utils import CoordinatorError
 from harness.orchestration.workflow import history
 
 
@@ -562,6 +569,112 @@ class OperationalRecordMigrationTests(unittest.TestCase):
             self.assertFalse(
                 ledger.migrate()["migrated"]
             )  # already current: the schema version did not change
+
+
+_ALL_CONTEXT_PACKAGE_FIELD_VALUES: JsonObject = {
+    "context_package_id": "context-package-1",
+    "batch_id": "batch-1",
+    "base_commit": "a" * 40,
+    "candidate_commit": "b" * 40,
+    "diff": "",
+    "starting_files": [],
+    "symbol_graph": {},
+    "related_tests": [],
+    "precedent_cards": [],
+    "file_hashes": {},
+    "size_bytes": 0,
+    "created_at": "2026-01-01T00:00:00+00:00",
+    "role": "shared",
+    "inclusion_reason": "test",
+    "estimated_tokens": 0,
+    "schema_version": 2,
+    "parser": "path-only",
+    "parser_provenance": {},
+}
+
+
+class ContextPackageSchemaCompatibilityTests(unittest.TestCase):
+    """`_validate_context_package` (harness/orchestration/workflow/history.py) must accept the
+    current v2 shape (`CONTEXT_PACKAGE_FIELDS`) and both retired legacy shapes issue #274 kept
+    readable for one schema version (`LEGACY_CONTEXT_PACKAGE_FIELDS`/`_NO_TOKENS`), and reject any
+    other field set -- these three constants had no test coverage anywhere in the repository."""
+
+    def _register(
+        self,
+        temporary: str,
+        field_set: frozenset[str],
+        *,
+        extra_package_fields: JsonObject | None = None,
+    ) -> tuple[Path, JsonObject, JsonObject]:
+        package: JsonObject = {
+            key: value
+            for key, value in _ALL_CONTEXT_PACKAGE_FIELD_VALUES.items()
+            if key in field_set
+        }
+        package.update(extra_package_fields or {})
+        root = Path(temporary) / "state"
+        ledger = LifecycleLedger(root)
+        ledger.ensure()
+        generation = ledger.records_root()
+        ledger.write_immutable(
+            generation
+            / ContextPackageRecord.directory
+            / f"{package['context_package_id']}.json",
+            package,
+        )
+        batch: JsonObject = {
+            "batch_id": "batch-1",
+            "context_packages": [
+                {
+                    "context_package_id": package["context_package_id"],
+                    "base_commit": package["base_commit"],
+                    "candidate_commit": package["candidate_commit"],
+                    "role": package["role"],
+                    "record_sha256": hashlib.sha256(
+                        utils._canonical(package).encode("utf-8")
+                    ).hexdigest(),
+                }
+            ],
+        }
+        return root, batch, package
+
+    def test_the_current_v2_shape_validates(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            root, batch, package = self._register(
+                temporary, frozenset(CONTEXT_PACKAGE_FIELDS)
+            )
+            history._validate_context_package(root, batch, package)  # must not raise
+
+    def test_the_pre_274_legacy_shape_without_schema_version_still_validates(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            root, batch, package = self._register(
+                temporary, frozenset(LEGACY_CONTEXT_PACKAGE_FIELDS)
+            )
+            self.assertNotIn("schema_version", package)
+            history._validate_context_package(root, batch, package)  # must not raise
+
+    def test_the_pre_estimated_tokens_legacy_shape_still_validates(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            root, batch, package = self._register(
+                temporary, frozenset(LEGACY_CONTEXT_PACKAGE_FIELDS_NO_TOKENS)
+            )
+            self.assertNotIn("estimated_tokens", package)
+            history._validate_context_package(root, batch, package)  # must not raise
+
+    def test_a_malformed_field_set_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            root, batch, package = self._register(
+                temporary,
+                frozenset(CONTEXT_PACKAGE_FIELDS),
+                extra_package_fields={
+                    "unexpected_field": "not part of any known schema version"
+                },
+            )
+            with self.assertRaises(CoordinatorError) as raised:
+                history._validate_context_package(root, batch, package)
+            self.assertIn("schema mismatch", raised.exception.message)
 
 
 if __name__ == "__main__":

@@ -183,8 +183,22 @@ CONTEXT_PACKAGE_FIELDS = {
     "role",
     "inclusion_reason",
     "estimated_tokens",
+    "schema_version",
+    "parser",
+    "parser_provenance",
 }
-LEGACY_CONTEXT_PACKAGE_FIELDS = CONTEXT_PACKAGE_FIELDS - {"estimated_tokens"}
+# Schema version 1 (issue #274): before build_context_package delegated its graph/signatures to
+# Repo Map, a package had no schema_version/parser/parser_provenance. Kept valid for one schema
+# version so an already-persisted v1 record still reads back.
+LEGACY_CONTEXT_PACKAGE_FIELDS = CONTEXT_PACKAGE_FIELDS - {
+    "schema_version",
+    "parser",
+    "parser_provenance",
+}
+# Pre-dates estimated_tokens entirely; kept for reading genuinely old ledger records.
+LEGACY_CONTEXT_PACKAGE_FIELDS_NO_TOKENS = LEGACY_CONTEXT_PACKAGE_FIELDS - {
+    "estimated_tokens"
+}
 CHECKPOINT_NO_CONTEXT_PACKAGE = "not applicable — no context package registered"
 CHECKPOINT_INPUT_FIELDS = {
     "dispatch_id",

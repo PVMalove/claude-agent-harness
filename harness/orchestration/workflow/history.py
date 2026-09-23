@@ -37,6 +37,7 @@ from harness.orchestration.core.constants import (
     DISPATCH_FIELDS,
     DISPATCH_PURPOSES,
     LEGACY_CONTEXT_PACKAGE_FIELDS,
+    LEGACY_CONTEXT_PACKAGE_FIELDS_NO_TOKENS,
     LEGACY_PLAN_FIELDS,
     LIVE_DISPATCH_STATES,
     PLAN_FIELDS,
@@ -187,9 +188,10 @@ def _validate_context_package(
     root: Path, batch: JsonObject, package: JsonObject
 ) -> None:
     _reject_sensitive(package, "context package")
-    if (
-        set(package) != CONTEXT_PACKAGE_FIELDS
-        and set(package) != LEGACY_CONTEXT_PACKAGE_FIELDS
+    if set(package) not in (
+        CONTEXT_PACKAGE_FIELDS,
+        LEGACY_CONTEXT_PACKAGE_FIELDS,
+        LEGACY_CONTEXT_PACKAGE_FIELDS_NO_TOKENS,
     ):
         raise CoordinatorError(
             "context package schema mismatch",
