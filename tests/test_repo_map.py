@@ -1,12 +1,16 @@
 """Behavior of the standalone Repo Map CLI at its process boundary."""
 
 import json
+import socket
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+from _parser_bundle_fixtures import build_bundle_dir
+
 from harness.errors import HarnessError
-from harness.repo_map import repo_map
+from harness.repo_map import parser_bundle, repo_map
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "harness" / "repo_map" / "repo_map.py"
@@ -16,7 +20,25 @@ def _git(repo: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
 
 
-def test_repo_map_reads_commit_and_is_deterministic(tmp_path: Path) -> None:
+def _pip_available() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec("pip") is not None
+
+
+def _forbid_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make any socket construction or outbound connection fail the test immediately."""
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("unexpected network call during repo map build")
+
+    monkeypatch.setattr(socket.socket, "__init__", _raise)
+    monkeypatch.setattr(socket, "create_connection", _raise)
+
+
+def test_repo_map_reads_commit_and_is_deterministic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo = tmp_path / "project"
     repo.mkdir()
     _git(repo, "init", "-q")
@@ -79,6 +101,11 @@ def test_repo_map_reads_commit_and_is_deterministic(tmp_path: Path) -> None:
     bounded = json.loads(subprocess.check_output(command + ["--max-tokens", "500"]))
     assert bounded["estimated_tokens"] <= 500
     assert bounded["files"] == [] or bounded["files"][0]["path"] == "helper.py"
+
+    # The default `reduced` tier never attempts a parser bundle or any network access.
+    _forbid_network(monkeypatch)
+    in_process = repo_map.build_map(repo, commit, 4000, [])
+    assert json.loads(in_process)["tier"] == "reduced"
 
 
 def test_repo_map_resolves_relative_package_imports(tmp_path: Path) -> None:
@@ -536,7 +563,153 @@ def test_repo_map_rejects_malformed_tier_with_remedy(tmp_path: Path) -> None:
     try:
         repo_map.load_policy(policy, explicit=True)
     except HarnessError as exc:
-        assert exc.message.endswith("must be one of: minimal, reduced")
+        assert exc.message.endswith("must be one of: minimal, reduced, full")
         assert exc.remedy
     else:
         raise AssertionError("malformed tier was accepted")
+
+
+def _init_repo_with_stub_file(repo: Path) -> str:
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "main.py").write_text("def run() -> None: pass\n")
+    (repo / "widget.stub").write_text("widget contents\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "fixture")
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def test_repo_map_full_tier_without_bundle_has_no_network_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "project"
+    commit = _init_repo_with_stub_file(repo)
+    policy = repo_map.RepoMapPolicy(tier="full")
+
+    _forbid_network(monkeypatch)
+    result = json.loads(repo_map.build_map(repo, commit, 4000, [], policy))
+
+    assert result["tier"] == "reduced"
+    assert result["parser"] == "ast-only"
+    assert result["degradation_reason"] == "offline parser bundle unavailable"
+
+
+def test_repo_map_full_tier_missing_wheelhouse_for_pair_degrades(tmp_path: Path) -> None:
+    repo = tmp_path / "project"
+    commit = _init_repo_with_stub_file(repo)
+    bundle_dir = build_bundle_dir(tmp_path / "bundle", pair="cp1-nonexistent-platform")
+    policy = repo_map.RepoMapPolicy(
+        tier="full", parser_bundle_registry_paths=(str(bundle_dir),)
+    )
+
+    result = json.loads(repo_map.build_map(repo, commit, 4000, [], policy))
+
+    assert result["tier"] == "reduced"
+    assert result["parser"] == "ast-only"
+    assert (
+        result["degradation_reason"]
+        == "parser wheelhouse missing for interpreter/platform pair"
+    )
+
+
+def test_repo_map_full_tier_hash_mismatch_degrades(tmp_path: Path) -> None:
+    repo = tmp_path / "project"
+    commit = _init_repo_with_stub_file(repo)
+    python_tag, platform_tag = parser_bundle.python_platform_tags(sys.executable, 30)
+    pair = f"{python_tag}-{platform_tag}"
+    bundle_dir = build_bundle_dir(tmp_path / "bundle", pair=pair)
+    wheel_path = bundle_dir / "wheelhouse" / pair / "stubparser-1.0.0-py3-none-any.whl"
+    wheel_path.write_bytes(b"corrupted")
+    policy = repo_map.RepoMapPolicy(
+        tier="full", parser_bundle_registry_paths=(str(bundle_dir),)
+    )
+
+    result = json.loads(repo_map.build_map(repo, commit, 4000, [], policy))
+
+    assert result["tier"] == "reduced"
+    assert result["parser"] == "ast-only"
+    assert result["degradation_reason"] == "parser bundle hash mismatch"
+
+
+@pytest.mark.skipif(not _pip_available(), reason="pip is not importable in this interpreter")
+def test_repo_map_full_tier_applies_bundle_and_leaves_repo_git_status_clean(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "project"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
+    (repo / ".gitignore").write_text(".harness/\n")
+    (repo / "main.py").write_text("def run() -> None: pass\n")
+    (repo / "widget.stub").write_text("widget contents\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "fixture")
+    commit = _git(repo, "rev-parse", "HEAD")
+
+    python_tag, platform_tag = parser_bundle.python_platform_tags(sys.executable, 30)
+    pair = f"{python_tag}-{platform_tag}"
+    bundle_dir = build_bundle_dir(tmp_path / "registry-bundle", pair=pair)
+
+    policy_path = tmp_path / "orchestration.json"
+    policy_path.write_text(
+        json.dumps(
+            {
+                "repo_map_policy": {
+                    "tier": "full",
+                    "parser_bundle_registry_paths": [str(bundle_dir)],
+                    "parser_bundle_timeout_seconds": 120,
+                }
+            }
+        )
+    )
+
+    command = [
+        sys.executable,
+        str(CLI),
+        "--repo",
+        str(repo),
+        "--commit",
+        commit,
+        "--policy",
+        str(policy_path),
+    ]
+    result = json.loads(subprocess.check_output(command))
+
+    assert result["tier"] == "full"
+    assert result["parser"] == "bundle"
+    assert result["degradation_reason"] == "parser bundle applied"
+    provenance = result["parser_provenance"]
+    assert provenance["bundle_mode"] == "applied"
+    assert provenance["bundle_source"] == "internal-registry"
+    assert provenance["python_tag"] == python_tag
+    assert provenance["platform_tag"] == platform_tag
+    assert provenance["lock_sha256"]
+    assert provenance["script_hash"]
+    assert provenance["core_version"] == "0.1.0"
+    assert provenance["grammars"] == [
+        {
+            "name": "stub-lang",
+            "version": "1.0.0",
+            "abi": 14,
+            "sha256": provenance["grammars"][0]["sha256"],
+        }
+    ]
+    stub_file = next(item for item in result["files"] if item["path"] == "widget.stub")
+    assert stub_file["parser_status"] == "ok"
+    assert stub_file["signatures"]
+
+    # No .venv, no requirements.txt, and no change visible to the mapped repository's own Git state.
+    assert not (repo / ".venv").exists()
+    assert not (repo / "requirements.txt").exists()
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_repo_map_hot_path_never_invokes_uv_run() -> None:
+    for source_path in (
+        ROOT / "harness" / "repo_map" / "repo_map.py",
+        ROOT / "harness" / "repo_map" / "parser_bundle.py",
+    ):
+        assert "uv run" not in source_path.read_text(encoding="utf-8")

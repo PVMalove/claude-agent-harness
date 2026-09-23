@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 import copy
 import hashlib
 import importlib.util
@@ -37,6 +38,7 @@ if _HARNESS_ROOT.name != "harness":
     _spec.loader.exec_module(_pkg)
 
 from harness.errors import HarnessError, PolicyError, print_and_exit
+from harness.repo_map import parser_bundle
 from harness.token_estimator import TOKEN_ESTIMATOR_VERSION, estimate_tokens
 
 DEFAULT_MAX_TOKENS = 4000
@@ -46,6 +48,8 @@ DEFAULT_MAX_PATH_LENGTH = 4_096
 DEFAULT_MAX_SYMBOL_LENGTH = 256
 DEFAULT_MAX_SIGNATURE_LENGTH = 2_048
 DEFAULT_TIMEOUT_SECONDS = 10
+DEFAULT_PARSER_BUNDLE_TIMEOUT_SECONDS = 30
+DEFAULT_PARSER_BUNDLE_MAX_OUTPUT_BYTES = 10_000_000
 # Names defined in this many files are too common to provide useful references.
 DEFINITION_FILE_FANOUT_THRESHOLD = 5
 EXCLUDED_DIRS = frozenset(
@@ -136,7 +140,10 @@ class RepoMapPolicy:
     max_signature_length: int = DEFAULT_MAX_SIGNATURE_LENGTH
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     max_tokens: int | None = None
-    tier: Literal["minimal", "reduced"] = "reduced"
+    tier: Literal["minimal", "reduced", "full"] = "reduced"
+    parser_bundle_registry_paths: tuple[str, ...] = ()
+    parser_bundle_timeout_seconds: int = DEFAULT_PARSER_BUNDLE_TIMEOUT_SECONDS
+    parser_bundle_max_output_bytes: int = DEFAULT_PARSER_BUNDLE_MAX_OUTPUT_BYTES
     sha256: str | None = None
 
     @property
@@ -264,6 +271,9 @@ def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
         "timeout_seconds",
         "max_tokens",
         "tier",
+        "parser_bundle_registry_paths",
+        "parser_bundle_timeout_seconds",
+        "parser_bundle_max_output_bytes",
     }
     unknown = sorted(str(key) for key in section.keys() - allowed)
     if unknown:
@@ -275,6 +285,15 @@ def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
     for field in ("allow_paths", "deny_paths", "redact_paths", "redact_symbols"):
         value = section.get(field, [])
         patterns[field] = _string_patterns(value, field)
+    registry_paths_value = section.get("parser_bundle_registry_paths", [])
+    if not isinstance(registry_paths_value, list) or any(
+        not isinstance(item, str) or not item for item in registry_paths_value
+    ):
+        raise PolicyError(
+            "repo_map_policy.parser_bundle_registry_paths must be a list of non-empty strings",
+            remedy="set repo_map_policy.parser_bundle_registry_paths to a list of non-empty path strings",
+        )
+    registry_paths = tuple(registry_paths_value)
     numeric: dict[str, int] = {}
     for field, default in (
         ("max_files", DEFAULT_MAX_FILES),
@@ -283,6 +302,8 @@ def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
         ("max_symbol_length", DEFAULT_MAX_SYMBOL_LENGTH),
         ("max_signature_length", DEFAULT_MAX_SIGNATURE_LENGTH),
         ("timeout_seconds", DEFAULT_TIMEOUT_SECONDS),
+        ("parser_bundle_timeout_seconds", DEFAULT_PARSER_BUNDLE_TIMEOUT_SECONDS),
+        ("parser_bundle_max_output_bytes", DEFAULT_PARSER_BUNDLE_MAX_OUTPUT_BYTES),
     ):
         value = section.get(field, default)
         numeric[field] = _positive_int(value, field)
@@ -293,17 +314,20 @@ def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
         else None
     )
     tier = section.get("tier", "reduced")
-    if not isinstance(tier, str) or tier not in {"minimal", "reduced"}:
+    if not isinstance(tier, str) or tier not in {"minimal", "reduced", "full"}:
         raise _policy_error(
-            "repo_map_policy.tier must be one of: minimal, reduced",
-            "set repo_map_policy.tier to 'minimal' or 'reduced'",
+            "repo_map_policy.tier must be one of: minimal, reduced, full",
+            "set repo_map_policy.tier to 'minimal', 'reduced', or 'full'",
         )
-    tier = cast(Literal["minimal", "reduced"], tier)
+    tier = cast(Literal["minimal", "reduced", "full"], tier)
     return RepoMapPolicy(
         allow_paths=patterns["allow_paths"],
         deny_paths=patterns["deny_paths"],
         redact_paths=patterns["redact_paths"],
         redact_symbols=patterns["redact_symbols"],
+        parser_bundle_registry_paths=registry_paths,
+        parser_bundle_timeout_seconds=numeric["parser_bundle_timeout_seconds"],
+        parser_bundle_max_output_bytes=numeric["parser_bundle_max_output_bytes"],
         max_files=numeric["max_files"],
         max_file_bytes=numeric["max_file_bytes"],
         max_path_length=numeric["max_path_length"],
@@ -457,6 +481,80 @@ def _sized(payload: dict[str, object]) -> tuple[str, int]:
     raise ValueError("token estimate did not converge")
 
 
+def _apply_parser_bundle(
+    repo: Path,
+    policy: RepoMapPolicy,
+    files: dict[str, dict[str, object]],
+    bundle_candidate_content: dict[str, bytes],
+) -> tuple[
+    Literal["minimal", "reduced", "full"],
+    Literal["path-only", "ast-only", "bundle"],
+    str,
+    dict[str, object],
+]:
+    """Try the opt-in `full` tier's offline parser bundle; degrade to `reduced`/`ast-only` on any failure.
+
+    Never raises and never touches the network: every branch below is either a local filesystem
+    read, an offline `pip install --no-index --target` subprocess, or a bounded local subprocess
+    call into the bundle's own worker script (see harness/repo_map/parser_bundle.py).
+    """
+    bundle_result = parser_bundle.acquire_bundle(
+        repo=repo,
+        registry_paths=policy.parser_bundle_registry_paths,
+        python_executable=sys.executable,
+        timeout_seconds=policy.parser_bundle_timeout_seconds,
+    )
+    if isinstance(bundle_result, str):
+        provenance = parser_bundle.build_provenance(
+            None,
+            bundle_mode="degraded",
+            bundle_source="none",
+            python_tag=None,
+            platform_tag=None,
+        )
+        return "reduced", "ast-only", bundle_result, provenance
+    eligible = {
+        path: content
+        for path, content in bundle_candidate_content.items()
+        if Path(path).suffix in bundle_result.worker_extensions
+    }
+    request: dict[str, object] = {
+        "paths": {
+            path: base64.b64encode(content).decode("ascii")
+            for path, content in eligible.items()
+        }
+    }
+    parse_result = parser_bundle.run_bundle_parser(
+        sys.executable,
+        bundle_result.worker_script,
+        bundle_result.install_dir,
+        request,
+        timeout_seconds=policy.parser_bundle_timeout_seconds,
+        max_output_bytes=policy.parser_bundle_max_output_bytes,
+        expected_script_sha256=bundle_result.lock.script_sha256,
+    )
+    if isinstance(parse_result, str):
+        provenance = parser_bundle.build_provenance(
+            bundle_result.lock,
+            bundle_mode="degraded",
+            bundle_source=bundle_result.bundle_source,
+            python_tag=bundle_result.python_tag,
+            platform_tag=bundle_result.platform_tag,
+        )
+        return "reduced", "ast-only", parse_result, provenance
+    for path, record in parse_result["files"].items():
+        if path in files:
+            files[path] = {"path": path, **record}
+    provenance = parser_bundle.build_provenance(
+        bundle_result.lock,
+        bundle_mode="applied",
+        bundle_source=bundle_result.bundle_source,
+        python_tag=bundle_result.python_tag,
+        platform_tag=bundle_result.platform_tag,
+    )
+    return "full", "bundle", "parser bundle applied", provenance
+
+
 def build_map(
     repo: Path,
     commit: str,
@@ -507,7 +605,8 @@ def build_map(
     edges: list[EdgeRecord] = []
     diagnostics: list[Diagnostic] = []
     parsed_trees: dict[str, ast.Module] = {}
-    if effective_policy.tier == "reduced":
+    bundle_candidate_content: dict[str, bytes] = {}
+    if effective_policy.tier in ("reduced", "full"):
         python_paths = {path for path in paths if path.endswith(".py")}
         module_paths = _module_paths(python_paths)
         for path in paths:
@@ -577,6 +676,8 @@ def build_map(
                                 }
                                 if import_edge not in edges:
                                     edges.append(import_edge)
+            elif effective_policy.tier == "full":
+                bundle_candidate_content[path] = content
             files[path] = {
                 "path": path,
                 "signatures": signatures,
@@ -652,22 +753,31 @@ def build_map(
         if effective_seeds
         else (lambda path: (-indegree[path], path)),
     )
-    tier = effective_policy.tier
+    tier: Literal["minimal", "reduced", "full"] = effective_policy.tier
+    parser: Literal["path-only", "ast-only", "bundle"] = (
+        "path-only" if tier == "minimal" else "ast-only"
+    )
+    degradation_reason = (
+        "policy requested minimal tier"
+        if tier == "minimal"
+        else "offline parser bundle unavailable"
+    )
+    bundle_provenance: dict[str, object] = {}
+    if effective_policy.tier == "full":
+        tier, parser, degradation_reason, bundle_provenance = _apply_parser_bundle(
+            repo, effective_policy, files, bundle_candidate_content
+        )
     payload: dict[str, object] = {
         "schema_version": 1,
         "commit": pinned,
         "tier": tier,
-        "parser": "path-only" if tier == "minimal" else "ast-only",
-        "degradation_reason": (
-            "policy requested minimal tier"
-            if tier == "minimal"
-            else "offline parser bundle unavailable"
-        ),
+        "parser": parser,
+        "degradation_reason": degradation_reason,
         "token_estimator_version": TOKEN_ESTIMATOR_VERSION,
         "parser_provenance": {
             "policy_mode": "enforced" if effective_policy.enforced else "portable",
             "policy_sha256": effective_policy.sha256,
-            "policy_tier": tier,
+            "policy_tier": effective_policy.tier,
             "max_file_bytes": effective_policy.max_file_bytes,
             "max_files": effective_policy.max_files,
             "max_path_length": effective_policy.max_path_length,
@@ -675,6 +785,7 @@ def build_map(
             "max_signature_length": effective_policy.max_signature_length,
             "timeout_seconds": effective_policy.timeout_seconds,
             "max_tokens": max_tokens,
+            **bundle_provenance,
         },
         "files": [],
         "edges": [],

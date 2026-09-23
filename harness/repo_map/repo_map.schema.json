@@ -18,8 +18,8 @@
   "properties": {
     "schema_version": {"const": 1},
     "commit": {"type": "string", "minLength": 40},
-    "tier": {"enum": ["minimal", "reduced"]},
-    "parser": {"enum": ["ast-only", "path-only"]},
+    "tier": {"enum": ["minimal", "reduced", "full"]},
+    "parser": {"enum": ["ast-only", "path-only", "bundle"]},
     "degradation_reason": {"type": "string", "minLength": 1},
     "token_estimator_version": {"type": "string"},
     "parser_provenance": {
@@ -36,14 +36,36 @@
       "properties": {
         "policy_mode": {"enum": ["portable", "enforced"]},
         "policy_sha256": {"type": ["string", "null"]},
-        "policy_tier": {"enum": ["minimal", "reduced"]},
+        "policy_tier": {"enum": ["minimal", "reduced", "full"]},
         "max_file_bytes": {"type": "integer", "minimum": 1},
         "max_files": {"type": "integer", "minimum": 1},
         "max_path_length": {"type": "integer", "minimum": 1},
         "max_symbol_length": {"type": "integer", "minimum": 1},
         "max_signature_length": {"type": "integer", "minimum": 1},
         "timeout_seconds": {"type": "integer", "minimum": 1},
-        "max_tokens": {"type": "integer", "minimum": 1}
+        "max_tokens": {"type": "integer", "minimum": 1},
+        "bundle_mode": {"enum": ["applied", "degraded"]},
+        "bundle_source": {"enum": ["local-cache", "internal-registry", "none"]},
+        "python_tag": {"type": "string"},
+        "platform_tag": {"type": "string"},
+        "lock_sha256": {"type": "string"},
+        "script_hash": {"type": "string"},
+        "core_version": {"type": "string"},
+        "core_abi_range": {"type": "string"},
+        "grammars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "version", "abi", "sha256"],
+            "properties": {
+              "name": {"type": "string"},
+              "version": {"type": "string"},
+              "abi": {"type": "integer"},
+              "sha256": {"type": "string"}
+            }
+          }
+        }
       }
     },
     "files": {

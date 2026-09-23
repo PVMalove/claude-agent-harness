@@ -24,7 +24,7 @@ py-modules = []
 python_version = "3.12"
 strict = true
 disallow_any_explicit = true
-mypy_path = "."
+mypy_path = ".:tests"
 explicit_package_bases = true
 files = [
     "harness",
