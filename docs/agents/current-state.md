@@ -96,8 +96,10 @@ python .harness/orchestration/coordinator.py --repo . batch decide ...
 
 ### Discovery Context и Context Package
 
-До реализации curated-контекст проходит отдельный Discovery Pipeline: `/grilling` собирает
-`Live Artifact` только из явно одобренных пользователем путей; `/to-spec` сохраняет их в эпике под
+До реализации curated-контекст проходит отдельный Discovery Pipeline: `/grilling` сначала один раз
+по требованию запускает Repo Map (только если тема сессии касается кода), затем ищет кандидатные
+пути точечным `rg` и чтением; `Live Artifact` собирается только из явно одобренных пользователем
+путей; `/to-spec` сохраняет их в эпике под
 `## Relevant Files (Discovery Context)`; `/to-tickets` распределяет пути по дочерним тикетам и
 строит Path inventory. Cheap advisory может предложить только дополнительные exact paths из
 этого списка и не получает полномочий менять scope, risk, QA или dispatch.

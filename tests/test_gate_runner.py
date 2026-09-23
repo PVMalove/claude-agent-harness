@@ -272,7 +272,10 @@ class GateRunnerTests(unittest.TestCase):
             harness_python.write_text("#!/bin/sh\necho harness-venv\n", encoding="utf-8")
             harness_python.chmod(0o755)
 
-            result = _clean_room_python(checkout)
+            with mock.patch("harness.gate_runner.gate_runner.sys") as mock_sys:
+                mock_sys.platform = "linux"
+                mock_sys.executable = "/nonexistent/python3"
+                result = _clean_room_python(checkout)
             self.assertEqual(result, harness_python)
 
     def test_clean_room_python_does_not_use_root_level_venv(self) -> None:

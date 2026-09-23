@@ -357,6 +357,9 @@ def main() -> None:
         ROOT / "skills" / "first-party" / "pvmalove" / "to-tickets" / "SKILL.md",
         "or symbol signatures",
     )
+    agents_seed = ROOT / "harness" / "project" / "AGENTS.md.tmpl"
+    grep_contains(agents_seed, "For code discovery, run the Repo Map")
+    grep_contains(agents_seed, "then use targeted `rg` searches and reads.")
     check_docs_agents_enumeration()
     check_pvmalove_override_docs_sync()
     check_pvmalove_additions_docs_sync()
