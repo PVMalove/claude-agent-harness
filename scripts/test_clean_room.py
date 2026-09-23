@@ -83,6 +83,14 @@ def capture(cmd) -> str:
     return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
 
 
+def commit_map_for(brief: dict, commit_sha: str) -> list[dict]:
+    """The developer report's mandatory commit_map for a single-commit candidate."""
+    return [
+        {"commit_sha": commit_sha, "plan_entry_id": entry["id"]}
+        for entry in brief.get("commit_plan", [])
+    ]
+
+
 def fill_agents(repo: Path):
     agents = repo / "AGENTS.md"
     agents.write_text(
@@ -2281,6 +2289,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "implemented the requested backend change",
         "commit_sha": candidate_sha,
         "changed_files": ["services/retry.py"],
+        "commit_map": commit_map_for(dispatch_record["brief"], candidate_sha),
         "checks_run": [
             {
                 "command": "python developer_check.py",
@@ -3184,7 +3193,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 f"coordinator rejected the delta-review {role_name} dispatch: "
                 + created.stderr
             )
-        role_dispatch = json.loads(created.stdout)["dispatch_id"]
+        role_record = json.loads(created.stdout)
+        role_dispatch = role_record["dispatch_id"]
         coordinator_run(
             "--state-dir",
             str(delta_state),
@@ -3228,6 +3238,10 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "report_language": "ru",
         }
         payload.update(payload_extra)
+        if role_record["brief"].get("commit_plan"):
+            payload["commit_map"] = commit_map_for(
+                role_record["brief"], payload["commit_sha"]
+            )
         payload_file = staged_payload(f"delta-{role_name}-{role_dispatch}-report.json")
         payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         submitted = coordinator_run(
@@ -3795,7 +3809,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 f"coordinator rejected the low-risk {role_name} dispatch: "
                 + created.stderr
             )
-        role_dispatch = json.loads(created.stdout)["dispatch_id"]
+        role_record = json.loads(created.stdout)
+        role_dispatch = role_record["dispatch_id"]
         coordinator_run(
             "--state-dir",
             str(low_risk_state),
@@ -3839,6 +3854,10 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "report_language": "ru",
         }
         payload.update(payload_extra)
+        if role_record["brief"].get("commit_plan"):
+            payload["commit_map"] = commit_map_for(
+                role_record["brief"], payload["commit_sha"]
+            )
         payload_file = staged_payload(f"low-risk-{role_name}-report.json")
         payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         submitted = coordinator_run(
@@ -4016,7 +4035,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 f"coordinator rejected the context-package {role_name} dispatch: "
                 + created.stderr
             )
-        role_dispatch = json.loads(created.stdout)["dispatch_id"]
+        role_record = json.loads(created.stdout)
+        role_dispatch = role_record["dispatch_id"]
         coordinator_run(
             "--state-dir",
             str(ctxpkg_state),
@@ -4060,6 +4080,10 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "report_language": "ru",
         }
         payload.update(payload_extra)
+        if role_record["brief"].get("commit_plan"):
+            payload["commit_map"] = commit_map_for(
+                role_record["brief"], payload["commit_sha"]
+            )
         payload_file = staged_payload(
             f"context-package-{role_name}-{role_dispatch}.json"
         )
@@ -4957,6 +4981,14 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                     "services/checkpoint_demo.py",
                     "services/checkpoint_demo_v2.py",
                 ],
+                "commit_map": [
+                    {"commit_sha": sha, "plan_entry_id": entry["id"]}
+                    for sha, entry in zip(
+                        (checkpoint_first_sha, checkpoint_second_sha),
+                        checkpoint_dev_record["brief"]["commit_plan"],
+                        strict=True,
+                    )
+                ],
                 "checks_run": [
                     {
                         "command": "python developer_check.py",
@@ -5425,7 +5457,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 f"coordinator rejected the stale-base {role_name} dispatch: "
                 + created.stderr
             )
-        role_dispatch = json.loads(created.stdout)["dispatch_id"]
+        role_record = json.loads(created.stdout)
+        role_dispatch = role_record["dispatch_id"]
         coordinator_run(
             "--state-dir",
             str(stale_state),
@@ -5469,6 +5502,10 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "report_language": "ru",
         }
         payload.update(payload_extra)
+        if role_record["brief"].get("commit_plan"):
+            payload["commit_map"] = commit_map_for(
+                role_record["brief"], payload["commit_sha"]
+            )
         payload_file = staged_payload(f"stale-base-{role_name}-report.json")
         payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         submitted = coordinator_run(
@@ -5685,7 +5722,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "coordinator refused the developer rebase dispatch after a stale-base block: "
             + rebase_created.stderr
         )
-    rebase_dispatch = json.loads(rebase_created.stdout)["dispatch_id"]
+    rebase_record = json.loads(rebase_created.stdout)
+    rebase_dispatch = rebase_record["dispatch_id"]
     coordinator_run(
         "--state-dir",
         str(stale_state),
@@ -5716,6 +5754,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "attempted rebase without producing a new commit",
         "commit_sha": stale_sha,
         "changed_files": ["services/stale_base.py"],
+        "commit_map": commit_map_for(rebase_record["brief"], stale_sha),
         "checks_run": [
             {
                 "command": "python developer_check.py",
@@ -5767,6 +5806,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "rebased onto the current integration tip",
         "commit_sha": rebased_sha,
         "changed_files": ["services/stale_base.py"],
+        "commit_map": commit_map_for(rebase_record["brief"], rebased_sha),
         "checks_run": [
             {
                 "command": "python developer_check.py",
