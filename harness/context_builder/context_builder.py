@@ -14,8 +14,13 @@ tree-sitter machinery never crosses the process boundary; only its validated, ty
 
 `allow_paths`/`deny_paths`/`redact_paths` are whole-path decisions Repo Map already bakes into that
 JSON's `files` list (a denied or redacted path simply never appears there), so every other raw read
-this module does directly via `git diff`/`git show` -- the diff and any dependency fallback excerpt
--- is restricted to that same `files` slice instead of the full changed-file set.
+this module does directly via `git diff`/`git show` -- the diff, dependency fallback excerpts, and
+starting/related file content -- is restricted to that same `files` slice instead of the full
+changed-file set. `redact_symbols` is a finer-grained, per-identifier decision that Repo Map's JSON
+contract has no channel to express over arbitrary raw text, so that raw text is additionally passed
+through Repo Map's own policy loader and matcher (`load_policy`/`_matches`, plain Python, no
+tree-sitter, no subprocess, no network) imported in-process here -- reused, not reimplemented --
+before it can enter the package.
 """
 
 from __future__ import annotations
@@ -30,6 +35,8 @@ from pathlib import Path
 from typing import cast
 
 from ..errors import HarnessError
+from ..repo_map.repo_map import RepoMapPolicy, load_policy
+from ..repo_map.repo_map import _matches as _repo_map_matches
 from ..token_estimator import estimate_tokens as estimate_tokens
 
 
@@ -123,6 +130,45 @@ def _run_git(repository: Path, *args: str) -> str:
 
 def _read_file(repository: Path, commit: str, path: str) -> str:
     return _run_git(repository, "show", f"{commit}:{path}")
+
+
+_IDENTIFIER_RE: re.Pattern[str] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_REDACTED_SYMBOL_MARKER = "[REDACTED-SYMBOL]"
+
+
+def _redact_symbol_patterns(repository: Path) -> tuple[str, ...]:
+    """Load `repo_map_policy.redact_symbols` the same way Repo Map itself does.
+
+    `_run_repo_map` already invoked the Repo Map CLI against this exact `.harness/orchestration.json`
+    before this is called, so a malformed policy file would already have failed loudly there; reading
+    it again here with the identical, reused loader cannot disagree with what that subprocess run
+    enforced.
+    """
+    policy: RepoMapPolicy = load_policy(
+        repository / ".harness" / "orchestration.json", explicit=False
+    )
+    return policy.redact_symbols
+
+
+def _redact_symbols(text: str, patterns: tuple[str, ...]) -> str:
+    """Replace every identifier matching a `redact_symbols` glob with a fixed marker.
+
+    Repo Map's JSON contract only ever redacts symbols from its own derived `signatures`/`edges`
+    output; it has no channel to express per-occurrence redaction over arbitrary raw text such as a
+    diff hunk or a `git show` read. This reuses Repo Map's own matcher (`_matches`) rather than a
+    second implementation of glob matching, applied here to that raw text before it can enter the
+    package.
+    """
+    if not patterns or not text:
+        return text
+    return _IDENTIFIER_RE.sub(
+        lambda match: (
+            _REDACTED_SYMBOL_MARKER
+            if _repo_map_matches(match.group(0), patterns)
+            else match.group(0)
+        ),
+        text,
+    )
 
 
 def _changed_files(
@@ -523,6 +569,8 @@ def build_context_package(
             remedy=f"set min_starting_files>=1 and max_starting_files>=min_starting_files (got min={min_starting_files}, max={max_starting_files})",
         )
 
+    redact_symbol_patterns: tuple[str, ...] = _redact_symbol_patterns(repository)
+
     changed: list[tuple[str, str]] = _changed_files(
         repository, base_commit, candidate_commit
     )
@@ -548,18 +596,21 @@ def build_context_package(
     # reach `diff` either, or the raw unified-diff hunk for a policy-blocked file would leak its
     # content even though `starting_files`/`symbol_graph`/`file_hashes` correctly omit it.
     diff_paths: list[str] = sorted({path for path, _ in changed} & files_set)
-    diff: str = (
-        _run_git(
-            repository,
-            "diff",
-            "--no-color",
-            base_commit,
-            candidate_commit,
-            "--",
-            *diff_paths,
-        )
-        if diff_paths
-        else ""
+    diff: str = _redact_symbols(
+        (
+            _run_git(
+                repository,
+                "diff",
+                "--no-color",
+                base_commit,
+                candidate_commit,
+                "--",
+                *diff_paths,
+            )
+            if diff_paths
+            else ""
+        ),
+        redact_symbol_patterns,
     )
 
     imported_by: dict[str, set[str]] = {path: set() for path in import_graph}
@@ -615,7 +666,9 @@ def build_context_package(
         }
     )
     dependency_files: dict[str, str] = {
-        path: _read_file(repository, candidate_commit, path)
+        path: _redact_symbols(
+            _read_file(repository, candidate_commit, path), redact_symbol_patterns
+        )
         for path in dependency_paths
     }
     direct_context: dict[str, list[str]] = _dependency_context(
@@ -651,7 +704,10 @@ def build_context_package(
         | {f"docs/adr/{card.id}.md" for card in precedent_cards}
     )
     contents: dict[str, str] = {
-        path: _read_file(repository, candidate_commit, path) for path in included_paths
+        path: _redact_symbols(
+            _read_file(repository, candidate_commit, path), redact_symbol_patterns
+        )
+        for path in included_paths
     }
     file_hashes: dict[str, str] = {
         path: hashlib.sha256(content.encode("utf-8")).hexdigest()

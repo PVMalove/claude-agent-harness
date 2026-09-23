@@ -11,6 +11,7 @@ missing bundle, they fail (an unavailable artifact is a failure, not a silent sk
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -28,6 +29,7 @@ from harness.context_builder.context_builder import (
     ContextPackageError,
     _dependency_context,
     _fallback_excerpt,
+    _redact_symbols,
     build_context_package,
     estimate_tokens,
 )
@@ -332,6 +334,101 @@ class ContextBuilderTests(ContextBuilderFixture):
         self.assertNotIn("pkg/base.py", paths)
         self.assertNotIn("pkg/base.py", package.symbol_graph)
         self.assertNotIn("pkg/base.py", package.file_hashes)
+
+    def test_a_policy_denied_changed_files_patch_is_absent_from_the_diff(self) -> None:
+        """`deny_paths` must also keep the denied file's own unified-diff hunk out of
+        `package.diff`, not just out of `starting_files`/`symbol_graph`/`file_hashes` -- the raw
+        `git diff` this module runs is otherwise independent of Repo Map's policy-filtered `files`."""
+        (self.repo / ".harness").mkdir(exist_ok=True)
+        (self.repo / ".harness" / "orchestration.json").write_text(
+            json.dumps({"repo_map_policy": {"deny_paths": ["pkg/base.py"]}}),
+            encoding="utf-8",
+        )
+
+        package = build_context_package(
+            self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+        )
+
+        self.assertEqual(package.diff, "")
+        self.assertNotIn("dependency.compose(2)", package.diff)
+
+    def test_a_redact_paths_changed_file_is_also_absent_from_the_diff(self) -> None:
+        """`redact_paths` excludes a path from Repo Map's `files` exactly like `deny_paths` (Repo
+        Map's own `_allowed()` treats them identically), so it must get the same diff treatment."""
+        (self.repo / ".harness").mkdir(exist_ok=True)
+        (self.repo / ".harness" / "orchestration.json").write_text(
+            json.dumps({"repo_map_policy": {"redact_paths": ["pkg/base.py"]}}),
+            encoding="utf-8",
+        )
+
+        package = build_context_package(
+            self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+        )
+
+        self.assertEqual(package.diff, "")
+        self.assertNotIn("pkg/base.py", package.file_hashes)
+
+    def test_allow_paths_restricts_the_diff_to_the_allowed_slice(self) -> None:
+        """`allow_paths` must restrict which changed files' raw diff enters the package, not just
+        which paths can become starting files."""
+        _write(
+            self.repo,
+            "pkg/consumer.py",
+            "from pkg import base\n\ndef use():\n    return base.helper() + 1\n",
+        )
+        _run("add", ".", cwd=self.repo)
+        _run("commit", "-qm", "fix: also touch consumer", cwd=self.repo)
+        candidate = _head(self.repo)
+
+        (self.repo / ".harness").mkdir(exist_ok=True)
+        (self.repo / ".harness" / "orchestration.json").write_text(
+            json.dumps({"repo_map_policy": {"allow_paths": ["pkg/base.py"]}}),
+            encoding="utf-8",
+        )
+
+        package = build_context_package(
+            self.repo, self.base_commit, candidate, min_starting_files=1
+        )
+
+        self.assertIn("dependency.compose(2)", package.diff)
+        self.assertNotIn("base.helper() + 1", package.diff)
+        self.assertNotIn("pkg/consumer.py", package.file_hashes)
+
+    def test_redact_symbols_scrubs_matching_identifiers_from_diff_and_hashed_content(
+        self,
+    ) -> None:
+        """`redact_symbols` has no channel in Repo Map's JSON contract to redact arbitrary raw
+        text, so `build_context_package` must additionally scrub matching identifiers itself
+        (reusing Repo Map's own matcher) before the diff and any hashed file content can enter the
+        package."""
+        (self.repo / ".harness").mkdir(exist_ok=True)
+        (self.repo / ".harness" / "orchestration.json").write_text(
+            json.dumps({"repo_map_policy": {"redact_symbols": ["helper"]}}),
+            encoding="utf-8",
+        )
+
+        package = build_context_package(
+            self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+        )
+
+        self.assertNotIn("helper", package.diff)
+        self.assertIn("[REDACTED-SYMBOL]", package.diff)
+
+        raw_base_py = subprocess.run(
+            ["git", "show", f"{self.candidate_commit}:pkg/base.py"],
+            cwd=self.repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        expected_hash = hashlib.sha256(
+            _redact_symbols(raw_base_py, ("helper",)).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(package.file_hashes["pkg/base.py"], expected_hash)
+
+    def test_redact_symbols_defaults_to_a_no_op(self) -> None:
+        self.assertEqual(_redact_symbols("def helper(): pass", ()), "def helper(): pass")
+        self.assertEqual(_redact_symbols("", ("helper",)), "")
 
 
 def _patch_repo_map_call(

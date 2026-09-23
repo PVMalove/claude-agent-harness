@@ -108,9 +108,15 @@ sibling-модуля `harness/repo_map/repo_map.py`, — вызывая его �
 `allow_paths`/`deny_paths`/`redact_paths` — это решения на уровне целого пути, которые Repo Map уже
 закладывает в список `files` этого JSON (запрещённый или redact-путь просто никогда там не
 появляется), поэтому любое другое сырое чтение через `git diff`/`git show`, которое делает сам
-`build_context_package` — diff и fallback-excerpt зависимости — дополнительно ограничено тем же
-срезом `files`, а не полным набором изменённых файлов (issue #274, review-finding: `package.diff`
-изначально строился нефильтрованным `git diff` по всем изменённым файлам, независимо от `files`).
+`build_context_package` — diff, fallback-excerpt зависимости, содержимое starting/related файлов —
+дополнительно ограничено тем же срезом `files`, а не полным набором изменённых файлов (issue #274,
+review-finding: `package.diff` изначально строился нефильтрованным `git diff` по всем изменённым
+файлам, независимо от `files`). `redact_symbols` — более тонкое, посимвольное решение, для которого
+у JSON-контракта Repo Map нет канала выразить точечную редакцию произвольного сырого текста; поэтому
+такой текст дополнительно прогоняется через тот же policy-loader и matcher самого Repo Map
+(`load_policy`/`_matches`, чистый Python, без tree-sitter, подпроцессов и сети), импортируемый в
+процессе `context_builder` — переиспользуемый, а не продублированный заново. Так path/symbol,
+заблокированный политикой, не попадает ни в граф/сигнатуры, ни в diff и другое сырое содержимое.
 
 `symbol_graph["<path>"]["imports"]`/`["imported_by"]` заполняются только рёбрами `kind == "import"`;
 рёбра `unique-name-ref`/`ambiguous-name-ref` образуют новые аддитивные ключи `["references"]`/
