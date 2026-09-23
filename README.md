@@ -126,6 +126,16 @@ make bootstrap
 make verify
 ```
 
+Без `make` то же окружение создаёт `uv`: он ставит Python и зависимости из `requirements-dev.txt`
+по зафиксированному `uv.lock`:
+
+```bash
+uv python install
+UV_PROJECT_ENVIRONMENT=.harness/.venv uv sync --frozen --extra dev
+```
+
+В PowerShell переменную задают отдельно: `$env:UV_PROJECT_ENVIRONMENT = ".harness/.venv"`.
+
 Для обновления пакета меняйте его версию одновременно в `requirements-dev.txt` и
 `pyproject.toml`, затем пересоздайте `uv.lock`.
 
