@@ -9,7 +9,8 @@
 stdlib `ast` (`harness/context_builder/context_builder.py`); для остальных языков берутся первые
 30 строк. Обзора всего репозитория за несколько тысяч токенов нет. Целевые монолиты написаны не
 только на Python. Харнесс может использовать сторонние Python-библиотеки во всех своих Python-путях;
-прямые зависимости перечислены в `requirements-dev.txt`, а `uv.lock` фиксирует их разрешённый граф.
+прямые зависимости перечислены в группе `dev` файла `pyproject.toml` (`uv add --dev`), а `uv.lock`
+фиксирует их разрешённый граф; pip не используется.
 [ADR 0018](0018-harness-as-importable-package-without-pip-install.md) по-прежнему запрещает
 упаковывать сам харнесс в wheel. Сравнение с Aider/Cursor: Repo Map строится парсером, а не regex.
 
@@ -21,22 +22,24 @@ stdlib `ast` (`harness/context_builder/context_builder.py`); для осталь
   lifecycle-эффекта. В поставке #266 это standalone CLI; переход Context Package на этот ресурс и
   удаление его regex-графа с `_extract_python_signatures` выполняются отдельной миграцией.
 - **Ранжирование** без LLM: без seeds — по in-degree, с seeds — по BFS-дистанции, ничья решается по
-  пути; отсечение по токен-бюджету. Текущий `ast-only` режим строит сильные import-рёбра с `kind` и
-  `confidence`. Полный режим добавляет сопоставление def/ref по имени (приближение, не call graph:
+  пути; отсечение по токен-бюджету. Режим `full` строит сильные import-рёбра с `kind` и
+  `confidence` и сопоставление def/ref по имени (приближение, не call graph:
   разрешение типов вне scope): unique-name-ref среднее, ambiguous-name-ref низкое и не ранжирует
   файл самостоятельно.
-- **Поставка парсеров** — Python всегда разбирается встроенным `ast`; tree-sitter нужен только для
-  TS/JS, Go, Java и C#. Dispatch и `context_builder` никогда не разрешают зависимости через сеть.
+- **Поставка парсеров** — все поддержанные языки, включая Python, разбираются только tree-sitter из
+  проверенного bundle; stdlib `ast` не используется ни как основной путь, ни как fallback (уточнено
+  #290). Dispatch и `context_builder` никогда не разрешают зависимости через сеть.
   Полный режим получает проверенный parser bundle из lock+hash артефактов, локального cache или
   разрешённого внутреннего registry. Bundle релиза формирует SBOM и проходит CVE-проверку.
-  Харнесс использует полноценное Python-окружение со сторонними библиотеками из
-  `requirements-dev.txt`; оно создаётся только в `.harness/.venv` командой `make bootstrap`.
+  Харнесс использует полноценное Python-окружение со сторонними библиотеками из группы `dev`
+  `pyproject.toml`; оно создаётся только в `.harness/.venv` командой `make bootstrap` (`uv sync
+  --locked`). Bundle ставится `uv pip install --offline --no-index --require-hashes --target`.
   Разрешение и установка зависимостей происходят при bootstrap, а не во время Dispatch или Context
   Package: эти пути не обращаются к сети и не создают `.venv`, `requirements.txt` или `uv add` в
   корне целевого проекта.
 - **Уровни качества и data policy:** `full` содержит parser-backed сигнатуры и связи поддержанных
-  языков; `reduced` — Python `ast` и path-only сведения прочих; `minimal` — только
-  policy-approved Path inventory. До сериализации применяются project-owned allowlist/denylist,
+  языков, включая Python; `minimal` — только policy-approved Path inventory с причиной деградации
+  (уровня `reduced` нет, уточнено #290). До сериализации применяются project-owned allowlist/denylist,
   path/symbol redaction и пределы длины; комментарии и тела функций не включаются. По умолчанию
   поведение portable. Enterprise-ограничения задаёт `repo_map_policy` в `orchestration.json`;
   отдельной сущности «профиль» нет. Policy применяет allowlist/denylist/redaction и лимиты числа
@@ -83,8 +86,8 @@ offline parser bundle, а не runtime-зависимость через `uv run
 
 ## Операционные последствия
 
-- Полная карта требует установленного проверенного bundle, а не `uv`; portable runtime безопасно
-  возвращает `reduced`/`minimal`, enterprise policy принимает или ограничивает dispatch.
+- Полная карта требует установленного проверенного bundle (его ставит `uv`, но не `uv run`); portable runtime безопасно
+  возвращает `minimal`, enterprise policy принимает или ограничивает dispatch.
 - Окружение харнесса — только `.harness/.venv`; корневая `.venv` не создаётся и не используется.
 - Пины, hashes, SBOM и CVE-статус меняются только осознанным релизом харнесса и входят в provenance.
 - Польза измеряется на фиксированном наборе задач, одинаковых моделях и commit. Считаются все

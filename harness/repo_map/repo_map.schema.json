@@ -18,8 +18,8 @@
   "properties": {
     "schema_version": {"const": 1},
     "commit": {"type": "string", "minLength": 40},
-    "tier": {"enum": ["minimal", "reduced", "full"]},
-    "parser": {"enum": ["ast-only", "path-only", "bundle"]},
+    "tier": {"enum": ["minimal", "full"]},
+    "parser": {"enum": ["path-only", "bundle"]},
     "degradation_reason": {"type": "string", "minLength": 1},
     "token_estimator_version": {"type": "string"},
     "parser_provenance": {
@@ -36,7 +36,7 @@
       "properties": {
         "policy_mode": {"enum": ["portable", "enforced"]},
         "policy_sha256": {"type": ["string", "null"]},
-        "policy_tier": {"enum": ["minimal", "reduced", "full"]},
+        "policy_tier": {"enum": ["minimal", "full"]},
         "max_file_bytes": {"type": "integer", "minimum": 1},
         "max_files": {"type": "integer", "minimum": 1},
         "max_path_length": {"type": "integer", "minimum": 1},

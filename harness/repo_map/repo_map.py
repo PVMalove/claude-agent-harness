@@ -4,9 +4,7 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import base64
-import copy
 import hashlib
 import importlib.util
 import json
@@ -140,7 +138,7 @@ class RepoMapPolicy:
     max_signature_length: int = DEFAULT_MAX_SIGNATURE_LENGTH
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     max_tokens: int | None = None
-    tier: Literal["minimal", "reduced", "full"] = "reduced"
+    tier: Literal["minimal", "full"] = "full"
     parser_bundle_registry_paths: tuple[str, ...] = ()
     parser_bundle_timeout_seconds: int = DEFAULT_PARSER_BUNDLE_TIMEOUT_SECONDS
     parser_bundle_max_output_bytes: int = DEFAULT_PARSER_BUNDLE_MAX_OUTPUT_BYTES
@@ -313,13 +311,13 @@ def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
         if max_tokens_value is not None
         else None
     )
-    tier = section.get("tier", "reduced")
-    if not isinstance(tier, str) or tier not in {"minimal", "reduced", "full"}:
+    tier = section.get("tier", "full")
+    if not isinstance(tier, str) or tier not in {"minimal", "full"}:
         raise _policy_error(
-            "repo_map_policy.tier must be one of: minimal, reduced, full",
-            "set repo_map_policy.tier to 'minimal', 'reduced', or 'full'",
+            "repo_map_policy.tier must be one of: full, minimal",
+            "set repo_map_policy.tier to 'full' or 'minimal'",
         )
-    tier = cast(Literal["minimal", "reduced", "full"], tier)
+    tier = cast(Literal["minimal", "full"], tier)
     return RepoMapPolicy(
         allow_paths=patterns["allow_paths"],
         deny_paths=patterns["deny_paths"],
@@ -346,84 +344,16 @@ def _symbol_visible(name: str, policy: RepoMapPolicy) -> bool:
     )
 
 
-def _signature_parts_visible(
-    parts: tuple[ast.AST | None, ...], policy: RepoMapPolicy
-) -> bool:
-    """Reject a signature when any serialized AST name would bypass symbol policy."""
-    for part in parts:
-        if part is None:
-            continue
-        for node in ast.walk(part):
-            if isinstance(node, ast.arg) and not _symbol_visible(node.arg, policy):
-                return False
-            if isinstance(node, ast.Name) and not _symbol_visible(node.id, policy):
-                return False
-            if isinstance(node, ast.Attribute) and not _symbol_visible(
-                node.attr, policy
-            ):
-                return False
-            if (
-                isinstance(node, ast.keyword)
-                and node.arg is not None
-                and not _symbol_visible(node.arg, policy)
-            ):
-                return False
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if not _symbol_visible(node.value, policy):
-                    return False
-    return True
-
-
-def _signatures(tree: ast.Module, policy: RepoMapPolicy) -> list[str]:
-    found: list[str] = []
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if not _symbol_visible(node.name, policy):
-                continue
-            prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
-            annotation = f" -> {ast.unparse(node.returns)}" if node.returns else ""
-            args = copy.deepcopy(node.args)
-            args.defaults = [ast.Constant(value=Ellipsis) for _ in args.defaults]
-            args.kw_defaults = [
-                ast.Constant(value=Ellipsis) if item is not None else None
-                for item in args.kw_defaults
-            ]
-            if not _signature_parts_visible((args, node.returns), policy):
-                continue
-            signature = f"{prefix} {node.name}({ast.unparse(args)}){annotation}"
-            if len(signature) <= policy.max_signature_length:
-                found.append(signature)
-        elif isinstance(node, ast.ClassDef):
-            if not _symbol_visible(node.name, policy):
-                continue
-            if not _signature_parts_visible(
-                tuple(node.bases) + tuple(node.keywords), policy
-            ):
-                continue
-            bases = ", ".join(ast.unparse(base) for base in node.bases)
-            signature = f"class {node.name}({bases})" if bases else f"class {node.name}"
-            if len(signature) <= policy.max_signature_length:
-                found.append(signature)
-    return found
-
-
-def _defined_names(tree: ast.Module, policy: RepoMapPolicy) -> set[str]:
-    return {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        and _symbol_visible(node.name, policy)
-    }
-
-
-def _referenced_names(tree: ast.Module, policy: RepoMapPolicy) -> set[str]:
-    return {
-        node.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Name)
-        and isinstance(node.ctx, ast.Load)
-        and _symbol_visible(node.id, policy)
-    }
+def _visible_signatures(
+    signatures: list[parser_bundle.SignatureFact], policy: RepoMapPolicy
+) -> list[str]:
+    """Keep a signature only when every symbol it serializes passes symbol policy."""
+    return [
+        signature["text"]
+        for signature in signatures
+        if len(signature["text"]) <= policy.max_signature_length
+        and all(_symbol_visible(symbol, policy) for symbol in signature["symbols"])
+    ]
 
 
 def _module_paths(paths: set[str]) -> dict[str, str]:
@@ -438,19 +368,14 @@ def _module_paths(paths: set[str]) -> dict[str, str]:
     return modules
 
 
-def _import_modules(node: ast.stmt, module: str) -> list[str]:
-    if isinstance(node, ast.Import):
-        return [alias.name for alias in node.names]
-    if not isinstance(node, ast.ImportFrom):
+def _import_modules(fact: parser_bundle.ImportFact, module: str) -> list[str]:
+    """Candidate dotted modules for one import: the base module and each `from` name under it."""
+    level = fact["level"]
+    parent = module.rsplit(".", level)[0] if level else ""
+    base = ".".join(part for part in (parent, fact["module"]) if part)
+    if not base:
         return []
-    parent = module.rsplit(".", node.level)[0] if node.level else ""
-    base = ".".join(part for part in (parent, node.module or "") if part)
-    candidates = [base] if base else []
-    if base:
-        candidates.extend(
-            f"{base}.{alias.name}" for alias in node.names if alias.name != "*"
-        )
-    return candidates
+    return [base, *(f"{base}.{name}" for name in fact["names"] if name != "*")]
 
 
 def _module_visible(module: str, policy: RepoMapPolicy) -> bool:
@@ -481,30 +406,40 @@ def _sized(payload: dict[str, object]) -> tuple[str, int]:
     raise ValueError("token estimate did not converge")
 
 
-def _apply_parser_bundle(
-    repo: Path,
-    policy: RepoMapPolicy,
-    files: dict[str, dict[str, object]],
-    bundle_candidate_content: dict[str, bytes],
-) -> tuple[
-    Literal["minimal", "reduced", "full"],
-    Literal["path-only", "ast-only", "bundle"],
-    str,
-    dict[str, object],
-]:
-    """Try the opt-in `full` tier's offline parser bundle; degrade to `reduced`/`ast-only` on any failure.
+@dataclass(frozen=True)
+class _BundleParse:
+    """The outcome of the `full` tier: parsed file records and facts, or a degradation reason."""
 
-    Never raises and never touches the network: every branch below is either a local filesystem
-    read, an offline `pip install --no-index --target` subprocess, or a bounded local subprocess
-    call into the bundle's own worker script (see harness/repo_map/parser_bundle.py).
+    reason: str
+    provenance: dict[str, object]
+    records: dict[str, dict[str, object]]
+    facts: dict[str, parser_bundle.FileFacts]
+    diagnostics: list[Diagnostic]
+
+    @property
+    def applied(self) -> bool:
+        return self.reason == "parser bundle applied"
+
+
+def _parse_with_bundle(
+    repo: Path, commit: str, paths: list[str], policy: RepoMapPolicy
+) -> _BundleParse:
+    """Parse every supported file with the verified offline parser bundle, or degrade.
+
+    Every language, Python included, goes through the bundle's tree-sitter worker: there is no
+    in-process parser to fall back to, so any failure yields a reason for the `minimal` tier.
+    Never touches the network: every step is a local filesystem read, an offline
+    `uv pip install --offline --no-index --target`, or a bounded local subprocess into the bundle's worker
+    script (see harness/repo_map/parser_bundle.py). The bundle is located before any file content
+    is read, so a degraded run reads only paths.
     """
-    bundle_result = parser_bundle.acquire_bundle(
+    bundle = parser_bundle.acquire_bundle(
         repo=repo,
         registry_paths=policy.parser_bundle_registry_paths,
         python_executable=sys.executable,
         timeout_seconds=policy.parser_bundle_timeout_seconds,
     )
-    if isinstance(bundle_result, str):
+    if isinstance(bundle, str):
         provenance = parser_bundle.build_provenance(
             None,
             bundle_mode="degraded",
@@ -512,47 +447,109 @@ def _apply_parser_bundle(
             python_tag=None,
             platform_tag=None,
         )
-        return "reduced", "ast-only", bundle_result, provenance
-    eligible = {
-        path: content
-        for path, content in bundle_candidate_content.items()
-        if Path(path).suffix in bundle_result.worker_extensions
-    }
-    request: dict[str, object] = {
-        "paths": {
-            path: base64.b64encode(content).decode("ascii")
-            for path, content in eligible.items()
-        }
-    }
+        return _BundleParse(bundle, provenance, {}, {}, [])
+    records: dict[str, dict[str, object]] = {}
+    diagnostics: list[Diagnostic] = []
+    request_paths: dict[str, str] = {}
+    for path in paths:
+        # Git object reads keep the working tree, including untracked files, outside the input.
+        object_name = f"{commit}:{path}"
+        size = int(
+            _git(repo, policy.timeout_seconds, "cat-file", "-s", object_name)
+            .decode()
+            .strip()
+        )
+        if size > policy.max_file_bytes:
+            records[path] = {"path": path, "signatures": [], "parser_status": "too_large"}
+            diagnostics.append({"code": "file_too_large", "path": path})
+            continue
+        content = _git(repo, policy.timeout_seconds, "show", object_name)
+        if b"\0" in content:
+            continue
+        records[path] = {"path": path, "signatures": [], "parser_status": "ok"}
+        if Path(path).suffix in bundle.worker_extensions:
+            request_paths[path] = base64.b64encode(content).decode("ascii")
     parse_result = parser_bundle.run_bundle_parser(
         sys.executable,
-        bundle_result.worker_script,
-        bundle_result.install_dir,
-        request,
+        bundle.worker_script,
+        bundle.install_dir,
+        {"paths": request_paths},
         timeout_seconds=policy.parser_bundle_timeout_seconds,
         max_output_bytes=policy.parser_bundle_max_output_bytes,
-        expected_script_sha256=bundle_result.lock.script_sha256,
+        expected_script_sha256=bundle.lock.script_sha256,
+    )
+    applied = not isinstance(parse_result, str)
+    provenance = parser_bundle.build_provenance(
+        bundle.lock,
+        bundle_mode="applied" if applied else "degraded",
+        bundle_source=bundle.bundle_source,
+        python_tag=bundle.python_tag,
+        platform_tag=bundle.platform_tag,
     )
     if isinstance(parse_result, str):
-        provenance = parser_bundle.build_provenance(
-            bundle_result.lock,
-            bundle_mode="degraded",
-            bundle_source=bundle_result.bundle_source,
-            python_tag=bundle_result.python_tag,
-            platform_tag=bundle_result.platform_tag,
-        )
-        return "reduced", "ast-only", parse_result, provenance
-    for path, record in parse_result["files"].items():
-        if path in files:
-            files[path] = {"path": path, **record}
-    provenance = parser_bundle.build_provenance(
-        bundle_result.lock,
-        bundle_mode="applied",
-        bundle_source=bundle_result.bundle_source,
-        python_tag=bundle_result.python_tag,
-        platform_tag=bundle_result.platform_tag,
-    )
-    return "full", "bundle", "parser bundle applied", provenance
+        return _BundleParse(parse_result, provenance, {}, {}, [])
+    facts = {
+        path: record
+        for path, record in parse_result["files"].items()
+        if path in request_paths
+    }
+    return _BundleParse("parser bundle applied", provenance, records, facts, diagnostics)
+
+
+def _graph_from_facts(
+    records: dict[str, dict[str, object]],
+    facts: dict[str, parser_bundle.FileFacts],
+    diagnostics: list[Diagnostic],
+    policy: RepoMapPolicy,
+) -> list[EdgeRecord]:
+    """Apply symbol policy to worker facts, fill in file records, and build the edge list."""
+    module_paths = _module_paths({path for path in records if path.endswith(".py")})
+    edges: set[tuple[str, str, str, str]] = set()
+    definitions: dict[str, set[str]] = {}
+    for path in sorted(facts):
+        record = facts[path]
+        status = record["parser_status"]
+        records[path]["parser_status"] = status
+        if status != "ok":
+            diagnostics.append({"code": status, "path": path})
+        records[path]["signatures"] = _visible_signatures(record["signatures"], policy)
+        for name in record["definitions"]:
+            if _symbol_visible(name, policy):
+                definitions.setdefault(name, set()).add(path)
+        if not path.endswith(".py"):
+            continue
+        current_module = path.removesuffix(".py").replace("/", ".")
+        for import_fact in record["imports"]:
+            for imported_module in _import_modules(import_fact, current_module):
+                if not _module_visible(imported_module, policy):
+                    continue
+                target = module_paths.get(imported_module)
+                if (
+                    target
+                    and target != path
+                    and _module_visible(target.removesuffix(".py").replace("/", "."), policy)
+                ):
+                    edges.add((path, target, "import", "high"))
+    for path in sorted(facts):
+        for name in set(facts[path]["references"]):
+            if not _symbol_visible(name, policy):
+                continue
+            definition_paths = definitions.get(name, set())
+            if len(definition_paths) >= DEFINITION_FILE_FANOUT_THRESHOLD:
+                continue
+            targets = definition_paths - {path}
+            kind, confidence = (
+                ("unique-name-ref", "medium")
+                if len(targets) == 1
+                else ("ambiguous-name-ref", "low")
+            )
+            for target in targets:
+                edges.add((path, target, kind, confidence))
+    diagnostics.sort(key=lambda item: (item["path"], item["code"]))
+    return [
+        {"source": source, "target": target, "kind": kind, "confidence": confidence}
+        for source, target, kind, confidence in sorted(edges)
+    ]
 
 
 def build_map(
@@ -601,128 +598,22 @@ def build_map(
             f"Repo Map has {len(paths)} policy-approved files, above repo_map_policy.max_files={effective_policy.max_files}",
             remedy="narrow repo_map_policy.allow_paths or raise repo_map_policy.max_files deliberately",
         )
-    files: dict[str, dict[str, object]] = {}
+    files: dict[str, dict[str, object]] = {path: {"path": path} for path in paths}
     edges: list[EdgeRecord] = []
     diagnostics: list[Diagnostic] = []
-    parsed_trees: dict[str, ast.Module] = {}
-    bundle_candidate_content: dict[str, bytes] = {}
-    if effective_policy.tier in ("reduced", "full"):
-        python_paths = {path for path in paths if path.endswith(".py")}
-        module_paths = _module_paths(python_paths)
-        for path in paths:
-            # Git object reads keep the working tree, including untracked files, outside the input.
-            object_name = f"{pinned}:{path}"
-            size = int(
-                _git(
-                    repo,
-                    effective_policy.timeout_seconds,
-                    "cat-file",
-                    "-s",
-                    object_name,
-                )
-                .decode()
-                .strip()
-            )
-            if size > effective_policy.max_file_bytes:
-                files[path] = {
-                    "path": path,
-                    "signatures": [],
-                    "parser_status": "too_large",
-                }
-                diagnostics.append({"code": "file_too_large", "path": path})
-                continue
-            content = _git(repo, effective_policy.timeout_seconds, "show", object_name)
-            if b"\0" in content:
-                continue
-            signatures: list[str] = []
-            parser_status: Literal[
-                "ok", "syntax_error", "invalid_encoding", "too_large"
-            ] = "ok"
-            if path.endswith(".py"):
-                try:
-                    tree = ast.parse(content.decode("utf-8"), filename=path)
-                except UnicodeDecodeError:
-                    parser_status = "invalid_encoding"
-                    diagnostics.append({"code": "invalid_encoding", "path": path})
-                except SyntaxError:
-                    parser_status = "syntax_error"
-                    diagnostics.append({"code": "syntax_error", "path": path})
-                else:
-                    parsed_trees[path] = tree
-                    signatures = _signatures(tree, effective_policy)
-                    current_module = path.removesuffix(".py").replace("/", ".")
-                    for node in ast.walk(tree):
-                        if not isinstance(node, ast.stmt):
-                            continue
-                        for imported_module in _import_modules(node, current_module):
-                            if not _module_visible(imported_module, effective_policy):
-                                continue
-                            target = module_paths.get(imported_module)
-                            target_module = (
-                                target.removesuffix(".py").replace("/", ".")
-                                if target
-                                else ""
-                            )
-                            if (
-                                target
-                                and target != path
-                                and _module_visible(target_module, effective_policy)
-                            ):
-                                import_edge: EdgeRecord = {
-                                    "source": path,
-                                    "target": target,
-                                    "kind": "import",
-                                    "confidence": "high",
-                                }
-                                if import_edge not in edges:
-                                    edges.append(import_edge)
-            elif effective_policy.tier == "full":
-                bundle_candidate_content[path] = content
-            files[path] = {
-                "path": path,
-                "signatures": signatures,
-                "parser_status": parser_status,
-            }
-
-        definitions: dict[str, set[str]] = {}
-        for path, tree in parsed_trees.items():
-            for name in _defined_names(tree, effective_policy):
-                definitions.setdefault(name, set()).add(path)
-        for path, tree in parsed_trees.items():
-            for name in _referenced_names(tree, effective_policy):
-                definition_paths = definitions.get(name, set())
-                if len(definition_paths) >= DEFINITION_FILE_FANOUT_THRESHOLD:
-                    continue
-                targets = sorted(definition_paths - {path})
-                if not targets:
-                    continue
-                kind: Literal["unique-name-ref", "ambiguous-name-ref"]
-                confidence: Literal["medium", "low"]
-                kind, confidence = (
-                    ("unique-name-ref", "medium")
-                    if len(targets) == 1
-                    else ("ambiguous-name-ref", "low")
-                )
-                for target in targets:
-                    reference_edge: EdgeRecord = {
-                        "source": path,
-                        "target": target,
-                        "kind": kind,
-                        "confidence": confidence,
-                    }
-                    if reference_edge not in edges:
-                        edges.append(reference_edge)
-
-        edges.sort(
-            key=lambda edge: (
-                edge["source"],
-                edge["target"],
-                edge["kind"],
-                edge["confidence"],
-            )
-        )
-    else:
-        files = {path: {"path": path} for path in paths}
+    tier: Literal["minimal", "full"] = "minimal"
+    parser: Literal["path-only", "bundle"] = "path-only"
+    degradation_reason = "policy requested minimal tier"
+    bundle_provenance: dict[str, object] = {}
+    if effective_policy.tier == "full":
+        parsed = _parse_with_bundle(repo, pinned, paths, effective_policy)
+        degradation_reason = parsed.reason
+        bundle_provenance = parsed.provenance
+        if parsed.applied:
+            tier, parser = "full", "bundle"
+            files = parsed.records
+            diagnostics = parsed.diagnostics
+            edges = _graph_from_facts(files, parsed.facts, diagnostics, effective_policy)
     indegree = {path: 0 for path in files}
     for edge in edges:
         if edge["confidence"] != "low" and edge["target"] in indegree:
@@ -753,20 +644,6 @@ def build_map(
         if effective_seeds
         else (lambda path: (-indegree[path], path)),
     )
-    tier: Literal["minimal", "reduced", "full"] = effective_policy.tier
-    parser: Literal["path-only", "ast-only", "bundle"] = (
-        "path-only" if tier == "minimal" else "ast-only"
-    )
-    degradation_reason = (
-        "policy requested minimal tier"
-        if tier == "minimal"
-        else "offline parser bundle unavailable"
-    )
-    bundle_provenance: dict[str, object] = {}
-    if effective_policy.tier == "full":
-        tier, parser, degradation_reason, bundle_provenance = _apply_parser_bundle(
-            repo, effective_policy, files, bundle_candidate_content
-        )
     payload: dict[str, object] = {
         "schema_version": 1,
         "commit": pinned,

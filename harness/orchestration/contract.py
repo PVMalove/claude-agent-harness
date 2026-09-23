@@ -563,9 +563,17 @@ def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
         "max_signature_length",
         "timeout_seconds",
         "max_tokens",
+        "parser_bundle_timeout_seconds",
+        "parser_bundle_max_output_bytes",
     }
-    patterns = {"allow_paths", "deny_paths", "redact_paths", "redact_symbols"}
-    enum_values = {"tier": {"minimal", "reduced"}}
+    patterns = {
+        "allow_paths",
+        "deny_paths",
+        "redact_paths",
+        "redact_symbols",
+        "parser_bundle_registry_paths",
+    }
+    enum_values = {"tier": {"minimal", "full"}}
     unknown = sorted(set(value) - numeric - patterns - set(enum_values))
     problems: list[str] = []
     if unknown:

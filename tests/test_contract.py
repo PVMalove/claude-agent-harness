@@ -442,7 +442,7 @@ class RepoMapPolicyProblemTests(unittest.TestCase):
                     "max_path_length": 0,
                     "max_symbol_length": False,
                     "max_signature_length": -1,
-                    "tier": "full",
+                    "tier": "reduced",
                 }
             }
         )
@@ -453,7 +453,7 @@ class RepoMapPolicyProblemTests(unittest.TestCase):
                 "orchestration repo_map_policy.max_signature_length must be a positive integer",
                 "orchestration repo_map_policy.max_symbol_length must be a positive integer",
                 "orchestration repo_map_policy.redact_symbols must be a list of non-empty path globs",
-                "orchestration repo_map_policy.tier must be one of: minimal, reduced",
+                "orchestration repo_map_policy.tier must be one of: full, minimal",
             ],
         )
 
@@ -463,7 +463,39 @@ class RepoMapPolicyProblemTests(unittest.TestCase):
         )
         self.assertEqual(
             problems,
-            ["orchestration repo_map_policy.tier must be one of: minimal, reduced"],
+            ["orchestration repo_map_policy.tier must be one of: full, minimal"],
+        )
+
+    def test_full_tier_and_parser_bundle_fields_are_valid(self) -> None:
+        self.assertEqual(
+            contract._repo_map_policy_problems(
+                {
+                    "repo_map_policy": {
+                        "tier": "full",
+                        "parser_bundle_registry_paths": ["/opt/parser-bundle"],
+                        "parser_bundle_timeout_seconds": 30,
+                        "parser_bundle_max_output_bytes": 1000,
+                    }
+                }
+            ),
+            [],
+        )
+
+    def test_parser_bundle_fields_reject_invalid_values(self) -> None:
+        problems = contract._repo_map_policy_problems(
+            {
+                "repo_map_policy": {
+                    "parser_bundle_registry_paths": [""],
+                    "parser_bundle_timeout_seconds": 0,
+                }
+            }
+        )
+        self.assertEqual(
+            sorted(problems),
+            [
+                "orchestration repo_map_policy.parser_bundle_registry_paths must be a list of non-empty path globs",
+                "orchestration repo_map_policy.parser_bundle_timeout_seconds must be a positive integer",
+            ],
         )
 
 

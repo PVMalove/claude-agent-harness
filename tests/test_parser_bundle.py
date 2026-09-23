@@ -1,10 +1,10 @@
 """Unit-level behavior of the offline parser-bundle loader (harness/repo_map/parser_bundle.py).
 
 Every test here proves the generic mechanism -- lock parsing, hash verification, an offline
-`pip install --target`, and a bounded worker subprocess -- against synthetic fixtures assembled
-locally (see tests/_parser_bundle_fixtures.py). No test in this file makes a network call; the
-`pip install` calls below all pass `--no-index` and are skipped with a clear reason if pip is
-unavailable in the running interpreter.
+`uv pip install --target`, and a bounded worker subprocess -- against synthetic fixtures
+assembled locally (see tests/_parser_bundle_fixtures.py). No test in this file makes a network
+call; the `uv pip install` calls below all pass `--offline --no-index` and are skipped with a clear
+reason if `uv` is not on PATH (CI installs it with astral-sh/setup-uv).
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ from pathlib import Path
 import pytest
 from _parser_bundle_fixtures import (
     FAILING_WORKER_SCRIPT_SOURCE,
+    MALFORMED_FACTS_WORKER_SCRIPT_SOURCE,
     MINIMAL_WORKER_SCRIPT_SOURCE,
     OUTPUT_BEFORE_STDIN_DRAIN_WORKER_SCRIPT_SOURCE,
     OVERSIZED_WORKER_SCRIPT_SOURCE,
@@ -35,10 +37,8 @@ PARSER_BUNDLE_SOURCE = (ROOT / "harness" / "repo_map" / "parser_bundle.py").read
 )
 
 
-def _pip_available() -> bool:
-    import importlib.util
-
-    return importlib.util.find_spec("pip") is not None
+def _uv_available() -> bool:
+    return shutil.which("uv") is not None
 
 
 def _running_pair(timeout_seconds: int = 30) -> str:
@@ -117,7 +117,7 @@ def test_verify_wheelhouse_detects_missing_pair_and_hash_mismatch(tmp_path: Path
     assert corrupted == {"ok": False, "reason": "parser bundle hash mismatch"}
 
 
-@pytest.mark.skipif(not _pip_available(), reason="pip is not importable in this interpreter")
+@pytest.mark.skipif(not _uv_available(), reason="uv is not on PATH")
 def test_install_bundle_installs_offline_and_is_idempotent(tmp_path: Path) -> None:
     pair = _running_pair()
     bundle_dir = build_bundle_dir(tmp_path / "bundle", pair=pair)
@@ -136,7 +136,7 @@ def test_install_bundle_installs_offline_and_is_idempotent(tmp_path: Path) -> No
     marker = install_dir / parser_bundle.INSTALL_MARKER_FILENAME
     assert marker.read_text(encoding="utf-8").strip() == lock.raw_sha256
 
-    # Idempotent: a second call with the same lock hash must not fail or need to re-run pip.
+    # Idempotent: a second call with the same lock hash must not fail or need to re-run uv.
     parser_bundle.install_bundle(
         lock,
         bundle_dir / "wheelhouse" / pair,
@@ -148,7 +148,7 @@ def test_install_bundle_installs_offline_and_is_idempotent(tmp_path: Path) -> No
     assert marker.read_text(encoding="utf-8").strip() == lock.raw_sha256
 
 
-@pytest.mark.skipif(not _pip_available(), reason="pip is not importable in this interpreter")
+@pytest.mark.skipif(not _uv_available(), reason="uv is not on PATH")
 def test_run_bundle_parser_succeeds_and_uses_the_installed_package(tmp_path: Path) -> None:
     pair = _running_pair()
     bundle_dir = build_bundle_dir(tmp_path / "bundle", pair=pair)
@@ -221,6 +221,78 @@ def test_run_bundle_parser_degrades_on_subprocess_failure(tmp_path: Path) -> Non
         expected_script_sha256=script_sha256,
     )
     assert result == "parser subprocess failed"
+
+
+def test_run_bundle_parser_rejects_records_outside_the_facts_contract(tmp_path: Path) -> None:
+    script_path, script_sha256 = write_worker_script(
+        tmp_path, MALFORMED_FACTS_WORKER_SCRIPT_SOURCE, filename="malformed.py"
+    )
+    result = parser_bundle.run_bundle_parser(
+        sys.executable,
+        script_path,
+        tmp_path,
+        {"paths": {}},
+        timeout_seconds=10,
+        max_output_bytes=1_000_000,
+        expected_script_sha256=script_sha256,
+    )
+    assert result == "parser subprocess failed"
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"parser_status": "ok", "signatures": [], "imports": [], "definitions": []},
+        {
+            "parser_status": "too_large",
+            "signatures": [],
+            "imports": [],
+            "definitions": [],
+            "references": [],
+        },
+        {
+            "parser_status": "ok",
+            "signatures": [{"text": "def f()", "symbols": [1]}],
+            "imports": [],
+            "definitions": [],
+            "references": [],
+        },
+        {
+            "parser_status": "ok",
+            "signatures": [],
+            "imports": [{"module": "a", "level": -1, "names": []}],
+            "definitions": [],
+            "references": [],
+        },
+        {
+            "parser_status": "ok",
+            "signatures": [],
+            "imports": [{"module": "a", "level": True, "names": []}],
+            "definitions": [],
+            "references": [],
+        },
+        {
+            "parser_status": "ok",
+            "signatures": [],
+            "imports": [],
+            "definitions": [],
+            "references": "name",
+        },
+    ],
+)
+def test_file_facts_rejects_contract_violations(record: dict[str, object]) -> None:
+    assert parser_bundle._file_facts(record) is None
+
+
+def test_file_facts_accepts_a_complete_record() -> None:
+    record: dict[str, object] = {
+        "parser_status": "syntax_error",
+        "signatures": [{"text": "def f(x: int)", "symbols": ["f", "x", "int"]}],
+        "imports": [{"module": "pkg", "level": 1, "names": ["helper"]}],
+        "definitions": ["f"],
+        "references": ["helper"],
+    }
+    assert parser_bundle._file_facts(record) == record
 
 
 def test_run_bundle_parser_degrades_on_script_hash_mismatch_toctou(tmp_path: Path) -> None:
@@ -377,7 +449,7 @@ _UNSAFE_SHA256_VALUES = [
 @pytest.mark.parametrize("sha256", _UNSAFE_SHA256_VALUES)
 def test_parse_lock_rejects_unsafe_artifact_sha256(sha256: str) -> None:
     """An artifact digest is interpolated into the generated requirements file, so anything but
-    a bare lowercase hex digest could inject another requirement line or pip option."""
+    a bare lowercase hex digest could inject another requirement line or installer option."""
     with pytest.raises(parser_bundle.BundleFormatError):
         parser_bundle.parse_lock(
             json.dumps(
@@ -405,12 +477,11 @@ def test_parse_lock_rejects_unsafe_grammar_sha256(sha256: str) -> None:
         parser_bundle.parse_lock(json.dumps(_lock_payload(grammars=[grammar])).encode())
 
 
-def test_install_bundle_uses_isolated_flag_and_strips_pip_env(
+def test_install_bundle_runs_uv_offline_and_strips_installer_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No `PIP_*` variable or pip config file in the parent's environment may reach the pip
-
-    subprocess: the call is stubbed out entirely, so this proves the args/env passed to
+    """No `UV_*`/`PIP_*` variable or config file in the parent's environment may redirect the
+    offline install: the call is stubbed out entirely, so this proves the args/env passed to
     `subprocess.run` without ever touching the network or installing anything.
     """
     pair = _running_pair()
@@ -418,10 +489,12 @@ def test_install_bundle_uses_isolated_flag_and_strips_pip_env(
     lock = parser_bundle.parse_lock((bundle_dir / "parser_bundle.lock.json").read_bytes())
     install_dir = tmp_path / "install"
 
+    monkeypatch.setenv("UV_INDEX_URL", "http://example.invalid/simple")
+    monkeypatch.setenv("UV_FIND_LINKS", "http://example.invalid/links")
+    monkeypatch.setenv("UV_CONFIG_FILE", str(tmp_path / "uv.toml"))
     monkeypatch.setenv("PIP_INDEX_URL", "http://example.invalid/simple")
-    monkeypatch.setenv("PIP_FIND_LINKS", "http://example.invalid/links")
-    monkeypatch.setenv("PIP_CONFIG_FILE", str(tmp_path / "pip.conf"))
     monkeypatch.setenv("PARSER_BUNDLE_TEST_KEEP", "keep-me")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/opt/{name}")
 
     captured: dict[str, object] = {}
 
@@ -443,10 +516,46 @@ def test_install_bundle_uses_isolated_flag_and_strips_pip_env(
 
     cmd = captured["cmd"]
     assert isinstance(cmd, list)
-    assert "--isolated" in cmd
-    assert "--no-index" in cmd
+    assert cmd[:3] == ["/opt/uv", "pip", "install"]
+    for flag in ("--offline", "--no-config", "--no-index", "--require-hashes", "--no-cache"):
+        assert flag in cmd
+    assert cmd[cmd.index("--python") + 1] == sys.executable
+    assert cmd[cmd.index("--only-binary") + 1] == ":all:"
+    assert cmd[cmd.index("--target") + 1] == str(install_dir)
 
     env = captured["env"]
     assert isinstance(env, dict)
-    assert not any(key.startswith("PIP_") for key in env)
+    assert not any(key.startswith(("UV_", "PIP_")) for key in env)
     assert env.get("PARSER_BUNDLE_TEST_KEEP") == "keep-me"
+
+
+def test_install_bundle_without_uv_raises_install_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = _running_pair()
+    bundle_dir = build_bundle_dir(tmp_path / "bundle", pair=pair)
+    lock = parser_bundle.parse_lock((bundle_dir / "parser_bundle.lock.json").read_bytes())
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    with pytest.raises(parser_bundle.BundleInstallError, match="uv"):
+        parser_bundle.install_bundle(
+            lock,
+            bundle_dir / "wheelhouse" / pair,
+            tmp_path / "install",
+            sys.executable,
+            pair=pair,
+            timeout_seconds=30,
+        )
+
+
+def test_acquire_bundle_without_uv_degrades_with_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = _running_pair()
+    build_bundle_dir(parser_bundle.default_registry_dir(tmp_path), pair=pair)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    result = parser_bundle.acquire_bundle(
+        repo=tmp_path, registry_paths=(), python_executable=sys.executable, timeout_seconds=30
+    )
+    assert result == "uv executable unavailable"

@@ -32,8 +32,12 @@ files = [
     "scripts/verify.py",
     "scripts/check_public_metadata.py",
     "scripts/diff_coverage.py",
+    "scripts/build_parser_bundle.py",
     "skills/first-party/pvmalove/qa-gate/scripts/test_summary.py",
 ]
+# Imports `tree_sitter*`, which only the parser bundle provides: checked by the separate mypy run in
+# the `repo-map-bundle` CI job with the bundle installed (ADR 0024).
+exclude = ["^harness/repo_map/tree_sitter_worker\\.py$"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
