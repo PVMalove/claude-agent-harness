@@ -50,11 +50,6 @@ _ADR_HEADING_RE: re.Pattern[str] = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 # harness/bin/harness resource packaging and scripts/test_clean_room.py).
 _REPO_MAP_SCRIPT: Path = Path(__file__).resolve().parents[1] / "repo_map" / "repo_map.py"
 
-# Deliberately large and independent of `max_package_tokens`: the Repo Map call must not truncate
-# the graph/signatures it hands back, because the Context Package's own token budget is enforced
-# separately, later, over the assembled payload.
-_REPO_MAP_MAX_TOKENS: int = 5_000_000
-
 _REPO_MAP_REQUIRED_FIELDS: tuple[str, ...] = (
     "schema_version",
     "commit",
@@ -226,8 +221,6 @@ def _run_repo_map(repository: Path, commit: str, seeds: list[str]) -> dict[str, 
         str(repository),
         "--commit",
         commit,
-        "--max-tokens",
-        str(_REPO_MAP_MAX_TOKENS),
     ]
     for seed in seeds:
         args.extend(["--seed", seed])
