@@ -8,10 +8,12 @@ import base64
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
+import tempfile
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Literal, TypedDict, cast
@@ -48,6 +50,7 @@ DEFAULT_MAX_SIGNATURE_LENGTH = 2_048
 DEFAULT_TIMEOUT_SECONDS = 10
 DEFAULT_PARSER_BUNDLE_TIMEOUT_SECONDS = 30
 DEFAULT_PARSER_BUNDLE_MAX_OUTPUT_BYTES = 10_000_000
+DEFAULT_CACHE_DIR = Path(tempfile.gettempdir()) / "agent-harness" / "repo-map"
 # Names defined in this many files are too common to provide useful references.
 DEFINITION_FILE_FANOUT_THRESHOLD = 5
 EXCLUDED_DIRS = frozenset(
@@ -460,7 +463,11 @@ def _parse_with_bundle(
             .strip()
         )
         if size > policy.max_file_bytes:
-            records[path] = {"path": path, "signatures": [], "parser_status": "too_large"}
+            records[path] = {
+                "path": path,
+                "signatures": [],
+                "parser_status": "too_large",
+            }
             diagnostics.append({"code": "file_too_large", "path": path})
             continue
         content = _git(repo, policy.timeout_seconds, "show", object_name)
@@ -493,7 +500,9 @@ def _parse_with_bundle(
         for path, record in parse_result["files"].items()
         if path in request_paths
     }
-    return _BundleParse("parser bundle applied", provenance, records, facts, diagnostics)
+    return _BundleParse(
+        "parser bundle applied", provenance, records, facts, diagnostics
+    )
 
 
 def _graph_from_facts(
@@ -527,7 +536,9 @@ def _graph_from_facts(
                 if (
                     target
                     and target != path
-                    and _module_visible(target.removesuffix(".py").replace("/", "."), policy)
+                    and _module_visible(
+                        target.removesuffix(".py").replace("/", "."), policy
+                    )
                 ):
                     edges.add((path, target, "import", "high"))
     for path in sorted(facts):
@@ -552,52 +563,78 @@ def _graph_from_facts(
     ]
 
 
-def build_map(
+def _cache_key(
+    pinned: str,
+    seeds: list[str],
+    max_tokens: int,
+    policy: RepoMapPolicy,
+) -> str:
+    """Hash every input that can affect a serialized Repo Map."""
+    parser_identity = hashlib.sha256(
+        Path(__file__).read_bytes()
+        + Path(parser_bundle.__file__).read_bytes()
+        + (_HARNESS_ROOT / "repo_map" / "tree_sitter_worker.py").read_bytes()
+    ).hexdigest()
+    identity = {
+        "commit": pinned,
+        "seeds": seeds,
+        "max_tokens": max_tokens,
+        "policy": asdict(policy),
+        "parser_identity": parser_identity,
+        "token_estimator_version": TOKEN_ESTIMATOR_VERSION,
+    }
+    return hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _read_cache(cache_dir: Path, key: str) -> str | None:
+    """Return a verified entry; malformed or tampered entries are cache misses."""
+    try:
+        envelope = json.loads((cache_dir / f"{key}.json").read_text(encoding="utf-8"))
+        if not isinstance(envelope, dict):
+            return None
+        payload = envelope.get("payload")
+        digest = envelope.get("sha256")
+        if not isinstance(payload, str) or not isinstance(digest, str):
+            return None
+        if hashlib.sha256(payload.encode("utf-8")).hexdigest() != digest:
+            return None
+        return payload
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
+def _write_cache(cache_dir: Path, key: str, payload: str) -> None:
+    """Best-effort atomic cache write: the cache must never become authoritative."""
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        envelope = json.dumps(
+            {
+                "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+                "payload": payload,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        descriptor, temporary = tempfile.mkstemp(
+            dir=cache_dir, prefix=f".{key}.", suffix=".tmp"
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(envelope)
+        Path(temporary).replace(cache_dir / f"{key}.json")
+    except OSError:
+        return
+
+
+def _build_map(
     repo: Path,
-    commit: str,
+    pinned: str,
+    paths: list[str],
     max_tokens: int,
     seeds: list[str],
-    policy: RepoMapPolicy | None = None,
+    effective_policy: RepoMapPolicy,
 ) -> str:
-    effective_policy = policy or RepoMapPolicy()
-    if max_tokens < 1:
-        raise PolicyError(
-            "--max-tokens must be positive",
-            remedy="pass a positive integer to --max-tokens",
-        )
-    if (
-        effective_policy.max_tokens is not None
-        and max_tokens > effective_policy.max_tokens
-    ):
-        raise PolicyError(
-            "--max-tokens exceeds repo_map_policy.max_tokens",
-            remedy="lower --max-tokens or raise repo_map_policy.max_tokens in the project config",
-        )
-    pinned = (
-        _git(
-            repo,
-            effective_policy.timeout_seconds,
-            "rev-parse",
-            "--verify",
-            f"{commit}^{{commit}}",
-        )
-        .decode()
-        .strip()
-    )
-    raw_paths = _git(
-        repo, effective_policy.timeout_seconds, "ls-tree", "-rz", "--name-only", pinned
-    )
-    paths = sorted(
-        path.decode("utf-8", "surrogateescape")
-        for path in raw_paths.split(b"\0")
-        if path
-    )
-    paths = [path for path in paths if _allowed(path, effective_policy)]
-    if len(paths) > effective_policy.max_files:
-        raise PolicyError(
-            f"Repo Map has {len(paths)} policy-approved files, above repo_map_policy.max_files={effective_policy.max_files}",
-            remedy="narrow repo_map_policy.allow_paths or raise repo_map_policy.max_files deliberately",
-        )
     files: dict[str, dict[str, object]] = {path: {"path": path} for path in paths}
     edges: list[EdgeRecord] = []
     diagnostics: list[Diagnostic] = []
@@ -613,7 +650,9 @@ def build_map(
             tier, parser = "full", "bundle"
             files = parsed.records
             diagnostics = parsed.diagnostics
-            edges = _graph_from_facts(files, parsed.facts, diagnostics, effective_policy)
+            edges = _graph_from_facts(
+                files, parsed.facts, diagnostics, effective_policy
+            )
     indegree = {path: 0 for path in files}
     for edge in edges:
         if edge["confidence"] != "low" and edge["target"] in indegree:
@@ -706,6 +745,68 @@ def build_map(
     return encoded
 
 
+def build_map(
+    repo: Path,
+    commit: str,
+    max_tokens: int,
+    seeds: list[str],
+    policy: RepoMapPolicy | None = None,
+    *,
+    cache_dir: Path | None = None,
+) -> str:
+    """Build a Repo Map, reusing a verified local content-addressed entry when possible."""
+    effective_policy = policy or RepoMapPolicy()
+    if max_tokens < 1:
+        raise PolicyError(
+            "--max-tokens must be positive",
+            remedy="pass a positive integer to --max-tokens",
+        )
+    if (
+        effective_policy.max_tokens is not None
+        and max_tokens > effective_policy.max_tokens
+    ):
+        raise PolicyError(
+            "--max-tokens exceeds repo_map_policy.max_tokens",
+            remedy="lower --max-tokens or raise repo_map_policy.max_tokens in the project config",
+        )
+    pinned = (
+        _git(
+            repo,
+            effective_policy.timeout_seconds,
+            "rev-parse",
+            "--verify",
+            f"{commit}^{{commit}}",
+        )
+        .decode()
+        .strip()
+    )
+    raw_paths = _git(
+        repo, effective_policy.timeout_seconds, "ls-tree", "-rz", "--name-only", pinned
+    )
+    paths = sorted(
+        path.decode("utf-8", "surrogateescape")
+        for path in raw_paths.split(b"\0")
+        if path
+    )
+    paths = [path for path in paths if _allowed(path, effective_policy)]
+    if len(paths) > effective_policy.max_files:
+        raise PolicyError(
+            f"Repo Map has {len(paths)} policy-approved files, above repo_map_policy.max_files={effective_policy.max_files}",
+            remedy="narrow repo_map_policy.allow_paths or raise repo_map_policy.max_files deliberately",
+        )
+    normalized_seeds = sorted(set(seeds) & set(paths))
+    root = cache_dir if cache_dir is not None else DEFAULT_CACHE_DIR
+    key = _cache_key(pinned, normalized_seeds, max_tokens, effective_policy)
+    cached = _read_cache(root, key)
+    if cached is not None:
+        return cached
+    result = _build_map(
+        repo, pinned, paths, max_tokens, normalized_seeds, effective_policy
+    )
+    _write_cache(root, key, result)
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path.cwd())
@@ -713,6 +814,7 @@ def main() -> int:
     parser.add_argument("--seed", action="append", default=[])
     parser.add_argument("--max-tokens", type=int)
     parser.add_argument("--policy", type=Path)
+    parser.add_argument("--cache-dir", type=Path)
     args = parser.parse_args()
     try:
         policy_path = args.policy or args.repo / ".harness" / "orchestration.json"
@@ -724,7 +826,14 @@ def main() -> int:
         else:
             max_tokens = DEFAULT_MAX_TOKENS
         sys.stdout.write(
-            build_map(args.repo, args.commit, max_tokens, args.seed, policy)
+            build_map(
+                args.repo,
+                args.commit,
+                max_tokens,
+                args.seed,
+                policy,
+                cache_dir=args.cache_dir,
+            )
         )
     except HarnessError as exc:
         return print_and_exit(exc)

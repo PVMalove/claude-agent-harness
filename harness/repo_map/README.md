@@ -10,6 +10,12 @@ The JSON output conforms to `repo_map.schema.json`. It includes parser provenanc
 selected files, dependency edges, diagnostics, and a conservative token estimate. The provenance
 records the applied tier and numeric limits, never the policy's path or symbol patterns.
 
+Repo Map keeps a best-effort, content-addressed cache under the system temporary directory
+(`agent-harness/repo-map`), never in the mapped repository or its ledger. The cache key covers the
+pinned commit, normalized seeds, budget, policy, parser identity, and token-estimator version.
+Entries carry a SHA-256 of their payload; malformed or altered entries are recomputed. Use
+`--cache-dir <path>` to select a different disposable cache location.
+
 `--seed` accepts repository-relative paths. The CLI keeps only existing, policy-approved seeds,
 then deduplicates and sorts them. With effective seeds, files are ordered by their breadth-first
 distance through high- and medium-confidence edges, then by path. Without effective seeds, files
