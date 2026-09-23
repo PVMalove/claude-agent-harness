@@ -5,6 +5,8 @@ import re
 import socket
 import subprocess
 import sys
+import time
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -76,7 +78,11 @@ def _fake_python_bundle(
         script_sha256="0" * 64,
         grammars=(
             parser_bundle.GrammarSpec(
-                name="python", version="0.25.0", abi=15, sha256="1" * 64, extensions=(".py",)
+                name="python",
+                version="0.25.0",
+                abi=15,
+                sha256="1" * 64,
+                extensions=(".py",),
             ),
         ),
         wheelhouses={},
@@ -94,7 +100,11 @@ def _fake_python_bundle(
     requests: list[dict[str, object]] = []
 
     def _run(
-        _python: str, _script: Path, _install: Path, request: dict[str, object], **_: object
+        _python: str,
+        _script: Path,
+        _install: Path,
+        request: dict[str, object],
+        **_: object,
     ) -> dict[str, object]:
         requests.append(request)
         paths = request["paths"]
@@ -180,6 +190,88 @@ def test_repo_map_without_bundle_is_minimal_path_inventory(
     assert in_process["tier"] == "minimal"
 
 
+def test_repo_map_cache_reuses_byte_identical_result_and_keys_every_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "project"
+    commit = _commit_files(
+        repo,
+        {"main.py": "import helper\n", "helper.py": "def render() -> None: ...\n"},
+    )
+    cache_dir = tmp_path / "cache"
+    calls = _fake_python_bundle(monkeypatch, {"main.py": _facts()})
+    policy = repo_map.RepoMapPolicy(tier="full")
+
+    first = repo_map.build_map(
+        repo, commit, 4000, ["main.py", "main.py"], policy, cache_dir=cache_dir
+    )
+    assert (
+        repo_map.build_map(repo, commit, 4000, ["main.py"], policy, cache_dir=cache_dir)
+        == first
+    )
+    assert len(calls) == 1
+
+    repo_map.build_map(repo, commit, 3999, ["main.py"], policy, cache_dir=cache_dir)
+    repo_map.build_map(repo, commit, 4000, ["helper.py"], policy, cache_dir=cache_dir)
+    repo_map.build_map(
+        repo,
+        commit,
+        4000,
+        ["main.py"],
+        repo_map.RepoMapPolicy(tier="full", max_file_bytes=999),
+        cache_dir=cache_dir,
+    )
+    assert len(calls) == 4
+
+
+def test_repo_map_cache_discards_tampered_entry_and_never_touches_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "project"
+    commit = _commit_files(repo, {"main.py": "def run() -> None: ...\n"})
+    cache_dir = tmp_path / "cache"
+    calls = _fake_python_bundle(monkeypatch, {"main.py": _facts()})
+    policy = repo_map.RepoMapPolicy(tier="full")
+    first = repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir)
+    entry = next(cache_dir.glob("*.json"))
+    entry.write_text('{"sha256":"bad","payload":"tampered"}', encoding="utf-8")
+
+    assert (
+        repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir) == first
+    )
+    assert len(calls) == 2
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_repo_map_cache_large_fixture_measures_cold_warm_limits(tmp_path: Path) -> None:
+    repo = tmp_path / "project"
+    commit = _commit_files(
+        repo,
+        {
+            f"src/module_{index:04}.py": "def run() -> None: pass\n"
+            for index in range(500)
+        },
+    )
+    cache_dir = tmp_path / "cache"
+    policy = repo_map.RepoMapPolicy(tier="minimal")
+
+    tracemalloc.start()
+    started = time.perf_counter()
+    cold = repo_map.build_map(repo, commit, 1600, [], policy, cache_dir=cache_dir)
+    cold_latency = time.perf_counter() - started
+    started = time.perf_counter()
+    warm = repo_map.build_map(repo, commit, 1600, [], policy, cache_dir=cache_dir)
+    warm_latency = time.perf_counter() - started
+    _, peak_memory = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert warm == cold
+    assert len(cold.encode("utf-8")) <= 8_000
+    assert peak_memory < 32_000_000
+    assert cold_latency < 10
+    assert warm_latency < 10
+
+
 def test_repo_map_production_modules_never_import_stdlib_ast() -> None:
     for source_path in (
         ROOT / "harness" / "repo_map" / "repo_map.py",
@@ -187,7 +279,10 @@ def test_repo_map_production_modules_never_import_stdlib_ast() -> None:
         ROOT / "harness" / "repo_map" / "tree_sitter_worker.py",
     ):
         source = source_path.read_text(encoding="utf-8")
-        assert re.search(r"^\s*(import ast\b|from ast import)", source, re.MULTILINE) is None
+        assert (
+            re.search(r"^\s*(import ast\b|from ast import)", source, re.MULTILINE)
+            is None
+        )
         assert "ast-only" not in source
 
 
@@ -214,7 +309,9 @@ def test_repo_map_full_tier_builds_signatures_and_edges_from_bundle_facts(
                 references=["helper"],
             ),
             "helper.py": _facts(
-                signatures=[("def render(value: int) -> str", ["render", "value", "int", "str"])],
+                signatures=[
+                    ("def render(value: int) -> str", ["render", "value", "int", "str"])
+                ],
                 definitions=["render"],
             ),
         },
@@ -244,7 +341,11 @@ def test_repo_map_full_tier_builds_signatures_and_edges_from_bundle_facts(
         "signatures": ["def render(value: int) -> str"],
         "parser_status": "ok",
     }
-    assert result["files"][-1] == {"path": "notes.txt", "signatures": [], "parser_status": "ok"}
+    assert result["files"][-1] == {
+        "path": "notes.txt",
+        "signatures": [],
+        "parser_status": "ok",
+    }
     assert result["edges"] == [
         {
             "source": "main.py",
@@ -312,12 +413,18 @@ def test_repo_map_ranks_normalized_seeds_and_definition_references(
     commit = _commit_files(repo, sources)
     _fake_python_bundle(monkeypatch, facts)
     policy_path = tmp_path / "orchestration.json"
-    policy_path.write_text(json.dumps({"repo_map_policy": {"deny_paths": ["private.py"]}}))
+    policy_path.write_text(
+        json.dumps({"repo_map_policy": {"deny_paths": ["private.py"]}})
+    )
     policy = repo_map.load_policy(policy_path, explicit=True)
 
     normalized = json.loads(
         repo_map.build_map(
-            repo, commit, 4000, ["missing.py", "seed.py", "seed.py", "private.py"], policy
+            repo,
+            commit,
+            4000,
+            ["missing.py", "seed.py", "seed.py", "private.py"],
+            policy,
         )
     )
     assert normalized == json.loads(
@@ -531,8 +638,14 @@ def test_repo_map_applies_symbol_and_length_redaction_before_serialization(
             "public.py": _facts(
                 signatures=[
                     ("def visible(value: int) -> int", ["visible", "value", "int"]),
-                    ("def hidden_symbol(value: int) -> int", ["hidden_symbol", "value", "int"]),
-                    ("def shown(arg: hidden_type) -> int", ["shown", "arg", "hidden_type", "int"]),
+                    (
+                        "def hidden_symbol(value: int) -> int",
+                        ["hidden_symbol", "value", "int"],
+                    ),
+                    (
+                        "def shown(arg: hidden_type) -> int",
+                        ["shown", "arg", "hidden_type", "int"],
+                    ),
                     ("def " + "long" * 10 + "()", ["long" * 10]),
                     ("def wide(" + "a, " * 20 + "b)", ["wide", "a", "b"]),
                 ],
@@ -641,7 +754,9 @@ def test_repo_map_minimal_policy_never_acquires_a_bundle(
 
     monkeypatch.setattr(parser_bundle, "acquire_bundle", _refuse)
     result = json.loads(
-        repo_map.build_map(repo, commit, 4000, [], repo_map.RepoMapPolicy(tier="minimal"))
+        repo_map.build_map(
+            repo, commit, 4000, [], repo_map.RepoMapPolicy(tier="minimal")
+        )
     )
     assert result["tier"] == "minimal"
     assert result["degradation_reason"] == "policy requested minimal tier"
@@ -667,7 +782,10 @@ def test_repo_map_redacts_signature_names_and_import_edges(
             "main.py": _facts(
                 signatures=[
                     ("def visible(value: int) -> int", ["visible", "value", "int"]),
-                    ("def public(hidden_arg: int) -> int", ["public", "hidden_arg", "int"]),
+                    (
+                        "def public(hidden_arg: int) -> int",
+                        ["public", "hidden_arg", "int"],
+                    ),
                 ],
                 imports=[
                     ("pkg.hidden_service", 0, []),
@@ -679,7 +797,9 @@ def test_repo_map_redacts_signature_names_and_import_edges(
         },
     )
     policy_path = tmp_path / "orchestration.json"
-    policy_path.write_text(json.dumps({"repo_map_policy": {"redact_symbols": ["hidden_*"]}}))
+    policy_path.write_text(
+        json.dumps({"repo_map_policy": {"redact_symbols": ["hidden_*"]}})
+    )
 
     result = json.loads(
         repo_map.build_map(
@@ -751,7 +871,9 @@ def test_repo_map_full_tier_without_bundle_has_no_network_call(
     assert result["degradation_reason"] == "offline parser bundle unavailable"
 
 
-def test_repo_map_full_tier_missing_wheelhouse_for_pair_degrades(tmp_path: Path) -> None:
+def test_repo_map_full_tier_missing_wheelhouse_for_pair_degrades(
+    tmp_path: Path,
+) -> None:
     repo = tmp_path / "project"
     commit = _init_repo_with_stub_file(repo)
     bundle_dir = build_bundle_dir(tmp_path / "bundle", pair="cp1-nonexistent-platform")
