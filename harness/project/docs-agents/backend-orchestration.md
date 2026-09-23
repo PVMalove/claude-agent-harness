@@ -475,6 +475,11 @@ operational-категории могут повторить read-only стад�
 запускают. `--retry-role developer` принудительно выбирает developer retry там, где coordinator
 иначе повторил бы ту же роль на том же SHA.
 
+Code-review `blocker` никогда не принимается. Пока `retry_policy.max_developer_retries` ещё допускает
+developer retry, для него доступны `retry` или `abandon`; после исчерпания budget `retry`
+отклоняется, а blocker закрывается через `block`, `fail` или `abandon`, после чего работа
+разбивается или перепланируется в новом batch.
+
 Решение `abandon` доступно после любого completion report. Оно требует явного approval и непустого
 `--reason`, переводит batch в терминальный `abandoned` и помечает незакрытые dispatch как
 `abandoned`:
