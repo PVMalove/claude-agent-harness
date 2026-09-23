@@ -120,18 +120,56 @@ def run_hook(
     )
 
 
-def _force_remove_readonly(func, path, exc_info):
+def _force_remove_readonly(func, path, exc):
     # git leaves some files read-only on Windows; clear the bit and retry the removal.
     os.chmod(path, stat.S_IWRITE)
     func(path)
 
 
-def main():
-    test_root = Path(tempfile.mkdtemp(prefix="agent-harness-test."))
+# Longest path this test creates below its root, measured at 165 chars
+# (orchestration_project/.harness/orchestration/state/generations/generation-*/qa-artifacts/
+# <sha256>.log), plus headroom for fixtures growing deeper.
+DEEPEST_RELATIVE_PATH = 180
+WINDOWS_MAX_PATH = 259
+
+
+def _long_paths_enabled():
+    import winreg
+
     try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem"
+        ) as key:
+            return winreg.QueryValueEx(key, "LongPathsEnabled")[0] == 1
+    except OSError:
+        return False
+
+
+def _check_path_budget(test_root):
+    """Fail up front, with the fix spelled out, instead of a cryptic WinError deep inside git or a
+    hook when a long TMP pushes the tree past MAX_PATH (issue #305)."""
+    if os.name != "nt" or _long_paths_enabled():
+        return
+    if len(str(test_root)) + 1 + DEEPEST_RELATIVE_PATH > WINDOWS_MAX_PATH:
+        sys.exit(
+            f"test-clean-room: temp root {test_root} ({len(str(test_root))} chars) leaves no room "
+            f"for its {DEEPEST_RELATIVE_PATH}-char tree under Windows MAX_PATH "
+            f"({WINDOWS_MAX_PATH}). Point TMP/TEMP at a shorter directory, or enable "
+            "LongPathsEnabled."
+        )
+
+
+def main():
+    test_root = Path(tempfile.mkdtemp(prefix="cr."))
+    try:
+        _check_path_budget(test_root)
         _run(test_root)
     finally:
-        shutil.rmtree(test_root, onerror=_force_remove_readonly)
+        try:
+            shutil.rmtree(test_root, onexc=_force_remove_readonly)
+        except OSError as exc:
+            # A cleanup failure must not replace the test's own result or traceback.
+            print(f"warning: could not remove {test_root}: {exc}", file=sys.stderr)
 
 
 def _run(test_root: Path):
