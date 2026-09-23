@@ -167,6 +167,10 @@ def _run_repo_map(repository: Path, commit: str, seeds: list[str]) -> dict[str, 
     """
     args: list[str] = [
         sys.executable,
+        # -B: never write .pyc bytecode caches. Repo Map's own imports otherwise land
+        # __pycache__ directories inside the target repository -- a mutation the checkout-clean
+        # invariant (git status --porcelain must be empty before a review dispatch) forbids.
+        "-B",
         str(_REPO_MAP_SCRIPT),
         "--repo",
         str(repository),

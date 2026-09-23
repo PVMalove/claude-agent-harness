@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from collections.abc import Callable
@@ -480,6 +481,89 @@ class DependencyContextUnitTests(unittest.TestCase):
     def test_fallback_excerpt_is_bounded_at_thirty_lines(self) -> None:
         text = "\n".join(str(index) for index in range(40))
         self.assertEqual(_fallback_excerpt(text), [str(index) for index in range(30)])
+
+
+class GuardHotPathTests(unittest.TestCase):
+    """No network, `.venv`, `requirements.txt`, target-project mutation, or `uv run` in the hot path."""
+
+    def test_repo_map_is_invoked_with_sys_executable_and_no_uv(self) -> None:
+        calls: list[list[str]] = []
+        real_run = subprocess.run
+
+        def _spy(
+            args: list[str],
+            *,
+            capture_output: bool = True,
+            text: bool = True,
+            encoding: str = "utf-8",
+            errors: str = "replace",
+            check: bool = False,
+        ) -> subprocess.CompletedProcess[str]:
+            if any(str(item).endswith("repo_map.py") for item in args):
+                calls.append([str(item) for item in args])
+            return real_run(
+                args,
+                capture_output=capture_output,
+                text=text,
+                encoding=encoding,
+                errors=errors,
+                check=check,
+            )
+
+        fixture = ContextBuilderFixture()
+        fixture.setUp()
+        try:
+            with patch(
+                "harness.context_builder.context_builder.subprocess.run", side_effect=_spy
+            ):
+                build_context_package(
+                    fixture.repo,
+                    fixture.base_commit,
+                    fixture.candidate_commit,
+                    min_starting_files=1,
+                )
+        finally:
+            fixture.tearDown()
+
+        self.assertEqual(len(calls), 1)
+        invoked = calls[0]
+        self.assertEqual(invoked[0], sys.executable)
+        # -B: no .pyc bytecode caches written into the target repository.
+        self.assertIn("-B", invoked)
+        self.assertNotIn("uv", invoked)
+        for token in invoked:
+            self.assertNotIn("uv run", token)
+
+    def test_a_real_invocation_writes_no_bytecode_cache_under_the_harness_package(
+        self,
+    ) -> None:
+        """A real (non-mocked) subprocess run must not create a new __pycache__ under harness/ --
+        that mutation is exactly what broke a review dispatch's checkout-clean invariant
+        (git status --porcelain must be empty) before -B was added to the Repo Map invocation."""
+        harness_root = MODULE_ROOT.parent  # .../harness
+        before = {path for path in harness_root.rglob("__pycache__")}
+        fixture = ContextBuilderFixture()
+        fixture.setUp()
+        try:
+            build_context_package(
+                fixture.repo, fixture.base_commit, fixture.candidate_commit, min_starting_files=1
+            )
+        finally:
+            fixture.tearDown()
+        after = {path for path in harness_root.rglob("__pycache__")}
+        self.assertEqual(after - before, set())
+
+    def test_hot_path_source_has_no_network_venv_requirements_or_uv_run(self) -> None:
+        module_source = (MODULE_ROOT / "context_builder.py").read_text(encoding="utf-8")
+        for banned in (
+            "uv run",
+            ".venv",
+            "requirements.txt",
+            "urlopen",
+            "requests.get",
+            "socket.",
+        ):
+            self.assertNotIn(banned, module_source)
 
 
 # --- Repo Map full (bundle) tier: graph widening, symbol-graph depth, and signature-based
