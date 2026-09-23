@@ -47,6 +47,10 @@ _WHEEL_FILENAME_RE = re.compile(
     r"\.whl"
 )
 
+# A bare lowercase sha256 hex digest, the form `hashlib.sha256().hexdigest()` produces. Artifact
+# digests are interpolated into the generated requirements file, so nothing else may pass.
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
 DegradationReason = Literal[
     "offline parser bundle unavailable",
     "parser bundle hash mismatch",
@@ -134,6 +138,21 @@ def _wheel_filename(value: str, where: str) -> str:
     return value
 
 
+def _sha256_field(obj: dict[str, object], field: str, where: str) -> str:
+    """Validate a lock digest as a bare lowercase sha256 hex string -- reject injection.
+
+    Artifact digests are interpolated into the generated requirements file, so a value carrying
+    a newline or pip option would add requirement lines; a lock that fails this is a
+    degradation (`BundleFormatError`), never a crash or an install.
+    """
+    value = _string_field(obj, field)
+    if not _SHA256_RE.fullmatch(value):
+        raise BundleFormatError(
+            f"parser_bundle.lock.json: {where} must be a lowercase sha256 hex digest, got {value!r}"
+        )
+    return value
+
+
 def _int_field(obj: dict[str, object], field: str) -> int:
     value = obj.get(field)
     if isinstance(value, bool) or not isinstance(value, int):
@@ -151,7 +170,7 @@ def _artifact_specs(value: object, where: str) -> tuple[ArtifactSpec, ...]:
         specs.append(
             ArtifactSpec(
                 filename=_wheel_filename(_string_field(item, "filename"), f"{where}.filename"),
-                sha256=_string_field(item, "sha256"),
+                sha256=_sha256_field(item, "sha256", f"{where}.sha256"),
             )
         )
     return tuple(specs)
@@ -188,7 +207,7 @@ def parse_lock(raw: bytes) -> BundleLock:
                 name=_string_field(item, "name"),
                 version=_string_field(item, "version"),
                 abi=_int_field(item, "abi"),
-                sha256=_string_field(item, "sha256"),
+                sha256=_sha256_field(item, "sha256", "grammars[].sha256"),
                 extensions=tuple(extensions_raw),
             )
         )
@@ -204,7 +223,7 @@ def parse_lock(raw: bytes) -> BundleLock:
         core_version=_string_field(decoded, "core_version"),
         core_abi_range=_string_field(decoded, "core_abi_range"),
         worker_script=_safe_bare_filename(_string_field(decoded, "worker_script"), "worker_script"),
-        script_sha256=_string_field(decoded, "script_sha256"),
+        script_sha256=_sha256_field(decoded, "script_sha256", "script_sha256"),
         grammars=tuple(grammars),
         wheelhouses=wheelhouses,
         raw_sha256=hashlib.sha256(raw).hexdigest(),

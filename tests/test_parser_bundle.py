@@ -363,6 +363,48 @@ def test_parse_lock_rejects_unsafe_wheelhouse_filename(filename: str) -> None:
         )
 
 
+_UNSAFE_SHA256_VALUES = [
+    "a" * 64 + "\ngit+https://example.invalid/pkg.git#egg=pkg2",
+    "a" * 64 + "\n--index-url http://example.invalid/simple",
+    "a" * 64 + " --hash=sha256:" + "b" * 64,
+    "a" * 63,
+    "a" * 65,
+    "A" * 64,
+    "g" * 64,
+]
+
+
+@pytest.mark.parametrize("sha256", _UNSAFE_SHA256_VALUES)
+def test_parse_lock_rejects_unsafe_artifact_sha256(sha256: str) -> None:
+    """An artifact digest is interpolated into the generated requirements file, so anything but
+    a bare lowercase hex digest could inject another requirement line or pip option."""
+    with pytest.raises(parser_bundle.BundleFormatError):
+        parser_bundle.parse_lock(
+            json.dumps(
+                _lock_payload(
+                    wheelhouses={
+                        "cp312-any": [
+                            {"filename": "stubparser-1.0.0-py3-none-any.whl", "sha256": sha256}
+                        ]
+                    }
+                )
+            ).encode()
+        )
+
+
+@pytest.mark.parametrize("sha256", _UNSAFE_SHA256_VALUES)
+def test_parse_lock_rejects_unsafe_script_sha256(sha256: str) -> None:
+    with pytest.raises(parser_bundle.BundleFormatError):
+        parser_bundle.parse_lock(json.dumps(_lock_payload(script_sha256=sha256)).encode())
+
+
+@pytest.mark.parametrize("sha256", _UNSAFE_SHA256_VALUES)
+def test_parse_lock_rejects_unsafe_grammar_sha256(sha256: str) -> None:
+    grammar = {"name": "stub", "version": "1.0.0", "abi": 14, "sha256": sha256, "extensions": [".ts"]}
+    with pytest.raises(parser_bundle.BundleFormatError):
+        parser_bundle.parse_lock(json.dumps(_lock_payload(grammars=[grammar])).encode())
+
+
 def test_install_bundle_uses_isolated_flag_and_strips_pip_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
