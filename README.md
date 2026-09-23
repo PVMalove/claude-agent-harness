@@ -116,28 +116,26 @@ Hermes fallback. Схема не содержит секретов и не оп�
 
 ## Разработка этого репозитория
 
-Пакеты для проверки и разработки перечислены в
-[`requirements-dev.txt`](./requirements-dev.txt); зафиксированный граф их транзитивных
-зависимостей хранится в `uv.lock`. Рабочее окружение харнесса находится в
-`.harness/.venv`, поэтому не пересекается с окружением самого проекта:
+Окружение ставится только через [uv](https://docs.astral.sh/uv/), pip не используется. Пакеты для
+проверки и разработки перечислены в группе `dev` файла [`pyproject.toml`](./pyproject.toml);
+зафиксированный граф их транзитивных зависимостей хранится в `uv.lock`. Рабочее окружение харнесса
+находится в `.harness/.venv`, поэтому не пересекается с окружением самого проекта:
 
 ```bash
 make bootstrap
 make verify
 ```
 
-Без `make` то же окружение создаёт `uv`: он ставит Python и зависимости из `requirements-dev.txt`
-по зафиксированному `uv.lock`:
+`make bootstrap` выполняет `uv sync --locked` с `UV_PROJECT_ENVIRONMENT=.harness/.venv`. Без `make`:
 
 ```bash
-uv python install
-UV_PROJECT_ENVIRONMENT=.harness/.venv uv sync --frozen --extra dev
+UV_PROJECT_ENVIRONMENT=.harness/.venv uv sync --locked
 ```
 
 В PowerShell переменную задают отдельно: `$env:UV_PROJECT_ENVIRONMENT = ".harness/.venv"`.
 
-Для обновления пакета меняйте его версию одновременно в `requirements-dev.txt` и
-`pyproject.toml`, затем пересоздайте `uv.lock`.
+Пакеты добавляют и обновляют командой `uv add --dev <пакет>==<версия>` (удаляют — `uv remove --dev`):
+она сама правит `pyproject.toml` и `uv.lock`.
 
 Глобальный слой — `bin/install-global`, не персонализирован, ставится отдельно и один раз на машину (на пользователя `~`, не на конкретный проект). Поддерживает пять рантаймов, `--runtime` повторяем:
 

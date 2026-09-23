@@ -16,31 +16,33 @@ mypy 2.3.1, pip-audit 2.10.1, cyclonedx-py 7.4.0). Полный режим ос�
 - **Состав и пины** (меняются только релизом харнесса): `tree-sitter==0.26.0`,
   `tree-sitter-typescript==0.23.2` (языки `language_typescript` и `language_tsx`),
   `tree-sitter-javascript==0.25.0`, `tree-sitter-go==0.25.0`, `tree-sitter-java==0.23.5`,
-  `tree-sitter-c-sharp==0.23.5`. Все лицензии — MIT. Хеши в ADR не копируются; при расхождении версий или хешей источник истины — lock релиза, ADR фиксирует политику и стартовые пины. Lock и wheelhouse создаёт релизный процесс (#277 — первым языком), они поставляются как release-asset, а не коммитятся в репозиторий.
+  `tree-sitter-c-sharp==0.23.5`, `tree-sitter-python==0.25.0` (добавлен #290: Python разбирается только
+  tree-sitter; abi3-wheels `cp310-abi3` есть для всей матрицы и `win_arm64`). Все лицензии — MIT. Хеши в ADR не копируются; при расхождении версий или хешей источник истины — lock релиза, ADR фиксирует политику и стартовые пины. Lock и wheelhouse создаёт релизный процесс (#277 — первым языком), они поставляются как release-asset, а не коммитятся в репозиторий.
 - **Wheels.** Только бинарные wheels (`--only-binary=:all:`), сборка из sdist запрещена. Windows
-  `win_amd64` и `win_arm64` есть у всех шести пакетов. Ядро собрано отдельным wheel на каждую минорную
+  `win_amd64` и `win_arm64` есть у всех семи пакетов. Ядро собрано отдельным wheel на каждую минорную
   версию Python (`cp312`–`cp314`, не abi3); грамматики — abi3 и не зависят от версии Python. Поэтому
   bundle — матрица, а не один артефакт: Python 3.12, 3.13, 3.14 × `win_amd64`, `linux_x86_64` (manylinux),
   `macos_arm64`. Расширение матрицы — релизное решение (wheels на PyPI для `win_arm64`, `linux_aarch64`, `macos_x86_64` есть).
 - **ABI.** Диапазон ядра 0.26.0 — 13–15; грамматики: typescript/tsx 14, java 14, javascript 15,
-  go 15, c-sharp 15. Конфликта нет. Версия ABI каждой грамматики и диапазон ядра входят в provenance (вместе с hash скрипта и версией token estimator из ADR 0023 — их добавляет #272).
+  go 15, c-sharp 15, python 15. Конфликта нет. Версия ABI каждой грамматики и диапазон ядра входят в provenance (вместе с hash скрипта и версией token estimator из ADR 0023 — их добавляет #272).
 - **Формат поставки — вариант A.** Wheelhouse-каталог на каждую пару «Python × платформа» и общий lock
   с хешами (`uv pip compile --generate-hashes`), поставляемые как release-asset харнесса. Загрузчик
   выбирает каталог по интерпретатору, который запускает разбор, и платформе; сверяет sha256 каждого
-  wheel с lock и при отсутствии каталога для пары или несовпадении хеша деградирует в `reduced`/`minimal`
-  без сети. Wheels распаковываются в изолированный каталог bundle вне целевого проекта (кандидат — `pip install
-  --no-index --find-links --require-hashes --only-binary=:all: --target`, не проверен); момент (при установке
+  wheel с lock и при отсутствии каталога для пары или несовпадении хеша деградирует в `minimal`
+  без сети. Wheels распаковываются в изолированный каталог bundle вне целевого проекта (`uv pip install
+  --offline --no-config --no-index --find-links --require-hashes --only-binary :all: --target`; pip не
+  используется, отсутствие `uv` — причина деградации `uv executable unavailable`); момент (при установке
   харнесса или при первом запуске) и место распаковки определяет #272. Это относится к bundle, а не к пакету
   харнесса: «пакет без pip-установки» из ADR 0018 сохраняется. Харнесс использует собственное
-  окружение `.harness/.venv` и зависимости из `requirements-dev.txt`; `.venv`, `requirements.txt`
+  окружение `.harness/.venv` и группу `dev` из `pyproject.toml` (`uv sync --locked`); `.venv`, `requirements.txt`
   и правка `pyproject.toml` целевого проекта по-прежнему запрещены.
   Внутренний registry (вариант B) — разрешённый источник для enterprise-профиля с тем же lock; vendoring
   wheels в репозиторий (вариант C) отвергнут.
-- **Typed-граница** ([ADR 0020](0020-mypy-strict-disallow-any-explicit.md)). Во всех шести пакетах есть
+- **Typed-граница** ([ADR 0020](0020-mypy-strict-disallow-any-explicit.md)). Во всех семи пакетах есть
   `py.typed` и `.pyi`; код разбора проходит `mypy --strict --disallow-any-explicit` (`Node.text` —
   `bytes | None`, проверка на `None` обязательна). Без установленного bundle те же импорты дают
   `import-not-found`, поэтому модуль с `import tree_sitter*` не входит в `files` основного mypy-прогона
-  (в CI ставится `requirements-dev.txt`); он проверяется отдельным mypy-прогоном в изолированной CI-задаче с
+  (в CI ставится группа `dev` через `uv sync`); он проверяется отдельным mypy-прогоном в изолированной CI-задаче с
   установленным bundle. Типы tree-sitter не пересекают границу процесса: `context_builder` видит
   только типизированный JSON-контракт.
 - **SBOM.** Релиз формирует CycloneDX 1.6 (`cyclonedx-py`) по lock/установленному bundle. Инструмент
@@ -56,6 +58,15 @@ mypy 2.3.1, pip-audit 2.10.1, cyclonedx-py 7.4.0). Полный режим ос�
   TS, TSX, JS, Go, Java, C# без ошибок; `mypy strict` с установленным и без установленного bundle; offline
   установка из wheelhouse с `--require-hashes` (только Python 3.12, `win_amd64`); отклонение подменённого wheel; SBOM и `pip-audit` онлайн;
   `pip-audit` без сети с пустым кэшем завершается кодом 1.
+- **Проверено #290 (2026-09-23):** `tree-sitter==0.26.0` + `tree-sitter-python==0.25.0` на Python 3.14,
+  `win_amd64`: офлайн-установка `uv pip install --target`, разбор Python (сигнатуры, импорты, def/ref,
+  ERROR-узлы), отдельный `mypy --strict --disallow-any-explicit` worker'а через `--python-executable`
+  (при `MYPYPATH` mypy проверяет сами `.pyi` tree-sitter и падает на их explicit `Any`).
+- **CI до release-asset (#290).** Пока релиз не публикует wheelhouse, задача `repo-map-bundle` берёт
+  wheels пары `cp312` × `linux_x86_64` по закоммиченному `.github/parser-bundle-wheels.txt` (URL PyPI +
+  sha256), отвергает несовпадение хеша и собирает bundle `scripts/build_parser_bundle.py`. Это
+  отступление от «хеши не в репозитории» ограничено CI-входом; lock bundle по-прежнему строится
+  при сборке.
 - **Не проверено:** Python 3.13 (на машине нет — wheels на PyPI есть, запуск не проверен); установка на
   Linux и macOS (проверены только наличие wheels и, для `linux`, разрешение lock); `win_arm64`;
   `osv-scanner`; поведение `--target`-установки и подпроцесса с `PYTHONPATH` на этих платформах; стоимость

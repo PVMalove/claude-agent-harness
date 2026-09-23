@@ -23,17 +23,13 @@ class HarnessEnvironmentContractTests(unittest.TestCase):
     def test_dev_manifest_and_execution_paths_share_the_harness_environment(
         self,
     ) -> None:
-        requirements = {
-            line.strip()
-            for line in (ROOT / "requirements-dev.txt")
-            .read_text(encoding="utf-8")
-            .splitlines()
-            if line.strip() and not line.startswith("#")
-        }
+        # uv is the only installer: dev tools live in the `dev` dependency group (`uv add --dev`),
+        # uv.lock pins their graph, and there is no pip requirements file or extra to drift.
+        self.assertFalse((ROOT / "requirements-dev.txt").exists())
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-        self.assertEqual(
-            requirements, set(project["project"]["optional-dependencies"]["dev"])
-        )
+        self.assertNotIn("optional-dependencies", project["project"])
+        self.assertIs(project["tool"]["uv"]["package"], False)
+        requirements = set(project["dependency-groups"]["dev"])
         lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
         harness_package = next(
             package
@@ -42,20 +38,23 @@ class HarnessEnvironmentContractTests(unittest.TestCase):
         )
         locked_requirements = {
             f"{item['name']}{item['specifier']}"
-            for item in harness_package["metadata"]["requires-dist"]
-            if item.get("marker") == "extra == 'dev'"
+            for item in harness_package["metadata"]["requires-dev"]["dev"]
         }
         self.assertEqual(requirements, locked_requirements)
 
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("HARNESS_VENV := .harness/.venv", makefile)
+        self.assertIn("export UV_PROJECT_ENVIRONMENT := $(HARNESS_VENV)", makefile)
+        self.assertIn("\tuv sync --locked", makefile)
         self.assertIn("$(HARNESS_PYTHON) -c", makefile)
         self.assertNotIn("\n\tpython -c", makefile)
+        self.assertNotRegex(makefile, r"(?<!uv )\bpip install|-m pip\b")
 
         workflow = (ROOT / ".github/workflows/verify.yml").read_text(encoding="utf-8")
-        self.assertNotIn("pip install -r requirements-dev.txt", workflow)
+        self.assertNotRegex(workflow, r"(?<!uv )\bpip install|-m pip\b")
         self.assertNotIn("run: python scripts/verify.py", workflow)
-        self.assertEqual(workflow.count("run: make bootstrap"), 2)
+        self.assertEqual(workflow.count("uses: astral-sh/setup-uv@"), 3)
+        self.assertEqual(workflow.count("run: make bootstrap"), 3)
         self.assertEqual(workflow.count("run: make verify"), 2)
 
 
@@ -442,7 +441,7 @@ class RepoMapPolicyProblemTests(unittest.TestCase):
                     "max_path_length": 0,
                     "max_symbol_length": False,
                     "max_signature_length": -1,
-                    "tier": "full",
+                    "tier": "reduced",
                 }
             }
         )
@@ -453,7 +452,7 @@ class RepoMapPolicyProblemTests(unittest.TestCase):
                 "orchestration repo_map_policy.max_signature_length must be a positive integer",
                 "orchestration repo_map_policy.max_symbol_length must be a positive integer",
                 "orchestration repo_map_policy.redact_symbols must be a list of non-empty path globs",
-                "orchestration repo_map_policy.tier must be one of: minimal, reduced",
+                "orchestration repo_map_policy.tier must be one of: full, minimal",
             ],
         )
 
@@ -463,7 +462,39 @@ class RepoMapPolicyProblemTests(unittest.TestCase):
         )
         self.assertEqual(
             problems,
-            ["orchestration repo_map_policy.tier must be one of: minimal, reduced"],
+            ["orchestration repo_map_policy.tier must be one of: full, minimal"],
+        )
+
+    def test_full_tier_and_parser_bundle_fields_are_valid(self) -> None:
+        self.assertEqual(
+            contract._repo_map_policy_problems(
+                {
+                    "repo_map_policy": {
+                        "tier": "full",
+                        "parser_bundle_registry_paths": ["/opt/parser-bundle"],
+                        "parser_bundle_timeout_seconds": 30,
+                        "parser_bundle_max_output_bytes": 1000,
+                    }
+                }
+            ),
+            [],
+        )
+
+    def test_parser_bundle_fields_reject_invalid_values(self) -> None:
+        problems = contract._repo_map_policy_problems(
+            {
+                "repo_map_policy": {
+                    "parser_bundle_registry_paths": [""],
+                    "parser_bundle_timeout_seconds": 0,
+                }
+            }
+        )
+        self.assertEqual(
+            sorted(problems),
+            [
+                "orchestration repo_map_policy.parser_bundle_registry_paths must be a list of non-empty path globs",
+                "orchestration repo_map_policy.parser_bundle_timeout_seconds must be a positive integer",
+            ],
         )
 
 

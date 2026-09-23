@@ -2,16 +2,16 @@
 """Offline parser bundle loader: locate, verify, install, and run a pinned parser bundle.
 
 This module implements only the *generic* mechanism -- lock parsing, hash verification, an
-offline `pip install --target` into an isolated cache directory, and a bounded subprocess call
+offline `uv pip install --target` into an isolated cache directory, and a bounded subprocess call
 into a worker script. It never imports `tree_sitter*` and carries no real grammar pins, so it
-stays in the main `mypy --strict` run. Real grammars, a real release lock, and a real wheelhouse
-are shipped by #277; this module only proves the mechanism against synthetic fixtures (a
-locally-assembled pure-Python wheel and a stub worker script) -- see
-docs/adr/0024-repo-map-parser-bundle-composition-and-delivery.md.
+stays in the main `mypy --strict` run. The tree-sitter worker is tree_sitter_worker.py, and
+scripts/build_parser_bundle.py assembles a real bundle from pinned wheels -- see
+docs/adr/0024-repo-map-parser-bundle-composition-and-delivery.md. It also owns the worker's
+`FileFacts` contract and rejects any response outside it.
 
-Every entry point here is called only when `repo_map_policy.tier == "full"` (opt-in). It never
+Every entry point here is called only for `repo_map_policy.tier == "full"` (the default). It never
 raises for a missing, mismatched, or misbehaving bundle -- callers get back a `DegradationReason`
-string instead, so a failure here always turns into a valid degraded Repo Map, never a crash or a
+string instead, so a failure here always turns into a valid `minimal` Repo Map, never a crash or a
 network call.
 """
 
@@ -22,6 +22,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -58,6 +59,7 @@ DegradationReason = Literal[
     "parser subprocess exceeded time limit",
     "parser subprocess exceeded output size limit",
     "parser subprocess failed",
+    "uv executable unavailable",
 ]
 
 
@@ -142,7 +144,7 @@ def _sha256_field(obj: dict[str, object], field: str, where: str) -> str:
     """Validate a lock digest as a bare lowercase sha256 hex string -- reject injection.
 
     Artifact digests are interpolated into the generated requirements file, so a value carrying
-    a newline or pip option would add requirement lines; a lock that fails this is a
+    a newline or installer option would add requirement lines; a lock that fails this is a
     degradation (`BundleFormatError`), never a crash or an install.
     """
     value = _string_field(obj, field)
@@ -308,7 +310,11 @@ def verify_worker_script(lock: BundleLock, worker_script: Path) -> bool:
 
 
 class BundleInstallError(RuntimeError):
-    """`pip install --no-index --target` failed or produced an unexpected result."""
+    """`uv pip install --offline --no-index --target` failed or produced an unexpected result."""
+
+
+class UvUnavailableError(BundleInstallError):
+    """No `uv` executable on PATH: the harness installs bundles with uv only, never pip."""
 
 
 def install_bundle(
@@ -320,14 +326,18 @@ def install_bundle(
     pair: str,
     timeout_seconds: int,
 ) -> None:
-    """Install this pair's wheels into `install_dir` with the parsing interpreter itself.
+    """Install this pair's wheels into `install_dir` for the parsing interpreter, with uv.
 
-    Uses `--target`, never a venv: no `.venv`, `requirements.txt`, or target-project change is
-    created (ADR 0023/0024). Idempotent: a matching marker file skips a repeat install.
+    Uses `uv pip install --target`, never a venv or pip: no `.venv`, `requirements.txt`, or
+    target-project change is created (ADR 0023/0024), and `--offline --no-index` keeps it off the
+    network. Idempotent: a matching marker file skips a repeat install.
     """
     marker = install_dir / INSTALL_MARKER_FILENAME
     if marker.is_file() and marker.read_text(encoding="utf-8").strip() == lock.raw_sha256:
         return
+    uv = shutil.which("uv")
+    if uv is None:
+        raise UvUnavailableError("uv executable not found on PATH")
     artifacts = lock.wheelhouses.get(pair, ())
     install_dir.mkdir(parents=True, exist_ok=True)
     requirements_path = install_dir / ".requirements.txt"
@@ -336,24 +346,30 @@ def install_bundle(
         name, version = _wheel_name_version(artifact.filename)
         lines.append(f"{name}=={version} --hash=sha256:{artifact.sha256}")
     requirements_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    # `--isolated` ignores pip config files and environment variables that are not `PIP_*` env
-    # vars pip reads directly; stripping `PIP_*` from the child's environment closes the rest of
-    # that gap (e.g. PIP_INDEX_URL, PIP_FIND_LINKS, PIP_CONFIG_FILE) so nothing in the parent
-    # process's environment can redirect this offline, `--no-index` install.
-    isolated_env = {key: value for key, value in os.environ.items() if not key.startswith("PIP_")}
+    # `--no-config` ignores uv.toml/pyproject configuration; stripping `UV_*` (and legacy `PIP_*`,
+    # which uv also honors for some settings) from the child's environment closes the rest of that
+    # gap (e.g. UV_INDEX_URL, UV_FIND_LINKS, UV_CONFIG_FILE) so nothing in the parent process's
+    # environment can redirect this offline, `--no-index` install.
+    isolated_env = {
+        key: value for key, value in os.environ.items() if not key.startswith(("UV_", "PIP_"))
+    }
     try:
         result = subprocess.run(
             [
-                python_executable,
-                "-m",
+                uv,
                 "pip",
                 "install",
-                "--isolated",
+                "--offline",
+                "--no-config",
+                "--no-cache",
                 "--no-index",
                 "--find-links",
                 str(wheelhouse_dir),
                 "--require-hashes",
-                "--only-binary=:all:",
+                "--only-binary",
+                ":all:",
+                "--python",
+                python_executable,
                 "--target",
                 str(install_dir),
                 "--requirement",
@@ -365,7 +381,7 @@ def install_bundle(
             env=isolated_env,
         )
     except subprocess.TimeoutExpired as exc:
-        raise BundleInstallError("pip install timed out") from exc
+        raise BundleInstallError("uv pip install timed out") from exc
     finally:
         requirements_path.unlink(missing_ok=True)
     if result.returncode != 0:
@@ -381,8 +397,96 @@ def _wheel_name_version(filename: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+class SignatureFact(TypedDict):
+    """One serialized signature plus every symbol it exposes, so policy redaction stays in-process."""
+
+    text: str
+    symbols: list[str]
+
+
+class ImportFact(TypedDict):
+    """`module` relative to `level` leading dots; `names` are the `from ... import` names, if any."""
+
+    module: str
+    level: int
+    names: list[str]
+
+
+class FileFacts(TypedDict):
+    """The per-file worker contract: facts only -- edges and redaction are built by repo_map."""
+
+    parser_status: Literal["ok", "syntax_error", "invalid_encoding"]
+    signatures: list[SignatureFact]
+    imports: list[ImportFact]
+    definitions: list[str]
+    references: list[str]
+
+
 class BundleParseResult(TypedDict):
-    files: dict[str, dict[str, object]]
+    files: dict[str, FileFacts]
+
+
+def _string_list(value: object) -> list[str] | None:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return None
+    return cast(list[str], value)
+
+
+def _signature_fact(value: object) -> SignatureFact | None:
+    if not isinstance(value, dict) or set(value) != {"text", "symbols"}:
+        return None
+    text = value["text"]
+    symbols = _string_list(value["symbols"])
+    if not isinstance(text, str) or symbols is None:
+        return None
+    return {"text": text, "symbols": symbols}
+
+
+def _import_fact(value: object) -> ImportFact | None:
+    if not isinstance(value, dict) or set(value) != {"module", "level", "names"}:
+        return None
+    module = value["module"]
+    level = value["level"]
+    names = _string_list(value["names"])
+    if (
+        not isinstance(module, str)
+        or isinstance(level, bool)
+        or not isinstance(level, int)
+        or level < 0
+        or names is None
+    ):
+        return None
+    return {"module": module, "level": level, "names": names}
+
+
+def _file_facts(value: object) -> FileFacts | None:
+    """Validate one worker record against the `FileFacts` contract; None for any deviation."""
+    if not isinstance(value, dict) or set(value) != set(FileFacts.__annotations__):
+        return None
+    status = value["parser_status"]
+    raw_signatures = value["signatures"]
+    raw_imports = value["imports"]
+    definitions = _string_list(value["definitions"])
+    references = _string_list(value["references"])
+    if (
+        status not in ("ok", "syntax_error", "invalid_encoding")
+        or not isinstance(raw_signatures, list)
+        or not isinstance(raw_imports, list)
+        or definitions is None
+        or references is None
+    ):
+        return None
+    signatures = [_signature_fact(item) for item in raw_signatures]
+    imports = [_import_fact(item) for item in raw_imports]
+    if any(item is None for item in signatures) or any(item is None for item in imports):
+        return None
+    return {
+        "parser_status": cast(Literal["ok", "syntax_error", "invalid_encoding"], status),
+        "signatures": [item for item in signatures if item is not None],
+        "imports": [item for item in imports if item is not None],
+        "definitions": definitions,
+        "references": references,
+    }
 
 
 def _read_stdout(stream: object, output_queue: queue.Queue[bytes | None]) -> None:
@@ -492,11 +596,15 @@ def run_bundle_parser(
     if not isinstance(decoded, dict):
         return "parser subprocess failed"
     files_obj = decoded.get("files")
-    if not isinstance(files_obj, dict) or not all(
-        isinstance(key, str) and isinstance(value, dict) for key, value in files_obj.items()
-    ):
+    if not isinstance(files_obj, dict):
         return "parser subprocess failed"
-    return {"files": cast(dict[str, dict[str, object]], files_obj)}
+    files: dict[str, FileFacts] = {}
+    for key, value in files_obj.items():
+        facts = _file_facts(value)
+        if not isinstance(key, str) or facts is None:
+            return "parser subprocess failed"
+        files[key] = facts
+    return {"files": files}
 
 
 def build_provenance(
@@ -545,7 +653,7 @@ def acquire_bundle(
 
     Returns an `AppliedBundle` ready for `run_bundle_parser`, or a `DegradationReason` -- never
     raises. No step here makes a network call: every path below reads only the local filesystem
-    and runs `python_executable`/`pip` against `--no-index --find-links <local wheelhouse dir>`.
+    and runs `uv pip install --offline --no-index --find-links <local wheelhouse dir>`.
     """
     dirs = search_dirs(repo, registry_paths)
     bundle_dir = find_bundle(dirs)
@@ -589,6 +697,8 @@ def acquire_bundle(
             pair=pair,
             timeout_seconds=timeout_seconds,
         )
+    except UvUnavailableError:
+        return "uv executable unavailable"
     except BundleInstallError:
         return "parser subprocess failed"
     worker_extensions = {

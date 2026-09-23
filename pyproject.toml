@@ -4,21 +4,11 @@ version = "1.2.0"
 requires-python = ">=3.12"
 dependencies = []
 
-[project.optional-dependencies]
-dev = [
-    "coverage==7.16.1",
-    "mypy==2.3.1",
-    "pytest==9.1.1",
-    "pytest-cov==7.1.0",
-    "pytest-xdist==3.8.0",
-    "ruff==0.8.6",
-]
-
-[tool.setuptools]
-# The repository is a toolkit, not an installable distribution: `pip install .[dev]` exists only to
-# get the dev tools, so opt out of setuptools' flat-layout auto-discovery (it rejects several
-# top-level directories).
-py-modules = []
+[tool.uv]
+# The repository is a toolkit, not an installable distribution (ADR 0018): `uv sync` installs only
+# the `dev` dependency group into `.harness/.venv`, never the project itself. Manage dev tools with
+# `uv add --dev` / `uv remove --dev`; never pip.
+package = false
 
 [tool.mypy]
 python_version = "3.12"
@@ -32,8 +22,12 @@ files = [
     "scripts/verify.py",
     "scripts/check_public_metadata.py",
     "scripts/diff_coverage.py",
+    "scripts/build_parser_bundle.py",
     "skills/first-party/pvmalove/qa-gate/scripts/test_summary.py",
 ]
+# Imports `tree_sitter*`, which only the parser bundle provides: checked by the separate mypy run in
+# the `repo-map-bundle` CI job with the bundle installed (ADR 0024).
+exclude = ["^harness/repo_map/tree_sitter_worker\\.py$"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -41,3 +35,13 @@ testpaths = ["tests"]
 [tool.ruff.lint.per-file-ignores]
 # Facade: `import x as x` marks explicit re-exports under mypy strict (no implicit reexport).
 "harness/orchestration/coordinator.py" = ["PLC0414"]
+
+[dependency-groups]
+dev = [
+    "coverage==7.16.1",
+    "mypy==2.3.1",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "pytest-xdist==3.8.0",
+    "ruff==0.8.6",
+]

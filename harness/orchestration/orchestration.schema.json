@@ -189,7 +189,10 @@
         "max_signature_length": {"type": "integer", "minimum": 1, "default": 2048},
         "timeout_seconds": {"type": "integer", "minimum": 1, "default": 10},
         "max_tokens": {"type": "integer", "minimum": 1},
-        "tier": {"enum": ["minimal", "reduced"], "default": "reduced"}
+        "tier": {"enum": ["minimal", "full"], "default": "full"},
+        "parser_bundle_registry_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "parser_bundle_timeout_seconds": {"type": "integer", "minimum": 1, "default": 30},
+        "parser_bundle_max_output_bytes": {"type": "integer", "minimum": 1, "default": 10000000}
       }
     },
     "continuation_policy": {

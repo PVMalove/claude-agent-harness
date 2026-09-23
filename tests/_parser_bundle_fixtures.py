@@ -1,6 +1,6 @@
 """Synthetic parser-bundle fixtures shared by test_parser_bundle.py and test_repo_map.py.
 
-Everything here is assembled directly with `zipfile`/plain text -- never `pip wheel`/`build` -- so
+Everything here is assembled directly with `zipfile`/plain text -- never a wheel build tool -- so
 building a fixture never triggers build isolation or a network call. The wheel is pure Python with
 no compiled extension.
 """
@@ -23,7 +23,7 @@ import sys
 def main() -> None:
     install_dir = sys.argv[1]
     sys.path.insert(0, install_dir)
-    import stubparser  # proves the offline `pip install --target` succeeded
+    import stubparser  # proves the offline `uv pip install --target` succeeded
 
     assert stubparser.STUB_PARSER_INSTALLED
     request = json.loads(sys.stdin.read())
@@ -31,14 +31,25 @@ def main() -> None:
     for path, encoded in request.get("paths", {}).items():
         content = base64.b64decode(encoded).decode("utf-8", "replace")
         files[path] = {
-            "signatures": [f"stub-signature:{len(content)}"],
             "parser_status": "ok",
+            "signatures": [{"text": f"stub-signature:{len(content)}", "symbols": []}],
+            "imports": [],
+            "definitions": [],
+            "references": [],
         }
     sys.stdout.write(json.dumps({"files": files}))
 
 
 if __name__ == "__main__":
     main()
+"""
+
+# Emits a record that breaks the `FileFacts` contract (signatures as bare strings, no facts).
+MALFORMED_FACTS_WORKER_SCRIPT_SOURCE = """\
+import sys
+
+sys.stdin.read()
+sys.stdout.write('{"files": {"a.stub": {"signatures": ["x"], "parser_status": "ok"}}}')
 """
 
 SLOW_WORKER_SCRIPT_SOURCE = """\

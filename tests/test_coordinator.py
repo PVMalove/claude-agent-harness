@@ -477,6 +477,35 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "write-role completion reports require commit_sha and changed_files",
         )
 
+    def test_commit_plan_is_not_checked_against_git_without_a_repository(self) -> None:
+        # Without a repository there is no history to map commits against: validation must not
+        # reach the Git-backed commit_map check (it used to fail on an unbound commit).
+        report = {
+            "dispatch_id": "dispatch-123",
+            "ticket": "#238",
+            "role": "developer",
+            "outcome": "completed",
+            "output": "done",
+            "commit_sha": "a" * 40,
+            "changed_files": ["src/app.py"],
+            "checks_run": [{"command": "true", "result": "pass", "evidence": "passed"}],
+            "risks": "none",
+            "blockers": "none",
+            "next_coordinator_action": "accept",
+            "report_language": "ru",
+            "commit_map": [{"commit_sha": "a" * 40, "plan_entry_id": "step-1"}],
+        }
+        dispatch = {
+            "dispatch_id": "dispatch-123",
+            "ticket": "#238",
+            "role": "developer",
+            "verification_commands": ["true"],
+            "write_paths": ["**"],
+            "commit_plan": [{"id": "step-1"}],
+        }
+
+        coordinator._validate_report(report, dispatch, {"mode": "write", "name": "developer"})
+
     def test_qa_lane_bridge_surface_has_no_path_builders(self) -> None:
         """``qa_lane.py`` constructs its own ``LifecycleLedger`` and Value Objects directly (issue
         #196); the only things it still reaches into ``coordinator.py`` (via the ``ops`` parameter)
