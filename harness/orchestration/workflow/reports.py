@@ -1078,7 +1078,9 @@ def _validate_report(
                 )
         commit_plan = dispatch.get("commit_plan", [])
         commit_map = report.get("commit_map")
-        if role.get("name") == "developer" and commit_plan:
+        # The commit plan is verified against Git history, so it needs the repository, like the
+        # changed_files check above.
+        if role.get("name") == "developer" and commit_plan and repo is not None:
             if not isinstance(commit_map, list) or not commit_map:
                 raise CoordinatorError(
                     "developer completion report requires commit_map for the immutable commit plan",
