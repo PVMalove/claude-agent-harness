@@ -2,21 +2,28 @@
 
 Sibling module to gate_runner.py: it reads a repository at two pinned commits (via git plumbing,
 never the working tree) and returns one immutable, reproducible record — the exact diff, a bounded
-set of starting files with a stated reason for each, an import-based dependency graph bounded to a
-configurable depth, related tests, short ADR/precedent cards, and a hash of every included file.
-It makes no model call, chooses no candidate, and writes no ledger or coordinator state; the caller
-decides how (or whether) to persist the result.
+set of starting files with a stated reason for each, a dependency/reference graph and per-file
+signatures obtained from the Repo Map CLI, related tests, short ADR/precedent cards, and a hash of
+every included file. It makes no model call, chooses no candidate, and writes no ledger or
+coordinator state; the caller decides how (or whether) to persist the result.
+
+The import/reference graph and per-file signatures are not computed here: they are obtained from
+the Repo Map CLI (`harness/repo_map/repo_map.py`), invoked as a `sys.executable` subprocess so its
+tree-sitter machinery and policy enforcement (allow/deny/redact) never cross the process boundary.
+Only its validated, typed JSON contract (see `harness/repo_map/repo_map.schema.json`) is consumed
+here; a policy-denied path or symbol simply never appears in that JSON.
 """
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import json
 import re
 import subprocess
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import cast
 
 from ..errors import HarnessError
 from ..token_estimator import estimate_tokens as estimate_tokens
@@ -26,13 +33,34 @@ class ContextPackageError(HarnessError):
     """The package could not be built, or would exceed its configured size limit."""
 
 
-_FROM_IMPORT_RE: re.Pattern[str] = re.compile(
-    r"^\s*from\s+([\w.]+)\s+import\s+(.+)$", re.MULTILINE
-)
-_PLAIN_IMPORT_RE: re.Pattern[str] = re.compile(
-    r"^\s*import\s+([\w.,\s]+)$", re.MULTILINE
-)
 _ADR_HEADING_RE: re.Pattern[str] = re.compile(r"^#\s+(.+)$", re.MULTILINE)
+
+# The Repo Map CLI is a sibling module; installed projects keep the same layout (see
+# harness/bin/harness resource packaging and scripts/test_clean_room.py).
+_REPO_MAP_SCRIPT: Path = Path(__file__).resolve().parents[1] / "repo_map" / "repo_map.py"
+
+# Deliberately large and independent of `max_package_tokens`: the Repo Map call must not truncate
+# the graph/signatures it hands back, because the Context Package's own token budget is enforced
+# separately, later, over the assembled payload.
+_REPO_MAP_MAX_TOKENS: int = 5_000_000
+
+_REPO_MAP_REQUIRED_FIELDS: tuple[str, ...] = (
+    "schema_version",
+    "commit",
+    "tier",
+    "parser",
+    "degradation_reason",
+    "token_estimator_version",
+    "parser_provenance",
+    "files",
+    "edges",
+    "diagnostics",
+    "estimated_tokens",
+)
+
+_REPO_MAP_CONTRACT_REMEDY = (
+    "inspect harness/repo_map/repo_map.schema.json and the Repo Map CLI output for a contract drift"
+)
 
 
 @dataclass(frozen=True)
@@ -86,11 +114,6 @@ def _run_git(repository: Path, *args: str) -> str:
     return result.stdout
 
 
-def _list_files(repository: Path, commit: str) -> list[str]:
-    output: str = _run_git(repository, "ls-tree", "-r", "--name-only", commit)
-    return sorted(line for line in output.splitlines() if line)
-
-
 def _read_file(repository: Path, commit: str, path: str) -> str:
     return _run_git(repository, "show", f"{commit}:{path}")
 
@@ -115,113 +138,151 @@ def _changed_files(
     return sorted(changes, key=lambda entry: entry[0])
 
 
-def _module_name(path: str) -> str | None:
-    if "." not in path.rsplit("/", 1)[-1]:
-        return None
-    stem: str = path.rsplit(".", 1)[0]
-    if path.endswith(".py") and stem.endswith("/__init__"):
-        stem = stem[: -len("/__init__")]
-    return stem.replace("/", ".")
+def _repo_map_error_from_stderr(stderr: str) -> ContextPackageError:
+    """Parse the Repo Map CLI's `ERROR: <message>\\nREMEDY: <remedy>` stderr contract."""
+    text: str = (stderr or "").strip()
+    match: re.Match[str] | None = re.match(
+        r"ERROR:\s*(.+?)\s*\nREMEDY:\s*(.+)", text, re.DOTALL
+    )
+    if match:
+        return ContextPackageError(
+            f"Repo Map failed: {match.group(1).strip()}",
+            remedy=match.group(2).strip(),
+        )
+    return ContextPackageError(
+        f"Repo Map failed: {text or 'unknown error (no stderr output)'}",
+        remedy="inspect the Repo Map CLI stderr output above and fix the repository/commit/policy before retrying",
+    )
 
 
-def _build_import_graph(
-    repository: Path, commit: str, files: list[str]
-) -> dict[str, set[str]]:
-    module_to_path: dict[str, str] = {}
-    for path in files:
-        name: str | None = _module_name(path)
-        if name and (name not in module_to_path or path.endswith(".py")):
-            # Keep real Python modules authoritative when a resource shares their module-like name.
-            module_to_path[name] = path
-    graph: dict[str, set[str]] = {path: set() for path in files}
-    for path in files:
-        if not path.endswith(".py"):
+def _run_repo_map(repository: Path, commit: str, seeds: list[str]) -> dict[str, object]:
+    """Invoke the Repo Map CLI as a `sys.executable` subprocess and validate its JSON contract.
+
+    Only JSON crosses the process boundary: the CLI resolves `<repo>/.harness/orchestration.json`
+    itself and applies `repo_map_policy` (allow/deny/redact); this function never duplicates that
+    policy logic and never imports the CLI's tree-sitter machinery in-process.
+    """
+    args: list[str] = [
+        sys.executable,
+        str(_REPO_MAP_SCRIPT),
+        "--repo",
+        str(repository),
+        "--commit",
+        commit,
+        "--max-tokens",
+        str(_REPO_MAP_MAX_TOKENS),
+    ]
+    for seed in seeds:
+        args.extend(["--seed", seed])
+    result: subprocess.CompletedProcess[str] = subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.returncode != 0:
+        raise _repo_map_error_from_stderr(result.stderr)
+
+    try:
+        parsed: object = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ContextPackageError(
+            f"Repo Map produced invalid JSON: {exc}",
+            remedy="inspect the Repo Map CLI stdout for a truncated or malformed write and fix it upstream",
+        ) from exc
+
+    if not isinstance(parsed, dict):
+        raise ContextPackageError(
+            "Repo Map JSON contract violation: top-level payload is not an object",
+            remedy=_REPO_MAP_CONTRACT_REMEDY,
+        )
+    payload: dict[str, object] = cast(dict[str, object], parsed)
+
+    missing: list[str] = [
+        field for field in _REPO_MAP_REQUIRED_FIELDS if field not in payload
+    ]
+    if missing:
+        raise ContextPackageError(
+            f"Repo Map JSON contract violation: missing field(s) {', '.join(missing)}",
+            remedy=_REPO_MAP_CONTRACT_REMEDY,
+        )
+    if payload.get("schema_version") != 1:
+        raise ContextPackageError(
+            f"Repo Map JSON contract violation: schema_version {payload.get('schema_version')!r} is not the supported 1",
+            remedy="upgrade context_builder.py to support the new Repo Map schema_version, or pin the Repo Map CLI to schema_version 1",
+        )
+    return payload
+
+
+def _parse_repo_map_files(
+    payload: dict[str, object],
+) -> tuple[list[str], dict[str, list[str]]]:
+    entries: object = payload.get("files")
+    if not isinstance(entries, list):
+        raise ContextPackageError(
+            "Repo Map JSON contract violation: 'files' is not a list",
+            remedy=_REPO_MAP_CONTRACT_REMEDY,
+        )
+    paths: list[str] = []
+    signatures_by_path: dict[str, list[str]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            raise ContextPackageError(
+                "Repo Map JSON contract violation: a 'files' entry is missing a string 'path'",
+                remedy=_REPO_MAP_CONTRACT_REMEDY,
+            )
+        path: str = cast(str, entry["path"])
+        paths.append(path)
+        signatures: object = entry.get("signatures")
+        if isinstance(signatures, list) and signatures:
+            signatures_by_path[path] = [str(item) for item in signatures]
+    return sorted(paths), signatures_by_path
+
+
+def _import_and_reference_graphs(
+    payload: dict[str, object], files: list[str]
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Split Repo Map edges into an import graph and an additive name-reference graph.
+
+    `imports`/`imported_by` come only from edges with `kind == "import"`; `unique-name-ref` and
+    `ambiguous-name-ref` edges populate the separate, additive reference graph (empty at Repo Map's
+    minimal tier, where `edges` is `[]`).
+    """
+    entries: object = payload.get("edges")
+    if not isinstance(entries, list):
+        raise ContextPackageError(
+            "Repo Map JSON contract violation: 'edges' is not a list",
+            remedy=_REPO_MAP_CONTRACT_REMEDY,
+        )
+    import_graph: dict[str, set[str]] = {path: set() for path in files}
+    reference_graph: dict[str, set[str]] = {path: set() for path in files}
+    for edge in entries:
+        if not isinstance(edge, dict):
             continue
-        content: str = _read_file(repository, commit, path)
-        candidates: set[str] = set()
-        for match in _FROM_IMPORT_RE.finditer(content):
-            base_module: str = match.group(1)
-            candidates.add(base_module)
-            for name in match.group(2).split(","):
-                name = name.strip().split(" as ")[0].strip()
-                if name and name != "*":
-                    candidates.add(f"{base_module}.{name}")
-        for match in _PLAIN_IMPORT_RE.finditer(content):
-            for name in match.group(1).split(","):
-                name = name.strip().split(" as ")[0].strip()
-                if name:
-                    candidates.add(name)
-        for module in candidates:
-            target: str | None = module_to_path.get(module)
-            if target and target != path:
-                graph[path].add(target)
-    return graph
-
-
-def _bounded_symbol_graph(
-    graph: dict[str, set[str]], seeds: list[str], depth: int
-) -> dict[str, dict[str, list[str]]]:
-    imported_by: dict[str, set[str]] = {path: set() for path in graph}
-    for path, imports in graph.items():
-        for target in imports:
-            imported_by[target].add(path)
-
-    visited: set[str] = set()
-    frontier: list[str] = list(dict.fromkeys(seeds))
-    for _ in range(depth + 1):
-        if not frontier:
-            break
-        visited.update(frontier)
-        next_frontier: list[str] = []
-        for node in frontier:
-            for neighbour in graph.get(node, set()) | imported_by.get(node, set()):
-                if neighbour not in visited:
-                    next_frontier.append(neighbour)
-        frontier = list(dict.fromkeys(next_frontier))
-
-    return {
-        path: {
-            "imports": sorted(graph.get(path, ())),
-            "imported_by": sorted(imported_by.get(path, ())),
-        }
-        for path in sorted(visited)
-    }
+        source: object = edge.get("source")
+        target: object = edge.get("target")
+        kind: object = edge.get("kind")
+        if not isinstance(source, str) or not isinstance(target, str):
+            continue
+        if kind == "import":
+            import_graph.setdefault(source, set()).add(target)
+        elif kind in ("unique-name-ref", "ambiguous-name-ref"):
+            reference_graph.setdefault(source, set()).add(target)
+    return import_graph, reference_graph
 
 
 def _fallback_excerpt(text: str) -> list[str]:
-    """Return the deterministic bounded context for a file we cannot analyse."""
+    """Return the deterministic bounded context for a file without Repo Map signatures."""
     return text.splitlines()[:30]
 
 
-def _signature_for(
-    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef, lines: list[str]
-) -> str:
-    """Extract a definition header selected by the AST, excluding its body."""
-    body: list[ast.stmt] = node.body
-    end_line: int | None = body[0].lineno - 1 if body else node.end_lineno
-    header: str = "\n".join(lines[node.lineno - 1 : end_line]).strip()
-    if header:
-        return header
-
-    # A one-line suite puts the first body node on the header line.  The final colon is the
-    # definition delimiter even when parameters have annotations or defaults.
-    line = lines[node.lineno - 1]
-    return line[node.col_offset : line.rfind(":") + 1].strip()
-
-
-def _extract_python_signatures(text: str) -> list[str]:
-    """Return the module and top-level definition signatures from valid Python source."""
-    tree: ast.Module = ast.parse(text)
-    lines: list[str] = text.splitlines()
-    signatures: list[str] = ["module"]
-    for node in tree.body:
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            signatures.append(_signature_for(node, lines))
-    return signatures
-
-
 def _dependency_context(
-    import_graph: dict[str, set[str]], seeds: list[str], files: dict[str, str]
+    import_graph: dict[str, set[str]],
+    seeds: list[str],
+    files: dict[str, str],
+    signatures_by_path: dict[str, list[str]],
 ) -> dict[str, list[str]]:
     """Build context for direct local dependencies only; never traverse a dependency's imports."""
     seed_paths: set[str] = set(seeds)
@@ -235,15 +296,52 @@ def _dependency_context(
     )
     context: dict[str, list[str]] = {}
     for path in direct_dependencies:
-        text: str = files.get(path, "")
-        if path.endswith(".py"):
-            try:
-                context[path] = _extract_python_signatures(text)
-                continue
-            except (SyntaxError, ValueError):
-                pass
-        context[path] = _fallback_excerpt(text)
+        signatures: list[str] | None = signatures_by_path.get(path)
+        if signatures:
+            context[path] = signatures
+            continue
+        context[path] = _fallback_excerpt(files.get(path, ""))
     return context
+
+
+def _bounded_symbol_graph(
+    import_graph: dict[str, set[str]],
+    imported_by: dict[str, set[str]],
+    reference_graph: dict[str, set[str]],
+    referenced_by: dict[str, set[str]],
+    seeds: list[str],
+    depth: int,
+) -> dict[str, dict[str, list[str]]]:
+    def neighbours(node: str) -> set[str]:
+        return (
+            import_graph.get(node, set())
+            | imported_by.get(node, set())
+            | reference_graph.get(node, set())
+            | referenced_by.get(node, set())
+        )
+
+    visited: set[str] = set()
+    frontier: list[str] = list(dict.fromkeys(seeds))
+    for _ in range(depth + 1):
+        if not frontier:
+            break
+        visited.update(frontier)
+        next_frontier: list[str] = []
+        for node in frontier:
+            for neighbour in neighbours(node):
+                if neighbour not in visited:
+                    next_frontier.append(neighbour)
+        frontier = list(dict.fromkeys(next_frontier))
+
+    return {
+        path: {
+            "imports": sorted(import_graph.get(path, ())),
+            "imported_by": sorted(imported_by.get(path, ())),
+            "references": sorted(reference_graph.get(path, ())),
+            "referenced_by": sorted(referenced_by.get(path, ())),
+        }
+        for path in sorted(visited)
+    }
 
 
 def _select_starting_files(
@@ -371,13 +469,15 @@ def build_context_package(
     """Build one immutable Context Package for `base_commit`..`candidate_commit`.
 
     Reads only pinned git history (`git show`/`git diff`/`git ls-tree`), never the working tree, so
-    the same inputs always produce the same output regardless of local checkout state. Raises
-    `ContextPackageError` instead of silently truncating when the assembled package would exceed
-    `max_package_size_bytes` (pass `None` to disable the legacy diagnostic limit), the token-aware
-    `max_package_tokens` limit, or -- when `max_related_tests` is set -- an import-graph fan-out
-    that pulls in more related tests than a misscoped batch should. The token/byte limits are the
-    admission control used by the coordinator; bytes are retained only for explicit
-    backwards-compatible callers.
+    the same inputs always produce the same output regardless of local checkout state. The
+    dependency/reference graph and per-file signatures come from the Repo Map CLI's validated JSON
+    contract, so only the policy-approved slice of the repository (per `repo_map_policy`) ever
+    enters the package. Raises `ContextPackageError` instead of silently truncating when the
+    assembled package would exceed `max_package_size_bytes` (pass `None` to disable the legacy
+    diagnostic limit), the token-aware `max_package_tokens` limit, or -- when `max_related_tests` is
+    set -- an import-graph fan-out that pulls in more related tests than a misscoped batch should.
+    The token/byte limits are the admission control used by the coordinator; bytes are retained only
+    for explicit backwards-compatible callers.
     """
     if min_starting_files < 1 or max_starting_files < min_starting_files:
         raise ContextPackageError(
@@ -392,14 +492,25 @@ def build_context_package(
         repository, base_commit, candidate_commit
     )
 
-    files: list[str] = _list_files(repository, candidate_commit)
-    import_graph: dict[str, set[str]] = _build_import_graph(
-        repository, candidate_commit, files
+    repo_map_seeds: list[str] = sorted({path for path, _ in changed}) or list(
+        seed_paths or []
     )
+    repo_map_payload: dict[str, object] = _run_repo_map(
+        repository, candidate_commit, repo_map_seeds
+    )
+    files, signatures_by_path = _parse_repo_map_files(repo_map_payload)
+    import_graph, reference_graph = _import_and_reference_graphs(
+        repo_map_payload, files
+    )
+
     imported_by: dict[str, set[str]] = {path: set() for path in import_graph}
     for path, imports in import_graph.items():
         for target in imports:
-            imported_by[target].add(path)
+            imported_by.setdefault(target, set()).add(path)
+    referenced_by: dict[str, set[str]] = {path: set() for path in reference_graph}
+    for path, refs in reference_graph.items():
+        for target in refs:
+            referenced_by.setdefault(target, set()).add(path)
 
     available_changed: list[tuple[str, str]] = [
         entry for entry in changed if entry[0] in files
@@ -431,7 +542,7 @@ def build_context_package(
     starting_paths: list[str] = [item.path for item in starting_files]
 
     symbol_graph: dict[str, dict[str, list[str]]] = _bounded_symbol_graph(
-        import_graph, starting_paths, symbol_graph_depth
+        import_graph, imported_by, reference_graph, referenced_by, starting_paths, symbol_graph_depth
     )
     changed_paths: set[str] = {path for path, _ in changed}
     dependency_paths: list[str] = sorted(
@@ -447,7 +558,7 @@ def build_context_package(
         for path in dependency_paths
     }
     direct_context: dict[str, list[str]] = _dependency_context(
-        import_graph, sorted(changed_paths), dependency_files
+        import_graph, sorted(changed_paths), dependency_files, signatures_by_path
     )
     for path, context in direct_context.items():
         symbol_graph.setdefault(
@@ -455,6 +566,8 @@ def build_context_package(
             {
                 "imports": sorted(import_graph.get(path, ())),
                 "imported_by": sorted(imported_by.get(path, ())),
+                "references": sorted(reference_graph.get(path, ())),
+                "referenced_by": sorted(referenced_by.get(path, ())),
             },
         )["context"] = context
 
