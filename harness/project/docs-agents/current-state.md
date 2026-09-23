@@ -69,6 +69,12 @@ python3 harness/bin/harness update /path/to/repository --capability backend-orch
 python3 harness/bin/harness health /path/to/repository
 ```
 
+`harness health` также показывает доступный tier Repo Map, provenance parser bundle и ограничение
+dispatch от применимой policy. Отсутствующий offline bundle — warning, а не ошибка health:
+dispatch получает минимальный Path inventory, а команда не скачивает зависимости. Bundle нужно
+установить в project-local registry; `uv run` допустим только для developer bootstrap, но не для
+пути dispatch.
+
 Ключевой lifecycle coordinator использует `batch create`, `batch approve`, `dispatch create`,
 `dispatch send`, `report submit` и `batch decide`:
 

@@ -299,6 +299,30 @@ def _run(test_root: Path):
     )
     fill_agents(pv_project)
     run_ok(HARNESS + ["health", str(pv_project)])
+    repo_map_health = capture(HARNESS + ["health", str(pv_project)])
+    if "Repo Map: tier=minimal" not in repo_map_health:
+        sys.exit("health did not report the degraded Repo Map tier")
+    if "provenance: offline parser bundle unavailable" not in repo_map_health:
+        sys.exit("health did not report missing Repo Map bundle provenance")
+    if "REMEDY install an offline parser bundle" not in repo_map_health:
+        sys.exit("health did not provide the offline Repo Map remedy")
+    if "uv run" in repo_map_health:
+        sys.exit("health incorrectly offered uv run as a Repo Map dispatch remedy")
+    corrupt_registry = (
+        pv_project
+        / ".harness"
+        / ".cache"
+        / "repo_map"
+        / "parser_bundle"
+        / "registry"
+    )
+    corrupt_registry.mkdir(parents=True)
+    (corrupt_registry / "parser_bundle.lock.json").write_text("{invalid", encoding="utf-8")
+    corrupt_bundle_health = capture(HARNESS + ["health", str(pv_project)])
+    if "Repo Map: tier=minimal" not in corrupt_bundle_health:
+        sys.exit("health accepted a corrupt Repo Map bundle as full tier")
+    if "Repo Map: tier=full" in corrupt_bundle_health:
+        sys.exit("health reported a corrupt Repo Map bundle as full tier")
     repo_map_cli = pv_project / ".harness" / "repo_map" / "repo_map.py"
     if (
         not repo_map_cli.is_file()
@@ -978,6 +1002,19 @@ def _run(test_root: Path):
         json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8"
     )
     run_ok(HARNESS + ["health", str(orchestration_project)])
+    minimal_repo_map_policy = json.loads(json.dumps(valid_orchestration))
+    minimal_repo_map_policy["repo_map_policy"] = {"tier": "minimal"}
+    orchestration_config.write_text(
+        json.dumps(minimal_repo_map_policy, indent=2) + "\n", encoding="utf-8"
+    )
+    policy_health = capture(HARNESS + ["health", str(orchestration_project)])
+    if "Repo Map: tier=minimal (requested by policy)" not in policy_health:
+        sys.exit("health did not report the policy-required Repo Map tier")
+    if "dispatch is limited to minimal path inventory" not in policy_health:
+        sys.exit("health did not report Repo Map policy dispatch effect")
+    orchestration_config.write_text(
+        json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8"
+    )
     subprocess.run(
         ["git", "config", "user.email", "test@example.invalid"],
         cwd=orchestration_project,
