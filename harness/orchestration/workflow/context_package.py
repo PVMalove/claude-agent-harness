@@ -141,6 +141,9 @@ def _persist_context_package(
         "estimated_tokens": built.estimated_tokens,
         "role": "shared",
         "inclusion_reason": inclusion_reason,
+        "schema_version": built.schema_version,
+        "parser": built.parser,
+        "parser_provenance": built.parser_provenance,
     }
     _reject_sensitive(package, "context package")
     _safe_id(package["context_package_id"], "context package")

@@ -88,6 +88,9 @@ class ContextPackage:
     file_hashes: dict[str, str]
     size_bytes: int
     estimated_tokens: int
+    schema_version: int = 2
+    parser: str = "path-only"
+    parser_provenance: dict[str, object] | None = None
 
     def to_json(self) -> str:
         return (
@@ -271,6 +274,33 @@ def _import_and_reference_graphs(
         elif kind in ("unique-name-ref", "ambiguous-name-ref"):
             reference_graph.setdefault(source, set()).add(target)
     return import_graph, reference_graph
+
+
+def _parser_provenance_from_repo_map(payload: dict[str, object]) -> dict[str, object]:
+    tier: object = payload.get("tier")
+    parser: object = payload.get("parser")
+    degradation_reason: object = payload.get("degradation_reason")
+    token_estimator_version: object = payload.get("token_estimator_version")
+    nested_provenance: object = payload.get("parser_provenance")
+    if (
+        not isinstance(tier, str)
+        or not isinstance(parser, str)
+        or not isinstance(degradation_reason, str)
+        or not isinstance(token_estimator_version, str)
+        or not isinstance(nested_provenance, dict)
+    ):
+        raise ContextPackageError(
+            "Repo Map JSON contract violation: tier/parser/degradation_reason/"
+            "token_estimator_version/parser_provenance have an unexpected type",
+            remedy=_REPO_MAP_CONTRACT_REMEDY,
+        )
+    return {
+        "tier": tier,
+        "parser": parser,
+        "degradation_reason": degradation_reason,
+        "token_estimator_version": token_estimator_version,
+        "parser_provenance": nested_provenance,
+    }
 
 
 def _fallback_excerpt(text: str) -> list[str]:
@@ -502,6 +532,10 @@ def build_context_package(
     import_graph, reference_graph = _import_and_reference_graphs(
         repo_map_payload, files
     )
+    parser_provenance: dict[str, object] = _parser_provenance_from_repo_map(
+        repo_map_payload
+    )
+    parser: str = cast(str, parser_provenance["parser"])
 
     imported_by: dict[str, set[str]] = {path: set() for path in import_graph}
     for path, imports in import_graph.items():
@@ -638,4 +672,7 @@ def build_context_package(
         file_hashes=file_hashes,
         size_bytes=size_bytes,
         estimated_tokens=estimated_tokens,
+        schema_version=2,
+        parser=parser,
+        parser_provenance=parser_provenance,
     )

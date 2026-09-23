@@ -96,3 +96,23 @@ post-integration defect rate между continuation- и single-session-batch), 
 - **Отдельная новая ledger-запись "continuation approval"** вместо переиспользования "coordinator
   decision". Отклонено: continuation-триггер — это ровно тот "новый факт после dispatch", который
   playbook.md уже описывает; отдельная схема добавила бы параллельную сущность без новой семантики.
+
+## Обновление (issue #274): граф символов и parser_provenance из Repo Map
+
+`build_context_package` больше не строит граф импортов и не извлекает Python-сигнатуры сам (удалены
+regex-based import graph и AST-based signature extraction); он получает их из Repo Map CLI —
+sibling-модуля `harness/repo_map/repo_map.py`, — вызывая его подпроцессом через `sys.executable` и
+валидируя типизированный JSON-контракт (`harness/repo_map/repo_map.schema.json`). Через границу
+процесса пересекает только JSON: tree-sitter-типы и enforcement `repo_map_policy`
+(allow/deny/redact) остаются внутри Repo Map, поэтому в пакет попадает только policy-approved срез
+репозитория, а path/symbol, заблокированный политикой, никогда в него не попадает.
+
+`symbol_graph["<path>"]["imports"]`/`["imported_by"]` заполняются только рёбрами `kind == "import"`;
+рёбра `unique-name-ref`/`ambiguous-name-ref` образуют новые аддитивные ключи `["references"]`/
+`["referenced_by"]` (пустые списки, когда Repo Map работает на minimal-tier без grammar-бандла).
+
+Context Package получил структурированный `parser_provenance` (tier, parser, degradation_reason,
+token_estimator_version, plюс вложенный `parser_provenance` самого Repo Map — идентичность и версии
+tree-sitter-бандла, hash скрипта, версия token-estimator) и `schema_version` (2); прежнее строковое
+поле `parser` сохраняется как legacy-зеркало top-level `parser` Repo Map ("path-only"/"bundle") ещё
+одну версию схемы. Отсутствие `schema_version` в уже существующей записи трактуется как версия 1.
