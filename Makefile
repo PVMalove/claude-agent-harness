@@ -20,12 +20,14 @@ endif
 help: ## Показать список команд с описанием
 	@$(PYTHON_BOOTSTRAP) -c "import re, sys; print('Доступные команды:'); lines = open(sys.argv[1], encoding='utf-8').readlines(); matches = [re.match(r'^([a-zA-Z0-9_-]+):.*?## (.*)$$', line) for line in lines]; [print(f'  {m.group(1):<16} - {m.group(2)}') for m in matches if m]" $(MAKEFILE_LIST)
 
-$(HARNESS_ENV_STAMP): requirements-dev.txt
-	$(PYTHON_BOOTSTRAP) -m venv $(HARNESS_VENV)
-	$(HARNESS_PYTHON) -m pip install --disable-pip-version-check -r requirements-dev.txt
+# Окружение харнесса ставит только uv (без pip): группа `dev` из pyproject.toml строго по uv.lock.
+export UV_PROJECT_ENVIRONMENT := $(HARNESS_VENV)
+
+$(HARNESS_ENV_STAMP): pyproject.toml uv.lock
+	uv sync --locked --python $(PYTHON_BOOTSTRAP)
 	$(HARNESS_PYTHON) -c "from pathlib import Path; Path(r'$(HARNESS_ENV_STAMP)').touch()"
 
-bootstrap: $(HARNESS_ENV_STAMP) ## Создать .harness/.venv и установить Python-зависимости
+bootstrap: $(HARNESS_ENV_STAMP) ## Создать .harness/.venv через uv sync и установить Python-зависимости
 
 format: $(HARNESS_ENV_STAMP) ## Автоформатирование кода (ruff format + ruff check --fix-only)
 	$(HARNESS_PYTHON) -m ruff format .
