@@ -170,6 +170,7 @@ worktree, branch и SHA; legacy projects могут включить это по
   },
   "concurrency_budget": 1,
   "developer_verification_commands": ["python -m pytest tests/unit"],
+  "review_verification_commands": ["python -m pytest tests/unit"],
   "verification_commands": ["python -m pytest"]
 }
 ```
@@ -185,9 +186,10 @@ immutable brief, обязаны пройти model self-report и вернуть
 `verification_commands` выполняет clean-room QA, а developer получает
 `developer_verification_commands`. Это необязательное поле: без него сохраняется совместимый
 режим, в котором developer получает полный список. Задавайте в нём быстрые task-scoped проверки,
-а в `verification_commands` — независимый полный gate. Code-review получает полный список, но
-запускает каждую команду через `test_summary.py`: в report остаются исходная команда и bounded
-summary, а санитизированный полный лог доступен только для упавшей проверки.
+а в `verification_commands` — независимый полный gate. `review_verification_commands` так же
+необязателен и управляет только code-review; без него review получает полный список. Code-review
+запускает каждую полученную команду через `test_summary.py`: в report остаются исходная команда и
+bounded summary, а санитизированный полный лог доступен только для упавшей проверки.
 
 Зона — не подсказка, а граница: write-роль изменяет только разрешённые пути своей зоны. Если роли
 нужен более узкий scope, задайте ей `write_paths`: brief и completion report будут проверяться по
@@ -853,7 +855,8 @@ isolated worker. Он не выбирает scope, не запускает check
 
 Пример brief для write-роли. Для developer work-dispatch `verification_commands` должен буквально
 совпадать с `developer_verification_commands` (либо с `verification_commands`, если focused-список
-не задан); для остальных ролей — с `verification_commands`. `write_paths` — буквально с путями
+не задан); для code-review work-dispatch — с `review_verification_commands` по тому же правилу;
+для остальных ролей — с `verification_commands`. `write_paths` — буквально с путями
 выбранной зоны. Не добавляйте
 поля или значения, похожие на секреты.
 

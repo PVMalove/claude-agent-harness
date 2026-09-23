@@ -39,6 +39,7 @@ CONFIG_REQUIRED_FIELDS = (
 CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "$schema",
     "developer_verification_commands",
+    "review_verification_commands",
     "test_path_patterns",
     "adaptive_continuation_policy",
     "approval_policy",
@@ -448,17 +449,20 @@ def validate_brief_policy(
                 f"dispatch brief {field} must be a list of strings",
                 remedy=INTERNAL_INVARIANT_REMEDY,
             )
-    expected_commands = (
-        config.get(
+    if brief.get("purpose") == "work" and brief.get("role") == "developer":
+        expected_commands = config.get(
             "developer_verification_commands", config.get("verification_commands")
         )
-        if brief.get("role") == "developer" and brief.get("purpose") == "work"
-        else config.get("verification_commands")
-    )
+    elif brief.get("purpose") == "work" and brief.get("role") == "code-review":
+        expected_commands = config.get(
+            "review_verification_commands", config.get("verification_commands")
+        )
+    else:
+        expected_commands = config.get("verification_commands")
     if brief["verification_commands"] != expected_commands:
         raise ContractError(
             "dispatch brief verification_commands must exactly match its project role configuration",
-            remedy="regenerate this brief so verification_commands matches the project's (developer_)verification_commands",
+            remedy="regenerate this brief so verification_commands matches the project's role verification_commands",
         )
     branch = brief["branch"]
     pattern = project.get("branch_pattern", r"^feature/issue-[0-9]+-.+")
@@ -962,6 +966,11 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     if developer_commands is not None and not string_list(developer_commands):
         problems.append(
             "orchestration developer_verification_commands must be a list of strings when provided"
+        )
+    review_commands = config.get("review_verification_commands")
+    if review_commands is not None and not string_list(review_commands):
+        problems.append(
+            "orchestration review_verification_commands must be a list of strings when provided"
         )
     approval_policy = config.get("approval_policy", "manual_all")
     if approval_policy not in APPROVAL_POLICIES:

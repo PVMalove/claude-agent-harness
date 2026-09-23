@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -45,6 +46,7 @@ class IsolatedTempEnvTest(unittest.TestCase):
             self.assertEqual(env["KEEP"], "1")
             for name in ("TMP", "TEMP", "TMPDIR"):
                 self.assertEqual(env[name], str(run_tmp))
+            self.assertEqual(env["PYTHONPYCACHEPREFIX"], str(run_tmp / "pycache"))
             resolved = subprocess.run(
                 [sys.executable, "-c", "import tempfile; print(tempfile.gettempdir())"],
                 env=dict(os.environ, **env),
@@ -67,6 +69,30 @@ class RemoveTreeTest(unittest.TestCase):
         verify.remove_tree(root)
 
         self.assertFalse(root.exists())
+
+
+class VerifyStageTimingTest(unittest.TestCase):
+    def test_successful_stage_reports_its_name_and_duration(self) -> None:
+        with (
+            mock.patch.object(time, "perf_counter", side_effect=[10.0, 12.5]),
+            mock.patch.object(verify, "run_ok") as run_ok,
+            mock.patch("builtins.print") as printed,
+        ):
+            verify.run_stage("pytest", ["pytest"])
+
+        run_ok.assert_called_once_with(["pytest"], env=None, stdout=None, cwd=None)
+        printed.assert_called_once_with("[verify] pytest: passed in 2.50s")
+
+    def test_failed_stage_reports_its_name_and_duration_before_propagating(self) -> None:
+        with (
+            mock.patch.object(time, "perf_counter", side_effect=[10.0, 11.0]),
+            mock.patch.object(verify, "run_ok", side_effect=SystemExit(7)),
+            mock.patch("builtins.print") as printed,
+            self.assertRaises(SystemExit),
+        ):
+            verify.run_stage("clean-room", ["clean-room"])
+
+        printed.assert_called_once_with("[verify] clean-room: failed in 1.00s")
 
 
 class CleanRoomPathBudgetTest(unittest.TestCase):
