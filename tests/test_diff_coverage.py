@@ -102,6 +102,32 @@ class ThresholdTests(unittest.TestCase):
         self.assertTrue(diff_coverage.meets_threshold(5, 5))
 
 
+class CompactUncoveredTests(unittest.TestCase):
+    def test_groups_consecutive_lines_by_file_and_bounds_the_output(self) -> None:
+        displayed, omitted = diff_coverage.compact_uncovered(
+            [
+                "a.py:2",
+                "a.py:3",
+                "a.py:5",
+                "b.py:1",
+                "b.py:2",
+                "b.py:7",
+            ],
+            max_lines=4,
+        )
+
+        self.assertEqual(displayed, ["a.py:2-3, 5", "b.py:1"])
+        self.assertEqual(omitted, 2)
+
+    def test_keeps_a_single_line_as_a_single_location(self) -> None:
+        displayed, omitted = diff_coverage.compact_uncovered(
+            ["pkg/module.py:12"], max_lines=20
+        )
+
+        self.assertEqual(displayed, ["pkg/module.py:12"])
+        self.assertEqual(omitted, 0)
+
+
 class SourceDirsTests(unittest.TestCase):
     def test_every_changed_file_directory_is_a_coverage_source(self) -> None:
         changed = {

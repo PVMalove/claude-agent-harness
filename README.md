@@ -245,6 +245,9 @@ python harness\bin\harness list C:\path\to\repository
 - `docs/agents/*.md` и `harness/project/docs-agents/*.md` — одно и то же по смыслу в двух местах
   (вторая копия — то, что `pvmalove-suite` реально разворачивает в целевые проекты); `scripts/verify.py`
   сверяет обе копии по содержимому (без учёта BOM/CRLF) и не даст молча разойтись.
+- CI запускает `scripts/diff_coverage.py`: он читает машиночитаемый JSON отчёт coverage, проверяет
+  только изменённые исполняемые Python-строки и при провале выводит компактный список путей и
+  диапазонов, а не полный перечень непокрытых строк.
 - `harness update` по умолчанию не перезаписывает изменённые managed files и seed-файлы.
   `--force-managed-files` обновляет только managed snapshot, `--force-seed-files` — только seed,
   а `--force` объединяет оба действия и может перезаписать project-owned конфигурацию.
