@@ -3119,6 +3119,47 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             brief["transition"]["context_package_id"], brief["context_package_id"]
         )
 
+    def test_proposal_warns_about_minimal_repo_map_without_blocking_dispatch(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+
+        proposal = self._propose(batch["batch_id"], "architect")
+
+        warning = proposal["context_package_quality_warning"]
+        self.assertEqual(warning["tier"], "minimal")
+        self.assertTrue(warning["degradation_reason"])
+        self.assertIsInstance(warning["parser_provenance"], dict)
+        created = self._dispatch(
+            batch["batch_id"], "architect", digest=proposal["transition_digest"]
+        )
+        self.assertEqual(created["state"], "approved")
+
+    def test_proposal_omits_warning_for_full_repo_map(self) -> None:
+        batch = self._create_batch()
+        full_package: JsonObject = {
+            "context_package_id": "context-package-full",
+            "parser_provenance": {
+                "tier": "full",
+                "degradation_reason": "parser bundle applied",
+                "parser_provenance": {},
+            },
+        }
+
+        with (
+            mock.patch.object(
+                dispatch, "_persist_context_package", return_value=full_package
+            ),
+            mock.patch.object(
+                dispatch,
+                "_context_package_freshness",
+                return_value={"status": "fresh"},
+            ),
+        ):
+            proposal = self._propose(batch["batch_id"], "architect")
+
+        self.assertNotIn("context_package_quality_warning", proposal)
+
     def test_an_approval_is_valid_only_for_the_exact_transition_digest(self) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])
