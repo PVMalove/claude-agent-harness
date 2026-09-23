@@ -1094,7 +1094,7 @@ def _validate_report(
                     "dispatch commit_plan is malformed",
                     remedy="create a new developer dispatch with a valid immutable commit plan",
                 )
-            mapped: dict[str, str] = {}
+            pairs: list[tuple[str, str]] = []
             for entry in commit_map:
                 if not isinstance(entry, dict) or set(entry) != {
                     "commit_sha",
@@ -1110,24 +1110,28 @@ def _validate_report(
                         "commit_map entries must use string SHA and plan entry id",
                         remedy="report canonical commit SHA strings and commit plan entry ids",
                     )
-                mapped[_candidate_commit(repo, sha)] = plan_id
+                pairs.append((sha, plan_id))
             snapshot = dispatch.get("snapshot_commit")
             if not isinstance(snapshot, str):
                 raise CoordinatorError(
                     "developer dispatch lacks snapshot_commit",
                     remedy="create a new developer dispatch with an immutable snapshot",
                 )
-            created = _commits_between(repo, snapshot, resolved)
-            if (
-                set(mapped) != set(created)
-                or set(mapped.values()) != set(plan_ids)
-                or len(mapped) != len(created)
-                or len(mapped) != len(plan_ids)
-            ):
-                raise CoordinatorError(
-                    "commit_map must map each created commit to one distinct immutable plan entry",
-                    remedy="create one logical commit per commit_plan entry and report every SHA exactly once",
-                )
+            if repo is not None:
+                mapped = {
+                    _candidate_commit(repo, sha): plan_id for sha, plan_id in pairs
+                }
+                created = _commits_between(repo, snapshot, resolved)
+                if (
+                    set(mapped) != set(created)
+                    or set(mapped.values()) != set(plan_ids)
+                    or len(mapped) != len(created)
+                    or len(mapped) != len(plan_ids)
+                ):
+                    raise CoordinatorError(
+                        "commit_map must map each created commit to one distinct immutable plan entry",
+                        remedy="create one logical commit per commit_plan entry and report every SHA exactly once",
+                    )
     if role["mode"] == "read-only" and commit_sha != "not applicable — read-only role":
         raise CoordinatorError(
             "read-only completion reports must not claim a commit SHA",
