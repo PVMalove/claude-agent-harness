@@ -25,7 +25,10 @@ Run this project's quality gate and report the result. Nothing else — no resta
    ```
 
    On the first failure, stop. Return the wrapper's bounded summary — status, pytest totals, failed
-   node IDs, and its sanitized local log path — rather than command output. Do not run the remaining
-   commands. Read a failure log only when the developer needs that particular diagnostic evidence.
+   node IDs, structured diagnostics (traceback endings, explicit error messages, and compiler/linter
+   errors), and its sanitized local log path — rather than command output or an arbitrary tail of
+   the log. Do not run the remaining commands. Read a failure log only when the developer needs
+   that particular diagnostic evidence. The wrapper works with every quality command; do not add
+   a pytest JSON/XML reporting flag unless that command already owns and documents that artifact.
 3. If every command succeeds, record the pass marker yourself: run `bash "$CLAUDE_PROJECT_DIR/.claude/hooks/record-qa-gate-pass.sh"`. Don't rely on the `mark-qa-gate-passed.sh` PostToolUse hook alone for this — this skill runs forked (see `context: fork` above), and the hook isn't guaranteed to fire for Bash calls made inside that fork.
 4. Report a compact one-line PASS summary only — do not paste the passing output.

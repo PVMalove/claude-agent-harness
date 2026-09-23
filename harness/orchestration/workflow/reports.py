@@ -46,6 +46,7 @@ from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _changed_files_between,
     _commit_changed_files,
+    _commits_between,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -1074,6 +1075,58 @@ def _validate_report(
                 raise CoordinatorError(
                     "completion report changed_files must exactly match commit_sha",
                     remedy="regenerate completion report changed_files from the actual diff at commit_sha",
+                )
+        commit_plan = dispatch.get("commit_plan", [])
+        commit_map = report.get("commit_map")
+        if role.get("name") == "developer" and commit_plan:
+            if not isinstance(commit_map, list) or not commit_map:
+                raise CoordinatorError(
+                    "developer completion report requires commit_map for the immutable commit plan",
+                    remedy="map every commit created after snapshot_commit to exactly one commit_plan entry",
+                )
+            plan_ids = [
+                entry.get("id") for entry in commit_plan if isinstance(entry, dict)
+            ]
+            if len(plan_ids) != len(commit_plan) or not all(
+                isinstance(item, str) for item in plan_ids
+            ):
+                raise CoordinatorError(
+                    "dispatch commit_plan is malformed",
+                    remedy="create a new developer dispatch with a valid immutable commit plan",
+                )
+            mapped: dict[str, str] = {}
+            for entry in commit_map:
+                if not isinstance(entry, dict) or set(entry) != {
+                    "commit_sha",
+                    "plan_entry_id",
+                }:
+                    raise CoordinatorError(
+                        "commit_map entries must contain only commit_sha and plan_entry_id",
+                        remedy="report one SHA-to-plan-entry mapping for every created commit",
+                    )
+                sha, plan_id = entry["commit_sha"], entry["plan_entry_id"]
+                if not isinstance(sha, str) or not isinstance(plan_id, str):
+                    raise CoordinatorError(
+                        "commit_map entries must use string SHA and plan entry id",
+                        remedy="report canonical commit SHA strings and commit plan entry ids",
+                    )
+                mapped[_candidate_commit(repo, sha)] = plan_id
+            snapshot = dispatch.get("snapshot_commit")
+            if not isinstance(snapshot, str):
+                raise CoordinatorError(
+                    "developer dispatch lacks snapshot_commit",
+                    remedy="create a new developer dispatch with an immutable snapshot",
+                )
+            created = _commits_between(repo, snapshot, resolved)
+            if (
+                set(mapped) != set(created)
+                or set(mapped.values()) != set(plan_ids)
+                or len(mapped) != len(created)
+                or len(mapped) != len(plan_ids)
+            ):
+                raise CoordinatorError(
+                    "commit_map must map each created commit to one distinct immutable plan entry",
+                    remedy="create one logical commit per commit_plan entry and report every SHA exactly once",
                 )
     if role["mode"] == "read-only" and commit_sha != "not applicable — read-only role":
         raise CoordinatorError(

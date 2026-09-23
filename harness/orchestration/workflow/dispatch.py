@@ -34,6 +34,7 @@ from harness.orchestration.core.config import (
     _worker_attestation_required,
 )
 from harness.orchestration.core.constants import (
+    DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     TERMINAL_BATCH_STATES,
 )
 from harness.orchestration.core.git_utils import (
@@ -142,6 +143,25 @@ def _enforce_base_freshness(
         "only a new developer rebase dispatch can clear this block",
         remedy="run a new developer rebase dispatch to bring the batch base up to date with origin, then retry",
     )
+
+
+def _developer_commit_plan(
+    batch: JsonObject, write_paths: list[str]
+) -> list[JsonObject]:
+    """Turn the approved DoD into a compact, immutable commit-plan interface.
+
+    The coordinator owns the structure; a worker only supplies the SHA-to-entry evidence.
+    This keeps plan construction out of every runtime adapter while making each logical
+    DoD item independently reviewable.
+    """
+    return [
+        {
+            "id": f"step-{index}",
+            "summary": item,
+            "expected_paths": write_paths,
+        }
+        for index, item in enumerate(batch["definition_of_done"], start=1)
+    ]
 
 
 def _dispatch_approval_mode(
@@ -600,6 +620,11 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 session_effort=getattr(args, "effort", None),
             )
         )
+        commit_plan = (
+            _developer_commit_plan(batch, zone["paths"])
+            if role_name == "developer" and purpose == "work"
+            else []
+        )
         candidate = None
         risk = None
         review_scope: list[str] = []
@@ -722,22 +747,26 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             else _dispatch_approval_mode(args, batch, config, role_name, purpose, risk)
         )
         context_package = None
+        # A developer retry amends the latest reviewed candidate.  Pin its immutable
+        # startup snapshot to that candidate too, so the worker keeps the ordered
+        # commit history instead of rewinding HEAD and staging the whole diff.
+        snapshot_commit = candidate or batch["base_commit"]
         if role_name in {"architect", "developer", "verification", "code-review"}:
-            snapshot = candidate
-            if snapshot is None:
+            snapshot_commit = candidate
+            if snapshot_commit is None:
                 try:
-                    snapshot = _latest_developer_candidate(repo, root, batch)
+                    snapshot_commit = _latest_developer_candidate(repo, root, batch)
                 except CoordinatorError:
-                    snapshot = batch["base_commit"]
+                    snapshot_commit = batch["base_commit"]
             context_package = _persist_context_package(
                 repo,
                 root,
                 ledger,
                 batch,
                 role="shared",
-                snapshot=snapshot,
+                snapshot=snapshot_commit,
                 inclusion_reason=(
-                    f"automatic shared package for {role_name} at pinned snapshot {snapshot}; "
+                    f"automatic shared package for {role_name} at pinned snapshot {snapshot_commit}; "
                     "included before immutable brief creation"
                 ),
             )
@@ -784,6 +813,16 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             }
         assert approval_mode is not None  # only a proposal skips the approval mode
         approval = _bind_dispatch_approval(args, approval_mode, digest)
+        orchestration_policy = _orchestration_policy(config)
+        stale_after = cast(
+            int, orchestration_policy["attention"]["stale_dispatch_seconds"]
+        )
+        # A heartbeat must leave enough margin for an occasional slow tool call.  The cadence is
+        # frozen into the brief so a later project-config edit cannot silently change an active
+        # worker's liveness contract.
+        heartbeat_every = max(
+            1, min(DEFAULT_HEARTBEAT_INTERVAL_SECONDS, stale_after // 3)
+        )
         brief: JsonObject = {
             "dispatch_id": dispatch_id,
             "batch_id": batch["batch_id"],
@@ -829,14 +868,19 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "communication_policy": batch.get(
                 "communication_policy", _communication_policy(config)
             ),
-            "snapshot_commit": candidate or batch["base_commit"],
+            "snapshot_commit": snapshot_commit,
             # Absolute, so a role never resolves a relative reporting path against a guessed
             # current directory and never invents a home-directory folder of its own.
             "report_staging_path": str(_agent_inbox(repo) / f"{dispatch_id}.json"),
             "transition": transition,
             "transition_digest": digest,
             "retry_idempotency_key": idempotency_key,
-            "orchestration_policy": _orchestration_policy(config),
+            "orchestration_policy": orchestration_policy,
+            "liveness": {
+                "heartbeat_every_seconds": heartbeat_every,
+                "stale_after_seconds": stale_after,
+            },
+            "commit_plan": commit_plan,
         }
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the

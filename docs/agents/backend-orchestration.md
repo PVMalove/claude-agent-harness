@@ -271,7 +271,7 @@ manifests), а значением — непустой список уникал
 меняет то, под чем он был утверждён:
 
 ```json
-"attention_policy": {"retry_queue_seconds": 3600, "max_infrastructure_retries": 2, "stale_dispatch_seconds": 900},
+"attention_policy": {"retry_queue_seconds": 3600, "max_infrastructure_retries": 2, "stale_dispatch_seconds": 3600},
 "approval_ttl_seconds": 3600,
 "extensions": {"transport_health": "none", "verification_environment_health": "none",
                "retry_reason_classifier": "none", "context_telemetry_provider": "none", "human_notifier": "none"}
@@ -637,27 +637,20 @@ write-роли либо pinned SHA review-роли; расхождение не�
 `self-report` буквально совпадал с immutable `snapshot_commit` из brief. После `batch decide --decision
 retry`, маршрутизированного в `developer-retry` (например, после code-review blocker; повтор на том же
 SHA developer dispatch не создаёт), новый developer dispatch **всегда** пинит
-`snapshot_commit` обратно на `base_commit` batch-а, а не на отклонённый кандидатный коммит — чтобы retry
-не мог молча унаследовать состояние отклонённого коммита. Это значит, что coordinator обязан сам
-привести worktree к этому состоянию **до** `dispatch send`, иначе первый же `dispatch self-report`
-новой worker session упадёт с `AttestationError`:
+`snapshot_commit` на последний кандидатный коммит. Retry продолжает его историю и добавляет отдельные
+логические коммиты для замечаний review по immutable commit plan; coordinator не выполняет и не
+предлагает `git reset --soft`. Если HEAD worktree не совпадает с pinned snapshot, исправляйте
+конфигурацию нового dispatch или выбирайте worktree на этом commit, не переписывая существующую историю.
 
-```bash
-git -C <worktree> status --short
-git -C <worktree> reset --soft <base_commit>
-```
-
-Используйте именно `--soft`, не `--hard`: он передвигает только HEAD, оставляя diff отклонённого
-кандидата staged в рабочем дереве — новая worker session стартует с тем же кодом и правит только то,
-что назвал review, вместо повторной реализации с нуля. Ошибка attestation-несовпадения теперь сама
-называет точную команду для исправления.
-
-Пока роль работает, она отбивает heartbeat, а coordinator-сессия опрашивает состояние:
+Пока роль работает, она отбивает heartbeat, а coordinator-сессия опрашивает состояние. По умолчанию
+dispatch допускает до часа тишины для долгой сборки или теста, но immutable brief требует heartbeat
+сразу после self-report и затем не реже раза в пять минут. Это сохраняет быстрый сигнал о живом
+worker, не объявляя работающего developer stale из-за одного долгого tool call:
 
 ```bash
 python .harness/orchestration/coordinator.py --repo . dispatch heartbeat --dispatch <dispatch-id>
 python .harness/orchestration/coordinator.py --repo . dispatch status \
-  --batch <batch-id> --stale-after 900
+  --batch <batch-id> --stale-after 3600
 ```
 
 `dispatch status` показывает для каждого dispatch роль, транспорт, `resolved_model`, результат

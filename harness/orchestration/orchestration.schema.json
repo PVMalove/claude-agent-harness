@@ -216,7 +216,7 @@
       "properties": {
         "retry_queue_seconds": {"type": "integer", "minimum": 1, "default": 3600, "description": "How long a decided retry may wait for its next dispatch before the batch needs attention."},
         "max_infrastructure_retries": {"type": "integer", "minimum": 0, "default": 2, "description": "Operational retries (verification-infrastructure, transport, context-pressure) tolerated for one candidate; one more needs attention."},
-        "stale_dispatch_seconds": {"type": "integer", "minimum": 1, "default": 900, "description": "Silence after which a live dispatch is stale and the batch needs attention."}
+        "stale_dispatch_seconds": {"type": "integer", "minimum": 1, "default": 3600, "description": "Silence after which a live dispatch is stale and the batch needs attention. The dispatch brief requires heartbeats at least every five minutes by default."}
       }
     },
     "approval_ttl_seconds": {

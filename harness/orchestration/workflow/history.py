@@ -680,6 +680,21 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
             remedy="the dispatch orchestration_policy is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
+    liveness = dispatch.get("liveness")
+    if liveness is not None and (
+        not isinstance(liveness, dict)
+        or set(liveness) != {"heartbeat_every_seconds", "stale_after_seconds"}
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+            for value in liveness.values()
+        )
+        or liveness["heartbeat_every_seconds"] > liveness["stale_after_seconds"]
+    ):
+        raise CoordinatorError(
+            "dispatch liveness policy is malformed",
+            remedy="the dispatch liveness policy is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
 
 
 def _validate_dispatch(
@@ -695,6 +710,8 @@ def _validate_dispatch(
         "worker_attestation_required",
         "snapshot_commit",
         "communication_policy",
+        "commit_plan",
+        "liveness",
     }
     # A brief written before the canonical reporting path existed keeps its historical shape, the
     # same way every earlier field addition is treated here.

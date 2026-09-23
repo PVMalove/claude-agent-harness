@@ -302,6 +302,38 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         )
         self.assertEqual(on_disk_status["dispatch_id"], dispatch_id)
         self.assertEqual(on_disk_status["state"], "approved")
+        self.assertEqual(
+            on_disk_dispatch["liveness"],
+            {"heartbeat_every_seconds": 300, "stale_after_seconds": 3600},
+        )
+
+    def test_dispatch_send_returns_the_frozen_heartbeat_cadence(self) -> None:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+
+        sent = coordinator.send_dispatch(
+            _ns(
+                repo=str(self.repo),
+                state_dir=str(self.state_dir),
+                dispatch=dispatch["dispatch_id"],
+                adapter=None,
+                adapter_arg=None,
+                checkout=None,
+            )
+        )
+
+        self.assertEqual(
+            sent["heartbeat"],
+            {
+                "every_seconds": 300,
+                "stale_after_seconds": 3600,
+                "instruction": (
+                    "after self-report, send dispatch heartbeat now and at least once per "
+                    "300 seconds while working"
+                ),
+            },
+        )
 
     def test_dispatch_report_and_decision_round_trip(self) -> None:
         batch = self._create_batch()
@@ -1533,9 +1565,16 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def _developer_report(
         self, brief: JsonObject, candidate: str, changed: list[str], **overrides: object
     ) -> JsonObject:
-        return self._base_report(
-            brief, "developer", commit_sha=candidate, changed_files=changed, **overrides
-        )
+        defaults: JsonObject = {
+            "commit_sha": candidate,
+            "changed_files": changed,
+            "commit_map": [
+                {"commit_sha": candidate, "plan_entry_id": entry["id"]}
+                for entry in brief["commit_plan"]
+            ],
+        }
+        defaults.update(overrides)
+        return self._base_report(brief, "developer", **defaults)
 
     def _accepted_candidate(self, batch_id: str, name: str = "x") -> str:
         """A developer commit that was accepted and risk-assessed as review-required."""
@@ -2233,6 +2272,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         self.assertEqual(routing["previous_role"], "code-review")
         retry = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self.assertEqual(retry["snapshot_commit"], candidate)
         self._start(retry["dispatch_id"])
         changed = git_utils._changed_files_between(
             self.repo, self._batch_record(batch["batch_id"])["base_commit"], candidate
@@ -2241,6 +2281,21 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self._submit(
                 retry["dispatch_id"], self._developer_report(retry, candidate, changed)
             )  # no fictitious re-report
+
+    def test_developer_report_rejects_a_missing_commit_map(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit("commit-map")
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "requires commit_map"
+        ):
+            self._submit(
+                brief["dispatch_id"],
+                self._developer_report(brief, candidate, changed, commit_map=[]),
+            )
 
     def test_developer_stage_retry_routes_to_a_developer_retry_with_no_reusable_candidate(
         self,

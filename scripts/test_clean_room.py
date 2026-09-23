@@ -438,6 +438,10 @@ def _run(test_root: Path):
             (
                 "import sys; print('=== short test summary info ==='); "
                 "print('FAILED tests/test_checkout.py::test_quote - AssertionError: gho_abcdefghijklmnopqrstuvwxyz1234567890'); "
+                "print('Traceback (most recent call last):'); "
+                "print('  File tests/test_checkout.py, line 12, in test_quote'); "
+                "print('RuntimeError: gho_abcdefghijklmnopqrstuvwxyz1234567890'); "
+                "print('src/check.py:7:4: error: incompatible types'); "
                 "print('1 failed, 2 passed in 0.01s'); sys.exit(1)"
             ),
         ],
@@ -452,12 +456,17 @@ def _run(test_root: Path):
         )
     if "tests/test_checkout.py::test_quote" not in failing_summary.stdout:
         sys.exit("pytest summary wrapper did not retain the failed test node ID")
-    if (
-        "AssertionError" in failing_summary.stdout
-        or "gho_abcdefghijklmnopqrstuvwxyz1234567890" in failing_summary.stdout
+    for expected_diagnostic in (
+        "Traceback: RuntimeError: <REDACTED_GITHUB_TOKEN>",
+        "Error: src/check.py:7:4: incompatible types",
     ):
+        if expected_diagnostic not in failing_summary.stdout:
+            sys.exit(
+                "pytest summary wrapper did not extract a structured failure diagnostic"
+            )
+    if "gho_abcdefghijklmnopqrstuvwxyz1234567890" in failing_summary.stdout:
         sys.exit(
-            "pytest summary wrapper leaked failure detail into its bounded summary"
+            "pytest summary wrapper leaked a secret into its bounded summary"
         )
     log_match = re.search(
         r"^Full log: (.+)$", failing_summary.stdout, flags=re.MULTILINE

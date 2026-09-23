@@ -28,3 +28,7 @@ Follow the immutable brief's ordered commit plan. Each commit implements one ind
 reviewable logical change and is reported against its plan entry with the files it contains. A single
 commit is valid only when the plan records one inseparable unit. For recovery, retain the accepted
 plan or stop for a newly approved replacement before creating an affected commit.
+
+The completion report's `commit_map` is mandatory for a developer brief with a `commit_plan`.
+It contains one `{commit_sha, plan_entry_id}` pair for every commit after `snapshot_commit`; every
+plan entry is matched once. Do not report the candidate SHA alone when it hides multiple commits.
