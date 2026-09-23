@@ -19,6 +19,10 @@ class HarnessError(Exception):
         self.remedy = remedy
 
 
+class PolicyError(HarnessError):
+    """A project-owned policy cannot be applied safely."""
+
+
 INTERNAL_INVARIANT_REMEDY = (
     "internal invariant violated -- file a bug report with this traceback"
 )

@@ -8,6 +8,7 @@ read-only role on the same candidate; anything about the code itself goes back t
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 from typing import cast
 
@@ -29,6 +30,7 @@ from harness.orchestration.core.constants import (
     RETRY_REASON_CATEGORIES,
 )
 from harness.orchestration.core.git_utils import (
+    _candidate_commit,
     _fetch_ref_tip,
 )
 from harness.orchestration.core.utils import (
@@ -203,6 +205,13 @@ def _developer_retry_count(batch: JsonObject) -> int:
         for decision in batch.get("coordinator_decisions", [])
         if decision.get("decision") == "retry"
         and decision.get("next_role") == "developer"
+    )
+
+
+def _developer_retry_budget_exhausted(config: JsonObject, batch: JsonObject) -> bool:
+    return (
+        _developer_retry_count(batch)
+        >= _retry_policy(config)["max_developer_retries"]
     )
 
 
@@ -417,10 +426,16 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         if report.get("role") == "code-review":
             severities = _review_severity(report["review"])
             if any(value == "blocker" for value in severities.values()):
-                if args.decision not in {"retry", "abandon"}:
+                if _developer_retry_budget_exhausted(config, batch):
+                    if args.decision not in {"block", "fail", "abandon"}:
+                        raise CoordinatorError(
+                            "a review blocker cannot be accepted and the developer retry budget is exhausted for this batch",
+                            remedy="block, fail, or abandon (with --reason) this batch, then split or re-plan the work",
+                        )
+                elif args.decision not in {"retry", "abandon"}:
                     raise CoordinatorError(
                         "a review blocker requires a new developer retry",
-                        remedy="start a new developer retry dispatch to address the review blocker",
+                        remedy="start a new developer retry dispatch to address the review blocker, or abandon (with --reason) this batch",
                     )
             elif any(value == "warning" for value in severities.values()):
                 if args.decision == "accept":
@@ -447,16 +462,26 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         if args.decision == "retry":
             routing = _decide_retry_route(repo, root, batch, dispatch, report, args)
             routing["decided_at"] = utils._now()
-            if routing["next_action"] == "developer-retry":
-                retry_policy = _retry_policy(core_config._config(repo))
-                if (
-                    _developer_retry_count(batch)
-                    >= retry_policy["max_developer_retries"]
-                ):
-                    raise CoordinatorError(
-                        "developer retry budget is exhausted for this batch; split, block, or re-plan instead of starting another worker",
-                        remedy="split, block, or re-plan this batch instead of starting another developer retry",
-                    )
+            if routing["next_action"] == "verification":
+                report_path = _records_root(root) / pending[0]["report"]
+                batch.setdefault("candidate_registrations", []).append(
+                    {
+                        "candidate_commit": routing["candidate_commit"],
+                        "source_dispatch_id": dispatch["dispatch_id"],
+                        "source_report_sha256": hashlib.sha256(
+                            report_path.read_bytes()
+                        ).hexdigest(),
+                        "reason_category": routing["reason_category"],
+                        "registered_at": routing["decided_at"],
+                    }
+                )
+            if routing[
+                "next_action"
+            ] == "developer-retry" and _developer_retry_budget_exhausted(config, batch):
+                raise CoordinatorError(
+                    "developer retry budget is exhausted for this batch; block, fail, or abandon it instead of starting another worker",
+                    remedy="block, fail, or abandon (with --reason) this batch, then split or re-plan the work",
+                )
         abandon_reason = ""
         if args.decision == "abandon":
             abandon_reason = (
@@ -504,6 +529,8 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     batch["next_action"] = "risk-assessment"
             elif report["role"] == "architect":
                 batch["next_action"] = "developer"
+            elif report["role"] == "verification":
+                batch["next_action"] = "risk-assessment"
             elif report["role"] == "code-review":
                 batch["next_action"] = "qa"
             elif report["role"] == "qa":
@@ -586,6 +613,22 @@ def _decide_retry_route(
             for item in batch.get("context_pressure", [])
         ),
     )
+    if (
+        stage == "developer"
+        and routing["reason_category"] in OPERATIONAL_REASON_CATEGORIES
+        and report.get("outcome") == "blocked"
+    ):
+        candidate = _candidate_commit(repo, report["commit_sha"])
+        routing = {
+            **routing,
+            "next_role": "verification",
+            "next_action": "verification",
+            "candidate_commit": candidate,
+            "rationale": (
+                f"{routing['rationale']} The blocked developer candidate is registered "
+                "append-only and must pass a new read-only verification dispatch before risk assessment."
+            ),
+        }
     if hint is not None:
         routing["classifier_hint"] = {"category": hint.category, "basis": hint.basis}
     if forced == "developer" and routing["next_action"] != "developer-retry":

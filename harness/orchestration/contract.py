@@ -45,6 +45,7 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "approval_policy",
     "low_risk_zones",
     "context_package_policy",
+    "repo_map_policy",
     "continuation_policy",
     "retry_policy",
     "preflight_policy",
@@ -551,6 +552,65 @@ def _policy_problem(
     return problems
 
 
+def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
+    """Validate the Repo Map policy without importing its base-capability resource."""
+    value = config.get("repo_map_policy")
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        return ["orchestration repo_map_policy must be an object"]
+    numeric = {
+        "max_files",
+        "max_file_bytes",
+        "max_path_length",
+        "max_symbol_length",
+        "max_signature_length",
+        "timeout_seconds",
+        "max_tokens",
+        "parser_bundle_timeout_seconds",
+        "parser_bundle_max_output_bytes",
+    }
+    patterns = {
+        "allow_paths",
+        "deny_paths",
+        "redact_paths",
+        "redact_symbols",
+        "parser_bundle_registry_paths",
+    }
+    enum_values = {"tier": {"minimal", "full"}}
+    unknown = sorted(set(value) - numeric - patterns - set(enum_values))
+    problems: list[str] = []
+    if unknown:
+        problems.append(
+            f"orchestration repo_map_policy has unknown field(s): {', '.join(unknown)}"
+        )
+    for field in numeric:
+        if field in value and (
+            not _is_int(value[field]) or cast(int, value[field]) < 1
+        ):
+            problems.append(
+                f"orchestration repo_map_policy.{field} must be a positive integer"
+            )
+    for field in patterns:
+        if field in value:
+            item = value[field]
+            if not isinstance(item, list) or any(
+                not isinstance(entry, str) or not entry for entry in item
+            ):
+                problems.append(
+                    f"orchestration repo_map_policy.{field} must be a list of non-empty path globs"
+                )
+    for field, choices in enum_values.items():
+        if field in value and (
+            not isinstance(value[field], str) or value[field] not in choices
+        ):
+            problems.append(
+                f"orchestration repo_map_policy.{field} must be one of: "
+                + ", ".join(sorted(choices))
+            )
+    return problems
+
+
 def resolve_allowed_tools(
     config: Mapping[str, object], role_name: str, mode: str
 ) -> list[str]:
@@ -1035,6 +1095,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
             },
         )
     )
+    problems.extend(_repo_map_policy_problems(config))
     context_policy = config.get("context_package_policy")
     if isinstance(context_policy, dict):
         maximum = context_policy.get("max_tokens")

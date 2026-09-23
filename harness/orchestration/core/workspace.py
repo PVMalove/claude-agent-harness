@@ -114,7 +114,9 @@ def _harness_runtime_sha256(repo: Path) -> str:
     for path in sorted(
         item
         for item in root.rglob("*")
-        if item.is_file() and "state" not in item.relative_to(root).parts
+        if item.is_file()
+        and not {"state", "__pycache__"}.intersection(item.relative_to(root).parts)
+        and item.suffix != ".pyc"
     ):
         digest.update(path.relative_to(root).as_posix().encode("utf-8"))
         digest.update(b"\0")

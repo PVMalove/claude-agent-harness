@@ -78,6 +78,11 @@ uses an empty or fictitious commit, a changed candidate always needs a new risk 
 review or QA, and `block` or `fail` never start a retry by themselves. `--retry-role developer`
 forces a developer retry where a same-candidate re-run would otherwise be routed.
 
+A code-review `blocker` can never be accepted. While `retry_policy.max_developer_retries` still
+allows a developer retry, it takes `retry` or `abandon`; once that budget is exhausted, `retry` is
+refused and the blocker takes `block`, `fail` or `abandon`, after which the work is split or
+re-planned in a new batch.
+
 `abandon` is a fifth decision on a completion report. It needs explicit approval and a non-empty
 `--reason`, moves the batch to the terminal `abandoned` state and marks unfinished dispatches
 `abandoned`. It keeps the worktree, candidate, briefs, reports, Context Packages and audit records,

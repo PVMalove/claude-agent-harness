@@ -19,15 +19,20 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from ..errors import HarnessError
+from ..token_estimator import estimate_tokens as estimate_tokens
 
 
 class ContextPackageError(HarnessError):
     """The package could not be built, or would exceed its configured size limit."""
 
 
-_FROM_IMPORT_RE = re.compile(r"^\s*from\s+([\w.]+)\s+import\s+(.+)$", re.MULTILINE)
-_PLAIN_IMPORT_RE = re.compile(r"^\s*import\s+([\w.,\s]+)$", re.MULTILINE)
-_ADR_HEADING_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
+_FROM_IMPORT_RE: re.Pattern[str] = re.compile(
+    r"^\s*from\s+([\w.]+)\s+import\s+(.+)$", re.MULTILINE
+)
+_PLAIN_IMPORT_RE: re.Pattern[str] = re.compile(
+    r"^\s*import\s+([\w.,\s]+)$", re.MULTILINE
+)
+_ADR_HEADING_RE: re.Pattern[str] = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -64,7 +69,7 @@ class ContextPackage:
 
 
 def _run_git(repository: Path, *args: str) -> str:
-    result = subprocess.run(
+    result: subprocess.CompletedProcess[str] = subprocess.run(
         ["git", "-C", str(repository), *args],
         capture_output=True,
         text=True,
@@ -82,7 +87,7 @@ def _run_git(repository: Path, *args: str) -> str:
 
 
 def _list_files(repository: Path, commit: str) -> list[str]:
-    output = _run_git(repository, "ls-tree", "-r", "--name-only", commit)
+    output: str = _run_git(repository, "ls-tree", "-r", "--name-only", commit)
     return sorted(line for line in output.splitlines() if line)
 
 
@@ -93,16 +98,16 @@ def _read_file(repository: Path, commit: str, path: str) -> str:
 def _changed_files(
     repository: Path, base_commit: str, candidate_commit: str
 ) -> list[tuple[str, str]]:
-    output = _run_git(
+    output: str = _run_git(
         repository, "diff", "--name-status", base_commit, candidate_commit
     )
-    statuses = {"A": "added", "M": "modified", "D": "deleted"}
+    statuses: dict[str, str] = {"A": "added", "M": "modified", "D": "deleted"}
     changes: list[tuple[str, str]] = []
     for line in output.splitlines():
         if not line.strip():
             continue
-        parts = line.split("\t")
-        code = parts[0]
+        parts: list[str] = line.split("\t")
+        code: str = parts[0]
         if code.startswith("R"):
             changes.append((parts[-1], "renamed"))
         else:
@@ -113,7 +118,7 @@ def _changed_files(
 def _module_name(path: str) -> str | None:
     if "." not in path.rsplit("/", 1)[-1]:
         return None
-    stem = path.rsplit(".", 1)[0]
+    stem: str = path.rsplit(".", 1)[0]
     if path.endswith(".py") and stem.endswith("/__init__"):
         stem = stem[: -len("/__init__")]
     return stem.replace("/", ".")
@@ -124,7 +129,7 @@ def _build_import_graph(
 ) -> dict[str, set[str]]:
     module_to_path: dict[str, str] = {}
     for path in files:
-        name = _module_name(path)
+        name: str | None = _module_name(path)
         if name and (name not in module_to_path or path.endswith(".py")):
             # Keep real Python modules authoritative when a resource shares their module-like name.
             module_to_path[name] = path
@@ -132,10 +137,10 @@ def _build_import_graph(
     for path in files:
         if not path.endswith(".py"):
             continue
-        content = _read_file(repository, commit, path)
+        content: str = _read_file(repository, commit, path)
         candidates: set[str] = set()
         for match in _FROM_IMPORT_RE.finditer(content):
-            base_module = match.group(1)
+            base_module: str = match.group(1)
             candidates.add(base_module)
             for name in match.group(2).split(","):
                 name = name.strip().split(" as ")[0].strip()
@@ -147,7 +152,7 @@ def _build_import_graph(
                 if name:
                     candidates.add(name)
         for module in candidates:
-            target = module_to_path.get(module)
+            target: str | None = module_to_path.get(module)
             if target and target != path:
                 graph[path].add(target)
     return graph
@@ -162,7 +167,7 @@ def _bounded_symbol_graph(
             imported_by[target].add(path)
 
     visited: set[str] = set()
-    frontier = list(dict.fromkeys(seeds))
+    frontier: list[str] = list(dict.fromkeys(seeds))
     for _ in range(depth + 1):
         if not frontier:
             break
@@ -192,9 +197,9 @@ def _signature_for(
     node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef, lines: list[str]
 ) -> str:
     """Extract a definition header selected by the AST, excluding its body."""
-    body = node.body
-    end_line = body[0].lineno - 1 if body else node.end_lineno
-    header = "\n".join(lines[node.lineno - 1 : end_line]).strip()
+    body: list[ast.stmt] = node.body
+    end_line: int | None = body[0].lineno - 1 if body else node.end_lineno
+    header: str = "\n".join(lines[node.lineno - 1 : end_line]).strip()
     if header:
         return header
 
@@ -206,9 +211,9 @@ def _signature_for(
 
 def _extract_python_signatures(text: str) -> list[str]:
     """Return the module and top-level definition signatures from valid Python source."""
-    tree = ast.parse(text)
-    lines = text.splitlines()
-    signatures = ["module"]
+    tree: ast.Module = ast.parse(text)
+    lines: list[str] = text.splitlines()
+    signatures: list[str] = ["module"]
     for node in tree.body:
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             signatures.append(_signature_for(node, lines))
@@ -219,8 +224,8 @@ def _dependency_context(
     import_graph: dict[str, set[str]], seeds: list[str], files: dict[str, str]
 ) -> dict[str, list[str]]:
     """Build context for direct local dependencies only; never traverse a dependency's imports."""
-    seed_paths = set(seeds)
-    direct_dependencies = sorted(
+    seed_paths: set[str] = set(seeds)
+    direct_dependencies: list[str] = sorted(
         {
             target
             for seed in seed_paths
@@ -230,7 +235,7 @@ def _dependency_context(
     )
     context: dict[str, list[str]] = {}
     for path in direct_dependencies:
-        text = files.get(path, "")
+        text: str = files.get(path, "")
         if path.endswith(".py"):
             try:
                 context[path] = _extract_python_signatures(text)
@@ -252,7 +257,7 @@ def _select_starting_files(
     reasons: dict[str, str] = {
         path: f"changed in diff ({status})" for path, status in changed
     }
-    ordered = sorted(reasons)
+    ordered: list[str] = sorted(reasons)
 
     if len(ordered) > max_files:
         return [
@@ -263,7 +268,7 @@ def _select_starting_files(
     if len(ordered) >= min_files:
         return [StartingFile(path=path, reason=reasons[path]) for path in ordered]
 
-    changed_set = set(ordered)
+    changed_set: set[str] = set(ordered)
     candidates: list[tuple[str, str]] = []
     for path in ordered:
         for target in sorted(graph.get(path, ())):
@@ -300,8 +305,8 @@ def _related_tests(
 ) -> list[str]:
     related = []
     for path in files:
-        name = path.rsplit("/", 1)[-1]
-        is_test_file = "/tests/" in f"/{path}" and (
+        name: str = path.rsplit("/", 1)[-1]
+        is_test_file: bool = "/tests/" in f"/{path}" and (
             name.startswith("test_") or name.endswith("_test.py")
         )
         if not is_test_file:
@@ -314,27 +319,27 @@ def _related_tests(
 def _precedent_cards(
     repository: Path, commit: str, files: list[str], keywords: set[str]
 ) -> list[PrecedentCard]:
-    adr_files = sorted(
+    adr_files: list[str] = sorted(
         path for path in files if path.startswith("docs/adr/") and path.endswith(".md")
     )
     scored: list[tuple[int, str, PrecedentCard]] = []
     for path in adr_files:
-        content = _read_file(repository, commit, path)
-        haystack = f"{path} {content}".casefold()
-        score = sum(
+        content: str = _read_file(repository, commit, path)
+        haystack: str = f"{path} {content}".casefold()
+        score: int = sum(
             1 for keyword in keywords if keyword and keyword.casefold() in haystack
         )
         if score <= 0:
             continue
-        heading_match = _ADR_HEADING_RE.search(content)
-        title = heading_match.group(1).strip() if heading_match else path
-        paragraphs = [
+        heading_match: re.Match[str] | None = _ADR_HEADING_RE.search(content)
+        title: str = heading_match.group(1).strip() if heading_match else path
+        paragraphs: list[str] = [
             block.strip()
             for block in content.split("\n\n")
             if block.strip() and not block.strip().startswith("#")
         ]
-        summary = (paragraphs[0] if paragraphs else "")[:400]
-        stem = path.rsplit("/", 1)[-1].removesuffix(".md")
+        summary: str = (paragraphs[0] if paragraphs else "")[:400]
+        stem: str = path.rsplit("/", 1)[-1].removesuffix(".md")
         scored.append(
             (score, path, PrecedentCard(id=stem, title=title, summary=summary))
         )
@@ -345,22 +350,9 @@ def _precedent_cards(
 def _keywords_for(paths: list[str]) -> set[str]:
     keywords: set[str] = set()
     for path in paths:
-        stem = path.rsplit("/", 1)[-1].split(".")[0]
+        stem: str = path.rsplit("/", 1)[-1].split(".")[0]
         keywords.update(part for part in re.split(r"[_\-]+", stem) if len(part) > 2)
     return keywords
-
-
-def estimate_tokens(text: str) -> int:
-    """Return a deterministic conservative token estimate for a package payload.
-
-    The coordinator cannot assume a provider tokenizer, and a byte ceiling is especially unsafe
-    for non-ASCII source and prose.  Two UTF-8 bytes per token deliberately leaves room for the
-    less favourable tokenisation seen in code, identifiers and Cyrillic text.  It is a safety
-    bound for dispatch admission, not a claim about provider billing.
-    """
-    if not text:
-        return 0
-    return (len(text.encode("utf-8")) + 1) // 2
 
 
 def build_context_package(
@@ -393,19 +385,27 @@ def build_context_package(
             remedy=f"set min_starting_files>=1 and max_starting_files>=min_starting_files (got min={min_starting_files}, max={max_starting_files})",
         )
 
-    diff = _run_git(repository, "diff", "--no-color", base_commit, candidate_commit)
-    changed = _changed_files(repository, base_commit, candidate_commit)
+    diff: str = _run_git(
+        repository, "diff", "--no-color", base_commit, candidate_commit
+    )
+    changed: list[tuple[str, str]] = _changed_files(
+        repository, base_commit, candidate_commit
+    )
 
-    files = _list_files(repository, candidate_commit)
-    import_graph = _build_import_graph(repository, candidate_commit, files)
+    files: list[str] = _list_files(repository, candidate_commit)
+    import_graph: dict[str, set[str]] = _build_import_graph(
+        repository, candidate_commit, files
+    )
     imported_by: dict[str, set[str]] = {path: set() for path in import_graph}
     for path, imports in import_graph.items():
         for target in imports:
             imported_by[target].add(path)
 
-    available_changed = [entry for entry in changed if entry[0] in files]
+    available_changed: list[tuple[str, str]] = [
+        entry for entry in changed if entry[0] in files
+    ]
     if available_changed:
-        starting_files = _select_starting_files(
+        starting_files: list[StartingFile] = _select_starting_files(
             available_changed,
             import_graph,
             imported_by,
@@ -428,13 +428,13 @@ def build_context_package(
             StartingFile(path=path, reason="role preflight seed at pinned snapshot")
             for path in requested
         ]
-    starting_paths = [item.path for item in starting_files]
+    starting_paths: list[str] = [item.path for item in starting_files]
 
-    symbol_graph = _bounded_symbol_graph(
+    symbol_graph: dict[str, dict[str, list[str]]] = _bounded_symbol_graph(
         import_graph, starting_paths, symbol_graph_depth
     )
-    changed_paths = {path for path, _ in changed}
-    dependency_paths = sorted(
+    changed_paths: set[str] = {path for path, _ in changed}
+    dependency_paths: list[str] = sorted(
         {
             target
             for path in changed_paths
@@ -442,11 +442,11 @@ def build_context_package(
             if target not in changed_paths
         }
     )
-    dependency_files = {
+    dependency_files: dict[str, str] = {
         path: _read_file(repository, candidate_commit, path)
         for path in dependency_paths
     }
-    direct_context = _dependency_context(
+    direct_context: dict[str, list[str]] = _dependency_context(
         import_graph, sorted(changed_paths), dependency_files
     )
     for path, context in direct_context.items():
@@ -458,7 +458,7 @@ def build_context_package(
             },
         )["context"] = context
 
-    related_tests = _related_tests(import_graph, files, set(starting_paths))
+    related_tests: list[str] = _related_tests(import_graph, files, set(starting_paths))
     if max_related_tests is not None and len(related_tests) > max_related_tests:
         raise ContextPackageError(
             f"related_tests count {len(related_tests)} exceeds max_related_tests={max_related_tests}; "
@@ -466,18 +466,20 @@ def build_context_package(
             remedy=f"narrow the batch's changed files or raise context_package_policy.max_related_tests above {len(related_tests)}",
         )
 
-    keywords = _keywords_for(starting_paths)
-    precedent_cards = _precedent_cards(repository, candidate_commit, files, keywords)
+    keywords: set[str] = _keywords_for(starting_paths)
+    precedent_cards: list[PrecedentCard] = _precedent_cards(
+        repository, candidate_commit, files, keywords
+    )
 
-    included_paths = sorted(
+    included_paths: list[str] = sorted(
         set(starting_paths)
         | set(related_tests)
         | {f"docs/adr/{card.id}.md" for card in precedent_cards}
     )
-    contents = {
+    contents: dict[str, str] = {
         path: _read_file(repository, candidate_commit, path) for path in included_paths
     }
-    file_hashes = {
+    file_hashes: dict[str, str] = {
         path: hashlib.sha256(content.encode("utf-8")).hexdigest()
         for path, content in contents.items()
     }
@@ -486,8 +488,8 @@ def build_context_package(
     # `contents[path]` again for the token/size estimate would double-count the exact same bytes
     # without adding information (unlike a modified file, where the diff is only hunks and
     # `contents[path]` genuinely adds the rest of the file).
-    added_paths = {path for path, status in changed if status == "added"}
-    payload_text = "\n".join(
+    added_paths: set[str] = {path for path, status in changed if status == "added"}
+    payload_text: str = "\n".join(
         [
             diff,
             json.dumps(symbol_graph, ensure_ascii=False, sort_keys=True),
@@ -499,8 +501,8 @@ def build_context_package(
             *[contents[path] for path in sorted(contents) if path not in added_paths],
         ]
     )
-    size_bytes = len(payload_text.encode("utf-8"))
-    estimated_tokens = estimate_tokens(payload_text)
+    size_bytes: int = len(payload_text.encode("utf-8"))
+    estimated_tokens: int = estimate_tokens(payload_text)
     if max_package_size_bytes is not None and size_bytes > max_package_size_bytes:
         raise ContextPackageError(
             f"context package size {size_bytes} bytes exceeds max_package_size_bytes={max_package_size_bytes}",

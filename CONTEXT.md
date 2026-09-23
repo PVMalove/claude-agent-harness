@@ -252,18 +252,23 @@ _Avoid_: self-transition воркера, повторное использова
 
 **Worker session**:
 Одно фактическое runtime-исполнение роли — от cold start до завершения (успешного, по 429 или по
-сбою). Один dispatch может состоять из нескольких последовательных worker session, только если это
-явно разрешено ролью (сейчас — только write-роли с итеративным TDD: `developer`,
-`database-migrations`, `messaging-integration`); каждая новая сессия заново проходит model
-self-report и heartbeat.
-_Avoid_: dispatch, попытка, запуск воркера.
+сбою): живой контакт роли с dispatch между `dispatch send`/`dispatch resume` и следующим
+`dispatch checkpoint` или completion report. Один dispatch может состоять из нескольких
+последовательных worker session, только если это явно разрешено ролью (сейчас — только write-роли с
+итеративным TDD: `developer`, `database-migrations`, `messaging-integration`); каждая новая сессия
+заново проходит model self-report и heartbeat — `dispatch resume` для checkpointed dispatch
+стартует новую worker session под тем же dispatch ID.
+_Avoid_: dispatch (один dispatch может пройти несколько worker session), попытка, запуск воркера.
 
 **Checkpoint**:
-Проверяемый non-terminal снимок состояния write-роли на зелёной границе TDD-цикла: commit SHA,
-изменённые файлы, оставшийся DoD, пройденные проверки, краткие риски/блокеры и ссылка на Context
-Package. Не переносит историю чата, логи прошлых неудач или скрытые рассуждения и не является
-completion report.
-_Avoid_: completion report, промежуточный отчёт, снапшот сессии.
+Проверяемая non-terminal ledger-запись write-роли (`coordinator.py dispatch checkpoint`) на зелёной
+границе TDD-цикла: commit SHA, изменённые файлы, оставшийся DoD, пройденные проверки, краткие
+риски/блокеры и ссылка на Context Package. Переводит dispatch-status в `checkpointed` и не меняет
+outcome enum (`completed`/`blocked`/`failed`). Не переносит историю чата, логи прошлых неудач или
+скрытые рассуждения и не является completion report. Доступен только write-роли: read-only роль
+(architect, qa, code-review) не может растянуть себя на несколько worker session.
+_Avoid_: completion report, промежуточный отчёт, снапшот сессии, промежуточный commit без
+ledger-записи.
 
 **Continuation**:
 Coordinator decision о запуске новой worker session того же active dispatch из последнего
@@ -273,12 +278,14 @@ checkpoint, без изменения scope, DoD, рисков и зависим
 _Avoid_: retry, продолжение чата, повторный dispatch.
 
 **Context Package**:
-Ledger-owned immutable артефакт, детерминированно построенный отдельным модулем без участия LLM до
+Ledger-owned immutable бандл для Разработчика, детерминированно построенный отдельным модулем без участия LLM до
 dispatch: цель и DoD, integration base и candidate SHA, точный diff, стартовые файлы с причиной
 включения, ограниченный граф символов/зависимостей, связанные тесты, релевантные ADR-карточки и
-hash каждого включённого файла. Coordinator проверяет его свежесть перед каждым новым dispatch и
-отказывается создавать brief, если пакет устарел.
-_Avoid_: brief, discovery-лог, произвольное чтение репозитория.
+hash каждого включённого файла. Собирается `context_builder.py` из Discovery Context: локальные
+импорты разворачиваются на 1 уровень вглубь, из них берутся только сигнатуры. Coordinator проверяет
+его свежесть перед каждым новым dispatch и отказывается создавать brief, если пакет устарел.
+_Avoid_: brief, discovery-лог, произвольное чтение репозитория, контекст разработчика, пакет
+контекста.
 
 **Repo Map**:
 Детерминированная семантическая карта репозитория на pinned commit: сигнатуры определений и связи
@@ -288,16 +295,19 @@ _Avoid_: brief, discovery-лог, произвольное чтение репо
 _Avoid_: Path inventory (список путей без сигнатур), Context Package (срез под один dispatch).
 
 **Path inventory**:
-Список путей без содержимого, который `/to-tickets` строит по директориям Discovery Context для
+Список путей без содержимого и сигнатур, который `/to-tickets` строит по директориям Discovery Context для
 проверки cheap advisory-вызовом (ранее назывался «filtered Repo Map»).
 _Avoid_: Repo Map (семантическая карта с сигнатурами).
 
-**Advisory output**:
-Недетерминированный вывод дешёвой модели (ранжирование файлов, сводка логов, первичная
-риск-классификация), полученный вне brief/report-контракта роли как non-role tool call. Не входит в
-Context Package и не версионируется, регенерируется по требованию и не может сам разрешить dispatch,
-снизить риск, принять QA или изменить scope.
-_Avoid_: recommendation, findings, автономное решение.
+**Advisory output** (`harness/orchestration/advisory.py`):
+Недетерминированный эфемерный, неавторитетный вывод дешёвой модели (ранжирование файлов, сводка
+логов, первичная риск-классификация), полученный как non-role tool call вне
+brief/report/self-report/heartbeat контракта роли. Не создаёт dispatch и не пишет ledger-запись, не
+входит в Context Package и не версионируется; пересчитывается при каждом вызове и нигде не хранится
+как ground truth. Coordinator/contract validation path не принимает его как основание разрешить
+dispatch, снизить риск, принять QA или изменить scope — эти решения остаются за ролью и человеком.
+_Avoid_: recommendation, findings, автономное решение, risk assessment (`coordinator.py risk assess`
+— ledger-owned и authoritative), completion report.
 
 **Lifecycle ledger**:
 Версионируемый модуль ядра оркестрации, который хранит state batch/dispatch и применяет их
@@ -386,38 +396,9 @@ in-process субагент текущей сессии. Оба варианта
 проходить model self-report.
 _Avoid_: жёсткая привязка роли к одному транспортному механизму.
 
-**Advisory output** (`harness/orchestration/advisory.py`):
-Эфемерный, неавторитетный результат дешёвого non-role tool call — ранжирование файлов, сводка лога
-или грубая риск-подсказка. Выполняется вне brief/report/self-report/heartbeat контракта, не создаёт
-dispatch и не пишет ledger-запись; пересчитывается заново при каждом вызове и нигде не хранится как
-ground truth. Coordinator/contract validation path не принимает его как основание создать dispatch,
-понизить риск, принять QA или изменить scope — эти решения остаются за ролью и человеком.
-_Avoid_: risk assessment (`coordinator.py risk assess` — ledger-owned и authoritative), Context
-Package, completion report.
-
 **Discovery Context**:
 Собранный агентом и выверенный человеком (explicit opt-in) список релевантных путей файлов, передаваемый от Эпика к тикетам для исключения слепого поиска при разработке. В момент `/grilling` сохраняется в `docs/tasks/issue-<N-или-slug>-<slug>/artifacts/` (постоянный локальный архив задач); `/to-spec` дополнительно вписывает тот же список в текст эпика под «## Relevant Files (Discovery Context)».
 _Avoid_: Relevant Files, стартовый контекст.
-
-**Context Package**:
-Итоговый бандл для Разработчика, собранный `context_builder.py` из `Discovery Context` путём разворачивания локальных импортов на 1 уровень вглубь с извлечением только их сигнатур.
-_Avoid_: контекст разработчика, пакет контекста.
-
-**Checkpoint**:
-Неитоговая ledger-запись write-роли (`coordinator.py dispatch checkpoint`), фиксирующая ровно
-commit SHA, changed files, оставшийся Definition of Done, проходящие проверки, остаточные
-risks/blockers и ссылку на Context Package — без raw chat history и логов прежних попыток.
-Переводит dispatch-status в `checkpointed`; никогда не путается с completion report и не меняет
-outcome enum (`completed`/`blocked`/`failed`). Доступен только write-роли — read-only роль
-(architect, qa, code-review) не может растянуть себя на несколько worker session.
-_Avoid_: completion report, промежуточный commit без ledger-записи.
-
-**Worker session**:
-Один живой контакт роли с dispatch между `dispatch send`/`dispatch resume` и следующим
-`dispatch checkpoint` или completion report. Каждая worker session — своя, независимая
-model self-report и heartbeat; `dispatch resume` для checkpointed dispatch стартует новую worker
-session под тем же dispatch ID и требует их заново, как при первом контакте.
-_Avoid_: worker session как синоним dispatch (один dispatch может пройти несколько worker session).
 
 **Continuation authorization**:
 Правило, авторизующее `dispatch resume` checkpointed dispatch под новую worker session. Recognized

@@ -71,11 +71,8 @@ def attest(repo: Path, dispatch: Mapping[str, object], worktree: str) -> dict[st
     if isinstance(snapshot, str) and snapshot and head != snapshot:
         raise AttestationError(
             f"runtime worktree HEAD ({head}) does not match the immutable startup snapshot ({snapshot}); "
-            f"if the worktree carries a newer commit than the pinned snapshot (for example, a prior "
-            f"rejected candidate ahead of a developer-retry dispatch, which always pins snapshot_commit "
-            f"back to the batch's base_commit), reset it before dispatching: "
-            f"git -C {checkout} reset --soft {snapshot} (never --hard, which discards the working tree)",
-            remedy=f"run 'git -C {checkout} reset --soft {snapshot}' (never --hard) so HEAD matches the pinned snapshot",
+            "do not rewrite the existing commit history to satisfy this check",
+            remedy="create a new dispatch with the current candidate pinned as snapshot_commit, or use a worktree already at the immutable snapshot",
         )
     role = dispatch.get("role")
     branch = _git(checkout, "branch", "--show-current")
@@ -111,11 +108,11 @@ def attest(repo: Path, dispatch: Mapping[str, object], worktree: str) -> dict[st
                 "runtime worktree HEAD is not reachable from the immutable issue branch",
                 remedy=f"rebase or merge {expected_branch!r} so commit {head} is reachable from it, or dispatch from a worktree that is",
             )
-    elif role == "code-review":
+    elif role in {"verification", "code-review"}:
         candidate = dispatch.get("candidate_commit")
         if head != candidate:
             raise AttestationError(
-                "review runtime worktree HEAD does not match the pinned candidate commit",
-                remedy=f"checkout commit {candidate} in {checkout} before dispatching the code-review role",
+                f"{role} runtime worktree HEAD does not match the pinned candidate commit",
+                remedy=f"checkout commit {candidate} in {checkout} before dispatching the {role} role",
             )
     return {"worktree": str(checkout), "branch": branch, "head_commit": head}

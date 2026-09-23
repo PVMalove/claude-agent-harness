@@ -37,15 +37,20 @@ RETRY_REASON_CATEGORIES = (
 NEXT_ACTION_DISPATCH_ROLE = {
     "architect": "architect",
     "developer-retry": "developer",
+    "verification": "verification",
     "code-review": "code-review",
     "qa": "qa",
     "publish": "developer",
 }
-DISPATCH_PURPOSES = {"work", "publish"}
+DISPATCH_PURPOSES = {"work", "verification", "publish"}
 ROLE_TRANSPORTS = {"orca", "in-process"}
 DEFAULT_ZONE = "repository"
 DEFAULT_PROFILE = "session"
-DEFAULT_STALE_AFTER_SECONDS = 900
+# A developer can legitimately spend tens of minutes in one build, migration, or test command.
+# Keep the default long enough for that work, while the handoff still requires frequent, explicit
+# heartbeats so an actually lost worker is eventually surfaced.
+DEFAULT_STALE_AFTER_SECONDS = 3_600
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 300
 DEFAULT_COMMUNICATION_POLICY = {
     "agent_to_agent_language": "en",
     "coordinator_report_language": "ru",
@@ -128,6 +133,8 @@ DISPATCH_FIELDS = {
     "transition_digest",
     "retry_idempotency_key",
     "orchestration_policy",
+    "liveness",
+    "commit_plan",
 }
 # The four fields of the transition-bound approval contract (issue #250) are all present or all absent.
 POLICY_BRIEF_FIELDS = frozenset(
@@ -147,7 +154,7 @@ REPORT_FIELDS = {
     "blockers",
     "next_coordinator_action",
 }
-REPORT_OPTIONAL_FIELDS = {"risk_triggers", "review", "report_language"}
+REPORT_OPTIONAL_FIELDS = {"risk_triggers", "review", "report_language", "commit_map"}
 RISK_ASSESSMENT_FIELDS = {
     "risk_assessment_id",
     "batch_id",

@@ -1,0 +1,6 @@
+# Pinned wheels for the `repo-map-bundle` CI job (Python 3.12 x linux_x86_64), per ADR 0024.
+# Format: "<sha256>  <PyPI URL>". The job downloads each URL, rejects any sha256 mismatch, and only
+# then assembles the offline bundle with scripts/build_parser_bundle.py. Pins change only together
+# with the pins in scripts/build_parser_bundle.py and ADR 0024.
+5a6b333b0282d8bb0af741f9b018bd2523d4eecb2686bf6717066a625fecfaa4  https://files.pythonhosted.org/packages/8a/2f/6e6781b31677231366cb3cf27bc8269157f6d4b03c9032865a4f5f2bbe7e/tree_sitter-0.26.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+86f118e5eecad616ecdb81d171a36dde9bef5a0b21ed71ea9c3e390813c3baf5  https://files.pythonhosted.org/packages/aa/cb/d9b0b67d037922d60cbe0359e0c86457c2da721bc714381a63e2c8e35eba/tree_sitter_python-0.25.0-cp310-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl

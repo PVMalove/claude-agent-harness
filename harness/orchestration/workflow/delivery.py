@@ -272,6 +272,18 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
         "report_staging_path": dispatch.get("report_staging_path")
         or str(_agent_inbox(repo) / f"{dispatch['dispatch_id']}.json"),
         "next_role_action": "dispatch self-report",
+        "heartbeat": {
+            "every_seconds": dispatch.get("liveness", {}).get(
+                "heartbeat_every_seconds"
+            ),
+            "stale_after_seconds": dispatch.get("liveness", {}).get(
+                "stale_after_seconds"
+            ),
+            "instruction": (
+                "after self-report, send dispatch heartbeat now and at least once per "
+                f"{dispatch.get('liveness', {}).get('heartbeat_every_seconds')} seconds while working"
+            ),
+        },
     }
 
 

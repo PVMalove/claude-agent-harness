@@ -181,6 +181,28 @@
         }
       }
     },
+    "repo_map_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional enterprise policy for the portable Repo Map CLI. All paths are repository-relative globs; path and symbol redactions are applied before parsing and serialization, and policy contents never appear in Repo Map provenance.",
+      "properties": {
+        "allow_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "deny_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "redact_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "redact_symbols": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "max_files": {"type": "integer", "minimum": 1, "default": 10000},
+        "max_file_bytes": {"type": "integer", "minimum": 1, "default": 2000000},
+        "max_path_length": {"type": "integer", "minimum": 1, "default": 4096},
+        "max_symbol_length": {"type": "integer", "minimum": 1, "default": 256},
+        "max_signature_length": {"type": "integer", "minimum": 1, "default": 2048},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "default": 10},
+        "max_tokens": {"type": "integer", "minimum": 1},
+        "tier": {"enum": ["minimal", "full"], "default": "full"},
+        "parser_bundle_registry_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "parser_bundle_timeout_seconds": {"type": "integer", "minimum": 1, "default": 30},
+        "parser_bundle_max_output_bytes": {"type": "integer", "minimum": 1, "default": 10000000}
+      }
+    },
     "continuation_policy": {
       "type": "object",
       "additionalProperties": false,
@@ -205,7 +227,7 @@
       "properties": {
         "retry_queue_seconds": {"type": "integer", "minimum": 1, "default": 3600, "description": "How long a decided retry may wait for its next dispatch before the batch needs attention."},
         "max_infrastructure_retries": {"type": "integer", "minimum": 0, "default": 2, "description": "Operational retries (verification-infrastructure, transport, context-pressure) tolerated for one candidate; one more needs attention."},
-        "stale_dispatch_seconds": {"type": "integer", "minimum": 1, "default": 900, "description": "Silence after which a live dispatch is stale and the batch needs attention."}
+        "stale_dispatch_seconds": {"type": "integer", "minimum": 1, "default": 3600, "description": "Silence after which a live dispatch is stale and the batch needs attention. The dispatch brief requires heartbeats at least every five minutes by default."}
       }
     },
     "approval_ttl_seconds": {
