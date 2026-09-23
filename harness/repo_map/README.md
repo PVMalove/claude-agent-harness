@@ -44,7 +44,10 @@ By default the CLI is portable and applies its built-in exclusions. To enforce p
     "max_signature_length": 2048,
     "timeout_seconds": 10,
     "max_tokens": 8000,
-    "tier": "reduced"
+    "tier": "reduced",
+    "parser_bundle_registry_paths": [],
+    "parser_bundle_timeout_seconds": 30,
+    "parser_bundle_max_output_bytes": 10000000
   }
 }
 ```
@@ -59,6 +62,32 @@ serialized.
 The `minimal` tier emits only policy-approved paths (`{"path": "..."}`), with no signatures,
 parser statuses, or edges. Its JSON `tier` and `degradation_reason` explain the reduction. The
 default `reduced` tier uses Python's standard-library AST parser and keeps signatures only.
+
+## Opt-in `full` tier (offline parser bundle)
+
+Setting `repo_map_policy.tier` to `"full"` opts into an additional, offline parser bundle for
+non-Python files. Python files are always parsed with the standard-library AST, in every tier; the
+bundle only ever adds coverage for the file types its pinned grammars declare. The mechanism never
+makes a network call: it looks for a `parser_bundle.lock.json` under
+`.harness/.cache/repo_map/parser_bundle/registry/` (or an extra directory listed in
+`parser_bundle_registry_paths`), verifies every wheel's sha256 against the lock, and installs the
+matching interpreter/platform wheelhouse with `pip install --no-index --require-hashes
+--only-binary=:all: --target <cache dir>` -- never a `.venv`, `requirements.txt`, or a change to the
+target project, and never `uv run`. The worker subprocess that does the actual parsing is bounded by
+`parser_bundle_timeout_seconds` (wall clock) and `parser_bundle_max_output_bytes` (stdout size).
+
+Any failure along that path -- no bundle found, a wrong hash, a missing wheelhouse for the running
+interpreter's `(python_tag, platform_tag)` pair, or the worker subprocess exceeding its time or
+output limit -- degrades the whole run to `tier: "reduced"`, `parser: "ast-only"`, with
+`degradation_reason` naming the specific cause. A successful `full`-tier run reports
+`tier: "full"`, `parser: "bundle"`, and extends `parser_provenance` with `bundle_mode`,
+`bundle_source`, `python_tag`, `platform_tag`, `lock_sha256`, `script_hash`, `core_version`,
+`core_abi_range`, and `grammars` (each with `name`, `version`, `abi`, `sha256`) -- everything needed
+to audit exactly which pinned artifacts produced the output.
+
+Real tree-sitter grammars, a real release lock, and a real wheelhouse are release assets delivered
+by a later change (see `docs/adr/0024-repo-map-parser-bundle-composition-and-delivery.md`); this
+loader only proves the generic locate/verify/install/execute/degrade mechanism.
 
 The CLI rejects unknown policy fields and invalid values with an error and remedy. Token budgets
 resolve in this order: `--max-tokens`, `repo_map_policy.max_tokens` when the policy is present,
