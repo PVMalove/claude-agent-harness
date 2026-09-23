@@ -6,9 +6,12 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
-from collections.abc import Mapping
+import tempfile
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 MIN_PYTHON = (3, 12)
@@ -35,6 +38,26 @@ def run_ok(
     result = subprocess.run(cmd, env=env, stdout=stdout, cwd=cwd, check=False)
     if result.returncode != 0:
         sys.exit(result.returncode)
+
+
+def isolated_temp_env(base: Mapping[str, str], run_tmp: Path) -> dict[str, str]:
+    """`base` with every temp variable pointed at this run's own root (issue #305). pytest's
+    default root is %TEMP%\pytest-of-<USERNAME>, shared by every account that inherits USERNAME
+    and TEMP (agent sandboxes run as separate local users); Python 3.13+ creates it owner-only on
+    Windows, so whichever account made it first locks the others out with WinError 5."""
+    return dict(base, TMP=str(run_tmp), TEMP=str(run_tmp), TMPDIR=str(run_tmp))
+
+
+def _clear_read_only(
+    func: Callable[[str], object], path: str, _exc: BaseException
+) -> None:
+    # git leaves object files read-only on Windows; clear the bit and retry the removal.
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def remove_tree(path: Path) -> None:
+    shutil.rmtree(path, onexc=_clear_read_only)
 
 
 def grep_line(path: Path, exact_line: str) -> None:
@@ -336,10 +359,20 @@ def main() -> None:
 
     run_ok([sys.executable, "-m", "mypy"], cwd=ROOT)
 
-    test_env = dict(os.environ)
-    test_env["PYTHONPATH"] = str(ROOT)
-    run_ok([sys.executable, "-m", "pytest", "-n", "4", str(ROOT / "tests")], env=test_env)
-    run_ok([sys.executable, str(ROOT / "scripts" / "test_clean_room.py")])
+    # mkdtemp keeps the root short (the clean-room tree is deep, see its _check_path_budget) and
+    # owned by this run.
+    run_tmp = Path(tempfile.mkdtemp(prefix="ah"))
+    try:
+        test_env = isolated_temp_env(dict(os.environ, PYTHONPATH=str(ROOT)), run_tmp)
+        run_ok(
+            [sys.executable, "-m", "pytest", "-n", "4", str(ROOT / "tests")],
+            env=test_env,
+        )
+        run_ok(
+            [sys.executable, str(ROOT / "scripts" / "test_clean_room.py")], env=test_env
+        )
+    finally:
+        remove_tree(run_tmp)
 
     print("agent-harness verification passed")
 
