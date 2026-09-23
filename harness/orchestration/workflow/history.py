@@ -237,6 +237,27 @@ def _context_package_summary(package: JsonObject) -> JsonObject:
     }
 
 
+def _context_package_quality_warning(package: JsonObject) -> JsonObject | None:
+    """Return the Repo Map degradation facts a human must see before approving a dispatch."""
+    provenance = package.get("parser_provenance")
+    if not isinstance(provenance, dict) or provenance.get("tier") == "full":
+        return None
+    tier = provenance.get("tier")
+    degradation_reason = provenance.get("degradation_reason")
+    nested_provenance = provenance.get("parser_provenance")
+    if (
+        not isinstance(tier, str)
+        or not isinstance(degradation_reason, str)
+        or not isinstance(nested_provenance, dict)
+    ):
+        return None
+    return {
+        "tier": tier,
+        "degradation_reason": degradation_reason,
+        "parser_provenance": nested_provenance,
+    }
+
+
 def _reusable_context_package(
     root: Path,
     batch: JsonObject,

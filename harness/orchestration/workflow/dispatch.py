@@ -110,6 +110,7 @@ from harness.orchestration.workflow.history import (
     _accepted_architect,
     _accepted_qa_for_candidate,
     _context_package_freshness,
+    _context_package_quality_warning,
     _context_package_summary,
     _effective_base,
     _latest_context_package,
@@ -805,7 +806,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         if propose:
             _safe_id(batch["batch_id"], "batch")
             _replace_record(ledger, BatchRecord.from_dict(batch))
-            return {
+            proposal = {
                 "batch_id": batch["batch_id"],
                 "state": "proposed",
                 "transition": transition,
@@ -814,6 +815,11 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 "needs_attention": bool(batch.get("needs_attention", False)),
                 "context_package_freshness": context_package_freshness,
             }
+            if context_package is not None:
+                warning = _context_package_quality_warning(context_package)
+                if warning is not None:
+                    proposal["context_package_quality_warning"] = warning
+            return proposal
         assert approval_mode is not None  # only a proposal skips the approval mode
         approval = _bind_dispatch_approval(args, approval_mode, digest)
         orchestration_policy = _orchestration_policy(config)

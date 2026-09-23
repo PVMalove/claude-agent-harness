@@ -515,6 +515,10 @@ Context Package ID и required gates. `dispatch create` с явным approval �
 создаваемого перехода и привязан к его собственному digest. При `human_approval_gate: "tty"` digest
 показывается в запросе подтверждения.
 
+Если Repo Map у закрепляемого пакета имеет tier не `full`, результат `dispatch propose` дополнительно
+содержит `context_package_quality_warning`: tier, причину деградации и parser provenance. Это
+предупреждение для утверждающего человека, а не блокировка dispatch; для `full` поле отсутствует.
+
 Просроченное (`approval_ttl_seconds`) или отклонённое в терминале approval — fail-closed: coordinator
 не повторяет вызов сам и не подставляет более старое approval.
 
