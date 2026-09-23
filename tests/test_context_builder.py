@@ -169,6 +169,27 @@ class ContextBuilderTests(ContextBuilderFixture):
         self.assertIn("token_estimator_version", package.parser_provenance)
         self.assertIsInstance(package.parser_provenance["parser_provenance"], dict)
 
+    def test_the_default_no_policy_diff_still_includes_every_changed_file(self) -> None:
+        """The `files`-slice restriction added for the policy leak fix must be a no-op with no
+        `repo_map_policy` configured: Repo Map's default `files` list already contains every
+        git-tracked path, so every changed file -- not just the first -- keeps its diff hunk,
+        exactly matching pre-#274 behaviour."""
+        _write(
+            self.repo,
+            "pkg/consumer.py",
+            "from pkg import base\n\ndef use():\n    return base.helper() + 1\n",
+        )
+        _run("add", ".", cwd=self.repo)
+        _run("commit", "-qm", "fix: also touch consumer", cwd=self.repo)
+        candidate = _head(self.repo)
+
+        package = build_context_package(
+            self.repo, self.base_commit, candidate, min_starting_files=1
+        )
+
+        self.assertIn("dependency.compose(2)", package.diff)
+        self.assertIn("base.helper() + 1", package.diff)
+
     def test_output_is_byte_identical_across_repeated_builds(self) -> None:
         first = build_context_package(
             self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
