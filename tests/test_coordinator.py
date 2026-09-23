@@ -307,6 +307,26 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             {"heartbeat_every_seconds": 300, "stale_after_seconds": 3600},
         )
 
+    def test_clean_base_context_package_starts_with_expected_scope_file(self) -> None:
+        task_file = self.repo / "services" / "x.py"
+        task_file.parent.mkdir()
+        task_file.write_text("def target() -> None:\n    pass\n", encoding="utf-8")
+        _git(self.repo, "add", "services/x.py")
+        _git(self.repo, "commit", "-m", "Add target file")
+        _git(self.repo, "push", "origin", "master")
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+
+        package_id = dispatch["brief"]["context_package_id"]
+        package = coordinator._read_object(
+            self._records_root() / "context-packages" / f"{package_id}.json",
+            "context package",
+        )
+        paths = [item["path"] for item in package["starting_files"]]
+        self.assertIn("services/x.py", paths)
+
     def test_dispatch_send_returns_the_frozen_heartbeat_cadence(self) -> None:
         batch = self._create_batch()
         self._approve_batch(batch["batch_id"])
