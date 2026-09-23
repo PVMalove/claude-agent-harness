@@ -204,10 +204,11 @@ def main() -> int:
             "coverage",
             "run",
             f"--source={','.join(source_dirs(changed))}",
+            # pytest, not `unittest discover`: it also collects the function-style tests that
+            # unittest silently skips, which left their code counted as uncovered.
             "-m",
-            "unittest",
-            "discover",
-            "-s",
+            "pytest",
+            "-q",
             str(ROOT / "tests"),
         ],
         cwd=ROOT,
