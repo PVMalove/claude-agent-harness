@@ -302,6 +302,14 @@ def _developer_verification_commands(config: JsonObject) -> list[str]:
     return _strings(commands, "developer_verification_commands", allow_empty=True)
 
 
+def _review_verification_commands(config: JsonObject) -> list[str]:
+    """Focused review proof, with the historical full-QA list as a safe fallback."""
+    commands = config.get("review_verification_commands")
+    if commands is None:
+        return _verification_commands(config)
+    return _strings(commands, "review_verification_commands", allow_empty=True)
+
+
 def _worker_attestation_required(config: JsonObject) -> bool:
     value = config.get("worker_attestation_required", False)
     if not isinstance(value, bool):

@@ -6,9 +6,14 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
-from collections.abc import Mapping
+import tempfile
+import time
+import atexit
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 MIN_PYTHON = (3, 12)
@@ -35,6 +40,50 @@ def run_ok(
     result = subprocess.run(cmd, env=env, stdout=stdout, cwd=cwd, check=False)
     if result.returncode != 0:
         sys.exit(result.returncode)
+
+
+def run_stage(
+    name: str,
+    cmd: list[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    stdout: int | None = None,
+    cwd: Path | None = None,
+) -> None:
+    """Run one named verification stage and emit its elapsed monotonic duration."""
+    started = time.perf_counter()
+    try:
+        run_ok(cmd, env=env, stdout=stdout, cwd=cwd)
+    except SystemExit:
+        print(f"[verify] {name}: failed in {time.perf_counter() - started:.2f}s")
+        raise
+    print(f"[verify] {name}: passed in {time.perf_counter() - started:.2f}s")
+
+
+def isolated_temp_env(base: Mapping[str, str], run_tmp: Path) -> dict[str, str]:
+    """`base` with every temp variable pointed at this run's own root (issue #305). pytest's
+    default root is %TEMP%\\pytest-of-<USERNAME>, shared by every account that inherits USERNAME
+    and TEMP (agent sandboxes run as separate local users); Python 3.13+ creates it owner-only on
+    Windows, so whichever account made it first locks the others out with WinError 5."""
+    return dict(
+        base,
+        TMP=str(run_tmp),
+        TEMP=str(run_tmp),
+        TMPDIR=str(run_tmp),
+        PYTHONPYCACHEPREFIX=str(run_tmp / "pycache"),
+    )
+
+
+def _clear_read_only(
+    func: Callable[[str], object], path: str, _exc: BaseException
+) -> None:
+    # git leaves object files read-only on Windows; clear the bit and retry the removal.
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def remove_tree(path: Path) -> None:
+    shutil.rmtree(path, onexc=_clear_read_only)
 
 
 def grep_line(path: Path, exact_line: str) -> None:
@@ -312,6 +361,11 @@ def check_no_dispatch_specific_data_in_always_sent_files() -> None:
 
 
 def main() -> None:
+    # Create the short, owner-specific root before *any* Python subprocess.  py_compile and mypy
+    # also write bytecode; leaving their cache beside source files fails in restricted worktrees.
+    run_tmp = Path(tempfile.mkdtemp(prefix="ah"))
+    atexit.register(lambda: remove_tree(run_tmp) if run_tmp.exists() else None)
+    test_env = isolated_temp_env(dict(os.environ, PYTHONPATH=str(ROOT)), run_tmp)
     run_ok(
         [
             sys.executable,
@@ -319,7 +373,7 @@ def main() -> None:
             "json.tool",
             str(ROOT / "harness" / "CAPABILITIES.json"),
         ],
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, env=test_env,
     )
     run_ok(
         [
@@ -331,7 +385,7 @@ def main() -> None:
             str(ROOT / "bin" / "install-global"),
             str(ROOT / "scripts" / "verify.py"),
             str(ROOT / "scripts" / "test_clean_room.py"),
-        ]
+        ], env=test_env
     )
 
     start_project = ROOT / "global-skills" / "start-project" / "SKILL.md"
@@ -348,7 +402,7 @@ def main() -> None:
         "самоотчёт роли не является token telemetry",
     )
 
-    run_ok([sys.executable, str(ROOT / "scripts" / "build_registry.py")])
+    run_ok([sys.executable, str(ROOT / "scripts" / "build_registry.py")], env=test_env)
     run_ok(["git", "-C", str(ROOT), "diff", "--exit-code", "--", "skills/REGISTRY.md"])
 
     check_docs_agents_mirror()
@@ -367,20 +421,21 @@ def main() -> None:
     check_vendor_pin()
     check_no_dispatch_specific_data_in_always_sent_files()
 
-    mypy_check = subprocess.run(
-        [sys.executable, "-m", "mypy", "--version"], capture_output=True
-    )
-    if mypy_check.returncode == 0:
-        run_ok([sys.executable, "-m", "mypy"], cwd=ROOT)
-    else:
-        print("mypy module not found, skipping type check")
+    run_stage("mypy", [sys.executable, "-m", "mypy"], cwd=ROOT, env=test_env)
 
-    test_env = dict(os.environ)
-    test_env["PYTHONPATH"] = str(ROOT)
-    run_ok(
-        [sys.executable, "-m", "pytest", "-n", "4", str(ROOT / "tests")], env=test_env
-    )
-    run_ok([sys.executable, str(ROOT / "scripts" / "test_clean_room.py")])
+    try:
+        run_stage(
+            "pytest",
+            [sys.executable, "-m", "pytest", "-n", "4", str(ROOT / "tests")],
+            env=test_env,
+        )
+        run_stage(
+            "clean-room",
+            [sys.executable, str(ROOT / "scripts" / "test_clean_room.py")], env=test_env
+        )
+    finally:
+        remove_tree(run_tmp)
+
 
     print("agent-harness verification passed")
 

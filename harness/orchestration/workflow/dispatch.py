@@ -61,6 +61,17 @@ from harness.orchestration.core.workspace import (
 from harness.orchestration.dispatch_preflight import (
     PreflightError,
 )
+
+
+def _dispatch_verification_commands(
+    batch: JsonObject, role_name: str, purpose: str
+) -> list[str]:
+    """Return the immutable role-specific proof list frozen in ``batch``."""
+    if purpose == "work" and role_name == "developer":
+        return cast(list[str], batch["developer_verification_commands"])
+    if purpose == "work" and role_name == "code-review":
+        return cast(list[str], batch["review_verification_commands"])
+    return cast(list[str], batch["verification_commands"])
 from harness.orchestration.dispatch_preflight import (
     prepare as prepare_dispatch,
 )
@@ -268,11 +279,7 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
                 ).hexdigest(),
                 "freshness": _context_package_freshness(repo, root, batch),
             }
-        checks = (
-            batch["developer_verification_commands"]
-            if args.role == "developer"
-            else batch["verification_commands"]
-        )
+        checks = _dispatch_verification_commands(batch, args.role, args.purpose)
         state = {
             "repo": str(repo),
             "config": config,
@@ -780,11 +787,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     remedy="re-register the Context Package immediately before dispatching; it is validated fresh at dispatch time",
                 )
         dispatch_id = f"dispatch-{uuid.uuid4()}"
-        dispatch_commands = (
-            batch["developer_verification_commands"]
-            if role_name == "developer" and purpose == "work"
-            else batch["verification_commands"]
-        )
+        dispatch_commands = _dispatch_verification_commands(batch, role_name, purpose)
         transition = _proposed_transition(
             batch,
             next_action,

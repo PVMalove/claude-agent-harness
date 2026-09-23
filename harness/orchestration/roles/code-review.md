@@ -48,7 +48,9 @@ separate Standards and Spec findings with severity, residual risks, and blockers
 remain independent rather than being collapsed into one score. The completion report records no
 production changes and no integration action for this read-only role.
 
-For every approved verification command, run the installed bounded wrapper:
+For every approved verification command, run the installed bounded wrapper. A code-review work
+brief may carry the project's focused `review_verification_commands`; this is independent proof,
+not a substitute for the full QA gate that later receives `verification_commands`:
 
 ```bash
 python .harness/skills/qa-gate/scripts/test_summary.py -- bash -lc '<approved command>'
