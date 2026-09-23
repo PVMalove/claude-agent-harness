@@ -269,6 +269,9 @@ def build_parser(
     preflight.add_argument("--batch", required=True)
     preflight.add_argument("--role", required=True)
     preflight.add_argument("--runtime")
+    preflight.add_argument(
+        "--purpose", choices=sorted(defaults.DISPATCH_PURPOSES), default="work"
+    )
     preflight.add_argument("--candidate-commit")
     preflight.set_defaults(handler=handlers.preflight_dispatch)
     dispatch_propose = dispatch_commands.add_parser(

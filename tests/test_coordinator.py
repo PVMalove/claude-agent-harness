@@ -3946,6 +3946,16 @@ class CoordinatorCliParserTests(unittest.TestCase):
 
         self.assertIs(args.handler, coordinator.dispatch_status)
 
+    def test_dispatch_preflight_exposes_purpose_like_other_dispatch_commands(self) -> None:
+        parse = coordinator.parser().parse_args
+        default = parse(["dispatch", "preflight", "--batch", "batch-1", "--role", "architect"])
+        self.assertIs(default.handler, coordinator.preflight_dispatch)
+        self.assertEqual(default.purpose, "work")
+        publish = parse(
+            ["dispatch", "preflight", "--batch", "batch-1", "--role", "developer", "--purpose", "publish"]
+        )
+        self.assertEqual(publish.purpose, "publish")
+
     def test_operational_guard_commands_resolve_to_their_handlers(self) -> None:
         parse = coordinator.parser().parse_args
         approval = [
