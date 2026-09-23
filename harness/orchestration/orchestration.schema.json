@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "backend orchestration project config",
-  "description": "Project-owned provider profiles and role assignment plans for the optional backend-orchestration capability. This contract is separate from .harness/project.json and does not contain credentials.",
+  "description": "Конфигурация оркестрации бэкенда проекта: профили провайдеров, планы назначения ролей, зоны доступа и политики согласования.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,25 +14,25 @@
   "properties": {
     "$schema": {
       "type": "string",
-      "description": "Editor-facing pointer to this schema; the harness does not read it to resolve the config."
+      "description": "Указатель на относительный путь к файлу схемы JSON Schema. Используется редакторами кода и IDE для автодополнения, валидации и отображения подсказок при редактировании конфигурации."
     },
     "provider_profiles": {
       "type": "object",
-      "description": "Named project-owned provider profiles. Profile IDs are referenced by ordered assignment plans.",
+      "description": "Словарь профилей провайдеров (LLM-моделей и их агентов). Каждая запись задаёт список поддерживаемых возможностей (capabilities), имя агента, цепочку резервных профилей (fallback) и известные ограничения. Используется ролями в планах назначения (assignment_plans).",
       "additionalProperties": {
         "$ref": "#/definitions/providerProfile"
       }
     },
     "assignment_plans": {
       "type": "object",
-      "description": "Role plans with an explicit runtime-specific profile, model, and reasoning effort.",
+      "description": "Планы назначения ролей ('architect', 'developer', 'code-review', 'qa'). Определяют, какую область кода (zone) обрабатывает роль, какие рантаймы (например, 'claude', 'codex') доступны, с какой моделью, уровнем усилий ('effort') и транспортом ('orca' или 'in-process').",
       "additionalProperties": {
         "$ref": "#/definitions/assignmentPlan"
       }
     },
     "backend_zones": {
       "type": "object",
-      "description": "Named write/read boundaries referenced by assignment plans.",
+      "description": "Именованные зоны доступа к репозиторию. Задают границы чтения и записи (списки glob-шаблонов путей), к которым привязываются роли в assignment_plans.",
       "additionalProperties": {
         "$ref": "#/definitions/backendZone"
       }
@@ -40,7 +40,7 @@
     "concurrency_budget": {
       "type": "integer",
       "minimum": 1,
-      "description": "Maximum number of coordinator-approved active batches."
+      "description": "Цель: ограничение параллелизма. За что отвечает: максимальное количество одновременно активных батчей (задач), обрабатываемых координатором. Варианты: целое число >= 1 (по умолчанию 1)."
     },
     "verification_commands": {
       "type": "array",
@@ -48,7 +48,7 @@
         "type": "string",
         "minLength": 1
       },
-      "description": "Project commands a coordinator requires as orchestration proof."
+      "description": "Цель: обеспечение качества. За что отвечает: список shell-команд (тестов, линтеров, статического анализа), выполнение которых обязательно для успешной приемки работы. Варианты: массив строк (например, ['python scripts/verify.py'])."
     },
     "developer_verification_commands": {
       "type": "array",
@@ -56,15 +56,7 @@
         "type": "string",
         "minLength": 1
       },
-      "description": "Optional focused commands for a developer work dispatch. When omitted, verification_commands remains the backward-compatible developer and clean-room QA list."
-    },
-    "review_verification_commands": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      },
-      "description": "Optional focused commands for a code-review work dispatch. When omitted, verification_commands remains the backward-compatible review and clean-room QA list."
+      "description": "Цель: ускорение итераций разработки. За что отвечает: оптимизированное подмножество проверочных команд, запускаемых разработчиком. Варианты: массив строк; если не задан, используются полные verification_commands."
     },
     "test_path_patterns": {
       "type": "array",
@@ -72,27 +64,27 @@
         "type": "string",
         "minLength": 1
       },
-      "description": "Optional fnmatch-style glob patterns identifying this project's test files, used to gate delta-review eligibility for a test-only fix after a code-review Warning. Defaults to a Python/pytest convention (tests/**, **/tests/**, **/test_*.py, **/*_test.py) when omitted."
+      "description": "Цель: идентификация тестовых файлов. За что отвечает: glob-шаблоны путей к тестам для определения delta-review (оптимизация проверки при изменении только тестов). Варианты: массив glob-строк (например, ['tests/**', '**/test_*.py'])."
     },
     "approval_policy": {
       "enum": ["manual_all", "milestone", "low_risk"],
       "default": "manual_all",
-      "description": "Human approval cadence. manual_all approves every transition; milestone keeps plan, risk/scope, QA and publish gates; low_risk is restricted to explicitly approved low-risk zones."
+      "description": "Цель: контроль безопасности изменений. За что отвечает: политика человеческого согласования шагов оркестрации. Варианты: 'manual_all' (ручной аппрув на КАЖДЫЙ шаг, по умолчанию), 'milestone' (ручной аппрув только на ключевых вехах: QA, публикации, рисках), 'low_risk' (авто-продолжение для предсогласованных безопасных зон из low_risk_zones)."
     },
     "human_approval_gate": {
       "enum": ["trusted", "tty"],
       "default": "trusted",
-      "description": "How an explicit human approval is proven. trusted accepts --approved-by/--approved-at as authored by the operator; tty additionally requires a confirmation typed on the real terminal, which a non-interactive agent session cannot produce, so a coordinator session cannot advance a gate on its own."
+      "description": "Цель: проверка аутентичности аппрува. За что отвечает: способ валидации согласования человеком. Варианты: 'trusted' (принимает аргументы CLI --approved-by/--approved-at, по умолчанию), 'tty' (требует интерактивный ввод человека в TTY-терминале)."
     },
     "low_risk_zones": {
       "type": "array",
       "items": {"type": "string", "minLength": 1},
-      "description": "Explicitly pre-approved zones eligible for low_risk continuation; omitted means no zone is eligible."
+      "description": "Цель: авто-согласование безопасных правок. За что отвечает: список именованных зон из backend_zones с низким риском, для которых разрешено автопродолжение при approval_policy = 'low_risk'. Варианты: массив имён зон."
     },
     "worker_attestation_required": {
       "type": "boolean",
       "default": true,
-      "description": "Require each runtime worker to attest its canonical Git worktree, branch and pinned commit before a completion report is accepted. New projects should keep this enabled; omitted keeps legacy projects compatible."
+      "description": "Цель: гарантия целостности рабочего окружения. За что отвечает: требование от воркеров аттестации (подтверждения корректности Git-worktree, ветки и коммита) перед отправкой отчёта. Варианты: true (включено, по умолчанию), false (выключено)."
     },
     "communication_policy": {
       "type": "object",
@@ -102,157 +94,158 @@
         "coordinator_report_language": "ru"
       },
       "required": ["agent_to_agent_language", "coordinator_report_language"],
+      "description": "Цель: стандартизация языков в системе. За что отвечает: задаёт языки взаимодействия между агентами и формата отчётов.",
       "properties": {
         "agent_to_agent_language": {
           "const": "en",
-          "description": "Language for agent-to-agent handoffs, state evidence and internal protocol text."
+          "description": "Цель: общение между агентами. За что отвечает: язык технического контекста и сообщений между воркерами. Варианты: только 'en' (английский)."
         },
         "coordinator_report_language": {
           "const": "ru",
-          "description": "Language for completion reports and summaries addressed to the coordinator."
+          "description": "Цель: отчёты для человека. За что отвечает: язык сводок и итоговых отчётов координатора. Варианты: только 'ru' (русский)."
         }
       }
     },
     "adaptive_continuation_policy": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Optional thresholds a planned-trigger `dispatch resume` continuation must meet. Any field left out keeps the coordinator's documented default.",
+      "description": "Цель: управление запускными пороговыми значениями сессий. За что отвечает: условия автоматического возобновления работы по объёму контекста, TDD-циклам или логам ошибок.",
       "properties": {
         "context_limit": {
           "type": "integer",
           "minimum": 1,
-          "description": "Minimum --measured-value for a context-limit planned trigger. Default 150000."
+          "description": "Порог токенов контекста для возобновления диспатча (целое число >= 1, по умолчанию 150000)."
         },
         "tdd_cycle_count": {
           "type": "integer",
           "minimum": 1,
-          "description": "Minimum --measured-value for a tdd-cycles planned trigger. Default 3."
+          "description": "Число TDD-циклов до адаптивного возобновления (целое число >= 1, по умолчанию 3)."
         },
         "failure_log_bytes": {
           "type": "integer",
           "minimum": 1,
-          "description": "Minimum --measured-value for a failure-log planned trigger. Default 20000."
+          "description": "Порог размера лога ошибок в байтах для триггера продолжения (целое число >= 1, по умолчанию 20000)."
         },
         "context_warn_ratio": {
           "type": "number",
           "exclusiveMinimum": 0,
           "maximum": 1,
-          "description": "Share of context_limit at which record_telemetry/dispatch_status's context_advisory reaches level warn. Default 0.8."
+          "description": "Доля от context_limit (от 0 до 1), при достижении которой генерируется предупреждение о давлении контекста (по умолчанию 0.8)."
         }
       }
     },
     "tool_policy": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Optional override of the allowed_tools list each dispatch brief records. A role's own entry wins over its mode's entry, which wins over the built-in default for that mode (read-only: Read, Grep, Glob, Bash; write: those plus Edit, Write). The list is the role's working set recorded in the brief; it never disables the runtime's global tools.",
+      "description": "Цель: ограничение доступных инструментов. За что отвечает: явный список инструментов (tools), разрешённых по режимам и ролям.",
       "properties": {
         "modes": {
           "type": "object",
           "propertyNames": { "enum": ["read-only", "write"] },
           "additionalProperties": { "$ref": "#/definitions/toolList" },
-          "description": "Tools for every role of a manifest mode."
+          "description": "Ограничения инструментов по режимам доступа. Варианты ключей: 'read-only', 'write'."
         },
         "roles": {
           "type": "object",
           "additionalProperties": { "$ref": "#/definitions/toolList" },
-          "description": "Tools for one role, keyed by its manifest name; each name must match a role manifest."
+          "description": "Ограничения инструментов для конкретных ролей. Варианты ключей: 'architect', 'developer', 'code-review', 'qa'."
         }
       }
     },
     "context_package_policy": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Token-aware Context Package admission limits. The package must fit within the configured context window after reserving prompt headroom.",
+      "description": "Цель: управление размером контекста моделям. За что отвечает: лимиты токенов и глубины сбора кода при формировании контекстного пакета.",
       "properties": {
-        "max_tokens": {"type": "integer", "minimum": 1, "default": 200000},
-        "context_window_tokens": {"type": "integer", "minimum": 1, "default": 250000},
-        "reserved_prompt_tokens": {"type": "integer", "minimum": 1, "default": 20000},
+        "max_tokens": {"type": "integer", "minimum": 1, "default": 200000, "description": "Максимальное число токенов в пакете (целое число, по умолчанию 200000)."},
+        "context_window_tokens": {"type": "integer", "minimum": 1, "default": 250000, "description": "Общий размер окна контекста целевой модели (целое число, по умолчанию 250000)."},
+        "reserved_prompt_tokens": {"type": "integer", "minimum": 1, "default": 20000, "description": "Зарезервированный объём токенов под системный промпт и инструкции (целое число, по умолчанию 20000)."},
         "symbol_graph_depth": {
           "type": "integer",
           "minimum": 1,
           "default": 2,
-          "description": "Import-graph traversal depth from a Context Package's starting files. Applies to every automatic package (architect/developer/code-review dispatch creation) as well as a manual `context-package register`; `--symbol-graph-depth` on the latter overrides it for that package only."
+          "description": "Глубина обхода графа импортов/символов (целое число >= 1, по умолчанию 2)."
         },
         "max_related_tests": {
           "type": "integer",
           "minimum": 1,
           "default": 25,
-          "description": "Fail-loud circuit breaker: a Context Package whose related_tests (tests that import a starting file) exceed this count raises ContextPackageError instead of silently including all of them. `--max-related-tests` on `context-package register` overrides it for that package only."
+          "description": "Максимальное количество связанных тестов в пакете (целое число >= 1, по умолчанию 25)."
         }
       }
     },
     "repo_map_policy": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Optional enterprise policy for the portable Repo Map CLI. All paths are repository-relative globs; path and symbol redactions are applied before parsing and serialization, and policy contents never appear in Repo Map provenance.",
+      "description": "Цель: управление генерацией карты репозитория (Repo Map). За что отвечает: фильтрация путей, маскирование символов, лимиты и выбор режима парсинга.",
       "properties": {
-        "allow_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "deny_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "redact_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "redact_symbols": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "max_files": {"type": "integer", "minimum": 1, "default": 10000},
-        "max_file_bytes": {"type": "integer", "minimum": 1, "default": 2000000},
-        "max_path_length": {"type": "integer", "minimum": 1, "default": 4096},
-        "max_symbol_length": {"type": "integer", "minimum": 1, "default": 256},
-        "max_signature_length": {"type": "integer", "minimum": 1, "default": 2048},
-        "timeout_seconds": {"type": "integer", "minimum": 1, "default": 10},
-        "max_tokens": {"type": "integer", "minimum": 1},
-        "tier": {"enum": ["minimal", "full"], "default": "full"},
-        "parser_bundle_registry_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "parser_bundle_timeout_seconds": {"type": "integer", "minimum": 1, "default": 30},
-        "parser_bundle_max_output_bytes": {"type": "integer", "minimum": 1, "default": 10000000}
+        "allow_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Список glob-шаблонов разрешённых путей для включения в карту репозитория."},
+        "deny_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Список glob-шаблонов исключаемых путей."},
+        "redact_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Пути, из которых вырезается внутреннее содержимое символов."},
+        "redact_symbols": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Имена функций/классов, скрываемые из карты репозитория."},
+        "max_files": {"type": "integer", "minimum": 1, "default": 10000, "description": "Максимальное число файлов в карте (целое число, по умолчанию 10000)."},
+        "max_file_bytes": {"type": "integer", "minimum": 1, "default": 2000000, "description": "Максимальный размер обрабатываемого файла в байтах (по умолчанию 2000000)."},
+        "max_path_length": {"type": "integer", "minimum": 1, "default": 4096, "description": "Максимальная длина пути к файлу в символах (по умолчанию 4096)."},
+        "max_symbol_length": {"type": "integer", "minimum": 1, "default": 256, "description": "Максимальная длина имени символа (по умолчанию 256)."},
+        "max_signature_length": {"type": "integer", "minimum": 1, "default": 2048, "description": "Максимальная длина сигнатуры функции (по умолчанию 2048)."},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "default": 10, "description": "Таймаут сборки карты в секундах (по умолчанию 10)."},
+        "max_tokens": {"type": "integer", "minimum": 1, "description": "Лимит токенов на итоговый вывод карты репозитория (по умолчанию 4000)."},
+        "tier": {"enum": ["minimal", "full"], "default": "full", "description": "Режим карты: 'full' (полный AST-парсинг через tree-sitter, по умолчанию) или 'minimal' (только список путей файлов)."},
+        "parser_bundle_registry_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Пути к локальным реестрам бандлов офлайн-парсера tree-sitter."},
+        "parser_bundle_timeout_seconds": {"type": "integer", "minimum": 1, "default": 30, "description": "Таймаут выполнения парсер-бандла в секундах (по умолчанию 30)."},
+        "parser_bundle_max_output_bytes": {"type": "integer", "minimum": 1, "default": 10000000, "description": "Максимальный размер вывода парсер-бандла в байтах (по умолчанию 10000000)."}
       }
     },
     "continuation_policy": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Maximum worker-session continuations per dispatch, including provider rate-limit resumes.",
+      "description": "Цель: предотвращение зацикливания. За что отвечает: лимиты на число возобновлений сессий воркеров.",
       "properties": {
-        "max_continuations": {"type": "integer", "minimum": 1, "default": 2},
-        "max_rate_limit_resumes": {"type": "integer", "minimum": 1, "default": 1}
+        "max_continuations": {"type": "integer", "minimum": 1, "default": 2, "description": "Максимальное число продолжений сессии воркера на один диспатч (целое число >= 1, по умолчанию 2)."},
+        "max_rate_limit_resumes": {"type": "integer", "minimum": 1, "default": 1, "description": "Максимальное число возобновлений при исчерпании лимитов провайдера (rate limit) (целое число >= 1, по умолчанию 1)."}
       }
     },
     "retry_policy": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Maximum new developer attempts after review or QA asks for a retry.",
+      "description": "Цель: исправление ошибок. За что отвечает: повторные попытки разработки при отклонении ревью или QA.",
       "properties": {
-        "max_developer_retries": {"type": "integer", "minimum": 0, "default": 1}
+        "max_developer_retries": {"type": "integer", "minimum": 0, "default": 1, "description": "Максимальное количество повторных попыток разработчика на исправление замечаний (целое число >= 0, по умолчанию 1)."}
       }
     },
     "attention_policy": {
       "type": "object",
       "additionalProperties": false,
-      "description": "When a batch is flagged needs_attention -- a batch-level flag, not a lifecycle state. While it is set no next dispatch is created; evidence and the candidate are never touched. A human clears it with `batch attention resolve`. Any field left out keeps its default; the resolved values are frozen into every brief as orchestration_policy.attention.",
+      "description": "Цель: эскалация проблем человеку. За что отвечает: критерии перевода задачи в состояние 'needs_attention'.",
       "properties": {
-        "retry_queue_seconds": {"type": "integer", "minimum": 1, "default": 3600, "description": "How long a decided retry may wait for its next dispatch before the batch needs attention."},
-        "max_infrastructure_retries": {"type": "integer", "minimum": 0, "default": 2, "description": "Operational retries (verification-infrastructure, transport, context-pressure) tolerated for one candidate; one more needs attention."},
-        "stale_dispatch_seconds": {"type": "integer", "minimum": 1, "default": 3600, "description": "Silence after which a live dispatch is stale and the batch needs attention. The dispatch brief requires heartbeats at least every five minutes by default."}
+        "retry_queue_seconds": {"type": "integer", "minimum": 1, "default": 3600, "description": "Максимальное время ожидания в очереди повторов до привлечения человека (секунды, по умолчанию 3600)."},
+        "max_infrastructure_retries": {"type": "integer", "minimum": 0, "default": 2, "description": "Максимальное число сбоев инфраструктуры до остановки (целое число >= 0, по умолчанию 2)."},
+        "stale_dispatch_seconds": {"type": "integer", "minimum": 1, "default": 3600, "description": "Максимальное время молчания воркера, после которого диспатч считается зависшим (секунды, по умолчанию 3600)."}
       }
     },
     "approval_ttl_seconds": {
       "type": "integer",
       "minimum": 1,
-      "description": "How long an explicit --approved-at stays valid. An older, or future-dated, approval is rejected and never reused. Absent means an approval does not expire."
+      "description": "Цель: безопасность устаревших аппрувов. За что отвечает: срок действия ручного согласования в секундах. Варианты: целое число >= 1 (например, 3600 для 1 часа)."
     },
     "extensions": {
       "type": "object",
       "propertyNames": {"enum": ["transport_health", "verification_environment_health", "retry_reason_classifier", "context_telemetry_provider", "human_notifier"]},
       "additionalProperties": {"type": "string", "pattern": "^(none|[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_]*)?)$"},
-      "description": "Pluggable operational interfaces kept out of the coordinator core. Each value is 'none' (the default, inert), a name a host registered, or 'module:factory' naming a zero-argument factory in an importable module. The selection is frozen into every brief; no extension adds a model tool or changes a prompt."
+      "description": "Цель: подключение внешней инфраструктуры. За что отвечает: модули уведомления, телеметрии и проверки здоровья. Варианты ключей: 'transport_health', 'verification_environment_health', 'retry_reason_classifier', 'context_telemetry_provider', 'human_notifier'. Варианты значений: 'none' (по умолчанию), имя зарегистрированного модуля или 'module:factory'."
     },
     "preflight_policy": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Admission limits checked before a batch is created. Oversized work must be split before any model dispatch.",
+      "description": "Цель: контроль сложности задач перед запуском. За что отвечает: префлайт-ограничения объёма задач до создания батча.",
       "properties": {
-        "require_estimates": {"type": "boolean", "default": true},
-        "max_definition_of_done_items": {"type": "integer", "minimum": 1, "default": 5},
-        "max_dependencies": {"type": "integer", "minimum": 1, "default": 3},
-        "max_expected_files": {"type": "integer", "minimum": 1, "default": 12},
-        "max_expected_services": {"type": "integer", "minimum": 1, "default": 1},
-        "max_expected_changed_lines": {"type": "integer", "minimum": 1, "default": 800},
-        "max_expected_context_tokens": {"type": "integer", "minimum": 1, "default": 80000}
+        "require_estimates": {"type": "boolean", "default": true, "description": "Требовать ли наличие оценок трудоёмкости перед запуском. Варианты: true (по умолчанию), false."},
+        "max_definition_of_done_items": {"type": "integer", "minimum": 1, "default": 5, "description": "Максимальное количество пунктов Definition of Done (целое число, по умолчанию 5)."},
+        "max_dependencies": {"type": "integer", "minimum": 1, "default": 3, "description": "Максимальное количество зависимостей от других тикетов (целое число, по умолчанию 3)."},
+        "max_expected_files": {"type": "integer", "minimum": 1, "default": 12, "description": "Максимальное ожидаемое число изменённых файлов (целое число, по умолчанию 12)."},
+        "max_expected_services": {"type": "integer", "minimum": 1, "default": 1, "description": "Максимальное количество затрагиваемых сервисов (целое число, по умолчанию 1)."},
+        "max_expected_changed_lines": {"type": "integer", "minimum": 1, "default": 800, "description": "Максимальное ожидаемое число изменённых строк кода (целое число, по умолчанию 800)."},
+        "max_expected_context_tokens": {"type": "integer", "minimum": 1, "default": 80000, "description": "Максимальный ожидаемый объём контекста в токенах (целое число, по умолчанию 80000)."}
       }
     }
   },
@@ -269,12 +262,12 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Capabilities this profile can satisfy; credentials are never stored here."
+          "description": "Поддерживаемые возможности провайдера. Варианты: 'architecture-analysis', 'backend-development', 'code-review', 'independent-verification'."
         },
         "agent": {
           "type": "string",
           "minLength": 1,
-          "description": "Orca agent identifier selected by this project-owned profile."
+          "description": "Идентификатор агента Orca для этого профиля."
         },
         "fallback": {
           "type": "array",
@@ -282,14 +275,15 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Ordered fallback provider profile IDs."
+          "description": "Упорядоченный список имён резервных профилей провайдеров на случай недоступности основного."
         },
         "known_limitations": {
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1
-          }
+          },
+          "description": "Известные ограничения провайдера или модели."
         }
       }
     },
@@ -300,7 +294,8 @@
       "properties": {
         "zone": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Имя зоны из backend_zones, за которую отвечает данная роль."
         },
         "write_paths": {
           "type": "array",
@@ -309,17 +304,17 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Optional narrower write boundary for this role. It must remain inside the assigned zone."
+          "description": "Уточнённый список путей для записи (находящийся внутри выделенной зоны)."
         },
         "transport": {
           "enum": ["orca", "in-process"],
           "default": "in-process",
-          "description": "How this role is executed: an explicitly selected Orca-dispatched isolated worker, or an in-process subagent of the coordinator session. Both consume the same immutable brief and must pass the model self-report."
+          "description": "Способ выполнения роли. Варианты: 'in-process' (подагент сессии координатора, по умолчанию), 'orca' (изолированный воркер через Orca)."
         },
         "default_runtime": {
           "type": "string",
           "minLength": 1,
-          "description": "Project-owned default used only when this role declares more than one runtime. Without it callers must pass --runtime."
+          "description": "Рантайм по умолчанию при наличии нескольких рантаймов."
         },
         "runtimes": {
           "type": "object",
@@ -327,7 +322,7 @@
           "additionalProperties": {
             "$ref": "#/definitions/runtimeAssignment"
           },
-          "description": "Named runtime assignments, such as codex or claude."
+          "description": "Словарь назначенных рантаймов (например, 'claude', 'codex')."
         }
       }
     },
@@ -339,10 +334,11 @@
         "profiles": {
           "type": "array",
           "minItems": 1,
-          "items": {"type": "string", "minLength": 1}
+          "items": {"type": "string", "minLength": 1},
+          "description": "Список используемых профилей провайдеров из provider_profiles."
         },
-        "model": {"type": "string", "minLength": 1},
-        "effort": {"type": "string", "minLength": 1}
+        "model": {"type": "string", "minLength": 1, "description": "Имя используемой модели LLM. Варианты: 'claude-sonnet-5', 'gpt-5.6-terra', 'gpt-5.6-luna', 'claude-haiku-4-5-20251001' и др."},
+        "effort": {"type": "string", "minLength": 1, "description": "Уровень усилий рассуждения (reasoning effort). Варианты: 'low', 'medium', 'high', 'max'."}
       }
     },
     "toolList": {
@@ -352,7 +348,8 @@
       "items": {
         "type": "string",
         "minLength": 1
-      }
+      },
+      "description": "Список разрешённых имён инструментов (tools)."
     },
     "backendZone": {
       "type": "object",
@@ -365,7 +362,8 @@
           "items": {
             "type": "string",
             "minLength": 1
-          }
+          },
+          "description": "Список glob-шаблонов разрешённых путей в данной зоне."
         }
       }
     }
