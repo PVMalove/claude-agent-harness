@@ -2308,6 +2308,34 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
 
+    def test_review_blocker_can_be_blocked_only_once_the_developer_retry_budget_is_exhausted(
+        self,
+    ) -> None:
+        blocker = {"severity": "blocker", "summary": "data loss", "evidence": "x.py:9"}
+        for exhausted in (False, True):
+            with self.subTest(exhausted=exhausted):
+                self._reset()
+                batch = self._create_batch()
+                self._accepted_architect(batch["batch_id"])
+                candidate = self._accepted_candidate(batch["batch_id"])
+                self._reported_review(
+                    batch["batch_id"], candidate, standards=("blocker", [blocker])
+                )
+                budget = {"max_developer_retries": 0 if exhausted else 1}
+                with mock.patch.object(decisions, "_retry_policy", return_value=budget):
+                    refused = "retry" if exhausted else "block"
+                    with self.assertRaises(coordinator.CoordinatorError) as caught:
+                        self._decide(batch["batch_id"], refused)
+                    self.assertIn("abandon", caught.exception.remedy)
+                    self.assertEqual(
+                        self._batch_record(batch["batch_id"])["state"],
+                        "awaiting-approval",
+                    )
+                    if exhausted:
+                        self.assertIn("block", caught.exception.remedy)
+                        decided = self._decide(batch["batch_id"], "block")
+                        self.assertEqual(decided["state"], "blocked")
+
     # -- abandon -------------------------------------------------------------------------------
 
     def test_abandon_requires_explicit_approval_and_a_reason(self) -> None:

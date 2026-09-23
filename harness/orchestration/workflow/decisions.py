@@ -208,6 +208,13 @@ def _developer_retry_count(batch: JsonObject) -> int:
     )
 
 
+def _developer_retry_budget_exhausted(config: JsonObject, batch: JsonObject) -> bool:
+    return (
+        _developer_retry_count(batch)
+        >= _retry_policy(config)["max_developer_retries"]
+    )
+
+
 def _review_severity(review: JsonObject) -> dict[str, str]:
     return {axis: review[axis]["severity"] for axis in ("standards", "spec")}
 
@@ -419,10 +426,16 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         if report.get("role") == "code-review":
             severities = _review_severity(report["review"])
             if any(value == "blocker" for value in severities.values()):
-                if args.decision not in {"retry", "abandon"}:
+                if _developer_retry_budget_exhausted(config, batch):
+                    if args.decision not in {"block", "fail", "abandon"}:
+                        raise CoordinatorError(
+                            "a review blocker cannot be accepted and the developer retry budget is exhausted for this batch",
+                            remedy="block, fail, or abandon (with --reason) this batch, then split or re-plan the work",
+                        )
+                elif args.decision not in {"retry", "abandon"}:
                     raise CoordinatorError(
                         "a review blocker requires a new developer retry",
-                        remedy="start a new developer retry dispatch to address the review blocker",
+                        remedy="start a new developer retry dispatch to address the review blocker, or abandon (with --reason) this batch",
                     )
             elif any(value == "warning" for value in severities.values()):
                 if args.decision == "accept":
@@ -462,16 +475,13 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                         "registered_at": routing["decided_at"],
                     }
                 )
-            if routing["next_action"] == "developer-retry":
-                retry_policy = _retry_policy(core_config._config(repo))
-                if (
-                    _developer_retry_count(batch)
-                    >= retry_policy["max_developer_retries"]
-                ):
-                    raise CoordinatorError(
-                        "developer retry budget is exhausted for this batch; split, block, or re-plan instead of starting another worker",
-                        remedy="split, block, or re-plan this batch instead of starting another developer retry",
-                    )
+            if routing[
+                "next_action"
+            ] == "developer-retry" and _developer_retry_budget_exhausted(config, batch):
+                raise CoordinatorError(
+                    "developer retry budget is exhausted for this batch; block, fail, or abandon it instead of starting another worker",
+                    remedy="block, fail, or abandon (with --reason) this batch, then split or re-plan the work",
+                )
         abandon_reason = ""
         if args.decision == "abandon":
             abandon_reason = (
