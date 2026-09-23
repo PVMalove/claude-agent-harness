@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
-"""Focused public-contract tests for the standalone Context Package builder."""
+"""Focused public-contract tests for the standalone Context Package builder.
+
+The default (offline, bundle-free) test run exercises Repo Map's minimal tier: no tree-sitter
+grammar bundle is configured, so Repo Map returns empty `edges` and no `signatures` for every file
+(ADR 0024/0023 degradation). Graph widening, symbol-graph depth, and dependency-signature behaviour
+that need real edges are therefore covered separately by the `HARNESS_PARSER_BUNDLE_DIR`-gated tests
+below, following the pattern in tests/test_repo_map_tree_sitter.py: unset, they skip; set with a
+missing bundle, they fail (an unavailable artifact is a failure, not a silent skip).
+"""
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -12,14 +21,19 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from harness.context_builder.context_builder import (
     ContextPackageError,
+    _dependency_context,
+    _fallback_excerpt,
     build_context_package,
     estimate_tokens,
 )
 from harness.errors import HarnessError
 
 MODULE_ROOT = Path(__file__).resolve().parents[1] / "harness" / "context_builder"
+BUNDLE_ENV = "HARNESS_PARSER_BUNDLE_DIR"
 
 
 def _run(*args: str, cwd: Path) -> None:
@@ -30,6 +44,16 @@ def _write(repo: Path, path: str, content: str) -> None:
     file_path = repo / path
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(content, encoding="utf-8")
+
+
+def _head(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 class ContextBuilderFixture(unittest.TestCase):
@@ -79,13 +103,7 @@ class ContextBuilderFixture(unittest.TestCase):
         )
         _run("add", ".", cwd=self.repo)
         _run("commit", "-qm", "feat: base module and its adr", cwd=self.repo)
-        self.base_commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=self.repo,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        self.base_commit = _head(self.repo)
 
         _write(
             self.repo,
@@ -94,20 +112,16 @@ class ContextBuilderFixture(unittest.TestCase):
         )
         _run("add", ".", cwd=self.repo)
         _run("commit", "-qm", "fix: change base helper return value", cwd=self.repo)
-        self.candidate_commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=self.repo,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        self.candidate_commit = _head(self.repo)
 
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
 
 class ContextBuilderTests(ContextBuilderFixture):
-    def test_builds_diff_files_graph_tests_cards_and_hashes(self) -> None:
+    """Public-builder behaviour under Repo Map's minimal (bundle-free) tier."""
+
+    def test_builds_diff_starting_files_cards_and_hashes(self) -> None:
         package = build_context_package(
             self.repo,
             self.base_commit,
@@ -128,20 +142,29 @@ class ContextBuilderTests(ContextBuilderFixture):
         )
         self.assertIn("changed in diff", base_reason)
 
-        self.assertIn("pkg/base.py", package.symbol_graph)
-        self.assertIn(
-            "pkg/consumer.py", package.symbol_graph["pkg/base.py"]["imported_by"]
+        # Repo Map has no grammar bundle configured, so it runs at minimal tier: no edges are
+        # returned at all, and `symbol_graph` reflects that honestly instead of inventing a graph.
+        self.assertEqual(
+            package.symbol_graph["pkg/base.py"],
+            {"imports": [], "imported_by": [], "references": [], "referenced_by": []},
         )
-
-        self.assertEqual(package.related_tests, ["tests/test_base.py"])
+        self.assertEqual(package.related_tests, [])
 
         self.assertTrue(package.precedent_cards)
         self.assertEqual(package.precedent_cards[0].id, "0001-base-module")
         self.assertEqual(package.precedent_cards[0].title, "Base module contract")
 
         self.assertIn("pkg/base.py", package.file_hashes)
-        self.assertIn("tests/test_base.py", package.file_hashes)
         self.assertGreater(package.size_bytes, 0)
+
+        self.assertEqual(package.schema_version, 2)
+        self.assertEqual(package.parser, "path-only")
+        assert package.parser_provenance is not None
+        self.assertEqual(package.parser_provenance["tier"], "minimal")
+        self.assertEqual(package.parser_provenance["parser"], "path-only")
+        self.assertIn("degradation_reason", package.parser_provenance)
+        self.assertIn("token_estimator_version", package.parser_provenance)
+        self.assertIsInstance(package.parser_provenance["parser_provenance"], dict)
 
     def test_output_is_byte_identical_across_repeated_builds(self) -> None:
         first = build_context_package(
@@ -152,26 +175,6 @@ class ContextBuilderTests(ContextBuilderFixture):
         )
 
         self.assertEqual(first.to_json(), second.to_json())
-
-    def test_expands_below_minimum_starting_files_via_the_import_graph(self) -> None:
-        package = build_context_package(
-            self.repo,
-            self.base_commit,
-            self.candidate_commit,
-            min_starting_files=2,
-            max_starting_files=10,
-        )
-
-        paths = {item.path for item in package.starting_files}
-        self.assertGreaterEqual(len(paths), 2)
-        self.assertIn("pkg/base.py", paths)
-        self.assertIn("pkg/consumer.py", paths)
-        consumer_reason = next(
-            item.reason
-            for item in package.starting_files
-            if item.path == "pkg/consumer.py"
-        )
-        self.assertIn("pkg/base.py", consumer_reason)
 
     def test_fails_clearly_instead_of_truncating_when_the_size_limit_is_exceeded(
         self,
@@ -207,101 +210,11 @@ class ContextBuilderTests(ContextBuilderFixture):
     def test_fails_clearly_instead_of_silently_returning_fewer_than_the_minimum_starting_files(
         self,
     ) -> None:
+        # At minimal tier the import graph is empty, so widening below the minimum can never
+        # succeed from a single changed file -- it fails clearly instead of under-delivering.
         with self.assertRaises(ContextPackageError):
             build_context_package(
-                self.repo, self.base_commit, self.candidate_commit, min_starting_files=5
-            )
-
-    def test_symbol_graph_depth_bounds_how_far_indirect_dependents_are_included(
-        self,
-    ) -> None:
-        shallow = build_context_package(
-            self.repo,
-            self.base_commit,
-            self.candidate_commit,
-            min_starting_files=1,
-            symbol_graph_depth=1,
-        )
-        deep = build_context_package(
-            self.repo,
-            self.base_commit,
-            self.candidate_commit,
-            min_starting_files=1,
-            symbol_graph_depth=2,
-        )
-
-        self.assertNotIn("pkg/indirect.py", shallow.symbol_graph)
-        self.assertIn("pkg/indirect.py", deep.symbol_graph)
-
-    def test_adds_ast_signatures_for_direct_dependencies_without_following_second_hop(
-        self,
-    ) -> None:
-        package = build_context_package(
-            self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
-        )
-
-        self.assertEqual(
-            package.symbol_graph["pkg/dependency.py"]["context"],
-            [
-                "module",
-                "class Service:",
-                "def compose(value: int) -> Service:",
-                "async def fetch() -> None:",
-            ],
-        )
-        self.assertNotIn("context", package.symbol_graph["pkg/second_hop.py"])
-
-    def test_uses_first_thirty_lines_for_a_non_python_direct_dependency_from_the_public_builder(
-        self,
-    ) -> None:
-        _write(
-            self.repo,
-            "pkg/notes.txt",
-            "\n".join(f"line {index}" for index in range(35)),
-        )
-        _run("add", ".", cwd=self.repo)
-        _run("commit", "-qm", "test: add text dependency", cwd=self.repo)
-        base_with_notes = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=self.repo,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        _write(
-            self.repo,
-            "pkg/base.py",
-            "from pkg import dependency, notes\n\n\ndef helper():\n    return dependency.compose(2)\n",
-        )
-        _run("add", ".", cwd=self.repo)
-        _run("commit", "-qm", "test: import text dependency", cwd=self.repo)
-        candidate_with_notes = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=self.repo,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-
-        package = build_context_package(
-            self.repo, base_with_notes, candidate_with_notes, min_starting_files=1
-        )
-
-        self.assertEqual(
-            package.symbol_graph["pkg/notes.txt"]["context"],
-            [f"line {index}" for index in range(30)],
-        )
-
-    def test_fails_clearly_instead_of_silently_including_too_many_related_tests(
-        self,
-    ) -> None:
-        with self.assertRaisesRegex(ContextPackageError, "max_related_tests"):
-            build_context_package(
-                self.repo,
-                self.base_commit,
-                self.candidate_commit,
-                min_starting_files=1,
-                max_related_tests=0,
+                self.repo, self.base_commit, self.candidate_commit, min_starting_files=2
             )
 
     def test_added_file_content_is_not_double_counted_against_its_diff(self) -> None:
@@ -312,13 +225,7 @@ class ContextBuilderTests(ContextBuilderFixture):
         )
         _run("add", ".", cwd=self.repo)
         _run("commit", "-qm", "feat: add a large generated file", cwd=self.repo)
-        candidate_with_addition = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=self.repo,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        candidate_with_addition = _head(self.repo)
 
         package = build_context_package(
             self.repo,
@@ -349,9 +256,9 @@ class ContextBuilderTests(ContextBuilderFixture):
             ),
             (
                 "direct import-graph neighbours",
-                "lower min_starting_files below 5",
+                "lower min_starting_files below 2",
                 lambda: build_context_package(
-                    repo, base, candidate, min_starting_files=5
+                    repo, base, candidate, min_starting_files=2
                 ),
             ),
             (
@@ -370,13 +277,6 @@ class ContextBuilderTests(ContextBuilderFixture):
                     candidate,
                     min_starting_files=999,
                     max_starting_files=1000,
-                ),
-            ),
-            (
-                "max_related_tests=0",
-                "max_related_tests above 1",
-                lambda: build_context_package(
-                    repo, base, candidate, min_starting_files=1, max_related_tests=0
                 ),
             ),
             (
@@ -548,6 +448,174 @@ class RepoMapContractTests(ContextBuilderFixture):
                 )
         self.assertIn("totally unexpected crash", raised.exception.message)
         self.assertTrue(raised.exception.remedy)
+
+
+class DependencyContextUnitTests(unittest.TestCase):
+    """Direct unit coverage for the 30-line fallback vs. Repo Map signature preference.
+
+    Repo Map's minimal tier never returns signatures, so the public builder cannot exercise the
+    "prefer signatures, else 30-line fallback" branch end-to-end without a grammar bundle; these
+    call `_dependency_context` directly instead.
+    """
+
+    def test_uses_repo_map_signatures_when_present(self) -> None:
+        context = _dependency_context(
+            import_graph={"seed.py": {"dep.py"}},
+            seeds=["seed.py"],
+            files={"dep.py": "def f():\n    pass\n"},
+            signatures_by_path={"dep.py": ["def f()"]},
+        )
+        self.assertEqual(context, {"dep.py": ["def f()"]})
+
+    def test_falls_back_to_the_first_thirty_lines_without_signatures(self) -> None:
+        text = "\n".join(f"line {index}" for index in range(35))
+        context = _dependency_context(
+            import_graph={"seed.py": {"dep.txt"}},
+            seeds=["seed.py"],
+            files={"dep.txt": text},
+            signatures_by_path={},
+        )
+        self.assertEqual(context, {"dep.txt": [f"line {index}" for index in range(30)]})
+
+    def test_fallback_excerpt_is_bounded_at_thirty_lines(self) -> None:
+        text = "\n".join(str(index) for index in range(40))
+        self.assertEqual(_fallback_excerpt(text), [str(index) for index in range(30)])
+
+
+# --- Repo Map full (bundle) tier: graph widening, symbol-graph depth, and signature-based
+# dependency context need real edges, which only exist with a verified tree-sitter grammar bundle
+# (ADR 0023/0024). Follows the skip/fail pattern of tests/test_repo_map_tree_sitter.py.
+
+
+@pytest.fixture
+def bundle_dir() -> Path:
+    configured = os.environ.get(BUNDLE_ENV)
+    if not configured:
+        pytest.skip(f"{BUNDLE_ENV} is not set; the bundle CI job runs these tests")
+    path = Path(configured)
+    if not (path / "parser_bundle.lock.json").is_file():
+        pytest.fail(f"{BUNDLE_ENV}={configured} has no parser_bundle.lock.json")
+    return path
+
+
+def _bundle_repo(tmp_path: Path, bundle: Path) -> tuple[Path, str, str]:
+    repo = tmp_path / "project"
+    repo.mkdir()
+    _run("init", "-q", cwd=repo)
+    _run("config", "user.email", "test@example.invalid", cwd=repo)
+    _run("config", "user.name", "Test", cwd=repo)
+
+    (repo / ".harness").mkdir()
+    (repo / ".harness" / "orchestration.json").write_text(
+        json.dumps(
+            {
+                "repo_map_policy": {
+                    "tier": "full",
+                    "parser_bundle_registry_paths": [str(bundle)],
+                    "parser_bundle_timeout_seconds": 120,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _write(repo, "pkg/__init__.py", "")
+    _write(repo, "pkg/base_util.py", "def util() -> int:\n    return 1\n")
+    _write(
+        repo,
+        "pkg/helper.py",
+        "from pkg import base_util\n\n\ndef render(value: int) -> str:\n    return str(base_util.util())\n",
+    )
+    _write(
+        repo,
+        "pkg/consumer.py",
+        "from pkg import helper\n\n\ndef use() -> str:\n    return helper.render(1)\n",
+    )
+    _write(
+        repo,
+        "pkg/caller.py",
+        "from pkg import consumer\n\n\ndef trigger() -> str:\n    return consumer.use()\n",
+    )
+    _write(
+        repo,
+        "tests/test_consumer.py",
+        "from pkg import consumer\n\n\ndef test_use() -> None:\n    assert consumer.use() == '1'\n",
+    )
+    _write(
+        repo,
+        "docs/adr/0001-consumer.md",
+        "# Consumer contract\n\nDescribes the consumer module used across pkg.\n",
+    )
+    _run("add", ".", cwd=repo)
+    _run("commit", "-qm", "feat: base package", cwd=repo)
+    base_commit = _head(repo)
+
+    _write(
+        repo,
+        "pkg/consumer.py",
+        "from pkg import helper\n\n\ndef use() -> str:\n    return helper.render(2)\n",
+    )
+    _run("add", ".", cwd=repo)
+    _run("commit", "-qm", "fix: change consumer value", cwd=repo)
+    candidate_commit = _head(repo)
+    return repo, base_commit, candidate_commit
+
+
+def test_full_tier_symbol_graph_depth_bounds_indirect_dependents(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
+    repo, base, candidate = _bundle_repo(tmp_path, bundle_dir)
+
+    shallow = build_context_package(
+        repo, base, candidate, min_starting_files=1, symbol_graph_depth=1
+    )
+    deep = build_context_package(
+        repo, base, candidate, min_starting_files=1, symbol_graph_depth=2
+    )
+
+    assert "pkg/base_util.py" not in shallow.symbol_graph
+    assert "pkg/base_util.py" in deep.symbol_graph
+
+
+def test_full_tier_expands_below_minimum_starting_files_via_the_import_graph(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
+    repo, base, candidate = _bundle_repo(tmp_path, bundle_dir)
+
+    package = build_context_package(
+        repo, base, candidate, min_starting_files=2, max_starting_files=10
+    )
+
+    paths = {item.path for item in package.starting_files}
+    assert len(paths) >= 2
+    assert "pkg/consumer.py" in paths
+
+
+def test_full_tier_uses_repo_map_signatures_for_a_direct_dependency(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
+    repo, base, candidate = _bundle_repo(tmp_path, bundle_dir)
+
+    package = build_context_package(repo, base, candidate, min_starting_files=1)
+
+    assert package.symbol_graph["pkg/helper.py"]["context"] == [
+        "def render(value: int) -> str"
+    ]
+    assert package.related_tests == ["tests/test_consumer.py"]
+    assert package.parser == "bundle"
+    assert package.parser_provenance is not None
+    assert package.parser_provenance["tier"] == "full"
+
+
+def test_full_tier_fails_clearly_instead_of_silently_including_too_many_related_tests(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
+    repo, base, candidate = _bundle_repo(tmp_path, bundle_dir)
+
+    with pytest.raises(ContextPackageError, match="max_related_tests"):
+        build_context_package(
+            repo, base, candidate, min_starting_files=1, max_related_tests=0
+        )
 
 
 if __name__ == "__main__":
