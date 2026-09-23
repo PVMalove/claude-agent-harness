@@ -569,6 +569,52 @@ class RepoMapContractTests(ContextBuilderFixture):
         self.assertTrue(raised.exception.remedy)
 
 
+class PolicySliceGuardTests(ContextBuilderFixture):
+    """Guard against any raw `git`-read call site regressing to bypass Repo Map's policy-approved
+    `files` slice. The real Repo Map CLI never emits an edge whose target falls outside its own
+    `files` (`_graph_from_facts` resolves import targets only through `module_paths`, itself built
+    from the already-policy-filtered file set) -- this fakes exactly that otherwise-impossible edge
+    to prove `build_context_package` does not trust it for a raw `git show` read regardless."""
+
+    def test_an_edge_target_outside_files_never_triggers_a_raw_read_of_it(self) -> None:
+        payload = json.dumps(
+            {
+                "schema_version": 1,
+                "commit": self.candidate_commit,
+                "tier": "minimal",
+                "parser": "path-only",
+                "degradation_reason": "n/a",
+                "token_estimator_version": "n/a",
+                "parser_provenance": {},
+                "files": [{"path": "pkg/base.py", "signatures": []}],
+                "edges": [
+                    {
+                        "source": "pkg/base.py",
+                        "target": "pkg/dependency.py",
+                        "kind": "import",
+                        "confidence": "high",
+                    }
+                ],
+                "diagnostics": [],
+                "estimated_tokens": 0,
+            }
+        )
+        fake = subprocess.CompletedProcess(
+            args=["repo_map"], returncode=0, stdout=payload, stderr=""
+        )
+        with _patch_repo_map_call(fake):
+            package = build_context_package(
+                self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+            )
+
+        serialized = package.to_json()
+        # `pkg/dependency.py`'s own source (never in `files`) must not leak anywhere in the
+        # package, regardless of which field a future change might route a raw read through.
+        self.assertNotIn("class Service", serialized)
+        self.assertNotIn("async def fetch", serialized)
+        self.assertNotIn("pkg/dependency.py", package.file_hashes)
+
+
 class DependencyContextUnitTests(unittest.TestCase):
     """Direct unit coverage for the 30-line fallback vs. Repo Map signature preference.
 
