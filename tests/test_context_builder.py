@@ -3,19 +3,23 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 import unittest
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from pathlib import Path
+from unittest.mock import patch
 
-MODULE_ROOT = Path(__file__).resolve().parents[1] / "harness" / "context_builder"
 from harness.context_builder.context_builder import (
     ContextPackageError,
     build_context_package,
     estimate_tokens,
 )
 from harness.errors import HarnessError
+
+MODULE_ROOT = Path(__file__).resolve().parents[1] / "harness" / "context_builder"
 
 
 def _run(*args: str, cwd: Path) -> None:
@@ -406,6 +410,144 @@ class ContextBuilderTests(ContextBuilderFixture):
         module_source = (MODULE_ROOT / "context_builder.py").read_text(encoding="utf-8")
         for banned in ("anthropic", "openai", "requests.post", "http://", "https://"):
             self.assertNotIn(banned, module_source)
+
+    def test_a_policy_denied_changed_file_never_reaches_the_package(self) -> None:
+        """A path denied by `repo_map_policy.deny_paths` must not become a starting file,
+        appear in `symbol_graph`, or be hashed into the package, even though it is a changed file."""
+        (self.repo / ".harness").mkdir(exist_ok=True)
+        (self.repo / ".harness" / "orchestration.json").write_text(
+            json.dumps({"repo_map_policy": {"deny_paths": ["pkg/base.py"]}}),
+            encoding="utf-8",
+        )
+
+        package = build_context_package(
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+        )
+
+        paths = {item.path for item in package.starting_files}
+        self.assertNotIn("pkg/base.py", paths)
+        self.assertNotIn("pkg/base.py", package.symbol_graph)
+        self.assertNotIn("pkg/base.py", package.file_hashes)
+
+
+def _patch_repo_map_call(
+    fake: subprocess.CompletedProcess[str],
+) -> AbstractContextManager[object]:
+    """Patch only the Repo Map subprocess call, leaving `_run_git`'s own `subprocess.run` calls
+    (issued through the same module attribute) untouched."""
+    real_run = subprocess.run
+
+    def _dispatch(
+        args: list[str],
+        *,
+        capture_output: bool = True,
+        text: bool = True,
+        encoding: str = "utf-8",
+        errors: str = "replace",
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        if any(str(item).endswith("repo_map.py") for item in args):
+            return fake
+        return real_run(
+            args,
+            capture_output=capture_output,
+            text=text,
+            encoding=encoding,
+            errors=errors,
+            check=check,
+        )
+
+    return patch("harness.context_builder.context_builder.subprocess.run", side_effect=_dispatch)
+
+
+class RepoMapContractTests(ContextBuilderFixture):
+    """`_run_repo_map`'s error mapping: only JSON crosses the process boundary."""
+
+    def test_invalid_json_on_stdout_raises_a_contract_error_with_a_remedy(self) -> None:
+        fake = subprocess.CompletedProcess(
+            args=["repo_map"], returncode=0, stdout="not json", stderr=""
+        )
+        with _patch_repo_map_call(fake):
+            with self.assertRaises(ContextPackageError) as raised:
+                build_context_package(
+                    self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+                )
+        self.assertIn("invalid JSON", raised.exception.message)
+        self.assertTrue(raised.exception.remedy)
+
+    def test_a_missing_required_field_raises_a_contract_error_with_a_remedy(self) -> None:
+        incomplete = json.dumps({"schema_version": 1, "commit": "x" * 40})
+        fake = subprocess.CompletedProcess(
+            args=["repo_map"], returncode=0, stdout=incomplete, stderr=""
+        )
+        with _patch_repo_map_call(fake):
+            with self.assertRaises(ContextPackageError) as raised:
+                build_context_package(
+                    self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+                )
+        self.assertIn("contract violation", raised.exception.message)
+        self.assertIn("repo_map.schema.json", raised.exception.remedy)
+
+    def test_an_unsupported_schema_version_raises_a_contract_error_with_a_remedy(
+        self,
+    ) -> None:
+        payload = json.dumps(
+            {
+                "schema_version": 2,
+                "commit": "x" * 40,
+                "tier": "minimal",
+                "parser": "path-only",
+                "degradation_reason": "n/a",
+                "token_estimator_version": "n/a",
+                "parser_provenance": {},
+                "files": [],
+                "edges": [],
+                "diagnostics": [],
+                "estimated_tokens": 0,
+            }
+        )
+        fake = subprocess.CompletedProcess(
+            args=["repo_map"], returncode=0, stdout=payload, stderr=""
+        )
+        with _patch_repo_map_call(fake):
+            with self.assertRaises(ContextPackageError) as raised:
+                build_context_package(
+                    self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+                )
+        self.assertIn("schema_version", raised.exception.message)
+        self.assertTrue(raised.exception.remedy)
+
+    def test_a_nonzero_exit_parses_the_error_remedy_stderr_contract(self) -> None:
+        fake = subprocess.CompletedProcess(
+            args=["repo_map"],
+            returncode=2,
+            stdout="",
+            stderr="ERROR: something went wrong\nREMEDY: do the specific fix\n",
+        )
+        with _patch_repo_map_call(fake):
+            with self.assertRaises(ContextPackageError) as raised:
+                build_context_package(
+                    self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+                )
+        self.assertIn("something went wrong", raised.exception.message)
+        self.assertIn("do the specific fix", raised.exception.remedy)
+
+    def test_a_nonzero_exit_with_unrecognised_stderr_still_raises_with_a_remedy(
+        self,
+    ) -> None:
+        fake = subprocess.CompletedProcess(
+            args=["repo_map"], returncode=1, stdout="", stderr="totally unexpected crash\n"
+        )
+        with _patch_repo_map_call(fake):
+            with self.assertRaises(ContextPackageError) as raised:
+                build_context_package(
+                    self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+                )
+        self.assertIn("totally unexpected crash", raised.exception.message)
+        self.assertTrue(raised.exception.remedy)
 
 
 if __name__ == "__main__":
