@@ -190,6 +190,62 @@ def test_repo_map_without_bundle_is_minimal_path_inventory(
     assert in_process["tier"] == "minimal"
 
 
+def test_missing_bundle_keeps_python_typescript_and_javascript_path_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "project"
+    commit = _commit_files(repo, {
+        "example.py": "def python_symbol(): pass\n",
+        "example.ts": "export function tsSymbol() {}\n",
+        "example.js": "export function jsSymbol() {}\n",
+    })
+    monkeypatch.setattr(parser_bundle, "acquire_bundle", lambda **_: "offline parser bundle unavailable")
+    result = json.loads(repo_map.build_map(
+        repo, commit, 4000, [], repo_map.RepoMapPolicy(tier="full"), cache_dir=tmp_path / "cache"
+    ))
+    assert result["tier"] == "minimal"
+    assert result["parser"] == "path-only"
+    assert result["edges"] == []
+    assert all(set(item) == {"path"} for item in result["files"])
+
+
+def test_full_cache_rebuilds_after_bundle_becomes_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "project"
+    commit = _commit_files(repo, {"entry.py": "def entry(): pass\n"})
+    cache_dir = tmp_path / "cache"
+    policy = repo_map.RepoMapPolicy(tier="full")
+    monkeypatch.setattr(parser_bundle, "acquire_bundle", lambda **_: "offline parser bundle unavailable")
+    first = json.loads(repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir))
+    assert first["tier"] == "minimal"
+    assert list(cache_dir.glob("*.json")) == []
+    calls = _fake_python_bundle(monkeypatch, {"entry.py": _facts(signatures=[("def entry()", ["entry"])])})
+    second = json.loads(repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir))
+    assert second["tier"] == "full"
+    assert second["files"][0]["signatures"] == ["def entry()"]
+    assert len(calls) == 1
+
+
+def test_full_cache_identity_changes_when_bundle_bytes_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "project"
+    commit = _commit_files(repo, {"entry.py": "def entry(): pass\n"})
+    python_tag, platform_tag = parser_bundle.python_platform_tags(sys.executable, 30)
+    bundle = build_bundle_dir(tmp_path / "bundle", pair=f"{python_tag}-{platform_tag}")
+    policy = repo_map.RepoMapPolicy(tier="full", parser_bundle_registry_paths=(str(bundle),))
+    cache_dir = tmp_path / "cache"
+    calls = _fake_python_bundle(monkeypatch, {"entry.py": _facts()})
+    first = repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir)
+    assert repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir) == first
+    assert len(calls) == 1
+    worker = bundle / "worker.py"
+    worker.write_text(worker.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
+    assert repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir) == first
+    assert len(calls) == 2
+
+
 def test_repo_map_cache_reuses_byte_identical_result_and_keys_every_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

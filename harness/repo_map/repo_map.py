@@ -12,6 +12,7 @@ import os
 import posixpath
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from collections import deque
 from dataclasses import asdict, dataclass
@@ -596,6 +597,7 @@ def _graph_from_facts(
 
 
 def _cache_key(
+    repo: Path,
     pinned: str,
     seeds: list[str],
     max_tokens: int,
@@ -613,11 +615,40 @@ def _cache_key(
         "max_tokens": max_tokens,
         "policy": asdict(policy),
         "parser_identity": parser_identity,
+        "bundle_identity": _bundle_cache_identity(repo, policy) if policy.tier == "full" else None,
         "token_estimator_version": TOKEN_ESTIMATOR_VERSION,
     }
     return hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _bundle_cache_identity(repo: Path, policy: RepoMapPolicy) -> str:
+    """Bind full results to the selected lock and bytes needed by this interpreter."""
+    bundle_dir = parser_bundle.find_bundle(
+        parser_bundle.search_dirs(repo, policy.parser_bundle_registry_paths)
+    )
+    if bundle_dir is None:
+        return "unavailable"
+    digest = hashlib.sha256(str(bundle_dir.resolve()).encode("utf-8"))
+    try:
+        raw = (bundle_dir / parser_bundle.LOCK_FILENAME).read_bytes()
+        digest.update(raw)
+        lock = parser_bundle.parse_lock(raw)
+        pair = (
+            f"cp{sys.version_info.major}{sys.version_info.minor}-"
+            f"{sysconfig.get_platform().replace('-', '_').replace('.', '_')}"
+        )
+        paths = [bundle_dir / lock.worker_script]
+        paths.extend(
+            bundle_dir / "wheelhouse" / pair / item.filename
+            for item in lock.wheelhouses.get(pair, ())
+        )
+        for path in paths:
+            digest.update(path.read_bytes())
+    except (OSError, parser_bundle.BundleFormatError):
+        digest.update(b"invalid-or-incomplete")
+    return digest.hexdigest()
 
 
 def _read_cache(cache_dir: Path, key: str) -> str | None:
@@ -828,14 +859,22 @@ def build_map(
         )
     normalized_seeds = sorted(set(seeds) & set(paths))
     root = cache_dir if cache_dir is not None else storage_path(repo, ".cache", "repo_map", "results")
-    key = _cache_key(pinned, normalized_seeds, max_tokens, effective_policy)
+    key = _cache_key(repo, pinned, normalized_seeds, max_tokens, effective_policy)
     cached = _read_cache(root, key)
     if cached is not None:
-        return cached
+        try:
+            cached_payload = json.loads(cached)
+        except json.JSONDecodeError:
+            cached_payload = None
+        if isinstance(cached_payload, dict) and (
+            effective_policy.tier == "minimal" or cached_payload.get("tier") == "full"
+        ):
+            return cached
     result = _build_map(
         repo, pinned, paths, max_tokens, normalized_seeds, effective_policy
     )
-    _write_cache(root, key, result)
+    if effective_policy.tier == "minimal" or json.loads(result)["tier"] == "full":
+        _write_cache(root, key, result)
     return result
 
 
