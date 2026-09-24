@@ -22,6 +22,7 @@ help: ## Показать список команд с описанием
 
 # Окружение харнесса ставит только uv (без pip): группа `dev` из pyproject.toml строго по uv.lock.
 export UV_PROJECT_ENVIRONMENT := $(HARNESS_VENV)
+export PYTHONPATH := .
 
 $(HARNESS_ENV_STAMP): pyproject.toml uv.lock
 	uv sync --locked --python $(PYTHON_BOOTSTRAP)
@@ -40,19 +41,19 @@ verify: $(HARNESS_ENV_STAMP) ## Запустить полный набор пр�
 	$(HARNESS_PYTHON) scripts/verify.py
 
 test: $(HARNESS_ENV_STAMP) ## Запустить только unit-тесты (pytest)
-	set PYTHONPATH=. && $(HARNESS_PYTHON) -m pytest -n 4 tests
+	$(HARNESS_PYTHON) -m pytest -n 4 tests
 
 coverage: $(HARNESS_ENV_STAMP) ## Запустить тесты с проверкой покрытия (pytest-cov)
-	set PYTHONPATH=. && $(HARNESS_PYTHON) -m pytest --cov=harness --cov-report=term --cov-report=html tests
+	$(HARNESS_PYTHON) -m pytest --cov=harness --cov-report=term --cov-report=html tests
 
 typecheck: $(HARNESS_ENV_STAMP) ## Запустить mypy (проверка типов)
 	$(HARNESS_PYTHON) -m mypy
 
 registry: $(HARNESS_ENV_STAMP) ## Пересобрать skills/REGISTRY.md (после изменения/добавления скиллов)
-	$(HARNESS_PYTHON) scripts/build-registry.py
+	$(HARNESS_PYTHON) scripts/build_registry.py
 
 test-clean-room: $(HARNESS_ENV_STAMP) ## Запустить clean-room тесты
-	$(HARNESS_PYTHON) scripts/test-clean-room.py
+	$(HARNESS_PYTHON) scripts/test_clean_room.py
 
 clean: $(HARNESS_ENV_STAMP) ## Удалить временные файлы, стейт оркестратора, кэши и .pyc
 	$(HARNESS_PYTHON) -c "import shutil, os, glob; [shutil.rmtree(p, ignore_errors=True) for p in ['.mypy_cache', '.pytest_cache', '.harness/orchestration/state', '.harness/scratch', '.claude/worktrees', 'htmlcov'] if os.path.exists(p)]; [os.remove(f) for f in glob.glob('**/*.pyc', recursive=True)]"
