@@ -989,6 +989,13 @@ PVMALOVE_CAPABILITY = "pvmalove-suite"
 BACKEND_ORCHESTRATION_CAPABILITY = "backend-orchestration"
 PROJECT_TEMPLATE_DIR = PACKAGE / "project"
 DOCS_TASKS_GITIGNORE_LINE = "/docs/tasks/"
+HARNESS_RUNTIME_GITIGNORE = """# Generated harness runtime data
+.cache/
+tmp/
+reports/
+test-logs/
+worktrees/
+"""
 
 
 def _prompt(label: str, default: str) -> str:
@@ -1058,6 +1065,12 @@ def scaffold_pvmalove_extras(
     )
     if scratch_gitignore_result:
         written.append(scratch_gitignore_result)
+
+    harness_gitignore = repo / ".harness/.gitignore"
+    if not harness_gitignore.exists() or force_seed:
+        harness_gitignore.parent.mkdir(parents=True, exist_ok=True)
+        harness_gitignore.write_text(HARNESS_RUNTIME_GITIGNORE, encoding="utf-8", newline="\n")
+        written.append(str(harness_gitignore))
 
     root_gitignore = repo / ".gitignore"
     root_gitignore_text = root_gitignore.read_text(encoding="utf-8") if root_gitignore.exists() else ""

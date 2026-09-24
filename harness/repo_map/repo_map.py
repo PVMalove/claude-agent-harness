@@ -39,6 +39,7 @@ if _HARNESS_ROOT.name != "harness":
 
 from harness.errors import HarnessError, PolicyError, print_and_exit
 from harness.repo_map import parser_bundle
+from harness.storage import storage_path
 from harness.token_estimator import TOKEN_ESTIMATOR_VERSION, estimate_tokens
 
 DEFAULT_MAX_TOKENS = 4000
@@ -50,7 +51,6 @@ DEFAULT_MAX_SIGNATURE_LENGTH = 2_048
 DEFAULT_TIMEOUT_SECONDS = 10
 DEFAULT_PARSER_BUNDLE_TIMEOUT_SECONDS = 30
 DEFAULT_PARSER_BUNDLE_MAX_OUTPUT_BYTES = 10_000_000
-DEFAULT_CACHE_DIR = Path(tempfile.gettempdir()) / "agent-harness" / "repo-map"
 # Names defined in this many files are too common to provide useful references.
 DEFINITION_FILE_FANOUT_THRESHOLD = 5
 EXCLUDED_DIRS = frozenset(
@@ -795,7 +795,7 @@ def build_map(
             remedy="narrow repo_map_policy.allow_paths or raise repo_map_policy.max_files deliberately",
         )
     normalized_seeds = sorted(set(seeds) & set(paths))
-    root = cache_dir if cache_dir is not None else DEFAULT_CACHE_DIR
+    root = cache_dir if cache_dir is not None else storage_path(repo, ".cache", "repo_map", "results")
     key = _cache_key(pinned, normalized_seeds, max_tokens, effective_policy)
     cached = _read_cache(root, key)
     if cached is not None:

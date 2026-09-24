@@ -66,6 +66,7 @@
       "reporting",
       "gate_runner",
       "repo_map",
+      "storage.py",
       "token_estimator.py",
       "errors.py",
       "__init__.py"
