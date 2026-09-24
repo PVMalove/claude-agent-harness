@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -61,25 +62,43 @@ class CleanupTests(unittest.TestCase):
         self.assertTrue(ledger.exists())
 
     def test_soft_removes_a_run_whose_windows_pid_no_longer_exists(self) -> None:
-        class MissingWindowsProcess(OSError):
-            winerror = 87
-
         stale = self.repo / ".harness" / "tmp" / "tests" / "stale"
         stale.mkdir(parents=True)
         (stale / ".active.json").write_text(
             json.dumps({"pid": 987654321}), encoding="utf-8"
         )
-
-        with mock.patch(
-            "harness.cleanup.os.kill",
-            side_effect=MissingWindowsProcess(22, "invalid parameter"),
-        ):
-            plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
-            self.assertIn(str(stale), {item["path"] for item in plan["remove"]})
-            result = apply_cleanup(self.repo, plan)
-
+        plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
+        self.assertIn(str(stale), {item["path"] for item in plan["remove"]})
+        result = apply_cleanup(self.repo, plan)
         self.assertFalse(result["failed"])
         self.assertFalse(stale.exists())
+
+    def test_soft_does_not_terminate_a_live_run_while_checking_its_pid(self) -> None:
+        active = self.repo / ".harness" / "tmp" / "tests" / "active-child"
+        active.mkdir(parents=True)
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            (active / ".active.json").write_text(
+                json.dumps({"pid": process.pid}), encoding="utf-8"
+            )
+            if os.name == "nt":
+                with mock.patch(
+                    "harness.cleanup.os.kill",
+                    side_effect=AssertionError("Windows PID probe must not call os.kill"),
+                ):
+                    plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
+            else:
+                plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
+            self.assertNotIn(str(active), {item["path"] for item in plan["remove"]})
+            self.assertIsNone(process.poll())
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=10)
 
     def test_hard_keeps_active_and_dirty_worktree_then_removes_local_branch_only(self) -> None:
         remote = self.base / "origin.git"
