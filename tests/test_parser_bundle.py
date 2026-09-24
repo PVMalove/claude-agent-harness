@@ -63,6 +63,28 @@ def test_parser_bundle_module_never_imports_tree_sitter() -> None:
     assert not any(module.startswith("tree_sitter") for module in imported_modules)
 
 
+def test_tree_sitter_imports_are_confined_to_worker_process() -> None:
+    for path in (
+        ROOT / "harness" / "repo_map" / "parser_bundle.py",
+        ROOT / "harness" / "repo_map" / "repo_map.py",
+        ROOT / "harness" / "context_builder" / "context_builder.py",
+    ):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imports = [
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        ] + [
+            node.module or ""
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+        ]
+        assert not any(module.startswith("tree_sitter") for module in imports), path
+    worker = (ROOT / "harness" / "repo_map" / "tree_sitter_worker.py").read_text(encoding="utf-8")
+    assert "import tree_sitter" in worker
+
+
 def test_parse_lock_accepts_well_formed_json(tmp_path: Path) -> None:
     lock_path = build_bundle_dir(tmp_path / "bundle", pair="cp312-any") / "parser_bundle.lock.json"
     lock = parser_bundle.parse_lock(lock_path.read_bytes())

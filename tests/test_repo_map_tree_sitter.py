@@ -318,3 +318,23 @@ def test_typescript_redaction_filters_signatures_and_imports(tmp_path: Path, bun
     assert _file(result, "main.ts")["signatures"] == ["function visible(input: number)"]
     assert result["edges"] == []
     assert b"hiddenType" not in raw
+
+
+def test_ts_js_output_is_byte_identical_across_cold_runs(tmp_path: Path, bundle_dir: Path) -> None:
+    files = {
+        "src/base.ts": "export function shared(value: number): number { return value }\n",
+        "src/index.tsx": (
+            'import { shared } from "./base";\n'
+            'export function App(props: Props) { return <div>{shared(props.value)}</div> }\n'
+        ),
+        "src/view.jsx": "export function View(props) { return <div>{props.label}</div> }\n",
+    }
+    _, result = _map(tmp_path, bundle_dir, files)
+    repo = tmp_path / "project"
+    policy = repo_map.load_policy(tmp_path / "orchestration.json", explicit=True)
+    commit = result["commit"]
+    assert isinstance(commit, str)
+    first = repo_map.build_map(repo, commit, 8000, ["src/index.tsx"], policy, cache_dir=tmp_path / "cold-a")
+    second = repo_map.build_map(repo, commit, 8000, ["src/index.tsx"], policy, cache_dir=tmp_path / "cold-b")
+    assert first.encode("utf-8") == second.encode("utf-8")
+    assert json.loads(first)["tier"] == "full"
