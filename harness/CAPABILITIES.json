@@ -65,6 +65,8 @@
     "resources": [
       "reporting",
       "gate_runner",
+      "cleanup.py",
+      "storage.py",
       "errors.py",
       "__init__.py"
     ]

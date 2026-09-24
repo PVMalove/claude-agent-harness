@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Protocol
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+from ..storage import storage_path
 
 SENSITIVE_OUTPUT = (
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"), "<REDACTED_GITHUB_TOKEN>"),
@@ -58,7 +59,11 @@ class CleanRoomPolicy:
 
     @contextmanager
     def checkout(self) -> Iterator[Path]:
-        worktree_root = Path(tempfile.mkdtemp(prefix="agent-harness-qa-"))
+        temporary_parent = storage_path(self.repository, "tmp", "qa")
+        temporary_parent.mkdir(parents=True, exist_ok=True)
+        worktree_root = Path(
+            tempfile.mkdtemp(prefix="agent-harness-qa-", dir=temporary_parent)
+        )
         checkout = worktree_root / "checkout"
         try:
             created = subprocess.run(

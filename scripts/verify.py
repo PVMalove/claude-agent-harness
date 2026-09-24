@@ -24,6 +24,10 @@ if sys.version_info < MIN_PYTHON:
     sys.exit(1)
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from harness.storage import storage_path
 
 
 def run_ok(
@@ -361,7 +365,10 @@ def main() -> None:
 
     # mkdtemp keeps the root short (the clean-room tree is deep, see its _check_path_budget) and
     # owned by this run.
-    run_tmp = Path(tempfile.mkdtemp(prefix="ah"))
+    tests_root = storage_path(ROOT, "tmp", "tests")
+    tests_root.mkdir(parents=True, exist_ok=True)
+    run_tmp = Path(tempfile.mkdtemp(prefix="v", dir=tests_root))
+    (run_tmp / ".active.json").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
     try:
         test_env = isolated_temp_env(dict(os.environ, PYTHONPATH=str(ROOT)), run_tmp)
         run_ok(
@@ -369,7 +376,8 @@ def main() -> None:
             env=test_env,
         )
         run_ok(
-            [sys.executable, str(ROOT / "scripts" / "test_clean_room.py")], env=test_env
+            [sys.executable, str(ROOT / "scripts" / "test_clean_room.py")],
+            env=dict(test_env, HARNESS_TEST_RUN_ROOT=str(run_tmp)),
         )
     finally:
         remove_tree(run_tmp)
