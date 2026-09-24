@@ -82,6 +82,7 @@ class GrammarSpec:
     abi: int
     sha256: str
     extensions: tuple[str, ...]
+    sha256_by_pair: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -206,6 +207,16 @@ def parse_lock(raw: bytes) -> BundleLock:
             raise BundleFormatError(
                 "parser_bundle.lock.json: grammars[].extensions must be a list of non-empty strings"
             )
+        pair_hashes_raw = item.get("sha256_by_pair")
+        pair_hashes: dict[str, str] | None = None
+        if pair_hashes_raw is not None:
+            if not isinstance(pair_hashes_raw, dict):
+                raise BundleFormatError("parser_bundle.lock.json: grammars[].sha256_by_pair must be an object")
+            pair_hashes = {}
+            for pair, digest in pair_hashes_raw.items():
+                if not isinstance(pair, str) or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                    raise BundleFormatError("parser_bundle.lock.json: invalid per-pair grammar hash")
+                pair_hashes[pair] = digest
         grammars.append(
             GrammarSpec(
                 name=_string_field(item, "name"),
@@ -213,6 +224,7 @@ def parse_lock(raw: bytes) -> BundleLock:
                 abi=_int_field(item, "abi"),
                 sha256=_sha256_field(item, "sha256", "grammars[].sha256"),
                 extensions=tuple(extensions_raw),
+                sha256_by_pair=pair_hashes,
             )
         )
     wheelhouses_raw = decoded.get("wheelhouses")
@@ -223,6 +235,13 @@ def parse_lock(raw: bytes) -> BundleLock:
         if not isinstance(pair, str):
             raise BundleFormatError("parser_bundle.lock.json: wheelhouses keys must be strings")
         wheelhouses[pair] = _artifact_specs(artifacts_raw, f"wheelhouses[{pair!r}]")
+    for grammar in grammars:
+        if grammar.sha256_by_pair is not None:
+            if set(grammar.sha256_by_pair) != set(wheelhouses) or any(
+                grammar.sha256_by_pair[pair] not in {artifact.sha256 for artifact in artifacts}
+                for pair, artifacts in wheelhouses.items()
+            ):
+                raise BundleFormatError("parser_bundle.lock.json: per-pair grammar hash is not in wheelhouse")
     return BundleLock(
         core_version=_string_field(decoded, "core_version"),
         core_abi_range=_string_field(decoded, "core_abi_range"),
@@ -637,7 +656,11 @@ def build_provenance(
                 "name": grammar.name,
                 "version": grammar.version,
                 "abi": grammar.abi,
-                "sha256": grammar.sha256,
+                "sha256": (
+                    grammar.sha256_by_pair[f"{python_tag}-{platform_tag}"]
+                    if grammar.sha256_by_pair is not None and python_tag is not None and platform_tag is not None
+                    else grammar.sha256
+                ),
             }
             for grammar in lock.grammars
         ]
