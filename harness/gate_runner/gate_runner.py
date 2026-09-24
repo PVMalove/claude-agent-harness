@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Protocol
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+from ..storage import storage_path
 
 SENSITIVE_OUTPUT: tuple[
     tuple[re.Pattern[str], str],
@@ -64,8 +65,12 @@ class CleanRoomPolicy:
 
     @contextmanager
     def checkout(self) -> Iterator[Path]:
-        worktree_root = Path(tempfile.mkdtemp(prefix="agent-harness-qa-"))
-        checkout: Path = worktree_root / "checkout"
+        temporary_parent = storage_path(self.repository, "tmp", "qa")
+        temporary_parent.mkdir(parents=True, exist_ok=True)
+        worktree_root = Path(
+            tempfile.mkdtemp(prefix="agent-harness-qa-", dir=temporary_parent)
+        )
+        checkout = worktree_root / "checkout"
         try:
             created: subprocess.CompletedProcess[str] = subprocess.run(
                 [

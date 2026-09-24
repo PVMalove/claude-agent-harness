@@ -22,6 +22,10 @@ if sys.version_info < MIN_PYTHON:
     sys.exit(1)
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from harness.storage import storage_path
+
 LOCK_FILE = ROOT / "third_party" / "mattpocock-skills" / "UPSTREAM.lock"
 PLUGIN_FILE = ROOT / "third_party" / "mattpocock-skills" / "plugin.json"
 VENDOR_ROOT = ROOT / "skills" / "vendor" / "mattpocock"
@@ -109,7 +113,9 @@ def main() -> int:
         f"upstream has moved: pinned {pinned_ref} ({pinned_revision}) -> latest {latest_tag} ({latest_sha})"
     )
 
-    with tempfile.TemporaryDirectory(prefix="upstream-drift-") as tmp:
+    drift_root = storage_path(ROOT, "tmp", "drift")
+    drift_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="d", dir=drift_root) as tmp:
         clone_dir = Path(tmp) / "upstream"
         result = subprocess.run(
             [

@@ -26,6 +26,10 @@ if sys.version_info < MIN_PYTHON:
     sys.exit(1)
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from harness.storage import storage_path
 
 
 def run_ok(
@@ -363,7 +367,10 @@ def check_no_dispatch_specific_data_in_always_sent_files() -> None:
 def main() -> None:
     # Create the short, owner-specific root before *any* Python subprocess.  py_compile and mypy
     # also write bytecode; leaving their cache beside source files fails in restricted worktrees.
-    run_tmp = Path(tempfile.mkdtemp(prefix="ah"))
+    tests_root = storage_path(ROOT, "tmp", "tests")
+    tests_root.mkdir(parents=True, exist_ok=True)
+    run_tmp = Path(tempfile.mkdtemp(prefix="v", dir=tests_root))
+    (run_tmp / ".active.json").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
     atexit.register(lambda: remove_tree(run_tmp) if run_tmp.exists() else None)
     test_env = isolated_temp_env(dict(os.environ, PYTHONPATH=str(ROOT)), run_tmp)
     run_ok(
@@ -426,16 +433,25 @@ def main() -> None:
     try:
         run_stage(
             "pytest",
-            [sys.executable, "-m", "pytest", "-n", "4", str(ROOT / "tests")],
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-n",
+                "4",
+                "--basetemp",
+                str(run_tmp / "p"),
+                str(ROOT / "tests"),
+            ],
             env=test_env,
         )
         run_stage(
             "clean-room",
-            [sys.executable, str(ROOT / "scripts" / "test_clean_room.py")], env=test_env
+            [sys.executable, str(ROOT / "scripts" / "test_clean_room.py")],
+            env=dict(test_env, HARNESS_TEST_RUN_ROOT=str(run_tmp)),
         )
     finally:
         remove_tree(run_tmp)
-
 
     print("agent-harness verification passed")
 

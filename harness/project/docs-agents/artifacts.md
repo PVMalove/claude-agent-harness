@@ -1,5 +1,21 @@
 ### Artifacts & Scratchpads Management
 
+## Local runtime storage
+
+Generated runtime data belongs under the main checkout's `.harness/`, shared by its linked
+worktrees. The layout is `tmp/tests/` for verification runs, `tmp/qa/` for QA checkouts,
+`tmp/drift/` for upstream checks, `.cache/` for rebuildable caches, `test-logs/` for test logs,
+`reports/` for generated reports, `worktrees/` for managed issue checkouts, and
+`scratch/` for one-shot publication drafts and role inboxes. `orchestration/state/` is the
+durable ledger and is never part of cleanup.
+
+Use `harness cleanup <repo> --mode soft` to preview removal of old completed temporary runs and
+rebuildable cache. Add `--apply` to execute it. `--mode hard` also previews archived reports,
+test logs, and old clean managed worktrees with their local branches. Execute hard cleanup with
+`--apply --confirm HARD`. Both modes default to a 24-hour minimum age for temporary data and
+worktrees; adjust with `--min-age-hours`. Active runs, ledger-referenced worktrees, dirty trees,
+and branches with commits absent from `origin` are preserved. Remote branches are never deleted.
+
 System-wide architecture and the boundary between source documents and local evidence are described
 in [current-state.md](./current-state.md). This guide defines only task artifacts and scratchpads.
 

@@ -632,14 +632,14 @@ production-кода требует полного review.
 
 Итог по закрытому эпику: сколько это стоило. Читает только локальные данные — транскрипты сессий
 Claude Code, сессии Codex, историю git и трекер, — пишет один автономный HTML-дашборд в
-`docs/reports/` и печатает короткую сводку. Наружу ничего не отправляет.
+`.harness/reports/delivery-stats/` и печатает короткую сводку. Наружу ничего не отправляет.
 
 ```bash
-python .harness/reporting/delivery_stats.py --repo . --epic 81 --html docs/reports/epic-81.html
+python .harness/reporting/delivery_stats.py --repo . --epic 81 --html .harness/reports/delivery-stats/epic-81.html
 ```
 
 Для сопоставимых завершённых эпиков можно сохранить versioned baseline через
-`--save-baseline docs/reports/epic-81.baseline.json`, а в следующем отчёте передать его с
+`--save-baseline .harness/reports/delivery-stats/epic-81.baseline.json`, а в следующем отчёте передать его с
 `--baseline <файл>`. Dashboard и JSON тогда показывают provider totals обеих сторон вместе с
 `exact`/`estimated` attribution; разница не вычисляется, если telemetry хотя бы одной стороны нет.
 
