@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import re
@@ -9,8 +10,9 @@ import shutil
 import stat
 import subprocess
 import time
-from pathlib import Path
 from collections.abc import Callable
+from ctypes import wintypes
+from pathlib import Path
 from typing import NotRequired, TypedDict
 
 from harness.storage import storage_root
@@ -66,6 +68,39 @@ def _old_enough(path: Path, hours: float) -> bool:
         return False
 
 
+def _pid_active(pid: int) -> bool:
+    if os.name == "nt":
+        if pid > 0xFFFFFFFF:
+            return False
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        open_process.restype = wintypes.HANDLE
+        get_exit_code = kernel32.GetExitCodeProcess
+        get_exit_code.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        get_exit_code.restype = wintypes.BOOL
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        handle = open_process(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER: no such PID
+        try:
+            exit_code = wintypes.DWORD()
+            if not get_exit_code(handle, ctypes.byref(exit_code)):
+                return True  # An inconclusive probe must preserve the run.
+            return exit_code.value == 259  # STILL_ACTIVE
+        finally:
+            close_handle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def _run_active(path: Path) -> bool:
     marker = path / ".active.json"
     if not marker.is_file():
@@ -74,11 +109,10 @@ def _run_active(path: Path) -> bool:
         pid = json.loads(marker.read_text(encoding="utf-8"))["pid"]
         if not isinstance(pid, int) or pid <= 0:
             return True
-        os.kill(pid, 0)
+        return _pid_active(pid)
+    except OSError:
         return True
-    except ProcessLookupError:
-        return False
-    except (OSError, ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError):
         return True
 
 
@@ -270,7 +304,9 @@ def apply_cleanup(repo: Path, plan: CleanupPlan) -> CleanupResult:
                 if result.returncode != 0:
                     raise OSError(result.stderr.strip() or "local branch removal failed")
             elif item["kind"] == "directory":
-                shutil.rmtree(path, onexc=_clear_read_only)
+                # Windows needs an extended-length path for nested test fixtures.
+                target = "\\\\?\\" + str(path) if os.name == "nt" else path
+                shutil.rmtree(target, onexc=_clear_read_only)
             else:
                 path.unlink()
             removed.append(str(path))

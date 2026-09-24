@@ -224,6 +224,21 @@ def test_repo_map_cache_reuses_byte_identical_result_and_keys_every_input(
     assert len(calls) == 4
 
 
+def test_default_result_cache_is_shared_by_linked_worktrees(tmp_path: Path) -> None:
+    repo = tmp_path / "project"
+    commit = _commit_files(repo, {"main.py": "def run() -> None: pass\n"})
+    linked = tmp_path / "linked"
+    _git(repo, "worktree", "add", "--detach", str(linked), commit)
+    policy = repo_map.RepoMapPolicy(tier="minimal")
+
+    first = repo_map.build_map(repo, commit, 4000, [], policy)
+    cache = repo / ".harness" / ".cache" / "repo_map" / "results"
+    assert len(list(cache.glob("*.json"))) == 1
+    assert repo_map.build_map(linked, commit, 4000, [], policy) == first
+    assert len(list(cache.glob("*.json"))) == 1
+    assert not (linked / ".harness").exists()
+
+
 def test_repo_map_cache_discards_tampered_entry_and_never_touches_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -621,7 +636,7 @@ def test_repo_map_budget_prefers_cli_then_policy_then_default(tmp_path: Path) ->
     assert cli_result["estimated_tokens"] <= 450
 
     invalid = subprocess.run(
-        command + ["--max-tokens", "0"], capture_output=True, text=True
+        command + ["--max-tokens", "0"], capture_output=True, text=True, check=False
     )
     assert invalid.returncode != 0
     assert "REMEDY:" in invalid.stderr

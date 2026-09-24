@@ -1703,7 +1703,6 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self._base_report(
                 brief,
                 "architect",
-                risks="Known alias limitation",
                 blockers="none",
             ),
         )
@@ -1721,6 +1720,39 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(len(stored["dispatches"]), 2)
         self.assertEqual(stored["dispatches"][-1]["role"], "developer")
         self.assertEqual(stored["dispatches"][-1]["state"], "approved")
+
+    def test_low_risk_report_disclosing_risk_waits_for_decision(self) -> None:
+        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+
+        result = self._submit(
+            brief["dispatch_id"],
+            self._base_report(brief, "architect", risks="Known alias limitation"),
+        )
+
+        self.assertNotIn("auto_accepted", result)
+        stored = self._batch_record(batch["batch_id"])
+        self.assertEqual(stored["state"], "awaiting-approval")
+        self.assertEqual(len(stored["dispatches"]), 1)
+        self.assertNotIn("decision", stored["dispatches"][0])
+
+    def test_milestone_report_disclosing_risk_waits_for_decision(self) -> None:
+        self._patch_config(approval_policy="milestone")
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+
+        result = self._submit(
+            brief["dispatch_id"],
+            self._base_report(brief, "architect", risks="Known alias limitation"),
+        )
+
+        self.assertNotIn("auto_accepted", result)
+        stored = self._batch_record(batch["batch_id"])
+        self.assertEqual(stored["state"], "awaiting-approval")
+        self.assertNotIn("decision", stored["dispatches"][0])
 
     def test_manual_all_clean_report_waits_for_a_decision(self) -> None:
         batch = self._create_batch()

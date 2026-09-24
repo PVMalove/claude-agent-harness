@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict, cast
 
+from harness.storage import storage_path
+
 LOCK_FILENAME = "parser_bundle.lock.json"
 INSTALL_MARKER_FILENAME = ".install-complete"
 
@@ -234,7 +236,7 @@ def parse_lock(raw: bytes) -> BundleLock:
 
 def default_registry_dir(repo: Path) -> Path:
     """The portable, project-local bundle registry: never committed (`.harness/` is gitignored)."""
-    return repo / ".harness" / ".cache" / "repo_map" / "parser_bundle" / "registry"
+    return storage_path(repo, ".cache", "repo_map", "parser_bundle", "registry")
 
 
 def search_dirs(repo: Path, registry_paths: tuple[str, ...]) -> tuple[Path, ...]:
@@ -679,13 +681,9 @@ def acquire_bundle(
     worker_script = bundle_dir / lock.worker_script
     if not verify_worker_script(lock, worker_script):
         return "parser bundle hash mismatch"
-    cache_root = (
-        repo
-        / ".harness"
-        / ".cache"
-        / "repo_map"
-        / "parser_bundle"
-        / f"{lock.raw_sha256[:16]}-{python_tag}-{platform_tag}"
+    cache_root = storage_path(
+        repo, ".cache", "repo_map", "parser_bundle",
+        f"{lock.raw_sha256[:16]}-{python_tag}-{platform_tag}",
     )
     install_dir = cache_root / "install"
     try:

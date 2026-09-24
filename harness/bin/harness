@@ -73,6 +73,12 @@ def file_digest(path: Path) -> str | None:
         return None
 
 
+def git_command(repo: Path, *arguments: str) -> list[str]:
+    """Trust only the checkout explicitly supplied to this packager operation."""
+    checkout = repo.resolve()
+    return ["git", "-c", f"safe.directory={checkout}", "-C", str(checkout), *arguments]
+
+
 def relative_path(value: object, *, label: str) -> Path:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{label} must be a non-empty relative path")
@@ -174,10 +180,8 @@ def project_skill_files(repo: Path, directory: Path) -> list[Path]:
     except ValueError:
         fail(f"project skill path escapes repository: {directory}")
     result = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo),
+        git_command(
+            repo,
             "ls-files",
             "--cached",
             "--others",
@@ -185,7 +189,7 @@ def project_skill_files(repo: Path, directory: Path) -> list[Path]:
             "-z",
             "--",
             relative.as_posix(),
-        ],
+        ),
         capture_output=True,
         timeout=30,
     )
@@ -211,9 +215,11 @@ def version() -> str:
 
 def source_revision() -> str:
     result = subprocess.run(
-        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+        git_command(ROOT, "rev-parse", "HEAD"),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=10,
     )
     return result.stdout.strip() if result.returncode == 0 else "uncommitted"
@@ -392,9 +398,11 @@ def load_lock(repo: Path) -> dict | None:
 
 def ensure_git_repo(repo: Path) -> None:
     result = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+        git_command(repo, "rev-parse", "--show-toplevel"),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=10,
     )
     if result.returncode != 0:
@@ -1000,6 +1008,15 @@ RUNTIME_GITIGNORE_LINES = (
 )
 
 
+def missing_runtime_gitignore_lines(content: str) -> list[str]:
+    existing = set(content.splitlines())
+    harness_ignored = ".harness/" in existing or "/.harness/" in existing
+    return [
+        line for line in RUNTIME_GITIGNORE_LINES
+        if line not in existing and not (harness_ignored and line.startswith("/.harness/"))
+    ]
+
+
 def _prompt(label: str, default: str) -> str:
     if not sys.stdin.isatty():
         return default
@@ -1070,7 +1087,7 @@ def scaffold_pvmalove_extras(
 
     root_gitignore = repo / ".gitignore"
     root_gitignore_text = root_gitignore.read_text(encoding="utf-8") if root_gitignore.exists() else ""
-    missing_ignore_lines = [line for line in RUNTIME_GITIGNORE_LINES if line not in root_gitignore_text.splitlines()]
+    missing_ignore_lines = missing_runtime_gitignore_lines(root_gitignore_text)
     if missing_ignore_lines:
         if root_gitignore_text and not root_gitignore_text.endswith("\n"):
             root_gitignore_text += "\n"
