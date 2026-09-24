@@ -367,7 +367,8 @@ Runtime-neutral режим не имеет команды «запустить �
 report оставляет dispatch в `reported` до решения человека. При `low_risk` чистый завершённый
 report в разрешённой зоне принимается автоматически с записью решения в ledger. Blockers, failed
 checks, risk triggers и findings любой оси review сохраняют ручной gate; publish тоже требует
-отдельного approval.
+отдельного approval. При `milestone` чистый отчёт обычной роли также принимается автоматически,
+но QA, publish и рискованные переходы остаются ручными вехами.
 
 1. Создать planned batch и затем отдельно утвердить его:
 
@@ -432,7 +433,9 @@ checks, risk triggers и findings любой оси review сохраняют р
    report человек принимает report, override-ит warning либо требует retry. При `low_risk` и чистом
    report coordinator сам записывает `accept` с rationale
    `Auto-accepted due to low_risk policy and clean report`, вычисляет `next_action` и готовит
-   следующий допустимый dispatch. Ручное решение выглядит так:
+   следующий допустимый dispatch. При `milestone` чистый отчёт вне вехи также получает `accept`;
+   после developer оценивается риск, а QA-dispatch ждёт отдельного approval. Чистый QA-report при
+   `milestone` ждёт решения человека. Ручное решение выглядит так:
 
    ```bash
    python .harness/orchestration/coordinator.py --repo . batch decide \

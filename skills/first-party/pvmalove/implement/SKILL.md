@@ -61,9 +61,11 @@ because they are staged together.
 Follow the configured approval policy. Under `manual_all`, every transition needs explicit approval:
 show the decision packet, ask, and wait. Under `low_risk`, a clean completed report in an eligible
 zone is accepted by the coordinator with an audited policy decision, and the next eligible dispatch
-may already be approved. Continue from the recorded `next_action` without asking the operator to
-repeat that decision. Blockers, failed checks, risk triggers, review findings and publish still
-require the applicable manual decision. Never write `--approved-by` on the operator's behalf or
+may already be approved. Under `milestone`, clean reports outside QA, publish and risk milestones
+are also accepted automatically; stop for the remaining milestone decisions. Continue from the
+recorded `next_action` without asking the operator to repeat a policy decision. Blockers, failed
+checks, risk triggers, review findings and publish still require the applicable manual decision.
+Never write `--approved-by` on the operator's behalf or
 narrate a decision they did not make. `human_approval_gate: tty` requires confirmation on the
 operator's terminal for transitions that still require human approval.
 

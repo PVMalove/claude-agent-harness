@@ -39,8 +39,7 @@ def run_qa(args: argparse.Namespace) -> JsonObject:
         _state_root,
     )
     from harness.orchestration.workflow.decisions import (
-        AUTO_ACCEPT_RATIONALE,
-        _clean_low_risk_report,
+        _auto_accept_policy,
         decide_batch,
     )
 
@@ -49,7 +48,7 @@ def run_qa(args: argparse.Namespace) -> JsonObject:
     dispatch = _load_dispatch(root, args.dispatch)
     batch = _load_batch(root, dispatch["batch_id"])
     report = _read_object(Path(result["report"]), "QA completion report")
-    if not _clean_low_risk_report(core_config._config(repo), batch, dispatch, report):
+    if _auto_accept_policy(core_config._config(repo), batch, dispatch, report) != "low_risk":
         return result
     decided = decide_batch(
         argparse.Namespace(
@@ -59,7 +58,7 @@ def run_qa(args: argparse.Namespace) -> JsonObject:
             decision="accept",
             approved_by=None,
             approved_at=None,
-            note=AUTO_ACCEPT_RATIONALE,
+            note=None,
             reason=None,
             reason_category=None,
             retry_role=None,

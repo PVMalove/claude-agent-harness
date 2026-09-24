@@ -1581,6 +1581,97 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._submit(brief["dispatch_id"], self._base_report(brief, "architect"))
         self._decide(batch_id, "accept")
 
+    def test_milestone_clean_architect_report_prepares_developer(self) -> None:
+        self._patch_config(approval_policy="milestone")
+        batch = self._create_batch()
+        architect = coordinator.create_dispatch(
+            self._args(
+                transition_digest=None,
+                **self._proposal_fields(batch["batch_id"], "architect", "work", None),
+            )
+        )["brief"]
+        self._start(architect["dispatch_id"])
+
+        result = self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+
+        stored = self._batch_record(batch["batch_id"])
+        self.assertTrue(result["auto_accepted"])
+        self.assertEqual(stored["dispatches"][0]["decision"]["approved_by"], "policy:milestone")
+        self.assertEqual(stored["next_action"], "developer")
+        self.assertEqual(stored["dispatches"][-1]["role"], "developer")
+        self.assertEqual(stored["dispatches"][-1]["state"], "approved")
+
+    def test_milestone_developer_advances_to_qa_gate_and_qa_report_waits(self) -> None:
+        self._patch_config(approval_policy="milestone")
+        plan = self._batch_plan()
+        plan["definition_of_done"] = ["add simple marker"]
+        _git(self.repo, "worktree", "add", "-b", self.branch, str(self.worktree), "master")
+        batch = coordinator.create_batch(self._args(**plan))
+        coordinator.approve_batch(self._args(batch=batch["batch_id"], **self._approval()))
+        self.batch_id = batch["batch_id"]
+        architect = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(architect["dispatch_id"])
+        self._submit(architect["dispatch_id"], self._base_report(architect, "architect"))
+        developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1]["dispatch_id"]
+        developer = coordinator._read_object(
+            self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
+        )
+        self._start(developer_id)
+        candidate, changed = self._developer_commit("x")
+
+        result = self._submit(
+            developer_id, self._developer_report(developer, candidate, changed)
+        )
+
+        stored = self._batch_record(batch["batch_id"])
+        self.assertTrue(result["auto_accepted"])
+        self.assertEqual(stored["next_action"], "qa")
+        self.assertEqual(len(stored["dispatches"]), 2)
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "requires --approved-by"):
+            coordinator.create_dispatch(
+                self._args(
+                    transition_digest=None,
+                    **self._proposal_fields(batch["batch_id"], "qa", "work", candidate),
+                )
+            )
+        qa = self._reported_qa(batch["batch_id"], candidate)
+        report_path = self._records() / "reports" / f"{qa['dispatch_id']}.json"
+        with mock.patch.object(
+            qa_lane,
+            "run",
+            return_value={"state": "reported", "report": str(report_path)},
+        ):
+            qa_result = coordinator.run_qa(self._args(dispatch=qa["dispatch_id"]))
+        self.assertNotIn("auto_accepted", qa_result)
+        self.assertNotIn("decision", self._batch_record(batch["batch_id"])["dispatches"][-1])
+
+    def test_milestone_report_with_risk_trigger_waits_for_decision(self) -> None:
+        self._patch_config(approval_policy="milestone")
+        batch = self._create_batch()
+        architect = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(architect["dispatch_id"])
+        self._submit(architect["dispatch_id"], self._base_report(architect, "architect"))
+        developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1]["dispatch_id"]
+        developer = coordinator._read_object(
+            self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
+        )
+        self._start(developer_id)
+        candidate, changed = self._developer_commit("x")
+
+        result = self._submit(
+            developer_id,
+            self._developer_report(
+                developer, candidate, changed, risk_triggers=["transactions"]
+            ),
+        )
+
+        self.assertNotIn("auto_accepted", result)
+        stored = self._batch_record(batch["batch_id"])
+        self.assertNotIn("decision", stored["dispatches"][-1])
+        self.assertEqual(stored["state"], "awaiting-approval")
+
     def test_low_risk_clean_report_is_accepted_and_routes_to_developer(self) -> None:
         self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
         batch = self._create_batch()

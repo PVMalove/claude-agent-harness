@@ -1259,9 +1259,9 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             )
         role = _role(repo, dispatch["role"])
         _validate_report(report, dispatch, role, repo, batch.get("base_commit"))
-        from harness.orchestration.workflow.decisions import _clean_low_risk_report
+        from harness.orchestration.workflow.decisions import _auto_accept_policy
 
-        auto_accept = _clean_low_risk_report(config, batch, dispatch, report)
+        auto_accept_policy = _auto_accept_policy(config, batch, dispatch, report)
         retry_candidate: str | None = None
         was_retry = False
         if role["name"] == "developer" and batch.get("retry_candidate_required"):
@@ -1324,7 +1324,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 batch.pop("risk_reassessment_candidate", None)
                 batch.pop("risk_reassessment_triggers", None)
         report_json = _persist_report(ledger, root, batch, dispatch, report)
-    if auto_accept:
+    if auto_accept_policy is not None:
         # Reuse the ordinary decision transition and its audit record after releasing the
         # ledger lock. A policy decision is revalidated against the persisted report there.
         from harness.orchestration.workflow.decisions import decide_batch
@@ -1364,7 +1364,10 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             next_action = "code-review" if risk["review_required"] else "qa"
         next_dispatch_id = None
         if next_action == "developer" or (
-            next_action == "qa" and risk is not None and not risk["matched_triggers"]
+            next_action == "qa"
+            and auto_accept_policy == "low_risk"
+            and risk is not None
+            and not risk["matched_triggers"]
         ):
             from harness.orchestration.workflow.dispatch import create_dispatch
 
