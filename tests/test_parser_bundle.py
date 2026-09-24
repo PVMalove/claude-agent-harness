@@ -73,6 +73,35 @@ def test_parse_lock_accepts_well_formed_json(tmp_path: Path) -> None:
     assert "cp312-any" in lock.wheelhouses
 
 
+def test_bundle_builder_requires_js_wheels_and_records_both_ts_dialects(tmp_path: Path) -> None:
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    names = (
+        "tree_sitter-0.26.0-cp312-cp312-linux_x86_64.whl",
+        "tree_sitter_python-0.25.0-cp310-abi3-linux_x86_64.whl",
+        "tree_sitter_typescript-0.23.2-cp39-abi3-linux_x86_64.whl",
+        "tree_sitter_javascript-0.25.0-cp310-abi3-linux_x86_64.whl",
+    )
+    for name in names[:-1]:
+        (wheels / name).write_bytes(name.encode())
+    command = [
+        sys.executable, str(ROOT / "scripts" / "build_parser_bundle.py"),
+        "--wheelhouse", str(wheels), "--out", str(tmp_path / "bundle"),
+        "--pair", "cp312-linux_x86_64",
+    ]
+    assert subprocess.run(command, capture_output=True, check=False).returncode != 0
+    (wheels / names[-1]).write_bytes(names[-1].encode())
+    assert subprocess.run(command, capture_output=True, check=False).returncode == 0
+    lock = parser_bundle.parse_lock((tmp_path / "bundle" / "parser_bundle.lock.json").read_bytes())
+    assert {grammar.name for grammar in lock.grammars} == {
+        "python", "typescript", "tsx", "javascript"
+    }
+    assert len(lock.wheelhouses["cp312-linux_x86_64"]) == 4
+    assert next(grammar for grammar in lock.grammars if grammar.name == "typescript").sha256 == next(
+        grammar for grammar in lock.grammars if grammar.name == "tsx"
+    ).sha256
+
+
 def test_parse_lock_rejects_malformed_json() -> None:
     with pytest.raises(parser_bundle.BundleFormatError):
         parser_bundle.parse_lock(b"not json")
