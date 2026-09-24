@@ -351,8 +351,10 @@ def _run(test_root: Path):
         sys.exit("health did not report the degraded Repo Map tier")
     if "provenance: offline parser bundle unavailable" not in repo_map_health:
         sys.exit("health did not report missing Repo Map bundle provenance")
-    if "REMEDY install an offline parser bundle" not in repo_map_health:
+    if "КАК ИСПРАВИТЬ: установите offline parser bundle" not in repo_map_health:
         sys.exit("health did not provide the offline Repo Map remedy")
+    if "ПРЕДУПРЕЖДЕНИЕ: Repo Map работает в ограниченном режиме" not in repo_map_health:
+        sys.exit("health did not localize the Repo Map warning")
     if "uv run" in repo_map_health:
         sys.exit("health incorrectly offered uv run as a Repo Map dispatch remedy")
     corrupt_registry = (

@@ -19,7 +19,9 @@ from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
+    _attention_policy,
     _context_advisory,
+    _execution_policy,
 )
 from harness.orchestration.core.constants import (
     LIVE_DISPATCH_STATES,
@@ -291,7 +293,11 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
     """Wait locally for a significant event; heartbeat updates never reach the coordinator chat."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    timeout, interval, threshold = args.timeout, args.poll_interval, args.stale_after
+    config = core_config._config(repo)
+    execution = _execution_policy(config)
+    timeout = args.timeout if args.timeout is not None else execution["dispatch_wait_timeout_seconds"]
+    interval = args.poll_interval if args.poll_interval is not None else execution["dispatch_poll_interval_seconds"]
+    threshold = args.stale_after if args.stale_after is not None else _attention_policy(config)["stale_dispatch_seconds"]
     if any(
         isinstance(value, bool) or not isinstance(value, int) or value < 1
         for value in (timeout, interval, threshold)
@@ -357,13 +363,17 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
     reason for the coordinator to change state on its own."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    threshold = args.stale_after
+    config = core_config._config(repo)
+    threshold = (
+        args.stale_after
+        if args.stale_after is not None
+        else _attention_policy(config)["stale_dispatch_seconds"]
+    )
     if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 1:
         raise CoordinatorError(
             "stale-after must be a positive number of seconds",
             remedy="pass --stale-after as a positive number of seconds",
         )
-    config = core_config._config(repo)
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         entries: list[JsonObject] = []

@@ -236,6 +236,14 @@ DEFAULT_CONTEXT_PACKAGE_POLICY = {
     "reserved_prompt_tokens": 20_000,
     "symbol_graph_depth": 2,
     "max_related_tests": 25,
+    "min_starting_files": 5,
+    "max_starting_files": 10,
+}
+DEFAULT_EXECUTION_POLICY = {
+    "dispatch_wait_timeout_seconds": 60,
+    "dispatch_poll_interval_seconds": 5,
+    "qa_lease_seconds": 1_800,
+    "rate_limit_retry_seconds": 60,
 }
 DEFAULT_CONTINUATION_POLICY = {"max_continuations": 2, "max_rate_limit_resumes": 1}
 DEFAULT_RETRY_POLICY = {"max_developer_retries": 1}
@@ -247,11 +255,14 @@ DEFAULT_PREFLIGHT_POLICY = {
     "max_expected_services": 1,
     "max_expected_changed_lines": 800,
     "max_expected_context_tokens": 80_000,
+    "estimated_tokens_per_changed_line": 20,
+    "estimated_tokens_per_file": 2_000,
 }
 DEFAULT_ATTENTION_POLICY = {
     "retry_queue_seconds": 3_600,
     "max_infrastructure_retries": 2,
     "stale_dispatch_seconds": DEFAULT_STALE_AFTER_SECONDS,
+    "heartbeat_interval_seconds": DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
 }
 # Policy fields where zero is a meaningful "tolerate none"; every other numeric policy value is positive.
 ZERO_ALLOWED_POLICY_FIELDS = {
@@ -281,7 +292,6 @@ ATTENTION_STATE_FIELDS = (
     "last_safe_action",
     "recommended_human_action",
 )
-DEFAULT_RATE_LIMIT_RETRY_SECONDS = 60
 MAX_CHECK_EVIDENCE_CHARS = 1_600
 CONTINUATION_FACTS_FIELDS = {
     "dispatch_id",

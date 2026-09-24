@@ -171,7 +171,9 @@
           "minimum": 1,
           "default": 25,
           "description": "Максимальное количество связанных тестов в пакете (целое число >= 1, по умолчанию 25)."
-        }
+        },
+        "min_starting_files": {"type": "integer", "minimum": 1, "default": 5, "description": "Минимальное количество стартовых файлов при ручной регистрации Context Package."},
+        "max_starting_files": {"type": "integer", "minimum": 1, "default": 10, "description": "Максимальное количество стартовых файлов в Context Package."}
       }
     },
     "repo_map_policy": {
@@ -213,6 +215,17 @@
         "max_developer_retries": {"type": "integer", "minimum": 0, "default": 1, "description": "Максимальное количество повторных попыток разработчика на исправление замечаний (целое число >= 0, по умолчанию 1)."}
       }
     },
+    "execution_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Локальные таймауты и интервалы работы координатора.",
+      "properties": {
+        "dispatch_wait_timeout_seconds": {"type": "integer", "minimum": 1, "default": 60, "description": "Время одного ожидания dispatch в секундах."},
+        "dispatch_poll_interval_seconds": {"type": "integer", "minimum": 1, "default": 5, "description": "Интервал опроса dispatch в секундах."},
+        "qa_lease_seconds": {"type": "integer", "minimum": 1, "default": 1800, "description": "Срок аренды QA lane в секундах."},
+        "rate_limit_retry_seconds": {"type": "integer", "minimum": 1, "default": 60, "description": "Ожидание повторной попытки при rate limit, если провайдер не указал срок."}
+      }
+    },
     "attention_policy": {
       "type": "object",
       "additionalProperties": false,
@@ -220,7 +233,8 @@
       "properties": {
         "retry_queue_seconds": {"type": "integer", "minimum": 1, "default": 3600, "description": "Максимальное время ожидания в очереди повторов до привлечения человека (секунды, по умолчанию 3600)."},
         "max_infrastructure_retries": {"type": "integer", "minimum": 0, "default": 2, "description": "Максимальное число сбоев инфраструктуры до остановки (целое число >= 0, по умолчанию 2)."},
-        "stale_dispatch_seconds": {"type": "integer", "minimum": 1, "default": 3600, "description": "Максимальное время молчания воркера, после которого диспатч считается зависшим (секунды, по умолчанию 3600)."}
+        "stale_dispatch_seconds": {"type": "integer", "minimum": 1, "default": 3600, "description": "Максимальное время молчания воркера, после которого диспатч считается зависшим (секунды, по умолчанию 3600)."},
+        "heartbeat_interval_seconds": {"type": "integer", "minimum": 1, "default": 300, "description": "Желаемый интервал heartbeat воркера в секундах; фактический интервал ограничен третью stale_dispatch_seconds."}
       }
     },
     "approval_ttl_seconds": {
@@ -245,7 +259,9 @@
         "max_expected_files": {"type": "integer", "minimum": 1, "default": 12, "description": "Максимальное ожидаемое число изменённых файлов (целое число, по умолчанию 12)."},
         "max_expected_services": {"type": "integer", "minimum": 1, "default": 1, "description": "Максимальное количество затрагиваемых сервисов (целое число, по умолчанию 1)."},
         "max_expected_changed_lines": {"type": "integer", "minimum": 1, "default": 800, "description": "Максимальное ожидаемое число изменённых строк кода (целое число, по умолчанию 800)."},
-        "max_expected_context_tokens": {"type": "integer", "minimum": 1, "default": 80000, "description": "Максимальный ожидаемый объём контекста в токенах (целое число, по умолчанию 80000)."}
+        "max_expected_context_tokens": {"type": "integer", "minimum": 1, "default": 80000, "description": "Максимальный ожидаемый объём контекста в токенах (целое число, по умолчанию 80000)."},
+        "estimated_tokens_per_changed_line": {"type": "integer", "minimum": 1, "default": 20, "description": "Оценка токенов на одну изменённую строку для preflight."},
+        "estimated_tokens_per_file": {"type": "integer", "minimum": 1, "default": 2000, "description": "Оценка токенов на один затронутый файл для preflight."}
       }
     }
   },

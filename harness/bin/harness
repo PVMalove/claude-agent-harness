@@ -840,8 +840,8 @@ def repo_map_health(repo: Path) -> list[str]:
             f"Repo Map: tier=minimal ({degradation_reason})",
             f"Repo Map provenance: {degradation_reason}",
             f"Repo Map policy: {policy_mode}; {dispatch_policy}",
-            "WARNING Repo Map is degraded; health did not download dependencies",
-            "REMEDY install an offline parser bundle in .harness/.cache/repo_map/parser_bundle/registry, then rerun harness health",
+            "ПРЕДУПРЕЖДЕНИЕ: Repo Map работает в ограниченном режиме; команда health не загружает зависимости",
+            "КАК ИСПРАВИТЬ: установите offline parser bundle в .harness/.cache/repo_map/parser_bundle/registry и повторите harness health",
         ]
     bundle_source = "local-cache" if bundle_dir == bundle_dirs[0] else "internal-registry"
     grammars = ", ".join(
@@ -864,8 +864,8 @@ def _health_remedy(problem: str) -> str | None:
     """Add an actionable hint for policy diagnostics without echoing policy contents."""
     if problem.startswith("orchestration repo_map_policy"):
         return (
-            "fix the repo_map_policy value in .harness/orchestration.json "
-            "according to .harness/orchestration/orchestration.schema.json, then rerun harness health"
+            "исправьте значение repo_map_policy в .harness/orchestration.json "
+            "по схеме .harness/orchestration/orchestration.schema.json и повторите harness health"
         )
     return None
 
@@ -1437,7 +1437,7 @@ def cmd_health(args: argparse.Namespace) -> int:
             print(f"ERROR {problem}")
             remedy = _health_remedy(problem)
             if remedy:
-                print(f"REMEDY {remedy}")
+                print(f"КАК ИСПРАВИТЬ: {remedy}")
         return 1
     for line in repo_map_health(repo):
         print(line)

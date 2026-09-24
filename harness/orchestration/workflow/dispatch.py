@@ -34,7 +34,6 @@ from harness.orchestration.core.config import (
     _worker_attestation_required,
 )
 from harness.orchestration.core.constants import (
-    DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     TERMINAL_BATCH_STATES,
 )
 from harness.orchestration.core.git_utils import (
@@ -830,7 +829,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         # frozen into the brief so a later project-config edit cannot silently change an active
         # worker's liveness contract.
         heartbeat_every = max(
-            1, min(DEFAULT_HEARTBEAT_INTERVAL_SECONDS, stale_after // 3)
+            1, min(orchestration_policy["attention"]["heartbeat_interval_seconds"], stale_after // 3)
         )
         brief: JsonObject = {
             "dispatch_id": dispatch_id,

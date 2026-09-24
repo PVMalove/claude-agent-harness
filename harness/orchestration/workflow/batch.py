@@ -160,9 +160,10 @@ def _scope_preflight(
     # A deterministic conservative admission estimate.  It prevents a tiny-looking line count
     # spread across many files from escaping the same context budget.  A caller can supply a
     # stricter observed estimate, but cannot lower this floor.
-    derived_context_tokens = (expected_changed_lines or 0) * 20 + len(
-        expected_files
-    ) * 2_000
+    derived_context_tokens = (
+        (expected_changed_lines or 0) * policy["estimated_tokens_per_changed_line"]
+        + len(expected_files) * policy["estimated_tokens_per_file"]
+    )
     expected_context_tokens = max(supplied_context_tokens or 0, derived_context_tokens)
     problems: list[str] = []
     checks = {

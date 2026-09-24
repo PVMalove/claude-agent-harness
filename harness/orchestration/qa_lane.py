@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Protocol, TypeGuard
 
 from ..errors import HarnessError
+from .core.config import _execution_policy
 from ..gate_runner.gate_runner import CleanRoomPolicy, GateRunnerError, run_gate
 from .contract import JsonObject
 from .ledger import (
@@ -439,7 +440,11 @@ def _recover_transient_failure(
 def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
     repo = ops._repo(args)
     root = _state_root(args, repo, ops)
-    lease_seconds = args.lease_seconds
+    lease_seconds = (
+        args.lease_seconds
+        if args.lease_seconds is not None
+        else _execution_policy(ops._config(repo))["qa_lease_seconds"]
+    )
     if (
         isinstance(lease_seconds, bool)
         or not isinstance(lease_seconds, int)

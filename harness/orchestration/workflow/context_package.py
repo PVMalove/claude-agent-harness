@@ -63,7 +63,7 @@ def _persist_context_package(
     snapshot: str,
     inclusion_reason: str,
     min_starting_files: int = 1,
-    max_starting_files: int = 10,
+    max_starting_files: int | None = None,
     max_package_size_bytes: int | None = None,
     max_package_tokens: int | None = None,
     symbol_graph_depth: int | None = None,
@@ -80,6 +80,8 @@ def _persist_context_package(
             remedy="remove role-specific focus from the shared Context Package; put it in the immutable dispatch brief instead",
         )
     policy = _context_package_policy(core_config._config(repo))
+    if max_starting_files is None:
+        max_starting_files = policy["max_starting_files"]
     # `max_package_tokens` is documented as an optional *stricter* ceiling (see coordinator_cli.py
     # --max-package-tokens help text). Silently honouring a caller-supplied value above the
     # project's configured budget is exactly how a review context package was pushed to ~130k
@@ -213,7 +215,11 @@ def register_context_package(args: argparse.Namespace) -> JsonObject:
             inclusion_reason=getattr(
                 args, "inclusion_reason", "manual immutable context registration"
             ),
-            min_starting_files=args.min_starting_files,
+            min_starting_files=(
+                args.min_starting_files
+                if args.min_starting_files is not None
+                else _context_package_policy(core_config._config(repo))["min_starting_files"]
+            ),
             max_starting_files=args.max_starting_files,
             max_package_size_bytes=args.max_package_size_bytes,
             max_package_tokens=getattr(args, "max_package_tokens", None),

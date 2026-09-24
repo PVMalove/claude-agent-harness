@@ -54,6 +54,7 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "human_approval_gate",
     "tool_policy",
     "attention_policy",
+    "execution_policy",
     "approval_ttl_seconds",
     "extensions",
 }
@@ -667,6 +668,7 @@ ATTENTION_POLICY_FIELDS = {
     "retry_queue_seconds": 1,
     "max_infrastructure_retries": 0,
     "stale_dispatch_seconds": 1,
+    "heartbeat_interval_seconds": 1,
 }
 
 
@@ -1092,12 +1094,18 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
                 "reserved_prompt_tokens",
                 "symbol_graph_depth",
                 "max_related_tests",
+                "min_starting_files",
+                "max_starting_files",
             },
         )
     )
     problems.extend(_repo_map_policy_problems(config))
     context_policy = config.get("context_package_policy")
     if isinstance(context_policy, dict):
+        minimum_files = context_policy.get("min_starting_files")
+        maximum_files = context_policy.get("max_starting_files")
+        if _is_int(minimum_files) and _is_int(maximum_files) and minimum_files > maximum_files:
+            problems.append("orchestration context_package_policy.min_starting_files must not exceed max_starting_files")
         maximum = context_policy.get("max_tokens")
         window = context_policy.get("context_window_tokens")
         reserve = context_policy.get("reserved_prompt_tokens")
@@ -1118,6 +1126,18 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         )
     )
     problems.extend(
+        _policy_problem(
+            config,
+            "execution_policy",
+            {
+                "dispatch_wait_timeout_seconds",
+                "dispatch_poll_interval_seconds",
+                "qa_lease_seconds",
+                "rate_limit_retry_seconds",
+            },
+        )
+    )
+    problems.extend(
         _policy_problem(config, "retry_policy", {"max_developer_retries"}, minimum=0)
     )
     problems.extend(
@@ -1131,6 +1151,8 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
                 "max_expected_services",
                 "max_expected_changed_lines",
                 "max_expected_context_tokens",
+                "estimated_tokens_per_changed_line",
+                "estimated_tokens_per_file",
             },
             booleans={"require_estimates"},
         )
