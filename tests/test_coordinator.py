@@ -1152,6 +1152,18 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "attention_policy_negative": {
                 "attention_policy": {"max_infrastructure_retries": -1}
             },
+            "heartbeat_interval_zero": {
+                "attention_policy": {"heartbeat_interval_seconds": 0}
+            },
+            "preflight_estimate_zero": {
+                "preflight_policy": {"estimated_tokens_per_file": 0}
+            },
+            "execution_timeout_zero": {
+                "execution_policy": {"dispatch_wait_timeout_seconds": 0}
+            },
+            "starting_files_inverted": {
+                "context_package_policy": {"min_starting_files": 11, "max_starting_files": 10}
+            },
             "ttl_zero": {"approval_ttl_seconds": 0},
             "ttl_bool": {"approval_ttl_seconds": True},
             "extensions_list": {"extensions": ["none"]},
@@ -1193,6 +1205,21 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         self.assertEqual(
             config._attention_policy(template), template["attention_policy"]
         )
+        self.assertEqual(config._execution_policy(template), template["execution_policy"])
+
+    def test_cli_uses_config_for_unspecified_execution_limits(self) -> None:
+        parser = coordinator_cli.build_parser(coordinator, constants)
+        waiting = parser.parse_args(["dispatch", "wait", "--dispatch", "dispatch-1"])
+        qa = parser.parse_args(["qa", "run", "--dispatch", "dispatch-1"])
+        self.assertIsNone(waiting.timeout)
+        self.assertIsNone(waiting.poll_interval)
+        self.assertIsNone(waiting.stale_after)
+        self.assertIsNone(qa.lease_seconds)
+        configured = config._execution_policy(
+            {"execution_policy": {"dispatch_wait_timeout_seconds": 42}}
+        )
+        self.assertEqual(configured["dispatch_wait_timeout_seconds"], 42)
+        self.assertEqual(configured["qa_lease_seconds"], 1800)
 
     def test_persist_report_takes_an_explicit_ledger_instead_of_sniffing_the_path(
         self,
@@ -1266,6 +1293,22 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         }
         values.update(overrides)
         return _ns(**values)
+
+    def test_preflight_uses_configured_context_estimate_weights(self) -> None:
+        args = self._create_batch_args(expected_changed_lines=10)
+        with mock.patch.object(
+            config,
+            "_config",
+            return_value={
+                **config._config(self.repo),
+                "preflight_policy": {
+                    "estimated_tokens_per_changed_line": 7,
+                    "estimated_tokens_per_file": 300,
+                },
+            },
+        ):
+            result = coordinator.preflight_batch(args)
+        self.assertEqual(result["expected_context_tokens"], 370)
 
     def test_create_batch_rejects_a_missing_branch_or_worktree(self) -> None:
         with self.assertRaises(coordinator.CoordinatorError) as no_branch:
@@ -3803,6 +3846,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 "retry_queue_seconds": 1800,
                 "max_infrastructure_retries": 3,
                 "stale_dispatch_seconds": 600,
+                "heartbeat_interval_seconds": 90,
             },
             approval_ttl_seconds=900,
             extensions={"transport_health": "none"},
@@ -3825,8 +3869,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 "retry_queue_seconds": 1800,
                 "max_infrastructure_retries": 3,
                 "stale_dispatch_seconds": 600,
+                "heartbeat_interval_seconds": 90,
             },
         )
+        self.assertEqual(brief["liveness"]["heartbeat_every_seconds"], 90)
         self.assertEqual(policy["approval_ttl_seconds"], 900)
         self.assertEqual(
             policy["context_pressure"], {"context_limit": 150_000, "warning_ratio": 0.8}

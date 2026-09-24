@@ -23,6 +23,7 @@ from harness.orchestration.core.config import (
     _adaptive_continuation_policy,
     _context_advisory,
     _continuation_policy,
+    _execution_policy,
     _reject_sensitive,
     _role,
 )
@@ -250,7 +251,11 @@ def rate_limited_dispatch(args: argparse.Namespace) -> JsonObject:
     """Record a provider 429 without model-side polling or a lost checkpoint."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    retry_after = args.retry_after_seconds
+    retry_after = (
+        args.retry_after_seconds
+        if args.retry_after_seconds is not None
+        else _execution_policy(core_config._config(repo))["rate_limit_retry_seconds"]
+    )
     if (
         isinstance(retry_after, bool)
         or not isinstance(retry_after, int)

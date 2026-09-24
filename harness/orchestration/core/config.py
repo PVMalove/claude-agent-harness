@@ -30,6 +30,7 @@ from harness.orchestration.core.constants import (
     DEFAULT_COMMUNICATION_POLICY,
     DEFAULT_CONTEXT_PACKAGE_POLICY,
     DEFAULT_CONTINUATION_POLICY,
+    DEFAULT_EXECUTION_POLICY,
     DEFAULT_PREFLIGHT_POLICY,
     DEFAULT_PROFILE,
     DEFAULT_RETRY_POLICY,
@@ -189,6 +190,11 @@ def _context_package_policy(config: JsonObject) -> dict[str, int]:
     policy = _numeric_policy(
         config, "context_package_policy", DEFAULT_CONTEXT_PACKAGE_POLICY
     )
+    if policy["min_starting_files"] > policy["max_starting_files"]:
+        raise CoordinatorError(
+            "context_package_policy min_starting_files exceeds max_starting_files",
+            remedy="set min_starting_files no higher than max_starting_files",
+        )
     if policy["reserved_prompt_tokens"] >= policy["context_window_tokens"]:
         raise CoordinatorError(
             "context_package_policy reserved_prompt_tokens must be below context_window_tokens",
@@ -205,6 +211,10 @@ def _context_package_policy(config: JsonObject) -> dict[str, int]:
 
 def _continuation_policy(config: JsonObject) -> dict[str, int]:
     return _numeric_policy(config, "continuation_policy", DEFAULT_CONTINUATION_POLICY)
+
+
+def _execution_policy(config: JsonObject) -> dict[str, int]:
+    return _numeric_policy(config, "execution_policy", DEFAULT_EXECUTION_POLICY)
 
 
 def _retry_policy(config: JsonObject) -> dict[str, int]:
