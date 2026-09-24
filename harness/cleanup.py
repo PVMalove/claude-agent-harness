@@ -304,7 +304,9 @@ def apply_cleanup(repo: Path, plan: CleanupPlan) -> CleanupResult:
                 if result.returncode != 0:
                     raise OSError(result.stderr.strip() or "local branch removal failed")
             elif item["kind"] == "directory":
-                shutil.rmtree(path, onexc=_clear_read_only)
+                # Windows needs an extended-length path for nested test fixtures.
+                target = "\\\\?\\" + str(path) if os.name == "nt" else path
+                shutil.rmtree(target, onexc=_clear_read_only)
             else:
                 path.unlink()
             removed.append(str(path))

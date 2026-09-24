@@ -100,6 +100,22 @@ class CleanupTests(unittest.TestCase):
                 process.terminate()
             process.wait(timeout=10)
 
+    @unittest.skipUnless(os.name == "nt", "Windows long-path cleanup")
+    def test_soft_removes_a_run_with_paths_longer_than_max_path(self) -> None:
+        stale = self.repo / ".harness" / "tmp" / "tests" / "long-path"
+        nested = stale.joinpath(*(f"part-{index}-" + "x" * 54 for index in range(4)))
+        long_file = nested / "payload.txt"
+        self.assertGreater(len(str(long_file)), 260)
+        long_nested = Path("\\\\?\\" + str(nested))
+        long_nested.mkdir(parents=True)
+        (long_nested / long_file.name).write_text("finished", encoding="utf-8")
+
+        plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
+        result = apply_cleanup(self.repo, plan)
+
+        self.assertFalse(result["failed"])
+        self.assertFalse(stale.exists())
+
     def test_hard_keeps_active_and_dirty_worktree_then_removes_local_branch_only(self) -> None:
         remote = self.base / "origin.git"
         subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
