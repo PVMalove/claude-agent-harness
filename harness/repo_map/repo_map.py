@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import posixpath
 import subprocess
 import sys
 import tempfile
@@ -53,6 +54,7 @@ DEFAULT_PARSER_BUNDLE_TIMEOUT_SECONDS = 30
 DEFAULT_PARSER_BUNDLE_MAX_OUTPUT_BYTES = 10_000_000
 # Names defined in this many files are too common to provide useful references.
 DEFINITION_FILE_FANOUT_THRESHOLD = 5
+JS_EXTENSIONS = frozenset({".ts", ".tsx", ".js", ".jsx"})
 EXCLUDED_DIRS = frozenset(
     {
         ".git",
@@ -389,6 +391,20 @@ def _module_visible(module: str, policy: RepoMapPolicy) -> bool:
     )
 
 
+def _js_import_target(source: str, specifier: str, paths: set[str]) -> str | None:
+    """Resolve a tracked relative source import; never infer packages or TS aliases."""
+    if not specifier.startswith(("./", "../")):
+        return None
+    base = posixpath.normpath(posixpath.join(posixpath.dirname(source), specifier))
+    if base == ".." or base.startswith("../") or base.startswith("/"):
+        return None
+    candidates = [base]
+    if Path(base).suffix not in JS_EXTENSIONS:
+        candidates.extend(f"{base}{extension}" for extension in (".ts", ".tsx", ".js", ".jsx"))
+        candidates.extend(f"{base}/index{extension}" for extension in (".ts", ".tsx", ".js", ".jsx"))
+    return next((candidate for candidate in candidates if candidate in paths), None)
+
+
 def _encode(payload: dict[str, object]) -> str:
     return (
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -514,7 +530,8 @@ def _graph_from_facts(
     """Apply symbol policy to worker facts, fill in file records, and build the edge list."""
     module_paths = _module_paths({path for path in records if path.endswith(".py")})
     edges: set[tuple[str, str, str, str]] = set()
-    definitions: dict[str, set[str]] = {}
+    definitions: dict[tuple[str, str], set[str]] = {}
+    js_paths = {path for path in records if Path(path).suffix in JS_EXTENSIONS}
     for path in sorted(facts):
         record = facts[path]
         status = record["parser_status"]
@@ -522,9 +539,23 @@ def _graph_from_facts(
         if status != "ok":
             diagnostics.append({"code": status, "path": path})
         records[path]["signatures"] = _visible_signatures(record["signatures"], policy)
+        family = "python" if path.endswith(".py") else "js"
         for name in record["definitions"]:
             if _symbol_visible(name, policy):
-                definitions.setdefault(name, set()).add(path)
+                definitions.setdefault((family, name), set()).add(path)
+        if path in js_paths:
+            for import_fact in record["imports"]:
+                specifier = import_fact["module"]
+                if not _symbol_visible(specifier, policy) or not all(
+                    _symbol_visible(part, policy)
+                    for part in posixpath.splitext(specifier)[0].split("/")
+                    if part not in {".", ".."}
+                ):
+                    continue
+                target = _js_import_target(path, specifier, js_paths)
+                if target is not None and target != path:
+                    edges.add((path, target, "import", "high"))
+            continue
         if not path.endswith(".py"):
             continue
         current_module = path.removesuffix(".py").replace("/", ".")
@@ -542,10 +573,11 @@ def _graph_from_facts(
                 ):
                     edges.add((path, target, "import", "high"))
     for path in sorted(facts):
+        family = "python" if path.endswith(".py") else "js"
         for name in set(facts[path]["references"]):
             if not _symbol_visible(name, policy):
                 continue
-            definition_paths = definitions.get(name, set())
+            definition_paths = definitions.get((family, name), set())
             if len(definition_paths) >= DEFINITION_FILE_FANOUT_THRESHOLD:
                 continue
             targets = definition_paths - {path}

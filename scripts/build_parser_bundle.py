@@ -36,7 +36,12 @@ class GrammarPin:
     extensions: tuple[str, ...]
 
 
-GRAMMARS = (GrammarPin("python", "tree_sitter_python", "0.25.0", 15, (".py",)),)
+GRAMMARS = (
+    GrammarPin("python", "tree_sitter_python", "0.25.0", 15, (".py",)),
+    GrammarPin("typescript", "tree_sitter_typescript", "0.23.2", 14, (".ts",)),
+    GrammarPin("tsx", "tree_sitter_typescript", "0.23.2", 14, (".tsx",)),
+    GrammarPin("javascript", "tree_sitter_javascript", "0.25.0", 15, (".js", ".jsx")),
+)
 
 
 def _sha256(path: Path) -> str:
@@ -70,7 +75,7 @@ def build(wheelhouse: Path, out: Path, pair: str) -> Path:
     target = out / "wheelhouse" / pair
     target.mkdir(parents=True, exist_ok=True)
     artifacts = []
-    for wheel in (core, *grammar_wheels.values()):
+    for wheel in dict.fromkeys((core, *grammar_wheels.values())):
         shutil.copyfile(wheel, target / wheel.name)
         artifacts.append({"filename": wheel.name, "sha256": _sha256(wheel)})
     shutil.copyfile(WORKER, out / WORKER.name)

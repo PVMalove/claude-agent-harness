@@ -228,3 +228,93 @@ def test_wrong_bundle_hash_degrades_to_minimal(tmp_path: Path, bundle_dir: Path)
     assert result["parser"] == "path-only"
     assert result["degradation_reason"] == "parser bundle hash mismatch"
     assert all(set(item) == {"path"} for item in _records(result, "files"))
+
+
+def test_typescript_javascript_signatures_edges_and_provenance(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
+    raw, result = _map(
+        tmp_path,
+        bundle_dir,
+        {
+            "src/helper.ts": "export function render(value: number): string { return String(value) }\n",
+            "src/consumer.ts": (
+                'import { render } from "./helper";\n'
+                'import remote from "remote-package";\n'
+                'export function use(value: number = 7): string { return render(value) }\n'
+                'export class Box extends Base { send(message: string): void { render(1) } }\n'
+                'export const callback = (value: string): string => value;\n'
+            ),
+            "src/component.tsx": (
+                'import { render } from "./helper";\n'
+                'export function App(props: Props) { return <div>{render(1)}</div> }\n'
+            ),
+            "src/ui.jsx": (
+                'import { view } from "./view";\n'
+                'export function Widget(props) { return <div>{view(props)}</div> }\n'
+            ),
+            "src/view.js": "export function view(value) { return value }\n",
+            "src/remote-package.ts": "export function remote() {}\n",
+            "src/python.py": "def render(): pass\n",
+        },
+    )
+    assert result["tier"] == "full"
+    assert result["parser"] == "bundle"
+    provenance = result["parser_provenance"]
+    assert isinstance(provenance, dict)
+    grammars = provenance["grammars"]
+    assert isinstance(grammars, list)
+    assert {grammar["name"] for grammar in grammars} == {
+        "python", "typescript", "tsx", "javascript"
+    }
+    for grammar in grammars:
+        assert len(grammar["sha256"]) == 64
+        assert isinstance(grammar["version"], str)
+        assert grammar["abi"] in (14, 15)
+    assert len(provenance["lock_sha256"]) == 64
+    assert len(provenance["script_hash"]) == 64
+    signatures = _file(result, "src/consumer.ts")["signatures"]
+    assert signatures == [
+        "function use(value: number=...): string",
+        "class Box extends Base",
+        "method Box.send(message: string): void",
+        "const callback(value: string): string",
+    ]
+    assert _file(result, "src/component.tsx")["signatures"] == ["function App(props: Props)"]
+    assert _file(result, "src/ui.jsx")["signatures"] == ["function Widget(props)"]
+    edges = _records(result, "edges")
+    assert {"source": "src/consumer.ts", "target": "src/helper.ts", "kind": "import", "confidence": "high"} in edges
+    assert {"source": "src/ui.jsx", "target": "src/view.js", "kind": "import", "confidence": "high"} in edges
+    assert not any(edge["source"] == "src/consumer.ts" and edge["target"] == "src/remote-package.ts" for edge in edges)
+    assert not any(edge["source"] == "src/consumer.ts" and edge["target"] == "src/python.py" for edge in edges)
+    assert b"return render(value)" not in raw
+
+
+def test_javascript_name_references_and_syntax_errors(tmp_path: Path, bundle_dir: Path) -> None:
+    _, result = _map(tmp_path, bundle_dir, {
+        "a.js": "export function shared() {}\n",
+        "b.js": "export function shared() {}\n",
+        "unique.js": "export function onlyHere() {}\n",
+        "consumer.js": "onlyHere(); shared();\n",
+        "broken.ts": "export function intact(value: number) { return value }\nexport function broken( {\n",
+    })
+    edges = _records(result, "edges")
+    assert {"source": "consumer.js", "target": "unique.js", "kind": "unique-name-ref", "confidence": "medium"} in edges
+    assert {"source": "consumer.js", "target": "a.js", "kind": "ambiguous-name-ref", "confidence": "low"} in edges
+    assert {"source": "consumer.js", "target": "b.js", "kind": "ambiguous-name-ref", "confidence": "low"} in edges
+    assert _file(result, "broken.ts")["parser_status"] == "syntax_error"
+    assert _file(result, "broken.ts")["signatures"] == ["function intact(value: number)"]
+
+
+def test_typescript_redaction_filters_signatures_and_imports(tmp_path: Path, bundle_dir: Path) -> None:
+    raw, result = _map(tmp_path, bundle_dir, {
+        "main.ts": (
+            'import { hiddenHelper } from "./hidden_service";\n'
+            'export function visible(input: number) { return input }\n'
+            'export function leak(input: hiddenType) { return hiddenHelper(input) }\n'
+        ),
+        "hidden_service.ts": "export function hiddenHelper() {}\n",
+    }, redact_symbols=["hidden*"])
+    assert _file(result, "main.ts")["signatures"] == ["function visible(input: number)"]
+    assert result["edges"] == []
+    assert b"hiddenType" not in raw

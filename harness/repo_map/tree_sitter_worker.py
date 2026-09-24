@@ -77,7 +77,7 @@ def _symbols(nodes: list[Node | None]) -> list[str]:
         if part is None:
             continue
         for node in _walk(part):
-            if node.type in ("identifier", "string_content"):
+            if node.type in ("identifier", "type_identifier", "property_identifier", "string_content", "string_fragment"):
                 found.append(_text(node))
     return found
 
@@ -226,7 +226,122 @@ def _names(root: Node) -> tuple[list[str], list[str]]:
     return sorted(set(definitions)), sorted(set(references))
 
 
-def _file_facts(parser: Parser, content: bytes) -> dict[str, object]:
+def _js_parameter(node: Node) -> tuple[str, list[Node | None]]:
+    """Render a JS/TS parameter without serializing its default expression."""
+    if node.type == "assignment_pattern":
+        left = node.child_by_field_name("left")
+        return f"{_text(left)}=...", [left]
+    if node.type in {"required_parameter", "optional_parameter"}:
+        pattern = node.child_by_field_name("pattern")
+        annotation = node.child_by_field_name("type")
+        value = node.child_by_field_name("value")
+        suffix = _text(annotation)
+        marker = "?" if node.type == "optional_parameter" else ""
+        rendered = f"{_text(pattern)}{marker}{suffix}"
+        if value is not None:
+            rendered += "=..."
+        return rendered, [pattern, annotation]
+    return _text(node), [node]
+
+
+def _js_callable_signature(node: Node, name: Node | None, owner: str = "") -> dict[str, object]:
+    parameters = node.child_by_field_name("parameters")
+    return_type = node.child_by_field_name("return_type")
+    rendered: list[str] = []
+    exposed: list[Node | None] = [name, return_type]
+    for parameter in parameters.named_children if parameters is not None else []:
+        value, parts = _js_parameter(parameter)
+        rendered.append(value)
+        exposed.extend(parts)
+    qualified = f"{owner}.{_text(name)}" if owner else _text(name)
+    keyword = "method" if owner else ("const" if node.type == "arrow_function" else "function")
+    async_prefix = "async " if any(child.type == "async" for child in node.children) else ""
+    suffix = _text(return_type)
+    return {
+        "text": f"{async_prefix}{keyword} {qualified}({', '.join(rendered)}){suffix}",
+        "symbols": ([owner] if owner else []) + _symbols(exposed),
+    }
+
+
+def _js_signatures(root: Node) -> list[dict[str, object]]:
+    found: list[dict[str, object]] = []
+    for top in root.named_children:
+        node = top.child_by_field_name("declaration") if top.type == "export_statement" else top
+        if node is None or node.has_error:
+            continue
+        if node.type == "function_declaration":
+            found.append(_js_callable_signature(node, node.child_by_field_name("name")))
+        elif node.type == "class_declaration":
+            name = node.child_by_field_name("name")
+            heritage = next((c for c in node.named_children if c.type == "class_heritage"), None)
+            prefix = f"class {_text(name)}"
+            if heritage is not None:
+                prefix += f" {_text(heritage)}"
+            found.append({"text": prefix, "symbols": _symbols([name, heritage])})
+            body = node.child_by_field_name("body")
+            for member in body.named_children if body is not None else []:
+                if member.type == "method_definition" and not member.has_error:
+                    found.append(
+                        _js_callable_signature(member, member.child_by_field_name("name"), _text(name))
+                    )
+        elif node.type in {"lexical_declaration", "variable_declaration"}:
+            for variable in node.named_children:
+                if variable.type != "variable_declarator" or variable.has_error:
+                    continue
+                value = variable.child_by_field_name("value")
+                name = variable.child_by_field_name("name")
+                if value is not None and value.type == "arrow_function" and name is not None:
+                    found.append(_js_callable_signature(value, name))
+    return found
+
+
+def _js_imports(root: Node) -> list[dict[str, object]]:
+    found: list[dict[str, object]] = []
+    for node in root.named_children:
+        if node.type != "import_statement" or node.has_error:
+            continue
+        source = node.child_by_field_name("source")
+        if source is not None:
+            found.append({"module": _text(source).strip("\"'"), "level": 0, "names": []})
+    return found
+
+
+def _js_names(root: Node) -> tuple[list[str], list[str]]:
+    definitions: set[str] = set()
+    references: set[str] = set()
+    for node in _walk(root):
+        if node.has_error:
+            continue
+        if node.type in {"function_declaration", "class_declaration", "method_definition"}:
+            name = node.child_by_field_name("name")
+            if name is not None:
+                definitions.add(_text(name))
+        elif node.type == "variable_declarator":
+            name = node.child_by_field_name("name")
+            if name is not None and name.type == "identifier":
+                definitions.add(_text(name))
+        elif node.type in {"identifier", "type_identifier"}:
+            parent = node.parent
+            if parent is None:
+                continue
+            if parent.child_by_field_name("name") == node and parent.type in {
+                "function_declaration", "class_declaration", "method_definition", "variable_declarator"
+            }:
+                continue
+            if parent.type in {"member_expression", "subscript_expression"} and parent.child_by_field_name("property") == node:
+                continue
+            ancestor: Node | None = parent
+            while ancestor is not None and ancestor.type not in {
+                "import_statement", "formal_parameters", "required_parameter", "optional_parameter",
+                "type_alias_declaration", "interface_declaration"
+            }:
+                ancestor = ancestor.parent
+            if ancestor is None:
+                references.add(_text(node))
+    return sorted(definitions), sorted(references)
+
+
+def _file_facts(parser: Parser, content: bytes, language: str = "python") -> dict[str, object]:
     try:
         content.decode("utf-8")
     except UnicodeDecodeError:
@@ -238,11 +353,12 @@ def _file_facts(parser: Parser, content: bytes) -> dict[str, object]:
             "references": [],
         }
     root = parser.parse(content).root_node
-    definitions, references = _names(root)
+    javascript = language != "python"
+    definitions, references = _js_names(root) if javascript else _names(root)
     return {
         "parser_status": "syntax_error" if root.has_error else "ok",
-        "signatures": _signatures(root),
-        "imports": _imports(root),
+        "signatures": _js_signatures(root) if javascript else _signatures(root),
+        "imports": _js_imports(root) if javascript else _imports(root),
         "definitions": definitions,
         "references": references,
     }
@@ -251,15 +367,24 @@ def _file_facts(parser: Parser, content: bytes) -> dict[str, object]:
 def main() -> None:
     sys.path.insert(0, sys.argv[1])
     import tree_sitter
+    import tree_sitter_javascript
     import tree_sitter_python
+    import tree_sitter_typescript
 
-    parsers = {".py": tree_sitter.Parser(tree_sitter.Language(tree_sitter_python.language()))}
+    parsers = {
+        ".py": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_python.language())), "python"),
+        ".ts": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_typescript.language_typescript())), "typescript"),
+        ".tsx": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_typescript.language_tsx())), "tsx"),
+        ".js": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_javascript.language())), "javascript"),
+        ".jsx": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_javascript.language())), "javascript"),
+    }
     request = json.loads(sys.stdin.buffer.read())
     files: dict[str, dict[str, object]] = {}
     for path, encoded in sorted(request.get("paths", {}).items()):
-        parser = parsers.get(PurePosixPath(path).suffix)
-        if parser is not None:
-            files[path] = _file_facts(parser, base64.b64decode(encoded))
+        selected = parsers.get(PurePosixPath(path).suffix)
+        if selected is not None:
+            parser, language = selected
+            files[path] = _file_facts(parser, base64.b64decode(encoded), language)
     sys.stdout.write(json.dumps({"files": files}, sort_keys=True))
 
 
