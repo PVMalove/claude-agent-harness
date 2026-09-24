@@ -104,7 +104,11 @@ def _persist_context_package(
         if max_related_tests is not None
         else policy["max_related_tests"]
     )
+    scope = batch.get("scope_preflight")
+    expected_files = scope.get("expected_files", []) if isinstance(scope, dict) else []
+    task_files = [path for path in expected_files if isinstance(path, str)]
     seed_files = [
+        *task_files,
         "AGENTS.md",
         "README.md",
         ".harness/orchestration/roles/_common.md",
