@@ -2,6 +2,7 @@
 """Project-wide verification: config/skill sanity checks, vendor pin integrity, then the full
 clean-room test-clean-room run."""
 
+import atexit
 import hashlib
 import json
 import os
@@ -12,7 +13,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import atexit
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -75,6 +75,10 @@ def isolated_temp_env(base: Mapping[str, str], run_tmp: Path) -> dict[str, str]:
         TEMP=str(run_tmp),
         TMPDIR=str(run_tmp),
         PYTHONPYCACHEPREFIX=str(run_tmp / "pycache"),
+        MYPY_CACHE_DIR=str(run_tmp / "mypy"),
+        GIT_CEILING_DIRECTORIES=os.pathsep.join(
+            part for part in (base.get("GIT_CEILING_DIRECTORIES", ""), str(run_tmp)) if part
+        ),
     )
 
 
@@ -437,6 +441,8 @@ def main() -> None:
                 sys.executable,
                 "-m",
                 "pytest",
+                "-p",
+                "no:cacheprovider",
                 "-n",
                 "4",
                 "--basetemp",

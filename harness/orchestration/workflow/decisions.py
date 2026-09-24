@@ -94,6 +94,7 @@ def _auto_accept_policy(
     if (
         report.get("outcome") != "completed"
         or str(report.get("blockers", "")).strip().lower() != "none"
+        or str(report.get("risks", "")).strip().lower() != "none"
         or report.get("risk_triggers")
         or dispatch.get("purpose") == "publish"
     ):
@@ -127,6 +128,7 @@ def _auto_accept_policy(
                 or evidence.get("severity") != "clean"
                 or evidence.get("findings") != []
                 or str(evidence.get("blockers", "")).strip().lower() != "none"
+                or str(evidence.get("risks", "")).strip().lower() != "none"
             ):
                 return None
     return cast(str, policy)

@@ -9,8 +9,8 @@ import shutil
 import stat
 import subprocess
 import time
-from pathlib import Path
 from collections.abc import Callable
+from pathlib import Path
 from typing import NotRequired, TypedDict
 
 from harness.storage import storage_root
@@ -78,7 +78,10 @@ def _run_active(path: Path) -> bool:
         return True
     except ProcessLookupError:
         return False
-    except (OSError, ValueError, KeyError, TypeError):
+    except OSError as exc:
+        # Windows reports a missing PID as ERROR_INVALID_PARAMETER (87), not ESRCH.
+        return getattr(exc, "winerror", None) != 87
+    except (ValueError, KeyError, TypeError):
         return True
 
 

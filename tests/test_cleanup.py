@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from harness.cleanup import apply_cleanup, plan_cleanup
 
@@ -58,6 +59,27 @@ class CleanupTests(unittest.TestCase):
         self.assertFalse(cache.exists())
         self.assertTrue(active.exists())
         self.assertTrue(ledger.exists())
+
+    def test_soft_removes_a_run_whose_windows_pid_no_longer_exists(self) -> None:
+        class MissingWindowsProcess(OSError):
+            winerror = 87
+
+        stale = self.repo / ".harness" / "tmp" / "tests" / "stale"
+        stale.mkdir(parents=True)
+        (stale / ".active.json").write_text(
+            json.dumps({"pid": 987654321}), encoding="utf-8"
+        )
+
+        with mock.patch(
+            "harness.cleanup.os.kill",
+            side_effect=MissingWindowsProcess(22, "invalid parameter"),
+        ):
+            plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
+            self.assertIn(str(stale), {item["path"] for item in plan["remove"]})
+            result = apply_cleanup(self.repo, plan)
+
+        self.assertFalse(result["failed"])
+        self.assertFalse(stale.exists())
 
     def test_hard_keeps_active_and_dirty_worktree_then_removes_local_branch_only(self) -> None:
         remote = self.base / "origin.git"

@@ -366,7 +366,7 @@ Runtime-neutral режим не имеет команды «запустить �
 `planned → awaiting-approval ↔ active → completed | blocked | failed`. При `manual_all` каждый
 report оставляет dispatch в `reported` до решения человека. При `low_risk` чистый завершённый
 report в разрешённой зоне принимается автоматически с записью решения в ledger. Blockers, failed
-checks, risk triggers и findings любой оси review сохраняют ручной gate; publish тоже требует
+checks, раскрытые risks, risk triggers и findings любой оси review сохраняют ручной gate; publish тоже требует
 отдельного approval. При `milestone` чистый отчёт обычной роли также принимается автоматически,
 но QA, publish и рискованные переходы остаются ручными вехами.
 
