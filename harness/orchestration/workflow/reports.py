@@ -1259,6 +1259,9 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             )
         role = _role(repo, dispatch["role"])
         _validate_report(report, dispatch, role, repo, batch.get("base_commit"))
+        from harness.orchestration.workflow.decisions import _clean_low_risk_report
+
+        auto_accept = _clean_low_risk_report(config, batch, dispatch, report)
         retry_candidate: str | None = None
         was_retry = False
         if role["name"] == "developer" and batch.get("retry_candidate_required"):
@@ -1321,6 +1324,77 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 batch.pop("risk_reassessment_candidate", None)
                 batch.pop("risk_reassessment_triggers", None)
         report_json = _persist_report(ledger, root, batch, dispatch, report)
+    if auto_accept:
+        # Reuse the ordinary decision transition and its audit record after releasing the
+        # ledger lock. A policy decision is revalidated against the persisted report there.
+        from harness.orchestration.workflow.decisions import decide_batch
+
+        decided = decide_batch(
+            argparse.Namespace(
+                repo=str(repo),
+                state_dir=getattr(args, "state_dir", None),
+                batch=batch["batch_id"],
+                decision="accept",
+                approved_by=None,
+                approved_at=None,
+                note=None,
+                reason=None,
+                reason_category=None,
+                retry_role=None,
+                _policy_auto_accept=True,
+            )
+        )
+        next_action = decided.get("next_action")
+        candidate = report.get("commit_sha")
+        risk = None
+        if next_action == "risk-assessment" and isinstance(candidate, str):
+            from harness.orchestration.workflow.risk import assess_risk
+
+            risk = assess_risk(
+                argparse.Namespace(
+                    repo=str(repo),
+                    state_dir=getattr(args, "state_dir", None),
+                    batch=batch["batch_id"],
+                    candidate_commit=candidate,
+                    base_commit=None,
+                    changed_file=report["changed_files"],
+                    developer_trigger=report.get("risk_triggers", []),
+                )
+            )
+            next_action = "code-review" if risk["review_required"] else "qa"
+        next_dispatch_id = None
+        if next_action == "developer" or (
+            next_action == "qa" and risk is not None and not risk["matched_triggers"]
+        ):
+            from harness.orchestration.workflow.dispatch import create_dispatch
+
+            prepared = create_dispatch(
+                argparse.Namespace(
+                    repo=str(repo),
+                    state_dir=getattr(args, "state_dir", None),
+                    batch=batch["batch_id"],
+                    role=next_action,
+                    runtime=dispatch.get("resolved_runtime"),
+                    purpose="work",
+                    candidate_commit=candidate if next_action == "qa" else None,
+                    delta_review_of=None,
+                    model=dispatch.get("resolved_model"),
+                    effort=dispatch.get("resolved_effort"),
+                    propose=False,
+                    transition_digest=None,
+                    approved_by=None,
+                    approved_at=None,
+                )
+            )
+            next_dispatch_id = prepared["dispatch_id"]
+        return {
+            "dispatch_id": dispatch["dispatch_id"],
+            "state": "reported",
+            "report": str(report_json),
+            "auto_accepted": True,
+            "next_action": next_action,
+            "next_dispatch_id": next_dispatch_id,
+        }
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",

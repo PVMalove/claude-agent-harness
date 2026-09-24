@@ -78,6 +78,45 @@ from harness.orchestration.workflow.reports import (
     _validate_report,
 )
 
+AUTO_ACCEPT_RATIONALE = "Auto-accepted due to low_risk policy and clean report"
+
+
+def _clean_low_risk_report(
+    config: JsonObject, batch: JsonObject, dispatch: JsonObject, report: JsonObject
+) -> bool:
+    """Limit policy decisions to a completed report with no adverse evidence."""
+    if (
+        config.get("approval_policy") != "low_risk"
+        or batch.get("approval_policy") != "low_risk"
+        or batch.get("zone") not in config.get("low_risk_zones", [])
+        or report.get("outcome") != "completed"
+        or str(report.get("blockers", "")).strip().lower() != "none"
+        or report.get("risk_triggers")
+        or dispatch.get("purpose") == "publish"
+    ):
+        return False
+    for check in report.get("checks_run", []):
+        result = check.get("result") if isinstance(check, dict) else None
+        if result != "pass" and not (
+            dispatch.get("role") == "architect"
+            and result == "not_run_architect_read_only"
+        ):
+            return False
+    review = report.get("review")
+    if review is not None:
+        if not isinstance(review, dict):
+            return False
+        for axis in ("standards", "spec"):
+            evidence = review.get(axis)
+            if (
+                not isinstance(evidence, dict)
+                or evidence.get("severity") != "clean"
+                or evidence.get("findings") != []
+                or str(evidence.get("blockers", "")).strip().lower() != "none"
+            ):
+                return False
+    return True
+
 
 def decision_packet(args: argparse.Namespace) -> JsonObject:
     """Return concise approval evidence, with immutable report and diff paths kept in the ledger."""
@@ -493,12 +532,24 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     remedy="pass --reason explaining why this batch is abandoned",
                 )
             _reject_sensitive({"reason": abandon_reason}, "abandon reason")
-        approval = _approval(args)
+        if getattr(args, "_policy_auto_accept", False):
+            if args.decision != "accept" or not _clean_low_risk_report(
+                config, batch, dispatch, report
+            ):
+                raise CoordinatorError(
+                    "low_risk auto-accept requires a clean completed report",
+                    remedy="leave this report for an explicit coordinator decision",
+                )
+            approval = {"approved_by": "policy:low_risk", "approved_at": utils._now()}
+        else:
+            approval = _approval(args)
         decision = {
             "decision": args.decision,
             "approved_by": approval["approved_by"],
             "approved_at": approval["approved_at"],
-            "note": abandon_reason
+            "note": AUTO_ACCEPT_RATIONALE
+            if getattr(args, "_policy_auto_accept", False)
+            else abandon_reason
             or (args.note.strip() if _non_empty(args.note) else "none"),
         }
         if routing is not None:

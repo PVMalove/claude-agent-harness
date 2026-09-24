@@ -134,6 +134,13 @@ def build_parser(
         "--reason", required=True, help="why this batch can no longer be decided"
     )
     batch_abandon.set_defaults(handler=handlers.abandon_batch)
+    batch_resume = batch_commands.add_parser(
+        "resume", help="resume a startup-blocked batch from its accepted ledger history"
+    )
+    _common(batch_resume)
+    batch_resume.add_argument("--batch", required=True)
+    batch_resume.add_argument("--reason", required=True)
+    batch_resume.set_defaults(handler=handlers.resume_batch)
     batch_not_required = batch_commands.add_parser(
         "not-required",
         help="record that the pinned snapshot needs no implementation",
