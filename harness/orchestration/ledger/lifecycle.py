@@ -747,7 +747,7 @@ class LifecycleLedger:
                 "failed",
                 "not-required",
             },
-            "blocked": {"blocked", "failed"},
+            "blocked": {"blocked", "awaiting-approval", "failed"},
             "failed": {"failed"},
             "completed": {"completed", "failed"},
             "not-required": {"not-required"},
@@ -775,6 +775,28 @@ class LifecycleLedger:
                 raise LedgerError(
                     "ledger requires recorded coordinator approval before a batch awaits dispatch",
                     remedy="set coordinator_approval.approved_by and .approved_at before moving the batch to awaiting-approval",
+                )
+        if previous == "blocked" and target == "awaiting-approval":
+            before_entries = before.get("dispatches")
+            after_entries = after.get("dispatches")
+            decisions = after.get("coordinator_decisions")
+            last_before = before_entries[-1] if isinstance(before_entries, list) and before_entries else None
+            last_after = after_entries[-1] if isinstance(after_entries, list) and after_entries else None
+            resume = decisions[-1] if isinstance(decisions, list) and decisions else None
+            if not (
+                isinstance(last_before, dict)
+                and last_before.get("state") == "blocked"
+                and isinstance(last_after, dict)
+                and last_after.get("dispatch_id") == last_before.get("dispatch_id")
+                and last_after.get("state") == "abandoned"
+                and isinstance(resume, dict)
+                and resume.get("decision") == "resume"
+                and resume.get("dispatch_id") == last_before.get("dispatch_id")
+                and isinstance(after.get("next_action"), str)
+            ):
+                raise LedgerError(
+                    "ledger resume requires a retired blocked dispatch and recorded next action",
+                    remedy="record a resume decision for the blocked dispatch without changing its immutable brief or accepted history",
                 )
         if previous == "awaiting-approval" and target == "active":
             dispatches = after.get("dispatches")

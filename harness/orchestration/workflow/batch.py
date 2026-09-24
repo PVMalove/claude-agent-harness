@@ -26,6 +26,8 @@ from harness.orchestration.core.config import (
     _verification_commands,
 )
 from harness.orchestration.core.constants import (
+    ATTENTION_STATE_FIELDS,
+    LIVE_DISPATCH_STATES,
     PLAN_FIELDS,
     TERMINAL_BATCH_STATES,
 )
@@ -72,6 +74,7 @@ from harness.orchestration.workflow.decisions import (
     _abandon_open_dispatches,
 )
 from harness.orchestration.workflow.history import (
+    _accepted_architect,
     _settled,
     _validate_batch_integrity,
 )
@@ -383,6 +386,116 @@ def list_batches(args: argparse.Namespace) -> JsonObject:
                 }
             )
     return {"batches": batches}
+
+
+def resume_batch(args: argparse.Namespace) -> JsonObject:
+    """Continue a startup-blocked or stale batch without discarding accepted evidence.
+
+    The failed immutable dispatch is retired; the next dispatch is a new brief in the
+    same batch. A human `block` decision and an abandoned batch are never resumable.
+    """
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    reason = args.reason.strip() if _non_empty(args.reason) else ""
+    if not reason:
+        raise CoordinatorError(
+            "resuming a blocked batch requires a recorded reason",
+            remedy="pass --reason describing the resolved startup or infrastructure failure",
+        )
+    _reject_sensitive({"reason": reason}, "resume reason")
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
+        batch = _load_batch(root, args.batch)
+        _validate_batch_integrity(root, batch)
+        entries = batch.get("dispatches", [])
+        latest = entries[-1] if entries else None
+        if not isinstance(latest, dict):
+            raise CoordinatorError(
+                "batch resume requires a failed dispatch",
+                remedy="inspect the batch ledger before choosing a recovery path",
+            )
+        startup_blocked = (
+            batch.get("state") == "blocked"
+            and latest.get("state") == "blocked"
+        )
+        stale_worker = (
+            batch.get("state") == "active"
+            and latest.get("state") == "dispatched"
+            and batch.get("needs_attention") is True
+            and batch.get("attention_reason") == "stale-dispatch"
+        )
+        if not startup_blocked and not stale_worker:
+            raise CoordinatorError(
+                "batch resume requires a startup-blocked or stale dispatch",
+                remedy="resume only an attestation-blocked or observed stale dispatch; use the existing decision or abandon route otherwise",
+            )
+        status = _load_dispatch_status(root, latest["dispatch_id"])
+        if not (
+            (startup_blocked and status.get("state") == "blocked")
+            or (stale_worker and status.get("state") in LIVE_DISPATCH_STATES)
+        ):
+            raise CoordinatorError(
+                "batch resume requires matching blocked or live dispatch status",
+                remedy="inspect the dispatch status and preserve its immutable evidence before retrying",
+            )
+        next_action = batch.get("next_action")
+        if not isinstance(next_action, str):
+            if latest.get("role") == "developer" and _accepted_architect(batch):
+                next_action = "developer"
+            else:
+                next_action = latest.get("role")
+        if not isinstance(next_action, str) or next_action not in {
+            "architect",
+            "developer",
+            "verification",
+            "code-review",
+            "qa",
+            "publish",
+        }:
+            raise CoordinatorError(
+                "blocked batch has no resumable next action",
+                remedy="inspect the accepted ledger history and choose an explicit recovery path",
+            )
+        moment = utils._now()
+        retired = _abandon_open_dispatches(ledger, root, batch, moment)
+        if stale_worker:
+            keys = list(batch.get("attention_open_keys", []))
+            batch["attention_acknowledged"] = sorted(
+                set(batch.get("attention_acknowledged", [])) | set(keys)
+            )
+            batch["attention_open_keys"] = []
+            batch["needs_attention"] = False
+            for field in ATTENTION_STATE_FIELDS:
+                batch.pop(field, None)
+            batch.setdefault("attention_events", []).append(
+                {
+                    "event": "resolved",
+                    "at": moment,
+                    "keys": keys,
+                    "note": reason,
+                    "approved_by": "policy:operational-recovery",
+                    "approved_at": moment,
+                }
+            )
+        batch["next_action"] = next_action
+        batch["state"] = "awaiting-approval"
+        batch.setdefault("coordinator_decisions", []).append(
+            {
+                "decision": "resume",
+                "dispatch_id": latest["dispatch_id"],
+                "approved_by": "policy:operational-recovery",
+                "approved_at": moment,
+                "note": reason,
+                "next_role": next_action,
+            }
+        )
+        _replace_record(ledger, BatchRecord.from_dict(batch))
+    return {
+        "batch_id": batch["batch_id"],
+        "state": batch["state"],
+        "next_action": next_action,
+        "retired_dispatches": retired,
+    }
 
 
 def abandon_batch(args: argparse.Namespace) -> JsonObject:

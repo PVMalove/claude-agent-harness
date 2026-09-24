@@ -19,7 +19,7 @@ project did not install the capability that provides it — say so instead of re
 
 ```bash
 python .harness/reporting/delivery_stats.py --repo . --epic <номер> \
-  --html docs/reports/epic-<номер>.html
+  --html .harness/reports/delivery-stats/epic-<номер>.html
 ```
 
 Add `--json` when the developer wants the raw numbers rather than the summary. `--rates <file>`
@@ -30,10 +30,10 @@ one. The comparison appears in both the terminal/JSON report and the HTML dashbo
 
 ```bash
 python .harness/reporting/delivery_stats.py --repo . --epic <baseline-epic> \
-  --save-baseline docs/reports/epic-<baseline-epic>.baseline.json
+  --save-baseline .harness/reports/delivery-stats/epic-<baseline-epic>.baseline.json
 python .harness/reporting/delivery_stats.py --repo . --epic <current-epic> \
-  --baseline docs/reports/epic-<baseline-epic>.baseline.json \
-  --html docs/reports/epic-<current-epic>.html
+  --baseline .harness/reports/delivery-stats/epic-<baseline-epic>.baseline.json \
+  --html .harness/reports/delivery-stats/epic-<current-epic>.html
 ```
 
 ## Procedure
@@ -50,7 +50,7 @@ python .harness/reporting/delivery_stats.py --repo . --epic <current-epic> \
 3. **Save or compare a baseline when useful.** Save only a completed epic that is comparable to the
    one being assessed. The comparison preserves `exact` or `estimated` attribution for each provider
    on both sides; a delta appears only when telemetry exists for both sides.
-4. **Run the tool** and write the dashboard under `docs/reports/`.
+4. **Run the tool** and write the dashboard under `.harness/reports/delivery-stats/`.
 5. **Report the summary** in this session: tickets closed, code volume, tokens by model, cache split,
    cost if priced, and the path to the HTML.
 6. **Carry the caveats through, do not smooth them over.** They are the point of the report:

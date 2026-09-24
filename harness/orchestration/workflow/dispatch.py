@@ -196,7 +196,7 @@ def _dispatch_approval_mode(
     risk_triggered = bool(risk and risk.get("matched_triggers"))
     milestone = (
         purpose == "publish"
-        or role == "qa"
+        or (role == "qa" and policy != "low_risk")
         or risk_triggered
         or batch.get("risk_reassessment_required")
     )

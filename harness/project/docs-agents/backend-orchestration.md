@@ -2,8 +2,8 @@
 
 `backend-orchestration` — opt-in capability для согласованной backend-разработки несколькими
 ролями. Она расширяет `pvmalove-suite`, но не является автономным scheduler: coordinator (человек
-или назначенная им управляющая сессия) планирует batch, утверждает каждый dispatch и принимает
-результат. Роли не расширяют свой scope, не выбирают модель и не мержат pull request.
+или назначенная им управляющая сессия) планирует batch и ведёт переходы согласно настроенной
+политике approval. Роли не расширяют свой scope, не выбирают модель и не мержат pull request.
 
 Целостный действующий контракт capability, включая её место в системе, роли, clean-room QA и
 локальное state-хранилище, приведён в [current-state.md](./current-state.md). Этот документ
@@ -15,7 +15,7 @@
 ## Владение правилами
 
 `/implement` — короткий контракт coordinator-а: он сохраняет порядок handoff
-`architect → developer → code-review → qa → publish`, явный approval перед каждым dispatch,
+`architect → developer → code-review → qa → publish`, approval согласно политике,
 model self-report и watchdog. Он не является второй копией процедуры.
 
 Полные правила принадлежат устанавливаемым модулям: `playbook.md` — lifecycle, authority,
@@ -363,8 +363,12 @@ finding или failed QA снова проходит оценку риска.
 ## 4. Coordinator CLI и lifecycle
 
 Runtime-neutral режим не имеет команды «запустить всех». Coordinator CLI ведёт записи по
-`planned → awaiting-approval ↔ active → completed | blocked | failed`; каждый report возвращает
-batch в `awaiting-approval` и оставляет dispatch в `reported` до решения человека:
+`planned → awaiting-approval ↔ active → completed | blocked | failed`. При `manual_all` каждый
+report оставляет dispatch в `reported` до решения человека. При `low_risk` чистый завершённый
+report в разрешённой зоне принимается автоматически с записью решения в ledger. Blockers, failed
+checks, раскрытые risks, risk triggers и findings любой оси review сохраняют ручной gate; publish тоже требует
+отдельного approval. При `milestone` чистый отчёт обычной роли также принимается автоматически,
+но QA, publish и рискованные переходы остаются ручными вехами.
 
 1. Создать planned batch и затем отдельно утвердить его:
 
@@ -425,9 +429,13 @@ batch в `awaiting-approval` и оставляет dispatch в `reported` до �
    python .harness/orchestration/coordinator.py --repo . report submit \
      --file developer-report.json
    ```
-   До следующего dispatch coordinator должен записать отдельное решение. `reported` — не
-   автоматический переход: человек принимает report, override-ит только warning или требует retry,
-   а новая роль всё равно ждёт собственного approval:
+   До следующего dispatch coordinator записывает отдельное решение. При `manual_all` или нечистом
+   report человек принимает report, override-ит warning либо требует retry. При `low_risk` и чистом
+   report coordinator сам записывает `accept` с rationale
+   `Auto-accepted due to low_risk policy and clean report`, вычисляет `next_action` и готовит
+   следующий допустимый dispatch. При `milestone` чистый отчёт вне вехи также получает `accept`;
+   после developer оценивается риск, а QA-dispatch ждёт отдельного approval. Чистый QA-report при
+   `milestone` ждёт решения человека. Ручное решение выглядит так:
 
    ```bash
    python .harness/orchestration/coordinator.py --repo . batch decide \
@@ -597,6 +605,19 @@ python .harness/orchestration/coordinator.py --repo . batch abandon \
 dispatch как `abandoned` и записывает решение рядом с остальными. **Она ничего не удаляет**: immutable
 brief, отчёты и QA-артефакты остаются на месте. Повторно применить её к уже терминальному batch
 нельзя.
+
+Если старт dispatch завершился блокировкой инфраструктуры или watchdog отметил отправленный dispatch
+как `stale`, продолжайте тот же batch после устранения причины:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch resume \
+  --batch <batch-id> --reason 'причина устранена'
+```
+
+Команда сохраняет принятые отчёты и `next_action` в ledger, помечает только сорванный dispatch как
+`abandoned` и переводит batch в `awaiting-approval`. Следующий `dispatch create` использует ту же
+принятую архитектуру и создаёт новый brief для прерванной роли. Для решения `block` или закрытого
+через `batch abandon` batch этот путь недоступен.
 
 Если pinned snapshot уже удовлетворяет всем пунктам DoD, не создавайте фиктивный commit ради
 write-role отчёта и не используйте `abandon`. Зафиксируйте отдельное терминальное решение:

@@ -352,6 +352,48 @@ def test_acquire_bundle_returns_offline_unavailable_when_nothing_is_found(tmp_pa
     assert result == "offline parser bundle unavailable"
 
 
+def test_linked_worktree_uses_main_checkout_bundle_registry_and_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "project"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git", "-C", str(repo), "-c", "user.name=Test",
+            "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "fixture",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    linked = tmp_path / "linked"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "--detach", str(linked)],
+        check=True,
+        capture_output=True,
+    )
+    build_bundle_dir(parser_bundle.default_registry_dir(repo), pair=_running_pair())
+    installed: list[Path] = []
+
+    def record_install(*args: object, **_kwargs: object) -> None:
+        install_dir = args[2]
+        assert isinstance(install_dir, Path)
+        installed.append(install_dir)
+
+    monkeypatch.setattr(parser_bundle, "install_bundle", record_install)
+    result = parser_bundle.acquire_bundle(
+        repo=linked,
+        registry_paths=(),
+        python_executable=sys.executable,
+        timeout_seconds=30,
+    )
+
+    assert isinstance(result, parser_bundle.AppliedBundle)
+    assert installed == [result.install_dir]
+    assert result.install_dir.is_relative_to(repo / ".harness" / ".cache" / "repo_map")
+    assert not (linked / ".harness").exists()
+
+
 def test_acquire_bundle_reports_hash_mismatch(tmp_path: Path) -> None:
     pair = _running_pair()
     bundle_dir = build_bundle_dir(tmp_path / "bundle", pair=pair)

@@ -236,7 +236,7 @@ def parse_lock(raw: bytes) -> BundleLock:
 
 def default_registry_dir(repo: Path) -> Path:
     """The portable, project-local bundle registry: never committed (`.harness/` is gitignored)."""
-    return repo / ".harness" / ".cache" / "repo_map" / "parser_bundle" / "registry"
+    return storage_path(repo, ".cache", "repo_map", "parser_bundle", "registry")
 
 
 def search_dirs(repo: Path, registry_paths: tuple[str, ...]) -> tuple[Path, ...]:

@@ -47,6 +47,7 @@ class IsolatedTempEnvTest(unittest.TestCase):
             for name in ("TMP", "TEMP", "TMPDIR"):
                 self.assertEqual(env[name], str(run_tmp))
             self.assertEqual(env["PYTHONPYCACHEPREFIX"], str(run_tmp / "pycache"))
+            self.assertEqual(env["MYPY_CACHE_DIR"], str(run_tmp / "mypy"))
             resolved = subprocess.run(
                 [sys.executable, "-c", "import tempfile; print(tempfile.gettempdir())"],
                 env=dict(os.environ, **env),
@@ -55,6 +56,25 @@ class IsolatedTempEnvTest(unittest.TestCase):
                 check=True,
             ).stdout.strip()
             self.assertEqual(os.path.normcase(resolved), os.path.normcase(str(run_tmp)))
+
+    def test_child_git_does_not_discover_the_parent_checkout(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            project = Path(temporary) / "project"
+            project.mkdir()
+            subprocess.run(["git", "init", "-q", str(project)], check=True)
+            run_tmp = project / ".harness" / "tmp" / "tests" / "run"
+            nested = run_tmp / "not-a-repo"
+            nested.mkdir(parents=True)
+            env = verify.isolated_temp_env(dict(os.environ), run_tmp)
+
+            result = subprocess.run(
+                ["git", "-C", str(nested), "rev-parse", "--show-toplevel"],
+                env=env,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
 
 
 class RemoveTreeTest(unittest.TestCase):

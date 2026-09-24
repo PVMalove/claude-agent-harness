@@ -25,6 +25,10 @@ if sys.version_info < MIN_PYTHON:
     sys.exit(1)
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from harness.storage import storage_path
+
 HARNESS = [sys.executable, str(ROOT / "harness" / "bin" / "harness")]
 INSTALL_GLOBAL = [sys.executable, str(ROOT / "bin" / "install-global")]
 
@@ -134,10 +138,8 @@ def _force_remove_readonly(func, path, exc):
     func(path)
 
 
-# Longest path this test creates below its root, measured at 165 chars
-# (orchestration_project/.harness/orchestration/state/generations/generation-*/qa-artifacts/
-# <sha256>.log), plus headroom for fixtures growing deeper.
-DEEPEST_RELATIVE_PATH = 180
+# Longest observed ledger atomic-write path below the root is 166 chars.
+DEEPEST_RELATIVE_PATH = 170
 WINDOWS_MAX_PATH = 259
 
 
@@ -168,7 +170,14 @@ def _check_path_budget(test_root):
 
 
 def main():
-    test_root = Path(tempfile.mkdtemp(prefix="cr."))
+    run_root = os.environ.get("HARNESS_TEST_RUN_ROOT")
+    if run_root:
+        test_root = Path(run_root) / "c"
+        test_root.mkdir()
+    else:
+        tests_root = storage_path(ROOT, "tmp", "tests")
+        tests_root.mkdir(parents=True, exist_ok=True)
+        test_root = Path(tempfile.mkdtemp(prefix="c", dir=tests_root))
     try:
         _check_path_budget(test_root)
         _run(test_root)
@@ -572,7 +581,7 @@ def _run(test_root: Path):
     ):
         sys.exit("fast-implement does not carry the ungated single-session flow")
 
-    orchestration_project = test_root / "orchestration_project"
+    orchestration_project = test_root / "o"
 
     def staged_payload(name: str) -> Path:
         """Role-authored payloads live inside the project, at the brief's staging path.

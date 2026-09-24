@@ -135,6 +135,9 @@ from harness.orchestration.workflow.batch import (
 from harness.orchestration.workflow.batch import (
     preflight_batch as preflight_batch,
 )
+from harness.orchestration.workflow.batch import (
+    resume_batch as resume_batch,
+)
 from harness.orchestration.workflow.context_package import (
     register_context_package as register_context_package,
 )

@@ -34,6 +34,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from harness.errors import HarnessError, print_and_exit
 from harness.orchestration.contract import health_problems
+from harness.cleanup import apply_cleanup, plan_cleanup
 from harness.repo_map import parser_bundle
 
 CAPABILITIES_FILE = PACKAGE / "CAPABILITIES.json"
@@ -70,6 +71,12 @@ def file_digest(path: Path) -> str | None:
         return digest(path.read_bytes())
     except FileNotFoundError:
         return None
+
+
+def git_command(repo: Path, *arguments: str) -> list[str]:
+    """Trust only the checkout explicitly supplied to this packager operation."""
+    checkout = repo.resolve()
+    return ["git", "-c", f"safe.directory={checkout}", "-C", str(checkout), *arguments]
 
 
 def relative_path(value: object, *, label: str) -> Path:
@@ -173,10 +180,8 @@ def project_skill_files(repo: Path, directory: Path) -> list[Path]:
     except ValueError:
         fail(f"project skill path escapes repository: {directory}")
     result = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo),
+        git_command(
+            repo,
             "ls-files",
             "--cached",
             "--others",
@@ -184,7 +189,7 @@ def project_skill_files(repo: Path, directory: Path) -> list[Path]:
             "-z",
             "--",
             relative.as_posix(),
-        ],
+        ),
         capture_output=True,
         timeout=30,
     )
@@ -210,9 +215,11 @@ def version() -> str:
 
 def source_revision() -> str:
     result = subprocess.run(
-        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+        git_command(ROOT, "rev-parse", "HEAD"),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=10,
     )
     return result.stdout.strip() if result.returncode == 0 else "uncommitted"
@@ -391,9 +398,11 @@ def load_lock(repo: Path) -> dict | None:
 
 def ensure_git_repo(repo: Path) -> None:
     result = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+        git_command(repo, "rev-parse", "--show-toplevel"),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=10,
     )
     if result.returncode != 0:
@@ -996,6 +1005,23 @@ reports/
 test-logs/
 worktrees/
 """
+RUNTIME_GITIGNORE_LINES = (
+    DOCS_TASKS_GITIGNORE_LINE,
+    "/.harness/tmp/",
+    "/.harness/.cache/",
+    "/.harness/reports/",
+    "/.harness/test-logs/",
+    "/.harness/worktrees/",
+)
+
+
+def missing_runtime_gitignore_lines(content: str) -> list[str]:
+    existing = set(content.splitlines())
+    harness_ignored = ".harness/" in existing or "/.harness/" in existing
+    return [
+        line for line in RUNTIME_GITIGNORE_LINES
+        if line not in existing and not (harness_ignored and line.startswith("/.harness/"))
+    ]
 
 
 def _prompt(label: str, default: str) -> str:
@@ -1074,10 +1100,11 @@ def scaffold_pvmalove_extras(
 
     root_gitignore = repo / ".gitignore"
     root_gitignore_text = root_gitignore.read_text(encoding="utf-8") if root_gitignore.exists() else ""
-    if DOCS_TASKS_GITIGNORE_LINE not in root_gitignore_text.splitlines():
+    missing_ignore_lines = missing_runtime_gitignore_lines(root_gitignore_text)
+    if missing_ignore_lines:
         if root_gitignore_text and not root_gitignore_text.endswith("\n"):
             root_gitignore_text += "\n"
-        root_gitignore_text += DOCS_TASKS_GITIGNORE_LINE + "\n"
+        root_gitignore_text += "\n".join(missing_ignore_lines) + "\n"
         root_gitignore.write_text(root_gitignore_text, encoding="utf-8", newline="\n")
         written.append(str(root_gitignore))
 
@@ -1442,9 +1469,32 @@ def _add_pvmalove_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+def cmd_cleanup(args: argparse.Namespace) -> int:
+    if args.apply and args.mode == "hard" and args.confirm != "HARD":
+        fail("hard cleanup requires --confirm HARD")
+    try:
+        plan = plan_cleanup(Path(args.repo), args.mode, min_age_hours=args.min_age_hours)
+        print(json.dumps({"plan": plan}, ensure_ascii=False, indent=2))
+        if args.apply:
+            result = apply_cleanup(Path(args.repo), plan)
+            print(json.dumps({"result": result}, ensure_ascii=False, indent=2))
+            return 1 if result["failed"] else 0
+        return 0
+    except ValueError as exc:
+        fail(str(exc))
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="harness")
     commands = root.add_subparsers(dest="command", required=True)
+
+    cleanup = commands.add_parser("cleanup", help="preview or remove disposable .harness data")
+    cleanup.add_argument("repo")
+    cleanup.add_argument("--mode", choices=("soft", "hard"), default="soft")
+    cleanup.add_argument("--min-age-hours", type=float, default=24)
+    cleanup.add_argument("--apply", action="store_true", help="apply the printed cleanup plan")
+    cleanup.add_argument("--confirm", help="pass HARD when applying hard cleanup")
+    cleanup.set_defaults(func=cmd_cleanup)
 
     init = commands.add_parser("init")
     init.add_argument("repo")
