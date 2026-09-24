@@ -78,6 +78,59 @@ from harness.orchestration.workflow.reports import (
     _validate_report,
 )
 
+AUTO_ACCEPT_RATIONALE = "Auto-accepted due to low_risk policy and clean report"
+MILESTONE_AUTO_ACCEPT_RATIONALE = (
+    "Auto-accepted due to milestone policy and clean non-milestone report"
+)
+
+
+def _auto_accept_policy(
+    config: JsonObject, batch: JsonObject, dispatch: JsonObject, report: JsonObject
+) -> str | None:
+    """Return the policy authorized to decide this clean, non-milestone report."""
+    policy = config.get("approval_policy")
+    if policy != batch.get("approval_policy") or policy not in {"low_risk", "milestone"}:
+        return None
+    if (
+        report.get("outcome") != "completed"
+        or str(report.get("blockers", "")).strip().lower() != "none"
+        or report.get("risk_triggers")
+        or dispatch.get("purpose") == "publish"
+    ):
+        return None
+    if policy == "low_risk" and batch.get("zone") not in config.get("low_risk_zones", []):
+        return None
+    if policy == "milestone":
+        if dispatch.get("role") == "qa" or batch.get("risk_reassessment_required"):
+            return None
+        candidate = dispatch.get("candidate_commit")
+        if isinstance(candidate, str) and any(
+            item.get("candidate_commit") == candidate and item.get("matched_triggers")
+            for item in batch.get("risk_assessments", [])
+        ):
+            return None
+    for check in report.get("checks_run", []):
+        result = check.get("result") if isinstance(check, dict) else None
+        if result != "pass" and not (
+            dispatch.get("role") == "architect"
+            and result == "not_run_architect_read_only"
+        ):
+            return None
+    review = report.get("review")
+    if review is not None:
+        if not isinstance(review, dict):
+            return None
+        for axis in ("standards", "spec"):
+            evidence = review.get(axis)
+            if (
+                not isinstance(evidence, dict)
+                or evidence.get("severity") != "clean"
+                or evidence.get("findings") != []
+                or str(evidence.get("blockers", "")).strip().lower() != "none"
+            ):
+                return None
+    return cast(str, policy)
+
 
 def decision_packet(args: argparse.Namespace) -> JsonObject:
     """Return concise approval evidence, with immutable report and diff paths kept in the ledger."""
@@ -493,12 +546,28 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     remedy="pass --reason explaining why this batch is abandoned",
                 )
             _reject_sensitive({"reason": abandon_reason}, "abandon reason")
-        approval = _approval(args)
+        policy_auto_accept = getattr(args, "_policy_auto_accept", False)
+        if policy_auto_accept:
+            accepted_policy = _auto_accept_policy(config, batch, dispatch, report)
+            if args.decision != "accept" or accepted_policy is None:
+                raise CoordinatorError(
+                    "policy auto-accept requires a clean non-milestone completed report",
+                    remedy="leave this report for an explicit coordinator decision",
+                )
+            approval = {"approved_by": f"policy:{accepted_policy}", "approved_at": utils._now()}
+        else:
+            approval = _approval(args)
         decision = {
             "decision": args.decision,
             "approved_by": approval["approved_by"],
             "approved_at": approval["approved_at"],
-            "note": abandon_reason
+            "note": (
+                AUTO_ACCEPT_RATIONALE
+                if accepted_policy == "low_risk"
+                else MILESTONE_AUTO_ACCEPT_RATIONALE
+            )
+            if policy_auto_accept
+            else abandon_reason
             or (args.note.strip() if _non_empty(args.note) else "none"),
         }
         if routing is not None:

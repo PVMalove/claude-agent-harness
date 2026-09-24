@@ -17,11 +17,26 @@ class AttestationError(HarnessError):
     """The runtime did not start in the immutable dispatch's Git context."""
 
 
+def _git_command(path: Path, *arguments: str) -> list[str]:
+    # The coordinator may run under a different Windows sandbox account. Trust only the
+    # already selected repository or registered worktree for this one Git invocation.
+    trusted = path.resolve()
+    return [
+        "git",
+        "-c",
+        f"safe.directory={trusted}",
+        "-C",
+        str(trusted),
+        *arguments,
+    ]
+
+
 def _git(path: Path, *arguments: str) -> str:
     result = subprocess.run(
-        ["git", "-C", str(path), *arguments],
+        _git_command(path, *arguments),
         capture_output=True,
         text=True,
+        errors="replace",
         check=False,
     )
     if result.returncode:
@@ -89,18 +104,8 @@ def attest(repo: Path, dispatch: Mapping[str, object], worktree: str) -> dict[st
                 remedy=f"checkout branch {expected_branch!r} in {checkout} before dispatching this role",
             )
         ancestor = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo),
-                "merge-base",
-                "--is-ancestor",
-                head,
-                expected_branch,
-            ],
+            _git_command(repo, "merge-base", "--is-ancestor", head, expected_branch),
             capture_output=True,
-            text=True,
-            encoding="utf-8",
             check=False,
         )
         if ancestor.returncode:

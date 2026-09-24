@@ -58,12 +58,16 @@ maps every created commit to exactly one entry and explains any approved deviati
 unrelated implementation, tests, documentation, or type-only repairs into a recovery commit merely
 because they are staged together.
 
-Every transition needs explicit approval, and approval means the operator answered — not that this
-session concluded the next step was obvious. Never write `--approved-by` on the operator's behalf,
-and never narrate a decision they did not make: show the decision packet, ask, and wait. An accepted
-report sets `next_action`; it does not authorise it. Projects that want this enforced rather than
-promised set `human_approval_gate` to `tty` in `.harness/orchestration.json`, which makes every
-approval require a confirmation typed on the operator's own terminal.
+Follow the configured approval policy. Under `manual_all`, every transition needs explicit approval:
+show the decision packet, ask, and wait. Under `low_risk`, a clean completed report in an eligible
+zone is accepted by the coordinator with an audited policy decision, and the next eligible dispatch
+may already be approved. Under `milestone`, clean reports outside QA, publish and risk milestones
+are also accepted automatically; stop for the remaining milestone decisions. Continue from the
+recorded `next_action` without asking the operator to repeat a policy decision. Blockers, failed
+checks, risk triggers, review findings and publish still require the applicable manual decision.
+Never write `--approved-by` on the operator's behalf or
+narrate a decision they did not make. `human_approval_gate: tty` requires confirmation on the
+operator's terminal for transitions that still require human approval.
 
 Each worker records a model self-report and is observed by the event-driven watchdog; those facts
 are evidence, never a reason to edit an immutable brief.
