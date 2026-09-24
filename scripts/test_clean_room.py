@@ -87,6 +87,14 @@ def capture(cmd) -> str:
     return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
 
 
+def commit_map_for(brief: dict, commit_sha: str) -> list[dict]:
+    """The developer report's mandatory commit_map for a single-commit candidate."""
+    return [
+        {"commit_sha": commit_sha, "plan_entry_id": entry["id"]}
+        for entry in brief.get("commit_plan", [])
+    ]
+
+
 def fill_agents(repo: Path):
     agents = repo / "AGENTS.md"
     agents.write_text(
@@ -338,6 +346,75 @@ def _run(test_root: Path):
     )
     fill_agents(pv_project)
     run_ok(HARNESS + ["health", str(pv_project)])
+    repo_map_health = capture(HARNESS + ["health", str(pv_project)])
+    if "Repo Map: tier=minimal" not in repo_map_health:
+        sys.exit("health did not report the degraded Repo Map tier")
+    if "provenance: offline parser bundle unavailable" not in repo_map_health:
+        sys.exit("health did not report missing Repo Map bundle provenance")
+    if "REMEDY install an offline parser bundle" not in repo_map_health:
+        sys.exit("health did not provide the offline Repo Map remedy")
+    if "uv run" in repo_map_health:
+        sys.exit("health incorrectly offered uv run as a Repo Map dispatch remedy")
+    corrupt_registry = (
+        pv_project
+        / ".harness"
+        / ".cache"
+        / "repo_map"
+        / "parser_bundle"
+        / "registry"
+    )
+    corrupt_registry.mkdir(parents=True)
+    (corrupt_registry / "parser_bundle.lock.json").write_text("{invalid", encoding="utf-8")
+    corrupt_bundle_health = capture(HARNESS + ["health", str(pv_project)])
+    if "Repo Map: tier=minimal" not in corrupt_bundle_health:
+        sys.exit("health accepted a corrupt Repo Map bundle as full tier")
+    if "Repo Map: tier=full" in corrupt_bundle_health:
+        sys.exit("health reported a corrupt Repo Map bundle as full tier")
+    repo_map_cli = pv_project / ".harness" / "repo_map" / "repo_map.py"
+    if (
+        not repo_map_cli.is_file()
+        or not (pv_project / ".harness" / "token_estimator.py").is_file()
+        or not (pv_project / ".harness" / "repo_map" / "repo_map.schema.json").is_file()
+    ):
+        sys.exit("pvmalove-suite Repo Map resource missing")
+    map_project = test_root / "map_project"
+    map_project.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=map_project, check=True)
+    (map_project / "mapped.py").write_text(
+        "def mapped(value: int = 1) -> int:\n    return value\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "mapped.py"], cwd=map_project, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=map_project,
+        check=True,
+    )
+    mapped_commit = capture(
+        ["git", "-C", str(map_project), "rev-parse", "HEAD"]
+    ).strip()
+    mapped = json.loads(
+        capture(
+            [
+                sys.executable,
+                str(repo_map_cli),
+                "--repo",
+                str(map_project),
+                "--commit",
+                mapped_commit,
+            ]
+        )
+    )
+    if not any(item["path"] == "mapped.py" for item in mapped["files"]):
+        sys.exit("installed Repo Map did not read the pinned commit")
 
     pv_skill_count = count_skill_files(pv_project / ".harness" / "skills")
     if pv_skill_count != 31:
@@ -440,6 +517,10 @@ def _run(test_root: Path):
             (
                 "import sys; print('=== short test summary info ==='); "
                 "print('FAILED tests/test_checkout.py::test_quote - AssertionError: gho_abcdefghijklmnopqrstuvwxyz1234567890'); "
+                "print('Traceback (most recent call last):'); "
+                "print('  File tests/test_checkout.py, line 12, in test_quote'); "
+                "print('RuntimeError: gho_abcdefghijklmnopqrstuvwxyz1234567890'); "
+                "print('src/check.py:7:4: error: incompatible types'); "
                 "print('1 failed, 2 passed in 0.01s'); sys.exit(1)"
             ),
         ],
@@ -454,12 +535,17 @@ def _run(test_root: Path):
         )
     if "tests/test_checkout.py::test_quote" not in failing_summary.stdout:
         sys.exit("pytest summary wrapper did not retain the failed test node ID")
-    if (
-        "AssertionError" in failing_summary.stdout
-        or "gho_abcdefghijklmnopqrstuvwxyz1234567890" in failing_summary.stdout
+    for expected_diagnostic in (
+        "Traceback: RuntimeError: <REDACTED_GITHUB_TOKEN>",
+        "Error: src/check.py:7:4: incompatible types",
     ):
+        if expected_diagnostic not in failing_summary.stdout:
+            sys.exit(
+                "pytest summary wrapper did not extract a structured failure diagnostic"
+            )
+    if "gho_abcdefghijklmnopqrstuvwxyz1234567890" in failing_summary.stdout:
         sys.exit(
-            "pytest summary wrapper leaked failure detail into its bounded summary"
+            "pytest summary wrapper leaked a secret into its bounded summary"
         )
     log_match = re.search(
         r"^Full log: (.+)$", failing_summary.stdout, flags=re.MULTILINE
@@ -697,6 +783,7 @@ def _run(test_root: Path):
         "developer.md",
         "messaging-integration.md",
         "qa.md",
+        "verification.md",
     }
     actual_role_files = {
         path.name
@@ -956,12 +1043,25 @@ def _run(test_root: Path):
         "backend_zones": {"backend": {"paths": ["services/**"]}},
         "concurrency_budget": 2,
         "developer_verification_commands": ["python developer_check.py"],
-        "verification_commands": ["python qa_baseline.py"],
+        "verification_commands": [f"{sys.executable} qa_baseline.py"],
     }
     orchestration_config.write_text(
         json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8"
     )
     run_ok(HARNESS + ["health", str(orchestration_project)])
+    minimal_repo_map_policy = json.loads(json.dumps(valid_orchestration))
+    minimal_repo_map_policy["repo_map_policy"] = {"tier": "minimal"}
+    orchestration_config.write_text(
+        json.dumps(minimal_repo_map_policy, indent=2) + "\n", encoding="utf-8"
+    )
+    policy_health = capture(HARNESS + ["health", str(orchestration_project)])
+    if "Repo Map: tier=minimal (requested by policy)" not in policy_health:
+        sys.exit("health did not report the policy-required Repo Map tier")
+    if "dispatch is limited to minimal path inventory" not in policy_health:
+        sys.exit("health did not report Repo Map policy dispatch effect")
+    orchestration_config.write_text(
+        json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8"
+    )
     subprocess.run(
         ["git", "config", "user.email", "test@example.invalid"],
         cwd=orchestration_project,
@@ -1052,7 +1152,7 @@ else:
         "resolved_runtime": "codex",
         "definition_of_done": ["produce the requested backend change"],
         "prohibited_changes": ["no merge or production operations"],
-        "verification_commands": ["python qa_baseline.py"],
+        "verification_commands": [f"{sys.executable} qa_baseline.py"],
         "required_gates": ["code review"],
         "dependencies": ["approved project config"],
         "coordinator_approval": {
@@ -2057,7 +2157,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "changed_files": [],
         "checks_run": [
             {
-                "command": "python qa_baseline.py",
+                "command": f"{sys.executable} qa_baseline.py",
                 "result": "pass",
                 "evidence": "repository evidence inspected",
             }
@@ -2273,6 +2373,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "implemented the requested backend change",
         "commit_sha": candidate_sha,
         "changed_files": ["services/retry.py"],
+        "commit_map": commit_map_for(dispatch_record["brief"], candidate_sha),
         "checks_run": [
             {
                 "command": "python developer_check.py",
@@ -2513,7 +2614,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "changed_files": [],
         "checks_run": [
             {
-                "command": "python qa_baseline.py",
+                "command": f"{sys.executable} qa_baseline.py",
                 "result": "pass",
                 "evidence": "review scope inspected",
             }
@@ -2724,7 +2825,9 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     ):
         sys.exit("QA evidence artifact is not immutable and checksum-addressed")
     artifact_text = artifact.read_text(encoding="utf-8")
-    if not artifact_text.startswith("$ python qa_baseline.py\nexit_code=0\n"):
+    if not artifact_text.startswith(
+        f"$ {sys.executable} qa_baseline.py\nexit_code=0\n"
+    ):
         sys.exit("QA evidence artifact does not contain the full gate output")
     if "token=visible" in artifact_text or "token=<redacted>" not in artifact_text:
         sys.exit("QA evidence artifact was not sanitised")
@@ -3174,7 +3277,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 f"coordinator rejected the delta-review {role_name} dispatch: "
                 + created.stderr
             )
-        role_dispatch = json.loads(created.stdout)["dispatch_id"]
+        role_record = json.loads(created.stdout)
+        role_dispatch = role_record["dispatch_id"]
         coordinator_run(
             "--state-dir",
             str(delta_state),
@@ -3207,7 +3311,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
-                    else "python qa_baseline.py",
+                    else f"{sys.executable} qa_baseline.py",
                     "result": "pass",
                     "evidence": "1 passed",
                 }
@@ -3218,6 +3322,10 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "report_language": "ru",
         }
         payload.update(payload_extra)
+        if role_record["brief"].get("commit_plan"):
+            payload["commit_map"] = commit_map_for(
+                role_record["brief"], payload["commit_sha"]
+            )
         payload_file = staged_payload(f"delta-{role_name}-{role_dispatch}-report.json")
         payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         submitted = coordinator_run(
@@ -3370,7 +3478,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "changed_files": [],
         "checks_run": [
             {
-                "command": "python qa_baseline.py",
+                "command": f"{sys.executable} qa_baseline.py",
                 "result": "pass",
                 "evidence": "review scope inspected",
             }
@@ -3604,7 +3712,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "changed_files": [],
         "checks_run": [
             {
-                "command": "python qa_baseline.py",
+                "command": f"{sys.executable} qa_baseline.py",
                 "result": "pass",
                 "evidence": "fix diff inspected",
             }
@@ -3785,7 +3893,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 f"coordinator rejected the low-risk {role_name} dispatch: "
                 + created.stderr
             )
-        role_dispatch = json.loads(created.stdout)["dispatch_id"]
+        role_record = json.loads(created.stdout)
+        role_dispatch = role_record["dispatch_id"]
         coordinator_run(
             "--state-dir",
             str(low_risk_state),
@@ -3818,7 +3927,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
-                    else "python qa_baseline.py",
+                    else f"{sys.executable} qa_baseline.py",
                     "result": "pass",
                     "evidence": "1 passed",
                 }
@@ -3829,6 +3938,10 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "report_language": "ru",
         }
         payload.update(payload_extra)
+        if role_record["brief"].get("commit_plan"):
+            payload["commit_map"] = commit_map_for(
+                role_record["brief"], payload["commit_sha"]
+            )
         payload_file = staged_payload(f"low-risk-{role_name}-report.json")
         payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         submitted = coordinator_run(
@@ -4006,7 +4119,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 f"coordinator rejected the context-package {role_name} dispatch: "
                 + created.stderr
             )
-        role_dispatch = json.loads(created.stdout)["dispatch_id"]
+        role_record = json.loads(created.stdout)
+        role_dispatch = role_record["dispatch_id"]
         coordinator_run(
             "--state-dir",
             str(ctxpkg_state),
@@ -4039,7 +4153,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
-                    else "python qa_baseline.py",
+                    else f"{sys.executable} qa_baseline.py",
                     "result": "pass",
                     "evidence": "1 passed",
                 }
@@ -4050,6 +4164,10 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "report_language": "ru",
         }
         payload.update(payload_extra)
+        if role_record["brief"].get("commit_plan"):
+            payload["commit_map"] = commit_map_for(
+                role_record["brief"], payload["commit_sha"]
+            )
         payload_file = staged_payload(
             f"context-package-{role_name}-{role_dispatch}.json"
         )
@@ -4292,7 +4410,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "changed_files": [],
         "checks_run": [
             {
-                "command": "python qa_baseline.py",
+                "command": f"{sys.executable} qa_baseline.py",
                 "result": "pass",
                 "evidence": "review scope inspected",
             }
@@ -4553,7 +4671,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
-                    else "python qa_baseline.py",
+                    else f"{sys.executable} qa_baseline.py",
                     "result": "pass",
                     "evidence": "1 passed",
                 }
@@ -4946,6 +5064,14 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 "changed_files": [
                     "services/checkpoint_demo.py",
                     "services/checkpoint_demo_v2.py",
+                ],
+                "commit_map": [
+                    {"commit_sha": sha, "plan_entry_id": entry["id"]}
+                    for sha, entry in zip(
+                        (checkpoint_first_sha, checkpoint_second_sha),
+                        checkpoint_dev_record["brief"]["commit_plan"],
+                        strict=True,
+                    )
                 ],
                 "checks_run": [
                     {
@@ -5415,7 +5541,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 f"coordinator rejected the stale-base {role_name} dispatch: "
                 + created.stderr
             )
-        role_dispatch = json.loads(created.stdout)["dispatch_id"]
+        role_record = json.loads(created.stdout)
+        role_dispatch = role_record["dispatch_id"]
         coordinator_run(
             "--state-dir",
             str(stale_state),
@@ -5448,7 +5575,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
-                    else "python qa_baseline.py",
+                    else f"{sys.executable} qa_baseline.py",
                     "result": "pass",
                     "evidence": "1 passed",
                 }
@@ -5459,6 +5586,10 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "report_language": "ru",
         }
         payload.update(payload_extra)
+        if role_record["brief"].get("commit_plan"):
+            payload["commit_map"] = commit_map_for(
+                role_record["brief"], payload["commit_sha"]
+            )
         payload_file = staged_payload(f"stale-base-{role_name}-report.json")
         payload_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         submitted = coordinator_run(
@@ -5675,7 +5806,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "coordinator refused the developer rebase dispatch after a stale-base block: "
             + rebase_created.stderr
         )
-    rebase_dispatch = json.loads(rebase_created.stdout)["dispatch_id"]
+    rebase_record = json.loads(rebase_created.stdout)
+    rebase_dispatch = rebase_record["dispatch_id"]
     coordinator_run(
         "--state-dir",
         str(stale_state),
@@ -5706,6 +5838,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "attempted rebase without producing a new commit",
         "commit_sha": stale_sha,
         "changed_files": ["services/stale_base.py"],
+        "commit_map": commit_map_for(rebase_record["brief"], stale_sha),
         "checks_run": [
             {
                 "command": "python developer_check.py",
@@ -5757,6 +5890,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "rebased onto the current integration tip",
         "commit_sha": rebased_sha,
         "changed_files": ["services/stale_base.py"],
+        "commit_map": commit_map_for(rebase_record["brief"], rebased_sha),
         "checks_run": [
             {
                 "command": "python developer_check.py",

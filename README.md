@@ -19,7 +19,7 @@
 
 Discovery Pipeline сохраняет согласованный контекст между сессиями: `/grilling` ведёт `Live Artifact`
 только после explicit opt-in пользователя → `/to-spec` переносит пути в `Relevant Files` →
-`/to-tickets` назначает их тикетам и проверяет filtered Repo Map одним cheap advisory-вызовом →
+`/to-tickets` назначает их тикетам и проверяет Path inventory одним cheap advisory-вызовом →
 `context_builder.py` собирает deterministic Context Package. Advisory может только добавить exact
 dependencies и не имеет полномочий изменять scope или запускать dispatch.
 
@@ -113,6 +113,29 @@ Hermes fallback. Схема не содержит секретов и не оп�
 - `.harness/project.json` — язык вывода, паттерн имени ветки, базовая ветка для PR, команды `qa-gate` (спрашивается интерактивно, либо флагами)
 
 ## Установка
+
+## Разработка этого репозитория
+
+Окружение ставится только через [uv](https://docs.astral.sh/uv/), pip не используется. Пакеты для
+проверки и разработки перечислены в группе `dev` файла [`pyproject.toml`](./pyproject.toml);
+зафиксированный граф их транзитивных зависимостей хранится в `uv.lock`. Рабочее окружение харнесса
+находится в `.harness/.venv`, поэтому не пересекается с окружением самого проекта:
+
+```bash
+make bootstrap
+make verify
+```
+
+`make bootstrap` выполняет `uv sync --locked` с `UV_PROJECT_ENVIRONMENT=.harness/.venv`. Без `make`:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.harness/.venv uv sync --locked
+```
+
+В PowerShell переменную задают отдельно: `$env:UV_PROJECT_ENVIRONMENT = ".harness/.venv"`.
+
+Пакеты добавляют и обновляют командой `uv add --dev <пакет>==<версия>` (удаляют — `uv remove --dev`):
+она сама правит `pyproject.toml` и `uv.lock`.
 
 Глобальный слой — `bin/install-global`, не персонализирован, ставится отдельно и один раз на машину (на пользователя `~`, не на конкретный проект). Поддерживает пять рантаймов, `--runtime` повторяем:
 
@@ -220,6 +243,9 @@ python harness\bin\harness list C:\path\to\repository
 - `docs/agents/*.md` и `harness/project/docs-agents/*.md` — одно и то же по смыслу в двух местах
   (вторая копия — то, что `pvmalove-suite` реально разворачивает в целевые проекты); `scripts/verify.py`
   сверяет обе копии по содержимому (без учёта BOM/CRLF) и не даст молча разойтись.
+- CI запускает `scripts/diff_coverage.py`: он читает машиночитаемый JSON отчёт coverage, проверяет
+  только изменённые исполняемые Python-строки и при провале выводит компактный список путей и
+  диапазонов, а не полный перечень непокрытых строк.
 - `harness update` по умолчанию не перезаписывает изменённые managed files и seed-файлы.
   `--force-managed-files` обновляет только managed snapshot, `--force-seed-files` — только seed,
   а `--force` объединяет оба действия и может перезаписать project-owned конфигурацию.

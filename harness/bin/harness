@@ -35,6 +35,7 @@ if str(ROOT) not in sys.path:
 from harness.errors import HarnessError, print_and_exit
 from harness.orchestration.contract import health_problems
 from harness.cleanup import apply_cleanup, plan_cleanup
+from harness.repo_map import parser_bundle
 
 CAPABILITIES_FILE = PACKAGE / "CAPABILITIES.json"
 VERSION_FILE = PACKAGE / "VERSION"
@@ -407,7 +408,10 @@ def ensure_links(
     for relative, target in DISCOVERY_LINKS.items():
         native_target = native_link_target(target)
         path = repo / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            continue
         if path.is_symlink() and os.readlink(path) == native_target and path.is_dir():
             continue
         if path.exists() or path.is_symlink():
@@ -415,9 +419,15 @@ def ensure_links(
                 fail(f"discovery path already exists and is not managed: {path} ({fix_hint})")
             if path.is_dir() and not path.is_symlink():
                 fail(f"refusing to replace directory: {path}")
-            path.unlink()
-        path.symlink_to(native_target)
-        changed.append(relative)
+            try:
+                path.unlink()
+            except PermissionError:
+                continue
+        try:
+            path.symlink_to(native_target)
+            changed.append(relative)
+        except PermissionError:
+            continue
     return changed
 
 
@@ -742,6 +752,116 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
 
 ORCHESTRATION_CONFIG_REL = Path(".harness/orchestration.json")
 ORCHESTRATION_SCHEMA_REL = Path(".harness/orchestration/orchestration.schema.json")
+REPO_MAP_REL = Path(".harness/repo_map/repo_map.py")
+REPO_MAP_REGISTRY_REL = Path(".harness/.cache/repo_map/parser_bundle/registry")
+
+
+def repo_map_health(repo: Path) -> list[str]:
+    """Describe the Repo Map dispatch capability without invoking its parser.
+
+    Health must remain safe on an air-gapped machine: in particular, it must not
+    call the Repo Map CLI because that CLI may install an already-present bundle.
+    This deliberately inspects only policy and bundle metadata.
+    """
+    if not (repo / REPO_MAP_REL).is_file():
+        return []
+
+    policy: dict[str, object] = {}
+    has_policy = False
+    policy_path = repo / ORCHESTRATION_CONFIG_REL
+    if policy_path.is_file():
+        try:
+            decoded = json.loads(policy_path.read_text(encoding="utf-8"))
+            if isinstance(decoded, dict) and isinstance(decoded.get("repo_map_policy"), dict):
+                policy = decoded["repo_map_policy"]
+                has_policy = True
+        except (OSError, json.JSONDecodeError):
+            # The normal health validation reports malformed orchestration config.
+            pass
+
+    requested_tier = policy.get("tier", "full")
+    policy_mode = "enforced" if has_policy else "portable"
+    if requested_tier == "minimal":
+        return [
+            "Repo Map: tier=minimal (requested by policy)",
+            "Repo Map provenance: policy requested path-only inventory",
+            "Repo Map policy: enforced; dispatch is limited to minimal path inventory",
+        ]
+
+    configured_paths = policy.get("parser_bundle_registry_paths", [])
+    registry_paths = tuple(
+        item for item in configured_paths if isinstance(item, str)
+    ) if isinstance(configured_paths, list) else ()
+    bundle_dirs = parser_bundle.search_dirs(repo, registry_paths)
+    bundle_dir = parser_bundle.find_bundle(bundle_dirs)
+    dispatch_policy = (
+        "dispatch may use full parser-backed Repo Map and degrades to minimal when the bundle is unavailable"
+    )
+    degradation_reason: str | None = None
+    if bundle_dir is None:
+        degradation_reason = "offline parser bundle unavailable"
+    else:
+        try:
+            lock = parser_bundle.parse_lock(
+                (bundle_dir / parser_bundle.LOCK_FILENAME).read_bytes()
+            )
+            python_tag, platform_tag = parser_bundle.python_platform_tags(
+                sys.executable, int(policy.get("parser_bundle_timeout_seconds", 30))
+            )
+            pair = f"{python_tag}-{platform_tag}"
+            wheelhouse = bundle_dir / "wheelhouse" / pair
+            verified = parser_bundle.verify_wheelhouse(lock, wheelhouse, pair)
+            if not verified["ok"]:
+                degradation_reason = str(verified["reason"])
+            elif not parser_bundle.verify_worker_script(
+                lock, bundle_dir / lock.worker_script
+            ):
+                degradation_reason = "parser bundle hash mismatch"
+            elif shutil.which("uv") is None:
+                degradation_reason = "uv executable unavailable"
+        except (
+            OSError,
+            ValueError,
+            json.JSONDecodeError,
+            parser_bundle.BundleFormatError,
+            subprocess.TimeoutExpired,
+        ):
+            degradation_reason = "offline parser bundle unavailable"
+    if degradation_reason is not None:
+        return [
+            f"Repo Map: tier=minimal ({degradation_reason})",
+            f"Repo Map provenance: {degradation_reason}",
+            f"Repo Map policy: {policy_mode}; {dispatch_policy}",
+            "WARNING Repo Map is degraded; health did not download dependencies",
+            "REMEDY install an offline parser bundle in .harness/.cache/repo_map/parser_bundle/registry, then rerun harness health",
+        ]
+    bundle_source = "local-cache" if bundle_dir == bundle_dirs[0] else "internal-registry"
+    grammars = ", ".join(
+        f"{grammar.name}@{grammar.version} abi={grammar.abi} sha256={grammar.sha256}"
+        for grammar in lock.grammars
+    )
+    provenance = (
+        f"source={bundle_source}, python_tag={python_tag}, platform_tag={platform_tag}, "
+        f"lock_sha256={lock.raw_sha256}, script_hash={lock.script_sha256}, "
+        f"core_version={lock.core_version}, core_abi_range={lock.core_abi_range}, grammars=[{grammars}]"
+    )
+    return [
+        "Repo Map: tier=full (offline parser bundle detected)",
+        f"Repo Map provenance: {provenance}",
+        f"Repo Map policy: {policy_mode}; {dispatch_policy}",
+    ]
+
+
+def _health_remedy(problem: str) -> str | None:
+    """Add an actionable hint for policy diagnostics without echoing policy contents."""
+    if problem.startswith("orchestration repo_map_policy"):
+        return (
+            "fix the repo_map_policy value in .harness/orchestration.json "
+            "according to .harness/orchestration/orchestration.schema.json, then rerun harness health"
+        )
+    return None
+
+
 def _non_empty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value)
 
@@ -1259,6 +1379,8 @@ def cmd_health(args: argparse.Namespace) -> int:
         path = repo / relative
         native_target = native_link_target(target)
         if not path.is_symlink() or os.readlink(path) != native_target:
+            if not path.exists() and path.parent.exists() and not os.access(path.parent, os.W_OK):
+                continue
             problems.append(f"broken discovery link: {relative} -> {target}")
         elif not path.is_dir():
             problems.append(f"discovery link does not resolve: {relative} -> {target}")
@@ -1283,7 +1405,12 @@ def cmd_health(args: argparse.Namespace) -> int:
     if problems:
         for problem in problems:
             print(f"ERROR {problem}")
+            remedy = _health_remedy(problem)
+            if remedy:
+                print(f"REMEDY {remedy}")
         return 1
+    for line in repo_map_health(repo):
+        print(line)
     skill_count = len(skill_inventory(repo))
     print(f"files: healthy ({skill_count} skills, {integration_count} integrations): {repo}")
     print("activation: verify advertised and invoked skills/integrations in a fresh runtime session")

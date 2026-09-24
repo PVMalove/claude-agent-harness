@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent Harness Repo Map",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "commit",
+    "tier",
+    "parser",
+    "degradation_reason",
+    "token_estimator_version",
+    "parser_provenance",
+    "files",
+    "edges",
+    "diagnostics",
+    "estimated_tokens"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "commit": {"type": "string", "minLength": 40},
+    "tier": {"enum": ["minimal", "full"]},
+    "parser": {"enum": ["path-only", "bundle"]},
+    "degradation_reason": {"type": "string", "minLength": 1},
+    "token_estimator_version": {"type": "string"},
+    "parser_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_mode",
+        "policy_sha256",
+        "max_file_bytes",
+        "max_files",
+        "timeout_seconds",
+        "max_tokens"
+      ],
+      "properties": {
+        "policy_mode": {"enum": ["portable", "enforced"]},
+        "policy_sha256": {"type": ["string", "null"]},
+        "policy_tier": {"enum": ["minimal", "full"]},
+        "max_file_bytes": {"type": "integer", "minimum": 1},
+        "max_files": {"type": "integer", "minimum": 1},
+        "max_path_length": {"type": "integer", "minimum": 1},
+        "max_symbol_length": {"type": "integer", "minimum": 1},
+        "max_signature_length": {"type": "integer", "minimum": 1},
+        "timeout_seconds": {"type": "integer", "minimum": 1},
+        "max_tokens": {"type": "integer", "minimum": 1},
+        "bundle_mode": {"enum": ["applied", "degraded"]},
+        "bundle_source": {"enum": ["local-cache", "internal-registry", "none"]},
+        "python_tag": {"type": "string"},
+        "platform_tag": {"type": "string"},
+        "lock_sha256": {"type": "string"},
+        "script_hash": {"type": "string"},
+        "core_version": {"type": "string"},
+        "core_abi_range": {"type": "string"},
+        "grammars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "version", "abi", "sha256"],
+            "properties": {
+              "name": {"type": "string"},
+              "version": {"type": "string"},
+              "abi": {"type": "integer"},
+              "sha256": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "signatures": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "parser_status": {
+            "enum": ["ok", "syntax_error", "invalid_encoding", "too_large"]
+          }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "target", "kind", "confidence"],
+        "properties": {
+          "source": {"type": "string"},
+          "target": {"type": "string"},
+          "kind": {
+            "enum": ["import", "unique-name-ref", "ambiguous-name-ref"]
+          },
+          "confidence": {"enum": ["high", "medium", "low"]}
+        }
+      }
+    },
+    "diagnostics": {"type": "array"},
+    "estimated_tokens": {"type": "integer", "minimum": 0}
+  }
+}

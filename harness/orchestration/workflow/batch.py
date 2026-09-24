@@ -22,6 +22,7 @@ from harness.orchestration.core.config import (
     _developer_verification_commands,
     _preflight_policy,
     _reject_sensitive,
+    _review_verification_commands,
     _verification_commands,
 )
 from harness.orchestration.core.constants import (
@@ -288,6 +289,7 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         "definition_of_done": dod,
         "prohibited_changes": prohibited,
         "developer_verification_commands": _developer_verification_commands(config),
+        "review_verification_commands": _review_verification_commands(config),
         "verification_commands": _verification_commands(config),
         "required_gates": _strings(
             getattr(args, "required_gate", None) or ["none"], "required_gates"

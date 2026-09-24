@@ -39,11 +39,13 @@ CONFIG_REQUIRED_FIELDS = (
 CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "$schema",
     "developer_verification_commands",
+    "review_verification_commands",
     "test_path_patterns",
     "adaptive_continuation_policy",
     "approval_policy",
     "low_risk_zones",
     "context_package_policy",
+    "repo_map_policy",
     "continuation_policy",
     "retry_policy",
     "preflight_policy",
@@ -448,17 +450,20 @@ def validate_brief_policy(
                 f"dispatch brief {field} must be a list of strings",
                 remedy=INTERNAL_INVARIANT_REMEDY,
             )
-    expected_commands = (
-        config.get(
+    if brief.get("purpose") == "work" and brief.get("role") == "developer":
+        expected_commands = config.get(
             "developer_verification_commands", config.get("verification_commands")
         )
-        if brief.get("role") == "developer" and brief.get("purpose") == "work"
-        else config.get("verification_commands")
-    )
+    elif brief.get("purpose") == "work" and brief.get("role") == "code-review":
+        expected_commands = config.get(
+            "review_verification_commands", config.get("verification_commands")
+        )
+    else:
+        expected_commands = config.get("verification_commands")
     if brief["verification_commands"] != expected_commands:
         raise ContractError(
             "dispatch brief verification_commands must exactly match its project role configuration",
-            remedy="regenerate this brief so verification_commands matches the project's (developer_)verification_commands",
+            remedy="regenerate this brief so verification_commands matches the project's role verification_commands",
         )
     branch = brief["branch"]
     pattern = project.get("branch_pattern", r"^feature/issue-[0-9]+-.+")
@@ -544,6 +549,65 @@ def _policy_problem(
     for field in booleans or set():
         if field in value and not isinstance(value[field], bool):
             problems.append(f"orchestration {key}.{field} must be a boolean")
+    return problems
+
+
+def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
+    """Validate the Repo Map policy without importing its base-capability resource."""
+    value = config.get("repo_map_policy")
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        return ["orchestration repo_map_policy must be an object"]
+    numeric = {
+        "max_files",
+        "max_file_bytes",
+        "max_path_length",
+        "max_symbol_length",
+        "max_signature_length",
+        "timeout_seconds",
+        "max_tokens",
+        "parser_bundle_timeout_seconds",
+        "parser_bundle_max_output_bytes",
+    }
+    patterns = {
+        "allow_paths",
+        "deny_paths",
+        "redact_paths",
+        "redact_symbols",
+        "parser_bundle_registry_paths",
+    }
+    enum_values = {"tier": {"minimal", "full"}}
+    unknown = sorted(set(value) - numeric - patterns - set(enum_values))
+    problems: list[str] = []
+    if unknown:
+        problems.append(
+            f"orchestration repo_map_policy has unknown field(s): {', '.join(unknown)}"
+        )
+    for field in numeric:
+        if field in value and (
+            not _is_int(value[field]) or cast(int, value[field]) < 1
+        ):
+            problems.append(
+                f"orchestration repo_map_policy.{field} must be a positive integer"
+            )
+    for field in patterns:
+        if field in value:
+            item = value[field]
+            if not isinstance(item, list) or any(
+                not isinstance(entry, str) or not entry for entry in item
+            ):
+                problems.append(
+                    f"orchestration repo_map_policy.{field} must be a list of non-empty path globs"
+                )
+    for field, choices in enum_values.items():
+        if field in value and (
+            not isinstance(value[field], str) or value[field] not in choices
+        ):
+            problems.append(
+                f"orchestration repo_map_policy.{field} must be one of: "
+                + ", ".join(sorted(choices))
+            )
     return problems
 
 
@@ -963,6 +1027,11 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         problems.append(
             "orchestration developer_verification_commands must be a list of strings when provided"
         )
+    review_commands = config.get("review_verification_commands")
+    if review_commands is not None and not string_list(review_commands):
+        problems.append(
+            "orchestration review_verification_commands must be a list of strings when provided"
+        )
     approval_policy = config.get("approval_policy", "manual_all")
     if approval_policy not in APPROVAL_POLICIES:
         problems.append(
@@ -1026,6 +1095,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
             },
         )
     )
+    problems.extend(_repo_map_policy_problems(config))
     context_policy = config.get("context_package_policy")
     if isinstance(context_policy, dict):
         maximum = context_policy.get("max_tokens")

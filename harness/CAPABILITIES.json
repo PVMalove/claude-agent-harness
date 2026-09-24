@@ -67,6 +67,8 @@
       "gate_runner",
       "cleanup.py",
       "storage.py",
+      "repo_map",
+      "token_estimator.py",
       "errors.py",
       "__init__.py"
     ]

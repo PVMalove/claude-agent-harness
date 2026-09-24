@@ -3,7 +3,7 @@ name: verify
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [master]
 
 permissions:
   contents: read
@@ -18,12 +18,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install dev dependencies
-        run: pip install .[dev]
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Bootstrap harness environment
+        run: make bootstrap
       - name: Make script executable
         run: chmod +x scripts/verify.py
       - name: Verify harness and clean-room install
-        run: python scripts/verify.py
+        run: make verify
       - name: Check public Git metadata
         if: github.event_name == 'pull_request'
         env:
@@ -31,10 +32,12 @@ jobs:
           COMMIT_RANGE: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
         run: |
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
-          python scripts/check_public_metadata.py --commit-range "$COMMIT_RANGE" --pr-body-file "$RUNNER_TEMP/pr-body.md"
+          .harness/.venv/bin/python scripts/check_public_metadata.py --commit-range "$COMMIT_RANGE" --pr-body-file "$RUNNER_TEMP/pr-body.md"
       - name: Diff coverage of changed Python lines
         if: github.event_name == 'pull_request'
-        run: python scripts/diff_coverage.py
+        env:
+          DIFF_COVERAGE_BASE: ${{ github.event.pull_request.base.sha }}
+        run: .harness/.venv/bin/python scripts/diff_coverage.py
 
   verify-windows:
     runs-on: windows-latest
@@ -43,7 +46,47 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install dev dependencies
-        run: pip install .[dev]
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Bootstrap harness environment
+        run: make bootstrap
       - name: Verify harness and clean-room install
-        run: python scripts/verify.py
+        run: make verify
+
+  repo-map-bundle:
+    # Real tree-sitter bundle path (ADR 0024): pinned wheels -> sha256 check -> offline bundle ->
+    # bundle tests (never skipped here) and the separate mypy run of the tree-sitter worker.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Bootstrap harness environment
+        run: make bootstrap
+      - name: Download pinned parser wheels and verify sha256
+        run: |
+          mkdir -p "$RUNNER_TEMP/wheels"
+          grep -v '^#' .github/parser-bundle-wheels.txt | while read -r sha url; do
+            [ -n "$sha" ] || continue
+            file="$RUNNER_TEMP/wheels/$(basename "$url")"
+            curl --fail --silent --show-error --location --output "$file" "$url"
+            echo "$sha  $file" | sha256sum --check --strict
+          done
+      - name: Assemble offline parser bundle
+        run: .harness/.venv/bin/python scripts/build_parser_bundle.py --wheelhouse "$RUNNER_TEMP/wheels" --out "$RUNNER_TEMP/parser-bundle"
+      - name: Repo Map tests against the real bundle
+        env:
+          HARNESS_PARSER_BUNDLE_DIR: ${{ runner.temp }}/parser-bundle
+          PYTHONPATH: .
+        run: .harness/.venv/bin/python -m pytest tests/test_repo_map_tree_sitter.py tests/test_repo_map.py tests/test_parser_bundle.py
+      - name: Separate mypy run of the tree-sitter worker
+        run: |
+          uv venv --python .harness/.venv/bin/python "$RUNNER_TEMP/worker-typecheck"
+          uv pip install --offline --no-config --no-index --only-binary :all: \
+            --find-links "$RUNNER_TEMP/wheels" \
+            --python "$RUNNER_TEMP/worker-typecheck/bin/python" \
+            tree-sitter==0.26.0 tree-sitter-python==0.25.0
+          .harness/.venv/bin/python -m mypy --strict --disallow-any-explicit \
+            --python-executable "$RUNNER_TEMP/worker-typecheck/bin/python" \
+            harness/repo_map/tree_sitter_worker.py

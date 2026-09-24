@@ -37,15 +37,20 @@ RETRY_REASON_CATEGORIES = (
 NEXT_ACTION_DISPATCH_ROLE = {
     "architect": "architect",
     "developer-retry": "developer",
+    "verification": "verification",
     "code-review": "code-review",
     "qa": "qa",
     "publish": "developer",
 }
-DISPATCH_PURPOSES = {"work", "publish"}
+DISPATCH_PURPOSES = {"work", "verification", "publish"}
 ROLE_TRANSPORTS = {"orca", "in-process"}
 DEFAULT_ZONE = "repository"
 DEFAULT_PROFILE = "session"
-DEFAULT_STALE_AFTER_SECONDS = 900
+# A developer can legitimately spend tens of minutes in one build, migration, or test command.
+# Keep the default long enough for that work, while the handoff still requires frequent, explicit
+# heartbeats so an actually lost worker is eventually surfaced.
+DEFAULT_STALE_AFTER_SECONDS = 3_600
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 300
 DEFAULT_COMMUNICATION_POLICY = {
     "agent_to_agent_language": "en",
     "coordinator_report_language": "ru",
@@ -128,6 +133,8 @@ DISPATCH_FIELDS = {
     "transition_digest",
     "retry_idempotency_key",
     "orchestration_policy",
+    "liveness",
+    "commit_plan",
 }
 # The four fields of the transition-bound approval contract (issue #250) are all present or all absent.
 POLICY_BRIEF_FIELDS = frozenset(
@@ -147,7 +154,7 @@ REPORT_FIELDS = {
     "blockers",
     "next_coordinator_action",
 }
-REPORT_OPTIONAL_FIELDS = {"risk_triggers", "review", "report_language"}
+REPORT_OPTIONAL_FIELDS = {"risk_triggers", "review", "report_language", "commit_map"}
 RISK_ASSESSMENT_FIELDS = {
     "risk_assessment_id",
     "batch_id",
@@ -176,8 +183,22 @@ CONTEXT_PACKAGE_FIELDS = {
     "role",
     "inclusion_reason",
     "estimated_tokens",
+    "schema_version",
+    "parser",
+    "parser_provenance",
 }
-LEGACY_CONTEXT_PACKAGE_FIELDS = CONTEXT_PACKAGE_FIELDS - {"estimated_tokens"}
+# Schema version 1 (issue #274): before build_context_package delegated its graph/signatures to
+# Repo Map, a package had no schema_version/parser/parser_provenance. Kept valid for one schema
+# version so an already-persisted v1 record still reads back.
+LEGACY_CONTEXT_PACKAGE_FIELDS = CONTEXT_PACKAGE_FIELDS - {
+    "schema_version",
+    "parser",
+    "parser_provenance",
+}
+# Pre-dates estimated_tokens entirely; kept for reading genuinely old ledger records.
+LEGACY_CONTEXT_PACKAGE_FIELDS_NO_TOKENS = LEGACY_CONTEXT_PACKAGE_FIELDS - {
+    "estimated_tokens"
+}
 CHECKPOINT_NO_CONTEXT_PACKAGE = "not applicable — no context package registered"
 CHECKPOINT_INPUT_FIELDS = {
     "dispatch_id",

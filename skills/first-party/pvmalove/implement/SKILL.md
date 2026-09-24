@@ -28,6 +28,15 @@ If the command is unavailable or cannot read its state, stop and tell the develo
 Do not infer or repair an opt-in capability. Process one ticket to a terminal batch state before
 beginning another.
 
+If another batch blocks the ticket or zone, inspect `batch list --open`, the conflicting dispatch,
+and its decision packet. Tell the developer which batch is blocking and how to finish it normally.
+If its worker can no longer produce a report, show a copyable `batch abandon` command with the
+actual batch ID, the verified operator name, `--approved-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`,
+and a reason grounded in the observed failure. Present this as an operator action requiring their
+explicit approval; never supply `--approved-by` as though they already approved, or execute the
+command for them without that approval. `ledger clean` only removes orphaned evidence, and
+`ledger reset` does not clear an active batch.
+
 ## Coordinator contract
 
 Resolve the tracker ticket, issue branch and blockers without opening a second batch for the same
@@ -40,6 +49,14 @@ immutable brief. Pass the brief's `report_staging_path` to the worker verbatim; 
 guess where its report belongs writes it outside the project. The coordinator never writes feature code or repairs state by hand. A report is
 evidence, not permission to advance. Architect precedes developer; accepted candidate proceeds
 through the required review/QA/publish gates.
+
+Before every write-role dispatch, record an ordered commit plan in the immutable brief. Each entry
+names one independently reviewable logical change and its expected files; use one entry only when
+the entire approved change is inseparable. A recovery preserves the accepted plan, or replaces it
+with a newly approved plan that explains the changed boundary. The developer's completion report
+maps every created commit to exactly one entry and explains any approved deviation. Do not collapse
+unrelated implementation, tests, documentation, or type-only repairs into a recovery commit merely
+because they are staged together.
 
 Every transition needs explicit approval, and approval means the operator answered — not that this
 session concluded the next step was obvious. Never write `--approved-by` on the operator's behalf,

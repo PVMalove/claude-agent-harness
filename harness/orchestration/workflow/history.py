@@ -37,6 +37,7 @@ from harness.orchestration.core.constants import (
     DISPATCH_FIELDS,
     DISPATCH_PURPOSES,
     LEGACY_CONTEXT_PACKAGE_FIELDS,
+    LEGACY_CONTEXT_PACKAGE_FIELDS_NO_TOKENS,
     LEGACY_PLAN_FIELDS,
     LIVE_DISPATCH_STATES,
     PLAN_FIELDS,
@@ -187,9 +188,10 @@ def _validate_context_package(
     root: Path, batch: JsonObject, package: JsonObject
 ) -> None:
     _reject_sensitive(package, "context package")
-    if (
-        set(package) != CONTEXT_PACKAGE_FIELDS
-        and set(package) != LEGACY_CONTEXT_PACKAGE_FIELDS
+    if set(package) not in (
+        CONTEXT_PACKAGE_FIELDS,
+        LEGACY_CONTEXT_PACKAGE_FIELDS,
+        LEGACY_CONTEXT_PACKAGE_FIELDS_NO_TOKENS,
     ):
         raise CoordinatorError(
             "context package schema mismatch",
@@ -232,6 +234,27 @@ def _context_package_summary(package: JsonObject) -> JsonObject:
         "related_tests": package["related_tests"],
         "precedent_cards": package["precedent_cards"],
         "estimated_tokens": package.get("estimated_tokens"),
+    }
+
+
+def _context_package_quality_warning(package: JsonObject) -> JsonObject | None:
+    """Return the Repo Map degradation facts a human must see before approving a dispatch."""
+    provenance = package.get("parser_provenance")
+    if not isinstance(provenance, dict) or provenance.get("tier") == "full":
+        return None
+    tier = provenance.get("tier")
+    degradation_reason = provenance.get("degradation_reason")
+    nested_provenance = provenance.get("parser_provenance")
+    if (
+        not isinstance(tier, str)
+        or not isinstance(degradation_reason, str)
+        or not isinstance(nested_provenance, dict)
+    ):
+        return None
+    return {
+        "tier": tier,
+        "degradation_reason": degradation_reason,
+        "parser_provenance": nested_provenance,
     }
 
 
@@ -298,27 +321,49 @@ def _context_package_freshness(
 
 
 def _latest_developer_candidate(repo: Path, root: Path, batch: JsonObject) -> str:
-    accepted = [
-        item
-        for item in batch.get("dispatches", [])
-        if item.get("role") == "developer"
-        and item.get("state") == "reported"
-        and item.get("decision", {}).get("decision") in {"accept", "override-warning"}
-    ]
-    if not accepted:
+    candidates: list[str] = []
+    for item in batch.get("dispatches", []):
+        if item.get("state") != "reported" or item.get("decision", {}).get(
+            "decision"
+        ) not in {"accept", "override-warning"}:
+            continue
+        # Legacy dispatch ledger entries predate the explicit ``purpose`` field.
+        # They are developer work dispatches unless they explicitly identify another
+        # purpose (currently only publish), so candidate history must retain them.
+        if item.get("role") == "developer" and item.get("purpose", "work") == "work":
+            report = _pending_report(root, batch, item)
+            candidates.append(_candidate_commit(repo, report["commit_sha"]))
+        elif item.get("role") == "verification":
+            dispatch = _load_dispatch(root, item["dispatch_id"])
+            candidate = dispatch.get("candidate_commit")
+            if isinstance(candidate, str):
+                candidates.append(_candidate_commit(repo, candidate))
+    if not candidates:
         raise CoordinatorError(
             "candidate dispatch requires an accepted developer completion report",
             remedy="accept the developer's completion report before creating a candidate dispatch",
         )
-    report = _pending_report(root, batch, accepted[-1])
-    try:
-        return _candidate_commit(repo, report["commit_sha"])
-    except (KeyError, CoordinatorError) as exc:
+    return candidates[-1]
+
+
+def _latest_registered_verification_candidate(repo: Path, batch: JsonObject) -> str:
+    """Return the append-only candidate awaiting its read-only verification dispatch."""
+    registrations = batch.get("candidate_registrations", [])
+    if not isinstance(registrations, list):
         raise CoordinatorError(
-            "accepted developer report has no resolvable candidate commit",
-            remedy="the accepted developer report has no resolvable candidate commit -- "
-            + INTERNAL_INVARIANT_REMEDY,
-        ) from exc
+            "candidate registrations are malformed",
+            remedy="repair the coordinator ledger before creating another dispatch",
+        )
+    for registration in reversed(registrations):
+        if not isinstance(registration, dict):
+            continue
+        candidate = registration.get("candidate_commit")
+        if isinstance(candidate, str):
+            return _candidate_commit(repo, candidate)
+    raise CoordinatorError(
+        "verification dispatch requires a registered infrastructure-blocked developer candidate",
+        remedy="retry a blocked developer report with verified operational evidence before creating verification",
+    )
 
 
 def _accepted_architect(batch: JsonObject) -> bool:
@@ -658,6 +703,21 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
             remedy="the dispatch orchestration_policy is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
+    liveness = dispatch.get("liveness")
+    if liveness is not None and (
+        not isinstance(liveness, dict)
+        or set(liveness) != {"heartbeat_every_seconds", "stale_after_seconds"}
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+            for value in liveness.values()
+        )
+        or liveness["heartbeat_every_seconds"] > liveness["stale_after_seconds"]
+    ):
+        raise CoordinatorError(
+            "dispatch liveness policy is malformed",
+            remedy="the dispatch liveness policy is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
 
 
 def _validate_dispatch(
@@ -673,6 +733,8 @@ def _validate_dispatch(
         "worker_attestation_required",
         "snapshot_commit",
         "communication_policy",
+        "commit_plan",
+        "liveness",
     }
     # A brief written before the canonical reporting path existed keeps its historical shape, the
     # same way every earlier field addition is treated here.
@@ -725,10 +787,10 @@ def _validate_dispatch(
         )
     package_id = dispatch.get("context_package_id")
     package_sha = dispatch.get("context_package_sha256")
-    if dispatch["role"] in {"architect", "developer", "code-review"}:
+    if dispatch["role"] in {"architect", "developer", "verification", "code-review"}:
         if not isinstance(package_id, str) or not isinstance(package_sha, str):
             raise CoordinatorError(
-                "architect, developer and code-review briefs require a Context Package reference",
+                "architect, developer, verification and code-review briefs require a Context Package reference",
                 remedy="reference a registered Context Package in the dispatch brief for this role",
             )
         package = _load_context_package(root, package_id)
@@ -760,8 +822,8 @@ def _validate_dispatch(
         or dispatch.get("context_package_summary") is not None
     ):
         raise CoordinatorError(
-            "only architect, developer and code-review briefs may reference a Context Package",
-            remedy="only reference a Context Package from an architect, developer or code-review brief",
+            "only architect, developer, verification and code-review briefs may reference a Context Package",
+            remedy="only reference a Context Package from an architect, developer, verification or code-review brief",
         )
     entry = next(
         (
@@ -872,7 +934,9 @@ def _validate_dispatch(
                 + INTERNAL_INVARIANT_REMEDY,
             )
     candidate = dispatch.get("candidate_commit")
-    if dispatch["role"] in {"code-review", "qa"} and not isinstance(candidate, str):
+    if dispatch["role"] in {"verification", "code-review", "qa"} and not isinstance(
+        candidate, str
+    ):
         raise CoordinatorError(
             "review and QA dispatches must pin a candidate commit",
             remedy="pass --candidate-commit for a review or QA dispatch",
@@ -884,7 +948,13 @@ def _validate_dispatch(
                 remedy="only a pinned developer brief may be published",
             )
         _accepted_qa_for_candidate(root, batch, candidate)
-    if candidate is not None:
+    if dispatch["role"] == "verification":
+        if candidate != _latest_registered_verification_candidate(repo, batch):
+            raise CoordinatorError(
+                "verification dispatch must pin the latest registered candidate",
+                remedy="pin the candidate_commit recorded by the infrastructure retry decision",
+            )
+    elif candidate is not None:
         resolved = _candidate_commit(repo, candidate)
         if resolved != candidate:
             raise CoordinatorError(

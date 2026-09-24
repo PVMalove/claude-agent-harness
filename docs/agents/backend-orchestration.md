@@ -170,6 +170,7 @@ worktree, branch и SHA; legacy projects могут включить это по
   },
   "concurrency_budget": 1,
   "developer_verification_commands": ["python -m pytest tests/unit"],
+  "review_verification_commands": ["python -m pytest tests/unit"],
   "verification_commands": ["python -m pytest"]
 }
 ```
@@ -185,9 +186,10 @@ immutable brief, обязаны пройти model self-report и вернуть
 `verification_commands` выполняет clean-room QA, а developer получает
 `developer_verification_commands`. Это необязательное поле: без него сохраняется совместимый
 режим, в котором developer получает полный список. Задавайте в нём быстрые task-scoped проверки,
-а в `verification_commands` — независимый полный gate. Code-review получает полный список, но
-запускает каждую команду через `test_summary.py`: в report остаются исходная команда и bounded
-summary, а санитизированный полный лог доступен только для упавшей проверки.
+а в `verification_commands` — независимый полный gate. `review_verification_commands` так же
+необязателен и управляет только code-review; без него review получает полный список. Code-review
+запускает каждую полученную команду через `test_summary.py`: в report остаются исходная команда и
+bounded summary, а санитизированный полный лог доступен только для упавшей проверки.
 
 Зона — не подсказка, а граница: write-роль изменяет только разрешённые пути своей зоны. Если роли
 нужен более узкий scope, задайте ей `write_paths`: brief и completion report будут проверяться по
@@ -271,7 +273,7 @@ manifests), а значением — непустой список уникал
 меняет то, под чем он был утверждён:
 
 ```json
-"attention_policy": {"retry_queue_seconds": 3600, "max_infrastructure_retries": 2, "stale_dispatch_seconds": 900},
+"attention_policy": {"retry_queue_seconds": 3600, "max_infrastructure_retries": 2, "stale_dispatch_seconds": 3600},
 "approval_ttl_seconds": 3600,
 "extensions": {"transport_health": "none", "verification_environment_health": "none",
                "retry_reason_classifier": "none", "context_telemetry_provider": "none", "human_notifier": "none"}
@@ -298,8 +300,8 @@ manifests), а значением — непустой список уникал
 Discovery Pipeline переносит проверенный контекст от проектирования к dispatch. `/grilling` ведёт
 `Live Artifact` с кандидатными путями, но добавляет путь только после явного согласия пользователя.
 `/to-spec` сохраняет утверждённый список в эпике под `## Relevant Files (Discovery Context)`, а
-`/to-tickets` назначает каждый путь подходящему tracer-bullet тикету и строит path-only filtered Repo
-Map. Один cheap advisory-вызов может добавить только точные зависимости из этого Repo Map; его
+`/to-tickets` назначает каждый путь подходящему tracer-bullet тикету и строит Path
+inventory. Один cheap advisory-вызов может добавить только точные зависимости из этого Path inventory; его
 вывод не является evidence или authority.
 
 Перед первым dispatch coordinator может зарегистрировать детерминированный Context Package в
@@ -475,6 +477,11 @@ operational-категории могут повторить read-only стад�
 запускают. `--retry-role developer` принудительно выбирает developer retry там, где coordinator
 иначе повторил бы ту же роль на том же SHA.
 
+Code-review `blocker` никогда не принимается. Пока `retry_policy.max_developer_retries` ещё допускает
+developer retry, для него доступны `retry` или `abandon`; после исчерпания budget `retry`
+отклоняется, а blocker закрывается через `block`, `fail` или `abandon`, после чего работа
+разбивается или перепланируется в новом batch.
+
 Решение `abandon` доступно после любого completion report. Оно требует явного approval и непустого
 `--reason`, переводит batch в терминальный `abandoned` и помечает незакрытые dispatch как
 `abandoned`:
@@ -507,6 +514,10 @@ Context Package ID и required gates. `dispatch create` с явным approval �
 переходом; ledger-валидация пересчитывает его. Policy approval (`milestone`, `low_risk`) выводится из
 создаваемого перехода и привязан к его собственному digest. При `human_approval_gate: "tty"` digest
 показывается в запросе подтверждения.
+
+Если Repo Map у закрепляемого пакета имеет tier не `full`, результат `dispatch propose` дополнительно
+содержит `context_package_quality_warning`: tier, причину деградации и parser provenance. Это
+предупреждение для утверждающего человека, а не блокировка dispatch; для `full` поле отсутствует.
 
 Просроченное (`approval_ttl_seconds`) или отклонённое в терминале approval — fail-closed: coordinator
 не повторяет вызов сам и не подставляет более старое approval.
@@ -637,27 +648,20 @@ write-роли либо pinned SHA review-роли; расхождение не�
 `self-report` буквально совпадал с immutable `snapshot_commit` из brief. После `batch decide --decision
 retry`, маршрутизированного в `developer-retry` (например, после code-review blocker; повтор на том же
 SHA developer dispatch не создаёт), новый developer dispatch **всегда** пинит
-`snapshot_commit` обратно на `base_commit` batch-а, а не на отклонённый кандидатный коммит — чтобы retry
-не мог молча унаследовать состояние отклонённого коммита. Это значит, что coordinator обязан сам
-привести worktree к этому состоянию **до** `dispatch send`, иначе первый же `dispatch self-report`
-новой worker session упадёт с `AttestationError`:
+`snapshot_commit` на последний кандидатный коммит. Retry продолжает его историю и добавляет отдельные
+логические коммиты для замечаний review по immutable commit plan; coordinator не выполняет и не
+предлагает `git reset --soft`. Если HEAD worktree не совпадает с pinned snapshot, исправляйте
+конфигурацию нового dispatch или выбирайте worktree на этом commit, не переписывая существующую историю.
 
-```bash
-git -C <worktree> status --short
-git -C <worktree> reset --soft <base_commit>
-```
-
-Используйте именно `--soft`, не `--hard`: он передвигает только HEAD, оставляя diff отклонённого
-кандидата staged в рабочем дереве — новая worker session стартует с тем же кодом и правит только то,
-что назвал review, вместо повторной реализации с нуля. Ошибка attestation-несовпадения теперь сама
-называет точную команду для исправления.
-
-Пока роль работает, она отбивает heartbeat, а coordinator-сессия опрашивает состояние:
+Пока роль работает, она отбивает heartbeat, а coordinator-сессия опрашивает состояние. По умолчанию
+dispatch допускает до часа тишины для долгой сборки или теста, но immutable brief требует heartbeat
+сразу после self-report и затем не реже раза в пять минут. Это сохраняет быстрый сигнал о живом
+worker, не объявляя работающего developer stale из-за одного долгого tool call:
 
 ```bash
 python .harness/orchestration/coordinator.py --repo . dispatch heartbeat --dispatch <dispatch-id>
 python .harness/orchestration/coordinator.py --repo . dispatch status \
-  --batch <batch-id> --stale-after 900
+  --batch <batch-id> --stale-after 3600
 ```
 
 `dispatch status` показывает для каждого dispatch роль, транспорт, `resolved_model`, результат
@@ -853,7 +857,8 @@ isolated worker. Он не выбирает scope, не запускает check
 
 Пример brief для write-роли. Для developer work-dispatch `verification_commands` должен буквально
 совпадать с `developer_verification_commands` (либо с `verification_commands`, если focused-список
-не задан); для остальных ролей — с `verification_commands`. `write_paths` — буквально с путями
+не задан); для code-review work-dispatch — с `review_verification_commands` по тому же правилу;
+для остальных ролей — с `verification_commands`. `write_paths` — буквально с путями
 выбранной зоны. Не добавляйте
 поля или значения, похожие на секреты.
 

@@ -18,6 +18,17 @@ COUNT_RE = re.compile(
 )
 DURATION_RE = re.compile(r"\bin\s+(?P<duration>[0-9.]+s)\b")
 FAILURE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(?P<nodeid>.+?)(?:\s+-\s+.*)?$")
+TRACEBACK_START_RE = re.compile(r"^Traceback \(most recent call last\):$")
+EXCEPTION_RE = re.compile(
+    r"^(?:E\s+)?(?P<exception>[A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt|Fault|Failure))"
+    r"(?::\s*(?P<message>.*))?$"
+)
+TOOL_ERROR_RE = re.compile(
+    r"^(?P<location>.+?:\d+(?::\d+)?)\s*:\s*"
+    r"(?P<level>fatal\s+error|error)\s*:\s*(?P<message>.+)$",
+    re.IGNORECASE,
+)
+ERROR_MESSAGE_RE = re.compile(r"^(?:ERROR|FATAL):\s*(?P<message>.+)$")
 _GATE_RUNNER: ModuleType | None = None
 
 
@@ -27,6 +38,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--log-dir", default=".harness/test-logs")
     parser.add_argument("--max-failures", type=int, default=10)
+    parser.add_argument("--max-diagnostics", type=int, default=10)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if args.command[:1] == ["--"]:
@@ -35,6 +47,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("a command is required after --")
     if args.max_failures < 1:
         parser.error("--max-failures must be positive")
+    if args.max_diagnostics < 1:
+        parser.error("--max-diagnostics must be positive")
     return args
 
 
@@ -89,7 +103,55 @@ def render_counts(counts: dict[str, int]) -> str | None:
     return ", ".join(parts)
 
 
-def summarize(command: list[str], log_dir: Path, max_failures: int) -> int:
+def collect_diagnostics(lines: list[str], max_diagnostics: int) -> list[str]:
+    """Extract stable failure signals instead of returning an arbitrary log tail.
+
+    Commands wrapped by this tool are not necessarily pytest, so this deliberately recognizes
+    common Python tracebacks and compiler/linter diagnostics without requiring an output plugin.
+    The input has already been sanitized before it reaches this function.
+    """
+    diagnostics: list[str] = []
+    in_traceback = False
+
+    def add(kind: str, message: str) -> None:
+        entry = f"{kind}: {message.strip()}"
+        if message.strip() and entry not in diagnostics and len(diagnostics) < max_diagnostics:
+            diagnostics.append(entry)
+
+    for line in lines:
+        stripped = line.strip()
+        # gate_runner records the invoked command as "$ ...". Its quoted arguments may look
+        # like diagnostics, but they are input, not a failure emitted by the command.
+        if stripped.startswith("$ "):
+            continue
+        if TRACEBACK_START_RE.match(stripped):
+            in_traceback = True
+            continue
+
+        exception = EXCEPTION_RE.match(stripped)
+        if exception:
+            message = exception.group("exception")
+            if exception.group("message"):
+                message = f"{message}: {exception.group('message')}"
+            add("Traceback" if in_traceback else "Exception", message)
+            in_traceback = False
+            continue
+
+        tool_error = TOOL_ERROR_RE.match(stripped)
+        if tool_error:
+            add("Error", f"{tool_error.group('location')}: {tool_error.group('message')}")
+            continue
+
+        error_message = ERROR_MESSAGE_RE.match(stripped)
+        if error_message:
+            add("Error", error_message.group("message"))
+
+    return diagnostics
+
+
+def summarize(
+    command: list[str], log_dir: Path, max_failures: int, max_diagnostics: int
+) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -115,9 +177,11 @@ def summarize(command: list[str], log_dir: Path, max_failures: int) -> int:
         pytest_duration: str | None = None
         failure_count = 0
         failures: list[str] = []
+        sanitized_lines: list[str] = []
         for line in result.artifact.splitlines(keepends=True):
             sanitized = redact(line)
             capture.write(sanitized)
+            sanitized_lines.append(sanitized)
             found = {
                 match.group("kind"): int(match.group("count"))
                 for match in COUNT_RE.finditer(sanitized)
@@ -143,6 +207,8 @@ def summarize(command: list[str], log_dir: Path, max_failures: int) -> int:
         )
         elapsed = result.duration_seconds
 
+    diagnostics = collect_diagnostics(sanitized_lines, max_diagnostics)
+
     print("=== TEST SUMMARY ===")
     if exit_code == 0:
         temporary_log.unlink(missing_ok=True)
@@ -163,13 +229,19 @@ def summarize(command: list[str], log_dir: Path, max_failures: int) -> int:
         remaining = failure_count - len(failures)
         if remaining > 0:
             print(f"- … and {remaining} more")
+    if diagnostics:
+        print("Diagnostics:")
+        for diagnostic in diagnostics:
+            print(f"- {diagnostic}")
     print(f"Full log: {log_path.as_posix()}")
     return exit_code
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    return summarize(args.command, Path(args.log_dir), args.max_failures)
+    return summarize(
+        args.command, Path(args.log_dir), args.max_failures, args.max_diagnostics
+    )
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ Archify (`*.json`), а в `previews/` — статичное PNG той же д�
 | Диаграмма | О чём |
 |---|---|
 | [Пайплайн доставки](./delivery-pipeline.workflow.html) | Полный маршрут от идеи до merge: `/grill-with-docs` → `/to-spec` → `/to-tickets` → `/implement` → `/to-pull-requests`, с ветками `hitl` (`/to-guide`) и коротким `/fast-implement`. |
-| [Discovery Pipeline](./discovery-pipeline.workflow.html) | Explicit opt-in `Live Artifact` → `Relevant Files` → ticket-specific filtered Repo Map → один cheap advisory → LLM-free Context Package. |
+| [Discovery Pipeline](./discovery-pipeline.workflow.html) | Explicit opt-in `Live Artifact` → `Relevant Files` → ticket-specific Path inventory → один cheap advisory → LLM-free Context Package. |
 | [Конвейер `/implement`](./implement-pipeline.workflow.html) | Пять гейтов одного тикета: архитектор → approve → разработчик → code review → approve → QA (с циклом на исправления) → итоговый отчёт → публикация. |
 | [Резолв runtime и dispatch](./backend-runtime.workflow.html) | Как назначение роли превращается в immutable brief, как выбирается транспорт (`orca` или `in-process`) и как dispatch подтверждает свою модель и живость. |
 | [Жизненный цикл batch](./backend-batch.lifecycle.html) | Состояния batch: `planned → awaiting-approval ↔ active → completed`, плюс выходы `blocked` и `failed`; checkpoint/resume и base gate описаны в соседней Discovery/implement схеме и operational docs. |

@@ -11,6 +11,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+import atexit
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -44,12 +46,36 @@ def run_ok(
         sys.exit(result.returncode)
 
 
+def run_stage(
+    name: str,
+    cmd: list[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    stdout: int | None = None,
+    cwd: Path | None = None,
+) -> None:
+    """Run one named verification stage and emit its elapsed monotonic duration."""
+    started = time.perf_counter()
+    try:
+        run_ok(cmd, env=env, stdout=stdout, cwd=cwd)
+    except SystemExit:
+        print(f"[verify] {name}: failed in {time.perf_counter() - started:.2f}s")
+        raise
+    print(f"[verify] {name}: passed in {time.perf_counter() - started:.2f}s")
+
+
 def isolated_temp_env(base: Mapping[str, str], run_tmp: Path) -> dict[str, str]:
     """`base` with every temp variable pointed at this run's own root (issue #305). pytest's
-    default root is %TEMP%\pytest-of-<USERNAME>, shared by every account that inherits USERNAME
+    default root is %TEMP%\\pytest-of-<USERNAME>, shared by every account that inherits USERNAME
     and TEMP (agent sandboxes run as separate local users); Python 3.13+ creates it owner-only on
     Windows, so whichever account made it first locks the others out with WinError 5."""
-    return dict(base, TMP=str(run_tmp), TEMP=str(run_tmp), TMPDIR=str(run_tmp))
+    return dict(
+        base,
+        TMP=str(run_tmp),
+        TEMP=str(run_tmp),
+        TMPDIR=str(run_tmp),
+        PYTHONPYCACHEPREFIX=str(run_tmp / "pycache"),
+    )
 
 
 def _clear_read_only(
@@ -111,6 +137,31 @@ def check_docs_agents_mirror() -> None:
             sys.exit(
                 f"docs/agents/{template.name} has drifted from harness/project/docs-agents/{template.name}"
             )
+
+
+RETIRED_PATH_INVENTORY_TERM = re.compile(r"filtered\s+Repo\s+Map", re.IGNORECASE)
+PATH_INVENTORY_ROOTS = (
+    ROOT / "skills" / "first-party" / "pvmalove" / "to-tickets",
+    ROOT / "docs" / "agents",
+    DOCS_AGENTS_TEMPLATE,
+    ROOT / "docs" / "skills",
+    ROOT / "docs" / "diagrams",
+    ROOT / "docs" / "ARCHITECTURE.md",
+    ROOT / "README.md",
+)
+
+
+def check_no_retired_path_inventory_term() -> None:
+    """The path-only artifact /to-tickets builds is the "Path inventory"; "Repo Map" belongs only
+    to the semantic map (CONTEXT.md). Catch the retired "filtered Repo Map" name coming back."""
+    for base in PATH_INVENTORY_ROOTS:
+        for path in sorted(base.rglob("*") if base.is_dir() else [base]):
+            if path.is_file() and RETIRED_PATH_INVENTORY_TERM.search(
+                path.read_text(encoding="utf-8", errors="replace")
+            ):
+                sys.exit(
+                    f'{path}: retired term "filtered Repo Map"; use "Path inventory"'
+                )
 
 
 def check_docs_agents_enumeration() -> None:
@@ -314,6 +365,14 @@ def check_no_dispatch_specific_data_in_always_sent_files() -> None:
 
 
 def main() -> None:
+    # Create the short, owner-specific root before *any* Python subprocess.  py_compile and mypy
+    # also write bytecode; leaving their cache beside source files fails in restricted worktrees.
+    tests_root = storage_path(ROOT, "tmp", "tests")
+    tests_root.mkdir(parents=True, exist_ok=True)
+    run_tmp = Path(tempfile.mkdtemp(prefix="v", dir=tests_root))
+    (run_tmp / ".active.json").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    atexit.register(lambda: remove_tree(run_tmp) if run_tmp.exists() else None)
+    test_env = isolated_temp_env(dict(os.environ, PYTHONPATH=str(ROOT)), run_tmp)
     run_ok(
         [
             sys.executable,
@@ -321,7 +380,7 @@ def main() -> None:
             "json.tool",
             str(ROOT / "harness" / "CAPABILITIES.json"),
         ],
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, env=test_env,
     )
     run_ok(
         [
@@ -333,7 +392,7 @@ def main() -> None:
             str(ROOT / "bin" / "install-global"),
             str(ROOT / "scripts" / "verify.py"),
             str(ROOT / "scripts" / "test_clean_room.py"),
-        ]
+        ], env=test_env
     )
 
     start_project = ROOT / "global-skills" / "start-project" / "SKILL.md"
@@ -350,10 +409,18 @@ def main() -> None:
         "самоотчёт роли не является token telemetry",
     )
 
-    run_ok([sys.executable, str(ROOT / "scripts" / "build_registry.py")])
+    run_ok([sys.executable, str(ROOT / "scripts" / "build_registry.py")], env=test_env)
     run_ok(["git", "-C", str(ROOT), "diff", "--exit-code", "--", "skills/REGISTRY.md"])
 
     check_docs_agents_mirror()
+    check_no_retired_path_inventory_term()
+    grep_contains(
+        ROOT / "skills" / "first-party" / "pvmalove" / "to-tickets" / "SKILL.md",
+        "or symbol signatures",
+    )
+    agents_seed = ROOT / "harness" / "project" / "AGENTS.md.tmpl"
+    grep_contains(agents_seed, "For code discovery, run the Repo Map")
+    grep_contains(agents_seed, "then use targeted `rg` searches and reads.")
     check_docs_agents_enumeration()
     check_pvmalove_override_docs_sync()
     check_pvmalove_additions_docs_sync()
@@ -361,21 +428,25 @@ def main() -> None:
     check_vendor_pin()
     check_no_dispatch_specific_data_in_always_sent_files()
 
-    run_ok([sys.executable, "-m", "mypy"], cwd=ROOT)
+    run_stage("mypy", [sys.executable, "-m", "mypy"], cwd=ROOT, env=test_env)
 
-    # mkdtemp keeps the root short (the clean-room tree is deep, see its _check_path_budget) and
-    # owned by this run.
-    tests_root = storage_path(ROOT, "tmp", "tests")
-    tests_root.mkdir(parents=True, exist_ok=True)
-    run_tmp = Path(tempfile.mkdtemp(prefix="v", dir=tests_root))
-    (run_tmp / ".active.json").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
     try:
-        test_env = isolated_temp_env(dict(os.environ, PYTHONPATH=str(ROOT)), run_tmp)
-        run_ok(
-            [sys.executable, "-m", "pytest", "-n", "4", str(ROOT / "tests")],
+        run_stage(
+            "pytest",
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-n",
+                "4",
+                "--basetemp",
+                str(run_tmp / "p"),
+                str(ROOT / "tests"),
+            ],
             env=test_env,
         )
-        run_ok(
+        run_stage(
+            "clean-room",
             [sys.executable, str(ROOT / "scripts" / "test_clean_room.py")],
             env=dict(test_env, HARNESS_TEST_RUN_ROOT=str(run_tmp)),
         )

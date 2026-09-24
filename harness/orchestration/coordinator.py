@@ -24,8 +24,8 @@ from typing import cast
 # `.harness/orchestration/coordinator.py` -- a different directory name than the source tree's
 # `harness/`. Alias `harness` to whichever of the two this file actually lives under so
 # `from harness...` resolves the same way in both places. See docs/adr/0018.
-_HARNESS_ROOT = Path(__file__).resolve().parents[1]
-_REPO_ROOT = _HARNESS_ROOT.parent
+_HARNESS_ROOT: Path = Path(__file__).resolve().parents[1]
+_REPO_ROOT: Path = _HARNESS_ROOT.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 if _HARNESS_ROOT.name != "harness":
@@ -234,7 +234,7 @@ def main() -> int:
             cast(io.TextIOWrapper, stream).reconfigure(encoding="utf-8")
         except (AttributeError, OSError):
             pass
-    args = parser().parse_args()
+    args: argparse.Namespace = parser().parse_args()
     try:
         output = args.handler(args)
     except HarnessError as exc:
