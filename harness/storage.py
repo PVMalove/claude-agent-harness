@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 def storage_root(repo: Path) -> Path:
-    """Return the one `.harness` root shared by a repository's Git worktrees."""
+    """Найти общий `.harness` для корня репозитория и связанных worktree."""
     checkout = repo.expanduser().resolve()
     result = subprocess.run(
         [
@@ -21,6 +21,7 @@ def storage_root(repo: Path) -> Path:
             "-C",
             str(checkout),
             "rev-parse",
+            "--show-toplevel",
             "--git-common-dir",
         ],
         capture_output=True,
@@ -31,7 +32,10 @@ def storage_root(repo: Path) -> Path:
     )
     if result.returncode != 0:
         return checkout / ".harness"
-    common = Path(result.stdout.strip())
+    lines = result.stdout.splitlines()
+    if len(lines) != 2 or Path(lines[0]).resolve() != checkout:
+        return checkout / ".harness"
+    common = Path(lines[1])
     if not common.is_absolute():
         common = checkout / common
     common = common.resolve()

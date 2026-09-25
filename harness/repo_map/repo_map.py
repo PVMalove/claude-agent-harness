@@ -41,6 +41,7 @@ if _HARNESS_ROOT.name != "harness":
 
 from harness.errors import HarnessError, PolicyError, print_and_exit
 from harness.repo_map import parser_bundle
+from harness.repo_map.contract import validation_error as repo_map_validation_error
 from harness.storage import storage_path
 from harness.token_estimator import TOKEN_ESTIMATOR_VERSION, estimate_tokens
 
@@ -639,6 +640,8 @@ def _cache_key(
     parser_identity = hashlib.sha256(
         Path(__file__).read_bytes()
         + Path(parser_bundle.__file__).read_bytes()
+        + Path(__file__).with_name("contract.py").read_bytes()
+        + Path(__file__).with_name("repo_map.schema.json").read_bytes()
         + (_HARNESS_ROOT / "repo_map" / "tree_sitter_worker.py").read_bytes()
     ).hexdigest()
     identity = {
@@ -683,17 +686,22 @@ def _bundle_cache_identity(repo: Path, policy: RepoMapPolicy) -> str:
     return digest.hexdigest()
 
 
-def _read_cache(cache_dir: Path, key: str) -> str | None:
-    """Return a verified entry; malformed or tampered entries are cache misses."""
+def _read_cache(cache_dir: Path, key: str, pinned: str) -> str | None:
+    """Вернуть запись, соответствующую схеме, запрошенному ключу и коммиту."""
     try:
         envelope = json.loads((cache_dir / f"{key}.json").read_text(encoding="utf-8"))
         if not isinstance(envelope, dict):
             return None
         payload = envelope.get("payload")
         digest = envelope.get("sha256")
-        if not isinstance(payload, str) or not isinstance(digest, str):
+        if envelope.get("key") != key or not isinstance(payload, str) or not isinstance(digest, str):
             return None
         if hashlib.sha256(payload.encode("utf-8")).hexdigest() != digest:
+            return None
+        parsed: object = json.loads(payload)
+        if not isinstance(parsed, dict) or parsed.get("commit") != pinned:
+            return None
+        if repo_map_validation_error(parsed) is not None:
             return None
         return payload
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -706,6 +714,7 @@ def _write_cache(cache_dir: Path, key: str, payload: str) -> None:
         cache_dir.mkdir(parents=True, exist_ok=True)
         envelope = json.dumps(
             {
+                "key": key,
                 "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
                 "payload": payload,
             },
@@ -892,7 +901,7 @@ def build_map(
     normalized_seeds = sorted(set(seeds) & set(paths))
     root = cache_dir if cache_dir is not None else storage_path(repo, ".cache", "repo_map", "results")
     key = _cache_key(repo, pinned, normalized_seeds, max_tokens, effective_policy)
-    cached = _read_cache(root, key)
+    cached = _read_cache(root, key, pinned)
     if cached is not None:
         try:
             cached_payload = json.loads(cached)

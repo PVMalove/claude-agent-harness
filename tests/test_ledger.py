@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from harness.errors import HarnessError
 from harness.orchestration.core import utils
@@ -34,6 +36,29 @@ from harness.orchestration.workflow import history
 
 
 class ValueObjectRoundTripTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows sharing conflicts only")
+    def test_atomic_replace_retries_transient_windows_permission_error(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            source = Path(temporary) / "source.json"
+            target = Path(temporary) / "target.json"
+            source.write_text("new", encoding="utf-8")
+            target.write_text("old", encoding="utf-8")
+            replace = os.replace
+            attempts = 0
+
+            def conflict_once(src: Path, dst: Path) -> None:
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise PermissionError(13, "transient sharing conflict")
+                replace(src, dst)
+
+            with patch("harness.orchestration.ledger.lifecycle.os.replace", conflict_once):
+                LifecycleLedger._replace_with_windows_retry(source, target)
+
+            self.assertEqual(attempts, 2)
+            self.assertEqual(target.read_text(encoding="utf-8"), "new")
+
     def test_batch_record_round_trips_with_unknown_keys_in_extra(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             state_root = Path(temporary) / "state"

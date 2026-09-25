@@ -10,11 +10,13 @@ reason if `uv` is not on PATH (CI installs it with astral-sh/setup-uv).
 from __future__ import annotations
 
 import ast
+import concurrent.futures
 import json
 import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -223,6 +225,38 @@ def test_install_bundle_installs_offline_and_is_idempotent(tmp_path: Path) -> No
         timeout_seconds=120,
     )
     assert marker.read_text(encoding="utf-8").strip() == lock.raw_sha256
+
+
+def test_concurrent_installers_share_one_completed_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pair = _running_pair()
+    bundle_dir = build_bundle_dir(tmp_path / "bundle", pair=pair)
+    lock = parser_bundle.parse_lock((bundle_dir / "parser_bundle.lock.json").read_bytes())
+    install_dir = tmp_path / "install"
+    monkeypatch.setattr(shutil, "which", lambda _name: "uv")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(cmd)
+        time.sleep(0.1)
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    def install() -> None:
+        parser_bundle.install_bundle(
+            lock, bundle_dir / "wheelhouse" / pair, install_dir, sys.executable,
+            pair=pair, timeout_seconds=10,
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(lambda _index: install(), range(2)))
+
+    assert len(calls) == 1
+    assert (install_dir / parser_bundle.INSTALL_MARKER_FILENAME).read_text(
+        encoding="utf-8"
+    ).strip() == lock.raw_sha256
 
 
 @pytest.mark.skipif(not _uv_available(), reason="uv is not on PATH")

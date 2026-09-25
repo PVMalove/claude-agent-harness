@@ -1,5 +1,6 @@
 """Behavior of the standalone Repo Map CLI at its process boundary."""
 
+import hashlib
 import json
 import re
 import socket
@@ -312,6 +313,33 @@ def test_repo_map_cache_discards_tampered_entry_and_never_touches_repo(
     )
     assert len(calls) == 2
     assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_repo_map_cache_rejects_another_key_or_commit_even_with_a_valid_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "project"
+    commit = _commit_files(repo, {"main.py": "def run() -> None: ...\n"})
+    cache_dir = tmp_path / "cache"
+    calls = _fake_python_bundle(monkeypatch, {"main.py": _facts()})
+    policy = repo_map.RepoMapPolicy(tier="full")
+    expected = repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir)
+    entry = next(cache_dir.glob("*.json"))
+
+    envelope = json.loads(entry.read_text(encoding="utf-8"))
+    envelope["key"] = "another-key"
+    entry.write_text(json.dumps(envelope), encoding="utf-8")
+    assert repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir) == expected
+    assert len(calls) == 2
+
+    envelope = json.loads(entry.read_text(encoding="utf-8"))
+    payload = json.loads(envelope["payload"])
+    payload["commit"] = "a" * 40
+    envelope["payload"] = json.dumps(payload)
+    envelope["sha256"] = hashlib.sha256(envelope["payload"].encode()).hexdigest()
+    entry.write_text(json.dumps(envelope), encoding="utf-8")
+    assert repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir) == expected
+    assert len(calls) == 3
 
 
 def test_repo_map_cache_large_fixture_measures_cold_warm_limits(tmp_path: Path) -> None:

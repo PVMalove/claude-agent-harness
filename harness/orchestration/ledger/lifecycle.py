@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import shutil
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -711,12 +712,24 @@ class LifecycleLedger:
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         try:
             temporary.write_text(_canonical(value), encoding="utf-8", newline="\n")
-            os.replace(temporary, path)
+            LifecycleLedger._replace_with_windows_retry(temporary, path)
         finally:
             try:
                 temporary.unlink()
             except FileNotFoundError:
                 pass
+
+    @staticmethod
+    def _replace_with_windows_retry(source: Path, target: Path) -> None:
+        """Retry brief Windows sharing conflicts while preserving atomic replacement."""
+        for attempt in range(5):
+            try:
+                os.replace(source, target)
+                return
+            except PermissionError:
+                if os.name != "nt" or attempt == 4:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
 
     def _validate_batch_transition(
         self, generation: Path, before: JsonObject, after: JsonObject
@@ -859,7 +872,7 @@ class LifecycleLedger:
         )
         try:
             temporary.write_text(_canonical(pointer), encoding="utf-8", newline="\n")
-            os.replace(temporary, self.pointer_path)
+            self._replace_with_windows_retry(temporary, self.pointer_path)
         finally:
             try:
                 temporary.unlink()

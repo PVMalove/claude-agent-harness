@@ -121,7 +121,7 @@ CLI использует явно переданный `--policy` или `.harne
 
 `scripts/build_parser_bundle.py` собирает smoke-bundle CI из предварительно скачанных wheels. Задача `repo-map-bundle` в `.github/workflows/verify.yml` проверяет SHA-256, собирает bundle, запускает тесты реального parser-пути и отдельный строгий mypy для worker. Недоступный или подменённый wheel проваливает задачу. Основной mypy worker не включает.
 
-Ручной workflow `release-parser-bundle` использует `.github/parser-bundle-release-wheels.json` для матрицы Python 3.12–3.14 × Windows x64, Linux x64, macOS arm64. Он проверяет хеши, создаёт общий lock, CycloneDX 1.6 SBOM и результат `pip-audit` с пустым кэшем. Сейчас итог загружается как artifact запуска GitHub Actions; публикация в GitHub Release как asset ещё не реализована. Wheels не коммитятся. Целевой контракт поставки: [ADR 0024](../../docs/adr/0024-repo-map-parser-bundle-composition-and-delivery.md).
+Ручной workflow `release-parser-bundle` использует `.github/parser-bundle-release-wheels.json` для матрицы Python 3.12–3.14 × Windows x64, Linux x64, macOS arm64. Он проверяет хеши, создаёт общий lock, CycloneDX 1.6 SBOM и результат `pip-audit` с пустым кэшем. Запуск требует `release_tag` существующего GitHub Release, указывающего на коммит запуска. После проверок workflow сохраняет artifact запуска и загружает архив bundle как Release asset; существующий asset не перезаписывается. Wheels не коммитятся. Контракт поставки: [ADR 0024](../../docs/adr/0024-repo-map-parser-bundle-composition-and-delivery.md).
 
 ## Архитектурные решения и SOLID
 

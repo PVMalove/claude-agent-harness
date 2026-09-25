@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import cast
 
 from ..errors import HarnessError
+from ..repo_map.contract import validation_error as repo_map_validation_error
 from ..repo_map.repo_map import RepoMapPolicy, load_policy
 from ..repo_map.repo_map import _matches as _repo_map_matches
 from ..token_estimator import estimate_tokens as estimate_tokens
@@ -49,20 +50,6 @@ _ADR_HEADING_RE: re.Pattern[str] = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 # The Repo Map CLI is a sibling module; installed projects keep the same layout (see
 # harness/bin/harness resource packaging and scripts/test_clean_room.py).
 _REPO_MAP_SCRIPT: Path = Path(__file__).resolve().parents[1] / "repo_map" / "repo_map.py"
-
-_REPO_MAP_REQUIRED_FIELDS: tuple[str, ...] = (
-    "schema_version",
-    "commit",
-    "tier",
-    "parser",
-    "degradation_reason",
-    "token_estimator_version",
-    "parser_provenance",
-    "files",
-    "edges",
-    "diagnostics",
-    "estimated_tokens",
-)
 
 _REPO_MAP_CONTRACT_REMEDY = (
     "inspect harness/repo_map/repo_map.schema.json and the Repo Map CLI output for a contract drift"
@@ -250,18 +237,16 @@ def _run_repo_map(repository: Path, commit: str, seeds: list[str]) -> dict[str, 
         )
     payload: dict[str, object] = cast(dict[str, object], parsed)
 
-    missing: list[str] = [
-        field for field in _REPO_MAP_REQUIRED_FIELDS if field not in payload
-    ]
-    if missing:
-        raise ContextPackageError(
-            f"Repo Map JSON contract violation: missing field(s) {', '.join(missing)}",
-            remedy=_REPO_MAP_CONTRACT_REMEDY,
-        )
     if payload.get("schema_version") != 1:
         raise ContextPackageError(
             f"Repo Map JSON contract violation: schema_version {payload.get('schema_version')!r} is not the supported 1",
             remedy="upgrade context_builder.py to support the new Repo Map schema_version, or pin the Repo Map CLI to schema_version 1",
+        )
+    problem = repo_map_validation_error(payload)
+    if problem is not None:
+        raise ContextPackageError(
+            f"Repo Map JSON contract violation: {problem}",
+            remedy=_REPO_MAP_CONTRACT_REMEDY,
         )
     return payload
 

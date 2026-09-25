@@ -539,6 +539,41 @@ class RepoMapContractTests(ContextBuilderFixture):
         self.assertIn("schema_version", raised.exception.message)
         self.assertTrue(raised.exception.remedy)
 
+    def test_invalid_tier_and_edge_are_rejected_at_the_repo_map_boundary(self) -> None:
+        valid = {
+            "schema_version": 1,
+            "commit": self.candidate_commit,
+            "tier": "minimal",
+            "parser": "path-only",
+            "degradation_reason": "policy requested minimal tier",
+            "token_estimator_version": "1",
+            "parser_provenance": {
+                "policy_mode": "portable",
+                "policy_sha256": None,
+                "max_file_bytes": 1,
+                "max_files": 1,
+                "timeout_seconds": 1,
+                "max_tokens": 4000,
+            },
+            "files": [{"path": "pkg/base.py"}],
+            "edges": [],
+            "diagnostics": [],
+            "estimated_tokens": 1,
+        }
+        for change in ({"tier": "unknown"}, {"edges": [{"source": 7}]}):
+            with self.subTest(change=change):
+                fake = subprocess.CompletedProcess(
+                    args=["repo_map"], returncode=0,
+                    stdout=json.dumps({**valid, **change}), stderr="",
+                )
+                with _patch_repo_map_call(fake):
+                    with self.assertRaises(ContextPackageError) as raised:
+                        build_context_package(
+                            self.repo, self.base_commit, self.candidate_commit,
+                            min_starting_files=1,
+                        )
+                self.assertIn("contract violation", raised.exception.message)
+
     def test_a_nonzero_exit_parses_the_error_remedy_stderr_contract(self) -> None:
         fake = subprocess.CompletedProcess(
             args=["repo_map"],
@@ -585,7 +620,14 @@ class PolicySliceGuardTests(ContextBuilderFixture):
                 "parser": "path-only",
                 "degradation_reason": "n/a",
                 "token_estimator_version": "n/a",
-                "parser_provenance": {},
+                "parser_provenance": {
+                    "policy_mode": "portable",
+                    "policy_sha256": None,
+                    "max_file_bytes": 1,
+                    "max_files": 1,
+                    "timeout_seconds": 1,
+                    "max_tokens": 4000,
+                },
                 "files": [{"path": "pkg/base.py", "signatures": []}],
                 "edges": [
                     {

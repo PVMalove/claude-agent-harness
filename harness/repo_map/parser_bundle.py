@@ -17,6 +17,7 @@ network call.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -24,8 +25,11 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict, cast
@@ -351,6 +355,44 @@ class UvUnavailableError(BundleInstallError):
     """No `uv` executable on PATH: the harness installs bundles with uv only, never pip."""
 
 
+@contextmanager
+def _installation_lock(path: Path, timeout_seconds: int) -> Iterator[None]:
+    """Держать межпроцессную блокировку на время установки общего bundle."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                handle.seek(0)
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise BundleInstallError("parser bundle installation lock failed") from exc
+                if time.monotonic() >= deadline:
+                    raise BundleInstallError("parser bundle installation lock timed out") from exc
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if sys.platform == "win32":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def install_bundle(
     lock: BundleLock,
     wheelhouse_dir: Path,
@@ -360,12 +402,27 @@ def install_bundle(
     pair: str,
     timeout_seconds: int,
 ) -> None:
-    """Install this pair's wheels into `install_dir` for the parsing interpreter, with uv.
+    """Установить bundle один раз для всех процессов, разделяющих каталог кэша."""
+    try:
+        with _installation_lock(install_dir.parent / ".install.lock", timeout_seconds * 2):
+            _install_bundle_unlocked(
+                lock, wheelhouse_dir, install_dir, python_executable,
+                pair=pair, timeout_seconds=timeout_seconds,
+            )
+    except OSError as exc:
+        raise BundleInstallError("parser bundle installation failed") from exc
 
-    Uses `uv pip install --target`, never a venv or pip: no `.venv`, `requirements.txt`, or
-    target-project change is created (ADR 0023/0024), and `--offline --no-index` keeps it off the
-    network. Idempotent: a matching marker file skips a repeat install.
-    """
+
+def _install_bundle_unlocked(
+    lock: BundleLock,
+    wheelhouse_dir: Path,
+    install_dir: Path,
+    python_executable: str,
+    *,
+    pair: str,
+    timeout_seconds: int,
+) -> None:
+    """Установить проверенные wheels через uv; вызывать под межпроцессной блокировкой."""
     marker = install_dir / INSTALL_MARKER_FILENAME
     if marker.is_file() and marker.read_text(encoding="utf-8").strip() == lock.raw_sha256:
         return
