@@ -397,7 +397,7 @@ def _js_import_target(source: str, specifier: str, paths: set[str]) -> str | Non
     if not specifier.startswith(("./", "../")):
         return None
     base = posixpath.normpath(posixpath.join(posixpath.dirname(source), specifier))
-    if base == ".." or base.startswith("../") or base.startswith("/"):
+    if base == ".." or base.startswith(("../", "/")):
         return None
     candidates = [base]
     if Path(base).suffix not in JS_EXTENSIONS:

@@ -193,7 +193,7 @@ def build_release(
             raise ValueError("CycloneDX generator returned an unexpected format")
         components = sbom.get("components")
         if not isinstance(components, list):
-            raise ValueError("CycloneDX generator omitted components")
+            raise ValueError("CycloneDX generator omitted components")  # noqa: TRY004
         components.extend({
             "type": "file",
             "name": str(wheel["filename"]),
@@ -217,10 +217,10 @@ def build_release(
         }
         audited_dependencies: dict[str, str] = {}
         if not isinstance(dependencies, list):
-            raise ValueError("pip-audit result is incomplete or reports vulnerabilities")
+            raise ValueError("pip-audit result is incomplete or reports vulnerabilities")  # noqa: TRY004
         for item in dependencies:
             if not isinstance(item, dict):
-                raise ValueError("pip-audit result is incomplete or reports vulnerabilities")
+                raise ValueError("pip-audit result is incomplete or reports vulnerabilities")  # noqa: TRY004
             name = item.get("name")
             version = item.get("version")
             vulns = item.get("vulns")
