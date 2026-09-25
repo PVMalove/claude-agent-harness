@@ -138,7 +138,7 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
                 "risk assessment requires a batch awaiting coordinator approval",
                 remedy="move the batch to awaiting coordinator approval before registering a risk assessment",
             )
-        base = batch.get("base_commit")
+        base = batch.get("integration_base_commit") or batch.get("base_commit")
         if args.base_commit:
             requested_base = _candidate_commit(repo, args.base_commit)
             if requested_base != base:

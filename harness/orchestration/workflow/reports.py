@@ -48,6 +48,7 @@ from harness.orchestration.core.git_utils import (
     _changed_files_between,
     _commit_changed_files,
     _commits_between,
+    _git_is_ancestor,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -956,13 +957,29 @@ def _validate_review(review: object, dispatch: JsonObject) -> None:
             )
 
 
+def _rebase_target(batch: JsonObject, dispatch: JsonObject) -> str | None:
+    """The integration tip a developer dispatch must rebase onto, when a stale-base block is open."""
+    target = batch.get("rebase_target_commit")
+    if (
+        dispatch.get("role") == "developer"
+        and batch.get("base_rebase_required")
+        and isinstance(target, str)
+    ):
+        return target
+    return None
+
+
 def _validate_report(
     report: JsonObject,
     dispatch: JsonObject,
     role: JsonObject,
     repo: Path | None = None,
     base_commit: str | None = None,
+    rebase_target: str | None = None,
 ) -> None:
+    """``rebase_target`` is set only for the developer report that clears a stale-base block: the
+    candidate must contain that tip, and its own commits and files are measured from it, so
+    upstream commits the rebase brought in are never attributed to the ticket."""
     _reject_sensitive(report, "completion report")
     if (
         not REPORT_FIELDS <= set(report)
@@ -1071,6 +1088,13 @@ def _validate_report(
                 )
         if repo is not None:
             resolved = _candidate_commit(repo, commit_sha)
+            if rebase_target is not None:
+                if not _git_is_ancestor(repo, rebase_target, resolved):
+                    raise CoordinatorError(
+                        f"rebase candidate does not contain the integration tip {rebase_target}",
+                        remedy=f"rebase the issue branch onto {rebase_target} and report the rebased HEAD",
+                    )
+                base_commit = rebase_target
             actual_files = (
                 _changed_files_between(repo, base_commit, resolved)
                 if base_commit
@@ -1128,7 +1152,7 @@ def _validate_report(
                 mapped = {
                     _candidate_commit(repo, sha): plan_id for sha, plan_id in pairs
                 }
-                created = _commits_between(repo, snapshot, resolved)
+                created = _commits_between(repo, rebase_target or snapshot, resolved)
                 transition = dispatch.get("transition")
                 is_retry = (
                     isinstance(transition, dict)
@@ -1271,7 +1295,14 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 remedy="attest the canonical Git worktree (dispatch self-report) before reporting",
             )
         role = _role(repo, dispatch["role"])
-        _validate_report(report, dispatch, role, repo, batch.get("base_commit"))
+        _validate_report(
+            report,
+            dispatch,
+            role,
+            repo,
+            batch.get("integration_base_commit") or batch.get("base_commit"),
+            _rebase_target(batch, dispatch),
+        )
         from harness.orchestration.workflow.decisions import _auto_accept_policy
 
         auto_accept_policy = _auto_accept_policy(config, batch, dispatch, report)

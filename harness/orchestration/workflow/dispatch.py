@@ -147,6 +147,8 @@ def _enforce_base_freshness(
     batch["required_next_role"] = "developer"
     batch["retry_candidate_required"] = True
     batch["base_rebase_required"] = True
+    # The tip the rebase must land on: its report is measured from here and accept pins exactly it.
+    batch["rebase_target_commit"] = current
     _safe_id(batch["batch_id"], "batch")
     _replace_record(ledger, BatchRecord.from_dict(batch))
     raise CoordinatorError(
