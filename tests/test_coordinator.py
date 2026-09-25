@@ -1003,6 +1003,20 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
                 )
             )
 
+    def test_dispatch_admission_without_a_repo_map_policy_never_blocks_on_degradation(
+        self,
+    ) -> None:
+        """AC1: with no `repo_map_policy` configured at all -- the zero-config default for these
+        tests -- dispatch admission is never blocked by Repo Map degradation, even though the
+        real Context Package built here is `minimal`. Only the existing non-blocking
+        `context_package_quality_warning` (proven in a companion test class) may appear."""
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+
+        self.assertEqual(dispatch["state"], "approved")
+
     def test_only_write_mode_default_tools_include_edit_tools(self) -> None:
         for name in ("Edit", "Write"):
             self.assertNotIn(name, contract.DEFAULT_ALLOWED_TOOLS["read-only"])
