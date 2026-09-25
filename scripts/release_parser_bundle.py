@@ -211,7 +211,28 @@ def build_release(
             raise ValueError("pip-audit failed or could not reach the vulnerability service")
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
         dependencies = audit.get("dependencies")
-        if not isinstance(dependencies, list) or any(item.get("vulns") for item in dependencies):
+        expected_dependencies = {
+            name.replace("_", "-"): version for name, version in PACKAGES.items()
+        }
+        audited_dependencies: dict[str, str] = {}
+        if not isinstance(dependencies, list):
+            raise ValueError("pip-audit result is incomplete or reports vulnerabilities")
+        for item in dependencies:
+            if not isinstance(item, dict):
+                raise ValueError("pip-audit result is incomplete or reports vulnerabilities")
+            name = item.get("name")
+            version = item.get("version")
+            vulns = item.get("vulns")
+            if (
+                not isinstance(name, str)
+                or not isinstance(version, str)
+                or not isinstance(vulns, list)
+                or vulns
+                or name in audited_dependencies
+            ):
+                raise ValueError("pip-audit result is incomplete or reports vulnerabilities")
+            audited_dependencies[name] = version
+        if audited_dependencies != expected_dependencies:
             raise ValueError("pip-audit result is incomplete or reports vulnerabilities")
         shutil.rmtree(audit_cache)
         staging.rename(out)

@@ -45,7 +45,8 @@ def _staged(tmp_path: Path) -> tuple[Path, Path, TestManifest]:
 
 
 def _fake_tools(
-    commands: list[list[str]], *, vulnerable: bool = False, audit_error: bool = False
+    commands: list[list[str]], *, vulnerable: bool = False, audit_error: bool = False,
+    dependencies: list[dict[str, object]] | None = None,
 ) -> Callable[[list[str]], int]:
     def run(command: list[str]) -> int:
         commands.append(command)
@@ -56,11 +57,15 @@ def _fake_tools(
             return 0
         if audit_error:
             return 1
-        Path(command[command.index("--output") + 1]).write_text(json.dumps({
-            "dependencies": [{"name": "tree-sitter", "version": "0.26.0", "vulns": [
-                {"id": "TEST-CVE"}
-            ] if vulnerable else []}],
-        }), encoding="utf-8")
+        audited = dependencies if dependencies is not None else [
+            {"name": name.replace("_", "-"), "version": version, "vulns": []}
+            for name, version in release.PACKAGES.items()
+        ]
+        if vulnerable:
+            audited[0] = {**audited[0], "vulns": [{"id": "TEST-CVE"}]}
+        Path(command[command.index("--output") + 1]).write_text(
+            json.dumps({"dependencies": audited}), encoding="utf-8"
+        )
         return 0
     return run
 
@@ -121,5 +126,38 @@ def test_release_audit_failure_never_exposes_output(
         release.build_release(
             wheels, out, manifest_path=manifest,
             runner=_fake_tools([], vulnerable=vulnerable, audit_error=audit_error),
+        )
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("dependencies", [
+    [],
+    [{"name": "tree-sitter", "version": release.CORE_VERSION, "vulns": []}],
+    [
+        {"name": name.replace("_", "-"), "version": version, "vulns": []}
+        for name, version in release.PACKAGES.items() if name != "tree_sitter_python"
+    ],
+    [
+        {"name": name.replace("_", "-"), "version": "0.0.0" if name == "tree_sitter_python" else version, "vulns": []}
+        for name, version in release.PACKAGES.items()
+    ],
+    [
+        {"name": name.replace("_", "-"), "version": version, "vulns": []}
+        for name, version in release.PACKAGES.items()
+    ] + [{"name": "tree-sitter", "version": release.CORE_VERSION, "vulns": []}],
+    [
+        {"name": name.replace("_", "-"), "version": version, "vulns": []}
+        for name, version in release.PACKAGES.items() if name != "tree_sitter_python"
+    ] + [{"name": "tree-sitter-python", "version": "0.25.0"}],
+])
+def test_release_rejects_incomplete_audit(
+    tmp_path: Path, dependencies: list[dict[str, object]]
+) -> None:
+    wheels, manifest, _ = _staged(tmp_path)
+    out = tmp_path / "release"
+    with pytest.raises(ValueError, match="pip-audit"):
+        release.build_release(
+            wheels, out, manifest_path=manifest,
+            runner=_fake_tools([], dependencies=dependencies),
         )
     assert not out.exists()
