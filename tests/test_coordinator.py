@@ -2711,6 +2711,74 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 retry["dispatch_id"], self._developer_report(retry, candidate, changed)
             )  # no fictitious re-report
 
+    def test_developer_retry_maps_only_new_fix_commits_to_plan_subset(self) -> None:
+        plan = self._batch_plan()
+        plan["definition_of_done"] = ["one", "two", "three"]
+        with mock.patch.object(self, "_batch_plan", return_value=plan):
+            batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        initial = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(initial["dispatch_id"])
+        original_commits = [self._developer_commit(name)[0] for name in ("a", "b", "c")]
+        candidate = original_commits[-1]
+        base = self._batch_record(batch["batch_id"])["base_commit"]
+        changed = git_utils._changed_files_between(self.repo, base, candidate)
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "each created commit"
+        ):
+            self._submit(
+                initial["dispatch_id"],
+                self._developer_report(
+                    initial,
+                    candidate,
+                    changed,
+                    commit_map=[
+                        {"commit_sha": sha, "plan_entry_id": entry["id"]}
+                        for sha, entry in zip(
+                            original_commits[:2], initial["commit_plan"][:2]
+                        )
+                    ],
+                ),
+            )
+        self._submit(
+            initial["dispatch_id"],
+            self._developer_report(
+                initial,
+                candidate,
+                changed,
+                commit_map=[
+                    {"commit_sha": sha, "plan_entry_id": entry["id"]}
+                    for sha, entry in zip(original_commits, initial["commit_plan"])
+                ],
+            ),
+        )
+        self._decide(batch["batch_id"], "accept")
+        self._assess(batch["batch_id"], candidate, changed)
+        self._reported_review(
+            batch["batch_id"],
+            candidate,
+            outcome="blocked",
+            blockers="fix needed",
+            spec=("blocker", [{"severity": "blocker", "summary": "wrong", "evidence": "x.py:1"}]),
+        )
+        self._decide(batch["batch_id"], "retry")
+        retry = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self.assertEqual(retry["transition"]["next_action"], "developer-retry")
+        self._start(retry["dispatch_id"])
+        fixes = [self._developer_commit(name)[0] for name in ("fix_a", "fix_b")]
+        fixed = fixes[-1]
+        fixed_files = git_utils._changed_files_between(self.repo, base, fixed)
+        report = self._developer_report(
+            retry,
+            fixed,
+            fixed_files,
+            commit_map=[
+                {"commit_sha": fixes[0], "plan_entry_id": retry["commit_plan"][0]["id"]},
+                {"commit_sha": fixes[1], "plan_entry_id": retry["commit_plan"][1]["id"]},
+            ],
+        )
+        self._submit(retry["dispatch_id"], report)
+
     def test_developer_report_rejects_a_missing_commit_map(self) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])

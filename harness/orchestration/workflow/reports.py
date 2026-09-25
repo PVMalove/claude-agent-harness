@@ -1129,15 +1129,23 @@ def _validate_report(
                     _candidate_commit(repo, sha): plan_id for sha, plan_id in pairs
                 }
                 created = _commits_between(repo, snapshot, resolved)
+                transition = dispatch.get("transition")
+                is_retry = (
+                    isinstance(transition, dict)
+                    and transition.get("next_action") == "developer-retry"
+                )
+                mapped_plan_ids = set(mapped.values())
                 if (
                     set(mapped) != set(created)
-                    or set(mapped.values()) != set(plan_ids)
+                    or not mapped_plan_ids.issubset(plan_ids)
                     or len(mapped) != len(created)
-                    or len(mapped) != len(plan_ids)
+                    or len(mapped) != len(pairs)
+                    or len(mapped_plan_ids) != len(mapped)
+                    or (not is_retry and mapped_plan_ids != set(plan_ids))
                 ):
                     raise CoordinatorError(
                         "commit_map must map each created commit to one distinct immutable plan entry",
-                        remedy="create one logical commit per commit_plan entry and report every SHA exactly once",
+                        remedy="report every new commit once against a distinct commit_plan entry; the initial dispatch must cover the full plan",
                     )
     if role["mode"] == "read-only" and commit_sha != "not applicable — read-only role":
         raise CoordinatorError(
