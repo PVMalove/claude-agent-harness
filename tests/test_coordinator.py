@@ -1017,6 +1017,22 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
 
         self.assertEqual(dispatch["state"], "approved")
 
+    def test_dispatch_admission_unlisted_role_keeps_portable_default_behaviour(
+        self,
+    ) -> None:
+        """AC3: `min_tier_by_role` names only `developer`; `architect` is not listed and there is
+        no repo-wide `min_tier`, so it keeps the default unblocked behaviour even though the real
+        Context Package built here is `minimal`."""
+        self._configure_project(
+            repo_map_policy={"min_tier_by_role": {"developer": "full"}}
+        )
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+
+        self.assertEqual(dispatch["state"], "approved")
+
     def test_only_write_mode_default_tools_include_edit_tools(self) -> None:
         for name in ("Edit", "Write"):
             self.assertNotIn(name, contract.DEFAULT_ALLOWED_TOOLS["read-only"])
