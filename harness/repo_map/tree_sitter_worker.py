@@ -420,41 +420,72 @@ def _go_is_reference(node: Node) -> bool:
     return True
 
 
-def _go_names(root: Node) -> tuple[list[str], list[str]]:
+def _collect_names(
+    root: Node,
+    definition_types: tuple[str, ...],
+    reference_types: tuple[str, ...],
+    is_reference: Callable[[Node], bool],
+) -> tuple[list[str], list[str]]:
     definitions: set[str] = set()
     references: set[str] = set()
     for node in _walk(root):
         # A syntax error anywhere in a node's subtree marks that node `has_error` too, so this
         # checks each definition node's own flag rather than skipping the whole walk -- an
         # error in one member must not hide its intact siblings (or their enclosing type).
-        if node.type in ("function_declaration", "method_declaration", "type_spec") and not node.has_error:
+        if node.type in definition_types and not node.has_error:
             name = node.child_by_field_name("name")
             if name is not None:
                 definitions.add(_text(name))
-        elif node.type in ("identifier", "type_identifier") and _go_is_reference(node):
+        elif node.type in reference_types and is_reference(node):
             references.add(_text(node))
     return sorted(definitions), sorted(references)
 
 
-def _java_callable_signature(node: Node, owner: str) -> dict[str, object]:
+def _go_names(root: Node) -> tuple[list[str], list[str]]:
+    return _collect_names(
+        root,
+        ("function_declaration", "method_declaration", "type_spec"),
+        ("identifier", "type_identifier"),
+        _go_is_reference,
+    )
+
+
+def _member_callable_signature(
+    node: Node,
+    owner: str,
+    returns: Node | None,
+    is_static: bool,
+    parameter: Callable[[Node], tuple[str, list[Node | None]]],
+) -> dict[str, object]:
+    """Render a Java/C# method or constructor declared inside ``owner``."""
     is_constructor = node.type == "constructor_declaration"
     name = node.child_by_field_name("name")
     parameters = node.child_by_field_name("parameters")
-    return_type = node.child_by_field_name("type")
-    modifiers = next((child for child in node.children if child.type == "modifiers"), None)
-    is_static = modifiers is not None and any(child.type == "static" for child in modifiers.children)
-    exposed: list[Node | None] = [name, return_type]
+    exposed: list[Node | None] = [name, returns]
     rendered: list[str] = []
     for child in parameters.named_children if parameters is not None else []:
         if child.type == "comment":
             continue
-        rendered.append(_text(child))
-        exposed.append(child)
+        text, parts = parameter(child)
+        rendered.append(text)
+        exposed.extend(parts)
     qualified = f"{owner}.{_text(name)}" if owner else _text(name)
     keyword = "constructor" if is_constructor else ("static method" if is_static else "method")
-    suffix = f": {_text(return_type)}" if return_type is not None else ""
+    suffix = f": {_text(returns)}" if returns is not None else ""
     text = f"{keyword} {qualified}({', '.join(rendered)}){suffix}"
     return {"text": text, "symbols": ([owner] if owner else []) + _symbols(exposed)}
+
+
+def _java_parameter(node: Node) -> tuple[str, list[Node | None]]:
+    return _text(node), [node]
+
+
+def _java_callable_signature(node: Node, owner: str) -> dict[str, object]:
+    modifiers = next((child for child in node.children if child.type == "modifiers"), None)
+    is_static = modifiers is not None and any(child.type == "static" for child in modifiers.children)
+    return _member_callable_signature(
+        node, owner, node.child_by_field_name("type"), is_static, _java_parameter
+    )
 
 
 def _java_class_signature(node: Node) -> dict[str, object]:
@@ -517,21 +548,12 @@ def _java_is_reference(node: Node) -> bool:
 
 
 def _java_names(root: Node) -> tuple[list[str], list[str]]:
-    definitions: set[str] = set()
-    references: set[str] = set()
-    for node in _walk(root):
-        # See _go_names: check each definition node's own `has_error`, not a blanket skip, so one
-        # broken member does not hide its intact siblings or their enclosing class.
-        if (
-            node.type in ("class_declaration", "method_declaration", "constructor_declaration")
-            and not node.has_error
-        ):
-            name = node.child_by_field_name("name")
-            if name is not None:
-                definitions.add(_text(name))
-        elif node.type in ("identifier", "type_identifier") and _java_is_reference(node):
-            references.add(_text(node))
-    return sorted(definitions), sorted(references)
+    return _collect_names(
+        root,
+        ("class_declaration", "method_declaration", "constructor_declaration"),
+        ("identifier", "type_identifier"),
+        _java_is_reference,
+    )
 
 
 def _cs_parameter(node: Node) -> tuple[str, list[Node | None]]:
@@ -547,26 +569,12 @@ def _cs_parameter(node: Node) -> tuple[str, list[Node | None]]:
 
 
 def _cs_callable_signature(node: Node, owner: str) -> dict[str, object]:
-    is_constructor = node.type == "constructor_declaration"
-    name = node.child_by_field_name("name")
-    parameters = node.child_by_field_name("parameters")
-    returns = node.child_by_field_name("returns")
     is_static = any(
         child.type == "modifier" and _text(child) == "static" for child in node.children
     )
-    exposed: list[Node | None] = [name, returns]
-    rendered: list[str] = []
-    for child in parameters.named_children if parameters is not None else []:
-        if child.type == "comment":
-            continue
-        text, parts = _cs_parameter(child)
-        rendered.append(text)
-        exposed.extend(parts)
-    qualified = f"{owner}.{_text(name)}" if owner else _text(name)
-    keyword = "constructor" if is_constructor else ("static method" if is_static else "method")
-    suffix = f": {_text(returns)}" if returns is not None else ""
-    text = f"{keyword} {qualified}({', '.join(rendered)}){suffix}"
-    return {"text": text, "symbols": ([owner] if owner else []) + _symbols(exposed)}
+    return _member_callable_signature(
+        node, owner, node.child_by_field_name("returns"), is_static, _cs_parameter
+    )
 
 
 def _cs_class_signature(node: Node) -> dict[str, object]:
@@ -625,21 +633,12 @@ def _cs_is_reference(node: Node) -> bool:
 
 
 def _cs_names(root: Node) -> tuple[list[str], list[str]]:
-    definitions: set[str] = set()
-    references: set[str] = set()
-    for node in _walk(root):
-        # See _go_names: check each definition node's own `has_error`, not a blanket skip, so one
-        # broken member does not hide its intact siblings or their enclosing class.
-        if (
-            node.type in ("class_declaration", "method_declaration", "constructor_declaration")
-            and not node.has_error
-        ):
-            name = node.child_by_field_name("name")
-            if name is not None:
-                definitions.add(_text(name))
-        elif node.type == "identifier" and _cs_is_reference(node):
-            references.add(_text(node))
-    return sorted(definitions), sorted(references)
+    return _collect_names(
+        root,
+        ("class_declaration", "method_declaration", "constructor_declaration"),
+        ("identifier",),
+        _cs_is_reference,
+    )
 
 
 _LANGUAGE_EXTRACTORS: dict[
