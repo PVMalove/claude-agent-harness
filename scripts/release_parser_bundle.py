@@ -33,7 +33,13 @@ PACKAGES = {
     "tree_sitter_python": "0.25.0",
     "tree_sitter_typescript": "0.23.2",
     "tree_sitter_javascript": "0.25.0",
+    "tree_sitter_go": "0.25.0",
+    "tree_sitter_java": "0.23.5",
+    "tree_sitter_c_sharp": "0.23.5",
 }
+# One wheel per (python tag x platform) pair for the version-specific core, plus one abi3 wheel per
+# platform for every other (grammar) distribution, since abi3 wheels cover every pinned Python tag.
+EXPECTED_WHEEL_COUNT = len(MATRIX) + (len(PACKAGES) - 1) * len(PLATFORMS)
 
 
 class WheelPin(TypedDict):
@@ -54,8 +60,10 @@ def _manifest(path: Path) -> list[WheelPin]:
     if payload.get("schema_version") != 1 or payload.get("matrix") != list(MATRIX):
         raise ValueError("release wheel manifest has an incomplete or changed matrix")
     wheels = payload.get("wheels")
-    if not isinstance(wheels, list) or len(wheels) != 18:
-        raise ValueError("release wheel manifest must pin exactly 18 unique wheels")
+    if not isinstance(wheels, list) or len(wheels) != EXPECTED_WHEEL_COUNT:
+        raise ValueError(
+            f"release wheel manifest must pin exactly {EXPECTED_WHEEL_COUNT} unique wheels"
+        )
     seen: set[str] = set()
     coverage: dict[str, set[str]] = {pair: set() for pair in MATRIX}
     validated: list[WheelPin] = []

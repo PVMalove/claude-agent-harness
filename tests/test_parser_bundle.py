@@ -102,6 +102,9 @@ def test_bundle_builder_requires_js_wheels_and_records_both_ts_dialects(tmp_path
         "tree_sitter-0.26.0-cp312-cp312-linux_x86_64.whl",
         "tree_sitter_python-0.25.0-cp310-abi3-linux_x86_64.whl",
         "tree_sitter_typescript-0.23.2-cp39-abi3-linux_x86_64.whl",
+        "tree_sitter_go-0.25.0-cp310-abi3-linux_x86_64.whl",
+        "tree_sitter_java-0.23.5-cp39-abi3-linux_x86_64.whl",
+        "tree_sitter_c_sharp-0.23.5-cp310-abi3-linux_x86_64.whl",
         "tree_sitter_javascript-0.25.0-cp310-abi3-linux_x86_64.whl",
     )
     for name in names[:-1]:
@@ -116,9 +119,9 @@ def test_bundle_builder_requires_js_wheels_and_records_both_ts_dialects(tmp_path
     assert subprocess.run(command, capture_output=True, check=False).returncode == 0
     lock = parser_bundle.parse_lock((tmp_path / "bundle" / "parser_bundle.lock.json").read_bytes())
     assert {grammar.name for grammar in lock.grammars} == {
-        "python", "typescript", "tsx", "javascript"
+        "python", "typescript", "tsx", "javascript", "go", "java", "csharp"
     }
-    assert len(lock.wheelhouses["cp312-linux_x86_64"]) == 4
+    assert len(lock.wheelhouses["cp312-linux_x86_64"]) == 7
     assert next(grammar for grammar in lock.grammars if grammar.name == "typescript").sha256 == next(
         grammar for grammar in lock.grammars if grammar.name == "tsx"
     ).sha256

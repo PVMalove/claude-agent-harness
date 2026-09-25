@@ -33,7 +33,7 @@ def _staged(tmp_path: Path) -> tuple[Path, Path, TestManifest]:
         )
         abi = python_tag if wheel["distribution"] == "tree_sitter" else "abi3"
         wheel_tag = python_tag if wheel["distribution"] == "tree_sitter" else (
-            "cp39" if wheel["distribution"] == "tree_sitter_typescript" else "cp310"
+            "cp39" if wheel["distribution"] in {"tree_sitter_typescript", "tree_sitter_java"} else "cp310"
         )
         wheel["filename"] = f"{wheel['distribution']}-{wheel['version']}-{wheel_tag}-{abi}-{platform_tag}.whl"
         wheel["url"] = "https://files.pythonhosted.org/fixture/" + wheel["filename"]
@@ -79,9 +79,9 @@ def test_release_bundle_contains_complete_lock_sbom_and_clean_audit(tmp_path: Pa
     )
     lock = parser_bundle.parse_lock((out / "parser_bundle.lock.json").read_bytes())
     assert set(lock.wheelhouses) == set(release.MATRIX)
-    assert all(len(artifacts) == 4 for artifacts in lock.wheelhouses.values())
+    assert all(len(artifacts) == len(release.PACKAGES) for artifacts in lock.wheelhouses.values())
     assert {grammar.name for grammar in lock.grammars} == {
-        "python", "typescript", "tsx", "javascript"
+        "python", "typescript", "tsx", "javascript", "go", "java", "csharp"
     }
     typescript = next(grammar for grammar in lock.grammars if grammar.name == "typescript")
     assert typescript.sha256_by_pair is not None
@@ -94,7 +94,7 @@ def test_release_bundle_contains_complete_lock_sbom_and_clean_audit(tmp_path: Pa
     assert grammar["sha256"] == typescript.sha256_by_pair["cp312-linux_x86_64"]
     sbom = json.loads((out / "parser_bundle.sbom.cdx.json").read_text(encoding="utf-8"))
     files = [item for item in sbom["components"] if item["type"] == "file"]
-    assert len(files) == 18
+    assert len(files) == release.EXPECTED_WHEEL_COUNT
     assert {item["hashes"][0]["content"] for item in files} == {
         wheel["sha256"] for wheel in payload["wheels"]
     }
