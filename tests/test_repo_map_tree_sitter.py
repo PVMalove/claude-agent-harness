@@ -264,8 +264,10 @@ def test_typescript_javascript_signatures_edges_and_provenance(
     assert isinstance(provenance, dict)
     grammars = provenance["grammars"]
     assert isinstance(grammars, list)
+    # Provenance lists every grammar the bundle carries (ADR 0024), not only the ones this map's
+    # files used -- Go/Java/C# joined the same bundle in #279.
     assert {grammar["name"] for grammar in grammars} == {
-        "python", "typescript", "tsx", "javascript"
+        "python", "typescript", "tsx", "javascript", "go", "java", "csharp"
     }
     for grammar in grammars:
         assert len(grammar["sha256"]) == 64

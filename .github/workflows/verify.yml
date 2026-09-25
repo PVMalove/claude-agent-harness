@@ -57,8 +57,24 @@ jobs:
 
   repo-map-bundle:
     # Real tree-sitter bundle path (ADR 0024): pinned wheels -> sha256 check -> offline bundle ->
-    # bundle tests (never skipped here) and the separate mypy run of the tree-sitter worker.
+    # bundle tests (never skipped here, never a `pytest -k` filter) and the separate mypy run of
+    # the tree-sitter worker. Go, Java and C# each get their own isolated matrix leg and test file
+    # (#279): an unavailable bundle or an empty collection fails that leg hard, never a silent skip.
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python-ts-js
+            test_files: >-
+              tests/test_repo_map_tree_sitter.py tests/test_repo_map.py tests/test_parser_bundle.py
+              tests/test_repo_map_tree_sitter_unsupported.py tests/test_repo_map_tree_sitter_determinism.py
+          - language: go
+            test_files: tests/test_repo_map_tree_sitter_go.py
+          - language: java
+            test_files: tests/test_repo_map_tree_sitter_java.py
+          - language: csharp
+            test_files: tests/test_repo_map_tree_sitter_csharp.py
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -82,15 +98,17 @@ jobs:
         env:
           HARNESS_PARSER_BUNDLE_DIR: ${{ runner.temp }}/parser-bundle
           PYTHONPATH: .
-        run: .harness/.venv/bin/python -m pytest -q tests/test_repo_map_tree_sitter.py tests/test_repo_map.py tests/test_parser_bundle.py
+        run: .harness/.venv/bin/python -m pytest -q ${{ matrix.test_files }}
       - name: Separate mypy run of the tree-sitter worker
+        if: matrix.language == 'python-ts-js'
         run: |
           uv venv --python .harness/.venv/bin/python "$RUNNER_TEMP/worker-typecheck"
           uv pip install --offline --no-config --no-index --only-binary :all: \
             --find-links "$RUNNER_TEMP/wheels" \
             --python "$RUNNER_TEMP/worker-typecheck/bin/python" \
             tree-sitter==0.26.0 tree-sitter-python==0.25.0 \
-            tree-sitter-typescript==0.23.2 tree-sitter-javascript==0.25.0
+            tree-sitter-typescript==0.23.2 tree-sitter-javascript==0.25.0 \
+            tree-sitter-go==0.25.0 tree-sitter-java==0.23.5 tree-sitter-c-sharp==0.23.5
           .harness/.venv/bin/python -m mypy --strict --disallow-any-explicit \
             --python-executable "$RUNNER_TEMP/worker-typecheck/bin/python" \
             harness/repo_map/tree_sitter_worker.py

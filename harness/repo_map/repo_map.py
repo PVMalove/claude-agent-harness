@@ -56,6 +56,21 @@ DEFAULT_PARSER_BUNDLE_MAX_OUTPUT_BYTES = 10_000_000
 # Names defined in this many files are too common to provide useful references.
 DEFINITION_FILE_FANOUT_THRESHOLD = 5
 JS_EXTENSIONS = frozenset({".ts", ".tsx", ".js", ".jsx"})
+# Name-ref edges never cross a family: two languages that happen to share an identifier (e.g. Go
+# and TS both defining `Parse`) must not collide. Import edges stay Python/JS-only below regardless
+# of family membership (ADR 0024, #279).
+FAMILY_EXTENSIONS: dict[str, frozenset[str]] = {
+    "python": frozenset({".py"}),
+    "js": JS_EXTENSIONS,
+    "go": frozenset({".go"}),
+    "java": frozenset({".java"}),
+    "csharp": frozenset({".cs"}),
+}
+_EXTENSION_FAMILY: dict[str, str] = {
+    extension: family
+    for family, extensions in FAMILY_EXTENSIONS.items()
+    for extension in extensions
+}
 EXCLUDED_DIRS = frozenset(
     {
         ".git",
@@ -528,6 +543,17 @@ def _parse_with_bundle(
     )
 
 
+def _family(path: str) -> str:
+    """The name-ref family for `path`'s extension.
+
+    An extension outside the five declared families buckets under its own suffix, isolated from
+    every named family (a family name never starts with the `.` every suffix carries), instead of
+    silently joining `python` or `js`.
+    """
+    suffix = Path(path).suffix
+    return _EXTENSION_FAMILY.get(suffix, suffix)
+
+
 def _graph_from_facts(
     records: dict[str, dict[str, object]],
     facts: dict[str, parser_bundle.FileFacts],
@@ -546,7 +572,7 @@ def _graph_from_facts(
         if status != "ok":
             diagnostics.append({"code": status, "path": path})
         records[path]["signatures"] = _visible_signatures(record["signatures"], policy)
-        family = "python" if path.endswith(".py") else "js"
+        family = _family(path)
         for name in record["definitions"]:
             if _symbol_visible(name, policy):
                 definitions.setdefault((family, name), set()).add(path)
@@ -580,7 +606,7 @@ def _graph_from_facts(
                 ):
                     edges.add((path, target, "import", "high"))
     for path in sorted(facts):
-        family = "python" if path.endswith(".py") else "js"
+        family = _family(path)
         for name in set(facts[path]["references"]):
             if not _symbol_visible(name, policy):
                 continue

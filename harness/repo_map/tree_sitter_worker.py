@@ -20,7 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -341,6 +341,324 @@ def _js_names(root: Node) -> tuple[list[str], list[str]]:
     return sorted(definitions), sorted(references)
 
 
+def _no_imports(root: Node) -> list[dict[str, object]]:
+    """Go/Java/C# have no deterministic 1:1 import->file mapping without parsing project files
+    (go.mod, package roots, .csproj); repo_map.py keeps import edges Python/JS-only (ADR 0024,
+    #279), so these languages report the fact as empty rather than approximate it."""
+    return []
+
+
+def _go_callable_signature(node: Node) -> dict[str, object]:
+    receiver = node.child_by_field_name("receiver")
+    name = node.child_by_field_name("name")
+    parameters = node.child_by_field_name("parameters")
+    result = node.child_by_field_name("result")
+    exposed: list[Node | None] = [name, result]
+    rendered: list[str] = []
+    for child in parameters.named_children if parameters is not None else []:
+        if child.type == "comment":
+            continue
+        rendered.append(_text(child))
+        exposed.append(child)
+    receiver_text = ""
+    if receiver is not None:
+        receiver_param = next(iter(receiver.named_children), None)
+        if receiver_param is not None:
+            receiver_text = f" ({_text(receiver_param)})"
+            exposed.append(receiver_param)
+    result_text = f" {_text(result)}" if result is not None else ""
+    text = f"func{receiver_text} {_text(name)}({', '.join(rendered)}){result_text}"
+    return {"text": text, "symbols": _symbols(exposed)}
+
+
+def _go_type_signature(node: Node) -> dict[str, object] | None:
+    name = node.child_by_field_name("name")
+    kind = node.child_by_field_name("type")
+    if name is None or kind is None or kind.type not in ("struct_type", "interface_type"):
+        return None
+    keyword = "struct" if kind.type == "struct_type" else "interface"
+    return {"text": f"type {_text(name)} {keyword}", "symbols": _symbols([name])}
+
+
+def _go_signatures(root: Node) -> list[dict[str, object]]:
+    found: list[dict[str, object]] = []
+    for node in root.named_children:
+        if node.has_error:
+            continue
+        if node.type in ("function_declaration", "method_declaration"):
+            found.append(_go_callable_signature(node))
+        elif node.type == "type_declaration":
+            for spec in node.named_children:
+                if spec.type != "type_spec" or spec.has_error:
+                    continue
+                signature = _go_type_signature(spec)
+                if signature is not None:
+                    found.append(signature)
+    return found
+
+
+def _go_is_reference(node: Node) -> bool:
+    parent = node.parent
+    if parent is None:
+        return False
+    if (
+        parent.type in ("function_declaration", "method_declaration", "type_spec")
+        and parent.child_by_field_name("name") == node
+    ):
+        return False
+    if parent.type in (
+        "parameter_declaration", "variadic_parameter_declaration"
+    ) and node in parent.children_by_field_name("name"):
+        return False
+    if parent.type == "selector_expression" and parent.child_by_field_name("field") == node:
+        return False
+    ancestor: Node | None = parent
+    while ancestor is not None:
+        if ancestor.type == "import_declaration":
+            return False
+        ancestor = ancestor.parent
+    return True
+
+
+def _collect_names(
+    root: Node,
+    definition_types: tuple[str, ...],
+    reference_types: tuple[str, ...],
+    is_reference: Callable[[Node], bool],
+) -> tuple[list[str], list[str]]:
+    definitions: set[str] = set()
+    references: set[str] = set()
+    for node in _walk(root):
+        # A syntax error anywhere in a node's subtree marks that node `has_error` too, so this
+        # checks each definition node's own flag rather than skipping the whole walk -- an
+        # error in one member must not hide its intact siblings (or their enclosing type).
+        if node.type in definition_types and not node.has_error:
+            name = node.child_by_field_name("name")
+            if name is not None:
+                definitions.add(_text(name))
+        elif node.type in reference_types and is_reference(node):
+            references.add(_text(node))
+    return sorted(definitions), sorted(references)
+
+
+def _go_names(root: Node) -> tuple[list[str], list[str]]:
+    return _collect_names(
+        root,
+        ("function_declaration", "method_declaration", "type_spec"),
+        ("identifier", "type_identifier"),
+        _go_is_reference,
+    )
+
+
+def _member_callable_signature(
+    node: Node,
+    owner: str,
+    returns: Node | None,
+    is_static: bool,
+    parameter: Callable[[Node], tuple[str, list[Node | None]]],
+) -> dict[str, object]:
+    """Render a Java/C# method or constructor declared inside ``owner``."""
+    is_constructor = node.type == "constructor_declaration"
+    name = node.child_by_field_name("name")
+    parameters = node.child_by_field_name("parameters")
+    exposed: list[Node | None] = [name, returns]
+    rendered: list[str] = []
+    for child in parameters.named_children if parameters is not None else []:
+        if child.type == "comment":
+            continue
+        text, parts = parameter(child)
+        rendered.append(text)
+        exposed.extend(parts)
+    qualified = f"{owner}.{_text(name)}" if owner else _text(name)
+    keyword = "constructor" if is_constructor else ("static method" if is_static else "method")
+    suffix = f": {_text(returns)}" if returns is not None else ""
+    text = f"{keyword} {qualified}({', '.join(rendered)}){suffix}"
+    return {"text": text, "symbols": ([owner] if owner else []) + _symbols(exposed)}
+
+
+def _java_parameter(node: Node) -> tuple[str, list[Node | None]]:
+    return _text(node), [node]
+
+
+def _java_callable_signature(node: Node, owner: str) -> dict[str, object]:
+    modifiers = next((child for child in node.children if child.type == "modifiers"), None)
+    is_static = modifiers is not None and any(child.type == "static" for child in modifiers.children)
+    return _member_callable_signature(
+        node, owner, node.child_by_field_name("type"), is_static, _java_parameter
+    )
+
+
+def _java_class_signature(node: Node) -> dict[str, object]:
+    name = node.child_by_field_name("name")
+    superclass = node.child_by_field_name("superclass")
+    interfaces = node.child_by_field_name("interfaces")
+    bases: list[str] = []
+    if superclass is not None:
+        base = next(iter(superclass.named_children), None)
+        if base is not None:
+            bases.append(_text(base))
+    if interfaces is not None:
+        type_list = next(iter(interfaces.named_children), None)
+        if type_list is not None:
+            bases.extend(_text(item) for item in type_list.named_children)
+    text = f"class {_text(name)}({', '.join(bases)})" if bases else f"class {_text(name)}"
+    return {"text": text, "symbols": _symbols([name, superclass, interfaces])}
+
+
+def _java_signatures(root: Node) -> list[dict[str, object]]:
+    # A syntax error inside one member marks the enclosing class_declaration `has_error` too (Java
+    # nests every member inside the class body), so only individual members are gated below --
+    # matching the same "intact definitions survive" resilience as Python's top-level functions.
+    found: list[dict[str, object]] = []
+    for node in root.named_children:
+        if node.type != "class_declaration":
+            continue
+        found.append(_java_class_signature(node))
+        owner = _text(node.child_by_field_name("name"))
+        body = node.child_by_field_name("body")
+        for member in body.named_children if body is not None else []:
+            if member.type in ("method_declaration", "constructor_declaration") and not member.has_error:
+                found.append(_java_callable_signature(member, owner))
+    return found
+
+
+def _java_is_reference(node: Node) -> bool:
+    parent = node.parent
+    if parent is None:
+        return False
+    if (
+        parent.type in ("class_declaration", "method_declaration", "constructor_declaration")
+        and parent.child_by_field_name("name") == node
+    ):
+        return False
+    if parent.type == "formal_parameter" and parent.child_by_field_name("name") == node:
+        return False
+    if parent.type == "variable_declarator" and parent.child_by_field_name("name") == node:
+        return False
+    if parent.type == "method_invocation" and parent.child_by_field_name("name") == node:
+        return False
+    if parent.type == "field_access" and parent.child_by_field_name("field") == node:
+        return False
+    ancestor: Node | None = parent
+    while ancestor is not None:
+        if ancestor.type in ("import_declaration", "package_declaration"):
+            return False
+        ancestor = ancestor.parent
+    return True
+
+
+def _java_names(root: Node) -> tuple[list[str], list[str]]:
+    return _collect_names(
+        root,
+        ("class_declaration", "method_declaration", "constructor_declaration"),
+        ("identifier", "type_identifier"),
+        _java_is_reference,
+    )
+
+
+def _cs_parameter(node: Node) -> tuple[str, list[Node | None]]:
+    if node.type != "parameter":
+        return _text(node), [node]
+    type_node = node.child_by_field_name("type")
+    name = node.child_by_field_name("name")
+    has_default = any(child.type == "=" for child in node.children)
+    rendered = f"{_text(type_node)} {_text(name)}" if type_node is not None else _text(name)
+    if has_default:
+        rendered += "=..."
+    return rendered, [type_node, name]
+
+
+def _cs_callable_signature(node: Node, owner: str) -> dict[str, object]:
+    is_static = any(
+        child.type == "modifier" and _text(child) == "static" for child in node.children
+    )
+    return _member_callable_signature(
+        node, owner, node.child_by_field_name("returns"), is_static, _cs_parameter
+    )
+
+
+def _cs_class_signature(node: Node) -> dict[str, object]:
+    name = node.child_by_field_name("name")
+    base_list = next((child for child in node.children if child.type == "base_list"), None)
+    bases = [_text(item) for item in base_list.named_children] if base_list is not None else []
+    text = f"class {_text(name)}({', '.join(bases)})" if bases else f"class {_text(name)}"
+    return {"text": text, "symbols": _symbols([name, base_list])}
+
+
+def _cs_top_level_classes(root: Node) -> Iterator[Node]:
+    for node in root.named_children:
+        if node.type == "class_declaration":
+            yield node
+        elif node.type == "namespace_declaration":
+            body = node.child_by_field_name("body")
+            if body is not None:
+                yield from (child for child in body.named_children if child.type == "class_declaration")
+
+
+def _cs_signatures(root: Node) -> list[dict[str, object]]:
+    # Same resilience rule as Java: a member's syntax error marks the enclosing class_declaration
+    # `has_error` too, so only individual members are gated below.
+    found: list[dict[str, object]] = []
+    for node in _cs_top_level_classes(root):
+        found.append(_cs_class_signature(node))
+        owner = _text(node.child_by_field_name("name"))
+        body = node.child_by_field_name("body")
+        for member in body.named_children if body is not None else []:
+            if member.type in ("method_declaration", "constructor_declaration") and not member.has_error:
+                found.append(_cs_callable_signature(member, owner))
+    return found
+
+
+def _cs_is_reference(node: Node) -> bool:
+    parent = node.parent
+    if parent is None:
+        return False
+    if (
+        parent.type in ("class_declaration", "method_declaration", "constructor_declaration", "namespace_declaration")
+        and parent.child_by_field_name("name") == node
+    ):
+        return False
+    if parent.type == "parameter" and parent.child_by_field_name("name") == node:
+        return False
+    if parent.type == "variable_declarator" and parent.child_by_field_name("name") == node:
+        return False
+    if parent.type == "member_access_expression" and parent.child_by_field_name("name") == node:
+        return False
+    ancestor: Node | None = parent
+    while ancestor is not None:
+        if ancestor.type == "using_directive":
+            return False
+        ancestor = ancestor.parent
+    return True
+
+
+def _cs_names(root: Node) -> tuple[list[str], list[str]]:
+    return _collect_names(
+        root,
+        ("class_declaration", "method_declaration", "constructor_declaration"),
+        ("identifier",),
+        _cs_is_reference,
+    )
+
+
+_LANGUAGE_EXTRACTORS: dict[
+    str,
+    tuple[
+        Callable[[Node], list[dict[str, object]]],
+        Callable[[Node], list[dict[str, object]]],
+        Callable[[Node], tuple[list[str], list[str]]],
+    ],
+] = {
+    "python": (_signatures, _imports, _names),
+    "typescript": (_js_signatures, _js_imports, _js_names),
+    "tsx": (_js_signatures, _js_imports, _js_names),
+    "javascript": (_js_signatures, _js_imports, _js_names),
+    "go": (_go_signatures, _no_imports, _go_names),
+    "java": (_java_signatures, _no_imports, _java_names),
+    "csharp": (_cs_signatures, _no_imports, _cs_names),
+}
+
+
 def _file_facts(parser: Parser, content: bytes, language: str = "python") -> dict[str, object]:
     try:
         content.decode("utf-8")
@@ -353,12 +671,12 @@ def _file_facts(parser: Parser, content: bytes, language: str = "python") -> dic
             "references": [],
         }
     root = parser.parse(content).root_node
-    javascript = language != "python"
-    definitions, references = _js_names(root) if javascript else _names(root)
+    signatures_fn, imports_fn, names_fn = _LANGUAGE_EXTRACTORS[language]
+    definitions, references = names_fn(root)
     return {
         "parser_status": "syntax_error" if root.has_error else "ok",
-        "signatures": _js_signatures(root) if javascript else _signatures(root),
-        "imports": _js_imports(root) if javascript else _imports(root),
+        "signatures": signatures_fn(root),
+        "imports": imports_fn(root),
         "definitions": definitions,
         "references": references,
     }
@@ -367,6 +685,9 @@ def _file_facts(parser: Parser, content: bytes, language: str = "python") -> dic
 def main() -> None:
     sys.path.insert(0, sys.argv[1])
     import tree_sitter
+    import tree_sitter_c_sharp
+    import tree_sitter_go
+    import tree_sitter_java
     import tree_sitter_javascript
     import tree_sitter_python
     import tree_sitter_typescript
@@ -377,6 +698,9 @@ def main() -> None:
         ".tsx": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_typescript.language_tsx())), "tsx"),
         ".js": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_javascript.language())), "javascript"),
         ".jsx": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_javascript.language())), "javascript"),
+        ".go": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_go.language())), "go"),
+        ".java": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_java.language())), "java"),
+        ".cs": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_c_sharp.language())), "csharp"),
     }
     request = json.loads(sys.stdin.buffer.read())
     files: dict[str, dict[str, object]] = {}

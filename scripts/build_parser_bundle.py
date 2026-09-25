@@ -41,6 +41,9 @@ GRAMMARS = (
     GrammarPin("typescript", "tree_sitter_typescript", "0.23.2", 14, (".ts",)),
     GrammarPin("tsx", "tree_sitter_typescript", "0.23.2", 14, (".tsx",)),
     GrammarPin("javascript", "tree_sitter_javascript", "0.25.0", 15, (".js", ".jsx")),
+    GrammarPin("go", "tree_sitter_go", "0.25.0", 15, (".go",)),
+    GrammarPin("java", "tree_sitter_java", "0.23.5", 14, (".java",)),
+    GrammarPin("csharp", "tree_sitter_c_sharp", "0.23.5", 15, (".cs",)),
 )
 
 

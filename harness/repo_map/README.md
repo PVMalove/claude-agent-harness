@@ -34,7 +34,10 @@ Names defined in five or more files are ignored. Low-confidence edges remain in 
 not affect file ranking.
 TS/JS import resolution tries an exact tracked path, then `.ts`, `.tsx`, `.js`, `.jsx`, then the
 same extensions under `index`. Bare packages, path aliases, dynamic imports, and type resolution
-do not create import edges. Name-reference edges stay inside the Python or TS/JS language family.
+do not create import edges. Name-reference edges stay inside one language family -- Python, TS/JS,
+Go, Java, or C# -- so two languages that happen to share an identifier never collide. Import edges
+stay Python/JS-only: Go, Java, and C# have no deterministic 1:1 import-to-file mapping without
+parsing project files (`go.mod`, package roots, `.csproj`), so they get name-ref relations only.
 
 ## Enterprise policy
 
@@ -93,6 +96,10 @@ methods of top-level classes (`def Class.method(...)`) are serialized; defaults 
 For TS, TSX, JS and JSX, the worker also extracts intact top-level functions, classes, direct
 methods and arrow-function declarations, plus static import specifiers. TypeScript and TSX have
 distinct grammar identities in provenance.
+For Go, the worker extracts intact top-level functions, methods (with their receiver), and
+struct/interface type declarations. For Java and C#, it extracts intact top-level classes plus
+their direct constructors and methods (`class Name(Base)`, `method Class.name(...): Type`). None
+of the three resolve or serialize imports -- see the name-reference/import-edge note above.
 
 A successful run reports `tier: "full"`, `parser: "bundle"`, and extends `parser_provenance` with
 `bundle_mode`, `bundle_source`, `python_tag`, `platform_tag`, `lock_sha256`, `script_hash`,
@@ -106,7 +113,7 @@ naming the cause and `parser_provenance.bundle_mode: "degraded"`. Setting
 `repo_map_policy.tier` to `"minimal"` requests the same path inventory without looking for a bundle.
 
 `scripts/build_parser_bundle.py` assembles the one-pair CI smoke bundle from an already-downloaded
-wheelhouse. The manual `release-parser-bundle` workflow downloads the 18 binary wheels pinned in
+wheelhouse. The manual `release-parser-bundle` workflow downloads the 27 binary wheels pinned in
 `.github/parser-bundle-release-wheels.json` for Python 3.12–3.14 on Windows x64, Linux x64 and
 macOS arm64. `scripts/release_parser_bundle.py` verifies every staged SHA-256, builds a common
 nine-pair lock, generates a CycloneDX 1.6 SBOM with every wheel hash, and runs `pip-audit` against
