@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 MIN_PYTHON = (3, 9)
 if sys.version_info < MIN_PYTHON:
@@ -49,12 +49,27 @@ if _HARNESS_ROOT.name != "harness":
     sys.modules["harness"] = _pkg
     _spec.loader.exec_module(_pkg)
 
-from harness.errors import HarnessError, print_and_exit
-
-# Dynamic JSON boundary: gh output, transcripts, ledger records and reports are json.loads results
-# whose shape is checked at runtime, not statically. This alias is the one documented exception to
-# disallow_any_explicit for that boundary; everything else is typed concretely.
-JsonObject = dict[str, Any]  # type: ignore[explicit-any]
+# Keep these explicit re-exports for callers of the installed delivery_stats.py script.
+from harness.errors import HarnessError, print_and_exit  # noqa: I001
+from harness.reporting.baseline import (
+    _provider_delta as _provider_delta,  # noqa: PLC0414
+    baseline_snapshot,
+    compare_baseline,
+    load_baseline as load_baseline,  # noqa: PLC0414
+    save_baseline as save_baseline,  # noqa: PLC0414
+)
+from harness.reporting.common import (
+    BASELINE_SCHEMA_VERSION as BASELINE_SCHEMA_VERSION,  # noqa: PLC0414
+    CLAUDE_FIELDS,
+    CODEX_FIELDS,
+    MISSING as MISSING,  # noqa: PLC0414
+    JsonObject,
+    StatsError as StatsError,  # noqa: PLC0414
+    _int,
+)
+from harness.reporting.cost import estimate_cost as estimate_cost  # noqa: PLC0414
+from harness.reporting.cost import load_rates as load_rates  # noqa: PLC0414
+from harness.reporting.terminal import render_terminal as render_terminal  # noqa: PLC0414
 
 
 class _LedgerInstance(Protocol):
@@ -70,20 +85,6 @@ class LedgerClass(Protocol):
     def read_record_lenient(self, path: Path) -> JsonObject | None: ...
 
 
-MISSING = "нет данных"
-BASELINE_SCHEMA_VERSION = 1
-CLAUDE_FIELDS = (
-    "input_tokens",
-    "cache_creation_input_tokens",
-    "cache_read_input_tokens",
-    "output_tokens",
-)
-CODEX_FIELDS = (
-    "input_tokens",
-    "cached_input_tokens",
-    "cache_write_input_tokens",
-    "output_tokens",
-)
 # Pseudo-models the runtime writes for locally generated messages; never billed.
 NON_BILLABLE_MODELS = {"<synthetic>"}
 # Matches coordinator.py's own default STATE_REL: the backend-orchestration ledger this project's
@@ -91,10 +92,6 @@ NON_BILLABLE_MODELS = {"<synthetic>"}
 # coordinator itself does, since a missing or unreadable record must degrade to "missing", not abort.
 ORCHESTRATION_STATE_REL = Path(".harness/orchestration/state")
 CONTINUATION_DECISIONS = {"continue", "continue-automatic"}
-
-
-class StatsError(HarnessError):
-    """A request that cannot be answered from local evidence."""
 
 
 def _run(command: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
@@ -176,10 +173,6 @@ def _same_path(
                 hit = False
         _cache[key] = hit
     return hit
-
-
-def _int(value: object) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 # --------------------------------------------------------------------------------------- scope
@@ -1210,132 +1203,6 @@ def orchestration_metrics(
     }
 
 
-# ----------------------------------------------------------------------------------------- cost
-
-
-def _rate(card: object, field: str) -> float:
-    if not isinstance(card, dict):
-        return 0.0
-    try:
-        return float(card.get(field, 0) or 0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _is_priced(card: object) -> bool:
-    """A model is priced only when it carries a rate above zero.
-
-    The shipped template lists models at 0.0 so the shape is obvious. Treating those zeros as real
-    prices is what turns an unfilled card into a confident '0.00'.
-    """
-    return _rate(card, "input") > 0 or _rate(card, "output") > 0
-
-
-def load_rates(path: Path | None) -> JsonObject:
-    if path is None or not path.is_file():
-        return {
-            "status": MISSING,
-            "reason": f"тариф не настроен: нет файла {path}",
-            "models": {},
-        }
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except ValueError as exc:
-        raise StatsError(
-            f"rate card is not valid JSON: {path}",
-            remedy=f"fix the JSON syntax in {path}",
-        ) from exc
-    if not isinstance(value, dict) or not isinstance(value.get("models"), dict):
-        raise StatsError(
-            "rate card must be an object with a models object",
-            remedy=f"set {path} to a JSON object with a top-level 'models' object",
-        )
-    if not any(_is_priced(card) for card in value["models"].values()):
-        # An untouched template is not a rate card: every price is 0.0. Reporting its total as a
-        # real 0.00 would be the tool asserting a number nobody gave it.
-        return {
-            "status": MISSING,
-            "reason": f"тариф не заполнен — все ставки нулевые: {path}",
-            "models": {},
-        }
-    value.setdefault("status", "ok")
-    return value
-
-
-def estimate_cost(
-    claude: JsonObject, codex: JsonObject, rates: JsonObject
-) -> JsonObject:
-    """Cost by the supplied rate card only. No prices are built into this tool."""
-    if rates.get("status") != "ok":
-        return {"status": MISSING, "reason": rates.get("reason", "тариф не настроен")}
-    table = rates["models"]
-    per_model: list[JsonObject] = []
-    total = 0.0
-    uncached_total = 0.0
-    unpriced = []
-
-    def price(
-        model: str, fresh: int, cache_write: int, cache_read: int, output: int
-    ) -> None:
-        nonlocal total, uncached_total
-        card = table.get(model)
-        if not _is_priced(card):
-            # Includes a model left at the template's 0.0: absent from the card and priced at zero
-            # are the same statement — nobody said what this model costs.
-            unpriced.append(model)
-            return
-        rate_in = _rate(card, "input") / 1_000_000
-        rate_out = _rate(card, "output") / 1_000_000
-        write_multiplier = float(card.get("cache_write_multiplier", 1.25))
-        read_multiplier = float(card.get("cache_read_multiplier", 0.1))
-        cost = (
-            fresh * rate_in
-            + cache_write * rate_in * write_multiplier
-            + cache_read * rate_in * read_multiplier
-            + output * rate_out
-        )
-        uncached = (fresh + cache_write + cache_read) * rate_in + output * rate_out
-        total += cost
-        uncached_total += uncached
-        per_model.append(
-            {
-                "model": model,
-                "cost": round(cost, 6),
-                "uncached_cost": round(uncached, 6),
-            }
-        )
-
-    if claude.get("status") == "ok":
-        for model, bucket in claude["models"].items():
-            price(
-                model,
-                bucket["input_tokens"],
-                bucket["cache_creation_input_tokens"],
-                bucket["cache_read_input_tokens"],
-                bucket["output_tokens"],
-            )
-    if codex.get("status") == "ok":
-        for model, bucket in codex["models"].items():
-            price(
-                model,
-                bucket["input_tokens"] - bucket["cached_input_tokens"],
-                bucket["cache_write_input_tokens"],
-                bucket["cached_input_tokens"],
-                bucket["output_tokens"],
-            )
-
-    per_model.sort(key=lambda item: item["cost"], reverse=True)
-    return {
-        "status": "ok",
-        "currency": rates.get("currency", "USD"),
-        "rates_effective": rates.get("effective_date", MISSING),
-        "rates_source": rates.get("source", MISSING),
-        "per_model": per_model,
-        "total": round(total, 6),
-        "uncached_total": round(uncached_total, 6),
-        "cache_saving": round(uncached_total - total, 6),
-        "unpriced_models": sorted(set(unpriced)),
-    }
 
 
 # -------------------------------------------------------------------------------------- summary
@@ -1364,205 +1231,6 @@ def cache_split(claude: JsonObject) -> str | JsonObject:
         "cache_read_percent": round(read * 100 / total, 3),
     }
 
-
-def _cache_tokens(
-    models: JsonObject, write_field: str, read_field: str
-) -> JsonObject | None:
-    """Cache write/read tokens by the same rule as the input total: only when every model bucket
-    carries both fields, never a partial sum presented as complete."""
-    if not models or any(
-        not isinstance(bucket, dict)
-        or any(
-            not isinstance(bucket.get(field), int)
-            or isinstance(bucket.get(field), bool)
-            for field in (write_field, read_field)
-        )
-        for bucket in models.values()
-    ):
-        return None
-    return {
-        "cache_write_tokens": sum(
-            _int(bucket.get(write_field)) for bucket in models.values()
-        ),
-        "cache_read_tokens": sum(
-            _int(bucket.get(read_field)) for bucket in models.values()
-        ),
-    }
-
-
-def _provider_snapshot(
-    usage: JsonObject,
-    input_fields: tuple[str, ...],
-    *,
-    cache_fields: tuple[str, str] | None = None,
-) -> JsonObject:
-    """The comparable provider telemetry from one report, without filling absent data with zero."""
-    if usage.get("status") != "ok":
-        return {"status": MISSING, "reason": usage.get("reason", MISSING)}
-    models = usage.get("models")
-    if not isinstance(models, dict):
-        return {"status": MISSING, "reason": "в отчёте нет telemetry по моделям"}
-    fields = (*input_fields, "output_tokens")
-    if not models or any(
-        not isinstance(bucket, dict)
-        or any(
-            not isinstance(bucket.get(field), int)
-            or isinstance(bucket.get(field), bool)
-            for field in fields
-        )
-        for bucket in models.values()
-    ):
-        return {"status": MISSING, "reason": "в отчёте неполная telemetry по моделям"}
-    input_tokens = sum(
-        sum(_int(bucket.get(field)) for field in input_fields)
-        for bucket in models.values()
-    )
-    output_tokens = sum(_int(bucket.get("output_tokens")) for bucket in models.values())
-    snapshot = {
-        "status": "ok",
-        "attribution": usage.get("attribution", MISSING),
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": input_tokens + output_tokens,
-    }
-    if cache_fields is not None:
-        cache = _cache_tokens(models, *cache_fields)
-        snapshot["cache_write_tokens"] = (
-            cache["cache_write_tokens"] if cache else MISSING
-        )
-        snapshot["cache_read_tokens"] = cache["cache_read_tokens"] if cache else MISSING
-    return snapshot
-
-
-def baseline_snapshot(report: JsonObject) -> JsonObject:
-    """Make the small, versioned baseline contract that later reports can compare."""
-    epic = report["epic"]
-    return {
-        "schema_version": BASELINE_SCHEMA_VERSION,
-        "generated_at": report["generated_at"],
-        "repository": report["repository"],
-        "epic": {"number": epic.get("number"), "title": epic.get("title", MISSING)},
-        "providers": {
-            "claude": _provider_snapshot(
-                report["claude"],
-                CLAUDE_FIELDS[:3],
-                cache_fields=("cache_creation_input_tokens", "cache_read_input_tokens"),
-            ),
-            "codex": _provider_snapshot(
-                report["codex"],
-                ("input_tokens",),
-                cache_fields=("cache_write_input_tokens", "cached_input_tokens"),
-            ),
-        },
-    }
-
-
-def load_baseline(path: Path) -> JsonObject:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise StatsError(
-            f"не прочитать baseline: {path}: {exc}",
-            remedy=f"fix the file-system error above for {path} and retry",
-        ) from exc
-    except ValueError as exc:
-        raise StatsError(
-            f"baseline не является JSON: {path}",
-            remedy=f"fix the JSON syntax in {path}",
-        ) from exc
-    if (
-        not isinstance(value, dict)
-        or value.get("schema_version") != BASELINE_SCHEMA_VERSION
-    ):
-        raise StatsError(
-            f"baseline имеет неподдерживаемый формат: {path}",
-            remedy=f"regenerate {path} with --save-baseline so it matches schema_version={BASELINE_SCHEMA_VERSION}",
-        )
-    if not isinstance(value.get("providers"), dict) or not isinstance(
-        value.get("epic"), dict
-    ):
-        raise StatsError(
-            f"baseline не содержит providers и epic: {path}",
-            remedy=f"regenerate {path} with --save-baseline so it has providers and epic",
-        )
-    for provider in ("claude", "codex"):
-        telemetry = value["providers"].get(provider)
-        if not isinstance(telemetry, dict):
-            raise StatsError(
-                f"baseline не содержит telemetry {provider}: {path}",
-                remedy=f"regenerate {path} with --save-baseline so it has {provider} telemetry",
-            )
-        if telemetry.get("status") == "ok" and any(
-            not isinstance(telemetry.get(field), int)
-            or isinstance(telemetry.get(field), bool)
-            for field in ("input_tokens", "output_tokens", "total_tokens")
-        ):
-            raise StatsError(
-                f"baseline содержит неполную telemetry {provider}: {path}",
-                remedy=f"regenerate {path} with --save-baseline so {provider}'s token fields are complete integers",
-            )
-    return value
-
-
-def save_baseline(snapshot: JsonObject, path: Path) -> None:
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-    except OSError as exc:
-        raise StatsError(
-            f"не сохранить baseline: {path}: {exc}",
-            remedy=f"fix the file-system error above for {path} and retry",
-        ) from exc
-
-
-def _cache_delta_field(
-    baseline: JsonObject, current: JsonObject, field: str
-) -> str | int:
-    """A cache-token delta only when both sides actually carry that field -- one or both of them
-    may predate this metric or come from a provider report with incomplete cache telemetry."""
-    before, after = baseline.get(field), current.get(field)
-    if (
-        not isinstance(before, int)
-        or isinstance(before, bool)
-        or not isinstance(after, int)
-        or isinstance(after, bool)
-    ):
-        return MISSING
-    return after - before
-
-
-def _provider_delta(baseline: object, current: object) -> str | JsonObject:
-    if not isinstance(baseline, dict) or not isinstance(current, dict):
-        return MISSING
-    if baseline.get("status") != "ok" or current.get("status") != "ok":
-        return MISSING
-    delta: JsonObject = {
-        field: _int(current.get(field)) - _int(baseline.get(field))
-        for field in ("input_tokens", "output_tokens", "total_tokens")
-    }
-    for field in ("cache_write_tokens", "cache_read_tokens"):
-        delta[field] = _cache_delta_field(baseline, current, field)
-    return delta
-
-
-def compare_baseline(baseline: JsonObject, current: JsonObject) -> JsonObject:
-    """Compare only source-backed telemetry and preserve each side's attribution evidence."""
-    providers = ("claude", "codex")
-    return {
-        "baseline": baseline,
-        "current": current,
-        "delta": {
-            "providers": {
-                provider: _provider_delta(
-                    baseline.get("providers", {}).get(provider),
-                    current.get("providers", {}).get(provider),
-                )
-                for provider in providers
-            }
-        },
-    }
 
 
 def build_report(args: argparse.Namespace) -> JsonObject:
@@ -1649,168 +1317,6 @@ def build_report(args: argparse.Namespace) -> JsonObject:
     }
 
 
-# --------------------------------------------------------------------------------------- output
-
-
-def _thousands(value: object) -> str:
-    if not isinstance(value, int):
-        return str(value)
-    return f"{value:,}".replace(",", " ")
-
-
-def _compact(value: object) -> str:
-    if not isinstance(value, int):
-        return str(value)
-    for limit, suffix in ((1_000_000_000, "млрд"), (1_000_000, "млн"), (1_000, "тыс")):
-        if value >= limit:
-            return (
-                f"{value / limit:.2f}".rstrip("0").rstrip(".").replace(".", ",")
-                + f" {suffix}"
-            )
-    return str(value)
-
-
-def _ru(value: object, places: int = 2) -> str:
-    """Russian decimal comma for a report the reader sees in Russian."""
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return str(value)
-    return f"{value:,.{places}f}".replace(",", " ").replace(".", ",")
-
-
-def render_terminal(report: JsonObject) -> str:
-    epic = report["epic"]
-    lines = [
-        f"Эпик #{epic['number']} — {epic['title']}",
-        f"Тикетов закрыто: {report['tickets_closed']} из {report['tickets_total']}",
-    ]
-    totals = report["volume"]["totals"]
-    lines.append(
-        f"Код: +{_thousands(totals['insertions'])} / -{_thousands(totals['deletions'])} строк, "
-        f"{totals['files']} файлов, {totals['commits']} коммитов"
-    )
-    adr = report["adr_added"]
-    lines.append(f"ADR добавлено: {adr}")
-
-    claude = report["claude"]
-    if claude.get("status") == "ok":
-        for model, bucket in sorted(
-            claude["models"].items(), key=lambda kv: -kv[1]["output_tokens"]
-        ):
-            lines.append(
-                f"  Claude {model}: вход {_compact(sum(bucket[f] for f in CLAUDE_FIELDS[:3]))}, "
-                f"выход {_compact(bucket['output_tokens'])}, ходов {bucket['turns']}"
-            )
-        session_stats = claude.get("session_stats", [])
-        if session_stats:
-            lines.append("Топ-3 сессий по объему контекста:")
-            for s in session_stats[:3]:
-                lines.append(
-                    f"  Ветка {s['branch']}: ходов {s['turns']}, макс. контекст {_compact(s['max_input'])}, всего входных {_compact(s['total_input'])}"
-                )
-    else:
-        lines.append(f"  Claude: {claude.get('reason', MISSING)}")
-
-    codex = report["codex"]
-    if codex.get("status") == "ok":
-        for model, bucket in sorted(
-            codex["models"].items(), key=lambda kv: -kv[1]["output_tokens"]
-        ):
-            lines.append(
-                f"  Codex {model}: вход {_compact(bucket['input_tokens'])}, "
-                f"выход {_compact(bucket['output_tokens'])}, ходов {bucket['turns']} (оценка)"
-            )
-    else:
-        lines.append(f"  Codex: {codex.get('reason', MISSING)}")
-
-    comparison = report.get("comparison")
-    if isinstance(comparison, dict):
-        baseline = comparison.get("baseline", {})
-        current = comparison.get("current", {})
-        deltas = comparison.get("delta", {}).get("providers", {})
-        lines.append(
-            f"Сравнение: baseline эпика #{baseline.get('epic', {}).get('number', '?')} "
-            f"→ текущий эпик #{current.get('epic', {}).get('number', '?')}"
-        )
-        for provider, label in (("claude", "Claude"), ("codex", "Codex")):
-            before = baseline.get("providers", {}).get(provider, {})
-            after = current.get("providers", {}).get(provider, {})
-            delta = deltas.get(provider, MISSING)
-            if isinstance(before, dict) and before.get("status") == "ok":
-                before_text = f"{_compact(before.get('total_tokens'))} ({before.get('attribution', MISSING)})"
-            else:
-                before_text = MISSING
-            if isinstance(after, dict) and after.get("status") == "ok":
-                after_text = f"{_compact(after.get('total_tokens'))} ({after.get('attribution', MISSING)})"
-            else:
-                after_text = MISSING
-            delta_text = (
-                _compact(delta.get("total_tokens"))
-                if isinstance(delta, dict)
-                else MISSING
-            )
-            lines.append(
-                f"  {label}: {before_text} → {after_text}; разница {delta_text}"
-            )
-            cache_write_delta = (
-                delta.get("cache_write_tokens") if isinstance(delta, dict) else MISSING
-            )
-            cache_read_delta = (
-                delta.get("cache_read_tokens") if isinstance(delta, dict) else MISSING
-            )
-            if isinstance(cache_write_delta, int) or isinstance(cache_read_delta, int):
-                lines.append(
-                    f"    кеш: запись {_compact(cache_write_delta) if isinstance(cache_write_delta, int) else MISSING}, "
-                    f"чтение {_compact(cache_read_delta) if isinstance(cache_read_delta, int) else MISSING}"
-                )
-
-    cache = report["cache"]
-    if isinstance(cache, dict):
-        lines.append(
-            f"Кеш Claude: чтение {_ru(cache['cache_read_percent'], 3)}%, запись {_ru(cache['cache_write_percent'], 3)}%, "
-            f"свежий вход {_ru(cache['fresh_percent'], 3)}%"
-        )
-    else:
-        lines.append(f"Кеш Claude: {MISSING}")
-
-    cost = report["cost"]
-    if cost.get("status") == "ok":
-        lines.append(
-            f"Стоимость по ставкам {cost['rates_effective']}: {_ru(cost['total'])} {cost['currency']}; "
-            f"без кеша было бы {_ru(cost['uncached_total'])} (экономия {_ru(cost['cache_saving'])})"
-        )
-        if cost["unpriced_models"]:
-            lines.append(f"  Без ставок в тарифе: {', '.join(cost['unpriced_models'])}")
-    else:
-        lines.append(f"Стоимость: {cost.get('reason', MISSING)}")
-
-    orchestration = report["orchestration"]
-    if orchestration.get("status") == "ok":
-        for number, ticket in sorted(orchestration["tickets"].items()):
-            lines.append(f"Оркестрация тикета #{number}:")
-            for session in ticket["worker_sessions"]:
-                lines.append(
-                    f"  {session['role']} {session['dispatch_id']}: сессий {session['sessions']}"
-                )
-                for restart in session["restarts"]:
-                    lines.append(
-                        f"    рестарт ({restart['decision']}): {restart['reason']}"
-                    )
-            rate = ticket["qa_failure_rate"]
-            lines.append(
-                f"  QA failure rate: {_ru(rate * 100, 1) + '%' if isinstance(rate, float) else rate}"
-            )
-            scope = ticket["review_scope"]
-            if isinstance(scope, list):
-                for entry in scope:
-                    lines.append(
-                        f"  Review {entry['dispatch_id']}: вне зоны {entry['files_out_of_scope']}"
-                        f" из {entry['files_total']} файлов ({_ru(entry['share'] * 100, 1)}%)"
-                    )
-            else:
-                lines.append(f"  Review diff scope excess: {scope}")
-    else:
-        lines.append(f"Оркестрация: {orchestration.get('reason', MISSING)}")
-    return "\n".join(lines)
 
 
 def main_live_probe(argv: list[str]) -> int:
