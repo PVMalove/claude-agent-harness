@@ -10,6 +10,7 @@ import pytest
 
 from harness.repo_map import parser_bundle
 from scripts import release_parser_bundle as release
+from scripts.build_parser_bundle import CORE_VERSION
 
 
 class TestManifest(TypedDict):
@@ -57,7 +58,7 @@ def _fake_tools(
             return 0
         if audit_error:
             return 1
-        audited = dependencies if dependencies is not None else [
+        audited: list[dict[str, object]] = dependencies if dependencies is not None else [
             {"name": name.replace("_", "-"), "version": version, "vulns": []}
             for name, version in release.PACKAGES.items()
         ]
@@ -132,7 +133,7 @@ def test_release_audit_failure_never_exposes_output(
 
 @pytest.mark.parametrize("dependencies", [
     [],
-    [{"name": "tree-sitter", "version": release.CORE_VERSION, "vulns": []}],
+    [{"name": "tree-sitter", "version": CORE_VERSION, "vulns": []}],
     [
         {"name": name.replace("_", "-"), "version": version, "vulns": []}
         for name, version in release.PACKAGES.items() if name != "tree_sitter_python"
@@ -144,7 +145,7 @@ def test_release_audit_failure_never_exposes_output(
     [
         {"name": name.replace("_", "-"), "version": version, "vulns": []}
         for name, version in release.PACKAGES.items()
-    ] + [{"name": "tree-sitter", "version": release.CORE_VERSION, "vulns": []}],
+    ] + [{"name": "tree-sitter", "version": CORE_VERSION, "vulns": []}],
     [
         {"name": name.replace("_", "-"), "version": version, "vulns": []}
         for name, version in release.PACKAGES.items() if name != "tree_sitter_python"

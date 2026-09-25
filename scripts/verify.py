@@ -454,7 +454,8 @@ def main() -> None:
         run_stage(
             "clean-room",
             [sys.executable, str(ROOT / "scripts" / "test_clean_room.py")],
-            env=dict(test_env, HARNESS_TEST_RUN_ROOT=str(run_tmp)),
+            # UTF-8 mode: the harness CLI writes UTF-8, and a cp1252 runner locale cannot decode it.
+            env=dict(test_env, HARNESS_TEST_RUN_ROOT=str(run_tmp), PYTHONUTF8="1"),
         )
     finally:
         remove_tree(run_tmp)

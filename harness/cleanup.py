@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from ctypes import wintypes
@@ -69,7 +70,7 @@ def _old_enough(path: Path, hours: float) -> bool:
 
 
 def _pid_active(pid: int) -> bool:
-    if os.name == "nt":
+    if sys.platform == "win32":
         if pid > 0xFFFFFFFF:
             return False
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
