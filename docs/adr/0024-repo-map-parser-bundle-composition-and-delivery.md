@@ -78,7 +78,19 @@ mypy 2.3.1, pip-audit 2.10.1, cyclonedx-py 7.4.0). Полный режим ос�
 - **#277 (TS/JS, первый язык):** изолированная CI-задача ставит wheelhouse из lock офлайн, гоняет
   bundle-путь и отдельный mypy-прогон парсер-модуля; при недоступном артефакте — падает; выпускает SBOM
   и результат `pip-audit`. Для TypeScript загружаются два языка: `typescript` и `tsx`.
-- **#279 (Go, Java, C#):** без изменений по объёму; новые грамматики уже входят в пины и lock.
+- **#279 (Go, Java, C#):** реализовано. Грамматики и pin'ы, зафиксированные выше, добавлены в
+  `scripts/build_parser_bundle.py` (`GRAMMARS`) и `scripts/release_parser_bundle.py` (`PACKAGES`);
+  релизный манифест вырос с 18 до 27 wheels (core × 9 пар + 6 abi3-дистрибутивов × 3 платформы,
+  число вычисляется из `len(PACKAGES)`/`len(PLATFORMS)`, не захардкожено). Все 9 требуемых wheels
+  (3 платформы × 3 пакета) для `tree-sitter-go==0.25.0`, `tree-sitter-java==0.23.5` и
+  `tree-sitter-c-sharp==0.23.5` подтверждены на PyPI перед фиксацией лока (2026-09-25); их sha256
+  зафиксированы в `.github/parser-bundle-release-wheels.json` и (для cp312×linux_x86_64)
+  `.github/parser-bundle-wheels.txt`. `tree_sitter_worker.py` разбирает Go/Java/C# через ту же
+  dispatch-таблицу extractors, что и TS/JS/Python; `repo_map.py` группирует name-ref edges по
+  explicit extension→family map (пять семей), а не бинарно python/js. Import-edges остаются
+  Python/JS-only: у Go/Java/C# нет детерминированного 1:1 mapping импорт→файл без разбора
+  project-файлов (`go.mod`, package root, `.csproj`). CI-джоба `repo-map-bundle` — matrix-стратегия
+  с отдельным тестовым файлом на язык (`python-ts-js`, `go`, `java`, `csharp`), без `pytest -k`.
 - Обновление любого пина, версии Python или платформы матрицы — релиз харнесса с новым lock, SBOM и
   результатом CVE-проверки.
 
