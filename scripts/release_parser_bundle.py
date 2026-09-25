@@ -162,6 +162,7 @@ def build_release(
             }
             grammars.append({
                 "name": pin.name,
+                "distribution": pin.distribution,
                 "version": pin.version,
                 "abi": pin.abi,
                 "extensions": list(pin.extensions),

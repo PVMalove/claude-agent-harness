@@ -83,6 +83,7 @@ class GrammarSpec:
     sha256: str
     extensions: tuple[str, ...]
     sha256_by_pair: dict[str, str] | None = None
+    distribution: str | None = None
 
 
 @dataclass(frozen=True)
@@ -217,6 +218,12 @@ def parse_lock(raw: bytes) -> BundleLock:
                 if not isinstance(pair, str) or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
                     raise BundleFormatError("parser_bundle.lock.json: invalid per-pair grammar hash")
                 pair_hashes[pair] = digest
+        distribution = item.get("distribution")
+        if pair_hashes is not None and (
+            not isinstance(distribution, str)
+            or re.fullmatch(r"[A-Za-z0-9_]+", distribution) is None
+        ):
+            raise BundleFormatError("parser_bundle.lock.json: per-pair grammar distribution is invalid")
         grammars.append(
             GrammarSpec(
                 name=_string_field(item, "name"),
@@ -225,6 +232,7 @@ def parse_lock(raw: bytes) -> BundleLock:
                 sha256=_sha256_field(item, "sha256", "grammars[].sha256"),
                 extensions=tuple(extensions_raw),
                 sha256_by_pair=pair_hashes,
+                distribution=distribution if isinstance(distribution, str) else None,
             )
         )
     wheelhouses_raw = decoded.get("wheelhouses")
@@ -238,10 +246,14 @@ def parse_lock(raw: bytes) -> BundleLock:
     for grammar in grammars:
         if grammar.sha256_by_pair is not None:
             if set(grammar.sha256_by_pair) != set(wheelhouses) or any(
-                grammar.sha256_by_pair[pair] not in {artifact.sha256 for artifact in artifacts}
+                not any(
+                    artifact.filename.startswith(f"{grammar.distribution}-{grammar.version}-")
+                    and artifact.sha256 == grammar.sha256_by_pair[pair]
+                    for artifact in artifacts
+                )
                 for pair, artifacts in wheelhouses.items()
             ):
-                raise BundleFormatError("parser_bundle.lock.json: per-pair grammar hash is not in wheelhouse")
+                raise BundleFormatError("parser_bundle.lock.json: per-pair grammar hash does not match its distribution wheel")
     return BundleLock(
         core_version=_string_field(decoded, "core_version"),
         core_abi_range=_string_field(decoded, "core_abi_range"),

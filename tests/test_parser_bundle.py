@@ -133,6 +133,29 @@ def test_parse_lock_rejects_malformed_json() -> None:
         parser_bundle.parse_lock(json.dumps({"grammars": []}).encode())
 
 
+def test_parse_lock_rejects_grammar_hash_from_another_distribution() -> None:
+    core_hash = "a" * 64
+    grammar_hash = "b" * 64
+    payload = {
+        "core_version": "0.26.0",
+        "core_abi_range": "13-15",
+        "worker_script": "worker.py",
+        "script_sha256": "c" * 64,
+        "grammars": [{
+            "name": "typescript", "distribution": "tree_sitter_typescript",
+            "version": "0.23.2", "abi": 14, "extensions": [".ts"],
+            "sha256": grammar_hash,
+            "sha256_by_pair": {"cp312-any": core_hash},
+        }],
+        "wheelhouses": {"cp312-any": [
+            {"filename": "tree_sitter-0.26.0-cp312-cp312-any.whl", "sha256": core_hash},
+            {"filename": "tree_sitter_typescript-0.23.2-cp39-abi3-any.whl", "sha256": grammar_hash},
+        ]},
+    }
+    with pytest.raises(parser_bundle.BundleFormatError, match="per-pair grammar hash"):
+        parser_bundle.parse_lock(json.dumps(payload).encode())
+
+
 def test_find_bundle_returns_first_directory_with_a_lock_file(tmp_path: Path) -> None:
     empty_dir = tmp_path / "empty"
     empty_dir.mkdir()

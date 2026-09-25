@@ -87,6 +87,7 @@ def build(wheelhouse: Path, out: Path, pair: str) -> Path:
         "grammars": [
             {
                 "name": pin.name,
+                "distribution": pin.distribution,
                 "version": pin.version,
                 "abi": pin.abi,
                 "sha256": _sha256(grammar_wheels[pin.name]),
