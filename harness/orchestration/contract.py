@@ -553,6 +553,10 @@ def _policy_problem(
     return problems
 
 
+REPO_MAP_TIER_ORDER = ("minimal", "full")
+REPO_MAP_POLICY_ROLES = ("architect", "developer", "code-review")
+
+
 def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
     """Validate the Repo Map policy without importing its base-capability resource."""
     value = config.get("repo_map_policy")
@@ -578,8 +582,12 @@ def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
         "redact_symbols",
         "parser_bundle_registry_paths",
     }
-    enum_values = {"tier": {"minimal", "full"}}
-    unknown = sorted(set(value) - numeric - patterns - set(enum_values))
+    enum_values = {
+        "tier": set(REPO_MAP_TIER_ORDER),
+        "min_tier": set(REPO_MAP_TIER_ORDER),
+    }
+    structured = {"min_tier_by_role"}
+    unknown = sorted(set(value) - numeric - patterns - set(enum_values) - structured)
     problems: list[str] = []
     if unknown:
         problems.append(
@@ -609,7 +617,48 @@ def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
                 f"orchestration repo_map_policy.{field} must be one of: "
                 + ", ".join(sorted(choices))
             )
+    if "min_tier_by_role" in value:
+        by_role = value["min_tier_by_role"]
+        if not isinstance(by_role, dict):
+            problems.append(
+                "orchestration repo_map_policy.min_tier_by_role must be an object"
+            )
+        else:
+            for role_name, tier in by_role.items():
+                if role_name not in REPO_MAP_POLICY_ROLES:
+                    problems.append(
+                        f"orchestration repo_map_policy.min_tier_by_role names unknown role {role_name!r}"
+                    )
+                if not isinstance(tier, str) or tier not in REPO_MAP_TIER_ORDER:
+                    problems.append(
+                        f"orchestration repo_map_policy.min_tier_by_role.{role_name} must be one of: "
+                        + ", ".join(sorted(REPO_MAP_TIER_ORDER))
+                    )
     return problems
+
+
+def resolve_min_repo_map_tier(
+    config: Mapping[str, object], role_name: str
+) -> str | None:
+    """Minimum Repo Map tier a role's Context Package must meet at dispatch admission.
+
+    Resolution order: the role's entry in `repo_map_policy.min_tier_by_role`, else the
+    repository-wide `repo_map_policy.min_tier`, else `None` (no gate). Without a
+    `repo_map_policy`, or without either field, this always returns `None`, so a project that
+    never opts in is never blocked by Repo Map degradation.
+    """
+    policy = config.get("repo_map_policy")
+    if not isinstance(policy, dict):
+        return None
+    by_role = policy.get("min_tier_by_role")
+    if isinstance(by_role, dict):
+        role_value = by_role.get(role_name)
+        if isinstance(role_value, str) and role_value in REPO_MAP_TIER_ORDER:
+            return role_value
+    default_value = policy.get("min_tier")
+    if isinstance(default_value, str) and default_value in REPO_MAP_TIER_ORDER:
+        return default_value
+    return None
 
 
 def resolve_allowed_tools(

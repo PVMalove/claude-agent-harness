@@ -497,6 +497,84 @@ class RepoMapPolicyProblemTests(unittest.TestCase):
             ],
         )
 
+    def test_min_tier_and_min_tier_by_role_are_valid(self) -> None:
+        self.assertEqual(
+            contract._repo_map_policy_problems(
+                {
+                    "repo_map_policy": {
+                        "min_tier": "full",
+                        "min_tier_by_role": {
+                            "architect": "minimal",
+                            "developer": "full",
+                            "code-review": "minimal",
+                        },
+                    }
+                }
+            ),
+            [],
+        )
+
+    def test_repo_map_policy_problems_rejects_invalid_min_tier_and_unknown_roles(
+        self,
+    ) -> None:
+        problems = contract._repo_map_policy_problems(
+            {
+                "repo_map_policy": {
+                    "min_tier": "reduced",
+                    "min_tier_by_role": {
+                        "developer": "reduced",
+                        "qa": "full",
+                    },
+                }
+            }
+        )
+        self.assertEqual(
+            sorted(problems),
+            [
+                "orchestration repo_map_policy.min_tier must be one of: full, minimal",
+                "orchestration repo_map_policy.min_tier_by_role names unknown role 'qa'",
+                "orchestration repo_map_policy.min_tier_by_role.developer must be one of: full, minimal",
+            ],
+        )
+
+    def test_min_tier_by_role_must_be_an_object(self) -> None:
+        self.assertEqual(
+            contract._repo_map_policy_problems(
+                {"repo_map_policy": {"min_tier_by_role": ["developer"]}}
+            ),
+            ["orchestration repo_map_policy.min_tier_by_role must be an object"],
+        )
+
+
+class ResolveMinRepoMapTierTests(unittest.TestCase):
+    def test_resolve_min_repo_map_tier_prefers_role_then_default_then_none(
+        self,
+    ) -> None:
+        config_with_role_override = {
+            "repo_map_policy": {
+                "min_tier": "minimal",
+                "min_tier_by_role": {"developer": "full"},
+            }
+        }
+        self.assertEqual(
+            contract.resolve_min_repo_map_tier(
+                config_with_role_override, "developer"
+            ),
+            "full",
+        )
+        self.assertEqual(
+            contract.resolve_min_repo_map_tier(
+                config_with_role_override, "architect"
+            ),
+            "minimal",
+        )
+        self.assertIsNone(contract.resolve_min_repo_map_tier({}, "developer"))
+        self.assertIsNone(
+            contract.resolve_min_repo_map_tier(
+                {"repo_map_policy": {}}, "developer"
+            )
+        )
+
 
 class ContextWindowPolicyTests(unittest.TestCase):
     def _problems(self, policy: dict[str, object]) -> list[str]:
