@@ -16,6 +16,7 @@ from typing import cast
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import operational_guards
 from harness.orchestration.contract import (
+    REPO_MAP_TIER_ORDER,
     ContractError,
     valid_tool_list,
     validate_brief_policy,
@@ -256,6 +257,22 @@ def _context_package_quality_warning(package: JsonObject) -> JsonObject | None:
         "degradation_reason": degradation_reason,
         "parser_provenance": nested_provenance,
     }
+
+
+def _context_package_tier(package: JsonObject) -> str:
+    """The actual Repo Map tier of a package, for admission comparisons.
+
+    Mirrors `_context_package_quality_warning`'s treatment of a missing or malformed
+    `parser_provenance`: a legacy package that carries none is as good as `full`, so it never
+    fails a minimum-tier requirement it predates.
+    """
+    provenance = package.get("parser_provenance")
+    if not isinstance(provenance, dict):
+        return "full"
+    tier = provenance.get("tier")
+    if not isinstance(tier, str) or tier not in REPO_MAP_TIER_ORDER:
+        return "full"
+    return tier
 
 
 def _reusable_context_package(

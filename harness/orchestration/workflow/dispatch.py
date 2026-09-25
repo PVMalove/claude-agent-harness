@@ -17,7 +17,9 @@ from typing import cast
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import operational_guards
 from harness.orchestration.contract import (
+    REPO_MAP_TIER_ORDER,
     resolve_allowed_tools,
+    resolve_min_repo_map_tier,
 )
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
@@ -111,6 +113,7 @@ from harness.orchestration.workflow.history import (
     _context_package_freshness,
     _context_package_quality_warning,
     _context_package_summary,
+    _context_package_tier,
     _effective_base,
     _latest_context_package,
     _latest_developer_candidate,
@@ -788,6 +791,23 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     "newly registered Context Package is stale; refresh before dispatch",
                     remedy="re-register the Context Package immediately before dispatching; it is validated fresh at dispatch time",
                 )
+            if role_name in {"architect", "developer", "code-review"}:
+                required_tier = resolve_min_repo_map_tier(config, role_name)
+                if required_tier is not None:
+                    actual_tier = _context_package_tier(context_package)
+                    if (
+                        REPO_MAP_TIER_ORDER.index(actual_tier)
+                        < REPO_MAP_TIER_ORDER.index(required_tier)
+                    ):
+                        raise CoordinatorError(
+                            f"Repo Map tier {actual_tier!r} for role {role_name!r} is below "
+                            f"the configured minimum {required_tier!r}",
+                            remedy=(
+                                "repair or reinstall the offline tree-sitter parser bundle so "
+                                "the Repo Map reaches the required tier, or lower "
+                                "repo_map_policy.min_tier/min_tier_by_role for this role"
+                            ),
+                        )
         dispatch_id = f"dispatch-{uuid.uuid4()}"
         dispatch_commands = _dispatch_verification_commands(batch, role_name, purpose)
         transition = _proposed_transition(
