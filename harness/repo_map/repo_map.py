@@ -9,8 +9,10 @@ import hashlib
 import importlib.util
 import json
 import os
+import posixpath
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from collections import deque
 from dataclasses import asdict, dataclass
@@ -53,6 +55,7 @@ DEFAULT_PARSER_BUNDLE_TIMEOUT_SECONDS = 30
 DEFAULT_PARSER_BUNDLE_MAX_OUTPUT_BYTES = 10_000_000
 # Names defined in this many files are too common to provide useful references.
 DEFINITION_FILE_FANOUT_THRESHOLD = 5
+JS_EXTENSIONS = frozenset({".ts", ".tsx", ".js", ".jsx"})
 EXCLUDED_DIRS = frozenset(
     {
         ".git",
@@ -389,6 +392,20 @@ def _module_visible(module: str, policy: RepoMapPolicy) -> bool:
     )
 
 
+def _js_import_target(source: str, specifier: str, paths: set[str]) -> str | None:
+    """Resolve a tracked relative source import; never infer packages or TS aliases."""
+    if not specifier.startswith(("./", "../")):
+        return None
+    base = posixpath.normpath(posixpath.join(posixpath.dirname(source), specifier))
+    if base == ".." or base.startswith(("../", "/")):
+        return None
+    candidates = [base]
+    if Path(base).suffix not in JS_EXTENSIONS:
+        candidates.extend(f"{base}{extension}" for extension in (".ts", ".tsx", ".js", ".jsx"))
+        candidates.extend(f"{base}/index{extension}" for extension in (".ts", ".tsx", ".js", ".jsx"))
+    return next((candidate for candidate in candidates if candidate in paths), None)
+
+
 def _encode(payload: dict[str, object]) -> str:
     return (
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -514,7 +531,8 @@ def _graph_from_facts(
     """Apply symbol policy to worker facts, fill in file records, and build the edge list."""
     module_paths = _module_paths({path for path in records if path.endswith(".py")})
     edges: set[tuple[str, str, str, str]] = set()
-    definitions: dict[str, set[str]] = {}
+    definitions: dict[tuple[str, str], set[str]] = {}
+    js_paths = {path for path in records if Path(path).suffix in JS_EXTENSIONS}
     for path in sorted(facts):
         record = facts[path]
         status = record["parser_status"]
@@ -522,9 +540,23 @@ def _graph_from_facts(
         if status != "ok":
             diagnostics.append({"code": status, "path": path})
         records[path]["signatures"] = _visible_signatures(record["signatures"], policy)
+        family = "python" if path.endswith(".py") else "js"
         for name in record["definitions"]:
             if _symbol_visible(name, policy):
-                definitions.setdefault(name, set()).add(path)
+                definitions.setdefault((family, name), set()).add(path)
+        if path in js_paths:
+            for import_fact in record["imports"]:
+                specifier = import_fact["module"]
+                if not _symbol_visible(specifier, policy) or not all(
+                    _symbol_visible(part, policy)
+                    for part in posixpath.splitext(specifier)[0].split("/")
+                    if part not in {".", ".."}
+                ):
+                    continue
+                target = _js_import_target(path, specifier, js_paths)
+                if target is not None and target != path:
+                    edges.add((path, target, "import", "high"))
+            continue
         if not path.endswith(".py"):
             continue
         current_module = path.removesuffix(".py").replace("/", ".")
@@ -542,10 +574,11 @@ def _graph_from_facts(
                 ):
                     edges.add((path, target, "import", "high"))
     for path in sorted(facts):
+        family = "python" if path.endswith(".py") else "js"
         for name in set(facts[path]["references"]):
             if not _symbol_visible(name, policy):
                 continue
-            definition_paths = definitions.get(name, set())
+            definition_paths = definitions.get((family, name), set())
             if len(definition_paths) >= DEFINITION_FILE_FANOUT_THRESHOLD:
                 continue
             targets = definition_paths - {path}
@@ -564,6 +597,7 @@ def _graph_from_facts(
 
 
 def _cache_key(
+    repo: Path,
     pinned: str,
     seeds: list[str],
     max_tokens: int,
@@ -581,11 +615,40 @@ def _cache_key(
         "max_tokens": max_tokens,
         "policy": asdict(policy),
         "parser_identity": parser_identity,
+        "bundle_identity": _bundle_cache_identity(repo, policy) if policy.tier == "full" else None,
         "token_estimator_version": TOKEN_ESTIMATOR_VERSION,
     }
     return hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _bundle_cache_identity(repo: Path, policy: RepoMapPolicy) -> str:
+    """Bind full results to the selected lock and bytes needed by this interpreter."""
+    bundle_dir = parser_bundle.find_bundle(
+        parser_bundle.search_dirs(repo, policy.parser_bundle_registry_paths)
+    )
+    if bundle_dir is None:
+        return "unavailable"
+    digest = hashlib.sha256(str(bundle_dir.resolve()).encode("utf-8"))
+    try:
+        raw = (bundle_dir / parser_bundle.LOCK_FILENAME).read_bytes()
+        digest.update(raw)
+        lock = parser_bundle.parse_lock(raw)
+        pair = (
+            f"cp{sys.version_info.major}{sys.version_info.minor}-"
+            f"{sysconfig.get_platform().replace('-', '_').replace('.', '_')}"
+        )
+        paths = [bundle_dir / lock.worker_script]
+        paths.extend(
+            bundle_dir / "wheelhouse" / pair / item.filename
+            for item in lock.wheelhouses.get(pair, ())
+        )
+        for path in paths:
+            digest.update(path.read_bytes())
+    except (OSError, parser_bundle.BundleFormatError):
+        digest.update(b"invalid-or-incomplete")
+    return digest.hexdigest()
 
 
 def _read_cache(cache_dir: Path, key: str) -> str | None:
@@ -796,14 +859,22 @@ def build_map(
         )
     normalized_seeds = sorted(set(seeds) & set(paths))
     root = cache_dir if cache_dir is not None else storage_path(repo, ".cache", "repo_map", "results")
-    key = _cache_key(pinned, normalized_seeds, max_tokens, effective_policy)
+    key = _cache_key(repo, pinned, normalized_seeds, max_tokens, effective_policy)
     cached = _read_cache(root, key)
     if cached is not None:
-        return cached
+        try:
+            cached_payload = json.loads(cached)
+        except json.JSONDecodeError:
+            cached_payload = None
+        if isinstance(cached_payload, dict) and (
+            effective_policy.tier == "minimal" or cached_payload.get("tier") == "full"
+        ):
+            return cached
     result = _build_map(
         repo, pinned, paths, max_tokens, normalized_seeds, effective_policy
     )
-    _write_cache(root, key, result)
+    if effective_policy.tier == "minimal" or json.loads(result)["tier"] == "full":
+        _write_cache(root, key, result)
     return result
 
 

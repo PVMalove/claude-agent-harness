@@ -1,0 +1,44 @@
+name: release-parser-bundle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Install pinned release verification tools
+        run: |
+          uv venv "$RUNNER_TEMP/release-tools"
+          uv pip install --python "$RUNNER_TEMP/release-tools/bin/python" \
+            cyclonedx-bom==7.4.0 pip-audit==2.10.1
+          echo "$RUNNER_TEMP/release-tools/bin" >> "$GITHUB_PATH"
+      - name: Download and verify every pinned binary wheel
+        run: |
+          mkdir -p "$RUNNER_TEMP/staged-wheels"
+          jq -r '.wheels[] | [.sha256, .url] | @tsv' \
+            .github/parser-bundle-release-wheels.json |
+          while IFS=$'\t' read -r sha url; do
+            file="$RUNNER_TEMP/staged-wheels/$(basename "$url")"
+            curl --fail --silent --show-error --location --output "$file" "$url"
+            echo "$sha  $file" | sha256sum --check --strict
+          done
+      - name: Assemble, SBOM, and audit release bundle
+        run: |
+          python scripts/release_parser_bundle.py \
+            --wheelhouse "$RUNNER_TEMP/staged-wheels" \
+            --out "$RUNNER_TEMP/parser-bundle-release"
+      - name: Upload audited parser bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: parser-bundle-release
+          path: ${{ runner.temp }}/parser-bundle-release
+          if-no-files-found: error

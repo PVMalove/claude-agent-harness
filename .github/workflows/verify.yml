@@ -82,14 +82,15 @@ jobs:
         env:
           HARNESS_PARSER_BUNDLE_DIR: ${{ runner.temp }}/parser-bundle
           PYTHONPATH: .
-        run: .harness/.venv/bin/python -m pytest tests/test_repo_map_tree_sitter.py tests/test_repo_map.py tests/test_parser_bundle.py
+        run: .harness/.venv/bin/python -m pytest -q tests/test_repo_map_tree_sitter.py tests/test_repo_map.py tests/test_parser_bundle.py
       - name: Separate mypy run of the tree-sitter worker
         run: |
           uv venv --python .harness/.venv/bin/python "$RUNNER_TEMP/worker-typecheck"
           uv pip install --offline --no-config --no-index --only-binary :all: \
             --find-links "$RUNNER_TEMP/wheels" \
             --python "$RUNNER_TEMP/worker-typecheck/bin/python" \
-            tree-sitter==0.26.0 tree-sitter-python==0.25.0
+            tree-sitter==0.26.0 tree-sitter-python==0.25.0 \
+            tree-sitter-typescript==0.23.2 tree-sitter-javascript==0.25.0
           .harness/.venv/bin/python -m mypy --strict --disallow-any-explicit \
             --python-executable "$RUNNER_TEMP/worker-typecheck/bin/python" \
             harness/repo_map/tree_sitter_worker.py

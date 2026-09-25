@@ -63,6 +63,28 @@ def test_parser_bundle_module_never_imports_tree_sitter() -> None:
     assert not any(module.startswith("tree_sitter") for module in imported_modules)
 
 
+def test_tree_sitter_imports_are_confined_to_worker_process() -> None:
+    for path in (
+        ROOT / "harness" / "repo_map" / "parser_bundle.py",
+        ROOT / "harness" / "repo_map" / "repo_map.py",
+        ROOT / "harness" / "context_builder" / "context_builder.py",
+    ):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imports = [
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        ] + [
+            node.module or ""
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+        ]
+        assert not any(module.startswith("tree_sitter") for module in imports), path
+    worker = (ROOT / "harness" / "repo_map" / "tree_sitter_worker.py").read_text(encoding="utf-8")
+    assert "import tree_sitter" in worker
+
+
 def test_parse_lock_accepts_well_formed_json(tmp_path: Path) -> None:
     lock_path = build_bundle_dir(tmp_path / "bundle", pair="cp312-any") / "parser_bundle.lock.json"
     lock = parser_bundle.parse_lock(lock_path.read_bytes())
@@ -73,6 +95,35 @@ def test_parse_lock_accepts_well_formed_json(tmp_path: Path) -> None:
     assert "cp312-any" in lock.wheelhouses
 
 
+def test_bundle_builder_requires_js_wheels_and_records_both_ts_dialects(tmp_path: Path) -> None:
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    names = (
+        "tree_sitter-0.26.0-cp312-cp312-linux_x86_64.whl",
+        "tree_sitter_python-0.25.0-cp310-abi3-linux_x86_64.whl",
+        "tree_sitter_typescript-0.23.2-cp39-abi3-linux_x86_64.whl",
+        "tree_sitter_javascript-0.25.0-cp310-abi3-linux_x86_64.whl",
+    )
+    for name in names[:-1]:
+        (wheels / name).write_bytes(name.encode())
+    command = [
+        sys.executable, str(ROOT / "scripts" / "build_parser_bundle.py"),
+        "--wheelhouse", str(wheels), "--out", str(tmp_path / "bundle"),
+        "--pair", "cp312-linux_x86_64",
+    ]
+    assert subprocess.run(command, capture_output=True, check=False).returncode != 0
+    (wheels / names[-1]).write_bytes(names[-1].encode())
+    assert subprocess.run(command, capture_output=True, check=False).returncode == 0
+    lock = parser_bundle.parse_lock((tmp_path / "bundle" / "parser_bundle.lock.json").read_bytes())
+    assert {grammar.name for grammar in lock.grammars} == {
+        "python", "typescript", "tsx", "javascript"
+    }
+    assert len(lock.wheelhouses["cp312-linux_x86_64"]) == 4
+    assert next(grammar for grammar in lock.grammars if grammar.name == "typescript").sha256 == next(
+        grammar for grammar in lock.grammars if grammar.name == "tsx"
+    ).sha256
+
+
 def test_parse_lock_rejects_malformed_json() -> None:
     with pytest.raises(parser_bundle.BundleFormatError):
         parser_bundle.parse_lock(b"not json")
@@ -80,6 +131,29 @@ def test_parse_lock_rejects_malformed_json() -> None:
         parser_bundle.parse_lock(b"[]")
     with pytest.raises(parser_bundle.BundleFormatError):
         parser_bundle.parse_lock(json.dumps({"grammars": []}).encode())
+
+
+def test_parse_lock_rejects_grammar_hash_from_another_distribution() -> None:
+    core_hash = "a" * 64
+    grammar_hash = "b" * 64
+    payload = {
+        "core_version": "0.26.0",
+        "core_abi_range": "13-15",
+        "worker_script": "worker.py",
+        "script_sha256": "c" * 64,
+        "grammars": [{
+            "name": "typescript", "distribution": "tree_sitter_typescript",
+            "version": "0.23.2", "abi": 14, "extensions": [".ts"],
+            "sha256": grammar_hash,
+            "sha256_by_pair": {"cp312-any": core_hash},
+        }],
+        "wheelhouses": {"cp312-any": [
+            {"filename": "tree_sitter-0.26.0-cp312-cp312-any.whl", "sha256": core_hash},
+            {"filename": "tree_sitter_typescript-0.23.2-cp39-abi3-any.whl", "sha256": grammar_hash},
+        ]},
+    }
+    with pytest.raises(parser_bundle.BundleFormatError, match="per-pair grammar hash"):
+        parser_bundle.parse_lock(json.dumps(payload).encode())
 
 
 def test_find_bundle_returns_first_directory_with_a_lock_file(tmp_path: Path) -> None:

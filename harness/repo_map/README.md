@@ -15,6 +15,9 @@ Repo Map keeps a best-effort, content-addressed cache under the system temporary
 pinned commit, normalized seeds, budget, policy, parser identity, and token-estimator version.
 Entries carry a SHA-256 of their payload; malformed or altered entries are recomputed. Use
 `--cache-dir <path>` to select a different disposable cache location.
+For `full`, the key also binds the selected bundle lock, worker and wheel bytes for the running
+interpreter. A degraded `full` result is never cached, so installing a valid bundle can promote
+the same commit from path-only inventory to parsed output.
 
 `--seed` accepts repository-relative paths. The CLI keeps only existing, policy-approved seeds,
 then deduplicates and sorts them. With effective seeds, files are ordered by their breadth-first
@@ -23,12 +26,15 @@ are ordered by high- and medium-confidence in-degree, then by path.
 
 Edges are deterministic and sorted by source, target, kind, and confidence:
 
-- `import` / `high` for resolved Python imports;
+- `import` / `high` for resolved Python imports and tracked relative TS/JS static imports;
 - `unique-name-ref` / `medium` when a parsed name reference has one definition in another file;
 - `ambiguous-name-ref` / `low` when it has two through four definitions in other files.
 
 Names defined in five or more files are ignored. Low-confidence edges remain in the output but do
 not affect file ranking.
+TS/JS import resolution tries an exact tracked path, then `.ts`, `.tsx`, `.js`, `.jsx`, then the
+same extensions under `index`. Bare packages, path aliases, dynamic imports, and type resolution
+do not create import edges. Name-reference edges stay inside the Python or TS/JS language family.
 
 ## Enterprise policy
 
@@ -84,6 +90,9 @@ are applied here, in-process, so policy contents never reach the worker. A file 
 keeps the signatures and imports of its intact definitions and reports `parser_status:
 "syntax_error"`; invalid UTF-8 reports `"invalid_encoding"`. Top-level functions and classes and the
 methods of top-level classes (`def Class.method(...)`) are serialized; defaults become `...`.
+For TS, TSX, JS and JSX, the worker also extracts intact top-level functions, classes, direct
+methods and arrow-function declarations, plus static import specifiers. TypeScript and TSX have
+distinct grammar identities in provenance.
 
 A successful run reports `tier: "full"`, `parser: "bundle"`, and extends `parser_provenance` with
 `bundle_mode`, `bundle_source`, `python_tag`, `platform_tag`, `lock_sha256`, `script_hash`,
@@ -96,8 +105,15 @@ the facts contract -- yields `tier: "minimal"`, `parser: "path-only"`: only poli
 naming the cause and `parser_provenance.bundle_mode: "degraded"`. Setting
 `repo_map_policy.tier` to `"minimal"` requests the same path inventory without looking for a bundle.
 
-`scripts/build_parser_bundle.py` assembles a bundle directory from an already-downloaded wheelhouse;
-pins live there and in `docs/adr/0024-repo-map-parser-bundle-composition-and-delivery.md`.
+`scripts/build_parser_bundle.py` assembles the one-pair CI smoke bundle from an already-downloaded
+wheelhouse. The manual `release-parser-bundle` workflow downloads the 18 binary wheels pinned in
+`.github/parser-bundle-release-wheels.json` for Python 3.12–3.14 on Windows x64, Linux x64 and
+macOS arm64. `scripts/release_parser_bundle.py` verifies every staged SHA-256, builds a common
+nine-pair lock, generates a CycloneDX 1.6 SBOM with every wheel hash, and runs `pip-audit` against
+a hashed requirements lock with `--disable-pip` and an empty cache. The workflow uploads the
+release bundle only after all steps succeed. Pins and the matrix follow
+`docs/adr/0024-repo-map-parser-bundle-composition-and-delivery.md`; generated wheels and release
+assets stay outside Git.
 
 The CLI rejects unknown policy fields and invalid values with an error and remedy. Token budgets
 resolve in this order: `--max-tokens`, `repo_map_policy.max_tokens` when the policy is present,
