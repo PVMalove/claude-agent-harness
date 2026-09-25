@@ -84,6 +84,10 @@ class GateRunnerTests(unittest.TestCase):
         self.assertNotIn("$ python check.py", result.artifact)
         self.assertEqual(string_result.checks[0]["result"], "pass")
         self.assertNotIn("$ python check.py", string_result.artifact)
+        # The evidence keeps the approved command verbatim: the coordinator matches checks_run
+        # against the brief's verification_commands, not against the interpreter actually used.
+        self.assertEqual(result.checks[0]["command"], "python check.py")
+        self.assertEqual(string_result.checks[0]["command"], "python check.py")
 
     def test_local_and_clean_room_return_the_same_sanitised_evidence_shape(
         self,

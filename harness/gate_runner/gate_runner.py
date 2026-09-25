@@ -234,10 +234,15 @@ def run_gate(
     with policy.checkout() as checkout:
         for command in commands:
             prepared, shell = _prepared_command(command, checkout)
+            # The artifact shows what actually ran; the check keeps the approved command verbatim,
+            # which is what a completion report is matched against.
             command_text = (
                 prepared
                 if isinstance(prepared, str)
                 else subprocess.list2cmdline(prepared)
+            )
+            approved_text = (
+                command if isinstance(command, str) else subprocess.list2cmdline(command)
             )
             result: subprocess.CompletedProcess[str] = subprocess.run(
                 prepared,
@@ -259,7 +264,7 @@ def run_gate(
             )
             checks.append(
                 {
-                    "command": command_text,
+                    "command": approved_text,
                     "result": "pass" if result.returncode == 0 else "fail",
                     "evidence": f"exit {result.returncode}; {concise_evidence(combined)}",
                 }
