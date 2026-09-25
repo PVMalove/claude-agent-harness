@@ -5764,6 +5764,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit(
             "the coordinator repinned the base directly instead of requiring a developer rebase"
         )
+    if blocked_batch_record.get("rebase_target_commit") != drifted_sha:
+        sys.exit("a stale-base block did not record the integration tip the rebase must land on")
 
     # The block is cleared only by a developer dispatch — never a coordinator/human git operation.
     still_blocked_publish = coordinator_run(
@@ -5870,16 +5872,53 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "coordinator accepted a rebase report that reused the already-assessed stale candidate"
         )
 
+    # A new commit that does not contain the moved integration tip is not a rebase.
     stale_feature_file.write_text(
-        'def marker():\n    return "rebased"\n', encoding="utf-8"
+        'def marker():\n    return "not rebased"\n', encoding="utf-8"
     )
     subprocess.run(
         ["git", "add", "services/stale_base.py"], cwd=orchestration_project, check=True
     )
     subprocess.run(
-        ["git", "commit", "-qm", "feat: rebase onto the moved integration ref"],
+        ["git", "commit", "-qm", "feat: new commit without the moved integration ref"],
         cwd=orchestration_project,
         check=True,
+    )
+    unrebased_sha = capture(
+        ["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]
+    ).strip()
+    unrebased_file = staged_payload("stale-base-unrebased-report.json")
+    unrebased_file.write_text(
+        json.dumps(
+            {
+                **same_sha_payload,
+                "commit_sha": unrebased_sha,
+                "commit_map": commit_map_for(rebase_record["brief"], unrebased_sha),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    unrebased_submit = coordinator_run(
+        "--state-dir", str(stale_state), "report", "submit", "--file", str(unrebased_file)
+    )
+    if unrebased_submit.returncode == 0 or "integration tip" not in unrebased_submit.stderr:
+        sys.exit(
+            "coordinator accepted a rebase report whose candidate lacks the moved integration tip: "
+            + unrebased_submit.stderr
+        )
+    subprocess.run(
+        ["git", "reset", "-q", "--hard", stale_sha], cwd=orchestration_project, check=True
+    )
+
+    # A real rebase: the candidate now contains the upstream commit, which must not be counted as
+    # this ticket's commit or changed file.
+    subprocess.run(
+        ["git", "fetch", "-q", "origin", "main"], cwd=orchestration_project, check=True
+    )
+    subprocess.run(
+        ["git", "rebase", "-q", "FETCH_HEAD"], cwd=orchestration_project, check=True
     )
     rebased_sha = capture(
         ["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]
@@ -5948,8 +5987,10 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         sys.exit(
             "accepting the rebase did not repin integration_base_commit to the moved integration tip"
         )
-    if refreshed_batch_record.get("base_rebase_required"):
-        sys.exit("accepting the rebase did not clear the base_rebase_required flag")
+    if refreshed_batch_record.get("base_rebase_required") or (
+        "rebase_target_commit" in refreshed_batch_record
+    ):
+        sys.exit("accepting the rebase did not clear the stale-base rebase state")
     if refreshed_batch_record["base_commit"] != stale_batch_record["base_commit"]:
         sys.exit("a rebase mutated the batch's immutable base_commit")
 

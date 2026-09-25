@@ -378,7 +378,11 @@ def _record_report(
             remedy="the batch entry must be dispatched and the dispatch status working; if they are out of sync, abandon the batch and create a new QA dispatch",
         )
     ops._validate_report(
-        report, dispatch, ops._role(repo, "qa"), repo, batch.get("base_commit")
+        report,
+        dispatch,
+        ops._role(repo, "qa"),
+        repo,
+        batch.get("integration_base_commit") or batch.get("base_commit"),
     )
     return ops._persist_report(ledger, root, batch, dispatch, report)
 

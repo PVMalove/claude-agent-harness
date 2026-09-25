@@ -65,6 +65,7 @@ from harness.orchestration.workflow.attention import (
 )
 from harness.orchestration.workflow.history import (
     _accepted_qa_for_candidate,
+    _effective_base,
     _validate_batch_integrity,
     _validate_dispatch,
 )
@@ -527,7 +528,7 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
         _safe_id(batch["batch_id"], "batch")
         _replace_record(ledger, BatchRecord.from_dict(batch))
         changed = (
-            _changed_files_between(repo, batch["base_commit"], candidate)
+            _changed_files_between(repo, _effective_base(batch), candidate)
             if batch.get("base_commit")
             else _commit_changed_files(repo, candidate)
         )

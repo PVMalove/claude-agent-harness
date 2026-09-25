@@ -75,6 +75,7 @@ from harness.orchestration.workflow.history import (
 )
 from harness.orchestration.workflow.qa_integration import _ops
 from harness.orchestration.workflow.reports import (
+    _rebase_target,
     _validate_report,
 )
 
@@ -468,7 +469,8 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             dispatch,
             _role(repo, dispatch["role"]),
             repo,
-            batch.get("base_commit"),
+            batch.get("integration_base_commit") or batch.get("base_commit"),
+            _rebase_target(batch, dispatch),
         )
         if report.get("outcome") != "completed" and args.decision in {
             "accept",
@@ -590,8 +592,12 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         elif args.decision in {"accept", "override-warning"}:
             if report["role"] == "developer":
                 if batch.get("base_rebase_required"):
-                    ref = _integration_ref(repo, batch)
-                    batch["integration_base_commit"] = _fetch_ref_tip(repo, ref)
+                    # Pin the tip the accepted candidate was verified to contain; a batch blocked
+                    # before the target was recorded falls back to the fetched tip.
+                    target = batch.pop("rebase_target_commit", None)
+                    if not isinstance(target, str):
+                        target = _fetch_ref_tip(repo, _integration_ref(repo, batch))
+                    batch["integration_base_commit"] = target
                     batch["base_rebase_required"] = False
                 if dispatch.get("purpose") == "publish":
                     batch.pop("next_action", None)
