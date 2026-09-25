@@ -278,6 +278,12 @@ def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
         "parser_bundle_registry_paths",
         "parser_bundle_timeout_seconds",
         "parser_bundle_max_output_bytes",
+        # Dispatch-admission fields, not generation fields: the coordinator (not this module)
+        # resolves and enforces them via harness.orchestration.contract.resolve_min_repo_map_tier.
+        # Recognised here only so the same repo_map_policy object does not fail this module's
+        # generation-time validation.
+        "min_tier",
+        "min_tier_by_role",
     }
     unknown = sorted(str(key) for key in section.keys() - allowed)
     if unknown:

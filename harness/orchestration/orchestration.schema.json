@@ -193,6 +193,17 @@
         "timeout_seconds": {"type": "integer", "minimum": 1, "default": 10, "description": "Таймаут сборки карты в секундах (по умолчанию 10)."},
         "max_tokens": {"type": "integer", "minimum": 1, "description": "Лимит токенов на итоговый вывод карты репозитория (по умолчанию 4000)."},
         "tier": {"enum": ["minimal", "full"], "default": "full", "description": "Режим карты: 'full' (полный AST-парсинг через tree-sitter, по умолчанию) или 'minimal' (только список путей файлов)."},
+        "min_tier": {"enum": ["minimal", "full"], "description": "Минимальный tier Repo Map Context Package, требуемый для всего репозитория при допуске dispatch (без значения деградация никогда не блокирует dispatch)."},
+        "min_tier_by_role": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Переопределение min_tier по роли; ключи ровно architect/developer/code-review, роли вне списка следуют min_tier или отсутствию гейта.",
+          "properties": {
+            "architect": {"enum": ["minimal", "full"]},
+            "developer": {"enum": ["minimal", "full"]},
+            "code-review": {"enum": ["minimal", "full"]}
+          }
+        },
         "parser_bundle_registry_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Пути к локальным реестрам бандлов офлайн-парсера tree-sitter."},
         "parser_bundle_timeout_seconds": {"type": "integer", "minimum": 1, "default": 30, "description": "Таймаут выполнения парсер-бандла в секундах (по умолчанию 30)."},
         "parser_bundle_max_output_bytes": {"type": "integer", "minimum": 1, "default": 10000000, "description": "Максимальный размер вывода парсер-бандла в байтах (по умолчанию 10000000)."}

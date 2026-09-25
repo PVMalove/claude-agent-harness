@@ -959,6 +959,80 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         self.assertEqual(dispatch["brief"]["allowed_tools"], ["Read", "Grep"])
         self.assertEqual(dispatch["brief"]["context_budget"], 90_000)
 
+    def _architect_dispatch_fields(self, batch_id: str) -> JsonObject:
+        return {
+            "repo": str(self.repo),
+            "state_dir": str(self.state_dir),
+            "batch": batch_id,
+            "role": "architect",
+            "runtime": "claude",
+            "purpose": "work",
+            "candidate_commit": None,
+            "delta_review_of": None,
+            "model": "sonnet",
+            "effort": "high",
+        }
+
+    def test_dispatch_admission_rejects_a_context_package_poorer_than_the_configured_role_minimum(
+        self,
+    ) -> None:
+        """With a repo-wide `min_tier: full`, the real (offline, minimal-tier) Repo Map Context
+        Package used by these tests is rejected at admission -- both at `propose` (a dry run, no
+        brief written) and at `create` -- with a reason naming the role and both tiers."""
+        self._configure_project(repo_map_policy={"min_tier": "full"})
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        fields = self._architect_dispatch_fields(batch["batch_id"])
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator.create_dispatch(_ns(propose=True, **fields))
+
+        self.assertEqual(
+            caught.exception.message,
+            "Repo Map tier 'minimal' for role 'architect' is below the configured minimum 'full'",
+        )
+        self.assertIn("repo_map_policy", caught.exception.remedy)
+
+        with self.assertRaises(coordinator.CoordinatorError):
+            coordinator.create_dispatch(
+                _ns(
+                    transition_digest="irrelevant-because-the-gate-runs-first",
+                    approved_by="Malove",
+                    approved_at="2026-09-17T00:00:00+00:00",
+                    **fields,
+                )
+            )
+
+    def test_dispatch_admission_without_a_repo_map_policy_never_blocks_on_degradation(
+        self,
+    ) -> None:
+        """AC1: with no `repo_map_policy` configured at all -- the zero-config default for these
+        tests -- dispatch admission is never blocked by Repo Map degradation, even though the
+        real Context Package built here is `minimal`. Only the existing non-blocking
+        `context_package_quality_warning` (proven in a companion test class) may appear."""
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+
+        self.assertEqual(dispatch["state"], "approved")
+
+    def test_dispatch_admission_unlisted_role_keeps_portable_default_behaviour(
+        self,
+    ) -> None:
+        """AC3: `min_tier_by_role` names only `developer`; `architect` is not listed and there is
+        no repo-wide `min_tier`, so it keeps the default unblocked behaviour even though the real
+        Context Package built here is `minimal`."""
+        self._configure_project(
+            repo_map_policy={"min_tier_by_role": {"developer": "full"}}
+        )
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+
+        dispatch = self._create_architect_dispatch(batch["batch_id"])
+
+        self.assertEqual(dispatch["state"], "approved")
+
     def test_only_write_mode_default_tools_include_edit_tools(self) -> None:
         for name in ("Edit", "Write"):
             self.assertNotIn(name, contract.DEFAULT_ALLOWED_TOOLS["read-only"])

@@ -527,6 +527,17 @@ Context Package ID и required gates. `dispatch create` с явным approval �
 содержит `context_package_quality_warning`: tier, причину деградации и parser provenance. Это
 предупреждение для утверждающего человека, а не блокировка dispatch; для `full` поле отсутствует.
 
+Без `repo_map_policy.min_tier`/`min_tier_by_role` деградация Repo Map никогда не блокирует dispatch —
+только описанное выше необязывающее предупреждение. Если в `repo_map_policy` присутствует `min_tier`
+(общий минимум для репозитория) и/или `min_tier_by_role` (переопределение по роли, ключи ровно
+`architect`/`developer`/`code-review`), порядок разрешения — override роли, затем `min_tier`, затем
+отсутствие гейта. Если для роли задан минимум и фактический tier закреплённого Context Package хуже
+требуемого (порядок уровней по ADR 0023: `minimal` < `full`), и `dispatch propose`, и `dispatch create`
+отклоняются с причиной, называющей роль, фактический и требуемый tier, ещё до какого-либо approval —
+эта проверка выполняется в общем пути перед веткой `propose`/`create`, поэтому готовый
+`--transition-digest` её не обходит. Роль, не перечисленная в `min_tier_by_role`, при отсутствии
+общего `min_tier` сохраняет поведение по умолчанию (без блокировки).
+
 Просроченное (`approval_ttl_seconds`) или отклонённое в терминале approval — fail-closed: coordinator
 не повторяет вызов сам и не подставляет более старое approval.
 
