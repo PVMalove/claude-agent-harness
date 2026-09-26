@@ -1501,7 +1501,7 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         plan = plan_cleanup(Path(args.repo), args.mode, min_age_hours=args.min_age_hours)
         print(json.dumps({"plan": plan}, ensure_ascii=False, indent=2))
         if args.apply:
-            result = apply_cleanup(Path(args.repo), plan)
+            result = apply_cleanup(Path(args.repo), plan, confirm=args.confirm)
             print(json.dumps({"result": result}, ensure_ascii=False, indent=2))
             return 1 if result["failed"] else 0
         return 0
