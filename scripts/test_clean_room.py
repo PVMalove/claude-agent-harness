@@ -2157,13 +2157,8 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         "output": "recorded the boundary decision and acceptance criteria",
         "commit_sha": "not applicable — read-only role",
         "changed_files": [],
-        "checks_run": [
-            {
-                "command": f"{sys.executable} qa_baseline.py",
-                "result": "pass",
-                "evidence": "repository evidence inspected",
-            }
-        ],
+        # The architect owns no verification gate: its brief approves no commands to report.
+        "checks_run": [],
         "risks": "none",
         "blockers": "none",
         "next_coordinator_action": "accept and dispatch the developer",
@@ -3309,7 +3304,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "output": f"{role_name} finished the requested step",
             "commit_sha": "not applicable — read-only role",
             "changed_files": [],
-            "checks_run": [
+            "checks_run": [] if role_name == "architect" else [
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
@@ -3925,7 +3920,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "output": f"{role_name} finished the requested step",
             "commit_sha": "not applicable — read-only role",
             "changed_files": [],
-            "checks_run": [
+            "checks_run": [] if role_name == "architect" else [
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
@@ -4151,7 +4146,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "output": f"{role_name} finished the requested step",
             "commit_sha": "not applicable — read-only role",
             "changed_files": [],
-            "checks_run": [
+            "checks_run": [] if role_name == "architect" else [
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
@@ -4669,7 +4664,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "output": f"{role_name} finished the requested step",
             "commit_sha": "not applicable — read-only role",
             "changed_files": [],
-            "checks_run": [
+            "checks_run": [] if role_name == "architect" else [
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
@@ -5573,7 +5568,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             "output": f"{role_name} finished the requested step",
             "commit_sha": "not applicable — read-only role",
             "changed_files": [],
-            "checks_run": [
+            "checks_run": [] if role_name == "architect" else [
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"

@@ -389,7 +389,8 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "output": "architecture decision recorded",
             "commit_sha": "not applicable — read-only role",
             "changed_files": [],
-            "checks_run": [{"command": "true", "result": "pass", "evidence": "n/a"}],
+            # The architect owns no verification gate, so its brief approves no commands.
+            "checks_run": [],
             "risks": "none",
             "blockers": "none",
             "next_coordinator_action": "dispatch developer",

@@ -1,6 +1,6 @@
 # Диаграммы харнесса
 
-Одиннадцать автономных интерактивных HTML-диаграмм. Рядом с каждой лежит редактируемая спецификация
+Тринадцать автономных интерактивных HTML-диаграмм. Рядом с каждой лежит редактируемая спецификация
 Archify (`*.json`), а в `previews/` — статичное PNG той же диаграммы для Markdown, который не умеет
 рендерить HTML (например, README на GitHub).
 
@@ -16,6 +16,8 @@ Archify (`*.json`), а в `previews/` — статичное PNG той же д�
 | [Архитектура переносимого harness](./harness-topology.architecture.html) | **Architecture:** границы исходного harness и целевого проекта, capability-каталог, CLI, единый snapshot и runtime discovery. |
 | [Gated dispatch `/implement`](./implement-dispatch.sequence.html) | **Sequence:** участники и порядок взаимодействий: brief, approvals, candidate SHA, review, clean-room QA и публикация. |
 | [Поток capability](./capability-delivery.dataflow.html) | **Data Flow:** происхождение capability и skills от каталога/vendor/overrides до snapshot и runtime consumers. |
+| [Построение Repo Map](./repo-map-build.sequence.html) | **Sequence:** вход, кэш, проверка и offline-установка parser bundle, разбор в изолированном worker, граф и бюджет. |
+| [Компоненты Repo Map](./repo-map-components.architecture.html) | **Architecture:** `repo_map.py`, контракт, `parser_bundle.py`, tree-sitter worker, registry, кэш и потребители (Context Builder, Coordinator). |
 
 ## Как обновлять
 

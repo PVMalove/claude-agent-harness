@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Parser-bundle worker: extract per-file facts with tree-sitter grammars.
+"""Worker parser bundle: извлечь факты о файлах грамматиками tree-sitter.
 
-Runs only as the bounded subprocess that `parser_bundle.run_bundle_parser` starts:
-`python tree_sitter_worker.py <install_dir>`, a JSON request `{"paths": {path: base64}}` on
-stdin, and a JSON `{"files": {path: FileFacts}}` response on stdout (see `FileFacts` in
-harness/repo_map/parser_bundle.py). The release process copies this file next to the bundle lock
-and records its sha256 there, so it must stay standalone: stdlib plus the bundle's pinned
-`tree_sitter*` packages from `<install_dir>`, never a harness import.
+Запускается только как ограниченный subprocess из `parser_bundle.run_bundle_parser`:
+`python tree_sitter_worker.py <install_dir>`, на stdin — JSON-запрос `{"paths": {path: base64}}`,
+на stdout — JSON `{"files": {path: FileFacts}}` (см. `FileFacts` в
+harness/repo_map/parser_bundle.py). Релизный процесс копирует этот файл рядом с lock и записывает
+его SHA-256, поэтому модуль остаётся автономным: stdlib и закреплённые пакеты `tree_sitter*` из
+`<install_dir>`, без импорта harness.
 
-It returns facts only -- signature text with the symbols it exposes, imports, definitions, and
-references. Symbol policy, redaction, and edges stay in repo_map.py, so no policy content ever
-reaches this process. Function bodies and comments are never serialized. A file with syntax
-errors still yields facts from its intact definitions; tree-sitter types never leave this process
-(ADR 0024). This module is excluded from the main mypy run and checked by the bundle CI job.
+Worker возвращает только факты: текст сигнатуры с раскрываемыми символами, импорты, определения и
+ссылки. Политика символов, редактирование и рёбра остаются в repo_map.py, поэтому содержимое
+политики в этот процесс не попадает. Тела функций и комментарии не сериализуются. Файл с
+синтаксическими ошибками всё равно даёт факты целых определений; типы tree-sitter не покидают
+процесс (ADR 0024). Модуль исключён из основного mypy и проверяется в CI-задаче bundle.
 """
 
 from __future__ import annotations
@@ -54,15 +54,53 @@ _NAMED_BINDINGS = frozenset(
 _STORE_CONTAINERS = frozenset(
     {"pattern_list", "tuple_pattern", "list_pattern", "tuple", "list", "parenthesized_expression"}
 )
+# Identifiers nested in these nodes name modules or packages, never a referenced symbol.
+_PYTHON_IMPORT_CONTEXT = frozenset({"import_statement", "import_from_statement", "dotted_name"})
+_GO_IMPORT_CONTEXT = frozenset({"import_declaration"})
+_JAVA_IMPORT_CONTEXT = frozenset({"import_declaration", "package_declaration"})
+_CS_IMPORT_CONTEXT = frozenset({"using_directive"})
+# JS/TS identifiers inside imports, parameter lists, and type-only declarations are not references.
+_JS_NON_REFERENCE_CONTEXT = frozenset(
+    {
+        "import_statement",
+        "formal_parameters",
+        "required_parameter",
+        "optional_parameter",
+        "type_alias_declaration",
+        "interface_declaration",
+    }
+)
 
 
 def _text(node: Node | None) -> str:
+    """Вернуть текст узла с нормализованными пробелами; пустую строку для отсутствующего узла."""
     if node is None or node.text is None:
         return ""
     return " ".join(node.text.decode("utf-8", "replace").split())
 
 
+def _has_ancestor(node: Node, types: frozenset[str]) -> bool:
+    """Проверить, лежит ли узел внутри узла одного из типов `types`."""
+    ancestor = node.parent
+    while ancestor is not None:
+        if ancestor.type in types:
+            return True
+        ancestor = ancestor.parent
+    return False
+
+
+def _qualified(owner: str, name: Node | None) -> str:
+    """Имя члена с префиксом владельца, если владелец есть."""
+    return f"{owner}.{_text(name)}" if owner else _text(name)
+
+
+def _class_text(name: Node | None, bases: list[str]) -> str:
+    """Текст сигнатуры класса с базовыми типами в скобках, если они есть."""
+    return f"class {_text(name)}({', '.join(bases)})" if bases else f"class {_text(name)}"
+
+
 def _walk(node: Node) -> Iterator[Node]:
+    """Обойти поддерево в глубину в порядке исходного текста без рекурсии."""
     stack = [node]
     while stack:
         current = stack.pop()
@@ -71,7 +109,7 @@ def _walk(node: Node) -> Iterator[Node]:
 
 
 def _symbols(nodes: list[Node | None]) -> list[str]:
-    """Every identifier and string literal that a serialized signature part exposes."""
+    """Все идентификаторы и строковые литералы, которые раскрывает сериализуемая часть сигнатуры."""
     found: list[str] = []
     for part in nodes:
         if part is None:
@@ -83,7 +121,7 @@ def _symbols(nodes: list[Node | None]) -> list[str]:
 
 
 def _parameter(node: Node) -> tuple[str, list[Node | None]]:
-    """One parameter's normalized text and the nodes it serializes (defaults become `...`)."""
+    """Нормализованный текст параметра Python и раскрываемые им узлы; значение по умолчанию становится `...`."""
     if node.type not in _DEFAULT_PARAMETERS:
         return _text(node), [node]
     name = node.child_by_field_name("name")
@@ -94,6 +132,7 @@ def _parameter(node: Node) -> tuple[str, list[Node | None]]:
 
 
 def _function_signature(node: Node, owner: str) -> dict[str, object]:
+    """Сигнатура функции или метода Python: `def`/`async def`, параметры и аннотация результата."""
     name = node.child_by_field_name("name")
     parameters = node.child_by_field_name("parameters")
     returns = node.child_by_field_name("return_type")
@@ -106,7 +145,7 @@ def _function_signature(node: Node, owner: str) -> dict[str, object]:
         rendered.append(text)
         exposed.extend(parts)
     is_async = any(child.type == "async" for child in node.children)
-    qualified = f"{owner}.{_text(name)}" if owner else _text(name)
+    qualified = _qualified(owner, name)
     arrow = f" -> {_text(returns)}" if returns is not None else ""
     text = f"{'async def' if is_async else 'def'} {qualified}({', '.join(rendered)}){arrow}"
     symbols = ([owner] if owner else []) + _symbols(exposed)
@@ -114,6 +153,7 @@ def _function_signature(node: Node, owner: str) -> dict[str, object]:
 
 
 def _class_signature(node: Node) -> dict[str, object]:
+    """Сигнатура класса Python с базовыми классами; keyword-аргументы в текст не попадают."""
     name = node.child_by_field_name("name")
     superclasses = node.child_by_field_name("superclasses")
     bases: list[str] = []
@@ -124,11 +164,11 @@ def _class_signature(node: Node) -> dict[str, object]:
         exposed.append(child)
         if child.type != "keyword_argument":
             bases.append(_text(child))
-    text = f"class {_text(name)}({', '.join(bases)})" if bases else f"class {_text(name)}"
-    return {"text": text, "symbols": _symbols(exposed)}
+    return {"text": _class_text(name, bases), "symbols": _symbols(exposed)}
 
 
 def _definition(node: Node) -> Node:
+    """Вернуть определение внутри `decorated_definition` или сам узел."""
     if node.type == "decorated_definition":
         inner = node.child_by_field_name("definition")
         if inner is not None:
@@ -137,7 +177,7 @@ def _definition(node: Node) -> Node:
 
 
 def _signatures(root: Node) -> list[dict[str, object]]:
-    """Top-level functions and classes, plus the methods directly inside each top-level class."""
+    """Функции и классы верхнего уровня Python и методы непосредственно внутри таких классов."""
     found: list[dict[str, object]] = []
     for child in root.named_children:
         node = _definition(child)
@@ -157,6 +197,7 @@ def _signatures(root: Node) -> list[dict[str, object]]:
 
 
 def _imports(root: Node) -> list[dict[str, object]]:
+    """Импорты Python: `import` и `from ... import` с уровнем относительного импорта."""
     found: list[dict[str, object]] = []
     for node in _walk(root):
         if node.type == "import_statement":
@@ -183,7 +224,7 @@ def _imports(root: Node) -> list[dict[str, object]]:
 
 
 def _is_store(node: Node) -> bool:
-    """Whether `node` is (inside) an assignment/loop target rather than a load."""
+    """Проверить, является ли узел целью присваивания или цикла (запись), а не чтением."""
     child = node
     parent = node.parent
     while parent is not None and parent.type in _STORE_CONTAINERS:
@@ -198,6 +239,7 @@ def _is_store(node: Node) -> bool:
 
 
 def _is_reference(node: Node) -> bool:
+    """Проверить, является ли идентификатор Python ссылкой, а не привязкой имени, атрибутом или импортом."""
     parent = node.parent
     if parent is None:
         return False
@@ -207,27 +249,20 @@ def _is_reference(node: Node) -> bool:
         return False
     if parent.type == "attribute" and parent.child_by_field_name("attribute") == node:
         return False
-    ancestor: Node | None = parent
-    while ancestor is not None:
-        if ancestor.type in ("import_statement", "import_from_statement", "dotted_name"):
-            return False
-        ancestor = ancestor.parent
+    if _has_ancestor(node, _PYTHON_IMPORT_CONTEXT):
+        return False
     return not _is_store(node)
 
 
 def _names(root: Node) -> tuple[list[str], list[str]]:
-    definitions: list[str] = []
-    references: list[str] = []
-    for node in _walk(root):
-        if node.type in ("function_definition", "class_definition") and not node.has_error:
-            definitions.append(_text(node.child_by_field_name("name")))
-        elif node.type == "identifier" and _is_reference(node):
-            references.append(_text(node))
-    return sorted(set(definitions)), sorted(set(references))
+    """Определения и ссылки Python-модуля."""
+    return _collect_names(
+        root, ("function_definition", "class_definition"), ("identifier",), _is_reference
+    )
 
 
 def _js_parameter(node: Node) -> tuple[str, list[Node | None]]:
-    """Render a JS/TS parameter without serializing its default expression."""
+    """Отрисовать параметр JS/TS без сериализации выражения по умолчанию."""
     if node.type == "assignment_pattern":
         left = node.child_by_field_name("left")
         return f"{_text(left)}=...", [left]
@@ -245,6 +280,7 @@ def _js_parameter(node: Node) -> tuple[str, list[Node | None]]:
 
 
 def _js_callable_signature(node: Node, name: Node | None, owner: str = "") -> dict[str, object]:
+    """Сигнатура функции, стрелочной функции или метода JS/TS."""
     parameters = node.child_by_field_name("parameters")
     return_type = node.child_by_field_name("return_type")
     rendered: list[str] = []
@@ -253,7 +289,7 @@ def _js_callable_signature(node: Node, name: Node | None, owner: str = "") -> di
         value, parts = _js_parameter(parameter)
         rendered.append(value)
         exposed.extend(parts)
-    qualified = f"{owner}.{_text(name)}" if owner else _text(name)
+    qualified = _qualified(owner, name)
     keyword = "method" if owner else ("const" if node.type == "arrow_function" else "function")
     async_prefix = "async " if any(child.type == "async" for child in node.children) else ""
     suffix = _text(return_type)
@@ -264,6 +300,7 @@ def _js_callable_signature(node: Node, name: Node | None, owner: str = "") -> di
 
 
 def _js_signatures(root: Node) -> list[dict[str, object]]:
+    """Функции, классы с методами и стрелочные константы верхнего уровня JS/TS, включая экспорт."""
     found: list[dict[str, object]] = []
     for top in root.named_children:
         node = top.child_by_field_name("declaration") if top.type == "export_statement" else top
@@ -296,6 +333,7 @@ def _js_signatures(root: Node) -> list[dict[str, object]]:
 
 
 def _js_imports(root: Node) -> list[dict[str, object]]:
+    """Статические импорты JS/TS верхнего уровня: только строка источника."""
     found: list[dict[str, object]] = []
     for node in root.named_children:
         if node.type != "import_statement" or node.has_error:
@@ -307,6 +345,7 @@ def _js_imports(root: Node) -> list[dict[str, object]]:
 
 
 def _js_names(root: Node) -> tuple[list[str], list[str]]:
+    """Определения и ссылки JS/TS; узлы с синтаксической ошибкой пропускаются."""
     definitions: set[str] = set()
     references: set[str] = set()
     for node in _walk(root):
@@ -330,25 +369,23 @@ def _js_names(root: Node) -> tuple[list[str], list[str]]:
                 continue
             if parent.type in {"member_expression", "subscript_expression"} and parent.child_by_field_name("property") == node:
                 continue
-            ancestor: Node | None = parent
-            while ancestor is not None and ancestor.type not in {
-                "import_statement", "formal_parameters", "required_parameter", "optional_parameter",
-                "type_alias_declaration", "interface_declaration"
-            }:
-                ancestor = ancestor.parent
-            if ancestor is None:
+            if not _has_ancestor(node, _JS_NON_REFERENCE_CONTEXT):
                 references.add(_text(node))
     return sorted(definitions), sorted(references)
 
 
 def _no_imports(root: Node) -> list[dict[str, object]]:
-    """Go/Java/C# have no deterministic 1:1 import->file mapping without parsing project files
-    (go.mod, package roots, .csproj); repo_map.py keeps import edges Python/JS-only (ADR 0024,
-    #279), so these languages report the fact as empty rather than approximate it."""
+    """Для Go, Java и C# импорты не извлекаются.
+
+    Однозначного соответствия импорт → файл нет без разбора go.mod, корней пакетов и .csproj;
+    repo_map.py строит рёбра импорта только для Python и JS (ADR 0024, #279), поэтому здесь
+    возвращается пустой список, а не приближение.
+    """
     return []
 
 
 def _go_callable_signature(node: Node) -> dict[str, object]:
+    """Сигнатура функции или метода Go с получателем, параметрами и результатом."""
     receiver = node.child_by_field_name("receiver")
     name = node.child_by_field_name("name")
     parameters = node.child_by_field_name("parameters")
@@ -372,6 +409,7 @@ def _go_callable_signature(node: Node) -> dict[str, object]:
 
 
 def _go_type_signature(node: Node) -> dict[str, object] | None:
+    """Сигнатура `struct` или `interface` Go; `None` для остальных типов."""
     name = node.child_by_field_name("name")
     kind = node.child_by_field_name("type")
     if name is None or kind is None or kind.type not in ("struct_type", "interface_type"):
@@ -381,6 +419,7 @@ def _go_type_signature(node: Node) -> dict[str, object] | None:
 
 
 def _go_signatures(root: Node) -> list[dict[str, object]]:
+    """Функции, методы и типы struct/interface верхнего уровня Go."""
     found: list[dict[str, object]] = []
     for node in root.named_children:
         if node.has_error:
@@ -398,6 +437,7 @@ def _go_signatures(root: Node) -> list[dict[str, object]]:
 
 
 def _go_is_reference(node: Node) -> bool:
+    """Проверить, является ли идентификатор Go ссылкой, а не объявлением, параметром, полем или импортом."""
     parent = node.parent
     if parent is None:
         return False
@@ -412,12 +452,7 @@ def _go_is_reference(node: Node) -> bool:
         return False
     if parent.type == "selector_expression" and parent.child_by_field_name("field") == node:
         return False
-    ancestor: Node | None = parent
-    while ancestor is not None:
-        if ancestor.type == "import_declaration":
-            return False
-        ancestor = ancestor.parent
-    return True
+    return not _has_ancestor(node, _GO_IMPORT_CONTEXT)
 
 
 def _collect_names(
@@ -426,6 +461,7 @@ def _collect_names(
     reference_types: tuple[str, ...],
     is_reference: Callable[[Node], bool],
 ) -> tuple[list[str], list[str]]:
+    """Собрать отсортированные определения и ссылки по типам узлов языка."""
     definitions: set[str] = set()
     references: set[str] = set()
     for node in _walk(root):
@@ -442,6 +478,7 @@ def _collect_names(
 
 
 def _go_names(root: Node) -> tuple[list[str], list[str]]:
+    """Определения и ссылки Go."""
     return _collect_names(
         root,
         ("function_declaration", "method_declaration", "type_spec"),
@@ -457,7 +494,7 @@ def _member_callable_signature(
     is_static: bool,
     parameter: Callable[[Node], tuple[str, list[Node | None]]],
 ) -> dict[str, object]:
-    """Render a Java/C# method or constructor declared inside ``owner``."""
+    """Отрисовать метод или конструктор Java/C#, объявленный внутри `owner`."""
     is_constructor = node.type == "constructor_declaration"
     name = node.child_by_field_name("name")
     parameters = node.child_by_field_name("parameters")
@@ -469,7 +506,7 @@ def _member_callable_signature(
         text, parts = parameter(child)
         rendered.append(text)
         exposed.extend(parts)
-    qualified = f"{owner}.{_text(name)}" if owner else _text(name)
+    qualified = _qualified(owner, name)
     keyword = "constructor" if is_constructor else ("static method" if is_static else "method")
     suffix = f": {_text(returns)}" if returns is not None else ""
     text = f"{keyword} {qualified}({', '.join(rendered)}){suffix}"
@@ -477,10 +514,12 @@ def _member_callable_signature(
 
 
 def _java_parameter(node: Node) -> tuple[str, list[Node | None]]:
+    """Текст параметра Java и раскрываемый им узел."""
     return _text(node), [node]
 
 
 def _java_callable_signature(node: Node, owner: str) -> dict[str, object]:
+    """Сигнатура метода или конструктора Java с признаком `static`."""
     modifiers = next((child for child in node.children if child.type == "modifiers"), None)
     is_static = modifiers is not None and any(child.type == "static" for child in modifiers.children)
     return _member_callable_signature(
@@ -489,6 +528,7 @@ def _java_callable_signature(node: Node, owner: str) -> dict[str, object]:
 
 
 def _java_class_signature(node: Node) -> dict[str, object]:
+    """Сигнатура класса Java с суперклассом и интерфейсами."""
     name = node.child_by_field_name("name")
     superclass = node.child_by_field_name("superclass")
     interfaces = node.child_by_field_name("interfaces")
@@ -501,14 +541,14 @@ def _java_class_signature(node: Node) -> dict[str, object]:
         type_list = next(iter(interfaces.named_children), None)
         if type_list is not None:
             bases.extend(_text(item) for item in type_list.named_children)
-    text = f"class {_text(name)}({', '.join(bases)})" if bases else f"class {_text(name)}"
-    return {"text": text, "symbols": _symbols([name, superclass, interfaces])}
+    return {"text": _class_text(name, bases), "symbols": _symbols([name, superclass, interfaces])}
 
 
 def _java_signatures(root: Node) -> list[dict[str, object]]:
     # A syntax error inside one member marks the enclosing class_declaration `has_error` too (Java
     # nests every member inside the class body), so only individual members are gated below --
     # matching the same "intact definitions survive" resilience as Python's top-level functions.
+    """Классы Java верхнего уровня с методами и конструкторами; член с ошибкой пропускается."""
     found: list[dict[str, object]] = []
     for node in root.named_children:
         if node.type != "class_declaration":
@@ -523,6 +563,7 @@ def _java_signatures(root: Node) -> list[dict[str, object]]:
 
 
 def _java_is_reference(node: Node) -> bool:
+    """Проверить, является ли идентификатор Java ссылкой, а не объявлением, именем вызова, полем или импортом."""
     parent = node.parent
     if parent is None:
         return False
@@ -539,15 +580,11 @@ def _java_is_reference(node: Node) -> bool:
         return False
     if parent.type == "field_access" and parent.child_by_field_name("field") == node:
         return False
-    ancestor: Node | None = parent
-    while ancestor is not None:
-        if ancestor.type in ("import_declaration", "package_declaration"):
-            return False
-        ancestor = ancestor.parent
-    return True
+    return not _has_ancestor(node, _JAVA_IMPORT_CONTEXT)
 
 
 def _java_names(root: Node) -> tuple[list[str], list[str]]:
+    """Определения и ссылки Java."""
     return _collect_names(
         root,
         ("class_declaration", "method_declaration", "constructor_declaration"),
@@ -557,6 +594,7 @@ def _java_names(root: Node) -> tuple[list[str], list[str]]:
 
 
 def _cs_parameter(node: Node) -> tuple[str, list[Node | None]]:
+    """Текст параметра C# (тип и имя, значение по умолчанию становится `...`) и раскрываемые узлы."""
     if node.type != "parameter":
         return _text(node), [node]
     type_node = node.child_by_field_name("type")
@@ -569,6 +607,7 @@ def _cs_parameter(node: Node) -> tuple[str, list[Node | None]]:
 
 
 def _cs_callable_signature(node: Node, owner: str) -> dict[str, object]:
+    """Сигнатура метода или конструктора C# с признаком `static`."""
     is_static = any(
         child.type == "modifier" and _text(child) == "static" for child in node.children
     )
@@ -578,14 +617,15 @@ def _cs_callable_signature(node: Node, owner: str) -> dict[str, object]:
 
 
 def _cs_class_signature(node: Node) -> dict[str, object]:
+    """Сигнатура класса C# со списком базовых типов."""
     name = node.child_by_field_name("name")
     base_list = next((child for child in node.children if child.type == "base_list"), None)
     bases = [_text(item) for item in base_list.named_children] if base_list is not None else []
-    text = f"class {_text(name)}({', '.join(bases)})" if bases else f"class {_text(name)}"
-    return {"text": text, "symbols": _symbols([name, base_list])}
+    return {"text": _class_text(name, bases), "symbols": _symbols([name, base_list])}
 
 
 def _cs_top_level_classes(root: Node) -> Iterator[Node]:
+    """Классы C# верхнего уровня и непосредственно внутри блочных `namespace`."""
     for node in root.named_children:
         if node.type == "class_declaration":
             yield node
@@ -598,6 +638,7 @@ def _cs_top_level_classes(root: Node) -> Iterator[Node]:
 def _cs_signatures(root: Node) -> list[dict[str, object]]:
     # Same resilience rule as Java: a member's syntax error marks the enclosing class_declaration
     # `has_error` too, so only individual members are gated below.
+    """Классы C# с методами и конструкторами; член с ошибкой пропускается, соседние сохраняются."""
     found: list[dict[str, object]] = []
     for node in _cs_top_level_classes(root):
         found.append(_cs_class_signature(node))
@@ -610,6 +651,7 @@ def _cs_signatures(root: Node) -> list[dict[str, object]]:
 
 
 def _cs_is_reference(node: Node) -> bool:
+    """Проверить, является ли идентификатор C# ссылкой, а не объявлением, параметром, членом или `using`."""
     parent = node.parent
     if parent is None:
         return False
@@ -624,15 +666,11 @@ def _cs_is_reference(node: Node) -> bool:
         return False
     if parent.type == "member_access_expression" and parent.child_by_field_name("name") == node:
         return False
-    ancestor: Node | None = parent
-    while ancestor is not None:
-        if ancestor.type == "using_directive":
-            return False
-        ancestor = ancestor.parent
-    return True
+    return not _has_ancestor(node, _CS_IMPORT_CONTEXT)
 
 
 def _cs_names(root: Node) -> tuple[list[str], list[str]]:
+    """Определения и ссылки C#."""
     return _collect_names(
         root,
         ("class_declaration", "method_declaration", "constructor_declaration"),
@@ -659,7 +697,8 @@ _LANGUAGE_EXTRACTORS: dict[
 }
 
 
-def _file_facts(parser: Parser, content: bytes, language: str = "python") -> dict[str, object]:
+def _file_facts(parser: Parser, content: bytes, language: str) -> dict[str, object]:
+    """Разобрать один файл и вернуть его факты; неверный UTF-8 даёт `invalid_encoding` без фактов."""
     try:
         content.decode("utf-8")
     except UnicodeDecodeError:
@@ -683,6 +722,7 @@ def _file_facts(parser: Parser, content: bytes, language: str = "python") -> dic
 
 
 def main() -> None:
+    """Точка входа worker: загрузить грамматики из `<install_dir>`, прочитать запрос из stdin и вывести факты."""
     sys.path.insert(0, sys.argv[1])
     import tree_sitter
     import tree_sitter_c_sharp

@@ -1024,7 +1024,9 @@ def _validate_report(
         report["changed_files"], "completion report changed_files", allow_empty=True
     )
     checks = report["checks_run"]
-    if not isinstance(checks, list) or not checks:
+    # A role whose brief approves no verification commands (the architect) reports an empty list;
+    # every other role must report the commands its brief approved.
+    if not isinstance(checks, list) or (not checks and dispatch["verification_commands"]):
         raise CoordinatorError(
             "completion report checks_run must be a non-empty list",
             remedy="set checks_run to a non-empty list",

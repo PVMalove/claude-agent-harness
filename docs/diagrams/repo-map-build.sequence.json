@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Построение Repo Map на закреплённом коммите",
+    "viewBox": [1440, 900],
+    "column_fit": "spread",
+    "quality_profile": "showcase"
+  },
+  "participants": [
+    { "id": "caller", "type": "external", "label": "Context Builder / CLI" },
+    { "id": "map", "type": "backend", "label": "repo_map.py" },
+    { "id": "git", "type": "database", "label": "Git commit" },
+    { "id": "cache", "type": "database", "label": "results cache" },
+    { "id": "bundle", "type": "security", "label": "parser_bundle.py" },
+    { "id": "uv", "type": "external", "label": "uv (offline)" },
+    { "id": "worker", "type": "backend", "label": "tree_sitter_worker.py" }
+  ],
+  "segments": [
+    { "from": 150, "to": 350, "label": "Вход, политика и кэш" },
+    { "from": 370, "to": 510, "label": "Проверка и установка bundle" },
+    { "from": 530, "to": 700, "label": "Разбор в изолированном процессе" },
+    { "from": 720, "to": 810, "label": "Граф, бюджет и результат" }
+  ],
+  "messages": [
+    { "from": "caller", "to": "map", "y": 180, "label": "commit, seeds, max_tokens, policy", "variant": "emphasis" },
+    { "from": "map", "to": "git", "y": 220, "label": "rev-parse + ls-tree", "variant": "default" },
+    { "from": "git", "to": "map", "y": 255, "label": "tracked paths → _allowed()", "variant": "return" },
+    { "from": "map", "to": "cache", "y": 295, "label": "ключ: входы + parser/bundle identity", "variant": "default" },
+    { "from": "cache", "to": "map", "y": 330, "label": "hit (SHA-256 + схема) или miss", "variant": "return" },
+    { "from": "map", "to": "bundle", "y": 390, "label": "acquire_bundle()", "variant": "emphasis" },
+    { "from": "bundle", "to": "uv", "y": 425, "label": "pip install --offline --require-hashes", "variant": "default" },
+    { "from": "uv", "to": "bundle", "y": 460, "label": "install marker = lock SHA", "variant": "return" },
+    { "from": "bundle", "to": "map", "y": 495, "label": "AppliedBundle | DegradationReason", "variant": "return" },
+    { "from": "map", "to": "git", "y": 545, "label": "cat-file -s / show по файлу", "variant": "default" },
+    { "from": "map", "to": "bundle", "y": 585, "label": "run_bundle_parser(paths → base64)", "variant": "emphasis" },
+    { "from": "bundle", "to": "worker", "y": 620, "label": "stdin JSON, timeout, лимит вывода", "variant": "emphasis" },
+    { "from": "worker", "to": "bundle", "y": 655, "label": "FileFacts без тел функций", "variant": "return" },
+    { "from": "bundle", "to": "map", "y": 690, "label": "проверенные факты", "variant": "return" },
+    { "from": "map", "to": "cache", "y": 745, "label": "запись только tier full / minimal по политике", "variant": "dashed" },
+    { "from": "map", "to": "caller", "y": 790, "label": "Repo Map JSON + parser_provenance", "variant": "return" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Детерминизм", "items": ["Вход — только объекты Git коммита", "Сортировка, бюджет токенов, schema v1"] },
+    { "dot": "amber", "title": "Деградация без исключений", "items": ["Любой сбой bundle → tier minimal", "Причина пишется в degradation_reason"] },
+    { "dot": "emerald", "title": "Граница процесса", "items": ["Типы tree-sitter не покидают worker", "Политика и граф — в основном процессе"] }
+  ]
+}

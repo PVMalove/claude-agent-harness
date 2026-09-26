@@ -18,6 +18,7 @@ from harness.orchestration import operational_guards
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
     ContractError,
+    accepted_verification_commands,
     valid_tool_list,
     validate_brief_policy,
 )
@@ -878,12 +879,10 @@ def _validate_dispatch(
                 remedy=f"the dispatch record's {field} does not match its batch -- "
                 + INTERNAL_INVARIANT_REMEDY,
             )
-    expected_commands = (
-        batch["developer_verification_commands"]
-        if dispatch["role"] == "developer" and dispatch["purpose"] == "work"
-        else batch["verification_commands"]
+    accepted_commands = accepted_verification_commands(
+        batch, dispatch["role"], dispatch["purpose"]
     )
-    if dispatch["verification_commands"] != expected_commands:
+    if dispatch["verification_commands"] not in accepted_commands:
         raise CoordinatorError(
             "dispatch record verification_commands do not match its batch and role",
             remedy="the dispatch record's verification_commands diverged from its batch/role -- "

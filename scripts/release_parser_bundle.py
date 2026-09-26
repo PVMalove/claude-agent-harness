@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Assemble a complete, audited offline parser release from pinned, staged wheels.
+"""Собрать полный проверенный offline-релиз парсеров из закреплённых подготовленных wheels.
 
-The release job downloads the wheels named by the committed manifest. This script has no
-network path: it verifies every staged byte, builds the nine-pair lock, generates a CycloneDX
-1.6 SBOM, and requires a clean pip-audit JSON result before making the output visible.
+Release-задача скачивает wheels, перечисленные в закоммиченном манифесте. Сам скрипт ничего не
+скачивает: он проверяет каждый подготовленный байт, строит lock для девяти пар, генерирует CycloneDX
+1.6 SBOM и требует чистый JSON-результат pip-audit, прежде чем сделать результат видимым.
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ EXPECTED_WHEEL_COUNT = len(MATRIX) + (len(PACKAGES) - 1) * len(PLATFORMS)
 
 
 class WheelPin(TypedDict):
+    """Запись манифеста релизных wheels: дистрибутив, версия, файл, SHA-256, URL PyPI и пары."""
     distribution: str
     version: str
     filename: str
@@ -52,10 +53,12 @@ class WheelPin(TypedDict):
 
 
 def _sha256(path: Path) -> str:
+    """SHA-256 содержимого файла."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _manifest(path: Path) -> list[WheelPin]:
+    """Прочитать и строго проверить манифест релизных wheels: матрицу, версии, имена, хеши, URL и покрытие пар."""
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("schema_version") != 1 or payload.get("matrix") != list(MATRIX):
         raise ValueError("release wheel manifest has an incomplete or changed matrix")
@@ -113,6 +116,7 @@ def _manifest(path: Path) -> list[WheelPin]:
 
 
 def _requirements(wheels: list[WheelPin]) -> str:
+    """Сформировать requirements с хешами всех wheels каждого закреплённого дистрибутива."""
     lines = []
     for distribution, version in sorted(PACKAGES.items()):
         hashes = sorted({str(wheel["sha256"]) for wheel in wheels if wheel["distribution"] == distribution})
@@ -123,6 +127,7 @@ def _requirements(wheels: list[WheelPin]) -> str:
 
 
 def _run(command: list[str]) -> int:
+    """Выполнить команду и вернуть её код выхода."""
     return subprocess.run(command, capture_output=True, check=False).returncode
 
 
@@ -135,6 +140,10 @@ def build_release(
     pip_audit: str = "pip-audit",
     runner: Callable[[list[str]], int] = _run,
 ) -> Path:
+    """Проверить подготовленные wheels и атомарно собрать релиз в `out`: lock, requirements, SBOM и pip-audit.
+
+    Результат появляется только после успешных проверок; существующий `out` не перезаписывается.
+    """
     wheels = _manifest(manifest_path)
     expected = {str(wheel["filename"]) for wheel in wheels}
     actual = {path.name for path in wheelhouse.iterdir() if path.is_file()}
@@ -249,6 +258,7 @@ def build_release(
 
 
 def main() -> int:
+    """Точка входа CLI: собрать релиз и напечатать путь к нему."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     parser.add_argument("--wheelhouse", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
