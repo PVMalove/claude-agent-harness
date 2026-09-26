@@ -16,9 +16,13 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
+from harness.repo_map.bundle_install import INSTALL_DIR_HASH_PREFIX
+from harness.repo_map.bundle_lock import LOCK_FILENAME, BundleFormatError, parse_lock
 from harness.storage import storage_root
 
 TERMINAL_BATCH_STATES = {"completed", "failed", "abandoned", "not-required"}
+# An install directory is `<lock hash prefix>-<interpreter/platform pair>`.
+_INSTALL_DIR_RE = re.compile(rf"[0-9a-f]{{{INSTALL_DIR_HASH_PREFIX}}}-cp[0-9]+-[A-Za-z0-9_]+")
 
 
 class CleanupItem(TypedDict):
@@ -199,6 +203,37 @@ def _branch_allowed(root: Path, branch: str) -> bool:
         return re.fullmatch(r"feature/issue-[0-9]+-.+", branch) is not None
 
 
+def _current_lock_prefix(bundle_root: Path) -> str | None:
+    """Префикс имени install-каталога для lock из локального registry; `None`, если lock нет."""
+    try:
+        lock = parse_lock((bundle_root / "registry" / LOCK_FILENAME).read_bytes())
+    except (OSError, BundleFormatError):
+        return None
+    return lock.raw_sha256[:INSTALL_DIR_HASH_PREFIX]
+
+
+def _stale_bundle_installs(root: Path, min_age_hours: float) -> list[Path]:
+    """Install-каталоги parser bundle, которые не соответствуют текущему lock локального registry.
+
+    Каталог `<хеш lock>-<пара>` создаётся на каждую смену lock и после неё больше не используется.
+    Без lock в registry устаревшими считаются все такие каталоги: bundle недоступен, а установка
+    восстанавливается offline при следующем полном запуске.
+    """
+    bundle_root = root / ".cache" / "repo_map" / "parser_bundle"
+    if not bundle_root.is_dir() or bundle_root.is_symlink():
+        return []
+    current = _current_lock_prefix(bundle_root)
+    return [
+        path
+        for path in sorted(bundle_root.iterdir())
+        if path.is_dir()
+        and _INSTALL_DIR_RE.fullmatch(path.name)
+        and path.name.split("-", 1)[0] != current
+        and _inside(root, path)
+        and _old_enough(path, min_age_hours)
+    ]
+
+
 def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> CleanupPlan:
     """Return exact deletions and skips; never mutate the filesystem."""
     if mode not in {"soft", "hard"} or min_age_hours < 0:
@@ -231,6 +266,10 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
         for path in cache.iterdir():
             if path.is_file() and _inside(root, path) and _old_enough(path, min_age_hours):
                 remove.append({"kind": "file", "path": str(path)})
+    remove.extend(
+        {"kind": "directory", "path": str(path)}
+        for path in _stale_bundle_installs(root, min_age_hours)
+    )
 
     if mode == "hard":
         for parent, patterns in (

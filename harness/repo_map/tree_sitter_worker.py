@@ -2,9 +2,9 @@
 """Worker parser bundle: извлечь факты о файлах грамматиками tree-sitter.
 
 Запускается только как ограниченный subprocess из `parser_bundle.run_bundle_parser`:
-`python tree_sitter_worker.py <install_dir>`, на stdin — JSON-запрос `{"paths": {path: base64}}`,
-на stdout — JSON `{"files": {path: FileFacts}}` (см. `FileFacts` в
-harness/repo_map/parser_bundle.py). Релизный процесс копирует этот файл рядом с lock и записывает
+`python tree_sitter_worker.py <install_dir>`, на stdin — JSON-запрос
+`{"paths": {path: base64}, "languages": {extension: grammar}}`, на stdout — JSON
+`{"files": {path: FileFacts}}` (см. `FileFacts` в harness/repo_map/bundle_worker.py). Релизный процесс копирует этот файл рядом с lock и записывает
 его SHA-256, поэтому модуль остаётся автономным: stdlib и закреплённые пакеты `tree_sitter*` из
 `<install_dir>`, без импорта harness.
 
@@ -18,6 +18,7 @@ Worker возвращает только факты: текст сигнатур
 from __future__ import annotations
 
 import base64
+import importlib
 import json
 import sys
 from collections.abc import Callable, Iterator
@@ -695,6 +696,28 @@ _LANGUAGE_EXTRACTORS: dict[
     "java": (_java_signatures, _no_imports, _java_names),
     "csharp": (_cs_signatures, _no_imports, _cs_names),
 }
+# Grammar name -> (package in the bundle, factory returning the language pointer).
+_GRAMMAR_PACKAGES: dict[str, tuple[str, str]] = {
+    "python": ("tree_sitter_python", "language"),
+    "typescript": ("tree_sitter_typescript", "language_typescript"),
+    "tsx": ("tree_sitter_typescript", "language_tsx"),
+    "javascript": ("tree_sitter_javascript", "language"),
+    "go": ("tree_sitter_go", "language"),
+    "java": ("tree_sitter_java", "language"),
+    "csharp": ("tree_sitter_c_sharp", "language"),
+}
+# The bundle lock assigns extensions to grammars and repo_map sends that table as `languages`. This
+# default only serves a harness released before it did, so a newer bundle keeps working with it.
+_DEFAULT_LANGUAGES = {
+    ".py": "python",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".go": "go",
+    ".java": "java",
+    ".cs": "csharp",
+}
 
 
 def _file_facts(parser: Parser, content: bytes, language: str) -> dict[str, object]:
@@ -721,34 +744,56 @@ def _file_facts(parser: Parser, content: bytes, language: str) -> dict[str, obje
     }
 
 
-def main() -> None:
-    """Точка входа worker: загрузить грамматики из `<install_dir>`, прочитать запрос из stdin и вывести факты."""
-    sys.path.insert(0, sys.argv[1])
+def _load_parser(grammar: str) -> Parser | None:
+    """Импортировать пакет грамматики и создать парсер; `None`, если пакет недоступен в bundle."""
     import tree_sitter
-    import tree_sitter_c_sharp
-    import tree_sitter_go
-    import tree_sitter_java
-    import tree_sitter_javascript
-    import tree_sitter_python
-    import tree_sitter_typescript
 
-    parsers = {
-        ".py": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_python.language())), "python"),
-        ".ts": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_typescript.language_typescript())), "typescript"),
-        ".tsx": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_typescript.language_tsx())), "tsx"),
-        ".js": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_javascript.language())), "javascript"),
-        ".jsx": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_javascript.language())), "javascript"),
-        ".go": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_go.language())), "go"),
-        ".java": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_java.language())), "java"),
-        ".cs": (tree_sitter.Parser(tree_sitter.Language(tree_sitter_c_sharp.language())), "csharp"),
+    module_name, factory = _GRAMMAR_PACKAGES[grammar]
+    try:
+        module = importlib.import_module(module_name)
+        language = tree_sitter.Language(getattr(module, factory)())
+    except (ImportError, AttributeError, ValueError):
+        return None
+    return tree_sitter.Parser(language)
+
+
+def _parser_for(grammar: str, parsers: dict[str, Parser | None]) -> Parser | None:
+    """Парсер грамматики, загружаемый при первом обращении и переиспользуемый дальше."""
+    if grammar not in parsers:
+        parsers[grammar] = _load_parser(grammar)
+    return parsers[grammar]
+
+
+def _request_languages(request: dict[str, object]) -> dict[str, str]:
+    """Соответствие расширения грамматике из запроса или из совместимого значения по умолчанию."""
+    languages = request.get("languages")
+    if not isinstance(languages, dict):
+        return _DEFAULT_LANGUAGES
+    return {
+        str(extension): str(grammar)
+        for extension, grammar in languages.items()
+        if isinstance(extension, str) and isinstance(grammar, str)
     }
+
+
+def main() -> None:
+    """Точка входа worker: прочитать запрос из stdin, разобрать файлы и вывести факты в stdout.
+
+    Грамматики загружаются лениво из `<install_dir>`: файл грамматики, которой нет в bundle или в
+    `_GRAMMAR_PACKAGES`, пропускается, а остальные языки разбираются как обычно.
+    """
+    sys.path.insert(0, sys.argv[1])
     request = json.loads(sys.stdin.buffer.read())
+    languages = _request_languages(request)
+    parsers: dict[str, Parser | None] = {}
     files: dict[str, dict[str, object]] = {}
     for path, encoded in sorted(request.get("paths", {}).items()):
-        selected = parsers.get(PurePosixPath(path).suffix)
-        if selected is not None:
-            parser, language = selected
-            files[path] = _file_facts(parser, base64.b64decode(encoded), language)
+        grammar = languages.get(PurePosixPath(path).suffix)
+        if grammar is None or grammar not in _LANGUAGE_EXTRACTORS:
+            continue
+        parser = _parser_for(grammar, parsers)
+        if parser is not None:
+            files[path] = _file_facts(parser, base64.b64decode(encoded), grammar)
     sys.stdout.write(json.dumps({"files": files}, sort_keys=True))
 
 

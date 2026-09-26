@@ -1,5 +1,6 @@
 """Cleanup only disposes of recoverable local runtime data."""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -60,6 +61,41 @@ class CleanupTests(unittest.TestCase):
         self.assertFalse(cache.exists())
         self.assertTrue(active.exists())
         self.assertTrue(ledger.exists())
+
+    def test_soft_removes_only_bundle_installs_of_a_superseded_lock(self) -> None:
+        bundle_root = self.repo / ".harness" / ".cache" / "repo_map" / "parser_bundle"
+        registry = bundle_root / "registry"
+        registry.mkdir(parents=True)
+        lock_bytes = json.dumps(
+            {
+                "core_version": "0.26.0",
+                "core_abi_range": "13-15",
+                "worker_script": "worker.py",
+                "script_sha256": "0" * 64,
+                "grammars": [],
+                "wheelhouses": {},
+            }
+        ).encode("utf-8")
+        (registry / "parser_bundle.lock.json").write_bytes(lock_bytes)
+        current_prefix = hashlib.sha256(lock_bytes).hexdigest()[:16]
+        current = bundle_root / f"{current_prefix}-cp314-win_amd64"
+        stale = bundle_root / f"{'a' * 16}-cp314-win_amd64"
+        backup = bundle_root / "registry.stub-backup"
+        for directory in (current / "install", stale / "install", backup):
+            directory.mkdir(parents=True)
+
+        plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
+
+        self.assertEqual(
+            [item["path"] for item in plan["remove"] if "parser_bundle" in item["path"]],
+            [str(stale)],
+        )
+        result = apply_cleanup(self.repo, plan)
+        self.assertFalse(result["failed"])
+        self.assertFalse(stale.exists())
+        self.assertTrue(current.exists())
+        self.assertTrue(registry.exists())
+        self.assertTrue(backup.exists())
 
     def test_soft_removes_a_run_whose_windows_pid_no_longer_exists(self) -> None:
         stale = self.repo / ".harness" / "tmp" / "tests" / "stale"
