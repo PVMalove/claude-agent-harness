@@ -294,6 +294,66 @@ class ContextBuilderTests(ContextBuilderFixture):
             estimate_tokens(package.diff) + estimate_tokens(guide) * 1.5,
         )
 
+    def _commit_large_guide(self) -> tuple[str, str]:
+        guide = (
+            "# Guide\n\nIntro.\n\n"
+            "## Первый раздел\n\n" + "Текст первого раздела.\n" * 300 + "\n"
+            "```md\n## not a heading inside a fence\n```\n\n"
+            "### Подраздел\n\n" + "Текст подраздела.\n" * 300 + "\n"
+            "## Second\n\n" + "Second text.\n" * 300
+        )
+        _write(self.repo, "docs/guide.md", guide)
+        _run("add", ".", cwd=self.repo)
+        _run("commit", "-qm", "docs: add a large guide", cwd=self.repo)
+        return _head(self.repo), guide
+
+    def test_a_large_markdown_starting_file_is_seeded_as_a_section_index(
+        self,
+    ) -> None:
+        snapshot, guide = self._commit_large_guide()
+        lines = guide.split("\n")
+
+        package = build_context_package(
+            self.repo,
+            snapshot,
+            snapshot,
+            min_starting_files=1,
+            seed_paths=["docs/guide.md"],
+            section_index_min_tokens=1_000,
+        )
+
+        (starting,) = package.starting_files
+        self.assertIn("section index", starting.reason)
+        self.assertEqual(
+            [(section.heading, section.level) for section in starting.sections],
+            [("Guide", 1), ("Первый раздел", 2), ("Подраздел", 3), ("Second", 2)],
+        )
+        first, sub, second = starting.sections[1:]
+        self.assertEqual(lines[first.start_line - 1], "## Первый раздел")
+        self.assertEqual(first.end_line, sub.start_line - 1)
+        self.assertEqual(lines[second.start_line - 1], "## Second")
+        self.assertEqual(second.end_line, len(lines))
+        self.assertIn("docs/guide.md", package.file_hashes)
+        self.assertLess(package.estimated_tokens, estimate_tokens(guide) // 10)
+
+    def test_a_markdown_file_below_the_threshold_keeps_its_full_content(
+        self,
+    ) -> None:
+        snapshot, guide = self._commit_large_guide()
+
+        package = build_context_package(
+            self.repo,
+            snapshot,
+            snapshot,
+            min_starting_files=1,
+            seed_paths=["docs/guide.md"],
+            section_index_min_tokens=estimate_tokens(guide) + 1,
+        )
+
+        (starting,) = package.starting_files
+        self.assertEqual(starting.sections, [])
+        self.assertGreaterEqual(package.estimated_tokens, estimate_tokens(guide))
+
     def test_fails_clearly_instead_of_silently_returning_fewer_than_the_minimum_starting_files(
         self,
     ) -> None:

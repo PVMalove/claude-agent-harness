@@ -128,6 +128,7 @@ def _persist_context_package(
             max_package_tokens=token_limit,
             max_related_tests=related_tests_cap,
             seed_paths=seed_files,
+            section_index_min_tokens=policy["section_index_min_tokens"],
         )
     except ContextPackageError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc

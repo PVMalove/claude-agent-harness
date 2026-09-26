@@ -30,7 +30,7 @@ import json
 import re
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import cast
 
@@ -46,6 +46,8 @@ class ContextPackageError(HarnessError):
 
 
 _ADR_HEADING_RE: re.Pattern[str] = re.compile(r"^#\s+(.+)$", re.MULTILINE)
+_SECTION_HEADING_RE: re.Pattern[str] = re.compile(r"^(#{1,3})\s+(.+?)\s*#*\s*$")
+_FENCE_RE: re.Pattern[str] = re.compile(r"^\s{0,3}(```|~~~)")
 
 # The Repo Map CLI is a sibling module; installed projects keep the same layout (see
 # harness/bin/harness resource packaging and scripts/test_clean_room.py).
@@ -57,9 +59,20 @@ _REPO_MAP_CONTRACT_REMEDY = (
 
 
 @dataclass(frozen=True)
+class SectionPointer:
+    heading: str
+    level: int
+    start_line: int
+    end_line: int
+
+
+@dataclass(frozen=True)
 class StartingFile:
     path: str
     reason: str
+    # Non-empty only for a large Markdown file seeded as an index: the role reads only the line
+    # ranges it needs, and the package charges the index instead of the whole file.
+    sections: list[SectionPointer] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -507,6 +520,25 @@ def _precedent_cards(
     return [card for _, _, card in scored]
 
 
+def _markdown_sections(text: str) -> list[SectionPointer]:
+    """Level 1-3 ATX headings outside fenced code, each spanning to the next such heading."""
+    lines: list[str] = text.split("\n")
+    starts: list[tuple[int, int, str]] = []
+    in_fence: bool = False
+    for number, line in enumerate(lines, start=1):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        match = None if in_fence else _SECTION_HEADING_RE.match(line)
+        if match:
+            starts.append((number, len(match.group(1)), match.group(2)))
+    ends: list[int] = [number - 1 for number, _, _ in starts[1:]] + [len(lines)]
+    return [
+        SectionPointer(heading=heading, level=level, start_line=start, end_line=end)
+        for (start, level, heading), end in zip(starts, ends)
+    ]
+
+
 def _keywords_for(paths: list[str]) -> set[str]:
     keywords: set[str] = set()
     for path in paths:
@@ -527,8 +559,13 @@ def build_context_package(
     max_package_tokens: int | None = 80_000,
     max_related_tests: int | None = None,
     seed_paths: list[str] | None = None,
+    section_index_min_tokens: int | None = None,
 ) -> ContextPackage:
     """Build one immutable Context Package for `base_commit`..`candidate_commit`.
+
+    A Markdown starting file whose content estimate reaches `section_index_min_tokens` (`None`
+    disables this) is seeded as a section index: its `sections` list headings with line ranges and
+    the estimate charges that index instead of the whole file.
 
     Reads only pinned git history (`git show`/`git diff`/`git ls-tree`), never the working tree, so
     the same inputs always produce the same output regardless of local checkout state. The
@@ -699,13 +736,32 @@ def build_context_package(
         original = first_by_hash.setdefault(file_hashes[path], path)
         if original != path:
             mirror_of[path] = original
+    # A large Markdown document (e.g. an agent guide) is seeded as a section index, so the role reads
+    # only the sections the task needs instead of the whole file.
+    sections_by_path: dict[str, list[SectionPointer]] = {}
+    if section_index_min_tokens is not None:
+        for path in starting_paths:
+            if (
+                path.endswith(".md")
+                and path not in mirror_of
+                and estimate_tokens(contents[path]) >= section_index_min_tokens
+            ):
+                sections = _markdown_sections(contents[path])
+                if sections:
+                    sections_by_path[path] = sections
     starting_files = [
-        StartingFile(
-            path=item.path,
+        replace(
+            item,
             reason=f"{item.reason}; byte-identical mirror of {mirror_of[item.path]} -- "
             "read one copy and keep both identical",
         )
         if item.path in mirror_of
+        else replace(
+            item,
+            reason=f"{item.reason}; section index -- read only the line ranges the task needs",
+            sections=sections_by_path[item.path],
+        )
+        if item.path in sections_by_path
         else item
         for item in starting_files
     ]
@@ -725,7 +781,12 @@ def build_context_package(
                 sort_keys=True,
             ),
             *[
-                contents[path]
+                json.dumps(
+                    [asdict(section) for section in sections_by_path[path]],
+                    ensure_ascii=False,
+                )
+                if path in sections_by_path
+                else contents[path]
                 for path in sorted(contents)
                 if path not in added_paths and path not in mirror_of
             ],

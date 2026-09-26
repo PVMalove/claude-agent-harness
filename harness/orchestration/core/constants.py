@@ -238,6 +238,7 @@ DEFAULT_CONTEXT_PACKAGE_POLICY = {
     "max_related_tests": 25,
     "min_starting_files": 5,
     "max_starting_files": 10,
+    "section_index_min_tokens": 20_000,
 }
 DEFAULT_EXECUTION_POLICY = {
     "dispatch_wait_timeout_seconds": 60,
