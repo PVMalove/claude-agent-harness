@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Компоненты Repo Map",
+    "viewBox": [1440, 900],
+    "repository": { "url": "https://github.com/PVMalove/claude-agent-harness.git", "revision": "5a97875c18b59052d30b72bef68aa5d8eb659925" },
+    "quality_profile": "showcase"
+  },
+  "components": [
+    { "id": "coordinator", "type": "backend", "label": "Coordinator (dispatch)", "pos": [40, 200], "size": [220, 80], "sources": [{ "path": "harness/orchestration/workflow/dispatch.py", "label": "min_tier gate" }] },
+    { "id": "builder", "type": "backend", "label": "Context Builder", "pos": [40, 420], "size": [220, 80], "sources": [{ "path": "harness/context_builder/context_builder.py", "label": "Context Package" }] },
+    { "id": "map", "type": "backend", "label": "repo_map.py", "pos": [390, 420], "size": [220, 80], "sources": [{ "path": "harness/repo_map/repo_map.py", "label": "CLI и граф" }] },
+    { "id": "contract", "type": "security", "label": "contract.py + schema", "pos": [390, 640], "size": [220, 80], "sources": [{ "path": "harness/repo_map/contract.py", "label": "JSON-контракт" }] },
+    { "id": "git", "type": "database", "label": "Git commit", "pos": [390, 200], "size": [220, 80] },
+    { "id": "cache", "type": "database", "label": "results cache", "pos": [740, 640], "size": [220, 80], "sources": [{ "path": "harness/storage.py", "label": "storage_path" }] },
+    { "id": "bundle", "type": "security", "label": "parser_bundle.py", "pos": [740, 420], "size": [220, 80], "sources": [{ "path": "harness/repo_map/parser_bundle.py", "label": "lock, hash, install" }] },
+    { "id": "registry", "type": "database", "label": "registry + wheelhouse", "pos": [740, 200], "size": [220, 80] },
+    { "id": "worker", "type": "backend", "label": "tree_sitter_worker.py", "pos": [1120, 420], "size": [240, 80], "sources": [{ "path": "harness/repo_map/tree_sitter_worker.py", "label": "extractors" }] },
+    { "id": "release", "type": "cloud", "label": "release-parser-bundle", "pos": [1120, 200], "size": [240, 80], "sources": [{ "path": ".github/workflows/release-parser-bundle.yml", "label": "SBOM + audit" }] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Основной процесс harness", "wraps": ["builder", "map", "contract", "bundle"], "pad": 32 },
+    { "kind": "security-group", "label": "Изолированный subprocess", "wraps": ["worker"], "pad": 32 }
+  ],
+  "connections": [
+    { "from": "builder", "to": "map", "label": "build_map()", "variant": "emphasis" },
+    { "from": "coordinator", "to": "builder", "label": "Context Package", "labelAt": [150, 350] },
+    { "from": "map", "to": "git", "label": "ls-tree / show" },
+    { "from": "map", "to": "contract", "label": "validation_error()", "labelAt": [500, 570] },
+    { "from": "map", "to": "cache", "label": "content-addressed", "variant": "dashed" },
+    { "from": "map", "to": "bundle", "label": "acquire + run", "variant": "emphasis" },
+    { "from": "bundle", "to": "registry", "label": "lock + SHA-256" },
+    { "from": "bundle", "to": "worker", "label": "stdin/stdout JSON", "variant": "emphasis" },
+    { "from": "release", "to": "registry", "label": "архив bundle", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Потребители", "items": ["Context Builder встраивает срез карты", "Coordinator проверяет min_tier по роли"] },
+    { "dot": "amber", "title": "Доверие к bundle", "items": ["Lock, wheels и worker сверяются по SHA-256", "Установка только offline через uv"] },
+    { "dot": "emerald", "title": "Изоляция", "items": ["Нативные grammars живут только в worker", "Кэш не авторитетен и удаляем"] }
+  ]
+}
