@@ -12,13 +12,13 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: Bootstrap harness environment
         run: make bootstrap
       - name: Make script executable
@@ -45,21 +45,52 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: Bootstrap harness environment
         run: make bootstrap
       - name: Verify harness and clean-room install
         run: make verify
 
+  parser-bundle:
+    # Real tree-sitter bundle path (ADR 0024): pinned wheels -> sha256 check -> offline bundle. It is
+    # assembled once here and handed to every `repo-map-bundle` leg as one artifact, so all legs test
+    # byte-identical wheels and worker. An unavailable or substituted wheel fails this job.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Download pinned parser wheels and verify sha256
+        run: |
+          mkdir -p "$RUNNER_TEMP/wheels"
+          grep -v '^#' .github/parser-bundle-wheels.txt | while read -r sha url; do
+            [ -n "$sha" ] || continue
+            file="$RUNNER_TEMP/wheels/$(basename "$url")"
+            curl --fail --silent --show-error --location --output "$file" "$url"
+            echo "$sha  $file" | sha256sum --check --strict
+          done
+      - name: Assemble offline parser bundle
+        run: python scripts/build_parser_bundle.py --wheelhouse "$RUNNER_TEMP/wheels" --out "$RUNNER_TEMP/parser-bundle"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: parser-bundle
+          path: |
+            ${{ runner.temp }}/wheels
+            ${{ runner.temp }}/parser-bundle
+          if-no-files-found: error
+          retention-days: 1
+
   repo-map-bundle:
-    # Real tree-sitter bundle path (ADR 0024): pinned wheels -> sha256 check -> offline bundle ->
-    # bundle tests (never skipped here, never a `pytest -k` filter) and the separate mypy run of
-    # the tree-sitter worker. Go, Java and C# each get their own isolated matrix leg and test file
-    # (#279): an unavailable bundle or an empty collection fails that leg hard, never a silent skip.
+    # Bundle tests (never skipped here, never a `pytest -k` filter) and the separate mypy run of the
+    # tree-sitter worker against the bundle from `parser-bundle`. Go, Java and C# each get their own
+    # isolated matrix leg and test file (#279): an unavailable bundle or an empty collection fails
+    # that leg hard, never a silent skip.
+    needs: parser-bundle
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -76,24 +107,17 @@ jobs:
           - language: csharp
             test_files: tests/test_repo_map_tree_sitter_csharp.py
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: Bootstrap harness environment
         run: make bootstrap
-      - name: Download pinned parser wheels and verify sha256
-        run: |
-          mkdir -p "$RUNNER_TEMP/wheels"
-          grep -v '^#' .github/parser-bundle-wheels.txt | while read -r sha url; do
-            [ -n "$sha" ] || continue
-            file="$RUNNER_TEMP/wheels/$(basename "$url")"
-            curl --fail --silent --show-error --location --output "$file" "$url"
-            echo "$sha  $file" | sha256sum --check --strict
-          done
-      - name: Assemble offline parser bundle
-        run: .harness/.venv/bin/python scripts/build_parser_bundle.py --wheelhouse "$RUNNER_TEMP/wheels" --out "$RUNNER_TEMP/parser-bundle"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: parser-bundle
+          path: ${{ runner.temp }}
       - name: Repo Map tests against the real bundle
         env:
           HARNESS_PARSER_BUNDLE_DIR: ${{ runner.temp }}/parser-bundle
@@ -103,8 +127,8 @@ jobs:
         if: matrix.language == 'python-ts-js'
         run: |
           uv venv --python .harness/.venv/bin/python "$RUNNER_TEMP/worker-typecheck"
-          # Exactly the wheels pinned in .github/parser-bundle-wheels.txt and sha256-checked above,
-          # so the typecheck environment cannot drift from the bundle under test.
+          # Exactly the wheels pinned in .github/parser-bundle-wheels.txt and sha256-checked by the
+          # `parser-bundle` job, so the typecheck environment cannot drift from the bundle under test.
           uv pip install --offline --no-config --no-index --only-binary :all: \
             --python "$RUNNER_TEMP/worker-typecheck/bin/python" \
             "$RUNNER_TEMP"/wheels/*.whl
