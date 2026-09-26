@@ -150,9 +150,14 @@ python3 harness/bin/harness lock-project-skills /path/to/repository
 
 ```bash
 python3 harness/bin/harness health /path/to/repository
+python3 harness/bin/harness health /path/to/repository --json
 ```
 
-Проверяет: есть ли `.harness/harness.lock`; есть ли `AGENTS.md` и нет ли в нём нерешённых `{{...}}`-маркеров; что discovery-symlink'и не битые и резолвятся; и, если есть `.harness/project.json`, что это объект со всеми обязательными полями `language`, `base_branch`, `branch_pattern`, `qa_gate_commands` и без неизвестных полей (дополнительно разрешены необязательные `$schema`, `story_points` и `shell`). Если lock есть, также проверяет, что снимок capability-скиллов не разошёлся с диском, что `.harness/skills/REGISTRY.md` совпадает с тем, что построил бы `harness registry` прямо сейчас, что каждый project-owned скилл под `.harness/skills` подтверждён в `.harness/overlays/project-local.lock`, и что каждый реально существующий на диске нативный интеграционный файл (`.mcp.json`, `.claude/settings.local.json` и т.п.) заинвентаризирован в `.harness/integrations.json`. Печатает `ERROR ...` построчно и код `1` при любой проблеме; иначе `files: healthy (N skills, M integrations): <repo>` плюс строку-напоминание `activation: ...` (хэш в `integrations.json` доказывает целостность файла, не то, что интеграция реально подключена и работает — это проверяется только в свежей рантайм-сессии) и код `0`.
+Выполняет все проверки из реестра `harness/health/` (stdlib-only пакет, `harness/health/checks/*.py` — по одному модулю на группу) без раннего выхода: сломанная проверка не скрывает остальные. Код возврата `1`, только если у хотя бы одной проверки `status=fail`; `warn` и `skipped` на код возврата не влияют.
+
+Текстовый вывод сгруппирован (`files`, `repo_map`), на русском; каждая проверка — строка с маркером статуса (`✅`/`⚠️`/`❌`, ASCII-фолбэк `[OK]`/`[WARN]`/`[FAIL]`, если stdout не может закодировать эмодзи; у `skipped` маркер всегда `-`) и сообщением, а если у проверки есть fix — следующая строка `-> Как исправить: <текст>` (и команда третьей строкой, если она задана). Группа `files` — унаследованные проверки файлов харнесса (lock, AGENTS.md, discovery-ссылки, project.json, overlay-локи, интеграции, конфиг оркестрации, маршрутизация verification); группа `repo_map` — тир Repo Map (`full`/`minimal`, с причиной деградации и ремедиа, когда он есть).
+
+`--json` печатает контракт `schema_version: 1`: `{schema_version, repo, online, summary: {ok, warn, fail, skipped}, checks: [{id, group, status, message, fix: {text, command} | null}], fixes_applied: []}`. `checks[].id` (например `files.lock`, `repo_map.tier`) стабилен и является частью контракта — clean-room-сценарии и юнит-тесты ключуются по нему и по `status`, а не по тексту сообщения.
 
 **`list` — какие скиллы сейчас установлены** (построчно, по алфавиту):
 
