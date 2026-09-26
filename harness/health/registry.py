@@ -11,12 +11,26 @@ import json
 from pathlib import Path
 from typing import Callable
 
+from harness.health.checks import files as files_checks
+from harness.health.checks import repo_map as repo_map_checks
 from harness.health.context import HealthContext
 from harness.health.model import CheckResult, JsonObject, Report
 
 CheckFn = Callable[[HealthContext], CheckResult]
 
-REGISTRY: list[CheckFn] = []
+REGISTRY: list[CheckFn] = [
+    files_checks.check_lock,
+    files_checks.check_agents_md,
+    files_checks.check_discovery_links,
+    files_checks.check_project_json,
+    files_checks.check_orchestration_config,
+    files_checks.check_skill_snapshot,
+    files_checks.check_skill_registry,
+    files_checks.check_overlay_locks,
+    files_checks.check_integrations,
+    files_checks.check_verification_routing,
+    repo_map_checks.check_tier,
+]
 
 _LOCK_REL = Path(".harness/harness.lock")
 

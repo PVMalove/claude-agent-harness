@@ -1,5 +1,6 @@
-"""harness/health/ package skeleton: the registry runs every registered check without early exit
-and builds a HealthContext from .harness/harness.lock exactly once per run."""
+"""harness/health/ registry: it runs every registered check without early exit and builds a
+HealthContext from .harness/harness.lock exactly once per run. The registry-shape tests below
+monkeypatch REGISTRY to an empty list so they stay independent of which checks are wired in."""
 
 from __future__ import annotations
 
@@ -13,7 +14,10 @@ from harness.health.context import HealthContext
 from harness.health.model import CheckResult, Report
 
 
-def test_run_with_empty_registry_returns_a_schema_valid_empty_report(tmp_path: Path) -> None:
+def test_run_with_empty_registry_returns_a_schema_valid_empty_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(registry, "REGISTRY", [])
     report = registry.run(tmp_path)
 
     assert isinstance(report, Report)
@@ -23,6 +27,13 @@ def test_run_with_empty_registry_returns_a_schema_valid_empty_report(tmp_path: P
     assert report.checks == []
     assert report.fixes_applied == []
     assert report.summary() == {"ok": 0, "warn": 0, "fail": 0, "skipped": 0}
+
+
+def test_run_wires_every_registered_group(tmp_path: Path) -> None:
+    report = registry.run(tmp_path)
+
+    groups = {check.group for check in report.checks}
+    assert groups == {"files", "repo_map"}
 
 
 def test_run_passes_online_through_to_the_report(tmp_path: Path) -> None:
