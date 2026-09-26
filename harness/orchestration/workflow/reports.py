@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
+from harness.orchestration.contract import NO_GATE_WORK_ROLES
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
@@ -1024,9 +1025,10 @@ def _validate_report(
         report["changed_files"], "completion report changed_files", allow_empty=True
     )
     checks = report["checks_run"]
-    # A role whose brief approves no verification commands (the architect) reports an empty list;
-    # every other role must report the commands its brief approved.
-    if not isinstance(checks, list) or (not checks and dispatch["verification_commands"]):
+    # Only a work role that owns no verification gate (the architect) reports an empty list; every
+    # other role must report the non-empty command list its brief approved.
+    owns_no_gate = dispatch.get("purpose") == "work" and dispatch.get("role") in NO_GATE_WORK_ROLES
+    if not isinstance(checks, list) or (not checks and not owns_no_gate):
         raise CoordinatorError(
             "completion report checks_run must be a non-empty list",
             remedy="set checks_run to a non-empty list",

@@ -188,7 +188,9 @@ immutable brief, обязаны пройти model self-report и вернуть
 `developer_verification_commands`. Это необязательное поле: без него сохраняется совместимый
 режим, в котором developer получает полный список. Задавайте в нём быстрые task-scoped проверки,
 а в `verification_commands` — независимый полный gate. `review_verification_commands` так же
-необязателен и управляет только code-review; без него review получает полный список. Code-review
+необязателен и управляет только code-review; без него review получает полный список. Если
+`developer_verification_commands` не задан, `harness health` предупреждает, что developer будет
+гонять полный gate на каждой итерации. Code-review
 запускает каждую полученную команду через `test_summary.py`: в report остаются исходная команда и
 bounded summary, а санитизированный полный лог доступен только для упавшей проверки.
 
