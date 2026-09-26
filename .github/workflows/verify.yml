@@ -103,12 +103,11 @@ jobs:
         if: matrix.language == 'python-ts-js'
         run: |
           uv venv --python .harness/.venv/bin/python "$RUNNER_TEMP/worker-typecheck"
+          # Exactly the wheels pinned in .github/parser-bundle-wheels.txt and sha256-checked above,
+          # so the typecheck environment cannot drift from the bundle under test.
           uv pip install --offline --no-config --no-index --only-binary :all: \
-            --find-links "$RUNNER_TEMP/wheels" \
             --python "$RUNNER_TEMP/worker-typecheck/bin/python" \
-            tree-sitter==0.26.0 tree-sitter-python==0.25.0 \
-            tree-sitter-typescript==0.23.2 tree-sitter-javascript==0.25.0 \
-            tree-sitter-go==0.25.0 tree-sitter-java==0.23.5 tree-sitter-c-sharp==0.23.5
+            "$RUNNER_TEMP"/wheels/*.whl
           .harness/.venv/bin/python -m mypy --strict --disallow-any-explicit \
             --python-executable "$RUNNER_TEMP/worker-typecheck/bin/python" \
             harness/repo_map/tree_sitter_worker.py
