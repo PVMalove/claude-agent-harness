@@ -16,13 +16,10 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
-from harness.repo_map.bundle_install import INSTALL_DIR_HASH_PREFIX
-from harness.repo_map.bundle_lock import LOCK_FILENAME, BundleFormatError, parse_lock
-from harness.storage import storage_root
+from harness.storage import sandboxes_root, storage_root
 
 TERMINAL_BATCH_STATES = {"completed", "failed", "abandoned", "not-required"}
-# An install directory is `<lock hash prefix>-<interpreter/platform pair>`.
-_INSTALL_DIR_RE = re.compile(rf"[0-9a-f]{{{INSTALL_DIR_HASH_PREFIX}}}-cp[0-9]+-[A-Za-z0-9_]+")
+LEGACY_TOP_LEVEL_DIRS = (".cache", "test-logs", "tmp", "reports")
 
 
 class CleanupItem(TypedDict):
@@ -203,88 +200,93 @@ def _branch_allowed(root: Path, branch: str) -> bool:
         return re.fullmatch(r"feature/issue-[0-9]+-.+", branch) is not None
 
 
-def _current_lock_prefix(bundle_root: Path) -> str | None:
-    """Префикс имени install-каталога для lock из локального registry; `None`, если lock нет."""
-    try:
-        lock = parse_lock((bundle_root / "registry" / LOCK_FILENAME).read_bytes())
-    except (OSError, BundleFormatError):
-        return None
-    return lock.raw_sha256[:INSTALL_DIR_HASH_PREFIX]
-
-
-def _stale_bundle_installs(root: Path, min_age_hours: float) -> list[Path]:
-    """Install-каталоги parser bundle, которые не соответствуют текущему lock локального registry.
-
-    Каталог `<хеш lock>-<пара>` создаётся на каждую смену lock и после неё больше не используется.
-    Без lock в registry устаревшими считаются все такие каталоги: bundle недоступен, а установка
-    восстанавливается offline при следующем полном запуске.
-    """
-    bundle_root = root / ".cache" / "repo_map" / "parser_bundle"
-    if not bundle_root.is_dir() or bundle_root.is_symlink():
-        return []
-    current = _current_lock_prefix(bundle_root)
-    return [
-        path
-        for path in sorted(bundle_root.iterdir())
-        if path.is_dir()
-        and _INSTALL_DIR_RE.fullmatch(path.name)
-        and path.name.split("-", 1)[0] != current
-        and _inside(root, path)
-        and _old_enough(path, min_age_hours)
-    ]
-
-
 def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> CleanupPlan:
     """Return exact deletions and skips; never mutate the filesystem."""
     if mode not in {"soft", "hard"} or min_age_hours < 0:
         raise ValueError("cleanup mode must be soft or hard and minimum age cannot be negative")
     checkout = repo.expanduser().resolve()
     root = storage_root(checkout).resolve()
+    sandboxes = sandboxes_root(checkout).resolve()
     remove: list[CleanupItem] = []
     skipped: list[dict[str, str]] = []
     registered = _registered_worktrees(checkout)
 
-    for category in ("tests", "qa"):
-        parent = root / "tmp" / category
-        if not parent.is_dir() or parent.is_symlink():
-            continue
-        for path in parent.iterdir():
-            if not path.is_dir() or not _inside(root, path):
+    # 1. Runs: .sandboxes/runs
+    runs_dir = sandboxes / "runs"
+    if runs_dir.is_dir() and not runs_dir.is_symlink():
+        def _process_run_entry(path: Path, is_qa: bool = False) -> None:
+            if path.is_symlink() or not _inside(root, path):
                 skipped.append({"path": str(path), "reason": "not a local directory"})
-            elif category == "qa" and (
-                registered is None
-                or any(tree.is_relative_to(path.resolve()) for tree in registered)
+            elif path.is_file():
+                if _old_enough(path, min_age_hours):
+                    remove.append({"kind": "file", "path": str(path)})
+                else:
+                    skipped.append({"path": str(path), "reason": "active or newer than minimum age"})
+            elif path.is_dir():
+                if is_qa and (
+                    registered is None
+                    or any(tree.is_relative_to(path.resolve()) for tree in registered)
+                ):
+                    skipped.append({"path": str(path), "reason": "registered QA worktree or Git unavailable"})
+                elif _run_active(path) or not _old_enough(path, min_age_hours):
+                    skipped.append({"path": str(path), "reason": "active or newer than minimum age"})
+                else:
+                    remove.append({"kind": "directory", "path": str(path)})
+
+        for entry in sorted(runs_dir.iterdir()):
+            if (
+                entry.is_dir()
+                and not entry.is_symlink()
+                and entry.name in ("tests", "qa")
+                and not (entry / ".active.json").is_file()
             ):
-                skipped.append({"path": str(path), "reason": "registered QA worktree or Git unavailable"})
-            elif _run_active(path) or not _old_enough(path, min_age_hours):
-                skipped.append({"path": str(path), "reason": "active or newer than minimum age"})
+                for child in sorted(entry.iterdir()):
+                    _process_run_entry(child, is_qa=(entry.name == "qa"))
             else:
-                remove.append({"kind": "directory", "path": str(path)})
+                _process_run_entry(entry, is_qa=False)
 
-    cache = root / ".cache" / "repo_map" / "results"
-    if cache.is_dir() and not cache.is_symlink():
-        for path in cache.iterdir():
-            if path.is_file() and _inside(root, path) and _old_enough(path, min_age_hours):
-                remove.append({"kind": "file", "path": str(path)})
-    remove.extend(
-        {"kind": "directory", "path": str(path)}
-        for path in _stale_bundle_installs(root, min_age_hours)
-    )
+    # 2. Scratch & Logs: transit files in .sandboxes/scratch and .sandboxes/logs
+    for category in ("scratch", "logs"):
+        parent = sandboxes / category
+        if parent.is_dir() and not parent.is_symlink():
+            for path in sorted(parent.rglob("*")):
+                if path.is_file() and _inside(root, path) and _old_enough(path, min_age_hours):
+                    remove.append({"kind": "file", "path": str(path)})
 
+    # 3. Legacy top-level folders outside .sandboxes: (.cache, test-logs, tmp, reports)
+    for name in LEGACY_TOP_LEVEL_DIRS:
+        legacy_dir = root / name
+        if legacy_dir.is_dir() and not legacy_dir.is_symlink() and _inside(root, legacy_dir):
+            if (
+                not _old_enough(legacy_dir, min_age_hours)
+                or _run_active(legacy_dir)
+                or any(_run_active(sub) for sub in legacy_dir.rglob("*") if sub.is_dir())
+            ):
+                skipped.append({"path": str(legacy_dir), "reason": "active or newer than minimum age"})
+            else:
+                remove.append({"kind": "directory", "path": str(legacy_dir)})
+
+    # Hard mode additional cleanups:
     if mode == "hard":
-        for parent, patterns in (
-            (root / "test-logs", ("test-run-*.log", ".test-run-*.tmp")),
-            (root / "reports", ("*.html", "*.json", "*.md")),
-        ):
+        # 4. Cache & Reports: .sandboxes/cache and .sandboxes/reports
+        for category in ("cache", "reports"):
+            parent = sandboxes / category
             if parent.is_dir() and not parent.is_symlink():
-                for pattern in patterns:
-                    for path in parent.rglob(pattern):
-                        if path.is_file() and _inside(root, path) and _old_enough(path, min_age_hours):
-                            remove.append({"kind": "file", "path": str(path)})
+                for entry in sorted(parent.iterdir()):
+                    if entry.is_file() and _inside(root, entry):
+                        remove.append({"kind": "file", "path": str(entry)})
+                    elif entry.is_dir() and not entry.is_symlink() and _inside(root, entry):
+                        remove.append({"kind": "directory", "path": str(entry)})
 
-        worktrees = root / "worktrees"
+        # 5. Worktrees: .sandboxes/worktrees (and legacy root/worktrees)
+        worktree_roots = [sandboxes / "worktrees"]
+        if (root / "worktrees").resolve() != (sandboxes / "worktrees").resolve():
+            worktree_roots.append(root / "worktrees")
+
         active = _active_worktrees(root)
-        if worktrees.is_dir() and not worktrees.is_symlink():
+        for worktrees in worktree_roots:
+            if not worktrees.is_dir() or worktrees.is_symlink():
+                continue
             if registered is None or active is None:
                 skipped.append({"path": str(worktrees), "reason": "Git or ledger state unavailable"})
             else:
@@ -319,8 +321,15 @@ def _clear_read_only(func: Callable[[str], object], path: str, _exc: BaseExcepti
     func(path)
 
 
-def apply_cleanup(repo: Path, plan: CleanupPlan) -> CleanupResult:
+def apply_cleanup(
+    repo: Path,
+    plan: CleanupPlan,
+    *,
+    confirm: str | None = None,
+) -> CleanupResult:
     """Apply a fresh plan under the same resolved `.harness` root, failing closed on drift."""
+    if plan["mode"] == "hard" and confirm != "HARD":
+        raise ValueError("hard cleanup requires confirm='HARD'")
     checkout = repo.expanduser().resolve()
     fresh = plan_cleanup(checkout, plan["mode"], min_age_hours=plan["min_age_hours"])
     if fresh["root"] != plan["root"] or fresh["remove"] != plan["remove"]:
@@ -335,17 +344,20 @@ def apply_cleanup(repo: Path, plan: CleanupPlan) -> CleanupResult:
             continue
         try:
             if item["kind"] == "worktree":
+                branch = item.get("branch")
+                if not branch:
+                    raise OSError("worktree item missing branch name")
                 result = _git(checkout, "worktree", "remove", str(path))
                 if result.returncode != 0:
                     raise OSError(result.stderr.strip() or "git worktree remove failed")
-                if not _branch_recoverable(checkout, item["branch"]):
+                if not _branch_recoverable(checkout, branch):
                     raise OSError("local branch no longer matches its origin upstream")
-                result = _git(checkout, "branch", "-D", item["branch"])
+                result = _git(checkout, "branch", "-D", branch)
                 if result.returncode != 0:
                     raise OSError(result.stderr.strip() or "local branch removal failed")
             elif item["kind"] == "directory":
                 # Windows needs an extended-length path for nested test fixtures.
-                target = "\\\\?\\" + str(path) if os.name == "nt" else path
+                target = "\\\\?\\" + str(path) if os.name == "nt" and not str(path).startswith("\\\\?\\") else path
                 shutil.rmtree(target, onexc=_clear_read_only)
             else:
                 path.unlink()
