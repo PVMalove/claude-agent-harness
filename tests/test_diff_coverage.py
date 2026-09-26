@@ -262,10 +262,12 @@ class ChangedLinesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._git(root, "init", "-q")
-            (root / "scripts").mkdir()
+            (root / "scripts" / "clean_room").mkdir(parents=True)
             (root / "scripts" / "test_clean_room.py").write_text(
                 "a = 1\n", encoding="utf-8"
             )
+            scenario = root / "scripts" / "clean_room" / "scenario.py"
+            scenario.write_text("c = 1\n", encoding="utf-8")
             (root / "other.py").write_text("b = 1\n", encoding="utf-8")
             self._git(root, "add", "-A")
             self._git(root, "commit", "-q", "-m", "base")
@@ -273,6 +275,7 @@ class ChangedLinesTests(unittest.TestCase):
             (root / "scripts" / "test_clean_room.py").write_text(
                 "a = 2\n", encoding="utf-8"
             )
+            scenario.write_text("c = 2\n", encoding="utf-8")
             (root / "other.py").write_text("b = 2\n", encoding="utf-8")
             self._git(root, "add", "-A")
             self._git(root, "commit", "-q", "-m", "change")

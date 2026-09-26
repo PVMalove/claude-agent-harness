@@ -22,6 +22,8 @@ COVERAGE_JSON_FILE = ROOT / ".coverage.diff-coverage.json"
 # Verified by the clean-room run (scripts/verify.py), not by the unittest suite this gate measures, so
 # its changed lines could never count as covered.
 EXCLUDED_FROM_GATE = frozenset({"scripts/test_clean_room.py"})
+# The clean-room scenarios `scripts/test_clean_room.py` runs, split into their own package.
+EXCLUDED_PREFIXES = ("scripts/clean_room/",)
 
 
 def _base_branch() -> str:
@@ -94,7 +96,11 @@ def _changed_lines(base: str) -> dict[str, set[int]]:
         if line.startswith("+++ "):
             path = line[len("+++ ") :]
             path = path.removeprefix("b/")
-            is_gated = path.endswith(".py") and path not in EXCLUDED_FROM_GATE
+            is_gated = (
+                path.endswith(".py")
+                and path not in EXCLUDED_FROM_GATE
+                and not path.startswith(EXCLUDED_PREFIXES)
+            )
             current_path = path if is_gated else None
             continue
         if line.startswith("@@"):
