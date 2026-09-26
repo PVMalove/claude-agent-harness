@@ -800,56 +800,51 @@ def repo_map_health(repo: Path) -> list[str]:
     registry_paths = tuple(
         item for item in configured_paths if isinstance(item, str)
     ) if isinstance(configured_paths, list) else ()
-    bundle_dirs = parser_bundle.search_dirs(repo, registry_paths)
-    bundle_dir = parser_bundle.find_bundle(bundle_dirs)
     dispatch_policy = (
         "dispatch may use full parser-backed Repo Map and degrades to minimal when the bundle is unavailable"
     )
-    degradation_reason: str | None = None
-    if bundle_dir is None:
-        degradation_reason = "offline parser bundle unavailable"
+    timeout = policy.get("parser_bundle_timeout_seconds", 30)
+    located = parser_bundle.locate_bundle(
+        repo=repo,
+        registry_paths=registry_paths,
+        python_executable=sys.executable,
+        timeout_seconds=timeout if isinstance(timeout, int) and timeout > 0 else 30,
+    )
+    degradation_reason: str | None
+    remedy = (
+        "КАК ИСПРАВИТЬ: установите offline parser bundle в "
+        ".harness/.cache/repo_map/parser_bundle/registry и повторите harness health"
+    )
+    if isinstance(located, str):
+        degradation_reason = located
     else:
-        try:
-            lock = parser_bundle.parse_lock(
-                (bundle_dir / parser_bundle.LOCK_FILENAME).read_bytes()
+        degradation_reason = parser_bundle.check_bundle(located)
+        if degradation_reason is None and shutil.which("uv") is None:
+            degradation_reason = "uv executable unavailable"
+        if degradation_reason is None and not parser_bundle.supports_real_sources(located.lock):
+            degradation_reason = "parser bundle has no supported grammars"
+            remedy = (
+                "КАК ИСПРАВИТЬ: registry содержит bundle без поддерживаемых грамматик "
+                "(вероятно, тестовый stub); замените его bundle из scripts/build_parser_bundle.py "
+                "и повторите harness health"
             )
-            python_tag, platform_tag = parser_bundle.python_platform_tags(
-                sys.executable, int(policy.get("parser_bundle_timeout_seconds", 30))
-            )
-            pair = f"{python_tag}-{platform_tag}"
-            wheelhouse = bundle_dir / "wheelhouse" / pair
-            verified = parser_bundle.verify_wheelhouse(lock, wheelhouse, pair)
-            if not verified["ok"]:
-                degradation_reason = str(verified["reason"])
-            elif not parser_bundle.verify_worker_script(
-                lock, bundle_dir / lock.worker_script
-            ):
-                degradation_reason = "parser bundle hash mismatch"
-            elif shutil.which("uv") is None:
-                degradation_reason = "uv executable unavailable"
-        except (
-            OSError,
-            ValueError,
-            json.JSONDecodeError,
-            parser_bundle.BundleFormatError,
-            subprocess.TimeoutExpired,
-        ):
-            degradation_reason = "offline parser bundle unavailable"
     if degradation_reason is not None:
         return [
             f"Repo Map: tier=minimal ({degradation_reason})",
             f"Repo Map provenance: {degradation_reason}",
             f"Repo Map policy: {policy_mode}; {dispatch_policy}",
             "ПРЕДУПРЕЖДЕНИЕ: Repo Map работает в ограниченном режиме; команда health не загружает зависимости",
-            "КАК ИСПРАВИТЬ: установите offline parser bundle в .harness/.cache/repo_map/parser_bundle/registry и повторите harness health",
+            remedy,
         ]
-    bundle_source = "local-cache" if bundle_dir == bundle_dirs[0] else "internal-registry"
+    assert not isinstance(located, str)
+    lock = located.lock
     grammars = ", ".join(
         f"{grammar.name}@{grammar.version} abi={grammar.abi} sha256={grammar.sha256}"
         for grammar in lock.grammars
     )
     provenance = (
-        f"source={bundle_source}, python_tag={python_tag}, platform_tag={platform_tag}, "
+        f"source={located.bundle_source}, python_tag={located.python_tag}, "
+        f"platform_tag={located.platform_tag}, "
         f"lock_sha256={lock.raw_sha256}, script_hash={lock.script_sha256}, "
         f"core_version={lock.core_version}, core_abi_range={lock.core_abi_range}, grammars=[{grammars}]"
     )
@@ -857,6 +852,31 @@ def repo_map_health(repo: Path) -> list[str]:
         "Repo Map: tier=full (offline parser bundle detected)",
         f"Repo Map provenance: {provenance}",
         f"Repo Map policy: {policy_mode}; {dispatch_policy}",
+    ]
+
+
+def verification_routing_health(repo: Path) -> list[str]:
+    """Предупредить, если developer получает полный QA-gate вместо фокусных проверок.
+
+    Без `developer_verification_commands` coordinator отдаёт developer весь `verification_commands`,
+    и каждая итерация разработки гоняет полный gate. Это совместимое поведение, а не ошибка, поэтому
+    health только предупреждает и подсказывает поле.
+    """
+    config_path = repo / ORCHESTRATION_CONFIG_REL
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if (
+        not isinstance(config, dict)
+        or not config.get("verification_commands")
+        or "developer_verification_commands" in config
+    ):
+        return []
+    return [
+        "ПРЕДУПРЕЖДЕНИЕ: developer получает полный verification_commands на каждой итерации",
+        "КАК ИСПРАВИТЬ: задайте developer_verification_commands (и review_verification_commands) "
+        "с быстрыми task-scoped проверками в .harness/orchestration.json",
     ]
 
 
@@ -1441,6 +1461,9 @@ def cmd_health(args: argparse.Namespace) -> int:
         return 1
     for line in repo_map_health(repo):
         print(line)
+    if lock and BACKEND_ORCHESTRATION_CAPABILITY in (lock.get("capabilities") or []):
+        for line in verification_routing_health(repo):
+            print(line)
     skill_count = len(skill_inventory(repo))
     print(f"files: healthy ({skill_count} skills, {integration_count} integrations): {repo}")
     print("activation: verify advertised and invoked skills/integrations in a fresh runtime session")

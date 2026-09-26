@@ -9,12 +9,15 @@ import sys
 import time
 import tracemalloc
 from pathlib import Path
+from typing import cast
 
 import pytest
 from _parser_bundle_fixtures import build_bundle_dir
 
 from harness.errors import HarnessError
 from harness.repo_map import parser_bundle, repo_map
+from harness.repo_map.backend import ParseOutcome
+from harness.repo_map.bundle_worker import FileFacts
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "harness" / "repo_map" / "repo_map.py"
@@ -1086,8 +1089,96 @@ def test_repo_map_full_tier_applies_bundle_and_leaves_repo_git_status_clean(
 
 
 def test_repo_map_hot_path_never_invokes_uv_run() -> None:
-    for source_path in (
-        ROOT / "harness" / "repo_map" / "repo_map.py",
-        ROOT / "harness" / "repo_map" / "parser_bundle.py",
-    ):
+    sources = sorted((ROOT / "harness" / "repo_map").glob("*.py"))
+    assert len(sources) > 2
+    for source_path in sources:
         assert "uv run" not in source_path.read_text(encoding="utf-8")
+
+
+def test_full_tier_keeps_binary_files_as_path_only_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "project"
+    commit = _commit_files(repo, {"main.py": "def main(): pass\n"})
+    (repo / "blob.dat").write_bytes(b"\x00\x01binary")
+    _git(repo, "add", "blob.dat")
+    _git(repo, "commit", "-qm", "binary")
+    commit = _git(repo, "rev-parse", "HEAD")
+    requests = _fake_python_bundle(monkeypatch, {"main.py": _facts()})
+    policy = repo_map.RepoMapPolicy(tier="full")
+
+    full = json.loads(repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=tmp_path / "c"))
+    minimal = json.loads(
+        repo_map.build_map(repo, commit, 4000, [], repo_map.RepoMapPolicy(tier="minimal"))
+    )
+
+    assert full["tier"] == "full"
+    assert [item["path"] for item in full["files"]] == [item["path"] for item in minimal["files"]]
+    assert {"path": "blob.dat", "signatures": [], "parser_status": "ok"} in full["files"]
+    requested = requests[0]["paths"]
+    assert isinstance(requested, dict)
+    assert set(requested) == {"main.py"}
+
+
+def test_build_map_accepts_an_injected_parser_backend(tmp_path: Path) -> None:
+    repo = tmp_path / "project"
+    commit = _commit_files(repo, {"a.py": "import b\n", "b.py": "def b(): pass\n"})
+
+    class _Backend:
+        def identity(self) -> str:
+            return "fake-backend-v1"
+
+        def parse(self, commit: str, paths: list[str]) -> ParseOutcome:
+            records: dict[str, dict[str, object]] = {
+                path: {"path": path, "signatures": [], "parser_status": "ok"} for path in paths
+            }
+            facts = {
+                "a.py": cast(FileFacts, _facts(imports=[("b", 0, [])])),
+                "b.py": cast(FileFacts, _facts(signatures=[("def b()", ["b"])], definitions=["b"])),
+            }
+            return ParseOutcome(True, "parser bundle applied", {}, records, facts, [], {".py": "python"})
+
+    result = json.loads(
+        repo_map.build_map(
+            repo,
+            commit,
+            4000,
+            [],
+            repo_map.RepoMapPolicy(tier="full"),
+            cache_dir=tmp_path / "cache",
+            backend=_Backend(),
+        )
+    )
+
+    assert result["tier"] == "full"
+    assert {"source": "a.py", "target": "b.py", "kind": "import", "confidence": "high"} in result["edges"]
+
+
+def test_full_tier_locates_the_bundle_once_for_cache_key_and_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "project"
+    commit = _commit_files(repo, {"main.py": "def main(): pass\n"})
+    _fake_python_bundle(monkeypatch, {"main.py": _facts()})
+    located: list[object] = []
+    seen: list[object] = []
+
+    def _locate(**_: object) -> str:
+        located.append(True)
+        return "offline parser bundle unavailable"
+
+    # The fake installed above; read untyped so its call below can forward arbitrary keywords.
+    real_acquire = getattr(parser_bundle, "acquire_bundle")
+
+    def _acquire(**kwargs: object) -> object:
+        seen.append(kwargs.get("located"))
+        return real_acquire(**kwargs)
+
+    monkeypatch.setattr(parser_bundle, "locate_bundle", _locate)
+    monkeypatch.setattr(parser_bundle, "acquire_bundle", _acquire)
+    repo_map.build_map(
+        repo, commit, 4000, [], repo_map.RepoMapPolicy(tier="full"), cache_dir=tmp_path / "c"
+    )
+
+    assert located == [True]
+    assert seen == ["offline parser bundle unavailable"]

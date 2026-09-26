@@ -5030,13 +5030,11 @@
         <rect width="100%" height="100%" fill="url(#grid)" />
 
         <!-- Time Segments -->
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="segment" data-composition-frame-id="0" x="48" y="150" width="1344" height="200" rx="10" class="c-lane" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="segment" data-composition-frame-id="0" x="48" y="150" width="1344" height="290" rx="10" class="c-lane" stroke-width="1"/>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="segment" data-composition-frame-id="1" x="48" y="370" width="1344" height="140" rx="10" class="c-lane" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="segment" data-composition-frame-id="1" x="48" y="455" width="1344" height="270" rx="10" class="c-lane" stroke-width="1"/>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="segment" data-composition-frame-id="2" x="48" y="530" width="1344" height="170" rx="10" class="c-lane" stroke-width="1"/>
-
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="segment" data-composition-frame-id="3" x="48" y="720" width="1344" height="90" rx="10" class="c-lane" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="segment" data-composition-frame-id="2" x="48" y="740" width="1344" height="75" rx="10" class="c-lane" stroke-width="1"/>
 
         <!-- Lifelines -->
         <path d="M 144 142 L 144 835" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
@@ -5059,142 +5057,138 @@
         </g>
         </g>
 
-        <g data-edge-from="map" data-edge-to="git" data-edge-label="rev-parse + ls-tree" data-edge-key="1">
-          <path data-composition-edge-from="map" data-composition-edge-to="git" data-composition-points="346.66666666666663,220;528.3333333333333,220" d="M 346.66666666666663 220 L 528.3333333333333 220" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <g data-edge-from="map" data-edge-to="git" data-edge-label="rev-parse + ls-tree → path_allowed()" data-edge-key="1">
+          <path data-composition-edge-from="map" data-composition-edge-to="git" data-composition-points="346.66666666666663,215;919.6666666666666,215" d="M 346.66666666666663 215 L 919.6666666666666 215" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="382.09999999999997" y="200" width="110.8" height="16" rx="3" class="c-mask"/>
-          <text x="437.49999999999994" y="210" class="t-backend" font-size="9" text-anchor="middle">rev-parse + ls-tree</text>
+          <rect x="533.5666666666666" y="195" width="199.20000000000002" height="16" rx="3" class="c-mask"/>
+          <text x="633.1666666666666" y="205" class="t-backend" font-size="9" text-anchor="middle">rev-parse + ls-tree → path_allowed()</text>
         </g>
         </g>
 
-        <g data-edge-from="git" data-edge-to="map" data-edge-label="tracked paths → _allowed()" data-edge-key="2">
-          <path data-composition-edge-from="git" data-composition-edge-to="map" data-composition-points="528.3333333333333,255;346.66666666666663,255" d="M 528.3333333333333 255 L 346.66666666666663 255" class="a-default" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
+        <g data-edge-from="map" data-edge-to="backend" data-edge-label="identity()" data-edge-key="2">
+          <path data-composition-edge-from="map" data-composition-edge-to="backend" data-composition-points="346.66666666666663,255;724,255" d="M 346.66666666666663 255 L 724 255" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="363.8999999999999" y="235" width="147.20000000000002" height="16" rx="3" class="c-mask"/>
-          <text x="437.49999999999994" y="245" class="t-muted" font-size="9" text-anchor="middle">tracked paths → _allowed()</text>
+          <rect x="503.33333333333326" y="235" width="64" height="16" rx="3" class="c-mask"/>
+          <text x="535.3333333333333" y="245" class="t-backend" font-size="9" text-anchor="middle">identity()</text>
         </g>
         </g>
 
-        <g data-edge-from="map" data-edge-to="cache" data-edge-label="ключ: входы + parser/bundle identity" data-edge-key="3">
-          <path data-composition-edge-from="map" data-composition-edge-to="cache" data-composition-points="346.66666666666663,295;724,295" d="M 346.66666666666663 295 L 724 295" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <g data-edge-from="backend" data-edge-to="bundle" data-edge-label="locate_bundle() — один раз" data-edge-key="3">
+          <path data-composition-edge-from="backend" data-composition-edge-to="bundle" data-composition-points="738,290;1115.3333333333333,290" d="M 738 290 L 1115.3333333333333 290" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <g data-detail="context">
-          <rect x="435.73333333333323" y="275" width="199.20000000000002" height="16" rx="3" class="c-mask"/>
-          <text x="535.3333333333333" y="285" class="t-backend" font-size="9" text-anchor="middle">ключ: входы + parser/bundle identity</text>
+          <rect x="853.0666666666666" y="270" width="147.20000000000002" height="16" rx="3" class="c-mask"/>
+          <text x="926.6666666666666" y="280" class="t-backend" font-size="9" text-anchor="middle">locate_bundle() — один раз</text>
         </g>
         </g>
 
-        <g data-edge-from="cache" data-edge-to="map" data-edge-label="hit (SHA-256 + схема) или miss" data-edge-key="4">
-          <path data-composition-edge-from="cache" data-composition-edge-to="map" data-composition-points="724,330;346.66666666666663,330" d="M 724 330 L 346.66666666666663 330" class="a-default" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
+        <g data-edge-from="bundle" data-edge-to="backend" data-edge-label="LocatedBundle или причина" data-edge-key="4">
+          <path data-composition-edge-from="bundle" data-composition-edge-to="backend" data-composition-points="1115.3333333333333,325;738,325" d="M 1115.3333333333333 325 L 738 325" class="a-default" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="451.33333333333326" y="310" width="168" height="16" rx="3" class="c-mask"/>
-          <text x="535.3333333333333" y="320" class="t-muted" font-size="9" text-anchor="middle">hit (SHA-256 + схема) или miss</text>
+          <rect x="855.6666666666666" y="305" width="142" height="16" rx="3" class="c-mask"/>
+          <text x="926.6666666666666" y="315" class="t-muted" font-size="9" text-anchor="middle">LocatedBundle или причина</text>
         </g>
         </g>
 
-        <g data-edge-from="map" data-edge-to="bundle" data-edge-label="acquire_bundle()" data-edge-key="5">
-          <path data-composition-edge-from="map" data-composition-edge-to="bundle" data-composition-points="346.66666666666663,390;919.6666666666666,390" d="M 346.66666666666663 390 L 919.6666666666666 390" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <g data-edge-from="map" data-edge-to="cache" data-edge-label="ключ: входы + identity" data-edge-key="5">
+          <path data-composition-edge-from="map" data-composition-edge-to="cache" data-composition-points="346.66666666666663,370;528.3333333333333,370" d="M 346.66666666666663 370 L 528.3333333333333 370" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="585.5666666666666" y="370" width="95.2" height="16" rx="3" class="c-mask"/>
-          <text x="633.1666666666666" y="380" class="t-backend" font-size="9" text-anchor="middle">acquire_bundle()</text>
+          <rect x="374.29999999999995" y="350" width="126.4" height="16" rx="3" class="c-mask"/>
+          <text x="437.49999999999994" y="360" class="t-backend" font-size="9" text-anchor="middle">ключ: входы + identity</text>
         </g>
         </g>
 
-        <g data-edge-from="bundle" data-edge-to="uv" data-edge-label="pip install --offline --require-hashes" data-edge-key="6">
-          <path data-composition-edge-from="bundle" data-composition-edge-to="uv" data-composition-points="933.6666666666666,425;1115.3333333333333,425" d="M 933.6666666666666 425 L 1115.3333333333333 425" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <g data-edge-from="cache" data-edge-to="map" data-edge-label="hit (SHA-256 + схема) или miss" data-edge-key="6">
+          <path data-composition-edge-from="cache" data-composition-edge-to="map" data-composition-points="528.3333333333333,410;346.66666666666663,410" d="M 528.3333333333333 410 L 346.66666666666663 410" class="a-default" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="919.7" y="405" width="209.6" height="16" rx="3" class="c-mask"/>
-          <text x="1024.5" y="415" class="t-backend" font-size="9" text-anchor="middle">pip install --offline --require-hashes</text>
+          <rect x="353.49999999999994" y="390" width="168" height="16" rx="3" class="c-mask"/>
+          <text x="437.49999999999994" y="400" class="t-muted" font-size="9" text-anchor="middle">hit (SHA-256 + схема) или miss</text>
         </g>
         </g>
 
-        <g data-edge-from="uv" data-edge-to="bundle" data-edge-label="install marker = lock SHA" data-edge-key="7">
-          <path data-composition-edge-from="uv" data-composition-edge-to="bundle" data-composition-points="1115.3333333333333,460;933.6666666666666,460" d="M 1115.3333333333333 460 L 933.6666666666666 460" class="a-default" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
+        <g data-edge-from="map" data-edge-to="backend" data-edge-label="parse(commit, paths)" data-edge-key="7">
+          <path data-composition-edge-from="map" data-composition-edge-to="backend" data-composition-points="346.66666666666663,480;724,480" d="M 346.66666666666663 480 L 724 480" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <g data-detail="context">
-          <rect x="953.5" y="440" width="142" height="16" rx="3" class="c-mask"/>
-          <text x="1024.5" y="450" class="t-muted" font-size="9" text-anchor="middle">install marker = lock SHA</text>
+          <rect x="477.33333333333326" y="460" width="116" height="16" rx="3" class="c-mask"/>
+          <text x="535.3333333333333" y="470" class="t-backend" font-size="9" text-anchor="middle">parse(commit, paths)</text>
         </g>
         </g>
 
-        <g data-edge-from="bundle" data-edge-to="map" data-edge-label="AppliedBundle | DegradationReason" data-edge-key="8">
-          <path data-composition-edge-from="bundle" data-composition-edge-to="map" data-composition-points="919.6666666666666,495;346.66666666666663,495" d="M 919.6666666666666 495 L 346.66666666666663 495" class="a-default" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
+        <g data-edge-from="backend" data-edge-to="bundle" data-edge-label="acquire_bundle(located): SHA-256, uv offline" data-edge-key="8">
+          <path data-composition-edge-from="backend" data-composition-edge-to="bundle" data-composition-points="738,515;1115.3333333333333,515" d="M 738 515 L 1115.3333333333333 515" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="541.3666666666667" y="475" width="183.6" height="16" rx="3" class="c-mask"/>
-          <text x="633.1666666666666" y="485" class="t-muted" font-size="9" text-anchor="middle">AppliedBundle | DegradationReason</text>
+          <rect x="806.2666666666667" y="495" width="240.8" height="16" rx="3" class="c-mask"/>
+          <text x="926.6666666666666" y="505" class="t-backend" font-size="9" text-anchor="middle">acquire_bundle(located): SHA-256, uv offline</text>
         </g>
         </g>
 
-        <g data-edge-from="map" data-edge-to="git" data-edge-label="cat-file -s / show по файлу" data-edge-key="9">
-          <path data-composition-edge-from="map" data-composition-edge-to="git" data-composition-points="346.66666666666663,545;528.3333333333333,545" d="M 346.66666666666663 545 L 528.3333333333333 545" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <g data-edge-from="backend" data-edge-to="git" data-edge-label="cat-file --batch-check / --batch" data-edge-key="9">
+          <path data-composition-edge-from="backend" data-composition-edge-to="git" data-composition-points="738,550;919.6666666666666,550" d="M 738 550 L 919.6666666666666 550" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="361.29999999999995" y="525" width="152.4" height="16" rx="3" class="c-mask"/>
-          <text x="437.49999999999994" y="535" class="t-backend" font-size="9" text-anchor="middle">cat-file -s / show по файлу</text>
+          <rect x="739.6333333333332" y="530" width="178.4" height="16" rx="3" class="c-mask"/>
+          <text x="828.8333333333333" y="540" class="t-backend" font-size="9" text-anchor="middle">cat-file --batch-check / --batch</text>
         </g>
         </g>
 
-        <g data-edge-from="map" data-edge-to="bundle" data-edge-label="run_bundle_parser(paths → base64)" data-edge-key="10">
-          <path data-composition-edge-from="map" data-composition-edge-to="bundle" data-composition-points="346.66666666666663,585;919.6666666666666,585" d="M 346.66666666666663 585 L 919.6666666666666 585" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <g data-edge-from="backend" data-edge-to="bundle" data-edge-label="run_bundle_parser(paths, languages)" data-edge-key="10">
+          <path data-composition-edge-from="backend" data-composition-edge-to="bundle" data-composition-points="738,585;1115.3333333333333,585" d="M 738 585 L 1115.3333333333333 585" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <g data-detail="context">
-          <rect x="541.3666666666667" y="565" width="183.6" height="16" rx="3" class="c-mask"/>
-          <text x="633.1666666666666" y="575" class="t-backend" font-size="9" text-anchor="middle">run_bundle_parser(paths → base64)</text>
+          <rect x="829.6666666666666" y="565" width="194" height="16" rx="3" class="c-mask"/>
+          <text x="926.6666666666666" y="575" class="t-backend" font-size="9" text-anchor="middle">run_bundle_parser(paths, languages)</text>
         </g>
         </g>
 
         <g data-edge-from="bundle" data-edge-to="worker" data-edge-label="stdin JSON, timeout, лимит вывода" data-edge-key="11">
-          <path data-composition-edge-from="bundle" data-composition-edge-to="worker" data-composition-points="933.6666666666666,620;1311,620" d="M 933.6666666666666 620 L 1311 620" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+          <path data-composition-edge-from="bundle" data-composition-edge-to="worker" data-composition-points="1129.3333333333333,620;1311,620" d="M 1129.3333333333333 620 L 1311 620" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <g data-detail="context">
-          <rect x="1030.5333333333333" y="600" width="183.6" height="16" rx="3" class="c-mask"/>
-          <text x="1122.3333333333333" y="610" class="t-backend" font-size="9" text-anchor="middle">stdin JSON, timeout, лимит вывода</text>
+          <rect x="1128.3666666666666" y="600" width="183.6" height="16" rx="3" class="c-mask"/>
+          <text x="1220.1666666666665" y="610" class="t-backend" font-size="9" text-anchor="middle">stdin JSON, timeout, лимит вывода</text>
         </g>
         </g>
 
-        <g data-edge-from="worker" data-edge-to="bundle" data-edge-label="FileFacts без тел функций" data-edge-key="12">
-          <path data-composition-edge-from="worker" data-composition-edge-to="bundle" data-composition-points="1311,655;933.6666666666666,655" d="M 1311 655 L 933.6666666666666 655" class="a-default" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
+        <g data-edge-from="worker" data-edge-to="bundle" data-edge-label="FileFacts; при сбое stderr → лог" data-edge-key="12">
+          <path data-composition-edge-from="worker" data-composition-edge-to="bundle" data-composition-points="1311,655;1129.3333333333333,655" d="M 1311 655 L 1129.3333333333333 655" class="a-default" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="1051.3333333333333" y="635" width="142" height="16" rx="3" class="c-mask"/>
-          <text x="1122.3333333333333" y="645" class="t-muted" font-size="9" text-anchor="middle">FileFacts без тел функций</text>
+          <rect x="1130.9666666666665" y="635" width="178.4" height="16" rx="3" class="c-mask"/>
+          <text x="1220.1666666666665" y="645" class="t-muted" font-size="9" text-anchor="middle">FileFacts; при сбое stderr → лог</text>
         </g>
         </g>
 
-        <g data-edge-from="bundle" data-edge-to="map" data-edge-label="проверенные факты" data-edge-key="13">
-          <path data-composition-edge-from="bundle" data-composition-edge-to="map" data-composition-points="919.6666666666666,690;346.66666666666663,690" d="M 919.6666666666666 690 L 346.66666666666663 690" class="a-default" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
+        <g data-edge-from="backend" data-edge-to="map" data-edge-label="ParseOutcome" data-edge-key="13">
+          <path data-composition-edge-from="backend" data-composition-edge-to="map" data-composition-points="724,700;346.66666666666663,700" d="M 724 700 L 346.66666666666663 700" class="a-default" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="582.9666666666666" y="670" width="100.4" height="16" rx="3" class="c-mask"/>
-          <text x="633.1666666666666" y="680" class="t-muted" font-size="9" text-anchor="middle">проверенные факты</text>
+          <rect x="498.13333333333327" y="680" width="74.4" height="16" rx="3" class="c-mask"/>
+          <text x="535.3333333333333" y="690" class="t-muted" font-size="9" text-anchor="middle">ParseOutcome</text>
         </g>
         </g>
 
-        <g data-edge-from="map" data-edge-to="cache" data-edge-label="запись только tier full / minimal по политике" data-edge-key="14">
-          <path data-composition-edge-from="map" data-composition-edge-to="cache" data-composition-points="346.66666666666663,745;724,745" d="M 346.66666666666663 745 L 724 745" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <g data-edge-from="map" data-edge-to="cache" data-edge-label="build_graph → rank → бюджет → запись" data-edge-key="14">
+          <path data-composition-edge-from="map" data-composition-edge-to="cache" data-composition-points="346.66666666666663,765;528.3333333333333,765" d="M 346.66666666666663 765 L 528.3333333333333 765" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
         <g data-detail="context">
-          <rect x="412.33333333333326" y="725" width="246" height="16" rx="3" class="c-mask"/>
-          <text x="535.3333333333333" y="735" class="t-messagebus" font-size="9" text-anchor="middle">запись только tier full / minimal по политике</text>
+          <rect x="337.8999999999999" y="745" width="199.20000000000002" height="16" rx="3" class="c-mask"/>
+          <text x="437.49999999999994" y="755" class="t-messagebus" font-size="9" text-anchor="middle">build_graph → rank → бюджет → запись</text>
         </g>
         </g>
 
         <g data-edge-from="map" data-edge-to="caller" data-edge-label="Repo Map JSON + parser_provenance" data-edge-key="15">
-          <path data-composition-edge-from="map" data-composition-edge-to="caller" data-composition-points="332.66666666666663,790;151,790" d="M 332.66666666666663 790 L 151 790" class="a-default" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
+          <path data-composition-edge-from="map" data-composition-edge-to="caller" data-composition-points="332.66666666666663,800;151,800" d="M 332.66666666666663 800 L 151 800" class="a-default" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="150.0333333333333" y="770" width="183.6" height="16" rx="3" class="c-mask"/>
-          <text x="241.83333333333331" y="780" class="t-muted" font-size="9" text-anchor="middle">Repo Map JSON + parser_provenance</text>
+          <rect x="150.0333333333333" y="780" width="183.6" height="16" rx="3" class="c-mask"/>
+          <text x="241.83333333333331" y="790" class="t-muted" font-size="9" text-anchor="middle">Repo Map JSON + parser_provenance</text>
         </g>
         </g>
 
         <!-- Segment Labels -->
         <g data-graph-role="segment-label" data-segment-id="0">
-          <rect x="56" y="128" width="118" height="18" rx="3" class="c-mask"/>
-          <text x="62" y="141" class="t-dim" font-size="9" font-weight="600">Вход, политика и кэш</text>
+          <rect x="56" y="128" width="170" height="18" rx="3" class="c-mask"/>
+          <text x="62" y="141" class="t-dim" font-size="9" font-weight="600">Вход, поиск bundle и ключ кэша</text>
         </g>
         <g data-graph-role="segment-label" data-segment-id="1">
-          <rect x="56" y="348" width="154.4" height="18" rx="3" class="c-mask"/>
-          <text x="62" y="361" class="t-dim" font-size="9" font-weight="600">Проверка и установка bundle</text>
+          <rect x="56" y="433" width="149.20000000000002" height="18" rx="3" class="c-mask"/>
+          <text x="62" y="446" class="t-dim" font-size="9" font-weight="600">Разбор через ParserBackend</text>
         </g>
         <g data-graph-role="segment-label" data-segment-id="2">
-          <rect x="56" y="508" width="175.20000000000002" height="18" rx="3" class="c-mask"/>
-          <text x="62" y="521" class="t-dim" font-size="9" font-weight="600">Разбор в изолированном процессе</text>
-        </g>
-        <g data-graph-role="segment-label" data-segment-id="3">
-          <rect x="56" y="698" width="138.8" height="18" rx="3" class="c-mask"/>
-          <text x="62" y="711" class="t-dim" font-size="9" font-weight="600">Граф, бюджет и результат</text>
+          <rect x="56" y="718" width="138.8" height="18" rx="3" class="c-mask"/>
+          <text x="62" y="731" class="t-dim" font-size="9" font-weight="600">Граф, бюджет и результат</text>
         </g>
 
         <!-- Participants -->
@@ -5219,48 +5213,47 @@
           <text data-node-label="" x="339.66666666666663" y="94" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">repo_map.py</text>
         </g>
 
-        <g id="node-git" data-node-id="git" data-node-label="Git commit" tabindex="0" role="button" aria-label="Focus Git commit, Sequence participant" aria-pressed="false" data-node-kind="database" data-node-context="Sequence participant">
-          <title>Git commit · Sequence participant</title>
+        <g id="node-cache" data-node-id="cache" data-node-label="cache.py" tabindex="0" role="button" aria-label="Focus cache.py, Sequence participant" aria-pressed="false" data-node-kind="database" data-node-context="Sequence participant">
+          <title>cache.py · Sequence participant</title>
           <rect x="453.33333333333326" y="72" width="164" height="54" rx="6" class="c-mask"/>
           <rect x="453.33333333333326" y="72" width="164" height="54" rx="6" class="c-database" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(459.33333333333326 78) scale(0.6875)">
             <ellipse cx="8" cy="4" rx="5" ry="2"/>
             <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
           </g>
-          <text data-node-label="" x="535.3333333333333" y="94" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Git commit</text>
+          <text data-node-label="" x="535.3333333333333" y="94" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">cache.py</text>
         </g>
 
-        <g id="node-cache" data-node-id="cache" data-node-label="results cache" tabindex="0" role="button" aria-label="Focus results cache, Sequence participant" aria-pressed="false" data-node-kind="database" data-node-context="Sequence participant">
-          <title>results cache · Sequence participant</title>
+        <g id="node-backend" data-node-id="backend" data-node-label="BundleParserBackend" tabindex="0" role="button" aria-label="Focus BundleParserBackend, Sequence participant" aria-pressed="false" data-node-kind="backend" data-node-context="Sequence participant">
+          <title>BundleParserBackend · Sequence participant</title>
           <rect x="649" y="72" width="164" height="54" rx="6" class="c-mask"/>
-          <rect x="649" y="72" width="164" height="54" rx="6" class="c-database" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(655 78) scale(0.6875)">
+          <rect x="649" y="72" width="164" height="54" rx="6" class="c-backend" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(655 78) scale(0.6875)">
+            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
+          </g>
+          <text data-node-label="" x="731" y="94" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">BundleParserBackend</text>
+        </g>
+
+        <g id="node-git" data-node-id="git" data-node-label="git_source → Git" tabindex="0" role="button" aria-label="Focus git_source → Git, Sequence participant" aria-pressed="false" data-node-kind="database" data-node-context="Sequence participant">
+          <title>git_source → Git · Sequence participant</title>
+          <rect x="844.6666666666666" y="72" width="164" height="54" rx="6" class="c-mask"/>
+          <rect x="844.6666666666666" y="72" width="164" height="54" rx="6" class="c-database" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(850.6666666666666 78) scale(0.6875)">
             <ellipse cx="8" cy="4" rx="5" ry="2"/>
             <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
           </g>
-          <text data-node-label="" x="731" y="94" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">results cache</text>
+          <text data-node-label="" x="926.6666666666666" y="94" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">git_source → Git</text>
         </g>
 
         <g id="node-bundle" data-node-id="bundle" data-node-label="parser_bundle.py" tabindex="0" role="button" aria-label="Focus parser_bundle.py, Sequence participant" aria-pressed="false" data-node-kind="security" data-node-context="Sequence participant">
           <title>parser_bundle.py · Sequence participant</title>
-          <rect x="844.6666666666666" y="72" width="164" height="54" rx="6" class="c-mask"/>
-          <rect x="844.6666666666666" y="72" width="164" height="54" rx="6" class="c-security" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(850.6666666666666 78) scale(0.6875)">
+          <rect x="1040.3333333333333" y="72" width="164" height="54" rx="6" class="c-mask"/>
+          <rect x="1040.3333333333333" y="72" width="164" height="54" rx="6" class="c-security" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(1046.3333333333333 78) scale(0.6875)">
             <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
-          <text data-node-label="" x="926.6666666666666" y="94" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">parser_bundle.py</text>
-        </g>
-
-        <g id="node-uv" data-node-id="uv" data-node-label="uv (offline)" tabindex="0" role="button" aria-label="Focus uv (offline), Sequence participant" aria-pressed="false" data-node-kind="external" data-node-context="Sequence participant">
-          <title>uv (offline) · Sequence participant</title>
-          <rect x="1040.3333333333333" y="72" width="164" height="54" rx="6" class="c-mask"/>
-          <rect x="1040.3333333333333" y="72" width="164" height="54" rx="6" class="c-external" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(1046.3333333333333 78) scale(0.6875)">
-            <rect x="2.5" y="5" width="8.5" height="8" rx="1.5"/>
-            <path d="M8 2.5h5.5V8M13.5 2.5 7.5 8.5"/>
-          </g>
-          <text data-node-label="" x="1122.3333333333333" y="94" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">uv (offline)</text>
+          <text data-node-label="" x="1122.3333333333333" y="94" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">parser_bundle.py</text>
         </g>
 
         <g id="node-worker" data-node-id="worker" data-node-label="tree_sitter_worker.py" tabindex="0" role="button" aria-label="Focus tree_sitter_worker.py, Sequence participant" aria-pressed="false" data-node-kind="backend" data-node-context="Sequence participant">
@@ -5482,11 +5475,11 @@
       <div class="card">
         <div class="card-header">
           <div class="card-dot cyan"></div>
-          <h3>Детерминизм</h3>
+          <h3>Один bundle на запуск</h3>
         </div>
         <ul>
-          <li>&bull; Вход — только объекты Git коммита</li>
-          <li>&bull; Сортировка, бюджет токенов, schema v1</li>
+          <li>&bull; Тот же найденный bundle даёт ключ кэша и разбор</li>
+          <li>&bull; Два процесса git на весь коммит</li>
         </ul>
       </div>
 

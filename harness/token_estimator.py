@@ -9,4 +9,9 @@ def estimate_tokens(text: str) -> int:
     Two UTF-8 bytes per token leaves room for code, identifiers and non-ASCII text. It is a
     payload budget bound, not a provider billing estimate.
     """
-    return (len(text.encode("utf-8")) + 1) // 2
+    return estimate_tokens_for_bytes(len(text.encode("utf-8")))
+
+
+def estimate_tokens_for_bytes(byte_count: int) -> int:
+    """Return the same estimate as `estimate_tokens` for a UTF-8 payload of `byte_count` bytes."""
+    return (byte_count + 1) // 2

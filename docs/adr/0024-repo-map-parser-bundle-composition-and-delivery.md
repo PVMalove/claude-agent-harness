@@ -94,6 +94,16 @@ mypy 2.3.1, pip-audit 2.10.1, cyclonedx-py 7.4.0). Полный режим ос�
   с отдельным тестовым файлом на язык (`python-ts-js`, `go`, `java`, `csharp`), без `pytest -k`.
 - Обновление любого пина, версии Python или платформы матрицы — релиз харнесса с новым lock, SBOM и
   результатом CVE-проверки.
+- **Ревью PR #296 (вторая очередь):** соответствие расширения грамматике теперь задаёт только lock
+  (`grammars[].extensions`). Запрос к worker несёт его в поле `languages`, worker загружает грамматики
+  лениво, а семейство name-ref выводится из имени грамматики. Worker без `languages` в запросе
+  (старый harness) использует совместимую таблицу по умолчанию. Отсутствующий пакет грамматики
+  выключает только свои файлы. Bundle ищется один раз за запуск: один и тот же найденный bundle даёт
+  и идентичность ключа кэша, и установку. Сбой установки — отдельная причина `parser bundle install
+  failed`; при сбое worker хвост его stderr пишется в `last-worker-error.log` рядом с установкой.
+  `parser_bundle.py` стал фасадом над `bundle_lock.py`, `bundle_install.py` и `bundle_worker.py` с
+  прежним публичным API. CI собирает bundle одной задачей `parser-bundle` и передаёт его матрице
+  `repo-map-bundle` как artifact.
 
 ## Considered Options
 

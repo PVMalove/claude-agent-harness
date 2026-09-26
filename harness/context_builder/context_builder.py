@@ -36,8 +36,8 @@ from typing import cast
 
 from ..errors import HarnessError
 from ..repo_map.contract import validation_error as repo_map_validation_error
-from ..repo_map.repo_map import RepoMapPolicy, load_policy
-from ..repo_map.repo_map import _matches as _repo_map_matches
+from ..repo_map.policy import RepoMapPolicy, load_policy
+from ..repo_map.policy import matches as _repo_map_matches
 from ..token_estimator import estimate_tokens as estimate_tokens
 
 

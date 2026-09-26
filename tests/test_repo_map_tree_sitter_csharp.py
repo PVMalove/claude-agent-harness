@@ -68,6 +68,44 @@ def test_csharp_signatures_and_relations_come_from_tree_sitter(tmp_path: Path, b
     assert b"must not be serialized" not in raw
 
 
+def test_csharp_classes_under_a_file_scoped_namespace_are_mapped(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
+    _, result = build_map(
+        tmp_path,
+        bundle_dir,
+        {
+            "Service.cs": (
+                "namespace App.Core;\n\n"
+                "using System;\n\n"
+                "public class Service\n"
+                "{\n"
+                "    public int Run(int value) { return value; }\n"
+                "}\n"
+            ),
+            "Caller.cs": (
+                "namespace App.Web;\n\n"
+                "public class Caller\n"
+                "{\n"
+                "    public void Call() { new Service().Run(1); }\n"
+                "}\n"
+            ),
+        },
+    )
+
+    assert result["tier"] == "full"
+    assert file_record(result, "Service.cs")["signatures"] == [
+        "class Service",
+        "method Service.Run(int value): int",
+    ]
+    assert {
+        "source": "Caller.cs",
+        "target": "Service.cs",
+        "kind": "unique-name-ref",
+        "confidence": "medium",
+    } in records(result, "edges")
+
+
 def test_csharp_syntax_error_keeps_intact_definitions(tmp_path: Path, bundle_dir: Path) -> None:
     _, result = build_map(
         tmp_path,
