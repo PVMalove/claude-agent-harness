@@ -20,6 +20,7 @@ from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
     resolve_allowed_tools,
     resolve_min_repo_map_tier,
+    role_verification_commands,
 )
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
@@ -62,17 +63,6 @@ from harness.orchestration.core.workspace import (
 from harness.orchestration.dispatch_preflight import (
     PreflightError,
 )
-
-
-def _dispatch_verification_commands(
-    batch: JsonObject, role_name: str, purpose: str
-) -> list[str]:
-    """Return the immutable role-specific proof list frozen in ``batch``."""
-    if purpose == "work" and role_name == "developer":
-        return cast(list[str], batch["developer_verification_commands"])
-    if purpose == "work" and role_name == "code-review":
-        return cast(list[str], batch["review_verification_commands"])
-    return cast(list[str], batch["verification_commands"])
 from harness.orchestration.dispatch_preflight import (
     prepare as prepare_dispatch,
 )
@@ -128,6 +118,13 @@ from harness.orchestration.workflow.risk import (
     _matching_triggers,
     _risk_triggers,
 )
+
+
+def _dispatch_verification_commands(
+    batch: JsonObject, role_name: str, purpose: str
+) -> list[str]:
+    """Вернуть неизменяемый список проверок роли, замороженный в ``batch``."""
+    return cast(list[str], role_verification_commands(batch, role_name, purpose))
 
 
 def _enforce_base_freshness(

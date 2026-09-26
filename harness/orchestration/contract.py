@@ -451,17 +451,10 @@ def validate_brief_policy(
                 f"dispatch brief {field} must be a list of strings",
                 remedy=INTERNAL_INVARIANT_REMEDY,
             )
-    if brief.get("purpose") == "work" and brief.get("role") == "developer":
-        expected_commands = config.get(
-            "developer_verification_commands", config.get("verification_commands")
-        )
-    elif brief.get("purpose") == "work" and brief.get("role") == "code-review":
-        expected_commands = config.get(
-            "review_verification_commands", config.get("verification_commands")
-        )
-    else:
-        expected_commands = config.get("verification_commands")
-    if brief["verification_commands"] != expected_commands:
+    accepted_commands = accepted_verification_commands(
+        config, str(brief.get("role")), str(brief.get("purpose"))
+    )
+    if brief["verification_commands"] not in accepted_commands:
         raise ContractError(
             "dispatch brief verification_commands must exactly match its project role configuration",
             remedy="regenerate this brief so verification_commands matches the project's role verification_commands",
@@ -555,6 +548,45 @@ def _policy_problem(
 
 REPO_MAP_TIER_ORDER = ("minimal", "full")
 REPO_MAP_POLICY_ROLES = ("architect", "developer", "code-review")
+# Work roles that own no verification gate: the architect runs only decision-specific checks
+# (roles/architect.md), so it must never receive the batch's full QA suite in its brief.
+NO_GATE_WORK_ROLES = frozenset({"architect"})
+
+
+def role_verification_commands(
+    source: Mapping[str, object], role: str, purpose: str
+) -> object:
+    """Вернуть список проверок, положенный роли в brief.
+
+    ``source`` — конфиг оркестрации или замороженный batch: developer и code-review получают свои
+    фокусные списки с откатом на ``verification_commands``, architect — пустой список, остальные
+    роли и не-``work`` цели — полный ``verification_commands``.
+    """
+    fallback = source.get("verification_commands")
+    if purpose != "work":
+        return fallback
+    if role in NO_GATE_WORK_ROLES:
+        return []
+    if role == "developer":
+        return source.get("developer_verification_commands", fallback)
+    if role == "code-review":
+        return source.get("review_verification_commands", fallback)
+    return fallback
+
+
+def accepted_verification_commands(
+    source: Mapping[str, object], role: str, purpose: str
+) -> list[object]:
+    """Вернуть допустимые списки проверок для уже записанного brief роли.
+
+    Brief architect, созданный до исключения роли из полного gate, ещё несёт полный
+    ``verification_commands``; такие записи остаются валидными, чтобы незавершённые batch
+    продолжались без ручной правки ledger.
+    """
+    accepted = [role_verification_commands(source, role, purpose)]
+    if purpose == "work" and role in NO_GATE_WORK_ROLES:
+        accepted.append(source.get("verification_commands"))
+    return accepted
 
 
 def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:

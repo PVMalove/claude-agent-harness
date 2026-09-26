@@ -31,3 +31,5 @@ decision needs, rather than reading the repository at large to reconstruct it.
 Run only checks that distinguish the architectural decision. The architect must not run the batch's
 full verification suite merely to establish a baseline: the developer and independent QA gates own
 that evidence. Escalate if a broad baseline is the only way to establish a material premise.
+The architect brief therefore approves no verification commands: report `checks_run` as an empty
+list and name each decision-specific check with its result in `output`.

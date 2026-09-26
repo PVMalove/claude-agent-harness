@@ -182,7 +182,8 @@ immutable brief, обязаны пройти model self-report и вернуть
 поэтому логика coordinator-а от транспорта не зависит. `harness health` проверяет допустимость
 значения. Для изолированного worker укажите `"transport": "orca"` явно. Для `in-process` `dispatch send` только фиксирует handoff: следующим действием coordinator
 немедленно запускает субагента по уже immutable brief, до любого поиска старых report/template или
-конфигурации. Architect собирает лишь targeted evidence для решения; полный набор
+конфигурации. Architect собирает лишь targeted evidence для решения: его brief не содержит команд
+проверки, а отчёт сдаёт пустой `checks_run`. Полный набор
 `verification_commands` выполняет clean-room QA, а developer получает
 `developer_verification_commands`. Это необязательное поле: без него сохраняется совместимый
 режим, в котором developer получает полный список. Задавайте в нём быстрые task-scoped проверки,
