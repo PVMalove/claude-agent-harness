@@ -4,39 +4,43 @@
   "meta": {
     "title": "Компоненты Repo Map",
     "viewBox": [1440, 900],
-    "repository": { "url": "https://github.com/PVMalove/claude-agent-harness.git", "revision": "5a97875c18b59052d30b72bef68aa5d8eb659925" },
+    "repository": { "url": "https://github.com/PVMalove/claude-agent-harness.git", "revision": "3c3b78c4ccac460ab81bb9ea8b135d985ad2f593" },
     "quality_profile": "showcase"
   },
   "components": [
-    { "id": "coordinator", "type": "backend", "label": "Coordinator (dispatch)", "pos": [40, 200], "size": [220, 80], "sources": [{ "path": "harness/orchestration/workflow/dispatch.py", "label": "min_tier gate" }] },
-    { "id": "builder", "type": "backend", "label": "Context Builder", "pos": [40, 420], "size": [220, 80], "sources": [{ "path": "harness/context_builder/context_builder.py", "label": "Context Package" }] },
-    { "id": "map", "type": "backend", "label": "repo_map.py", "pos": [390, 420], "size": [220, 80], "sources": [{ "path": "harness/repo_map/repo_map.py", "label": "CLI и граф" }] },
-    { "id": "contract", "type": "security", "label": "contract.py + schema", "pos": [390, 640], "size": [220, 80], "sources": [{ "path": "harness/repo_map/contract.py", "label": "JSON-контракт" }] },
-    { "id": "git", "type": "database", "label": "Git commit", "pos": [390, 200], "size": [220, 80] },
-    { "id": "cache", "type": "database", "label": "results cache", "pos": [740, 640], "size": [220, 80], "sources": [{ "path": "harness/storage.py", "label": "storage_path" }] },
-    { "id": "bundle", "type": "security", "label": "parser_bundle.py", "pos": [740, 420], "size": [220, 80], "sources": [{ "path": "harness/repo_map/parser_bundle.py", "label": "lock, hash, install" }] },
-    { "id": "registry", "type": "database", "label": "registry + wheelhouse", "pos": [740, 200], "size": [220, 80] },
-    { "id": "worker", "type": "backend", "label": "tree_sitter_worker.py", "pos": [1120, 420], "size": [240, 80], "sources": [{ "path": "harness/repo_map/tree_sitter_worker.py", "label": "extractors" }] },
-    { "id": "release", "type": "cloud", "label": "release-parser-bundle", "pos": [1120, 200], "size": [240, 80], "sources": [{ "path": ".github/workflows/release-parser-bundle.yml", "label": "SBOM + audit" }] }
+    { "id": "coordinator", "type": "backend", "label": "Coordinator (dispatch)", "pos": [40, 150], "size": [220, 80], "sources": [{ "path": "harness/orchestration/workflow/dispatch.py", "label": "min_tier gate" }] },
+    { "id": "builder", "type": "backend", "label": "Context Builder", "pos": [40, 360], "size": [220, 80], "sources": [{ "path": "harness/context_builder/context_builder.py", "label": "Context Package" }] },
+    { "id": "cache", "type": "database", "label": "cache.py", "pos": [40, 600], "size": [220, 80], "sources": [{ "path": "harness/repo_map/cache.py", "label": "content-addressed" }] },
+    { "id": "map", "type": "backend", "label": "repo_map.py (CLI)", "pos": [340, 360], "size": [220, 80], "sources": [{ "path": "harness/repo_map/repo_map.py", "label": "build_map" }] },
+    { "id": "policy", "type": "security", "label": "policy.py", "pos": [340, 150], "size": [220, 80], "sources": [{ "path": "harness/repo_map/policy.py", "label": "RepoMapPolicy" }] },
+    { "id": "graph", "type": "backend", "label": "graph.py + budget.py", "pos": [340, 600], "size": [220, 80], "sources": [{ "path": "harness/repo_map/graph.py", "label": "рёбра и ранжирование" }] },
+    { "id": "backend", "type": "backend", "label": "BundleParserBackend", "pos": [640, 360], "size": [220, 80], "sources": [{ "path": "harness/repo_map/backend.py", "label": "ParserBackend" }] },
+    { "id": "git", "type": "database", "label": "git_source.py → Git", "pos": [640, 150], "size": [220, 80], "sources": [{ "path": "harness/repo_map/git_source.py", "label": "cat-file --batch" }] },
+    { "id": "bundle", "type": "security", "label": "parser_bundle.py", "pos": [940, 360], "size": [220, 80], "sources": [{ "path": "harness/repo_map/parser_bundle.py", "label": "locate, check, install" }] },
+    { "id": "registry", "type": "database", "label": "registry + wheelhouse", "pos": [940, 150], "size": [220, 80] },
+    { "id": "release", "type": "cloud", "label": "release-parser-bundle", "pos": [1200, 150], "size": [200, 80], "sources": [{ "path": ".github/workflows/release-parser-bundle.yml", "label": "SBOM + audit" }] },
+    { "id": "worker", "type": "backend", "label": "tree_sitter_worker.py", "pos": [940, 600], "size": [220, 80], "sources": [{ "path": "harness/repo_map/tree_sitter_worker.py", "label": "extractors" }] }
   ],
   "boundaries": [
-    { "kind": "region", "label": "Основной процесс harness", "wraps": ["builder", "map", "contract", "bundle"], "pad": 32 },
-    { "kind": "security-group", "label": "Изолированный subprocess", "wraps": ["worker"], "pad": 32 }
+    { "kind": "region", "label": "Пакет harness/repo_map", "wraps": ["map", "policy", "graph", "backend", "git", "bundle"], "pad": 28 },
+    { "kind": "security-group", "label": "Изолированный subprocess", "wraps": ["worker"], "pad": 28 }
   ],
   "connections": [
-    { "from": "builder", "to": "map", "label": "build_map()", "variant": "emphasis" },
-    { "from": "coordinator", "to": "builder", "label": "Context Package", "labelAt": [150, 350] },
-    { "from": "map", "to": "git", "label": "ls-tree / show" },
-    { "from": "map", "to": "contract", "label": "validation_error()", "labelAt": [500, 570] },
-    { "from": "map", "to": "cache", "label": "content-addressed", "variant": "dashed" },
-    { "from": "map", "to": "bundle", "label": "acquire + run", "variant": "emphasis" },
+    { "from": "coordinator", "to": "builder", "label": "Context Package", "labelAt": [150, 295] },
+    { "from": "builder", "to": "map", "label": "CLI", "variant": "emphasis" },
+    { "from": "map", "to": "policy", "label": "path_allowed" },
+    { "from": "map", "to": "graph", "label": "rank + budget", "labelAt": [450, 520] },
+    { "from": "map", "to": "cache", "label": "ключ + запись", "variant": "dashed" },
+    { "from": "map", "to": "backend", "label": "ParserBackend", "variant": "emphasis" },
+    { "from": "backend", "to": "git", "label": "blobs" },
+    { "from": "backend", "to": "bundle", "label": "locate / run", "variant": "emphasis" },
     { "from": "bundle", "to": "registry", "label": "lock + SHA-256" },
-    { "from": "bundle", "to": "worker", "label": "stdin/stdout JSON", "variant": "emphasis" },
-    { "from": "release", "to": "registry", "label": "архив bundle", "variant": "dashed" }
+    { "from": "bundle", "to": "worker", "label": "stdin/stdout JSON", "variant": "emphasis", "labelAt": [1050, 520] },
+    { "from": "release", "to": "registry", "label": "архив", "variant": "dashed" }
   ],
   "cards": [
-    { "dot": "cyan", "title": "Потребители", "items": ["Context Builder встраивает срез карты", "Coordinator проверяет min_tier по роли"] },
+    { "dot": "cyan", "title": "Зависимость от абстракции", "items": ["repo_map знает только ParserBackend", "Bundle ищется один раз на запуск"] },
     { "dot": "amber", "title": "Доверие к bundle", "items": ["Lock, wheels и worker сверяются по SHA-256", "Установка только offline через uv"] },
-    { "dot": "emerald", "title": "Изоляция", "items": ["Нативные grammars живут только в worker", "Кэш не авторитетен и удаляем"] }
+    { "dot": "emerald", "title": "Изоляция", "items": ["Грамматики грузятся лениво в worker", "Хвост stderr сбоя — в лог кэша"] }
   ]
 }
