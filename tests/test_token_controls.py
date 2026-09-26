@@ -8,6 +8,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from harness.orchestration import contract, coordinator
 from harness.orchestration.core import config, constants
@@ -106,6 +107,44 @@ class TokenControlTests(unittest.TestCase):
             {"context_package_policy": {"max_related_tests": 10}}
         )
         self.assertEqual(policy["max_related_tests"], 10)
+
+    def test_context_package_policy_defaults_section_index_min_tokens(self) -> None:
+        self.assertEqual(
+            config._context_package_policy({})["section_index_min_tokens"], 20_000
+        )
+
+    def test_persist_context_package_passes_the_section_index_threshold_to_the_builder(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = Path(tmp)
+            (repo / ".harness").mkdir()
+            (repo / ".harness" / "project.json").write_text("{}", encoding="utf-8")
+            batch = {"batch_id": "batch-1", "base_commit": "0" * 40, "context_packages": []}
+            with (
+                mock.patch.object(
+                    config,
+                    "_config",
+                    return_value={"context_package_policy": {"section_index_min_tokens": 1234}},
+                ),
+                mock.patch.object(
+                    context_package,
+                    "build_context_package",
+                    side_effect=RuntimeError("stop after capturing the call"),
+                ) as build,
+                self.assertRaises(RuntimeError),
+            ):
+                context_package._persist_context_package(
+                    repo,
+                    repo,
+                    LifecycleLedger(repo),
+                    batch,
+                    role="shared",
+                    snapshot="1" * 40,
+                    inclusion_reason="test",
+                )
+
+        self.assertEqual(build.call_args.kwargs["section_index_min_tokens"], 1234)
 
     def test_persist_context_package_rejects_a_token_override_above_policy(
         self,

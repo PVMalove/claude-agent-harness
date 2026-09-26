@@ -1004,6 +1004,36 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
                 )
             )
 
+    def test_dispatch_admission_rejects_a_context_package_above_the_role_context_budget(
+        self,
+    ) -> None:
+        """`context_package_policy.max_tokens` may exceed the role's `context_limit`; the package
+        must still fit the brief's `context_budget`, at `propose` and at `create`."""
+        self._configure_project(adaptive_continuation_policy={"context_limit": 1})
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        fields = self._architect_dispatch_fields(batch["batch_id"])
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator.create_dispatch(_ns(propose=True, **fields))
+
+        self.assertRegex(
+            caught.exception.message,
+            r"^Context Package estimate \d+ tokens exceeds the architect context budget of 1 tokens",
+        )
+        self.assertIn("expected_files", caught.exception.remedy)
+        self.assertIn("context_limit", caught.exception.remedy)
+
+        with self.assertRaises(coordinator.CoordinatorError):
+            coordinator.create_dispatch(
+                _ns(
+                    transition_digest="irrelevant-because-the-gate-runs-first",
+                    approved_by="Malove",
+                    approved_at="2026-09-17T00:00:00+00:00",
+                    **fields,
+                )
+            )
+
     def test_dispatch_admission_without_a_repo_map_policy_never_blocks_on_degradation(
         self,
     ) -> None:

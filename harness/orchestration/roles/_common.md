@@ -29,7 +29,9 @@ attestation. This is the only startup discovery needed before role-specific file
 work from the package rather than navigating to a guessed relative repository path.
 
 The Context Package's `starting_files`, `symbol_graph`, and `related_tests` are the working set for
-the role's task: read those first. Repository search is scoped to Context Package paths and reserved
+the role's task: read those first. A starting file with non-empty `sections` is a large document
+seeded as a section index: read only the `start_line`–`end_line` ranges the task needs, not the
+whole file. Repository search is scoped to Context Package paths and reserved
 as a last resort, not the default way to build understanding. When the package is insufficient — a
 needed file or symbol is missing from it — escalate a blocker naming that file or symbol rather than
 reading the repository blindly. This is a working discipline, not a dispatch-creation gate: Context

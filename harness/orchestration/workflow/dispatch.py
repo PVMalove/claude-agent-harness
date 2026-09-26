@@ -788,6 +788,21 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     "newly registered Context Package is stale; refresh before dispatch",
                     remedy="re-register the Context Package immediately before dispatching; it is validated fresh at dispatch time",
                 )
+            # `context_package_policy.max_tokens` is a package-wide ceiling and may legitimately
+            # exceed the role's context budget, so admission checks the budget the brief records.
+            # A reused pre-estimate ledger record has no estimate to check.
+            context_budget = _adaptive_continuation_policy(config)["context_limit"]
+            estimated_tokens = context_package.get("estimated_tokens")
+            if isinstance(estimated_tokens, int) and estimated_tokens > context_budget:
+                raise CoordinatorError(
+                    f"Context Package estimate {estimated_tokens} tokens exceeds "
+                    f"the {role_name} context budget of {context_budget} tokens "
+                    "(adaptive_continuation_policy.context_limit)",
+                    remedy=(
+                        "narrow the batch's scope_preflight.expected_files (large documents are "
+                        "the usual cause) or raise adaptive_continuation_policy.context_limit"
+                    ),
+                )
             if role_name in {"architect", "developer", "code-review"}:
                 required_tier = resolve_min_repo_map_tier(config, role_name)
                 if required_tier is not None:
