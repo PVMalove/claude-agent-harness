@@ -249,7 +249,10 @@ resume) и `retry_policy` (один developer retry) делают циклы к�
   не сканирует весь репозиторий и не подгружает нерелевантные инструменты. Список — рабочий набор
   роли, а не deny-list: brief не отключает глобальные инструменты runtime.
 - `context_budget` — токены из `adaptive_continuation_policy.context_limit` (по умолчанию 150000):
-  тот же порог, от которого считается `context_advisory`.
+  тот же порог, от которого считается `context_advisory`. `dispatch create` (и `--propose`)
+  отклоняет автоматический Context Package, чья `estimated_tokens` больше этого бюджета, даже если
+  она укладывается в `context_package_policy.max_tokens`: потолок пакета может быть выше бюджета
+  роли, но роль должна получить пакет, который помещается в её контекст.
 
 Проект переопределяет набор необязательным `tool_policy`; запись роли важнее записи режима, а она —
 встроенного дефолта:
@@ -320,7 +323,9 @@ python .harness/orchestration/coordinator.py --repo . context-package register \
 `context_builder.py` не вызывает LLM и работает по pinned base/candidate commits. Package содержит
 точный diff, 5–10 стартовых файлов с причинами, bounded symbol/dependency graph, связанные тесты,
 краткие карточки ADR/precedent, SHA-256 каждого включённого файла, byte size и консервативную token
-estimate. Для Python AST извлекает
+estimate. Побайтно идентичные файлы (например, зеркало `docs/agents/*` ↔
+`harness/project/docs-agents/*`) остаются стартовыми файлами, но их содержимое учитывается в оценке
+один раз; причина второй копии называет оригинал и требует держать копии идентичными. Для Python AST извлекает
 сигнатуры прямых локальных зависимостей; текущий Discovery-контракт ограничивает разворачивание
 одним уровнем. Неподдержанный формат получает первые 30 строк как deterministic fallback. При
 превышении token limit сборка завершается ошибкой, а не молча обрезает пакет. Legacy

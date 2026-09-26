@@ -231,6 +231,69 @@ class ContextBuilderTests(ContextBuilderFixture):
                 max_package_tokens=1,
             )
 
+    def _commit_mirror_pair(self, content: str) -> str:
+        _write(self.repo, "docs/agents/guide.md", content)
+        _write(self.repo, "harness/project/docs-agents/guide.md", content)
+        _run("add", ".", cwd=self.repo)
+        _run("commit", "-qm", "docs: add a mirrored guide", cwd=self.repo)
+        return _head(self.repo)
+
+    def test_byte_identical_seed_files_are_counted_once_and_noted_as_a_mirror(
+        self,
+    ) -> None:
+        guide = "".join(f"## Раздел {index}\n\nТекст раздела {index}.\n\n" for index in range(400))
+        snapshot = self._commit_mirror_pair(guide)
+        one_copy = build_context_package(
+            self.repo,
+            snapshot,
+            snapshot,
+            min_starting_files=1,
+            seed_paths=["docs/agents/guide.md"],
+        )
+
+        package = build_context_package(
+            self.repo,
+            snapshot,
+            snapshot,
+            min_starting_files=2,
+            seed_paths=["docs/agents/guide.md", "harness/project/docs-agents/guide.md"],
+        )
+
+        reasons = {item.path: item.reason for item in package.starting_files}
+        self.assertEqual(
+            set(reasons), {"docs/agents/guide.md", "harness/project/docs-agents/guide.md"}
+        )
+        self.assertNotIn("mirror", reasons["docs/agents/guide.md"])
+        self.assertIn(
+            "byte-identical mirror of docs/agents/guide.md",
+            reasons["harness/project/docs-agents/guide.md"],
+        )
+        # Only the second path's symbol-graph entry is added; its content is not charged again.
+        self.assertLess(
+            package.estimated_tokens - one_copy.estimated_tokens,
+            estimate_tokens(guide) // 10,
+        )
+
+    def test_byte_identical_changed_files_are_counted_once(self) -> None:
+        before = self._commit_mirror_pair("# Guide\n\nOld text.\n")
+        guide = "# Guide\n\n" + "".join(f"Строка {index}.\n" for index in range(400))
+        after = self._commit_mirror_pair(guide)
+
+        package = build_context_package(
+            self.repo, before, after, min_starting_files=2
+        )
+
+        reasons = {item.path: item.reason for item in package.starting_files}
+        self.assertIn(
+            "byte-identical mirror of docs/agents/guide.md",
+            reasons["harness/project/docs-agents/guide.md"],
+        )
+        # The diff carries both hunks, but the full mirrored content is charged only once.
+        self.assertLess(
+            package.estimated_tokens,
+            estimate_tokens(package.diff) + estimate_tokens(guide) * 1.5,
+        )
+
     def test_fails_clearly_instead_of_silently_returning_fewer_than_the_minimum_starting_files(
         self,
     ) -> None:

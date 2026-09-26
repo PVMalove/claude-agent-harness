@@ -691,6 +691,24 @@ def build_context_package(
         path: hashlib.sha256(content.encode("utf-8")).hexdigest()
         for path, content in contents.items()
     }
+    # A byte-identical copy (e.g. a docs/agents template mirror) adds no information: keep it as a
+    # pointer that states the mirror invariant and charge its content once, to the first path.
+    first_by_hash: dict[str, str] = {}
+    mirror_of: dict[str, str] = {}
+    for path in sorted(contents):
+        original = first_by_hash.setdefault(file_hashes[path], path)
+        if original != path:
+            mirror_of[path] = original
+    starting_files = [
+        StartingFile(
+            path=item.path,
+            reason=f"{item.reason}; byte-identical mirror of {mirror_of[item.path]} -- "
+            "read one copy and keep both identical",
+        )
+        if item.path in mirror_of
+        else item
+        for item in starting_files
+    ]
 
     # An added file's unified diff already contains 100% of its content as `+` lines, so counting
     # `contents[path]` again for the token/size estimate would double-count the exact same bytes
@@ -706,7 +724,11 @@ def build_context_package(
                 ensure_ascii=False,
                 sort_keys=True,
             ),
-            *[contents[path] for path in sorted(contents) if path not in added_paths],
+            *[
+                contents[path]
+                for path in sorted(contents)
+                if path not in added_paths and path not in mirror_of
+            ],
         ]
     )
     size_bytes: int = len(payload_text.encode("utf-8"))
