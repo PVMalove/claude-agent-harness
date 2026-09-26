@@ -12,8 +12,10 @@ from scripts.clean_room.support import (
     HARNESS,
     ROOT,
     capture,
+    capture_json,
     count_skill_files,
     fill_agents,
+    find_check,
     run_fails,
     run_ok,
 )
@@ -182,16 +184,19 @@ def run(ctx: SimpleNamespace) -> None:
     )
     fill_agents(pv_project)
     run_ok(HARNESS + ["health", str(pv_project)])
-    repo_map_health = capture(HARNESS + ["health", str(pv_project)])
-    if "Repo Map: tier=minimal" not in repo_map_health:
+    repo_map_health = find_check(
+        capture_json(HARNESS + ["health", str(pv_project), "--json"]), "repo_map.tier"
+    )
+    if repo_map_health["status"] != "warn":
+        sys.exit("health did not mark the degraded Repo Map tier as a warning")
+    if not repo_map_health["message"].startswith("Repo Map: tier=minimal"):
         sys.exit("health did not report the degraded Repo Map tier")
-    if "provenance: offline parser bundle unavailable" not in repo_map_health:
+    if "provenance: offline parser bundle unavailable" not in repo_map_health["message"]:
         sys.exit("health did not report missing Repo Map bundle provenance")
-    if "КАК ИСПРАВИТЬ: установите offline parser bundle" not in repo_map_health:
+    repo_map_fix = repo_map_health["fix"]["text"] if repo_map_health["fix"] else ""
+    if "установите offline parser bundle" not in repo_map_fix:
         sys.exit("health did not provide the offline Repo Map remedy")
-    if "ПРЕДУПРЕЖДЕНИЕ: Repo Map работает в ограниченном режиме" not in repo_map_health:
-        sys.exit("health did not localize the Repo Map warning")
-    if "uv run" in repo_map_health:
+    if "uv run" in repo_map_fix:
         sys.exit("health incorrectly offered uv run as a Repo Map dispatch remedy")
     corrupt_registry = (
         pv_project
@@ -203,10 +208,12 @@ def run(ctx: SimpleNamespace) -> None:
     )
     corrupt_registry.mkdir(parents=True)
     (corrupt_registry / "parser_bundle.lock.json").write_text("{invalid", encoding="utf-8")
-    corrupt_bundle_health = capture(HARNESS + ["health", str(pv_project)])
-    if "Repo Map: tier=minimal" not in corrupt_bundle_health:
+    corrupt_bundle_health = find_check(
+        capture_json(HARNESS + ["health", str(pv_project), "--json"]), "repo_map.tier"
+    )
+    if not corrupt_bundle_health["message"].startswith("Repo Map: tier=minimal"):
         sys.exit("health accepted a corrupt Repo Map bundle as full tier")
-    if "Repo Map: tier=full" in corrupt_bundle_health:
+    if corrupt_bundle_health["status"] == "ok":
         sys.exit("health reported a corrupt Repo Map bundle as full tier")
     repo_map_cli = pv_project / ".harness" / "repo_map" / "repo_map.py"
     if (
