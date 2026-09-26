@@ -35,6 +35,9 @@ if str(ROOT) not in sys.path:
 from harness.errors import HarnessError, print_and_exit
 from harness.orchestration.contract import health_problems
 from harness.cleanup import apply_cleanup, plan_cleanup
+from harness.health import registry as health_registry
+from harness.health import render as health_render
+from harness.health import report_json as health_report_json
 from harness.repo_map import parser_bundle
 
 CAPABILITIES_FILE = PACKAGE / "CAPABILITIES.json"
@@ -517,6 +520,7 @@ def validate_hash(repo: Path, relative: Path, expected: object, problems: list[s
         problems.append(f"{label} hash mismatch: {relative.as_posix()}")
 
 
+# Called from this file only via harness/health/checks/_cli.py's bridge (harness health); no in-file caller.
 def validate_overlay_locks(repo: Path, lock: dict, problems: list[str]) -> None:
     overlay_root = repo / ".harness/overlays"
     lock_paths = [] if not overlay_root.is_dir() else sorted(
@@ -629,6 +633,7 @@ def validate_overlay_locks(repo: Path, lock: dict, problems: list[str]) -> None:
             problems.append(f"overlay lock claims absent/public skills: {', '.join(stale)}")
 
 
+# Called from this file only via harness/health/checks/_cli.py's bridge (harness health); no in-file caller.
 def validate_integrations(repo: Path, problems: list[str]) -> int:
     known_paths = [
         Path(".mcp.json"),
@@ -698,6 +703,7 @@ STORY_POINTS_REQUIRED_FIELDS = ("scale", "fast_threshold", "full_threshold", "gr
 STORY_POINTS_ALLOWED_FIELDS = frozenset(STORY_POINTS_REQUIRED_FIELDS)
 
 
+# Called from this file only via harness/health/checks/_cli.py's bridge (harness health); no in-file caller.
 def validate_project_json(repo: Path, problems: list[str]) -> None:
     """.harness/project.json is optional - only pvmalove-suite writes it - so a missing file is
     not itself a problem; only validate its shape when it's actually there. Mirrors
@@ -764,6 +770,7 @@ REPO_MAP_REL = Path(".harness/repo_map/repo_map.py")
 REPO_MAP_REGISTRY_REL = Path(".harness/.cache/repo_map/parser_bundle/registry")
 
 
+# Called from this file only via harness/health/checks/_cli.py's bridge (harness health); no in-file caller.
 def repo_map_health(repo: Path) -> list[str]:
     """Describe the Repo Map dispatch capability without invoking its parser.
 
@@ -855,6 +862,7 @@ def repo_map_health(repo: Path) -> list[str]:
     ]
 
 
+# Called from this file only via harness/health/checks/_cli.py's bridge (harness health); no in-file caller.
 def verification_routing_health(repo: Path) -> list[str]:
     """Предупредить, если developer получает полный QA-gate вместо фокусных проверок.
 
@@ -880,16 +888,6 @@ def verification_routing_health(repo: Path) -> list[str]:
     ]
 
 
-def _health_remedy(problem: str) -> str | None:
-    """Add an actionable hint for policy diagnostics without echoing policy contents."""
-    if problem.startswith("orchestration repo_map_policy"):
-        return (
-            "исправьте значение repo_map_policy в .harness/orchestration.json "
-            "по схеме .harness/orchestration/orchestration.schema.json и повторите harness health"
-        )
-    return None
-
-
 def _non_empty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value)
 
@@ -898,6 +896,7 @@ def _string_list(value: object) -> bool:
     return isinstance(value, list) and all(_non_empty_string(item) for item in value)
 
 
+# Called from this file only via harness/health/checks/_cli.py's bridge (harness health); no in-file caller.
 def validate_orchestration_config(repo: Path, problems: list[str]) -> None:
     """Adapt portable orchestration policy into accumulated health diagnostics."""
     if not (repo / ORCHESTRATION_SCHEMA_REL).is_file():
@@ -1413,61 +1412,18 @@ def cmd_lock_project_skills(args: argparse.Namespace) -> int:
 
 
 def cmd_health(args: argparse.Namespace) -> int:
+    """Run every registered harness.health check and report; see harness/health/registry.py.
+
+    Every check runs - there is no early exit. The command's own exit code is 1 only when at
+    least one check's status is 'fail'; 'warn' and 'skipped' do not affect it.
+    """
     repo = Path(args.repo).expanduser().resolve()
-    problems: list[str] = []
-    integration_count = 0
-    lock = load_lock(repo)
-    if lock is None:
-        problems.append("missing .harness/harness.lock")
-    if not (repo / "AGENTS.md").is_file():
-        problems.append("missing AGENTS.md")
+    report = health_registry.run(repo)
+    if args.json:
+        print(json.dumps(health_report_json.to_json(report), ensure_ascii=False))
     else:
-        agents_text = (repo / "AGENTS.md").read_text(encoding="utf-8")
-        if re.search(r"{{[^{}\n]+}}", agents_text):
-            problems.append("AGENTS.md contains unresolved template markers")
-    for relative, target in DISCOVERY_LINKS.items():
-        path = repo / relative
-        native_target = native_link_target(target)
-        if not path.is_symlink() or os.readlink(path) != native_target:
-            if not path.exists() and path.parent.exists() and not os.access(path.parent, os.W_OK):
-                continue
-            problems.append(f"broken discovery link: {relative} -> {target}")
-        elif not path.is_dir():
-            problems.append(f"discovery link does not resolve: {relative} -> {target}")
-    validate_project_json(repo, problems)
-    if lock:
-        if BACKEND_ORCHESTRATION_CAPABILITY in (lock.get("capabilities") or []):
-            validate_orchestration_config(repo, problems)
-        result = snapshot_diff(repo)
-        if result["state"] != "clean":
-            problems.append("managed skill snapshot has drift")
-        try:
-            expected_registry = project_registry(repo)
-            registry_path = repo / REGISTRY_REL
-            if not registry_path.is_file():
-                problems.append(f"missing {REGISTRY_REL}")
-            elif registry_path.read_text(encoding="utf-8") != expected_registry:
-                problems.append(f"stale {REGISTRY_REL}; run harness registry")
-            validate_overlay_locks(repo, lock, problems)
-        except ValueError as exc:
-            problems.append(str(exc))
-        integration_count = validate_integrations(repo, problems)
-    if problems:
-        for problem in problems:
-            print(f"ERROR {problem}")
-            remedy = _health_remedy(problem)
-            if remedy:
-                print(f"КАК ИСПРАВИТЬ: {remedy}")
-        return 1
-    for line in repo_map_health(repo):
-        print(line)
-    if lock and BACKEND_ORCHESTRATION_CAPABILITY in (lock.get("capabilities") or []):
-        for line in verification_routing_health(repo):
-            print(line)
-    skill_count = len(skill_inventory(repo))
-    print(f"files: healthy ({skill_count} skills, {integration_count} integrations): {repo}")
-    print("activation: verify advertised and invoked skills/integrations in a fresh runtime session")
-    return 0
+        print(health_render.render_text(report), end="")
+    return 1 if report.summary()["fail"] else 0
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -1564,6 +1520,7 @@ def parser() -> argparse.ArgumentParser:
 
     health = commands.add_parser("health")
     health.add_argument("repo")
+    health.add_argument("--json", action="store_true", help="print the schema_version-1 --json report")
     health.set_defaults(func=cmd_health)
 
     list_cmd = commands.add_parser("list")
