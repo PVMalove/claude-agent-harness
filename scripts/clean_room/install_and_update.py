@@ -222,6 +222,8 @@ def run(ctx: SimpleNamespace) -> None:
         or not (pv_project / ".harness" / "repo_map" / "repo_map.schema.json").is_file()
     ):
         sys.exit("pvmalove-suite Repo Map resource missing")
+    if not (pv_project / ".harness" / "health" / "registry.py").is_file():
+        sys.exit("pvmalove-suite health resource missing")
     map_project = test_root / "map_project"
     map_project.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=map_project, check=True)
