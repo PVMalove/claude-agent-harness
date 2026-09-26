@@ -1019,6 +1019,7 @@ BACKEND_ORCHESTRATION_CAPABILITY = "backend-orchestration"
 PROJECT_TEMPLATE_DIR = PACKAGE / "project"
 DOCS_TASKS_GITIGNORE_LINE = "/docs/tasks/"
 HARNESS_RUNTIME_GITIGNORE = """# Generated harness runtime data
+.sandboxes/
 .cache/
 tmp/
 reports/
@@ -1027,6 +1028,7 @@ worktrees/
 """
 RUNTIME_GITIGNORE_LINES = (
     DOCS_TASKS_GITIGNORE_LINE,
+    "/.harness/.sandboxes/",
     "/.harness/tmp/",
     "/.harness/.cache/",
     "/.harness/reports/",
