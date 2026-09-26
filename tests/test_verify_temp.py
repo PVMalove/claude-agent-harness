@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest import mock
 
 from scripts import verify
+from scripts.verification import process
 
 CLEAN_ROOM = Path(__file__).resolve().parents[1] / "scripts" / "test_clean_room.py"
 
@@ -95,7 +96,7 @@ class VerifyStageTimingTest(unittest.TestCase):
     def test_successful_stage_reports_its_name_and_duration(self) -> None:
         with (
             mock.patch.object(time, "perf_counter", side_effect=[10.0, 12.5]),
-            mock.patch.object(verify, "run_ok") as run_ok,
+            mock.patch.object(process, "run_ok") as run_ok,
             mock.patch("builtins.print") as printed,
         ):
             verify.run_stage("pytest", ["pytest"])
@@ -106,7 +107,7 @@ class VerifyStageTimingTest(unittest.TestCase):
     def test_failed_stage_reports_its_name_and_duration_before_propagating(self) -> None:
         with (
             mock.patch.object(time, "perf_counter", side_effect=[10.0, 11.0]),
-            mock.patch.object(verify, "run_ok", side_effect=SystemExit(7)),
+            mock.patch.object(process, "run_ok", side_effect=SystemExit(7)),
             mock.patch("builtins.print") as printed,
             self.assertRaises(SystemExit),
         ):

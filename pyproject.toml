@@ -20,6 +20,7 @@ files = [
     "harness",
     "tests",
     "scripts/verify.py",
+    "scripts/verification",
     "scripts/check_public_metadata.py",
     "scripts/diff_coverage.py",
     "scripts/build_parser_bundle.py",
