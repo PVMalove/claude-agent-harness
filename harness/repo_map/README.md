@@ -55,7 +55,8 @@ python .harness/repo_map/repo_map.py --repo . --commit (git rev-parse HEAD)
 Причины деградации (`parser_bundle.DegradationReason`): `offline parser bundle unavailable`,
 `parser bundle hash mismatch`, `parser wheelhouse missing for interpreter/platform pair`,
 `parser subprocess exceeded time limit`, `parser subprocess exceeded output size limit`,
-`parser subprocess failed`, `uv executable unavailable`.
+`parser subprocess failed` (сбой или неверный ответ worker), `parser bundle install failed` (сбой
+`uv pip install` или межпроцессной блокировки установки), `uv executable unavailable`.
 
 ### Протокол worker
 
@@ -149,12 +150,24 @@ worker возвращает для них пустой список импорт
 bundle, а не тестовый stub (`grammars[].name == "stub-lang"`). Иначе все реальные языки деградируют в
 `minimal` с причиной `parser subprocess failed`.
 
-Фокусный прогон при изменении Repo Map (Windows):
+Локальный bundle собирается из wheels своей пары, закреплённых с SHA-256 в
+`.github/parser-bundle-release-wheels.json` (например, `cp314-win_amd64`). Скачайте ровно эти файлы,
+сверьте SHA-256 и выполните:
 
 ```powershell
-$env:HARNESS_PARSER_BUNDLE_DIR = "<каталог собранного bundle>"
+.harness/.venv/Scripts/python.exe scripts/build_parser_bundle.py --wheelhouse <каталог wheels> --out .harness/.cache/repo_map/parser_bundle/registry
+```
+
+После изменения `tree_sitter_worker.py` bundle нужно пересобрать: registry хранит собственную копию
+worker с её SHA-256 в lock, поэтому старый bundle продолжит запускать прежнюю копию.
+
+Фокусный прогон при изменении Repo Map (Windows). Короткий `--basetemp` обязателен: установка bundle
+во временный репозиторий теста иначе упирается в MAX_PATH и даёт `parser bundle install failed`.
+
+```powershell
+$env:HARNESS_PARSER_BUNDLE_DIR = (Resolve-Path .harness/.cache/repo_map/parser_bundle/registry).Path
 $env:PYTHONPATH = "."
-.harness/.venv/Scripts/python.exe -m pytest -q tests/test_repo_map.py tests/test_parser_bundle.py tests/test_repo_map_tree_sitter*.py
+.harness/.venv/Scripts/python.exe -m pytest -q -n 4 --basetemp .harness/scratch/pt tests/test_repo_map.py tests/test_parser_bundle.py tests/test_repo_map_tree_sitter.py tests/test_repo_map_tree_sitter_go.py tests/test_repo_map_tree_sitter_java.py tests/test_repo_map_tree_sitter_csharp.py tests/test_repo_map_tree_sitter_unsupported.py tests/test_repo_map_tree_sitter_determinism.py
 ```
 
 Полный `scripts/verify.py` — это gate QA и CI. Для итераций разработчика он не нужен (см.

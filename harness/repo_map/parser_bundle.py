@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Offline parser bundle loader: locate, verify, install, and run a pinned parser bundle.
+"""Offline-загрузчик parser bundle: найти, проверить, установить и запустить закреплённый bundle.
 
-This module implements only the *generic* mechanism -- lock parsing, hash verification, an
-offline `uv pip install --target` into an isolated cache directory, and a bounded subprocess call
-into a worker script. It never imports `tree_sitter*` and carries no real grammar pins, so it
-stays in the main `mypy --strict` run. The tree-sitter worker is tree_sitter_worker.py, and
-scripts/build_parser_bundle.py assembles a real bundle from pinned wheels -- see
-docs/adr/0024-repo-map-parser-bundle-composition-and-delivery.md. It also owns the worker's
-`FileFacts` contract and rejects any response outside it.
+Модуль реализует только общий механизм: разбор lock, проверку хешей, offline-установку
+`uv pip install --target` в изолированный каталог кэша и ограниченный вызов worker-скрипта в
+subprocess. Он не импортирует `tree_sitter*` и не содержит реальных версий грамматик, поэтому
+проверяется основным `mypy --strict`. Tree-sitter worker — это tree_sitter_worker.py, а
+scripts/build_parser_bundle.py собирает настоящий bundle из закреплённых wheels (см.
+docs/adr/0024-repo-map-parser-bundle-composition-and-delivery.md). Здесь же задан контракт
+`FileFacts` worker, и любой ответ вне него отклоняется.
 
-Every entry point here is called only for `repo_map_policy.tier == "full"` (the default). It never
-raises for a missing, mismatched, or misbehaving bundle -- callers get back a `DegradationReason`
-string instead, so a failure here always turns into a valid `minimal` Repo Map, never a crash or a
-network call.
+Все точки входа вызываются только при `repo_map_policy.tier`, равном `full` (по умолчанию). Для
+отсутствующего, несовпадающего или сбойного bundle они не бросают исключений, а возвращают строку
+`DegradationReason`, поэтому любой сбой превращается в корректную карту `minimal`, а не в падение
+или сетевой вызов.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import IO, BinaryIO, Literal, TypedDict, cast
 
 from harness.storage import storage_path
 
@@ -65,22 +65,32 @@ DegradationReason = Literal[
     "parser subprocess exceeded time limit",
     "parser subprocess exceeded output size limit",
     "parser subprocess failed",
+    "parser bundle install failed",
     "uv executable unavailable",
 ]
 
+# How often a process waiting for the shared install lock retries, and how many install timeouts it
+# waits in total before giving up (one for a concurrent install plus one for its own).
+LOCK_POLL_SECONDS = 0.05
+INSTALL_LOCK_TIMEOUT_FACTOR = 2
+# Size of one read from the worker's stdout pipe.
+STDOUT_CHUNK_BYTES = 65536
+
 
 class BundleFormatError(ValueError):
-    """The bundle lock file is not a well-formed `parser_bundle.lock.json`."""
+    """Файл `parser_bundle.lock.json` имеет неверную структуру."""
 
 
 @dataclass(frozen=True)
 class ArtifactSpec:
+    """Артефакт wheelhouse: безопасное имя wheel и его SHA-256."""
     filename: str
     sha256: str
 
 
 @dataclass(frozen=True)
 class GrammarSpec:
+    """Грамматика из lock: имя, версия, ABI, хеш и расширения; для релизного lock — хеши по парам."""
     name: str
     version: str
     abi: int
@@ -92,6 +102,7 @@ class GrammarSpec:
 
 @dataclass(frozen=True)
 class BundleLock:
+    """Разобранный и проверенный `parser_bundle.lock.json` вместе с SHA-256 его исходных байтов."""
     core_version: str
     core_abi_range: str
     worker_script: str
@@ -102,13 +113,14 @@ class BundleLock:
 
 
 class VerifyResult(TypedDict):
+    """Результат проверки wheelhouse: успех либо причина деградации."""
     ok: bool
     reason: DegradationReason | None
 
 
 @dataclass(frozen=True)
 class AppliedBundle:
-    """A bundle whose lock, wheelhouse, install, and worker script all verified successfully."""
+    """Bundle, у которого lock, wheelhouse, установка и worker-скрипт успешно прошли проверку."""
 
     lock: BundleLock
     install_dir: Path
@@ -120,6 +132,7 @@ class AppliedBundle:
 
 
 def _string_field(obj: dict[str, object], field: str) -> str:
+    """Вернуть непустое строковое поле lock или поднять `BundleFormatError`."""
     value = obj.get(field)
     if not isinstance(value, str) or not value:
         raise BundleFormatError(f"parser_bundle.lock.json: {field} must be a non-empty string")
@@ -127,11 +140,11 @@ def _string_field(obj: dict[str, object], field: str) -> str:
 
 
 def _safe_bare_filename(value: str, where: str) -> str:
-    """Validate `value` as a bare, safe file name -- reject traversal, separators, or injection.
+    """Проверить, что `value` — безопасное голое имя файла без обхода каталогов, разделителей и инъекций.
 
-    Used for the fields interpolated into `Path` joins or a generated requirements file
-    (`worker_script`, wheelhouse `filename`s); a lock that fails this is a degradation
-    (`BundleFormatError`), never a crash or an install.
+    Применяется к полям, которые подставляются в `Path` или в генерируемый файл requirements
+    (`worker_script`, имена wheels). Lock, не прошедший проверку, даёт деградацию (`BundleFormatError`),
+    а не падение или установку.
     """
     if not _SAFE_FILENAME_RE.fullmatch(value):
         raise BundleFormatError(
@@ -141,6 +154,7 @@ def _safe_bare_filename(value: str, where: str) -> str:
 
 
 def _wheel_filename(value: str, where: str) -> str:
+    """Проверить, что значение — корректное имя wheel по PEP 427."""
     if not _WHEEL_FILENAME_RE.fullmatch(value):
         raise BundleFormatError(
             f"parser_bundle.lock.json: {where} must be a valid wheel file name, got {value!r}"
@@ -149,11 +163,11 @@ def _wheel_filename(value: str, where: str) -> str:
 
 
 def _sha256_field(obj: dict[str, object], field: str, where: str) -> str:
-    """Validate a lock digest as a bare lowercase sha256 hex string -- reject injection.
+    """Проверить digest из lock как строчный hex SHA-256 без инъекций.
 
-    Artifact digests are interpolated into the generated requirements file, so a value carrying
-    a newline or installer option would add requirement lines; a lock that fails this is a
-    degradation (`BundleFormatError`), never a crash or an install.
+    Digest подставляется в генерируемый файл requirements: значение с переводом строки или опцией
+    установщика добавило бы строки. Такой lock даёт деградацию (`BundleFormatError`), а не падение или
+    установку.
     """
     value = _string_field(obj, field)
     if not _SHA256_RE.fullmatch(value):
@@ -164,6 +178,7 @@ def _sha256_field(obj: dict[str, object], field: str, where: str) -> str:
 
 
 def _int_field(obj: dict[str, object], field: str) -> int:
+    """Вернуть целочисленное поле lock (bool не допускается) или поднять `BundleFormatError`."""
     value = obj.get(field)
     if isinstance(value, bool) or not isinstance(value, int):
         raise BundleFormatError(f"parser_bundle.lock.json: {field} must be an integer")
@@ -171,6 +186,7 @@ def _int_field(obj: dict[str, object], field: str) -> int:
 
 
 def _artifact_specs(value: object, where: str) -> tuple[ArtifactSpec, ...]:
+    """Разобрать список артефактов wheelhouse одной пары интерпретатор/платформа."""
     if not isinstance(value, list):
         raise BundleFormatError(f"parser_bundle.lock.json: {where} must be a list")
     specs: list[ArtifactSpec] = []
@@ -187,10 +203,10 @@ def _artifact_specs(value: object, where: str) -> tuple[ArtifactSpec, ...]:
 
 
 def parse_lock(raw: bytes) -> BundleLock:
-    """Parse and structurally validate a `parser_bundle.lock.json` payload.
+    """Разобрать и структурно проверить содержимое `parser_bundle.lock.json`.
 
-    Raises `BundleFormatError` for any structural problem; callers treat that the same as a
-    missing bundle (`"offline parser bundle unavailable"`).
+    Любая структурная ошибка поднимает `BundleFormatError`; вызывающий код трактует её так же, как
+    отсутствие bundle (`offline parser bundle unavailable`).
     """
     try:
         decoded: object = json.loads(raw)
@@ -219,7 +235,7 @@ def parse_lock(raw: bytes) -> BundleLock:
                 raise BundleFormatError("parser_bundle.lock.json: grammars[].sha256_by_pair must be an object")
             pair_hashes = {}
             for pair, digest in pair_hashes_raw.items():
-                if not isinstance(pair, str) or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                if not isinstance(pair, str) or not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None:
                     raise BundleFormatError("parser_bundle.lock.json: invalid per-pair grammar hash")
                 pair_hashes[pair] = digest
         distribution = item.get("distribution")
@@ -271,11 +287,12 @@ def parse_lock(raw: bytes) -> BundleLock:
 
 
 def default_registry_dir(repo: Path) -> Path:
-    """The portable, project-local bundle registry: never committed (`.harness/` is gitignored)."""
+    """Переносимый локальный registry bundle проекта; никогда не коммитится (`.harness/` в gitignore)."""
     return storage_path(repo, ".cache", "repo_map", "parser_bundle", "registry")
 
 
 def search_dirs(repo: Path, registry_paths: tuple[str, ...]) -> tuple[Path, ...]:
+    """Каталоги поиска bundle: локальный registry, затем `parser_bundle_registry_paths` (относительные — от репозитория)."""
     extra = tuple(
         Path(path) if Path(path).is_absolute() else repo / path for path in registry_paths
     )
@@ -283,7 +300,7 @@ def search_dirs(repo: Path, registry_paths: tuple[str, ...]) -> tuple[Path, ...]
 
 
 def find_bundle(dirs: tuple[Path, ...]) -> Path | None:
-    """Return the first directory in `dirs` that holds a `parser_bundle.lock.json`, else None."""
+    """Вернуть первый каталог из `dirs`, где есть `parser_bundle.lock.json`, иначе `None`."""
     for candidate in dirs:
         if (candidate / LOCK_FILENAME).is_file():
             return candidate
@@ -291,11 +308,10 @@ def find_bundle(dirs: tuple[Path, ...]) -> Path | None:
 
 
 def python_platform_tags(python_executable: str, timeout_seconds: int) -> tuple[str, str]:
-    """The (python_tag, platform_tag) pair of the interpreter that will run the parser subprocess.
+    """Вернуть пару (python_tag, platform_tag) интерпретатора, который будет запускать worker.
 
-    Runs a short `-c` subprocess with that interpreter rather than reading the current process's
-    own tags, since the parsing subprocess and this loader are not guaranteed to be the same
-    interpreter (ADR 0024).
+    Теги берутся коротким subprocess `-c` этого интерпретатора, а не из текущего процесса: загрузчик и
+    worker не обязаны работать в одном интерпретаторе (ADR 0024).
     """
     script = (
         "import sys, sysconfig, json;"
@@ -326,7 +342,7 @@ def python_platform_tags(python_executable: str, timeout_seconds: int) -> tuple[
 
 
 def verify_wheelhouse(lock: BundleLock, wheelhouse_dir: Path, pair: str) -> VerifyResult:
-    """Verify the sha256 of every artifact this pair needs, and the worker script itself."""
+    """Проверить SHA-256 каждого артефакта, нужного паре интерпретатор/платформа."""
     artifacts = lock.wheelhouses.get(pair)
     if artifacts is None or not wheelhouse_dir.is_dir():
         return {"ok": False, "reason": "parser wheelhouse missing for interpreter/platform pair"}
@@ -341,6 +357,7 @@ def verify_wheelhouse(lock: BundleLock, wheelhouse_dir: Path, pair: str) -> Veri
 
 
 def verify_worker_script(lock: BundleLock, worker_script: Path) -> bool:
+    """Проверить, что worker-скрипт существует и его SHA-256 совпадает с lock."""
     if not worker_script.is_file():
         return False
     digest = hashlib.sha256(worker_script.read_bytes()).hexdigest()
@@ -348,11 +365,24 @@ def verify_worker_script(lock: BundleLock, worker_script: Path) -> bool:
 
 
 class BundleInstallError(RuntimeError):
-    """`uv pip install --offline --no-index --target` failed or produced an unexpected result."""
+    """Установка `uv pip install --offline --no-index --target` завершилась ошибкой или неожиданным результатом."""
 
 
 class UvUnavailableError(BundleInstallError):
-    """No `uv` executable on PATH: the harness installs bundles with uv only, never pip."""
+    """`uv` не найден в PATH: harness устанавливает bundle только через uv, а не через pip."""
+
+
+def _lock_first_byte(handle: BinaryIO, *, acquire: bool) -> None:
+    """Захватить без ожидания или освободить первый байт файла (Windows и POSIX)."""
+    handle.seek(0)
+    if sys.platform == "win32":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK if acquire else msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), (fcntl.LOCK_EX | fcntl.LOCK_NB) if acquire else fcntl.LOCK_UN)
 
 
 @contextmanager
@@ -363,34 +393,18 @@ def _installation_lock(path: Path, timeout_seconds: int) -> Iterator[None]:
         deadline = time.monotonic() + timeout_seconds
         while True:
             try:
-                handle.seek(0)
-                if sys.platform == "win32":
-                    import msvcrt
-
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _lock_first_byte(handle, acquire=True)
                 break
             except OSError as exc:
                 if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
                     raise BundleInstallError("parser bundle installation lock failed") from exc
                 if time.monotonic() >= deadline:
                     raise BundleInstallError("parser bundle installation lock timed out") from exc
-                time.sleep(0.05)
+                time.sleep(LOCK_POLL_SECONDS)
         try:
             yield
         finally:
-            handle.seek(0)
-            if sys.platform == "win32":
-                import msvcrt
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            _lock_first_byte(handle, acquire=False)
 
 
 def install_bundle(
@@ -404,7 +418,9 @@ def install_bundle(
 ) -> None:
     """Установить bundle один раз для всех процессов, разделяющих каталог кэша."""
     try:
-        with _installation_lock(install_dir.parent / ".install.lock", timeout_seconds * 2):
+        with _installation_lock(
+            install_dir.parent / ".install.lock", timeout_seconds * INSTALL_LOCK_TIMEOUT_FACTOR
+        ):
             _install_bundle_unlocked(
                 lock, wheelhouse_dir, install_dir, python_executable,
                 pair=pair, timeout_seconds=timeout_seconds,
@@ -481,6 +497,7 @@ def _install_bundle_unlocked(
 
 
 def _wheel_name_version(filename: str) -> tuple[str, str]:
+    """Извлечь имя дистрибутива и версию из имени wheel."""
     stem = filename.removesuffix(".whl")
     parts = stem.split("-")
     if len(parts) < 2:
@@ -489,14 +506,14 @@ def _wheel_name_version(filename: str) -> tuple[str, str]:
 
 
 class SignatureFact(TypedDict):
-    """One serialized signature plus every symbol it exposes, so policy redaction stays in-process."""
+    """Сериализованная сигнатура и все раскрываемые ею символы: редактирование по политике остаётся в основном процессе."""
 
     text: str
     symbols: list[str]
 
 
 class ImportFact(TypedDict):
-    """`module` relative to `level` leading dots; `names` are the `from ... import` names, if any."""
+    """Импорт: `module` относительно `level` ведущих точек; `names` — имена из `from ... import`, если есть."""
 
     module: str
     level: int
@@ -504,7 +521,7 @@ class ImportFact(TypedDict):
 
 
 class FileFacts(TypedDict):
-    """The per-file worker contract: facts only -- edges and redaction are built by repo_map."""
+    """Контракт worker для одного файла: только факты; рёбра и редактирование строит repo_map."""
 
     parser_status: Literal["ok", "syntax_error", "invalid_encoding"]
     signatures: list[SignatureFact]
@@ -514,16 +531,19 @@ class FileFacts(TypedDict):
 
 
 class BundleParseResult(TypedDict):
+    """Проверенный ответ worker: факты по путям файлов."""
     files: dict[str, FileFacts]
 
 
 def _string_list(value: object) -> list[str] | None:
+    """Вернуть значение как список строк или `None`, если оно им не является."""
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         return None
     return cast(list[str], value)
 
 
 def _signature_fact(value: object) -> SignatureFact | None:
+    """Проверить запись сигнатуры из ответа worker; `None` при любом отклонении."""
     if not isinstance(value, dict) or set(value) != {"text", "symbols"}:
         return None
     text = value["text"]
@@ -534,6 +554,7 @@ def _signature_fact(value: object) -> SignatureFact | None:
 
 
 def _import_fact(value: object) -> ImportFact | None:
+    """Проверить запись импорта из ответа worker; `None` при любом отклонении."""
     if not isinstance(value, dict) or set(value) != {"module", "level", "names"}:
         return None
     module = value["module"]
@@ -551,7 +572,7 @@ def _import_fact(value: object) -> ImportFact | None:
 
 
 def _file_facts(value: object) -> FileFacts | None:
-    """Validate one worker record against the `FileFacts` contract; None for any deviation."""
+    """Проверить одну запись worker по контракту `FileFacts`; `None` при любом отклонении."""
     if not isinstance(value, dict) or set(value) != set(FileFacts.__annotations__):
         return None
     status = value["parser_status"]
@@ -580,11 +601,11 @@ def _file_facts(value: object) -> FileFacts | None:
     }
 
 
-def _read_stdout(stream: object, output_queue: queue.Queue[bytes | None]) -> None:
-    assert hasattr(stream, "read")
+def _read_stdout(stream: IO[bytes], output_queue: queue.Queue[bytes | None]) -> None:
+    """Читать stdout worker кусками в очередь; `None` в очереди означает конец потока."""
     try:
         while True:
-            chunk = stream.read(65536)
+            chunk = stream.read(STDOUT_CHUNK_BYTES)
             if not chunk:
                 break
             output_queue.put(chunk)
@@ -592,8 +613,8 @@ def _read_stdout(stream: object, output_queue: queue.Queue[bytes | None]) -> Non
         output_queue.put(None)
 
 
-def _write_stdin(stream: object, payload: bytes) -> None:
-    assert hasattr(stream, "write") and hasattr(stream, "close")
+def _write_stdin(stream: IO[bytes], payload: bytes) -> None:
+    """Записать запрос в stdin worker и закрыть поток, игнорируя разрыв канала."""
     try:
         stream.write(payload)
     except OSError:
@@ -615,15 +636,14 @@ def run_bundle_parser(
     max_output_bytes: int,
     expected_script_sha256: str,
 ) -> BundleParseResult | DegradationReason:
-    """Run `worker_script` as a subprocess, feeding it `request` as JSON on stdin.
+    """Запустить `worker_script` в subprocess и передать ему `request` как JSON через stdin.
 
-    Bounded on both dimensions: `timeout_seconds` wall-clock and `max_output_bytes` of stdout.
-    Re-verifies `worker_script`'s sha256 immediately before executing it, closing the TOCTOU gap
-    between an earlier `acquire_bundle` verification and this call. Reads stdout on a background
-    thread, and writes stdin on a second background thread started together with it, so a request
-    larger than the OS pipe buffer can never deadlock against a worker that produces output before
-    draining stdin (a plain synchronous write-then-read could block forever on either side). Never
-    raises -- every failure mode becomes a `DegradationReason`.
+    Запуск ограничен по времени (`timeout_seconds`) и по объёму stdout (`max_output_bytes`).
+    Непосредственно перед запуском SHA-256 worker проверяется повторно, что закрывает окно TOCTOU после
+    проверки в `acquire_bundle`. Stdout читается в фоновом потоке, а stdin пишется во втором, запущенном
+    вместе с ним, поэтому запрос больше буфера канала ОС не приводит к взаимной блокировке с worker,
+    который начал писать до чтения stdin. Исключений не бросает: любой сбой становится
+    `DegradationReason`.
     """
     try:
         script_digest = hashlib.sha256(worker_script.read_bytes()).hexdigest()
@@ -706,7 +726,7 @@ def build_provenance(
     python_tag: str | None,
     platform_tag: str | None,
 ) -> dict[str, object]:
-    """The `parser_provenance` fields this module owns, additive on top of repo_map's own."""
+    """Собрать поля `parser_provenance`, за которые отвечает этот модуль; они дополняют поля repo_map."""
     provenance: dict[str, object] = {
         "bundle_mode": bundle_mode,
         "bundle_source": bundle_source,
@@ -744,11 +764,11 @@ def acquire_bundle(
     python_executable: str,
     timeout_seconds: int,
 ) -> AppliedBundle | DegradationReason:
-    """Locate, verify, and install a parser bundle for `python_executable`'s tags.
+    """Найти, проверить и установить parser bundle для тегов `python_executable`.
 
-    Returns an `AppliedBundle` ready for `run_bundle_parser`, or a `DegradationReason` -- never
-    raises. No step here makes a network call: every path below reads only the local filesystem
-    and runs `uv pip install --offline --no-index --find-links <local wheelhouse dir>`.
+    Возвращает `AppliedBundle`, готовый для `run_bundle_parser`, или `DegradationReason` и никогда не
+    бросает исключений. Сетевых вызовов нет: читается только локальная файловая система, а установка идёт
+    через `uv pip install --offline --no-index --find-links <локальный wheelhouse>`.
     """
     dirs = search_dirs(repo, registry_paths)
     bundle_dir = find_bundle(dirs)
@@ -791,7 +811,7 @@ def acquire_bundle(
     except UvUnavailableError:
         return "uv executable unavailable"
     except BundleInstallError:
-        return "parser subprocess failed"
+        return "parser bundle install failed"
     worker_extensions = {
         extension: grammar.name for grammar in lock.grammars for extension in grammar.extensions
     }

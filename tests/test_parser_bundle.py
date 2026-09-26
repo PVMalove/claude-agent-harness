@@ -712,3 +712,19 @@ def test_acquire_bundle_without_uv_degrades_with_reason(
         repo=tmp_path, registry_paths=(), python_executable=sys.executable, timeout_seconds=30
     )
     assert result == "uv executable unavailable"
+
+
+def test_acquire_bundle_names_an_install_failure_instead_of_a_worker_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    build_bundle_dir(parser_bundle.default_registry_dir(tmp_path), pair=_running_pair())
+
+    def failing_install(*_args: object, **_kwargs: object) -> None:
+        raise parser_bundle.BundleInstallError("uv pip install timed out")
+
+    monkeypatch.setattr(parser_bundle, "install_bundle", failing_install)
+
+    result = parser_bundle.acquire_bundle(
+        repo=tmp_path, registry_paths=(), python_executable=sys.executable, timeout_seconds=30
+    )
+    assert result == "parser bundle install failed"

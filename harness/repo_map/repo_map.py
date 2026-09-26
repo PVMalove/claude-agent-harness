@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic, offline Repo Map for a pinned Git commit."""
+"""Детерминированная offline-карта репозитория (Repo Map) для закреплённого коммита Git."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ import tempfile
 from collections import deque
 from dataclasses import asdict, dataclass
 from fnmatch import fnmatchcase
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal, TypedDict, cast
 
@@ -56,6 +57,11 @@ DEFAULT_PARSER_BUNDLE_TIMEOUT_SECONDS = 30
 DEFAULT_PARSER_BUNDLE_MAX_OUTPUT_BYTES = 10_000_000
 # Names defined in this many files are too common to provide useful references.
 DEFINITION_FILE_FANOUT_THRESHOLD = 5
+# Ranking distance of a file that no seed reaches through the graph: after every reachable file.
+UNREACHABLE_DISTANCE = sys.maxsize
+# `degradation_reason` of a `full` map: the contract field is required even when nothing degraded.
+BUNDLE_APPLIED_REASON = "parser bundle applied"
+MINIMAL_POLICY_REASON = "policy requested minimal tier"
 JS_EXTENSIONS = frozenset({".ts", ".tsx", ".js", ".jsx"})
 # Name-ref edges never cross a family: two languages that happen to share an identifier (e.g. Go
 # and TS both defining `Parse`) must not collide. Import edges stay Python/JS-only below regardless
@@ -130,12 +136,14 @@ EXCLUDED_SUFFIXES = frozenset(
 
 
 class FileRecord(TypedDict):
+    """Запись файла в выходной карте: путь, видимые сигнатуры и статус разбора."""
     path: str
     signatures: list[str]
     parser_status: Literal["ok", "syntax_error", "invalid_encoding", "too_large"]
 
 
 class EdgeRecord(TypedDict):
+    """Ребро графа: источник, цель, вид связи и уверенность."""
     source: str
     target: str
     kind: str
@@ -143,12 +151,17 @@ class EdgeRecord(TypedDict):
 
 
 class Diagnostic(TypedDict):
+    """Диагностика разбора файла для поля `diagnostics`."""
     code: Literal["syntax_error", "invalid_encoding", "file_too_large"]
     path: str
 
 
 @dataclass(frozen=True)
 class RepoMapPolicy:
+    """Проверенная политика Repo Map: фильтры путей и символов, лимиты, уровень и настройки bundle.
+
+    `sha256` — хеш исходного файла политики; `None` означает переносимые значения по умолчанию.
+    """
     allow_paths: tuple[str, ...] = ()
     deny_paths: tuple[str, ...] = ()
     redact_paths: tuple[str, ...] = ()
@@ -168,10 +181,19 @@ class RepoMapPolicy:
 
     @property
     def enforced(self) -> bool:
+        """Политика загружена из файла проекта, а не взята по умолчанию."""
         return self.sha256 is not None
 
 
+class RepoMapGitError(HarnessError):
+    """Git-команда Repo Map завершилась ошибкой или превысила таймаут."""
+
+
 def _git(repo: Path, timeout_seconds: int, *args: str) -> bytes:
+    """Выполнить Git-команду в `repo` с таймаутом и вернуть stdout.
+
+    Ошибка или превышение таймаута поднимают `RepoMapGitError` с рекомендацией.
+    """
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), *args],
@@ -180,19 +202,29 @@ def _git(repo: Path, timeout_seconds: int, *args: str) -> bytes:
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
-        raise ValueError(
-            f"git {' '.join(args)} timed out after {timeout_seconds} seconds"
+        raise RepoMapGitError(
+            f"git {' '.join(args)} timed out after {timeout_seconds} seconds",
+            remedy="raise repo_map_policy.timeout_seconds or retry on a less loaded machine",
         ) from exc
     if result.returncode:
-        raise ValueError(result.stderr.decode("utf-8", "replace").strip())
+        raise RepoMapGitError(
+            result.stderr.decode("utf-8", "replace").strip() or f"git {args[0]} failed",
+            remedy="check that --repo is a Git repository and --commit names an existing commit",
+        )
     return result.stdout
 
 
 def _matches(path: str, patterns: tuple[str, ...]) -> bool:
+    """Проверить, совпадает ли путь или имя хотя бы с одним glob-шаблоном (с учётом регистра)."""
     return any(fnmatchcase(path, pattern) for pattern in patterns)
 
 
 def _allowed(path: str, policy: RepoMapPolicy) -> bool:
+    """Решить, попадает ли tracked-путь в карту.
+
+    Отсекает служебные каталоги, секреты, сгенерированные и бинарные файлы, слишком длинные пути, а затем
+    применяет `allow_paths`, `deny_paths` и `redact_paths` политики.
+    """
     parts = Path(path).parts
     name = parts[-1]
     if any(part in EXCLUDED_DIRS or part.startswith(".env") for part in parts):
@@ -214,18 +246,25 @@ def _allowed(path: str, policy: RepoMapPolicy) -> bool:
     return not any(name.endswith(suffix) for suffix in EXCLUDED_SUFFIXES)
 
 
-def _string_patterns(value: object, field: str) -> tuple[str, ...]:
+def _non_empty_strings(value: object, field: str, kind: str) -> list[str]:
+    """Проверить, что поле политики — список непустых строк, иначе поднять `PolicyError`."""
     if not isinstance(value, list) or any(
         not isinstance(item, str) or not item for item in value
     ):
-        raise PolicyError(
-            f"repo_map_policy.{field} must be a list of non-empty path globs",
-            remedy=f"set repo_map_policy.{field} to a list of non-empty glob strings",
+        raise _policy_error(
+            f"repo_map_policy.{field} must be a list of non-empty {kind}",
+            f"set repo_map_policy.{field} to a list of non-empty {kind}",
         )
-    return tuple(sorted(set(value)))
+    return cast(list[str], value)
+
+
+def _string_patterns(value: object, field: str) -> tuple[str, ...]:
+    """Вернуть отсортированные glob-шаблоны поля политики без повторов."""
+    return tuple(sorted(set(_non_empty_strings(value, field, "path globs"))))
 
 
 def _positive_int(value: object, field: str) -> int:
+    """Проверить, что поле политики — положительное целое число (bool не допускается)."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise PolicyError(
             f"repo_map_policy.{field} must be a positive integer",
@@ -235,10 +274,17 @@ def _positive_int(value: object, field: str) -> int:
 
 
 def _policy_error(message: str, remedy: str) -> PolicyError:
+    """Собрать `PolicyError` с сообщением и рекомендацией."""
     return PolicyError(message, remedy=remedy)
 
 
 def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
+    """Загрузить и проверить `repo_map_policy` из файла оркестрации.
+
+    Без файла или без секции возвращает переносимые значения по умолчанию; если путь передан явно
+    (`explicit`), их отсутствие — ошибка. Неизвестные поля и неверные типы поднимают `PolicyError`
+    с рекомендацией.
+    """
     if path is None or not path.is_file():
         if explicit:
             raise _policy_error(
@@ -311,15 +357,13 @@ def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
     for field in ("allow_paths", "deny_paths", "redact_paths", "redact_symbols"):
         value = section.get(field, [])
         patterns[field] = _string_patterns(value, field)
-    registry_paths_value = section.get("parser_bundle_registry_paths", [])
-    if not isinstance(registry_paths_value, list) or any(
-        not isinstance(item, str) or not item for item in registry_paths_value
-    ):
-        raise PolicyError(
-            "repo_map_policy.parser_bundle_registry_paths must be a list of non-empty strings",
-            remedy="set repo_map_policy.parser_bundle_registry_paths to a list of non-empty path strings",
+    registry_paths = tuple(
+        _non_empty_strings(
+            section.get("parser_bundle_registry_paths", []),
+            "parser_bundle_registry_paths",
+            "strings",
         )
-    registry_paths = tuple(registry_paths_value)
+    )
     numeric: dict[str, int] = {}
     for field, default in (
         ("max_files", DEFAULT_MAX_FILES),
@@ -367,6 +411,7 @@ def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
 
 
 def _symbol_visible(name: str, policy: RepoMapPolicy) -> bool:
+    """Проверить, что символ укладывается в `max_symbol_length` и не попадает под `redact_symbols`."""
     return len(name) <= policy.max_symbol_length and not _matches(
         name, policy.redact_symbols
     )
@@ -375,7 +420,7 @@ def _symbol_visible(name: str, policy: RepoMapPolicy) -> bool:
 def _visible_signatures(
     signatures: list[parser_bundle.SignatureFact], policy: RepoMapPolicy
 ) -> list[str]:
-    """Keep a signature only when every symbol it serializes passes symbol policy."""
+    """Оставить сигнатуры, чей текст укладывается в лимит, а каждый сериализуемый символ проходит политику."""
     return [
         signature["text"]
         for signature in signatures
@@ -384,20 +429,26 @@ def _visible_signatures(
     ]
 
 
+def _python_module(path: str) -> str:
+    """Преобразовать путь `.py` в dotted-имя модуля."""
+    return path.removesuffix(".py").replace("/", ".")
+
+
 def _module_paths(paths: set[str]) -> dict[str, str]:
+    """Построить соответствие dotted-имени модуля его файлу; `pkg/__init__.py` становится `pkg`."""
     modules: dict[str, str] = {}
     for path in paths:
-        stem = path.removesuffix(".py")
-        if stem.endswith("/__init__"):
-            stem = stem.removesuffix("/__init__")
-        module = stem.replace("/", ".")
+        module = path.removesuffix(".py").removesuffix("/__init__").replace("/", ".")
         if module:
             modules[module] = path
     return modules
 
 
 def _import_modules(fact: parser_bundle.ImportFact, module: str) -> list[str]:
-    """Candidate dotted modules for one import: the base module and each `from` name under it."""
+    """Вернуть кандидатов dotted-модулей для одного импорта: базовый модуль и каждое имя из `from ... import`.
+
+    Относительный импорт разрешается от модуля `module` на `level` уровней вверх.
+    """
     level = fact["level"]
     parent = module.rsplit(".", level)[0] if level else ""
     base = ".".join(part for part in (parent, fact["module"]) if part)
@@ -406,16 +457,36 @@ def _import_modules(fact: parser_bundle.ImportFact, module: str) -> list[str]:
     return [base, *(f"{base}.{name}" for name in fact["names"] if name != "*")]
 
 
-def _module_visible(module: str, policy: RepoMapPolicy) -> bool:
-    """Apply symbol length/redaction to a dotted import before exposing its edge."""
-    parts = tuple(part for part in module.split(".") if part)
-    return _symbol_visible(module, policy) and all(
+def _name_and_parts_visible(name: str, parts: list[str], policy: RepoMapPolicy) -> bool:
+    """Проверить, что имя целиком и каждая его часть проходят политику символов."""
+    return _symbol_visible(name, policy) and all(
         _symbol_visible(part, policy) for part in parts
     )
 
 
+def _module_visible(module: str, policy: RepoMapPolicy) -> bool:
+    """Применить политику символов к dotted-модулю и каждому его сегменту до создания ребра импорта."""
+    return _name_and_parts_visible(
+        module, [part for part in module.split(".") if part], policy
+    )
+
+
+def _specifier_visible(specifier: str, policy: RepoMapPolicy) -> bool:
+    """Применить политику символов к спецификатору импорта JS/TS и каждому сегменту его пути."""
+    parts = [
+        part
+        for part in posixpath.splitext(specifier)[0].split("/")
+        if part not in {".", ".."}
+    ]
+    return _name_and_parts_visible(specifier, parts, policy)
+
+
 def _js_import_target(source: str, specifier: str, paths: set[str]) -> str | None:
-    """Resolve a tracked relative source import; never infer packages or TS aliases."""
+    """Разрешить относительный импорт TS/JS в tracked-файл.
+
+    Пробует точный путь, расширения `.ts`, `.tsx`, `.js`, `.jsx` и `index`-файлы. Пакеты, aliases и выход
+    за корень репозитория не разрешаются.
+    """
     if not specifier.startswith(("./", "../")):
         return None
     base = posixpath.normpath(posixpath.join(posixpath.dirname(source), specifier))
@@ -429,6 +500,7 @@ def _js_import_target(source: str, specifier: str, paths: set[str]) -> str | Non
 
 
 def _encode(payload: dict[str, object]) -> str:
+    """Сериализовать карту в канонический JSON: сортировка ключей, без пробелов, перевод строки в конце."""
     return (
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         + "\n"
@@ -437,6 +509,11 @@ def _encode(payload: dict[str, object]) -> str:
 
 def _sized(payload: dict[str, object]) -> tuple[str, int]:
     # The count includes the count field itself. Iterate until its digit width settles.
+    """Сериализовать карту и вычислить `estimated_tokens`, учитывающий само это поле.
+
+    Оценка повторяется, пока ширина числа не стабилизируется; если за 8 итераций сходимости нет,
+    поднимается `ValueError`.
+    """
     size = 0
     for _ in range(8):
         payload["estimated_tokens"] = size
@@ -450,30 +527,31 @@ def _sized(payload: dict[str, object]) -> tuple[str, int]:
 
 @dataclass(frozen=True)
 class _BundleParse:
-    """The outcome of the `full` tier: parsed file records and facts, or a degradation reason."""
+    """Итог разбора в режиме `full`: записи файлов и факты парсера либо причина деградации."""
 
+    applied: bool
     reason: str
     provenance: dict[str, object]
     records: dict[str, dict[str, object]]
     facts: dict[str, parser_bundle.FileFacts]
     diagnostics: list[Diagnostic]
 
-    @property
-    def applied(self) -> bool:
-        return self.reason == "parser bundle applied"
+    @classmethod
+    def degraded(cls, reason: str, provenance: dict[str, object]) -> _BundleParse:
+        """Создать итог деградации с причиной и provenance, без фактов."""
+        return cls(False, reason, provenance, {}, {}, [])
 
 
 def _parse_with_bundle(
     repo: Path, commit: str, paths: list[str], policy: RepoMapPolicy
 ) -> _BundleParse:
-    """Parse every supported file with the verified offline parser bundle, or degrade.
+    """Разобрать поддерживаемые файлы проверенным offline parser bundle или деградировать.
 
-    Every language, Python included, goes through the bundle's tree-sitter worker: there is no
-    in-process parser to fall back to, so any failure yields a reason for the `minimal` tier.
-    Never touches the network: every step is a local filesystem read, an offline
-    `uv pip install --offline --no-index --target`, or a bounded local subprocess into the bundle's worker
-    script (see harness/repo_map/parser_bundle.py). The bundle is located before any file content
-    is read, so a degraded run reads only paths.
+    Все языки, включая Python, проходят через tree-sitter worker из bundle: встроенного запасного
+    парсера нет, поэтому любой сбой даёт причину для уровня `minimal`. Сеть не используется: каждый шаг —
+    чтение локальных файлов, offline-установка `uv pip install --offline --no-index --target` или
+    ограниченный локальный subprocess worker (см. harness/repo_map/parser_bundle.py). Bundle ищется до
+    чтения содержимого файлов, поэтому деградировавший запуск читает только пути.
     """
     bundle = parser_bundle.acquire_bundle(
         repo=repo,
@@ -489,7 +567,7 @@ def _parse_with_bundle(
             python_tag=None,
             platform_tag=None,
         )
-        return _BundleParse(bundle, provenance, {}, {}, [])
+        return _BundleParse.degraded(bundle, provenance)
     records: dict[str, dict[str, object]] = {}
     diagnostics: list[Diagnostic] = []
     request_paths: dict[str, str] = {}
@@ -533,23 +611,22 @@ def _parse_with_bundle(
         platform_tag=bundle.platform_tag,
     )
     if isinstance(parse_result, str):
-        return _BundleParse(parse_result, provenance, {}, {}, [])
+        return _BundleParse.degraded(parse_result, provenance)
     facts = {
         path: record
         for path, record in parse_result["files"].items()
         if path in request_paths
     }
     return _BundleParse(
-        "parser bundle applied", provenance, records, facts, diagnostics
+        True, BUNDLE_APPLIED_REASON, provenance, records, facts, diagnostics
     )
 
 
 def _family(path: str) -> str:
-    """The name-ref family for `path`'s extension.
+    """Вернуть языковое семейство расширения `path` для ссылок по имени.
 
-    An extension outside the five declared families buckets under its own suffix, isolated from
-    every named family (a family name never starts with the `.` every suffix carries), instead of
-    silently joining `python` or `js`.
+    Расширение вне пяти известных семейств образует собственное семейство по суффиксу: имя семейства
+    никогда не начинается с точки, поэтому такой файл не смешивается с `python` или `js`.
     """
     suffix = Path(path).suffix
     return _EXTENSION_FAMILY.get(suffix, suffix)
@@ -561,7 +638,12 @@ def _graph_from_facts(
     diagnostics: list[Diagnostic],
     policy: RepoMapPolicy,
 ) -> list[EdgeRecord]:
-    """Apply symbol policy to worker facts, fill in file records, and build the edge list."""
+    """Применить политику символов к фактам worker, дополнить записи файлов и построить список рёбер.
+
+    Импорты дают `import/high` (Python и относительные TS/JS), ссылки по имени —
+    `unique-name-ref/medium` или `ambiguous-name-ref/low` в пределах одного семейства. Имена,
+    определённые в `DEFINITION_FILE_FANOUT_THRESHOLD` и более файлах, отбрасываются.
+    """
     module_paths = _module_paths({path for path in records if path.endswith(".py")})
     edges: set[tuple[str, str, str, str]] = set()
     definitions: dict[tuple[str, str], set[str]] = {}
@@ -580,11 +662,7 @@ def _graph_from_facts(
         if path in js_paths:
             for import_fact in record["imports"]:
                 specifier = import_fact["module"]
-                if not _symbol_visible(specifier, policy) or not all(
-                    _symbol_visible(part, policy)
-                    for part in posixpath.splitext(specifier)[0].split("/")
-                    if part not in {".", ".."}
-                ):
+                if not _specifier_visible(specifier, policy):
                     continue
                 target = _js_import_target(path, specifier, js_paths)
                 if target is not None and target != path:
@@ -592,7 +670,7 @@ def _graph_from_facts(
             continue
         if not path.endswith(".py"):
             continue
-        current_module = path.removesuffix(".py").replace("/", ".")
+        current_module = _python_module(path)
         for import_fact in record["imports"]:
             for imported_module in _import_modules(import_fact, current_module):
                 if not _module_visible(imported_module, policy):
@@ -601,9 +679,7 @@ def _graph_from_facts(
                 if (
                     target
                     and target != path
-                    and _module_visible(
-                        target.removesuffix(".py").replace("/", "."), policy
-                    )
+                    and _module_visible(_python_module(target), policy)
                 ):
                     edges.add((path, target, "import", "high"))
     for path in sorted(facts):
@@ -629,6 +705,18 @@ def _graph_from_facts(
     ]
 
 
+@lru_cache(maxsize=1)
+def _parser_identity() -> str:
+    """SHA-256 исходников, от которых зависит сериализация карты; вычисляется один раз на процесс."""
+    return hashlib.sha256(
+        Path(__file__).read_bytes()
+        + Path(parser_bundle.__file__).read_bytes()
+        + Path(__file__).with_name("contract.py").read_bytes()
+        + Path(__file__).with_name("repo_map.schema.json").read_bytes()
+        + (_HARNESS_ROOT / "repo_map" / "tree_sitter_worker.py").read_bytes()
+    ).hexdigest()
+
+
 def _cache_key(
     repo: Path,
     pinned: str,
@@ -636,20 +724,13 @@ def _cache_key(
     max_tokens: int,
     policy: RepoMapPolicy,
 ) -> str:
-    """Hash every input that can affect a serialized Repo Map."""
-    parser_identity = hashlib.sha256(
-        Path(__file__).read_bytes()
-        + Path(parser_bundle.__file__).read_bytes()
-        + Path(__file__).with_name("contract.py").read_bytes()
-        + Path(__file__).with_name("repo_map.schema.json").read_bytes()
-        + (_HARNESS_ROOT / "repo_map" / "tree_sitter_worker.py").read_bytes()
-    ).hexdigest()
+    """Вычислить ключ кэша по всем входам, влияющим на сериализованную карту."""
     identity = {
         "commit": pinned,
         "seeds": seeds,
         "max_tokens": max_tokens,
         "policy": asdict(policy),
-        "parser_identity": parser_identity,
+        "parser_identity": _parser_identity(),
         "bundle_identity": _bundle_cache_identity(repo, policy) if policy.tier == "full" else None,
         "token_estimator_version": TOKEN_ESTIMATOR_VERSION,
     }
@@ -659,7 +740,11 @@ def _cache_key(
 
 
 def _bundle_cache_identity(repo: Path, policy: RepoMapPolicy) -> str:
-    """Bind full results to the selected lock and bytes needed by this interpreter."""
+    """Привязать результат `full` к выбранному lock, worker и wheels текущего интерпретатора.
+
+    Недоступный или повреждённый bundle тоже даёт детерминированную идентичность, поэтому установка
+    или замена bundle меняет ключ.
+    """
     bundle_dir = parser_bundle.find_bundle(
         parser_bundle.search_dirs(repo, policy.parser_bundle_registry_paths)
     )
@@ -709,7 +794,7 @@ def _read_cache(cache_dir: Path, key: str, pinned: str) -> str | None:
 
 
 def _write_cache(cache_dir: Path, key: str, payload: str) -> None:
-    """Best-effort atomic cache write: the cache must never become authoritative."""
+    """Атомарно записать результат в кэш по возможности; кэш никогда не становится авторитетным."""
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
         envelope = json.dumps(
@@ -739,12 +824,17 @@ def _build_map(
     seeds: list[str],
     effective_policy: RepoMapPolicy,
 ) -> str:
+    """Построить карту для уже отобранных путей: разбор, граф, ранжирование и отбор файлов в бюджет.
+
+    С seeds файлы упорядочиваются по расстоянию в графе через рёбра высокой и средней уверенности,
+    без seeds — по входящей степени; затем по пути.
+    """
     files: dict[str, dict[str, object]] = {path: {"path": path} for path in paths}
     edges: list[EdgeRecord] = []
     diagnostics: list[Diagnostic] = []
     tier: Literal["minimal", "full"] = "minimal"
     parser: Literal["path-only", "bundle"] = "path-only"
-    degradation_reason = "policy requested minimal tier"
+    degradation_reason = MINIMAL_POLICY_REASON
     bundle_provenance: dict[str, object] = {}
     if effective_policy.tier == "full":
         parsed = _parse_with_bundle(repo, pinned, paths, effective_policy)
@@ -783,7 +873,7 @@ def _build_map(
                 queue.append(neighbor)
     ordered = sorted(
         files,
-        key=(lambda path: (distances.get(path, 10**9), path))
+        key=(lambda path: (distances.get(path, UNREACHABLE_DISTANCE), path))
         if effective_seeds
         else (lambda path: (-indegree[path], path)),
     )
@@ -858,7 +948,11 @@ def build_map(
     *,
     cache_dir: Path | None = None,
 ) -> str:
-    """Build a Repo Map, reusing a verified local content-addressed entry when possible."""
+    """Построить Repo Map для коммита, по возможности переиспользуя проверенную запись кэша.
+
+    Проверяет бюджет и политику, закрепляет коммит, отбирает tracked-пути и кэширует результат, если
+    запрос `full` не деградировал.
+    """
     effective_policy = policy or RepoMapPolicy()
     if max_tokens < 1:
         raise PolicyError(
@@ -920,6 +1014,7 @@ def build_map(
 
 
 def main() -> int:
+    """Точка входа CLI: разобрать аргументы, загрузить политику и напечатать карту; вернуть код выхода."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--commit", required=True)

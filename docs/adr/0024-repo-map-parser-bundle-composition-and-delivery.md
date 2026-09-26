@@ -31,7 +31,8 @@ mypy 2.3.1, pip-audit 2.10.1, cyclonedx-py 7.4.0). Полный режим ос�
   wheel с lock и при отсутствии каталога для пары или несовпадении хеша деградирует в `minimal`
   без сети. Wheels распаковываются в изолированный каталог bundle вне целевого проекта (`uv pip install
   --offline --no-config --no-index --find-links --require-hashes --only-binary :all: --target`; pip не
-  используется, отсутствие `uv` — причина деградации `uv executable unavailable`); момент (при установке
+  используется, отсутствие `uv` — причина деградации `uv executable unavailable`, любой другой сбой
+  установки — `parser bundle install failed`); момент (при установке
   харнесса или при первом запуске) и место распаковки определяет #272. Это относится к bundle, а не к пакету
   харнесса: «пакет без pip-установки» из ADR 0018 сохраняется. Харнесс использует собственное
   окружение `.harness/.venv` и группу `dev` из `pyproject.toml` (`uv sync --locked`); `.venv`, `requirements.txt`

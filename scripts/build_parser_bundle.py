@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Assemble an offline Repo Map parser bundle directory from an already-downloaded wheelhouse.
+"""Собрать offline parser bundle Repo Map из заранее скачанного wheelhouse.
 
-Build-time only: it copies wheels and the tree-sitter worker, hashes them, and writes
-`parser_bundle.lock.json` in the format `harness/repo_map/parser_bundle.py` verifies. It never
-downloads, resolves, or installs anything -- the wheelhouse must already hold exactly the pinned
-wheels below for one interpreter/platform pair (ADR 0024). Pins change only with a harness release.
+Только для сборки: скрипт копирует wheels и tree-sitter worker, хеширует их и пишет
+`parser_bundle.lock.json` в формате, который проверяет harness/repo_map/parser_bundle.py. Он ничего
+не скачивает, не разрешает зависимости и не устанавливает: wheelhouse уже должен содержать ровно
+закреплённые ниже wheels для одной пары интерпретатор/платформа (ADR 0024). Версии меняются только
+вместе с релизом harness.
 
-Usage: build_parser_bundle.py --wheelhouse DIR --out DIR [--pair cpXY-platform]
+Использование: build_parser_bundle.py --wheelhouse DIR --out DIR [--pair cpXY-platform]
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ CORE_ABI_RANGE = "13-15"
 
 @dataclass(frozen=True)
 class GrammarPin:
+    """Закреплённая грамматика: имя в lock, дистрибутив, версия, ABI и расширения файлов."""
     name: str
     distribution: str
     version: str
@@ -48,10 +50,12 @@ GRAMMARS = (
 
 
 def _sha256(path: Path) -> str:
+    """SHA-256 содержимого файла."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _running_pair() -> str:
+    """Пара интерпретатор/платформа текущего Python в формате `cpXY-platform`."""
     script = (
         "import sys, sysconfig;"
         "print(f'cp{sys.version_info[0]}{sys.version_info[1]}-'"
@@ -61,6 +65,7 @@ def _running_pair() -> str:
 
 
 def _single_wheel(wheelhouse: Path, distribution: str, version: str) -> Path:
+    """Найти единственный wheel дистрибутива нужной версии или завершить скрипт с ошибкой."""
     matches = sorted(wheelhouse.glob(f"{distribution}-{version}-*.whl"))
     if len(matches) != 1:
         raise SystemExit(
@@ -71,6 +76,7 @@ def _single_wheel(wheelhouse: Path, distribution: str, version: str) -> Path:
 
 
 def build(wheelhouse: Path, out: Path, pair: str) -> Path:
+    """Скопировать wheels и worker в `out` и записать lock для пары `pair`; вернуть путь к lock."""
     core = _single_wheel(wheelhouse, CORE_DISTRIBUTION, CORE_VERSION)
     grammar_wheels = {
         pin.name: _single_wheel(wheelhouse, pin.distribution, pin.version) for pin in GRAMMARS
@@ -106,6 +112,7 @@ def build(wheelhouse: Path, out: Path, pair: str) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Точка входа CLI: собрать bundle и напечатать путь к lock."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     parser.add_argument("--wheelhouse", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
