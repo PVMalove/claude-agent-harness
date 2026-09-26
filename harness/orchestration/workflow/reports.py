@@ -17,12 +17,14 @@ from pathlib import Path
 from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
+from harness.orchestration.contract import NO_GATE_WORK_ROLES
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
     _adaptive_continuation_policy,
     _context_advisory,
     _continuation_policy,
+    _execution_policy,
     _reject_sensitive,
     _role,
 )
@@ -46,6 +48,8 @@ from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _changed_files_between,
     _commit_changed_files,
+    _commits_between,
+    _git_is_ancestor,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -78,6 +82,7 @@ from harness.orchestration.ledger.lifecycle import (
     BatchRecord,
     CheckpointRecord,
     DispatchStatusRecord,
+    LedgerError,
     LifecycleLedger,
 )
 from harness.orchestration.runtime_attestation import (
@@ -248,7 +253,11 @@ def rate_limited_dispatch(args: argparse.Namespace) -> JsonObject:
     """Record a provider 429 without model-side polling or a lost checkpoint."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    retry_after = args.retry_after_seconds
+    retry_after = (
+        args.retry_after_seconds
+        if args.retry_after_seconds is not None
+        else _execution_policy(core_config._config(repo))["rate_limit_retry_seconds"]
+    )
     if (
         isinstance(retry_after, bool)
         or not isinstance(retry_after, int)
@@ -804,6 +813,10 @@ def _persist_report(
     try:
         _write_text_exclusive(ledger, report_md, _report_markdown(report))
     except CoordinatorError as exc:
+        try:
+            ledger.delete(report_json, reason="discard incomplete immutable report")
+        except LedgerError as cleanup:
+            raise CoordinatorError(cleanup.message, remedy=cleanup.remedy) from exc
         raise CoordinatorError(
             "refusing to overwrite immutable Markdown report",
             remedy=f"a Markdown report already exists at this immutable path -- {INTERNAL_INVARIANT_REMEDY}",
@@ -945,13 +958,29 @@ def _validate_review(review: object, dispatch: JsonObject) -> None:
             )
 
 
+def _rebase_target(batch: JsonObject, dispatch: JsonObject) -> str | None:
+    """The integration tip a developer dispatch must rebase onto, when a stale-base block is open."""
+    target = batch.get("rebase_target_commit")
+    if (
+        dispatch.get("role") == "developer"
+        and batch.get("base_rebase_required")
+        and isinstance(target, str)
+    ):
+        return target
+    return None
+
+
 def _validate_report(
     report: JsonObject,
     dispatch: JsonObject,
     role: JsonObject,
     repo: Path | None = None,
     base_commit: str | None = None,
+    rebase_target: str | None = None,
 ) -> None:
+    """``rebase_target`` is set only for the developer report that clears a stale-base block: the
+    candidate must contain that tip, and its own commits and files are measured from it, so
+    upstream commits the rebase brought in are never attributed to the ticket."""
     _reject_sensitive(report, "completion report")
     if (
         not REPORT_FIELDS <= set(report)
@@ -996,7 +1025,10 @@ def _validate_report(
         report["changed_files"], "completion report changed_files", allow_empty=True
     )
     checks = report["checks_run"]
-    if not isinstance(checks, list) or not checks:
+    # Only a work role that owns no verification gate (the architect) reports an empty list; every
+    # other role must report the non-empty command list its brief approved.
+    owns_no_gate = dispatch.get("purpose") == "work" and dispatch.get("role") in NO_GATE_WORK_ROLES
+    if not isinstance(checks, list) or (not checks and not owns_no_gate):
         raise CoordinatorError(
             "completion report checks_run must be a non-empty list",
             remedy="set checks_run to a non-empty list",
@@ -1060,6 +1092,13 @@ def _validate_report(
                 )
         if repo is not None:
             resolved = _candidate_commit(repo, commit_sha)
+            if rebase_target is not None:
+                if not _git_is_ancestor(repo, rebase_target, resolved):
+                    raise CoordinatorError(
+                        f"rebase candidate does not contain the integration tip {rebase_target}",
+                        remedy=f"rebase the issue branch onto {rebase_target} and report the rebased HEAD",
+                    )
+                base_commit = rebase_target
             actual_files = (
                 _changed_files_between(repo, base_commit, resolved)
                 if base_commit
@@ -1070,6 +1109,72 @@ def _validate_report(
                     "completion report changed_files must exactly match commit_sha",
                     remedy="regenerate completion report changed_files from the actual diff at commit_sha",
                 )
+        commit_plan = dispatch.get("commit_plan", [])
+        commit_map = report.get("commit_map")
+        # The commit plan is verified against Git history, so it needs the repository, like the
+        # changed_files check above.
+        if role.get("name") == "developer" and commit_plan and repo is not None:
+            if not isinstance(commit_map, list) or not commit_map:
+                raise CoordinatorError(
+                    "developer completion report requires commit_map for the immutable commit plan",
+                    remedy="map every commit created after snapshot_commit to exactly one commit_plan entry",
+                )
+            plan_ids = [
+                entry.get("id") for entry in commit_plan if isinstance(entry, dict)
+            ]
+            if len(plan_ids) != len(commit_plan) or not all(
+                isinstance(item, str) for item in plan_ids
+            ):
+                raise CoordinatorError(
+                    "dispatch commit_plan is malformed",
+                    remedy="create a new developer dispatch with a valid immutable commit plan",
+                )
+            pairs: list[tuple[str, str]] = []
+            for entry in commit_map:
+                if not isinstance(entry, dict) or set(entry) != {
+                    "commit_sha",
+                    "plan_entry_id",
+                }:
+                    raise CoordinatorError(
+                        "commit_map entries must contain only commit_sha and plan_entry_id",
+                        remedy="report one SHA-to-plan-entry mapping for every created commit",
+                    )
+                sha, plan_id = entry["commit_sha"], entry["plan_entry_id"]
+                if not isinstance(sha, str) or not isinstance(plan_id, str):
+                    raise CoordinatorError(
+                        "commit_map entries must use string SHA and plan entry id",
+                        remedy="report canonical commit SHA strings and commit plan entry ids",
+                    )
+                pairs.append((sha, plan_id))
+            snapshot = dispatch.get("snapshot_commit")
+            if not isinstance(snapshot, str):
+                raise CoordinatorError(
+                    "developer dispatch lacks snapshot_commit",
+                    remedy="create a new developer dispatch with an immutable snapshot",
+                )
+            if repo is not None:
+                mapped = {
+                    _candidate_commit(repo, sha): plan_id for sha, plan_id in pairs
+                }
+                created = _commits_between(repo, rebase_target or snapshot, resolved)
+                transition = dispatch.get("transition")
+                is_retry = (
+                    isinstance(transition, dict)
+                    and transition.get("next_action") == "developer-retry"
+                )
+                mapped_plan_ids = set(mapped.values())
+                if (
+                    set(mapped) != set(created)
+                    or not mapped_plan_ids.issubset(plan_ids)
+                    or len(mapped) != len(created)
+                    or len(mapped) != len(pairs)
+                    or len(mapped_plan_ids) != len(mapped)
+                    or (not is_retry and mapped_plan_ids != set(plan_ids))
+                ):
+                    raise CoordinatorError(
+                        "commit_map must map each created commit to one distinct immutable plan entry",
+                        remedy="report every new commit once against a distinct commit_plan entry; the initial dispatch must cover the full plan",
+                    )
     if role["mode"] == "read-only" and commit_sha != "not applicable — read-only role":
         raise CoordinatorError(
             "read-only completion reports must not claim a commit SHA",
@@ -1194,7 +1299,17 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 remedy="attest the canonical Git worktree (dispatch self-report) before reporting",
             )
         role = _role(repo, dispatch["role"])
-        _validate_report(report, dispatch, role, repo, batch.get("base_commit"))
+        _validate_report(
+            report,
+            dispatch,
+            role,
+            repo,
+            batch.get("integration_base_commit") or batch.get("base_commit"),
+            _rebase_target(batch, dispatch),
+        )
+        from harness.orchestration.workflow.decisions import _auto_accept_policy
+
+        auto_accept_policy = _auto_accept_policy(config, batch, dispatch, report)
         retry_candidate: str | None = None
         was_retry = False
         if role["name"] == "developer" and batch.get("retry_candidate_required"):
@@ -1257,6 +1372,80 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 batch.pop("risk_reassessment_candidate", None)
                 batch.pop("risk_reassessment_triggers", None)
         report_json = _persist_report(ledger, root, batch, dispatch, report)
+    if auto_accept_policy is not None:
+        # Reuse the ordinary decision transition and its audit record after releasing the
+        # ledger lock. A policy decision is revalidated against the persisted report there.
+        from harness.orchestration.workflow.decisions import decide_batch
+
+        decided = decide_batch(
+            argparse.Namespace(
+                repo=str(repo),
+                state_dir=getattr(args, "state_dir", None),
+                batch=batch["batch_id"],
+                decision="accept",
+                approved_by=None,
+                approved_at=None,
+                note=None,
+                reason=None,
+                reason_category=None,
+                retry_role=None,
+                _policy_auto_accept=True,
+            )
+        )
+        next_action = decided.get("next_action")
+        candidate = report.get("commit_sha")
+        risk = None
+        if next_action == "risk-assessment" and isinstance(candidate, str):
+            from harness.orchestration.workflow.risk import assess_risk
+
+            risk = assess_risk(
+                argparse.Namespace(
+                    repo=str(repo),
+                    state_dir=getattr(args, "state_dir", None),
+                    batch=batch["batch_id"],
+                    candidate_commit=candidate,
+                    base_commit=None,
+                    changed_file=report["changed_files"],
+                    developer_trigger=report.get("risk_triggers", []),
+                )
+            )
+            next_action = "code-review" if risk["review_required"] else "qa"
+        next_dispatch_id = None
+        if next_action == "developer" or (
+            next_action == "qa"
+            and auto_accept_policy == "low_risk"
+            and risk is not None
+            and not risk["matched_triggers"]
+        ):
+            from harness.orchestration.workflow.dispatch import create_dispatch
+
+            prepared = create_dispatch(
+                argparse.Namespace(
+                    repo=str(repo),
+                    state_dir=getattr(args, "state_dir", None),
+                    batch=batch["batch_id"],
+                    role=next_action,
+                    runtime=dispatch.get("resolved_runtime"),
+                    purpose="work",
+                    candidate_commit=candidate if next_action == "qa" else None,
+                    delta_review_of=None,
+                    model=dispatch.get("resolved_model"),
+                    effort=dispatch.get("resolved_effort"),
+                    propose=False,
+                    transition_digest=None,
+                    approved_by=None,
+                    approved_at=None,
+                )
+            )
+            next_dispatch_id = prepared["dispatch_id"]
+        return {
+            "dispatch_id": dispatch["dispatch_id"],
+            "state": "reported",
+            "report": str(report_json),
+            "auto_accepted": True,
+            "next_action": next_action,
+            "next_dispatch_id": next_dispatch_id,
+        }
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",

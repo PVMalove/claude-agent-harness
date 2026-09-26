@@ -30,8 +30,8 @@ Agent Harness — переносимый runtime-native snapshot skills, пра�
 1. `/grilling` предлагает кандидатные пути и записывает в `Live Artifact` только явно одобренные
    пользователем файлы.
 2. `/to-spec` сохраняет список в эпике в `## Relevant Files (Discovery Context)`.
-3. `/to-tickets` назначает пути tracer-bullet тикетам, строит path-only filtered Repo Map и один раз
-   вызывает cheap advisory. Advisory может только добавить exact dependency из карты.
+3. `/to-tickets` назначает пути tracer-bullet тикетам, строит Path inventory и один раз
+   вызывает cheap advisory. Advisory может только добавить exact dependency из Path inventory.
 4. `context_builder.py` читает pinned `base_commit`/`candidate_commit` без LLM и строит immutable
    Context Package: exact diff, 5–10 стартовых файлов с причинами, bounded graph, связанные тесты,
    ADR/precedent cards, размер и SHA-256. Локальные импорты раскрываются на один уровень; для

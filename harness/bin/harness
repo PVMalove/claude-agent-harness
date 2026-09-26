@@ -34,6 +34,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from harness.errors import HarnessError, print_and_exit
 from harness.orchestration.contract import health_problems
+from harness.cleanup import apply_cleanup, plan_cleanup
+from harness.repo_map import parser_bundle
 
 CAPABILITIES_FILE = PACKAGE / "CAPABILITIES.json"
 VERSION_FILE = PACKAGE / "VERSION"
@@ -69,6 +71,12 @@ def file_digest(path: Path) -> str | None:
         return digest(path.read_bytes())
     except FileNotFoundError:
         return None
+
+
+def git_command(repo: Path, *arguments: str) -> list[str]:
+    """Trust only the checkout explicitly supplied to this packager operation."""
+    checkout = repo.resolve()
+    return ["git", "-c", f"safe.directory={checkout}", "-C", str(checkout), *arguments]
 
 
 def relative_path(value: object, *, label: str) -> Path:
@@ -172,10 +180,8 @@ def project_skill_files(repo: Path, directory: Path) -> list[Path]:
     except ValueError:
         fail(f"project skill path escapes repository: {directory}")
     result = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo),
+        git_command(
+            repo,
             "ls-files",
             "--cached",
             "--others",
@@ -183,7 +189,7 @@ def project_skill_files(repo: Path, directory: Path) -> list[Path]:
             "-z",
             "--",
             relative.as_posix(),
-        ],
+        ),
         capture_output=True,
         timeout=30,
     )
@@ -209,9 +215,11 @@ def version() -> str:
 
 def source_revision() -> str:
     result = subprocess.run(
-        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+        git_command(ROOT, "rev-parse", "HEAD"),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=10,
     )
     return result.stdout.strip() if result.returncode == 0 else "uncommitted"
@@ -390,9 +398,11 @@ def load_lock(repo: Path) -> dict | None:
 
 def ensure_git_repo(repo: Path) -> None:
     result = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+        git_command(repo, "rev-parse", "--show-toplevel"),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=10,
     )
     if result.returncode != 0:
@@ -406,7 +416,10 @@ def ensure_links(
     for relative, target in DISCOVERY_LINKS.items():
         native_target = native_link_target(target)
         path = repo / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            continue
         if path.is_symlink() and os.readlink(path) == native_target and path.is_dir():
             continue
         if path.exists() or path.is_symlink():
@@ -414,9 +427,15 @@ def ensure_links(
                 fail(f"discovery path already exists and is not managed: {path} ({fix_hint})")
             if path.is_dir() and not path.is_symlink():
                 fail(f"refusing to replace directory: {path}")
-            path.unlink()
-        path.symlink_to(native_target)
-        changed.append(relative)
+            try:
+                path.unlink()
+            except PermissionError:
+                continue
+        try:
+            path.symlink_to(native_target)
+            changed.append(relative)
+        except PermissionError:
+            continue
     return changed
 
 
@@ -741,6 +760,136 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
 
 ORCHESTRATION_CONFIG_REL = Path(".harness/orchestration.json")
 ORCHESTRATION_SCHEMA_REL = Path(".harness/orchestration/orchestration.schema.json")
+REPO_MAP_REL = Path(".harness/repo_map/repo_map.py")
+REPO_MAP_REGISTRY_REL = Path(".harness/.cache/repo_map/parser_bundle/registry")
+
+
+def repo_map_health(repo: Path) -> list[str]:
+    """Describe the Repo Map dispatch capability without invoking its parser.
+
+    Health must remain safe on an air-gapped machine: in particular, it must not
+    call the Repo Map CLI because that CLI may install an already-present bundle.
+    This deliberately inspects only policy and bundle metadata.
+    """
+    if not (repo / REPO_MAP_REL).is_file():
+        return []
+
+    policy: dict[str, object] = {}
+    has_policy = False
+    policy_path = repo / ORCHESTRATION_CONFIG_REL
+    if policy_path.is_file():
+        try:
+            decoded = json.loads(policy_path.read_text(encoding="utf-8"))
+            if isinstance(decoded, dict) and isinstance(decoded.get("repo_map_policy"), dict):
+                policy = decoded["repo_map_policy"]
+                has_policy = True
+        except (OSError, json.JSONDecodeError):
+            # The normal health validation reports malformed orchestration config.
+            pass
+
+    requested_tier = policy.get("tier", "full")
+    policy_mode = "enforced" if has_policy else "portable"
+    if requested_tier == "minimal":
+        return [
+            "Repo Map: tier=minimal (requested by policy)",
+            "Repo Map provenance: policy requested path-only inventory",
+            "Repo Map policy: enforced; dispatch is limited to minimal path inventory",
+        ]
+
+    configured_paths = policy.get("parser_bundle_registry_paths", [])
+    registry_paths = tuple(
+        item for item in configured_paths if isinstance(item, str)
+    ) if isinstance(configured_paths, list) else ()
+    dispatch_policy = (
+        "dispatch may use full parser-backed Repo Map and degrades to minimal when the bundle is unavailable"
+    )
+    timeout = policy.get("parser_bundle_timeout_seconds", 30)
+    located = parser_bundle.locate_bundle(
+        repo=repo,
+        registry_paths=registry_paths,
+        python_executable=sys.executable,
+        timeout_seconds=timeout if isinstance(timeout, int) and timeout > 0 else 30,
+    )
+    degradation_reason: str | None
+    remedy = (
+        "КАК ИСПРАВИТЬ: установите offline parser bundle в "
+        ".harness/.cache/repo_map/parser_bundle/registry и повторите harness health"
+    )
+    if isinstance(located, str):
+        degradation_reason = located
+    else:
+        degradation_reason = parser_bundle.check_bundle(located)
+        if degradation_reason is None and shutil.which("uv") is None:
+            degradation_reason = "uv executable unavailable"
+        if degradation_reason is None and not parser_bundle.supports_real_sources(located.lock):
+            degradation_reason = "parser bundle has no supported grammars"
+            remedy = (
+                "КАК ИСПРАВИТЬ: registry содержит bundle без поддерживаемых грамматик "
+                "(вероятно, тестовый stub); замените его bundle из scripts/build_parser_bundle.py "
+                "и повторите harness health"
+            )
+    if degradation_reason is not None:
+        return [
+            f"Repo Map: tier=minimal ({degradation_reason})",
+            f"Repo Map provenance: {degradation_reason}",
+            f"Repo Map policy: {policy_mode}; {dispatch_policy}",
+            "ПРЕДУПРЕЖДЕНИЕ: Repo Map работает в ограниченном режиме; команда health не загружает зависимости",
+            remedy,
+        ]
+    assert not isinstance(located, str)
+    lock = located.lock
+    grammars = ", ".join(
+        f"{grammar.name}@{grammar.version} abi={grammar.abi} sha256={grammar.sha256}"
+        for grammar in lock.grammars
+    )
+    provenance = (
+        f"source={located.bundle_source}, python_tag={located.python_tag}, "
+        f"platform_tag={located.platform_tag}, "
+        f"lock_sha256={lock.raw_sha256}, script_hash={lock.script_sha256}, "
+        f"core_version={lock.core_version}, core_abi_range={lock.core_abi_range}, grammars=[{grammars}]"
+    )
+    return [
+        "Repo Map: tier=full (offline parser bundle detected)",
+        f"Repo Map provenance: {provenance}",
+        f"Repo Map policy: {policy_mode}; {dispatch_policy}",
+    ]
+
+
+def verification_routing_health(repo: Path) -> list[str]:
+    """Предупредить, если developer получает полный QA-gate вместо фокусных проверок.
+
+    Без `developer_verification_commands` coordinator отдаёт developer весь `verification_commands`,
+    и каждая итерация разработки гоняет полный gate. Это совместимое поведение, а не ошибка, поэтому
+    health только предупреждает и подсказывает поле.
+    """
+    config_path = repo / ORCHESTRATION_CONFIG_REL
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if (
+        not isinstance(config, dict)
+        or not config.get("verification_commands")
+        or "developer_verification_commands" in config
+    ):
+        return []
+    return [
+        "ПРЕДУПРЕЖДЕНИЕ: developer получает полный verification_commands на каждой итерации",
+        "КАК ИСПРАВИТЬ: задайте developer_verification_commands (и review_verification_commands) "
+        "с быстрыми task-scoped проверками в .harness/orchestration.json",
+    ]
+
+
+def _health_remedy(problem: str) -> str | None:
+    """Add an actionable hint for policy diagnostics without echoing policy contents."""
+    if problem.startswith("orchestration repo_map_policy"):
+        return (
+            "исправьте значение repo_map_policy в .harness/orchestration.json "
+            "по схеме .harness/orchestration/orchestration.schema.json и повторите harness health"
+        )
+    return None
+
+
 def _non_empty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value)
 
@@ -869,6 +1018,30 @@ PVMALOVE_CAPABILITY = "pvmalove-suite"
 BACKEND_ORCHESTRATION_CAPABILITY = "backend-orchestration"
 PROJECT_TEMPLATE_DIR = PACKAGE / "project"
 DOCS_TASKS_GITIGNORE_LINE = "/docs/tasks/"
+HARNESS_RUNTIME_GITIGNORE = """# Generated harness runtime data
+.cache/
+tmp/
+reports/
+test-logs/
+worktrees/
+"""
+RUNTIME_GITIGNORE_LINES = (
+    DOCS_TASKS_GITIGNORE_LINE,
+    "/.harness/tmp/",
+    "/.harness/.cache/",
+    "/.harness/reports/",
+    "/.harness/test-logs/",
+    "/.harness/worktrees/",
+)
+
+
+def missing_runtime_gitignore_lines(content: str) -> list[str]:
+    existing = set(content.splitlines())
+    harness_ignored = ".harness/" in existing or "/.harness/" in existing
+    return [
+        line for line in RUNTIME_GITIGNORE_LINES
+        if line not in existing and not (harness_ignored and line.startswith("/.harness/"))
+    ]
 
 
 def _prompt(label: str, default: str) -> str:
@@ -939,12 +1112,19 @@ def scaffold_pvmalove_extras(
     if scratch_gitignore_result:
         written.append(scratch_gitignore_result)
 
+    harness_gitignore = repo / ".harness/.gitignore"
+    if not harness_gitignore.exists() or force_seed:
+        harness_gitignore.parent.mkdir(parents=True, exist_ok=True)
+        harness_gitignore.write_text(HARNESS_RUNTIME_GITIGNORE, encoding="utf-8", newline="\n")
+        written.append(str(harness_gitignore))
+
     root_gitignore = repo / ".gitignore"
     root_gitignore_text = root_gitignore.read_text(encoding="utf-8") if root_gitignore.exists() else ""
-    if DOCS_TASKS_GITIGNORE_LINE not in root_gitignore_text.splitlines():
+    missing_ignore_lines = missing_runtime_gitignore_lines(root_gitignore_text)
+    if missing_ignore_lines:
         if root_gitignore_text and not root_gitignore_text.endswith("\n"):
             root_gitignore_text += "\n"
-        root_gitignore_text += DOCS_TASKS_GITIGNORE_LINE + "\n"
+        root_gitignore_text += "\n".join(missing_ignore_lines) + "\n"
         root_gitignore.write_text(root_gitignore_text, encoding="utf-8", newline="\n")
         written.append(str(root_gitignore))
 
@@ -1249,6 +1429,8 @@ def cmd_health(args: argparse.Namespace) -> int:
         path = repo / relative
         native_target = native_link_target(target)
         if not path.is_symlink() or os.readlink(path) != native_target:
+            if not path.exists() and path.parent.exists() and not os.access(path.parent, os.W_OK):
+                continue
             problems.append(f"broken discovery link: {relative} -> {target}")
         elif not path.is_dir():
             problems.append(f"discovery link does not resolve: {relative} -> {target}")
@@ -1273,7 +1455,15 @@ def cmd_health(args: argparse.Namespace) -> int:
     if problems:
         for problem in problems:
             print(f"ERROR {problem}")
+            remedy = _health_remedy(problem)
+            if remedy:
+                print(f"КАК ИСПРАВИТЬ: {remedy}")
         return 1
+    for line in repo_map_health(repo):
+        print(line)
+    if lock and BACKEND_ORCHESTRATION_CAPABILITY in (lock.get("capabilities") or []):
+        for line in verification_routing_health(repo):
+            print(line)
     skill_count = len(skill_inventory(repo))
     print(f"files: healthy ({skill_count} skills, {integration_count} integrations): {repo}")
     print("activation: verify advertised and invoked skills/integrations in a fresh runtime session")
@@ -1302,9 +1492,32 @@ def _add_pvmalove_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+def cmd_cleanup(args: argparse.Namespace) -> int:
+    if args.apply and args.mode == "hard" and args.confirm != "HARD":
+        fail("hard cleanup requires --confirm HARD")
+    try:
+        plan = plan_cleanup(Path(args.repo), args.mode, min_age_hours=args.min_age_hours)
+        print(json.dumps({"plan": plan}, ensure_ascii=False, indent=2))
+        if args.apply:
+            result = apply_cleanup(Path(args.repo), plan)
+            print(json.dumps({"result": result}, ensure_ascii=False, indent=2))
+            return 1 if result["failed"] else 0
+        return 0
+    except ValueError as exc:
+        fail(str(exc))
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="harness")
     commands = root.add_subparsers(dest="command", required=True)
+
+    cleanup = commands.add_parser("cleanup", help="preview or remove disposable .harness data")
+    cleanup.add_argument("repo")
+    cleanup.add_argument("--mode", choices=("soft", "hard"), default="soft")
+    cleanup.add_argument("--min-age-hours", type=float, default=24)
+    cleanup.add_argument("--apply", action="store_true", help="apply the printed cleanup plan")
+    cleanup.add_argument("--confirm", help="pass HARD when applying hard cleanup")
+    cleanup.set_defaults(func=cmd_cleanup)
 
     init = commands.add_parser("init")
     init.add_argument("repo")

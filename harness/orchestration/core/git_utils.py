@@ -88,6 +88,17 @@ def _changed_files_between(repo: Path, base: str, candidate: str) -> list[str]:
     return [line.replace("\\", "/") for line in output.splitlines() if line.strip()]
 
 
+def _commits_between(repo: Path, base: str, candidate: str) -> list[str]:
+    """Return the ordered first-parent candidate commits after an immutable snapshot."""
+    return [
+        line
+        for line in _git(
+            repo, "rev-list", "--reverse", f"{base}..{candidate}"
+        ).splitlines()
+        if line
+    ]
+
+
 def _commit_evidence(repo: Path, base: str | None, commit: str) -> str:
     if base:
         return "\n".join(

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Protocol, TypeGuard
 
 from ..errors import HarnessError
+from .core.config import _execution_policy
 from ..gate_runner.gate_runner import CleanRoomPolicy, GateRunnerError, run_gate
 from .contract import JsonObject
 from .ledger import (
@@ -186,6 +187,10 @@ def _counter_path(ledger: LifecycleLedger, ops: CoordinatorOps) -> Path:
 
 def _artifact_path(ledger: LifecycleLedger, checksum: str, ops: CoordinatorOps) -> Path:
     return _records_root(ledger, ops) / "qa-artifacts" / f"{checksum}.log"
+
+
+def _attempt_path(ledger: LifecycleLedger, ops: CoordinatorOps) -> Path:
+    return _records_root(ledger, ops) / "qa-lane" / "attempts" / f"{uuid.uuid4()}.json"
 
 
 def _queue_entries(
@@ -373,15 +378,77 @@ def _record_report(
             remedy="the batch entry must be dispatched and the dispatch status working; if they are out of sync, abandon the batch and create a new QA dispatch",
         )
     ops._validate_report(
-        report, dispatch, ops._role(repo, "qa"), repo, batch.get("base_commit")
+        report,
+        dispatch,
+        ops._role(repo, "qa"),
+        repo,
+        batch.get("integration_base_commit") or batch.get("base_commit"),
     )
     return ops._persist_report(ledger, root, batch, dispatch, report)
+
+
+def _recover_transient_failure(
+    ledger: LifecycleLedger,
+    root: Path,
+    dispatch: JsonObject,
+    queue_path: Path,
+    failure: HarnessError,
+    stage: str,
+    ops: CoordinatorOps,
+) -> None:
+    """Return one QA dispatch to its retryable state after a non-terminal failure."""
+    with _lock(ledger, ops):
+        _write_immutable(
+            ledger,
+            ops,
+            _attempt_path(ledger, ops),
+            {
+                "dispatch_id": dispatch["dispatch_id"],
+                "stage": stage,
+                "failed_at": ops._now(),
+                "message": failure.message,
+                "remedy": failure.remedy,
+            },
+        )
+        if queue_path.exists():
+            _delete_record(
+                ledger, ops, queue_path, reason="release transient QA queue entry"
+            )
+        lease_path = _lane_path(ledger, ops)
+        current = _lease(ledger, ops)
+        if current and current["dispatch_id"] == dispatch["dispatch_id"]:
+            _delete_record(ledger, ops, lease_path, reason="release transient QA lease")
+        batch = ops._load_batch(root, dispatch["batch_id"])
+        entry = next(
+            item
+            for item in batch["dispatches"]
+            if item["dispatch_id"] == dispatch["dispatch_id"]
+        )
+        entry["state"] = "approved"
+        ops._safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, ops, BatchRecord.from_dict(batch))
+        ops._safe_id(dispatch["dispatch_id"], "dispatch")
+        _replace_record(
+            ledger,
+            ops,
+            DispatchStatusRecord.from_dict(
+                {
+                    "dispatch_id": dispatch["dispatch_id"],
+                    "state": "approved",
+                    "updated_at": ops._now(),
+                }
+            ),
+        )
 
 
 def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
     repo = ops._repo(args)
     root = _state_root(args, repo, ops)
-    lease_seconds = args.lease_seconds
+    lease_seconds = (
+        args.lease_seconds
+        if args.lease_seconds is not None
+        else _execution_policy(ops._config(repo))["qa_lease_seconds"]
+    )
     if (
         isinstance(lease_seconds, bool)
         or not isinstance(lease_seconds, int)
@@ -484,20 +551,35 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
             stop_on_failure=True,
         )
     except GateRunnerError as exc:
-        raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
+        failure = ops.CoordinatorError(exc.message, remedy=exc.remedy)
+        _recover_transient_failure(
+            ledger, root, dispatch, queue_path, failure, "gate-run", ops
+        )
+        raise failure from exc
     artifact_text, checks = gate.artifact, gate.checks
     checksum = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
     artifact = _artifact_path(ledger, checksum, ops)
     try:
         _write_artifact(ledger, ops, artifact, artifact_text)
     except ops.CoordinatorError as exc:
-        raise ops.CoordinatorError(
+        failure = ops.CoordinatorError(
             "could not persist immutable QA evidence",
             remedy="resolve the underlying ledger error reported as its cause and run the QA runner again",
-        ) from exc
+        )
+        _recover_transient_failure(
+            ledger, root, dispatch, queue_path, failure, "artifact-persistence", ops
+        )
+        raise failure from exc
     report = _qa_report(dispatch, checks, artifact, checksum)
+    try:
+        with _lock(ledger, ops):
+            report_path = _record_report(ledger, root, repo, dispatch, report, ops)
+    except ops.CoordinatorError as exc:
+        _recover_transient_failure(
+            ledger, root, dispatch, queue_path, exc, "report-persistence", ops
+        )
+        raise
     with _lock(ledger, ops):
-        report_path = _record_report(ledger, root, repo, dispatch, report, ops)
         _queue_entries(ledger, ops)
         if queue_path.exists():
             _delete_record(ledger, ops, queue_path, reason="complete QA queue entry")

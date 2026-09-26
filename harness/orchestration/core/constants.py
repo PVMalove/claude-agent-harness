@@ -37,15 +37,20 @@ RETRY_REASON_CATEGORIES = (
 NEXT_ACTION_DISPATCH_ROLE = {
     "architect": "architect",
     "developer-retry": "developer",
+    "verification": "verification",
     "code-review": "code-review",
     "qa": "qa",
     "publish": "developer",
 }
-DISPATCH_PURPOSES = {"work", "publish"}
+DISPATCH_PURPOSES = {"work", "verification", "publish"}
 ROLE_TRANSPORTS = {"orca", "in-process"}
 DEFAULT_ZONE = "repository"
 DEFAULT_PROFILE = "session"
-DEFAULT_STALE_AFTER_SECONDS = 900
+# A developer can legitimately spend tens of minutes in one build, migration, or test command.
+# Keep the default long enough for that work, while the handoff still requires frequent, explicit
+# heartbeats so an actually lost worker is eventually surfaced.
+DEFAULT_STALE_AFTER_SECONDS = 3_600
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 300
 DEFAULT_COMMUNICATION_POLICY = {
     "agent_to_agent_language": "en",
     "coordinator_report_language": "ru",
@@ -128,6 +133,8 @@ DISPATCH_FIELDS = {
     "transition_digest",
     "retry_idempotency_key",
     "orchestration_policy",
+    "liveness",
+    "commit_plan",
 }
 # The four fields of the transition-bound approval contract (issue #250) are all present or all absent.
 POLICY_BRIEF_FIELDS = frozenset(
@@ -147,7 +154,7 @@ REPORT_FIELDS = {
     "blockers",
     "next_coordinator_action",
 }
-REPORT_OPTIONAL_FIELDS = {"risk_triggers", "review", "report_language"}
+REPORT_OPTIONAL_FIELDS = {"risk_triggers", "review", "report_language", "commit_map"}
 RISK_ASSESSMENT_FIELDS = {
     "risk_assessment_id",
     "batch_id",
@@ -176,8 +183,22 @@ CONTEXT_PACKAGE_FIELDS = {
     "role",
     "inclusion_reason",
     "estimated_tokens",
+    "schema_version",
+    "parser",
+    "parser_provenance",
 }
-LEGACY_CONTEXT_PACKAGE_FIELDS = CONTEXT_PACKAGE_FIELDS - {"estimated_tokens"}
+# Schema version 1 (issue #274): before build_context_package delegated its graph/signatures to
+# Repo Map, a package had no schema_version/parser/parser_provenance. Kept valid for one schema
+# version so an already-persisted v1 record still reads back.
+LEGACY_CONTEXT_PACKAGE_FIELDS = CONTEXT_PACKAGE_FIELDS - {
+    "schema_version",
+    "parser",
+    "parser_provenance",
+}
+# Pre-dates estimated_tokens entirely; kept for reading genuinely old ledger records.
+LEGACY_CONTEXT_PACKAGE_FIELDS_NO_TOKENS = LEGACY_CONTEXT_PACKAGE_FIELDS - {
+    "estimated_tokens"
+}
 CHECKPOINT_NO_CONTEXT_PACKAGE = "not applicable — no context package registered"
 CHECKPOINT_INPUT_FIELDS = {
     "dispatch_id",
@@ -215,6 +236,14 @@ DEFAULT_CONTEXT_PACKAGE_POLICY = {
     "reserved_prompt_tokens": 20_000,
     "symbol_graph_depth": 2,
     "max_related_tests": 25,
+    "min_starting_files": 5,
+    "max_starting_files": 10,
+}
+DEFAULT_EXECUTION_POLICY = {
+    "dispatch_wait_timeout_seconds": 60,
+    "dispatch_poll_interval_seconds": 5,
+    "qa_lease_seconds": 1_800,
+    "rate_limit_retry_seconds": 60,
 }
 DEFAULT_CONTINUATION_POLICY = {"max_continuations": 2, "max_rate_limit_resumes": 1}
 DEFAULT_RETRY_POLICY = {"max_developer_retries": 1}
@@ -226,11 +255,14 @@ DEFAULT_PREFLIGHT_POLICY = {
     "max_expected_services": 1,
     "max_expected_changed_lines": 800,
     "max_expected_context_tokens": 80_000,
+    "estimated_tokens_per_changed_line": 20,
+    "estimated_tokens_per_file": 2_000,
 }
 DEFAULT_ATTENTION_POLICY = {
     "retry_queue_seconds": 3_600,
     "max_infrastructure_retries": 2,
     "stale_dispatch_seconds": DEFAULT_STALE_AFTER_SECONDS,
+    "heartbeat_interval_seconds": DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
 }
 # Policy fields where zero is a meaningful "tolerate none"; every other numeric policy value is positive.
 ZERO_ALLOWED_POLICY_FIELDS = {
@@ -260,7 +292,6 @@ ATTENTION_STATE_FIELDS = (
     "last_safe_action",
     "recommended_human_action",
 )
-DEFAULT_RATE_LIMIT_RETRY_SECONDS = 60
 MAX_CHECK_EVIDENCE_CHARS = 1_600
 CONTINUATION_FACTS_FIELDS = {
     "dispatch_id",

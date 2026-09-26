@@ -67,6 +67,64 @@ class RuntimeAttestationTests(unittest.TestCase):
 
             self.assertEqual(proof["worktree"], str(worktree.resolve()))
 
+    def test_attestation_trusts_only_its_registered_git_paths_in_a_sandbox(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            _git(repo, "init", "-q")
+            _git(repo, "config", "user.email", "test@example.invalid")
+            _git(repo, "config", "user.name", "Attestation Test")
+            (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+            _git(repo, "add", "tracked.txt")
+            _git(repo, "commit", "-qm", "test: base")
+            snapshot = _git(repo, "rev-parse", "HEAD")
+            branch = "feature/issue-314-sandbox"
+            _git(repo, "branch", branch)
+            worktree = Path(temporary) / "issue-314"
+            _git(repo, "worktree", "add", "-q", str(worktree), branch)
+            real_run = cast(_RunFn, subprocess.run)
+
+            def sandbox_git(
+                command: list[str], **kwargs: object
+            ) -> subprocess.CompletedProcess[str]:
+                git_path = Path(command[command.index("-C") + 1]).resolve()
+                if f"safe.directory={git_path}" not in command:
+                    return subprocess.CompletedProcess(
+                        command, 128, "", "fatal: detected dubious ownership"
+                    )
+                return real_run(command, **kwargs)
+
+            with patch.object(subprocess, "run", side_effect=sandbox_git):
+                proof = attest(
+                    repo,
+                    {
+                        "role": "developer",
+                        "branch": branch,
+                        "snapshot_commit": snapshot,
+                    },
+                    str(worktree),
+                )
+
+            self.assertEqual(proof["worktree"], str(worktree.resolve()))
+
+    def test_attestation_surfaces_undecodable_git_error_as_failure(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+
+            def undecodable_git(
+                command: list[str], **kwargs: object
+            ) -> subprocess.CompletedProcess[str]:
+                if kwargs.get("errors") != "replace":
+                    raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte")
+                return subprocess.CompletedProcess(
+                    command, 128, "", "fatal: detected dubious ownership �"
+                )
+
+            with patch.object(subprocess, "run", side_effect=undecodable_git):
+                with self.assertRaisesRegex(AttestationError, "dubious ownership"):
+                    attest(repo, {"role": "developer"}, str(repo))
+
     def test_write_role_requires_the_registered_issue_worktree(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             repo = Path(temporary) / "repo"

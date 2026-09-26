@@ -1,13 +1,13 @@
 # Диаграммы харнесса
 
-Одиннадцать автономных интерактивных HTML-диаграмм. Рядом с каждой лежит редактируемая спецификация
+Тринадцать автономных интерактивных HTML-диаграмм. Рядом с каждой лежит редактируемая спецификация
 Archify (`*.json`), а в `previews/` — статичное PNG той же диаграммы для Markdown, который не умеет
 рендерить HTML (например, README на GitHub).
 
 | Диаграмма | О чём |
 |---|---|
 | [Пайплайн доставки](./delivery-pipeline.workflow.html) | Полный маршрут от идеи до merge: `/grill-with-docs` → `/to-spec` → `/to-tickets` → `/implement` → `/to-pull-requests`, с ветками `hitl` (`/to-guide`) и коротким `/fast-implement`. |
-| [Discovery Pipeline](./discovery-pipeline.workflow.html) | Explicit opt-in `Live Artifact` → `Relevant Files` → ticket-specific filtered Repo Map → один cheap advisory → LLM-free Context Package. |
+| [Discovery Pipeline](./discovery-pipeline.workflow.html) | Explicit opt-in `Live Artifact` → `Relevant Files` → ticket-specific Path inventory → один cheap advisory → LLM-free Context Package. |
 | [Конвейер `/implement`](./implement-pipeline.workflow.html) | Пять гейтов одного тикета: архитектор → approve → разработчик → code review → approve → QA (с циклом на исправления) → итоговый отчёт → публикация. |
 | [Резолв runtime и dispatch](./backend-runtime.workflow.html) | Как назначение роли превращается в immutable brief, как выбирается транспорт (`orca` или `in-process`) и как dispatch подтверждает свою модель и живость. |
 | [Жизненный цикл batch](./backend-batch.lifecycle.html) | Состояния batch: `planned → awaiting-approval ↔ active → completed`, плюс выходы `blocked` и `failed`; checkpoint/resume и base gate описаны в соседней Discovery/implement схеме и operational docs. |
@@ -16,6 +16,8 @@ Archify (`*.json`), а в `previews/` — статичное PNG той же д�
 | [Архитектура переносимого harness](./harness-topology.architecture.html) | **Architecture:** границы исходного harness и целевого проекта, capability-каталог, CLI, единый snapshot и runtime discovery. |
 | [Gated dispatch `/implement`](./implement-dispatch.sequence.html) | **Sequence:** участники и порядок взаимодействий: brief, approvals, candidate SHA, review, clean-room QA и публикация. |
 | [Поток capability](./capability-delivery.dataflow.html) | **Data Flow:** происхождение capability и skills от каталога/vendor/overrides до snapshot и runtime consumers. |
+| [Построение Repo Map](./repo-map-build.sequence.html) | **Sequence:** вход, кэш, проверка и offline-установка parser bundle, разбор в изолированном worker, граф и бюджет. |
+| [Компоненты Repo Map](./repo-map-components.architecture.html) | **Architecture:** `repo_map.py`, контракт, `parser_bundle.py`, tree-sitter worker, registry, кэш и потребители (Context Builder, Coordinator). |
 
 ## Как обновлять
 

@@ -134,6 +134,13 @@ def build_parser(
         "--reason", required=True, help="why this batch can no longer be decided"
     )
     batch_abandon.set_defaults(handler=handlers.abandon_batch)
+    batch_resume = batch_commands.add_parser(
+        "resume", help="resume a startup-blocked batch from its accepted ledger history"
+    )
+    _common(batch_resume)
+    batch_resume.add_argument("--batch", required=True)
+    batch_resume.add_argument("--reason", required=True)
+    batch_resume.set_defaults(handler=handlers.resume_batch)
     batch_not_required = batch_commands.add_parser(
         "not-required",
         help="record that the pinned snapshot needs no implementation",
@@ -248,8 +255,8 @@ def build_parser(
         default=None,
         help="override context_package_policy.max_related_tests for this package only",
     )
-    context_package_register.add_argument("--min-starting-files", type=int, default=5)
-    context_package_register.add_argument("--max-starting-files", type=int, default=10)
+    context_package_register.add_argument("--min-starting-files", type=int)
+    context_package_register.add_argument("--max-starting-files", type=int)
     context_package_register.add_argument(
         "--max-package-size-bytes",
         type=int,
@@ -269,6 +276,9 @@ def build_parser(
     preflight.add_argument("--batch", required=True)
     preflight.add_argument("--role", required=True)
     preflight.add_argument("--runtime")
+    preflight.add_argument(
+        "--purpose", choices=sorted(defaults.DISPATCH_PURPOSES), default="work"
+    )
     preflight.add_argument("--candidate-commit")
     preflight.set_defaults(handler=handlers.preflight_dispatch)
     dispatch_propose = dispatch_commands.add_parser(
@@ -376,7 +386,7 @@ def build_parser(
     dispatch_rate_limited.add_argument(
         "--retry-after-seconds",
         type=int,
-        default=defaults.DEFAULT_RATE_LIMIT_RETRY_SECONDS,
+        default=None,
     )
     dispatch_rate_limited.set_defaults(handler=handlers.rate_limited_dispatch)
     dispatch_wait = dispatch_commands.add_parser(
@@ -384,10 +394,10 @@ def build_parser(
     )
     _common(dispatch_wait)
     dispatch_wait.add_argument("--dispatch", required=True)
-    dispatch_wait.add_argument("--timeout", type=int, default=60)
-    dispatch_wait.add_argument("--poll-interval", type=int, default=5)
+    dispatch_wait.add_argument("--timeout", type=int)
+    dispatch_wait.add_argument("--poll-interval", type=int)
     dispatch_wait.add_argument(
-        "--stale-after", type=int, default=defaults.DEFAULT_STALE_AFTER_SECONDS
+        "--stale-after", type=int
     )
     dispatch_wait.set_defaults(handler=handlers.wait_dispatch)
     dispatch_pressure = dispatch_commands.add_parser(
@@ -448,7 +458,7 @@ def build_parser(
     dispatch_status_command.add_argument("--dispatch")
     dispatch_status_command.add_argument("--batch")
     dispatch_status_command.add_argument(
-        "--stale-after", type=int, default=defaults.DEFAULT_STALE_AFTER_SECONDS
+        "--stale-after", type=int
     )
     dispatch_status_command.set_defaults(handler=handlers.dispatch_status)
     dispatch_publish = dispatch_commands.add_parser("publish")
@@ -462,7 +472,7 @@ def build_parser(
     qa_run = qa_commands.add_parser("run")
     _common(qa_run)
     qa_run.add_argument("--dispatch", required=True)
-    qa_run.add_argument("--lease-seconds", type=int, default=1800)
+    qa_run.add_argument("--lease-seconds", type=int)
     qa_run.set_defaults(handler=handlers.run_qa)
     qa_status_command = qa_commands.add_parser("status")
     _common(qa_status_command)

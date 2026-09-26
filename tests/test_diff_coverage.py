@@ -102,6 +102,32 @@ class ThresholdTests(unittest.TestCase):
         self.assertTrue(diff_coverage.meets_threshold(5, 5))
 
 
+class CompactUncoveredTests(unittest.TestCase):
+    def test_groups_consecutive_lines_by_file_and_bounds_the_output(self) -> None:
+        displayed, omitted = diff_coverage.compact_uncovered(
+            [
+                "a.py:2",
+                "a.py:3",
+                "a.py:5",
+                "b.py:1",
+                "b.py:2",
+                "b.py:7",
+            ],
+            max_lines=4,
+        )
+
+        self.assertEqual(displayed, ["a.py:2-3, 5", "b.py:1"])
+        self.assertEqual(omitted, 2)
+
+    def test_keeps_a_single_line_as_a_single_location(self) -> None:
+        displayed, omitted = diff_coverage.compact_uncovered(
+            ["pkg/module.py:12"], max_lines=20
+        )
+
+        self.assertEqual(displayed, ["pkg/module.py:12"])
+        self.assertEqual(omitted, 0)
+
+
 class SourceDirsTests(unittest.TestCase):
     def test_every_changed_file_directory_is_a_coverage_source(self) -> None:
         changed = {
@@ -168,6 +194,31 @@ class MainCoverageRunTests(unittest.TestCase):
             f"--source={','.join(diff_coverage.source_dirs(changed))}", command
         )
 
+    def test_coverage_run_uses_pytest_so_function_style_tests_are_measured(
+        self,
+    ) -> None:
+        changed = {"harness/a.py": {1}}
+        with (
+            tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary,
+            mock.patch.object(diff_coverage, "_merge_base", return_value="base"),
+            mock.patch.object(diff_coverage, "_changed_lines", return_value=changed),
+            mock.patch.object(
+                diff_coverage, "COVERAGE_DATA_FILE", Path(temporary) / ".coverage"
+            ),
+            mock.patch.dict(diff_coverage.os.environ, {}),
+            mock.patch.object(
+                diff_coverage.subprocess,
+                "run",
+                return_value=types.SimpleNamespace(returncode=3),
+            ) as run,
+        ):
+            diff_coverage.main()
+
+        command = run.call_args.args[0]
+        module_index = command.index("-m", command.index("run"))
+        self.assertEqual(command[module_index + 1], "pytest")
+        self.assertEqual(command[-1], str(diff_coverage.ROOT / "tests"))
+
 
 class ChangedLinesTests(unittest.TestCase):
     def _git(self, root: Path, *args: str) -> str:
@@ -211,10 +262,12 @@ class ChangedLinesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._git(root, "init", "-q")
-            (root / "scripts").mkdir()
+            (root / "scripts" / "clean_room").mkdir(parents=True)
             (root / "scripts" / "test_clean_room.py").write_text(
                 "a = 1\n", encoding="utf-8"
             )
+            scenario = root / "scripts" / "clean_room" / "scenario.py"
+            scenario.write_text("c = 1\n", encoding="utf-8")
             (root / "other.py").write_text("b = 1\n", encoding="utf-8")
             self._git(root, "add", "-A")
             self._git(root, "commit", "-q", "-m", "base")
@@ -222,6 +275,7 @@ class ChangedLinesTests(unittest.TestCase):
             (root / "scripts" / "test_clean_room.py").write_text(
                 "a = 2\n", encoding="utf-8"
             )
+            scenario.write_text("c = 2\n", encoding="utf-8")
             (root / "other.py").write_text("b = 2\n", encoding="utf-8")
             self._git(root, "add", "-A")
             self._git(root, "commit", "-q", "-m", "change")

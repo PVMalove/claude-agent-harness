@@ -49,15 +49,16 @@ inventory-файлами; секреты в них не записываются
 `backend-orchestration` включается только явным выбором capability; `.harness/orchestration.json`
 опционален — без него zone по умолчанию весь репозиторий, а `model`/`effort` роли приходят из
 вызывающей сессии. Без opt-in `/implement` отправляет на однопроходный `/fast-implement`. Coordinator
-является runtime-neutral локальным CLI: он планирует batch, требует явное человеческое approval для
-каждого dispatch и принимает evidence. Он не является автономным scheduler. Обычная точка входа —
-`/implement <ticket>`: сессия сама выступает coordinator-ом и паузится на гейтах architect,
-developer, code-review, qa, publish.
+является runtime-neutral локальным CLI: он планирует batch, применяет проектную политику approval и
+принимает evidence. Он не является автономным scheduler. Обычная точка входа —
+`/implement <ticket>`: сессия сама выступает coordinator-ом. При `manual_all` решения остаются
+ручными; `low_risk` и `milestone` автоматически принимают только чистые отчёты на разрешённых
+переходах. Рискованные переходы, QA-вехи и publish сохраняют предусмотренные политикой гейты.
 
 Batch принадлежит одному тикету, issue-ветке, worktree и backend-зоне. Его lifecycle:
 `planned → awaiting-approval ↔ active → completed | blocked | failed`. Каждый dispatch получает
-новый immutable brief, а completion report переводит его в `reported`; следующий переход возможен
-только после отдельного решения coordinator. Изменение scope, зоны, DoD, назначения или proof
+новый immutable brief, а completion report переводит его в `reported`; следующий переход записывается
+как ручное или разрешённое политикой решение coordinator. Изменение scope, зоны, DoD, назначения или proof
 закрывает текущий dispatch и требует нового brief. Retry после `blocked` или `failed` также создаёт
 новый dispatch.
 
@@ -68,6 +69,12 @@ python3 harness/bin/harness init /path/to/repository --capability backend-orches
 python3 harness/bin/harness update /path/to/repository --capability backend-orchestration
 python3 harness/bin/harness health /path/to/repository
 ```
+
+`harness health` также показывает доступный tier Repo Map, provenance parser bundle и ограничение
+dispatch от применимой policy. Отсутствующий offline bundle — warning, а не ошибка health:
+dispatch получает минимальный Path inventory, а команда не скачивает зависимости. Bundle нужно
+установить в project-local registry; `uv run` допустим только для developer bootstrap, но не для
+пути dispatch.
 
 Ключевой lifecycle coordinator использует `batch create`, `batch approve`, `dispatch create`,
 `dispatch send`, `report submit` и `batch decide`:
@@ -96,11 +103,13 @@ python .harness/orchestration/coordinator.py --repo . batch decide ...
 
 ### Discovery Context и Context Package
 
-До реализации curated-контекст проходит отдельный Discovery Pipeline: `/grilling` собирает
-`Live Artifact` только из явно одобренных пользователем путей; `/to-spec` сохраняет их в эпике под
+До реализации curated-контекст проходит отдельный Discovery Pipeline: `/grilling` сначала один раз
+по требованию запускает Repo Map (только если тема сессии касается кода), затем ищет кандидатные
+пути точечным `rg` и чтением; `Live Artifact` собирается только из явно одобренных пользователем
+путей; `/to-spec` сохраняет их в эпике под
 `## Relevant Files (Discovery Context)`; `/to-tickets` распределяет пути по дочерним тикетам и
-строит filtered Repo Map. Cheap advisory может предложить только дополнительные exact paths из
-этой карты и не получает полномочий менять scope, risk, QA или dispatch.
+строит Path inventory. Cheap advisory может предложить только дополнительные exact paths из
+этого списка и не получает полномочий менять scope, risk, QA или dispatch.
 
 `context_builder.py` — детерминированный LLM-free sibling coordinator-а. Он работает с pinned
 `base_commit`/`candidate_commit`, формирует exact diff, 5–10 стартовых файлов с причинами, bounded

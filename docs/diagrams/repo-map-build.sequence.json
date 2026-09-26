@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Построение Repo Map на закреплённом коммите",
+    "viewBox": [1440, 900],
+    "column_fit": "spread",
+    "quality_profile": "showcase"
+  },
+  "participants": [
+    { "id": "caller", "type": "external", "label": "Context Builder / CLI" },
+    { "id": "map", "type": "backend", "label": "repo_map.py" },
+    { "id": "cache", "type": "database", "label": "cache.py" },
+    { "id": "backend", "type": "backend", "label": "BundleParserBackend" },
+    { "id": "git", "type": "database", "label": "git_source → Git" },
+    { "id": "bundle", "type": "security", "label": "parser_bundle.py" },
+    { "id": "worker", "type": "backend", "label": "tree_sitter_worker.py" }
+  ],
+  "segments": [
+    { "from": 150, "to": 440, "label": "Вход, поиск bundle и ключ кэша" },
+    { "from": 455, "to": 725, "label": "Разбор через ParserBackend" },
+    { "from": 740, "to": 815, "label": "Граф, бюджет и результат" }
+  ],
+  "messages": [
+    { "from": "caller", "to": "map", "y": 180, "label": "commit, seeds, max_tokens, policy", "variant": "emphasis" },
+    { "from": "map", "to": "git", "y": 215, "label": "rev-parse + ls-tree → path_allowed()", "variant": "default" },
+    { "from": "map", "to": "backend", "y": 255, "label": "identity()", "variant": "default" },
+    { "from": "backend", "to": "bundle", "y": 290, "label": "locate_bundle() — один раз", "variant": "emphasis" },
+    { "from": "bundle", "to": "backend", "y": 325, "label": "LocatedBundle или причина", "variant": "return" },
+    { "from": "map", "to": "cache", "y": 370, "label": "ключ: входы + identity", "variant": "default" },
+    { "from": "cache", "to": "map", "y": 410, "label": "hit (SHA-256 + схема) или miss", "variant": "return" },
+    { "from": "map", "to": "backend", "y": 480, "label": "parse(commit, paths)", "variant": "emphasis" },
+    { "from": "backend", "to": "bundle", "y": 515, "label": "acquire_bundle(located): SHA-256, uv offline", "variant": "default" },
+    { "from": "backend", "to": "git", "y": 550, "label": "cat-file --batch-check / --batch", "variant": "default" },
+    { "from": "backend", "to": "bundle", "y": 585, "label": "run_bundle_parser(paths, languages)", "variant": "emphasis" },
+    { "from": "bundle", "to": "worker", "y": 620, "label": "stdin JSON, timeout, лимит вывода", "variant": "emphasis" },
+    { "from": "worker", "to": "bundle", "y": 655, "label": "FileFacts; при сбое stderr → лог", "variant": "return" },
+    { "from": "backend", "to": "map", "y": 700, "label": "ParseOutcome", "variant": "return" },
+    { "from": "map", "to": "cache", "y": 765, "label": "build_graph → rank → бюджет → запись", "variant": "dashed" },
+    { "from": "map", "to": "caller", "y": 800, "label": "Repo Map JSON + parser_provenance", "variant": "return" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Один bundle на запуск", "items": ["Тот же найденный bundle даёт ключ кэша и разбор", "Два процесса git на весь коммит"] },
+    { "dot": "amber", "title": "Деградация без исключений", "items": ["Любой сбой bundle → tier minimal", "Причина пишется в degradation_reason"] },
+    { "dot": "emerald", "title": "Граница процесса", "items": ["Типы tree-sitter не покидают worker", "Политика и граф — в основном процессе"] }
+  ]
+}

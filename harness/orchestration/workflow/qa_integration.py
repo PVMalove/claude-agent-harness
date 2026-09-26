@@ -9,6 +9,7 @@ else.  The coordinator facade is imported inside each call: it is the module tha
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from typing import cast
 
 from harness.orchestration import qa_lane
@@ -27,7 +28,44 @@ def qa_evidence(args: argparse.Namespace) -> JsonObject:
 
 def run_qa(args: argparse.Namespace) -> JsonObject:
     """Run the repository-scoped QA lane without coupling it to CLI wiring."""
-    return qa_lane.run(args, _ops())
+    result = qa_lane.run(args, _ops())
+    if result.get("state") != "reported":
+        return result
+    from harness.orchestration.core import config as core_config
+    from harness.orchestration.core.utils import _read_object, _repo
+    from harness.orchestration.ledger.ledger_ops import (
+        _load_batch,
+        _load_dispatch,
+        _state_root,
+    )
+    from harness.orchestration.workflow.decisions import (
+        _auto_accept_policy,
+        decide_batch,
+    )
+
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    dispatch = _load_dispatch(root, args.dispatch)
+    batch = _load_batch(root, dispatch["batch_id"])
+    report = _read_object(Path(result["report"]), "QA completion report")
+    if _auto_accept_policy(core_config._config(repo), batch, dispatch, report) != "low_risk":
+        return result
+    decided = decide_batch(
+        argparse.Namespace(
+            repo=str(repo),
+            state_dir=getattr(args, "state_dir", None),
+            batch=batch["batch_id"],
+            decision="accept",
+            approved_by=None,
+            approved_at=None,
+            note=None,
+            reason=None,
+            reason_category=None,
+            retry_role=None,
+            _policy_auto_accept=True,
+        )
+    )
+    return {**result, "auto_accepted": True, "next_action": decided.get("next_action")}
 
 
 def qa_status(args: argparse.Namespace) -> JsonObject:

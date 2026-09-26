@@ -96,3 +96,34 @@ post-integration defect rate между continuation- и single-session-batch), 
 - **Отдельная новая ledger-запись "continuation approval"** вместо переиспользования "coordinator
   decision". Отклонено: continuation-триггер — это ровно тот "новый факт после dispatch", который
   playbook.md уже описывает; отдельная схема добавила бы параллельную сущность без новой семантики.
+
+## Обновление (issue #274): граф символов и parser_provenance из Repo Map
+
+`build_context_package` больше не строит граф импортов и не извлекает Python-сигнатуры сам (удалены
+regex-based import graph и AST-based signature extraction); он получает их из Repo Map CLI —
+sibling-модуля `harness/repo_map/repo_map.py`, — вызывая его подпроцессом через `sys.executable` и
+валидируя типизированный JSON-контракт (`harness/repo_map/repo_map.schema.json`). Через границу
+процесса пересекает только JSON; tree-sitter-типы никогда её не пересекают.
+
+`allow_paths`/`deny_paths`/`redact_paths` — это решения на уровне целого пути, которые Repo Map уже
+закладывает в список `files` этого JSON (запрещённый или redact-путь просто никогда там не
+появляется), поэтому любое другое сырое чтение через `git diff`/`git show`, которое делает сам
+`build_context_package` — diff, fallback-excerpt зависимости, содержимое starting/related файлов —
+дополнительно ограничено тем же срезом `files`, а не полным набором изменённых файлов (issue #274,
+review-finding: `package.diff` изначально строился нефильтрованным `git diff` по всем изменённым
+файлам, независимо от `files`). `redact_symbols` — более тонкое, посимвольное решение, для которого
+у JSON-контракта Repo Map нет канала выразить точечную редакцию произвольного сырого текста; поэтому
+такой текст дополнительно прогоняется через тот же policy-loader и matcher самого Repo Map
+(`load_policy`/`_matches`, чистый Python, без tree-sitter, подпроцессов и сети), импортируемый в
+процессе `context_builder` — переиспользуемый, а не продублированный заново. Так path/symbol,
+заблокированный политикой, не попадает ни в граф/сигнатуры, ни в diff и другое сырое содержимое.
+
+`symbol_graph["<path>"]["imports"]`/`["imported_by"]` заполняются только рёбрами `kind == "import"`;
+рёбра `unique-name-ref`/`ambiguous-name-ref` образуют новые аддитивные ключи `["references"]`/
+`["referenced_by"]` (пустые списки, когда Repo Map работает на minimal-tier без grammar-бандла).
+
+Context Package получил структурированный `parser_provenance` (tier, parser, degradation_reason,
+token_estimator_version, plюс вложенный `parser_provenance` самого Repo Map — идентичность и версии
+tree-sitter-бандла, hash скрипта, версия token-estimator) и `schema_version` (2); прежнее строковое
+поле `parser` сохраняется как legacy-зеркало top-level `parser` Repo Map ("path-only"/"bundle") ещё
+одну версию схемы. Отсутствие `schema_version` в уже существующей записи трактуется как версия 1.

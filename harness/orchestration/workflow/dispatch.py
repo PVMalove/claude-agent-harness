@@ -17,7 +17,10 @@ from typing import cast
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import operational_guards
 from harness.orchestration.contract import (
+    REPO_MAP_TIER_ORDER,
     resolve_allowed_tools,
+    resolve_min_repo_map_tier,
+    role_verification_commands,
 )
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
@@ -98,10 +101,13 @@ from harness.orchestration.workflow.history import (
     _accepted_architect,
     _accepted_qa_for_candidate,
     _context_package_freshness,
+    _context_package_quality_warning,
     _context_package_summary,
+    _context_package_tier,
     _effective_base,
     _latest_context_package,
     _latest_developer_candidate,
+    _latest_registered_verification_candidate,
     _pending_report,
     _risk_for_candidate,
     _settled,
@@ -112,6 +118,13 @@ from harness.orchestration.workflow.risk import (
     _matching_triggers,
     _risk_triggers,
 )
+
+
+def _dispatch_verification_commands(
+    batch: JsonObject, role_name: str, purpose: str
+) -> list[str]:
+    """Вернуть неизменяемый список проверок роли, замороженный в ``batch``."""
+    return cast(list[str], role_verification_commands(batch, role_name, purpose))
 
 
 def _enforce_base_freshness(
@@ -134,6 +147,8 @@ def _enforce_base_freshness(
     batch["required_next_role"] = "developer"
     batch["retry_candidate_required"] = True
     batch["base_rebase_required"] = True
+    # The tip the rebase must land on: its report is measured from here and accept pins exactly it.
+    batch["rebase_target_commit"] = current
     _safe_id(batch["batch_id"], "batch")
     _replace_record(ledger, BatchRecord.from_dict(batch))
     raise CoordinatorError(
@@ -141,6 +156,25 @@ def _enforce_base_freshness(
         "only a new developer rebase dispatch can clear this block",
         remedy="run a new developer rebase dispatch to bring the batch base up to date with origin, then retry",
     )
+
+
+def _developer_commit_plan(
+    batch: JsonObject, write_paths: list[str]
+) -> list[JsonObject]:
+    """Turn the approved DoD into a compact, immutable commit-plan interface.
+
+    The coordinator owns the structure; a worker only supplies the SHA-to-entry evidence.
+    This keeps plan construction out of every runtime adapter while making each logical
+    DoD item independently reviewable.
+    """
+    return [
+        {
+            "id": f"step-{index}",
+            "summary": item,
+            "expected_paths": write_paths,
+        }
+        for index, item in enumerate(batch["definition_of_done"], start=1)
+    ]
 
 
 def _dispatch_approval_mode(
@@ -163,7 +197,7 @@ def _dispatch_approval_mode(
     risk_triggered = bool(risk and risk.get("matched_triggers"))
     milestone = (
         purpose == "publish"
-        or role == "qa"
+        or (role == "qa" and policy != "low_risk")
         or risk_triggered
         or batch.get("risk_reassessment_required")
     )
@@ -247,11 +281,7 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
                 ).hexdigest(),
                 "freshness": _context_package_freshness(repo, root, batch),
             }
-        checks = (
-            batch["developer_verification_commands"]
-            if args.role == "developer"
-            else batch["verification_commands"]
-        )
+        checks = _dispatch_verification_commands(batch, args.role, args.purpose)
         state = {
             "repo": str(repo),
             "config": config,
@@ -563,6 +593,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "qa": {("qa", "work"), ("code-review", "work")},
             "publish": {("developer", "publish")},
             "developer-retry": {("developer", "work")},
+            "verification": {("verification", "work")},
             # A retried architect report gets a new architect, never a developer.
             "architect": {("architect", "work")},
         }
@@ -598,6 +629,11 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 session_effort=getattr(args, "effort", None),
             )
         )
+        commit_plan = (
+            _developer_commit_plan(batch, zone["paths"])
+            if role_name == "developer" and purpose == "work"
+            else []
+        )
         candidate = None
         risk = None
         review_scope: list[str] = []
@@ -606,7 +642,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         requested_delta_review_of = getattr(args, "delta_review_of", None)
         if args.candidate_commit is not None:
             candidate = _candidate_commit(repo, args.candidate_commit)
-        if role_name in {"code-review", "qa"} and candidate is None:
+        if role_name in {"verification", "code-review", "qa"} and candidate is None:
             raise CoordinatorError(
                 f"{role_name} dispatch requires candidate_commit",
                 remedy=f"pass --candidate-commit before dispatching the {role_name} role",
@@ -633,6 +669,12 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             _enforce_base_freshness(repo, root, ledger, batch)
         if candidate is not None:
             risk = _risk_for_candidate(root, batch, candidate)
+        if role_name == "verification":
+            if candidate != _latest_registered_verification_candidate(repo, batch):
+                raise CoordinatorError(
+                    "verification dispatch must pin the registered infrastructure candidate",
+                    remedy="pass the candidate_commit recorded by the infrastructure retry decision",
+                )
         if role_name in {
             "code-review",
             "qa",
@@ -714,22 +756,26 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             else _dispatch_approval_mode(args, batch, config, role_name, purpose, risk)
         )
         context_package = None
-        if role_name in {"architect", "developer", "code-review"}:
-            snapshot = candidate
-            if snapshot is None:
+        # A developer retry amends the latest reviewed candidate.  Pin its immutable
+        # startup snapshot to that candidate too, so the worker keeps the ordered
+        # commit history instead of rewinding HEAD and staging the whole diff.
+        snapshot_commit = candidate or batch["base_commit"]
+        if role_name in {"architect", "developer", "verification", "code-review"}:
+            snapshot_commit = candidate
+            if snapshot_commit is None:
                 try:
-                    snapshot = _latest_developer_candidate(repo, root, batch)
+                    snapshot_commit = _latest_developer_candidate(repo, root, batch)
                 except CoordinatorError:
-                    snapshot = batch["base_commit"]
+                    snapshot_commit = batch["base_commit"]
             context_package = _persist_context_package(
                 repo,
                 root,
                 ledger,
                 batch,
                 role="shared",
-                snapshot=snapshot,
+                snapshot=snapshot_commit,
                 inclusion_reason=(
-                    f"automatic shared package for {role_name} at pinned snapshot {snapshot}; "
+                    f"automatic shared package for {role_name} at pinned snapshot {snapshot_commit}; "
                     "included before immutable brief creation"
                 ),
             )
@@ -742,12 +788,25 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     "newly registered Context Package is stale; refresh before dispatch",
                     remedy="re-register the Context Package immediately before dispatching; it is validated fresh at dispatch time",
                 )
+            if role_name in {"architect", "developer", "code-review"}:
+                required_tier = resolve_min_repo_map_tier(config, role_name)
+                if required_tier is not None:
+                    actual_tier = _context_package_tier(context_package)
+                    if (
+                        REPO_MAP_TIER_ORDER.index(actual_tier)
+                        < REPO_MAP_TIER_ORDER.index(required_tier)
+                    ):
+                        raise CoordinatorError(
+                            f"Repo Map tier {actual_tier!r} for role {role_name!r} is below "
+                            f"the configured minimum {required_tier!r}",
+                            remedy=(
+                                "repair or reinstall the offline tree-sitter parser bundle so "
+                                "the Repo Map reaches the required tier, or lower "
+                                "repo_map_policy.min_tier/min_tier_by_role for this role"
+                            ),
+                        )
         dispatch_id = f"dispatch-{uuid.uuid4()}"
-        dispatch_commands = (
-            batch["developer_verification_commands"]
-            if role_name == "developer" and purpose == "work"
-            else batch["verification_commands"]
-        )
+        dispatch_commands = _dispatch_verification_commands(batch, role_name, purpose)
         transition = _proposed_transition(
             batch,
             next_action,
@@ -765,7 +824,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         if propose:
             _safe_id(batch["batch_id"], "batch")
             _replace_record(ledger, BatchRecord.from_dict(batch))
-            return {
+            proposal = {
                 "batch_id": batch["batch_id"],
                 "state": "proposed",
                 "transition": transition,
@@ -774,8 +833,23 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 "needs_attention": bool(batch.get("needs_attention", False)),
                 "context_package_freshness": context_package_freshness,
             }
+            if context_package is not None:
+                warning = _context_package_quality_warning(context_package)
+                if warning is not None:
+                    proposal["context_package_quality_warning"] = warning
+            return proposal
         assert approval_mode is not None  # only a proposal skips the approval mode
         approval = _bind_dispatch_approval(args, approval_mode, digest)
+        orchestration_policy = _orchestration_policy(config)
+        stale_after = cast(
+            int, orchestration_policy["attention"]["stale_dispatch_seconds"]
+        )
+        # A heartbeat must leave enough margin for an occasional slow tool call.  The cadence is
+        # frozen into the brief so a later project-config edit cannot silently change an active
+        # worker's liveness contract.
+        heartbeat_every = max(
+            1, min(orchestration_policy["attention"]["heartbeat_interval_seconds"], stale_after // 3)
+        )
         brief: JsonObject = {
             "dispatch_id": dispatch_id,
             "batch_id": batch["batch_id"],
@@ -821,14 +895,19 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "communication_policy": batch.get(
                 "communication_policy", _communication_policy(config)
             ),
-            "snapshot_commit": candidate or batch["base_commit"],
+            "snapshot_commit": snapshot_commit,
             # Absolute, so a role never resolves a relative reporting path against a guessed
             # current directory and never invents a home-directory folder of its own.
             "report_staging_path": str(_agent_inbox(repo) / f"{dispatch_id}.json"),
             "transition": transition,
             "transition_digest": digest,
             "retry_idempotency_key": idempotency_key,
-            "orchestration_policy": _orchestration_policy(config),
+            "orchestration_policy": orchestration_policy,
+            "liveness": {
+                "heartbeat_every_seconds": heartbeat_every,
+                "stale_after_seconds": stale_after,
+            },
+            "commit_plan": commit_plan,
         }
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the

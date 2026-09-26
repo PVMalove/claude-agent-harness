@@ -1,6 +1,6 @@
-# Repo Map: offline parser bundle, stdlib Python и policy-управляемая деградация
+# Repo Map: offline parser bundle, изолированное Python-окружение и policy-управляемая деградация
 
-Статус: proposed (черновик; принимается вместе со спекой, коммитится тикетом реализации).
+Статус: accepted.
 
 ## Контекст системы
 
@@ -8,50 +8,66 @@
 `rg` и чтение, а Context Package раскрывает только Python-импорты на один уровень через regex и
 stdlib `ast` (`harness/context_builder/context_builder.py`); для остальных языков берутся первые
 30 строк. Обзора всего репозитория за несколько тысяч токенов нет. Целевые монолиты написаны не
-только на Python, а `pyproject.toml` держит `dependencies = []`, и [ADR 0018](0018-harness-as-importable-package-without-pip-install.md)
-отказался от pip-инфраструктуры. Сравнение с Aider/Cursor: Repo Map строится парсером, а не regex.
+только на Python. Харнесс может использовать сторонние Python-библиотеки во всех своих Python-путях;
+прямые зависимости перечислены в группе `dev` файла `pyproject.toml` (`uv add --dev`), а `uv.lock`
+фиксирует их разрешённый граф; pip не используется.
+[ADR 0018](0018-harness-as-importable-package-without-pip-install.md) по-прежнему запрещает
+упаковывать сам харнесс в wheel. Сравнение с Aider/Cursor: Repo Map строится парсером, а не regex.
 
 ## Действующий контракт
 
 - **Repo Map** — чистая функция `(pinned commit, normalized seeds, budget, parser provenance,
   ignore policy, token-estimator version)`. Представление не хранится в ledger. Локальный
   content-addressed cache по этому ключу неавторитетен, проверяется хешем и очищается без
-  lifecycle-эффекта. Авторитетной записью остаётся immutable Context Package с hash каждого файла;
-  его regex-граф и `_extract_python_signatures` удаляются без дублирующей реализации.
+  lifecycle-эффекта. В поставке #266 это standalone CLI; переход Context Package на этот ресурс и
+  удаление его regex-графа с `_extract_python_signatures` выполняются отдельной миграцией.
 - **Ранжирование** без LLM: без seeds — по in-degree, с seeds — по BFS-дистанции, ничья решается по
-  пути; отсечение по токен-бюджету. Рёбра — импорты плюс сопоставление def/ref по имени
-  (приближение, не call graph: разрешение типов вне scope). Каждое ребро имеет `kind` и
-  `confidence`: import сильное, unique-name-ref среднее, ambiguous-name-ref низкое и не ранжирует
+  пути; отсечение по токен-бюджету. Режим `full` строит сильные import-рёбра с `kind` и
+  `confidence` и сопоставление def/ref по имени (приближение, не call graph:
+  разрешение типов вне scope): unique-name-ref среднее, ambiguous-name-ref низкое и не ранжирует
   файл самостоятельно.
-- **Поставка парсеров** — Python всегда разбирается встроенным `ast`; tree-sitter нужен только для
-  TS/JS, Go, Java и C#. Dispatch и `context_builder` никогда не разрешают зависимости через сеть.
+- **Поставка парсеров** — все поддержанные языки, включая Python, разбираются только tree-sitter из
+  проверенного bundle; stdlib `ast` не используется ни как основной путь, ни как fallback (уточнено
+  #290). Dispatch и `context_builder` никогда не разрешают зависимости через сеть.
   Полный режим получает проверенный parser bundle из lock+hash артефактов, локального cache или
-  разрешённого внутреннего registry. Bundle релиза формирует SBOM и проходит CVE-проверку; PEP 723/
-  `uv run` допустимы лишь как developer bootstrap вне dispatch hot path. `.venv`,
-  `requirements.txt` и `uv add` в целевом проекте не создаются.
+  разрешённого внутреннего registry. Bundle релиза формирует SBOM и проходит CVE-проверку.
+  Харнесс использует полноценное Python-окружение со сторонними библиотеками из группы `dev`
+  `pyproject.toml`; оно создаётся только в `.harness/.venv` командой `make bootstrap` (`uv sync
+  --locked`). Bundle ставится `uv pip install --offline --no-index --require-hashes --target`.
+  Разрешение и установка зависимостей происходят при bootstrap, а не во время Dispatch или Context
+  Package: эти пути не обращаются к сети и не создают `.venv`, `requirements.txt` или `uv add` в
+  корне целевого проекта.
 - **Уровни качества и data policy:** `full` содержит parser-backed сигнатуры и связи поддержанных
-  языков; `reduced` — Python `ast` и path-only сведения прочих; `minimal` — только
-  policy-approved Path inventory. До сериализации применяются project-owned allowlist/denylist,
-  path/symbol redaction и пределы длины; комментарии и тела функций не включаются. Portable-профиль
-  предупреждает, а enterprise policy может потребовать уровень для роли или запретить dispatch.
+  языков, включая Python; `minimal` — только policy-approved Path inventory с причиной деградации
+  (уровня `reduced` нет, уточнено #290). До сериализации применяются project-owned allowlist/denylist,
+  path/symbol redaction и пределы длины; комментарии и тела функций не включаются. По умолчанию
+  поведение portable. Enterprise-ограничения задаёт `repo_map_policy` в `orchestration.json`;
+  отдельной сущности «профиль» нет. Policy применяет allowlist/denylist/redaction и лимиты числа
+  файлов, размера blob, времени Git-вызова и token budget до сериализации.
 - **Provenance и health:** Context Package получает совместимое структурированное
   `parser_provenance`: версии и хеши bundle/грамматик, ABI, hash скрипта, token-estimator version,
   quality tier и причина деградации. `harness health` показывает уровень и offline remedy, не
   скачивает зависимости и сообщает применимую policy.
-- **Граница capability.** Модуль — новый ресурс `pvmalove-suite` (его вызывают `/grilling` и
-  `/to-tickets`); `context_builder` из `backend-orchestration` вызывает его подпроцессом, а не
-  импортирует. Встроенный `ast` собирает Python всегда; установленный bundle разбирает остальные
-  языки с ограничением времени и размера вывода. При отсутствии bundle CLI возвращает валидный
-  деградированный JSON без сетевого вызова. Скрипт читает pinned commit через git, а не рабочее
-  дерево. Бюджет токенов: константа по умолчанию, флаг `--max-tokens`, переопределение из
-  `.harness/orchestration.json`, только если файл есть.
+- **Граница capability.** Модуль — новый ресурс `pvmalove-suite`. Поставка #266 предоставляет
+  standalone CLI; последующая интеграция `/grilling`, `/to-tickets` и `context_builder` вызывает
+  его подпроцессом, а не импортирует. Встроенный `ast` собирает Python всегда; установленный bundle
+  разбирает остальные языки с ограничением времени и размера вывода. При отсутствии bundle CLI
+  возвращает валидный деградированный JSON без сетевого вызова. Скрипт читает pinned commit через
+  git, а не рабочее дерево. Бюджет токенов: константа по умолчанию, флаг `--max-tokens` и верхняя
+  граница из `.harness/orchestration.json`. В output попадают hash policy, применённые лимиты и
+  структурированные диагностики неразбираемых или слишком больших policy-approved файлов.
 - **Типизация** ([ADR 0020](0020-mypy-strict-disallow-any-explicit.md)): типы tree-sitter не
-  пересекают границу процесса; `context_builder` валидирует типизированный JSON-контракт скрипта.
-  Python fallback тестируется всегда, bundle-путь — в изолированной CI-задаче с проверенным offline
-  артефактом; policy, redaction и отказ bundle с неверным hash имеют отдельные контрактные тесты.
+  пересекают границу процесса. Интеграция `context_builder` валидирует типизированный JSON-контракт
+  скрипта. JSON Schema поставляется рядом с CLI. Python fallback, policy, redaction и лимиты имеют
+  контрактные тесты; bundle-путь тестируется в изолированной CI-задаче с проверенным offline
+  артефактом.
 
-Уточняет ADR 0018: пакет остаётся без pip-установки и `[build-system]`; полная карта получает
-релизный offline parser bundle, а не runtime-зависимость через `uv run`. Уточняет
+Состав bundle, пины, матрица wheels, формат поставки, правила SBOM/CVE и typed-граница уточнены
+[ADR 0024](0024-repo-map-parser-bundle-composition-and-delivery.md).
+
+Уточняет ADR 0018: пакет остаётся без установки в wheel и `[build-system]`, но харнесс может
+использовать сторонние библиотеки из собственного `.harness/.venv`; полная карта получает релизный
+offline parser bundle, а не runtime-зависимость через `uv run`. Уточняет
 [ADR 0016](0016-context-package-checkpoint-continuation-and-base-commit-gate.md): Context Package
 получает `parser_provenance` и quality tier, а граф символов строится из Repo Map.
 
@@ -60,9 +76,9 @@ stdlib `ast` (`harness/context_builder/context_builder.py`); для осталь
 - Tree-sitter как обязательная online-зависимость с fail-fast — один путь кода, но ломает Context
   Package в проектах без установки и расширяет supply-chain perimeter на каждый dispatch.
 - `harness parsers install` с настраиваемой командой по стеку — `uv add {packages}` правит
-  `pyproject.toml`, `uv.lock` и создаёт `.venv` в целевом проекте (в не-Python монолите — Python-
-  проект с нуля); в `project.json` нет `stack`, нужны новые поля и синхронная правка схемы,
-  валидатора, шаблона и guide.
+  `pyproject.toml` и lock целевого проекта, хотя зависимости харнесса должны оставаться в его
+  собственном manifest и `.harness/.venv`; в `project.json` нет `stack`, нужны новые поля и
+  синхронная правка схемы, валидатора, шаблона и guide.
 - universal-ctags/ast-grep — не Python-зависимость, но нужен бинарь в PATH, а ctags почти не даёт
   ссылок.
 - Только stdlib (`ast` + regex) — нулевые зависимости, но качество для не-Python языков низкое.
@@ -70,8 +86,9 @@ stdlib `ast` (`harness/context_builder/context_builder.py`); для осталь
 
 ## Операционные последствия
 
-- Полная карта требует установленного проверенного bundle, а не `uv`; portable runtime безопасно
-  возвращает `reduced`/`minimal`, enterprise policy принимает или ограничивает dispatch.
+- Полная карта требует установленного проверенного bundle (его ставит `uv`, но не `uv run`); portable runtime безопасно
+  возвращает `minimal`, enterprise policy принимает или ограничивает dispatch.
+- Окружение харнесса — только `.harness/.venv`; корневая `.venv` не создаётся и не используется.
 - Пины, hashes, SBOM и CVE-статус меняются только осознанным релизом харнесса и входят в provenance.
 - Польза измеряется на фиксированном наборе задач, одинаковых моделях и commit. Считаются все
   prompt input tokens (включая карту, повторные чтения, retry и failed sessions), latency, cache

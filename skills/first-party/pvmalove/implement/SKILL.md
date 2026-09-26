@@ -28,6 +28,15 @@ If the command is unavailable or cannot read its state, stop and tell the develo
 Do not infer or repair an opt-in capability. Process one ticket to a terminal batch state before
 beginning another.
 
+If another batch blocks the ticket or zone, inspect `batch list --open`, the conflicting dispatch,
+and its decision packet. Tell the developer which batch is blocking and how to finish it normally.
+If its worker can no longer produce a report, show a copyable `batch abandon` command with the
+actual batch ID, the verified operator name, `--approved-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`,
+and a reason grounded in the observed failure. Present this as an operator action requiring their
+explicit approval; never supply `--approved-by` as though they already approved, or execute the
+command for them without that approval. `ledger clean` only removes orphaned evidence, and
+`ledger reset` does not clear an active batch.
+
 ## Coordinator contract
 
 Resolve the tracker ticket, issue branch and blockers without opening a second batch for the same
@@ -41,12 +50,24 @@ guess where its report belongs writes it outside the project. The coordinator ne
 evidence, not permission to advance. Architect precedes developer; accepted candidate proceeds
 through the required review/QA/publish gates.
 
-Every transition needs explicit approval, and approval means the operator answered — not that this
-session concluded the next step was obvious. Never write `--approved-by` on the operator's behalf,
-and never narrate a decision they did not make: show the decision packet, ask, and wait. An accepted
-report sets `next_action`; it does not authorise it. Projects that want this enforced rather than
-promised set `human_approval_gate` to `tty` in `.harness/orchestration.json`, which makes every
-approval require a confirmation typed on the operator's own terminal.
+Before every write-role dispatch, record an ordered commit plan in the immutable brief. Each entry
+names one independently reviewable logical change and its expected files; use one entry only when
+the entire approved change is inseparable. A recovery preserves the accepted plan, or replaces it
+with a newly approved plan that explains the changed boundary. The developer's completion report
+maps every created commit to exactly one entry and explains any approved deviation. Do not collapse
+unrelated implementation, tests, documentation, or type-only repairs into a recovery commit merely
+because they are staged together.
+
+Follow the configured approval policy. Under `manual_all`, every transition needs explicit approval:
+show the decision packet, ask, and wait. Under `low_risk`, a clean completed report in an eligible
+zone is accepted by the coordinator with an audited policy decision, and the next eligible dispatch
+may already be approved. Under `milestone`, clean reports outside QA, publish and risk milestones
+are also accepted automatically; stop for the remaining milestone decisions. Continue from the
+recorded `next_action` without asking the operator to repeat a policy decision. Blockers, failed
+checks, risk triggers, review findings and publish still require the applicable manual decision.
+Never write `--approved-by` on the operator's behalf or
+narrate a decision they did not make. `human_approval_gate: tty` requires confirmation on the
+operator's terminal for transitions that still require human approval.
 
 Each worker records a model self-report and is observed by the event-driven watchdog; those facts
 are evidence, never a reason to edit an immutable brief.

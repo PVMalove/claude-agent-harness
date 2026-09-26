@@ -16,11 +16,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 THRESHOLD_PERCENT = 70.0
+MAX_UNCOVERED_LINES = 25
 COVERAGE_DATA_FILE = ROOT / ".coverage"
 COVERAGE_JSON_FILE = ROOT / ".coverage.diff-coverage.json"
 # Verified by the clean-room run (scripts/verify.py), not by the unittest suite this gate measures, so
 # its changed lines could never count as covered.
 EXCLUDED_FROM_GATE = frozenset({"scripts/test_clean_room.py"})
+# The clean-room scenarios `scripts/test_clean_room.py` runs, split into their own package.
+EXCLUDED_PREFIXES = ("scripts/clean_room/",)
 
 
 def _base_branch() -> str:
@@ -93,7 +96,11 @@ def _changed_lines(base: str) -> dict[str, set[int]]:
         if line.startswith("+++ "):
             path = line[len("+++ ") :]
             path = path.removeprefix("b/")
-            is_gated = path.endswith(".py") and path not in EXCLUDED_FROM_GATE
+            is_gated = (
+                path.endswith(".py")
+                and path not in EXCLUDED_FROM_GATE
+                and not path.startswith(EXCLUDED_PREFIXES)
+            )
             current_path = path if is_gated else None
             continue
         if line.startswith("@@"):
@@ -155,6 +162,38 @@ def meets_threshold(covered: int, total: int) -> bool:
     return covered * 100 >= total * THRESHOLD_PERCENT
 
 
+def compact_uncovered(
+    uncovered: Sequence[str], *, max_lines: int = MAX_UNCOVERED_LINES
+) -> tuple[list[str], int]:
+    """Render a bounded coverage failure summary grouped by path and line ranges.
+
+    ``uncovered`` is already sorted by ``summarize_coverage`` and consists of the stable
+    ``path:line`` form it emits. Keep the full set for the threshold calculation, but show only
+    enough locations to make the failed gate actionable instead of flooding CI with its log.
+    """
+    selected = uncovered[:max_lines]
+    by_path: dict[str, list[int]] = {}
+    for entry in selected:
+        path, separator, line_text = entry.rpartition(":")
+        if not separator or not line_text.isdecimal():
+            raise ValueError(f"invalid uncovered coverage location: {entry!r}")
+        by_path.setdefault(path, []).append(int(line_text))
+
+    rendered: list[str] = []
+    for path, lines in by_path.items():
+        ranges: list[str] = []
+        start = previous = lines[0]
+        for line_number in lines[1:]:
+            if line_number == previous + 1:
+                previous = line_number
+                continue
+            ranges.append(str(start) if start == previous else f"{start}-{previous}")
+            start = previous = line_number
+        ranges.append(str(start) if start == previous else f"{start}-{previous}")
+        rendered.append(f"{path}:{', '.join(ranges)}")
+    return rendered, len(uncovered) - len(selected)
+
+
 def main() -> int:
     os.environ["PYTHONPATH"] = str(ROOT)
     base = _merge_base()
@@ -171,10 +210,11 @@ def main() -> int:
             "coverage",
             "run",
             f"--source={','.join(source_dirs(changed))}",
+            # pytest, not `unittest discover`: it also collects the function-style tests that
+            # unittest silently skips, which left their code counted as uncovered.
             "-m",
-            "unittest",
-            "discover",
-            "-s",
+            "pytest",
+            "-q",
             str(ROOT / "tests"),
         ],
         cwd=ROOT,
@@ -223,11 +263,15 @@ def main() -> int:
         f"diff-coverage: {total_covered}/{total_changed} changed lines covered ({percent:.1f}%)"
     )
     if not meets_threshold(total_covered, total_changed):
+        compact, omitted = compact_uncovered(uncovered)
         print(
-            f"diff-coverage: below the {THRESHOLD_PERCENT:.0f}% threshold; uncovered changed lines:"
+            f"diff-coverage: below the {THRESHOLD_PERCENT:.0f}% threshold; "
+            f"uncovered changed lines (showing {len(uncovered) - omitted}/{len(uncovered)}):"
         )
-        for entry in uncovered:
+        for entry in compact:
             print(f"  {entry}")
+        if omitted:
+            print(f"  … and {omitted} more uncovered changed lines")
         return 1
     return 0
 

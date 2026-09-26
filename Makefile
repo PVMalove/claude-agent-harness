@@ -4,37 +4,56 @@
 ifeq ($(OS),Windows_NT)
 SHELL := cmd.exe
 .SHELLFLAGS := /C
+HARNESS_VENV := .harness\.venv
+HARNESS_ENV_STAMP := $(HARNESS_VENV)\.requirements-installed
+PYTHON_BOOTSTRAP ?= python
+HARNESS_PYTHON := $(HARNESS_VENV)\Scripts\python.exe
+else
+HARNESS_VENV := .harness/.venv
+HARNESS_ENV_STAMP := $(HARNESS_VENV)/.requirements-installed
+PYTHON_BOOTSTRAP ?= python3
+HARNESS_PYTHON := $(HARNESS_VENV)/bin/python
 endif
 
-.PHONY: help verify test coverage typecheck clean registry test-clean-room format lint
+.PHONY: help bootstrap verify test coverage typecheck clean registry test-clean-room format lint
 
 help: ## Показать список команд с описанием
-	@python -c "import re, sys; print('Доступные команды:'); lines = open(sys.argv[1], encoding='utf-8').readlines(); matches = [re.match(r'^([a-zA-Z0-9_-]+):.*?## (.*)$$', line) for line in lines]; [print(f'  {m.group(1):<16} - {m.group(2)}') for m in matches if m]" $(MAKEFILE_LIST)
+	@$(PYTHON_BOOTSTRAP) -c "import re, sys; print('Доступные команды:'); lines = open(sys.argv[1], encoding='utf-8').readlines(); matches = [re.match(r'^([a-zA-Z0-9_-]+):.*?## (.*)$$', line) for line in lines]; [print(f'  {m.group(1):<16} - {m.group(2)}') for m in matches if m]" $(MAKEFILE_LIST)
 
-format: ## Автоформатирование кода (ruff format + ruff check --fix-only)
-	ruff format .
-	ruff check --fix-only .
+# Окружение харнесса ставит только uv (без pip): группа `dev` из pyproject.toml строго по uv.lock.
+export UV_PROJECT_ENVIRONMENT := $(HARNESS_VENV)
+export PYTHONPATH := .
 
-lint: typecheck ## Линтинг кода (ruff check + mypy)
-	ruff check .
+$(HARNESS_ENV_STAMP): pyproject.toml uv.lock
+	uv sync --locked --python $(PYTHON_BOOTSTRAP)
+	$(HARNESS_PYTHON) -c "from pathlib import Path; Path(r'$(HARNESS_ENV_STAMP)').touch()"
 
-verify: ## Запустить полный набор проверок проекта (sanity checks, mypy, tests, clean-room)
-	python scripts/verify.py
+bootstrap: $(HARNESS_ENV_STAMP) ## Создать .harness/.venv через uv sync и установить Python-зависимости
 
-test: ## Запустить только unit-тесты (pytest)
-	set PYTHONPATH=. && python -m pytest -n 4 tests
+format: $(HARNESS_ENV_STAMP) ## Автоформатирование кода (ruff format + ruff check --fix-only)
+	$(HARNESS_PYTHON) -m ruff format .
+	$(HARNESS_PYTHON) -m ruff check --fix-only .
 
-coverage: ## Запустить тесты с проверкой покрытия (pytest-cov)
-	set PYTHONPATH=. && pytest --cov=harness --cov-report=term --cov-report=html tests
+lint: typecheck $(HARNESS_ENV_STAMP) ## Линтинг кода (ruff check + mypy)
+	$(HARNESS_PYTHON) -m ruff check .
 
-typecheck: ## Запустить mypy (проверка типов)
-	python -m mypy
+verify: $(HARNESS_ENV_STAMP) ## Запустить полный набор проверок проекта (sanity checks, mypy, tests, clean-room)
+	$(HARNESS_PYTHON) scripts/verify.py
 
-registry: ## Пересобрать skills/REGISTRY.md (после изменения/добавления скиллов)
-	python scripts/build-registry.py
+test: $(HARNESS_ENV_STAMP) ## Запустить только unit-тесты (pytest)
+	$(HARNESS_PYTHON) -m pytest -n 4 tests
 
-test-clean-room: ## Запустить clean-room тесты
-	python scripts/test-clean-room.py
+coverage: $(HARNESS_ENV_STAMP) ## Запустить тесты с проверкой покрытия (pytest-cov)
+	$(HARNESS_PYTHON) -m pytest --cov=harness --cov-report=term --cov-report=html tests
 
-clean: ## Удалить временные файлы, стейт оркестратора, кэши и .pyc
-	python -c "import shutil, os, glob; [shutil.rmtree(p, ignore_errors=True) for p in ['.mypy_cache', '.pytest_cache', '.harness/orchestration/state', '.harness/scratch', '.claude/worktrees', 'htmlcov'] if os.path.exists(p)]; [os.remove(f) for f in glob.glob('**/*.pyc', recursive=True)]"
+typecheck: $(HARNESS_ENV_STAMP) ## Запустить mypy (проверка типов)
+	$(HARNESS_PYTHON) -m mypy
+
+registry: $(HARNESS_ENV_STAMP) ## Пересобрать skills/REGISTRY.md (после изменения/добавления скиллов)
+	$(HARNESS_PYTHON) scripts/build_registry.py
+
+test-clean-room: $(HARNESS_ENV_STAMP) ## Запустить clean-room тесты
+	$(HARNESS_PYTHON) scripts/test_clean_room.py
+
+clean: $(HARNESS_ENV_STAMP) ## Удалить временные файлы, стейт оркестратора, кэши и .pyc
+	$(HARNESS_PYTHON) -c "import shutil, os, glob; [shutil.rmtree(p, ignore_errors=True) for p in ['.mypy_cache', '.pytest_cache', '.harness/orchestration/state', '.harness/scratch', '.claude/worktrees', 'htmlcov'] if os.path.exists(p)]; [os.remove(f) for f in glob.glob('**/*.pyc', recursive=True)]"

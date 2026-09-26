@@ -63,7 +63,7 @@ def _persist_context_package(
     snapshot: str,
     inclusion_reason: str,
     min_starting_files: int = 1,
-    max_starting_files: int = 10,
+    max_starting_files: int | None = None,
     max_package_size_bytes: int | None = None,
     max_package_tokens: int | None = None,
     symbol_graph_depth: int | None = None,
@@ -80,6 +80,8 @@ def _persist_context_package(
             remedy="remove role-specific focus from the shared Context Package; put it in the immutable dispatch brief instead",
         )
     policy = _context_package_policy(core_config._config(repo))
+    if max_starting_files is None:
+        max_starting_files = policy["max_starting_files"]
     # `max_package_tokens` is documented as an optional *stricter* ceiling (see coordinator_cli.py
     # --max-package-tokens help text). Silently honouring a caller-supplied value above the
     # project's configured budget is exactly how a review context package was pushed to ~130k
@@ -104,7 +106,11 @@ def _persist_context_package(
         if max_related_tests is not None
         else policy["max_related_tests"]
     )
+    scope = batch.get("scope_preflight")
+    expected_files = scope.get("expected_files", []) if isinstance(scope, dict) else []
+    task_files = [path for path in expected_files if isinstance(path, str)]
     seed_files = [
+        *task_files,
         "AGENTS.md",
         "README.md",
         ".harness/orchestration/roles/_common.md",
@@ -141,6 +147,9 @@ def _persist_context_package(
         "estimated_tokens": built.estimated_tokens,
         "role": "shared",
         "inclusion_reason": inclusion_reason,
+        "schema_version": built.schema_version,
+        "parser": built.parser,
+        "parser_provenance": built.parser_provenance,
     }
     _reject_sensitive(package, "context package")
     _safe_id(package["context_package_id"], "context package")
@@ -206,7 +215,11 @@ def register_context_package(args: argparse.Namespace) -> JsonObject:
             inclusion_reason=getattr(
                 args, "inclusion_reason", "manual immutable context registration"
             ),
-            min_starting_files=args.min_starting_files,
+            min_starting_files=(
+                args.min_starting_files
+                if args.min_starting_files is not None
+                else _context_package_policy(core_config._config(repo))["min_starting_files"]
+            ),
             max_starting_files=args.max_starting_files,
             max_package_size_bytes=args.max_package_size_bytes,
             max_package_tokens=getattr(args, "max_package_tokens", None),

@@ -39,11 +39,13 @@ CONFIG_REQUIRED_FIELDS = (
 CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "$schema",
     "developer_verification_commands",
+    "review_verification_commands",
     "test_path_patterns",
     "adaptive_continuation_policy",
     "approval_policy",
     "low_risk_zones",
     "context_package_policy",
+    "repo_map_policy",
     "continuation_policy",
     "retry_policy",
     "preflight_policy",
@@ -52,6 +54,7 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "human_approval_gate",
     "tool_policy",
     "attention_policy",
+    "execution_policy",
     "approval_ttl_seconds",
     "extensions",
 }
@@ -448,17 +451,13 @@ def validate_brief_policy(
                 f"dispatch brief {field} must be a list of strings",
                 remedy=INTERNAL_INVARIANT_REMEDY,
             )
-    expected_commands = (
-        config.get(
-            "developer_verification_commands", config.get("verification_commands")
-        )
-        if brief.get("role") == "developer" and brief.get("purpose") == "work"
-        else config.get("verification_commands")
+    accepted_commands = accepted_verification_commands(
+        config, str(brief.get("role")), str(brief.get("purpose"))
     )
-    if brief["verification_commands"] != expected_commands:
+    if brief["verification_commands"] not in accepted_commands:
         raise ContractError(
             "dispatch brief verification_commands must exactly match its project role configuration",
-            remedy="regenerate this brief so verification_commands matches the project's (developer_)verification_commands",
+            remedy="regenerate this brief so verification_commands matches the project's role verification_commands",
         )
     branch = brief["branch"]
     pattern = project.get("branch_pattern", r"^feature/issue-[0-9]+-.+")
@@ -547,6 +546,153 @@ def _policy_problem(
     return problems
 
 
+REPO_MAP_TIER_ORDER = ("minimal", "full")
+REPO_MAP_POLICY_ROLES = ("architect", "developer", "code-review")
+# Work roles that own no verification gate: the architect runs only decision-specific checks
+# (roles/architect.md), so it must never receive the batch's full QA suite in its brief.
+NO_GATE_WORK_ROLES = frozenset({"architect"})
+
+
+def role_verification_commands(
+    source: Mapping[str, object], role: str, purpose: str
+) -> object:
+    """Вернуть список проверок, положенный роли в brief.
+
+    ``source`` — конфиг оркестрации или замороженный batch: developer и code-review получают свои
+    фокусные списки с откатом на ``verification_commands``, architect — пустой список, остальные
+    роли и не-``work`` цели — полный ``verification_commands``.
+    """
+    fallback = source.get("verification_commands")
+    if purpose != "work":
+        return fallback
+    if role in NO_GATE_WORK_ROLES:
+        return []
+    if role == "developer":
+        return source.get("developer_verification_commands", fallback)
+    if role == "code-review":
+        return source.get("review_verification_commands", fallback)
+    return fallback
+
+
+def accepted_verification_commands(
+    source: Mapping[str, object], role: str, purpose: str
+) -> list[object]:
+    """Вернуть допустимые списки проверок для уже записанного brief роли.
+
+    Brief architect, созданный до исключения роли из полного gate, ещё несёт полный
+    ``verification_commands``; такие записи остаются валидными, чтобы незавершённые batch
+    продолжались без ручной правки ledger.
+    """
+    accepted = [role_verification_commands(source, role, purpose)]
+    if purpose == "work" and role in NO_GATE_WORK_ROLES:
+        accepted.append(source.get("verification_commands"))
+    return accepted
+
+
+def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
+    """Validate the Repo Map policy without importing its base-capability resource."""
+    value = config.get("repo_map_policy")
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        return ["orchestration repo_map_policy must be an object"]
+    numeric = {
+        "max_files",
+        "max_file_bytes",
+        "max_path_length",
+        "max_symbol_length",
+        "max_signature_length",
+        "timeout_seconds",
+        "max_tokens",
+        "parser_bundle_timeout_seconds",
+        "parser_bundle_max_output_bytes",
+    }
+    patterns = {
+        "allow_paths",
+        "deny_paths",
+        "redact_paths",
+        "redact_symbols",
+        "parser_bundle_registry_paths",
+    }
+    enum_values = {
+        "tier": set(REPO_MAP_TIER_ORDER),
+        "min_tier": set(REPO_MAP_TIER_ORDER),
+    }
+    structured = {"min_tier_by_role"}
+    unknown = sorted(set(value) - numeric - patterns - set(enum_values) - structured)
+    problems: list[str] = []
+    if unknown:
+        problems.append(
+            f"orchestration repo_map_policy has unknown field(s): {', '.join(unknown)}"
+        )
+    for field in numeric:
+        if field in value and (
+            not _is_int(value[field]) or cast(int, value[field]) < 1
+        ):
+            problems.append(
+                f"orchestration repo_map_policy.{field} must be a positive integer"
+            )
+    for field in patterns:
+        if field in value:
+            item = value[field]
+            if not isinstance(item, list) or any(
+                not isinstance(entry, str) or not entry for entry in item
+            ):
+                problems.append(
+                    f"orchestration repo_map_policy.{field} must be a list of non-empty path globs"
+                )
+    for field, choices in enum_values.items():
+        if field in value and (
+            not isinstance(value[field], str) or value[field] not in choices
+        ):
+            problems.append(
+                f"orchestration repo_map_policy.{field} must be one of: "
+                + ", ".join(sorted(choices))
+            )
+    if "min_tier_by_role" in value:
+        by_role = value["min_tier_by_role"]
+        if not isinstance(by_role, dict):
+            problems.append(
+                "orchestration repo_map_policy.min_tier_by_role must be an object"
+            )
+        else:
+            for role_name, tier in by_role.items():
+                if role_name not in REPO_MAP_POLICY_ROLES:
+                    problems.append(
+                        f"orchestration repo_map_policy.min_tier_by_role names unknown role {role_name!r}"
+                    )
+                if not isinstance(tier, str) or tier not in REPO_MAP_TIER_ORDER:
+                    problems.append(
+                        f"orchestration repo_map_policy.min_tier_by_role.{role_name} must be one of: "
+                        + ", ".join(sorted(REPO_MAP_TIER_ORDER))
+                    )
+    return problems
+
+
+def resolve_min_repo_map_tier(
+    config: Mapping[str, object], role_name: str
+) -> str | None:
+    """Minimum Repo Map tier a role's Context Package must meet at dispatch admission.
+
+    Resolution order: the role's entry in `repo_map_policy.min_tier_by_role`, else the
+    repository-wide `repo_map_policy.min_tier`, else `None` (no gate). Without a
+    `repo_map_policy`, or without either field, this always returns `None`, so a project that
+    never opts in is never blocked by Repo Map degradation.
+    """
+    policy = config.get("repo_map_policy")
+    if not isinstance(policy, dict):
+        return None
+    by_role = policy.get("min_tier_by_role")
+    if isinstance(by_role, dict):
+        role_value = by_role.get(role_name)
+        if isinstance(role_value, str) and role_value in REPO_MAP_TIER_ORDER:
+            return role_value
+    default_value = policy.get("min_tier")
+    if isinstance(default_value, str) and default_value in REPO_MAP_TIER_ORDER:
+        return default_value
+    return None
+
+
 def resolve_allowed_tools(
     config: Mapping[str, object], role_name: str, mode: str
 ) -> list[str]:
@@ -603,6 +749,7 @@ ATTENTION_POLICY_FIELDS = {
     "retry_queue_seconds": 1,
     "max_infrastructure_retries": 0,
     "stale_dispatch_seconds": 1,
+    "heartbeat_interval_seconds": 1,
 }
 
 
@@ -963,6 +1110,11 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         problems.append(
             "orchestration developer_verification_commands must be a list of strings when provided"
         )
+    review_commands = config.get("review_verification_commands")
+    if review_commands is not None and not string_list(review_commands):
+        problems.append(
+            "orchestration review_verification_commands must be a list of strings when provided"
+        )
     approval_policy = config.get("approval_policy", "manual_all")
     if approval_policy not in APPROVAL_POLICIES:
         problems.append(
@@ -1023,11 +1175,18 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
                 "reserved_prompt_tokens",
                 "symbol_graph_depth",
                 "max_related_tests",
+                "min_starting_files",
+                "max_starting_files",
             },
         )
     )
+    problems.extend(_repo_map_policy_problems(config))
     context_policy = config.get("context_package_policy")
     if isinstance(context_policy, dict):
+        minimum_files = context_policy.get("min_starting_files")
+        maximum_files = context_policy.get("max_starting_files")
+        if _is_int(minimum_files) and _is_int(maximum_files) and minimum_files > maximum_files:
+            problems.append("orchestration context_package_policy.min_starting_files must not exceed max_starting_files")
         maximum = context_policy.get("max_tokens")
         window = context_policy.get("context_window_tokens")
         reserve = context_policy.get("reserved_prompt_tokens")
@@ -1048,6 +1207,18 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         )
     )
     problems.extend(
+        _policy_problem(
+            config,
+            "execution_policy",
+            {
+                "dispatch_wait_timeout_seconds",
+                "dispatch_poll_interval_seconds",
+                "qa_lease_seconds",
+                "rate_limit_retry_seconds",
+            },
+        )
+    )
+    problems.extend(
         _policy_problem(config, "retry_policy", {"max_developer_retries"}, minimum=0)
     )
     problems.extend(
@@ -1061,6 +1232,8 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
                 "max_expected_services",
                 "max_expected_changed_lines",
                 "max_expected_context_tokens",
+                "estimated_tokens_per_changed_line",
+                "estimated_tokens_per_file",
             },
             booleans={"require_estimates"},
         )

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,7 @@ from harness.gate_runner.gate_runner import (
     CleanRoomPolicy,
     GateRunnerError,
     LocalPolicy,
+    _clean_room_python,
     run_gate,
 )
 
@@ -27,6 +29,66 @@ class _RunFn(Protocol):
 
 
 class GateRunnerTests(unittest.TestCase):
+    def test_clean_room_python_command_ignores_a_broken_path_launcher(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            root = Path(temporary)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "test@example.invalid"],
+                cwd=repo,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Gate Runner Test"],
+                cwd=repo,
+                check=True,
+            )
+            (repo / "check.py").write_text(
+                "print('valid interpreter')\n", encoding="utf-8"
+            )
+            subprocess.run(["git", "add", "check.py"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "commit", "-qm", "test: pin candidate"], cwd=repo, check=True
+            )
+            candidate = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            broken_bin = root / "broken-bin"
+            broken_bin.mkdir()
+            broken_python = broken_bin / "python"
+            broken_python.write_text("#!/bin/sh\nexit 73\n", encoding="utf-8")
+            broken_python.chmod(0o755)
+            original_path = os.environ["PATH"]
+            self.addCleanup(os.environ.__setitem__, "PATH", original_path)
+            os.environ["PATH"] = f"{broken_bin}{os.pathsep}{original_path}"
+
+            result = run_gate(
+                [["python", "check.py"]],
+                CleanRoomPolicy(repo, candidate),
+                stop_on_failure=True,
+            )
+            string_result = run_gate(
+                ["python check.py"],
+                CleanRoomPolicy(repo, candidate),
+                stop_on_failure=True,
+            )
+
+        self.assertEqual(result.checks[0]["result"], "pass")
+        self.assertIn("valid interpreter", result.artifact)
+        self.assertNotIn("$ python check.py", result.artifact)
+        self.assertEqual(string_result.checks[0]["result"], "pass")
+        self.assertNotIn("$ python check.py", string_result.artifact)
+        # The evidence keeps the approved command verbatim: the coordinator matches checks_run
+        # against the brief's verification_commands, not against the interpreter actually used.
+        self.assertEqual(result.checks[0]["command"], "python check.py")
+        self.assertEqual(string_result.checks[0]["command"], "python check.py")
+
     def test_local_and_clean_room_return_the_same_sanitised_evidence_shape(
         self,
     ) -> None:
@@ -201,6 +263,58 @@ class GateRunnerTests(unittest.TestCase):
                         )
                     self.assertIn("contains mutable files", raised.exception.message)
                     self.assertIn(expected_remedy, raised.exception.remedy)
+
+    def test_clean_room_python_prefers_harness_venv_over_root_venv(self) -> None:
+        """Regression: the contract is .harness/.venv, not <checkout>/.venv."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            checkout = Path(temporary) / "checkout"
+            checkout.mkdir()
+
+            # Create .harness/.venv/bin/python (the contract path)
+            harness_python = checkout / ".harness" / ".venv" / "bin" / "python"
+            harness_python.parent.mkdir(parents=True)
+            harness_python.write_text("#!/bin/sh\necho harness-venv\n", encoding="utf-8")
+            harness_python.chmod(0o755)
+
+            with mock.patch("harness.gate_runner.gate_runner.sys") as mock_sys:
+                mock_sys.platform = "linux"
+                mock_sys.executable = "/nonexistent/python3"
+                result = _clean_room_python(checkout)
+            self.assertEqual(result, harness_python)
+
+    def test_clean_room_python_does_not_use_root_level_venv(self) -> None:
+        """The function must NOT look for .venv in the checkout root."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            checkout = Path(temporary) / "checkout"
+            checkout.mkdir()
+
+            # Create ONLY root-level .venv (the WRONG path)
+            wrong_python = checkout / ".venv" / "bin" / "python"
+            wrong_python.parent.mkdir(parents=True)
+            wrong_python.write_text("#!/bin/sh\necho wrong\n", encoding="utf-8")
+            wrong_python.chmod(0o755)
+
+            # With no .harness/.venv, should fall back to sys.executable, not root .venv
+            result = _clean_room_python(checkout)
+            self.assertNotEqual(result, wrong_python,
+                "must not use root-level .venv — contract is .harness/.venv")
+
+    def test_clean_room_python_resolves_windows_path_under_harness_venv(self) -> None:
+        """On win32 the interpreter lives at .harness/.venv/Scripts/python.exe."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            checkout = Path(temporary) / "checkout"
+            checkout.mkdir()
+
+            win_python = checkout / ".harness" / ".venv" / "Scripts" / "python.exe"
+            win_python.parent.mkdir(parents=True)
+            win_python.write_text("fake", encoding="utf-8")
+
+            with mock.patch("harness.gate_runner.gate_runner.sys") as mock_sys:
+                mock_sys.platform = "win32"
+                mock_sys.executable = "/nonexistent/python3"
+                result = _clean_room_python(checkout)
+
+            self.assertEqual(result, win_python)
 
 
 if __name__ == "__main__":

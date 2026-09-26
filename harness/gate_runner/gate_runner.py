@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Iterator
@@ -15,8 +17,13 @@ from pathlib import Path
 from typing import Protocol
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+from ..storage import storage_path
 
-SENSITIVE_OUTPUT = (
+SENSITIVE_OUTPUT: tuple[
+    tuple[re.Pattern[str], str],
+    tuple[re.Pattern[str], str],
+    tuple[re.Pattern[str], str],
+] = (
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"), "<REDACTED_GITHUB_TOKEN>"),
     (
         re.compile(
@@ -58,10 +65,14 @@ class CleanRoomPolicy:
 
     @contextmanager
     def checkout(self) -> Iterator[Path]:
-        worktree_root = Path(tempfile.mkdtemp(prefix="agent-harness-qa-"))
+        temporary_parent = storage_path(self.repository, "tmp", "qa")
+        temporary_parent.mkdir(parents=True, exist_ok=True)
+        worktree_root = Path(
+            tempfile.mkdtemp(prefix="agent-harness-qa-", dir=temporary_parent)
+        )
         checkout = worktree_root / "checkout"
         try:
-            created = subprocess.run(
+            created: subprocess.CompletedProcess[str] = subprocess.run(
                 [
                     "git",
                     "-C",
@@ -79,12 +90,12 @@ class CleanRoomPolicy:
                 check=False,
             )
             if created.returncode != 0:
-                detail = sanitise((created.stderr or created.stdout).strip())
+                detail: str = sanitise((created.stderr or created.stdout).strip())
                 raise GateRunnerError(
                     f"could not create clean QA worktree: {detail or 'unknown error'}",
                     remedy=f"inspect the git worktree error above and fix the repository/candidate commit {self.candidate_commit} before retrying",
                 )
-            resolved = subprocess.run(
+            resolved: subprocess.CompletedProcess[str] = subprocess.run(
                 ["git", "-C", str(checkout), "rev-parse", "--verify", "HEAD^{commit}"],
                 capture_output=True,
                 text=True,
@@ -100,7 +111,7 @@ class CleanRoomPolicy:
                     "clean QA worktree HEAD does not match the pinned candidate commit",
                     remedy=f"verify commit {self.candidate_commit} exists and resolves cleanly, then retry",
                 )
-            status = subprocess.run(
+            status: subprocess.CompletedProcess[str] = subprocess.run(
                 [
                     "git",
                     "-C",
@@ -160,6 +171,45 @@ class GateResult:
         return all(check["result"] == "pass" for check in self.checks)
 
 
+def _clean_room_python(checkout: Path) -> Path:
+    """Choose a deterministic interpreter without consulting PATH."""
+    venv_python = (
+        checkout / ".harness" / ".venv" / "Scripts" / "python.exe"
+        if sys.platform == "win32"
+        else checkout / ".harness" / ".venv" / "bin" / "python"
+    )
+    if venv_python.is_file():
+        return venv_python
+    interpreter = Path(sys.executable)
+    if interpreter.is_file():
+        return interpreter
+    raise GateRunnerError(
+        "clean-room QA has no usable explicit Python interpreter",
+        remedy="create the project's .harness/.venv before QA or run the coordinator with a valid Python interpreter",
+    )
+
+
+def _prepared_command(
+    command: str | list[str], checkout: Path
+) -> tuple[str | list[str], bool]:
+    """Replace a bare Python launcher before invoking a clean-room command."""
+    original = command
+    if isinstance(command, str):
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            return command, True
+        if not tokens:
+            return command, True
+        command = tokens
+    if not command:
+        return command, isinstance(command, str)
+    launcher = Path(command[0]).name.lower()
+    if launcher not in {"python", "python3", "py"}:
+        return original, isinstance(original, str)
+    return [str(_clean_room_python(checkout)), *command[1:]], False
+
+
 def sanitise(text: str) -> str:
     """Redact secret-shaped values before they enter an evidence artifact."""
     for pattern, replacement in SENSITIVE_OUTPUT:
@@ -168,7 +218,9 @@ def sanitise(text: str) -> str:
 
 
 def concise_evidence(text: str) -> str:
-    lines = [line.strip() for line in sanitise(text).splitlines() if line.strip()]
+    lines: list[str] = [
+        line.strip() for line in sanitise(text).splitlines() if line.strip()
+    ]
     return lines[0][:240] if lines else "no output"
 
 
@@ -178,25 +230,31 @@ def run_gate(
     """Run configured commands and return one sanitised, policy-independent result shape."""
     checks: list[dict[str, str]] = []
     outputs: list[str] = []
-    started = time.monotonic()
+    started: float = time.monotonic()
     with policy.checkout() as checkout:
         for command in commands:
+            prepared, shell = _prepared_command(command, checkout)
+            # The artifact shows what actually ran; the check keeps the approved command verbatim,
+            # which is what a completion report is matched against.
             command_text = (
-                command
-                if isinstance(command, str)
-                else subprocess.list2cmdline(command)
+                prepared
+                if isinstance(prepared, str)
+                else subprocess.list2cmdline(prepared)
             )
-            result = subprocess.run(
-                command,
+            approved_text = (
+                command if isinstance(command, str) else subprocess.list2cmdline(command)
+            )
+            result: subprocess.CompletedProcess[str] = subprocess.run(
+                prepared,
                 cwd=checkout,
-                shell=isinstance(command, str),
+                shell=shell,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 check=False,
             )
-            combined = sanitise(
+            combined: str = sanitise(
                 (result.stdout or "")
                 + ("\n" if result.stdout and result.stderr else "")
                 + (result.stderr or "")
@@ -206,7 +264,7 @@ def run_gate(
             )
             checks.append(
                 {
-                    "command": command_text,
+                    "command": approved_text,
                     "result": "pass" if result.returncode == 0 else "fail",
                     "evidence": f"exit {result.returncode}; {concise_evidence(combined)}",
                 }

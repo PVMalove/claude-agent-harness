@@ -58,6 +58,8 @@ model names, session URLs, or `Co-Authored-By` trailers. The project hook and CI
   `.claude/skills`.
 - If a runtime has no native project skill root, search `.harness/skills/REGISTRY.md` by intent and
   open only the exact matching `SKILL.md`.
+- For code discovery, run the Repo Map (`.harness/repo_map/repo_map.py`, when installed) once on
+  demand, then use targeted `rg` searches and reads.
 - Harness-managed skill files and their version lock live in `.harness/`.
 - Project MCP, plugin, hook, or runtime config is native; record its path, hash, runtime, and
   secret variable names in `.harness/integrations.json` without storing secret values.

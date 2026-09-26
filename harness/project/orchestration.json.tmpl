@@ -15,7 +15,23 @@
     "context_window_tokens": 250000,
     "reserved_prompt_tokens": 20000,
     "symbol_graph_depth": 2,
-    "max_related_tests": 25
+    "max_related_tests": 25,
+    "min_starting_files": 5,
+    "max_starting_files": 10
+  },
+  "repo_map_policy": {
+    "allow_paths": [],
+    "deny_paths": [],
+    "redact_paths": [],
+    "redact_symbols": [],
+    "max_files": 10000,
+    "max_file_bytes": 2000000,
+    "max_path_length": 4096,
+    "max_symbol_length": 256,
+    "max_signature_length": 2048,
+    "timeout_seconds": 10,
+    "max_tokens": 4000,
+    "tier": "full"
   },
   "continuation_policy": {
     "max_continuations": 2,
@@ -24,10 +40,17 @@
   "retry_policy": {
     "max_developer_retries": 1
   },
+  "execution_policy": {
+    "dispatch_wait_timeout_seconds": 60,
+    "dispatch_poll_interval_seconds": 5,
+    "qa_lease_seconds": 1800,
+    "rate_limit_retry_seconds": 60
+  },
   "attention_policy": {
     "retry_queue_seconds": 3600,
     "max_infrastructure_retries": 2,
-    "stale_dispatch_seconds": 900
+    "stale_dispatch_seconds": 3600,
+    "heartbeat_interval_seconds": 300
   },
   "approval_ttl_seconds": 3600,
   "extensions": {
@@ -44,7 +67,9 @@
     "max_expected_files": 12,
     "max_expected_services": 1,
     "max_expected_changed_lines": 800,
-    "max_expected_context_tokens": 80000
+    "max_expected_context_tokens": 80000,
+    "estimated_tokens_per_changed_line": 20,
+    "estimated_tokens_per_file": 2000
   },
   "verification_commands": []
 }
