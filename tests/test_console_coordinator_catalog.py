@@ -136,6 +136,14 @@ def test_choices_and_repeatable_fields_match_the_live_parser(entry: CoordinatorC
         assert field.choices == expected_choices
 
 
+@pytest.mark.parametrize("entry", COORDINATOR_COMMANDS, ids=lambda e: e.key)
+def test_cli_argv_round_trips_into_the_named_handler(entry: CoordinatorCommand) -> None:
+    argv = entry.cli_argv(REPO, MINIMAL_VALUES[entry.key])
+    assert argv[:4] == ["python", ".harness/orchestration/coordinator.py", "--repo", str(REPO)]
+    args = coordinator.parser().parse_args(argv[4:])
+    assert args.handler is getattr(coordinator, EXPECTED_HANDLER[entry.key])
+
+
 def test_repeatable_field_serialises_one_flag_value_pair_per_non_empty_line() -> None:
     entry = ENTRIES["risk-assess"]
     values = {
