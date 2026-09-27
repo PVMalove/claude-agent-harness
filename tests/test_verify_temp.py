@@ -42,7 +42,10 @@ class IsolatedTempEnvTest(unittest.TestCase):
     def test_child_processes_resolve_temp_to_the_run_root(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             run_tmp = Path(temporary)
-            env = verify.isolated_temp_env({"KEEP": "1", "TMP": "elsewhere"}, run_tmp)
+            env = verify.isolated_temp_env(
+                {"KEEP": "1", "TMP": "elsewhere", "PYTHONPYCACHEPREFIX": "old-cache"},
+                run_tmp,
+            )
 
             self.assertEqual(env["KEEP"], "1")
             for name in ("TMP", "TEMP", "TMPDIR"):
@@ -58,6 +61,7 @@ class IsolatedTempEnvTest(unittest.TestCase):
                 check=True,
             ).stdout.strip()
             self.assertEqual(os.path.normcase(resolved), os.path.normcase(str(run_tmp)))
+            self.assertEqual(list(run_tmp.rglob("*.pyc")), [])
 
     def test_child_git_does_not_discover_the_parent_checkout(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
@@ -77,6 +81,18 @@ class IsolatedTempEnvTest(unittest.TestCase):
             )
 
             self.assertNotEqual(result.returncode, 0)
+
+    def test_syntax_check_does_not_create_bytecode_under_long_source_path(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            source = Path(temporary) / ("linked-worktree-" + "x" * 90) / "module.py"
+            source.parent.mkdir()
+            source.write_text("answer = 42\n", encoding="utf-8")
+            with mock.patch.object(verify, "_compiled_sources", return_value=[str(source)]):
+                verify._check_python_syntax()
+                self.assertEqual(list(source.parent.rglob("*.pyc")), [])
+                source.write_text("def broken(:\n", encoding="utf-8")
+                with self.assertRaises(SyntaxError):
+                    verify._check_python_syntax()
 
 
 class WrittenPathBudgetTest(unittest.TestCase):

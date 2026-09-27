@@ -44,6 +44,56 @@ def run(ctx: SimpleNamespace) -> None:
     if not bounded_hook.is_file():
         sys.exit("pvmalove-suite init did not scaffold require-bounded-check.sh")
 
+    # A PR launched from the primary checkout can explicitly target a tested linked worktree.
+    # Its QA marker must belong to that checkout, even when the primary checkout is dirty.
+    subprocess.run(["git", "add", "-A"], cwd=pv_project, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "test fixture"],
+        cwd=pv_project,
+        check=True,
+    )
+    linked = test_root / "linked"
+    linked_branch = "feature/issue-373-linked"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", linked_branch, str(linked)],
+        cwd=pv_project,
+        check=True,
+    )
+    require_gate = pv_project / ".claude" / "hooks" / "require-qa-gate.sh"
+    record_gate = pv_project / ".claude" / "hooks" / "record-qa-gate-pass.sh"
+    mark_gate = pv_project / ".claude" / "hooks" / "mark-qa-gate-passed.sh"
+    project_json.write_text(project_json.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    pr_command = f"gh pr create --head {linked_branch} --body-file pr-body.md"
+    pr_payload = json.dumps({"cwd": str(pv_project), "tool_input": {"command": pr_command}})
+    if run_hook(record_gate, pv_project, "", cwd=pv_project).returncode:
+        sys.exit("could not record primary checkout QA marker")
+    if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode == 0:
+        sys.exit("primary checkout QA marker opened a linked-worktree PR")
+    if run_hook(record_gate, pv_project, "", cwd=linked).returncode:
+        sys.exit("could not record linked-worktree QA marker")
+    if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode:
+        sys.exit("linked-worktree QA marker did not permit its PR")
+    local_pr_payload = json.dumps(
+        {"cwd": str(linked), "tool_input": {"command": "gh pr create --body-file pr-body.md"}}
+    )
+    if run_hook(require_gate, pv_project, "", raw_payload=local_pr_payload).returncode:
+        sys.exit("QA marker did not permit PR from the linked checkout cwd")
+    unknown_pr_payload = json.dumps(
+        {"cwd": str(linked), "tool_input": {"command": "gh pr create --head feature/issue-999-missing"}}
+    )
+    if run_hook(require_gate, pv_project, "", raw_payload=unknown_pr_payload).returncode == 0:
+        sys.exit("unknown PR head reused a linked-worktree QA marker")
+    (linked / ".claude" / ".qa-gate" / "passed").unlink()
+    mark_payload = json.dumps({"cwd": str(linked), "tool_input": {"command": "echo test"}})
+    if run_hook(mark_gate, pv_project, "", raw_payload=mark_payload).returncode:
+        sys.exit("could not mark linked-worktree QA pass")
+    if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode:
+        sys.exit("fallback QA marker did not permit linked-worktree PR")
+    linked_config = linked / ".harness" / "project.json"
+    linked_config.write_text(linked_config.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode == 0:
+        sys.exit("stale linked-worktree QA marker opened a PR")
+
     scratch_gitignore = pv_project / ".harness" / "scratch" / ".gitignore"
     if not scratch_gitignore.is_file():
         sys.exit("pvmalove-suite init did not scaffold .harness/scratch/.gitignore")

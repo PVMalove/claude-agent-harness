@@ -40,7 +40,8 @@ from scripts.verification.vendor_pin import check_vendor_pin
 
 __all__ = ["check_syntax", "isolated_temp_env", "main", "remove_tree", "run_ok", "run_stage"]
 
-# Every Python entry point `check_syntax` must accept before any stage runs: the extensionless CLIs and
+
+# Every Python entry point must compile before any stage runs: the extensionless CLIs and
 # each script module, including the packages the verification and clean-room scripts are split into.
 _COMPILED_SCRIPTS = (
     ROOT / "harness" / "bin" / "harness",
@@ -54,9 +55,8 @@ _COMPILED_PACKAGES = (ROOT / "scripts" / "verification", ROOT / "scripts" / "cle
 
 def _prepare_run_root() -> tuple[Path, dict[str, str]]:
     """Создать короткий корень запуска до любого subprocess Python и окружение, изолированное в нём.
-
-    Дочерние Python не пишут байткод: кэш рядом с исходниками падает в ограниченных worktree, а
-    PYTHONPYCACHEPREFIX зеркалирует полный путь исходника и выводит QA lane за MAX_PATH (#381).
+    Python subprocesses run without bytecode writes, avoiding MAX_PATH when the source is in a
+    linked worktree. Syntax checks below compile in memory for the same reason.
     """
     tests_root = storage_path(ROOT, "tmp", "tests")
     tests_root.mkdir(parents=True, exist_ok=True)
@@ -83,6 +83,12 @@ def _compiled_sources() -> list[str]:
     """Файлы, которые должны компилироваться без ошибок."""
     modules = [path for package in _COMPILED_PACKAGES for path in sorted(package.glob("*.py"))]
     return [str(path) for path in (*_COMPILED_SCRIPTS, *modules)]
+
+
+def _check_python_syntax() -> None:
+    """Compile entry points without writing .pyc files under a long worktree path."""
+    for source in _compiled_sources():
+        compile(Path(source).read_bytes(), source, "exec")
 
 
 def _check_global_skills() -> None:
@@ -125,7 +131,8 @@ def _static_checks(test_env: dict[str, str]) -> None:
         stdout=subprocess.DEVNULL,
         env=test_env,
     )
-    check_syntax(_compiled_sources())
+
+    _check_python_syntax()
     _check_global_skills()
     run_ok([sys.executable, str(ROOT / "scripts" / "build_registry.py")], env=test_env)
     run_ok(["git", "-C", str(ROOT), "diff", "--exit-code", "--", "skills/REGISTRY.md"])

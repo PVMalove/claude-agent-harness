@@ -57,8 +57,9 @@ def isolated_temp_env(base: Mapping[str, str], run_tmp: Path) -> dict[str, str]:
     Байткод не пишется вовсе: PYTHONPYCACHEPREFIX зеркалирует под собой полный абсолютный путь
     исходника, и QA checkout внутри того же репозитория выходил за MAX_PATH (#381).
     """
-    return dict(
-        base,
+    env = dict(base)
+    env.pop("PYTHONPYCACHEPREFIX", None)
+    env.update(
         TMP=str(run_tmp),
         TEMP=str(run_tmp),
         TMPDIR=str(run_tmp),
@@ -68,6 +69,7 @@ def isolated_temp_env(base: Mapping[str, str], run_tmp: Path) -> dict[str, str]:
             part for part in (base.get("GIT_CEILING_DIRECTORIES", ""), str(run_tmp)) if part
         ),
     )
+    return env
 
 
 def _clear_read_only(func: Callable[[str], object], path: str, _exc: BaseException) -> None:
