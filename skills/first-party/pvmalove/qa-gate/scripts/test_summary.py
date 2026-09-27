@@ -36,7 +36,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run a command and print a bounded pytest-oriented summary.",
     )
-    parser.add_argument("--log-dir", default=".harness/.sandboxes/logs")
+    parser.add_argument("--log-dir")
     parser.add_argument("--max-failures", type=int, default=10)
     parser.add_argument("--max-diagnostics", type=int, default=10)
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -239,8 +239,18 @@ def summarize(
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    if args.log_dir:
+        log_dir = Path(args.log_dir)
+    else:
+        runner = _gate_runner()
+        from harness.storage import storage_path
+
+        runner_file = runner.__file__
+        if runner_file is None:
+            raise RuntimeError("shared gate-runner has no file path")
+        log_dir = storage_path(Path(runner_file).resolve().parents[2], "logs")
     return summarize(
-        args.command, Path(args.log_dir), args.max_failures, args.max_diagnostics
+        args.command, log_dir, args.max_failures, args.max_diagnostics
     )
 
 

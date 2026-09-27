@@ -159,6 +159,18 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit(
             "block-scratch-outside-docs-tasks.sh rejected a PR body in .harness/.sandboxes/scratch/tmp/"
         )
+    nested_non_body = sandboxes_scratch_pr_body.parent / "pr-body-dir" / "notes.md"
+    if run_hook(
+        scratch_hook, pv_project, "",
+        raw_payload=json.dumps({"tool_input": {"file_path": str(nested_non_body)}}),
+    ).returncode == 0:
+        sys.exit("block-scratch-outside-docs-tasks.sh accepted a filename without a body marker")
+    escaped_body = pv_project.parent / "outside" / ".harness" / ".sandboxes" / "scratch" / "tmp" / "pr-body-1.md"
+    if run_hook(
+        scratch_hook, pv_project, "",
+        raw_payload=json.dumps({"tool_input": {"file_path": str(escaped_body)}}),
+    ).returncode == 0:
+        sys.exit("block-scratch-outside-docs-tasks.sh accepted a path outside the project")
     sandboxes_cache_path = (
         pv_project
         / ".harness"

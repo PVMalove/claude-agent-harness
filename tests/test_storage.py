@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from harness.cleanup import plan_cleanup
 from harness.storage import (
     SANDBOX_CATEGORIES,
     SANDBOXES_DIR,
@@ -91,6 +92,32 @@ def test_storage_path_escape_and_invalid_components(tmp_path: Path) -> None:
     # Unknown category
     with pytest.raises(ValueError, match="unknown storage category"):
         storage_path(tmp_path, "invalid_cat", "sub")
+
+
+@pytest.mark.parametrize("linked_part", [".harness", ".sandboxes"])
+def test_storage_and_cleanup_reject_linked_roots(tmp_path: Path, linked_part: str) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    harness_dir = repo / ".harness"
+    if linked_part == ".sandboxes":
+        harness_dir.mkdir()
+        link = harness_dir / ".sandboxes"
+    else:
+        link = harness_dir
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    with pytest.raises(ValueError, match="symlink"):
+        storage_path(repo, "cache", "item")
+    with pytest.raises(ValueError, match="symlink"):
+        plan_cleanup(repo, "soft")
+    problems: list[str] = []
+    validate_sandboxes(repo, problems)
+    assert any("symlink" in problem for problem in problems)
 
 
 def test_orchestration_constants_sandboxes_paths() -> None:

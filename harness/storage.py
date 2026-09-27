@@ -52,12 +52,19 @@ def storage_root(repo: Path) -> Path:
 
 
 def sandboxes_root(repo: Path) -> Path:
-    """Return the shared .sandboxes root inside the repository's .harness directory."""
+    """Вернуть путь к общим временным данным основного checkout и связанных worktree.
+
+    Функция только строит путь; доступность и безопасность проверяются при использовании.
+    """
     return storage_root(repo) / SANDBOXES_DIR
 
 
 def storage_path(repo: Path, *parts: str) -> Path:
-    """Join known internal categories without allowing callers to escape storage."""
+    """Построить путь внутри известной категории общего хранилища.
+
+    Компоненты должны быть одиночными именами; неизвестные категории, выход через
+    symlink и переход за границу `.harness/.sandboxes` вызывают ``ValueError``.
+    """
     if not parts or any(
         not part
         or part in {".", ".."}
@@ -75,6 +82,8 @@ def storage_path(repo: Path, *parts: str) -> Path:
         raise ValueError(
             f"unknown storage category {category!r}, expected one of {sorted(SANDBOX_CATEGORIES)}"
         )
+    if root.parent.is_symlink() or root.is_symlink():
+        raise ValueError("storage root must not be a symlink")
     target = root.joinpath(*parts)
     if not target.resolve().is_relative_to(root.resolve()):
         raise ValueError(f"path escaped {root_name}: {target}")
@@ -82,10 +91,17 @@ def storage_path(repo: Path, *parts: str) -> Path:
 
 
 def sandboxes_health(repo: Path) -> list[str]:
-    """Диагностика готовности .sandboxes/ и предупреждение об устаревших директориях."""
+    """Вернуть предупреждения о недоступном хранилище и старых каталогах.
+
+    Проверка не создаёт файлов и не следует за symlink на корень хранилища.
+    """
     lines: list[str] = []
     storage = storage_root(repo)
     sandboxes = sandboxes_root(repo)
+
+    if storage.is_symlink() or sandboxes.is_symlink():
+        return ["ПРЕДУПРЕЖДЕНИЕ: корень .harness/.sandboxes не должен быть symlink",
+                "КАК ИСПРАВИТЬ: замените symlink локальной директорией"]
 
     try:
         rel_sandboxes = sandboxes.relative_to(repo).as_posix()
@@ -125,8 +141,14 @@ def sandboxes_health(repo: Path) -> list[str]:
 
 
 def validate_sandboxes(repo: Path, problems: list[str]) -> None:
-    """Проверить доступность структуры .sandboxes/ и зафиксировать фатальные ошибки."""
+    """Добавить фатальные ошибки корня хранилища в список ``problems``.
+
+    Отклоняет symlink и недоступный каталог, чтобы запись не вышла за пределы проекта.
+    """
     sandboxes = sandboxes_root(repo)
+    if sandboxes.parent.is_symlink() or sandboxes.is_symlink():
+        problems.append(f"{sandboxes} storage root must not be a symlink")
+        return
     if sandboxes.exists():
         if not sandboxes.is_dir():
             problems.append(f"{sandboxes} exists but is not a directory")

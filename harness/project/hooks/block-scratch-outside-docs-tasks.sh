@@ -27,10 +27,13 @@ if project_dir:
         p = Path(value)
         proj = Path(project_dir).resolve()
         resolved = p.resolve()
-        if resolved.is_relative_to(proj):
-            value = resolved.relative_to(proj).as_posix()
+        if not resolved.is_relative_to(proj):
+            raise SystemExit(2)
+        value = resolved.relative_to(proj).as_posix()
+    except SystemExit:
+        raise
     except Exception:
-        pass
+        raise SystemExit(2)
 
 sys.stdout.write(value.replace("\\", "/"))
 ')"
@@ -39,8 +42,9 @@ if [ $? -ne 0 ]; then
   exit 2
 fi
 
-if echo "$FILE_PATH" | grep -qiE 'pr-body|pr-comment|issue-comment'; then
-  if printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/\.sandboxes/scratch/tmp/'; then
+BASE_NAME="${FILE_PATH##*/}"
+if printf '%s' "$BASE_NAME" | grep -qiE 'pr-body|pr-comment|issue-comment'; then
+  if printf '%s' "$FILE_PATH" | grep -qiE '^\.harness/\.sandboxes/scratch/tmp/[^/]+$'; then
     exit 0
   fi
   echo "git-workflow.md §1: тело PR/комментария пишется только в .harness/.sandboxes/scratch/tmp/ (например, .harness/.sandboxes/scratch/tmp/pr-body-<issue>-<slug>.md), не в docs/tasks/; удали его после успешного gh/glab: $FILE_PATH" >&2

@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 MIN_PYTHON = (3, 12)
@@ -37,9 +38,10 @@ from scripts.verification.process import isolated_temp_env, remove_tree, run_ok,
 from scripts.verification.text_checks import check_no_todo, grep_contains, grep_line
 from scripts.verification.vendor_pin import check_vendor_pin
 
-__all__ = ["isolated_temp_env", "main", "remove_tree", "run_ok", "run_stage"]
+__all__ = ["check_syntax", "isolated_temp_env", "main", "remove_tree", "run_ok", "run_stage"]
 
-# Every Python entry point `py_compile` must accept before any stage runs: the extensionless CLIs and
+
+# Every Python entry point must compile before any stage runs: the extensionless CLIs and
 # each script module, including the packages the verification and clean-room scripts are split into.
 _COMPILED_SCRIPTS = (
     ROOT / "harness" / "bin" / "harness",
@@ -53,8 +55,8 @@ _COMPILED_PACKAGES = (ROOT / "scripts" / "verification", ROOT / "scripts" / "cle
 
 def _prepare_run_root() -> tuple[Path, dict[str, str]]:
     """Создать короткий корень запуска до любого subprocess Python и окружение, изолированное в нём.
-
-    py_compile и mypy тоже пишут байткод; кэш рядом с исходниками падает в ограниченных worktree.
+    Python subprocesses run without bytecode writes, avoiding MAX_PATH when the source is in a
+    linked worktree. Syntax checks below compile in memory for the same reason.
     """
     tests_root = storage_path(ROOT, "runs", "tests")
     tests_root.mkdir(parents=True, exist_ok=True)
@@ -64,10 +66,29 @@ def _prepare_run_root() -> tuple[Path, dict[str, str]]:
     return run_tmp, isolated_temp_env(dict(os.environ, PYTHONPATH=str(ROOT)), run_tmp)
 
 
+def check_syntax(sources: list[str]) -> None:
+    """Скомпилировать исходники в памяти, как `py_compile`, но без записи `.pyc` (#381)."""
+    failed = False
+    for source in sources:
+        try:
+            compile(Path(source).read_bytes(), source, "exec")
+        except (SyntaxError, ValueError) as error:
+            sys.stderr.write("".join(traceback.format_exception_only(error)))
+            failed = True
+    if failed:
+        sys.exit(1)
+
+
 def _compiled_sources() -> list[str]:
     """Файлы, которые должны компилироваться без ошибок."""
     modules = [path for package in _COMPILED_PACKAGES for path in sorted(package.glob("*.py"))]
     return [str(path) for path in (*_COMPILED_SCRIPTS, *modules)]
+
+
+def _check_python_syntax() -> None:
+    """Compile entry points without writing .pyc files under a long worktree path."""
+    for source in _compiled_sources():
+        compile(Path(source).read_bytes(), source, "exec")
 
 
 def _check_global_skills() -> None:
@@ -110,7 +131,8 @@ def _static_checks(test_env: dict[str, str]) -> None:
         stdout=subprocess.DEVNULL,
         env=test_env,
     )
-    run_ok([sys.executable, "-m", "py_compile", *_compiled_sources()], env=test_env)
+
+    _check_python_syntax()
     _check_global_skills()
     run_ok([sys.executable, str(ROOT / "scripts" / "build_registry.py")], env=test_env)
     run_ok(["git", "-C", str(ROOT), "diff", "--exit-code", "--", "skills/REGISTRY.md"])
