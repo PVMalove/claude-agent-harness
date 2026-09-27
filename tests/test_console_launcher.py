@@ -5,9 +5,12 @@
 from __future__ import annotations
 
 import os
+import shutil
+import signal
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Mapping, Sequence
 from unittest import mock
@@ -99,16 +102,33 @@ def _init_repo(path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)
 
 
+def _kill_process_tree(proc: "subprocess.Popen[bytes]") -> None:
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+    else:
+        os.killpg(proc.pid, signal.SIGKILL)
+    proc.wait()
+
+
 def _console_subprocess(repo: Path, *, path_env: str) -> "subprocess.CompletedProcess[str]":
+    """Output goes to temp files, not pipes: if a real `uv run` TUI leaks in, its grandchild
+    processes inherit the pipes and `subprocess.run` would wait for their EOF forever after the
+    timeout. On timeout the whole process tree is killed and the test fails instead of hanging."""
     env = dict(os.environ)
     env["PATH"] = path_env
-    return subprocess.run(
-        [sys.executable, str(_BIN_HARNESS), "console", str(repo)],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=60,
-    )
+    argv = [sys.executable, str(_BIN_HARNESS), "console", str(repo)]
+    with tempfile.TemporaryFile("w+") as stdout, tempfile.TemporaryFile("w+") as stderr:
+        proc = subprocess.Popen(
+            argv, stdout=stdout, stderr=stderr, env=env, start_new_session=True
+        )
+        try:
+            returncode = proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            _kill_process_tree(proc)
+            raise
+        stdout.seek(0)
+        stderr.seek(0)
+        return subprocess.CompletedProcess(argv, returncode, stdout.read(), stderr.read())
 
 
 def test_console_prints_reason_and_health_report_when_uv_is_missing(
@@ -119,10 +139,12 @@ def test_console_prints_reason_and_health_report_when_uv_is_missing(
     repo = tmp_path / "target-repo"
     _init_repo(repo)
 
+    # shutil.which per entry honours PATHEXT, so a Windows `uv.EXE` is scrubbed too - the same
+    # lookup launcher.find_uv() does.
     scrubbed_path = os.pathsep.join(
         entry
         for entry in os.environ.get("PATH", "").split(os.pathsep)
-        if entry and not (Path(entry) / "uv").exists()
+        if entry and shutil.which("uv", path=entry) is None
     )
 
     result = _console_subprocess(repo, path_env=scrubbed_path)
@@ -150,6 +172,12 @@ def test_console_prints_reason_and_health_report_when_relaunch_fails(
         encoding="utf-8",
     )
     fake_uv.chmod(fake_uv.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    # Windows: shutil.which only resolves PATHEXT names, so the extensionless sh script is
+    # invisible there; this batch twin is found first instead.
+    (fake_bin / "uv.cmd").write_text(
+        "@echo off\necho fake uv: textual resolution failed (offline) 1>&2\nexit /b 7\n",
+        encoding="utf-8",
+    )
 
     path_env = os.pathsep.join([str(fake_bin), os.environ.get("PATH", "")])
     result = _console_subprocess(repo, path_env=path_env)
