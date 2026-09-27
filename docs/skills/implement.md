@@ -37,7 +37,11 @@ python .harness/orchestration/coordinator.py --repo . dispatch status
 
 ## Контракт coordinator-а
 
-Разрешите тикет, integration-ветку и блокеры по tracker/Git guidance. Используйте isolated
+Разрешите тикет, integration-ветку и блокеры по tracker/Git guidance. Статус тикета — часть этого
+pre-flight, до `batch create` и до создания issue-ветки: проверьте блокеры при любой текущей метке
+(есть открытые → стоп, назовите их, убедитесь, что стоит `status::blocked`); иначе замените метку
+`status::*` на `status::in-progress` так же, как шаги 2–3 фазы 1 `/fast-implement`, и проверьте, что
+она единственная `status::*`. Неудачная запись метки — блокер, а не предупреждение. Используйте isolated
 issue-ветку и worktree; protected и `integration/*` — не write targets. Открытый batch — evidence,
 которое показывают разработчику, а не запись для повторного использования или замены.
 
@@ -84,7 +88,9 @@ module-owned guidance:
 ## Завершение
 
 После accepted publish предложите `/to-pull-requests <ticket>`. Не запускайте его автоматически,
-не открывайте и не мержьте PR, не пишите в integration-ветку и не закрывайте тикет этим скилом.
+не открывайте и не мержьте PR, не пишите в integration-ветку и не закрывайте тикет этим скилом. Оставьте на тикете
+`status::in-progress`: закрытие и перевод разблокированных зависимых в `status::ready` делает
+`/to-pull-requests` после merge.
 ````
 
 ## 3. Контракты
