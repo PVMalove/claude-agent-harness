@@ -93,6 +93,17 @@ class ImmutableReportPersistenceTests(unittest.TestCase):
             self.assertFalse(report_path.exists())
 
 
+class GitUtilsValidationTests(unittest.TestCase):
+    def test_fetch_ref_tip_rejects_invalid_refs(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            repo = Path(temporary)
+            for invalid in ("-v", "--help", "", 123):
+                with self.subTest(invalid=invalid):
+                    with self.assertRaises(coordinator.CoordinatorError) as raised:
+                        git_utils._fetch_ref_tip(repo, cast(str, invalid))
+                    self.assertIn("ref must be a non-empty string not starting with '-'", raised.exception.message)
+
+
 def _git(repo: Path, *arguments: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo), *arguments],
