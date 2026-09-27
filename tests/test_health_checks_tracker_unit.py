@@ -11,6 +11,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -121,9 +122,20 @@ def test_a_stalled_git_call_fails_reachability(
 
 
 def _write_fake_tool(bin_dir: Path, name: str, script: str) -> Path:
-    path = bin_dir / name
-    path.write_text(f"#!/bin/sh\n{script}\n", encoding="utf-8")
-    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    """Put a fake `name` on PATH that runs the Python `script` under this interpreter, with a
+    .cmd launcher on Windows (a #!/bin/sh file is not executable there), as
+    test_health_checks_tracker.py's _fake_tool does."""
+    source = bin_dir / f"{name}_fake.py"
+    source.write_text(script, encoding="utf-8")
+    if os.name == "nt":
+        path = bin_dir / f"{name}.cmd"
+        path.write_text(f'@"{sys.executable}" "{source}" %*\r\n', encoding="utf-8")
+    else:
+        path = bin_dir / name
+        path.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" "{source}" "$@"\n', encoding="utf-8"
+        )
+        path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return path
 
 
@@ -153,22 +165,20 @@ def test_list_repo_labels_reads_every_page_past_the_default_cap(
     bin_dir.mkdir()
     calls_log = tmp_path / "calls.log"
     fake_script = f"""
-echo "$@" >> {calls_log}
-if [ "$1" = "api" ]; then
-    if [ "$3" != "{api_path}" ]; then
-        echo "unexpected api path: $3" >&2
-        exit 1
-    fi
-    cat <<'JSON'
-{json.dumps(all_labels)}
-JSON
-    exit 0
-fi
-if [ "$1" = "label" ] && [ "$2" = "create" ]; then
-    exit 0
-fi
-echo "unexpected invocation: $@" >&2
-exit 1
+import json, sys
+args = sys.argv[1:]
+with open({str(calls_log)!r}, "a", encoding="utf-8") as log:
+    log.write(" ".join(args) + "\\n")
+if args[:1] == ["api"]:
+    if args[2:3] != [{api_path!r}]:
+        sys.stderr.write("unexpected api path: " + " ".join(args[2:3]) + "\\n")
+        sys.exit(1)
+    sys.stdout.write({json.dumps(all_labels)!r})
+    sys.exit(0)
+if args[:2] == ["label", "create"]:
+    sys.exit(0)
+sys.stderr.write("unexpected invocation: " + " ".join(args) + "\\n")
+sys.exit(1)
 """
     _write_fake_tool(bin_dir, tool, fake_script)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
