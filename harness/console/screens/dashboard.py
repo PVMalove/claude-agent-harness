@@ -1,30 +1,51 @@
-"""The console's home screen: an offline dashboard summary (added in the next commit) plus the
-section menu - Diagnostics, Harness, Orchestration, Reports, Repo Map. Only Diagnostics gets a
-real screen (also the next commit); the rest stay stubs."""
+"""The console's home screen: an offline dashboard summary plus the section menu - Diagnostics,
+Harness, Orchestration, Reports, Repo Map. Only Diagnostics gets a real screen (a later commit);
+the rest stay stubs."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import Footer, Header, ListItem, ListView, Static
 
+from .. import data as console_data
+from ..data import DashboardData
 from .stub import StubScreen
 
 SECTIONS = ("Diagnostics", "Harness", "Orchestration", "Reports", "Repo Map")
 
 
+def _render_summary(data: DashboardData) -> str:
+    active_batches = (
+        str(data.active_batches) if data.active_batches is not None else "не подключено"
+    )
+    return (
+        f"health: ok={data.ok} warn={data.warn} fail={data.fail} skipped={data.skipped}\n"
+        f"active batches: {active_batches}\n"
+        f"repo map: {data.repo_map_tier}\n"
+        f"harness: {data.harness_version} (drift: {data.drift_state})"
+    )
+
+
 class DashboardScreen(Screen[None]):
     """Home screen: dashboard summary above a `ListView` menu of the five sections."""
 
-    def __init__(self, repo: Path) -> None:
+    def __init__(
+        self,
+        repo: Path,
+        *,
+        collect_dashboard: Callable[[Path], DashboardData] = console_data.collect_dashboard,
+    ) -> None:
         super().__init__()
         self.repo = repo
+        self._collect_dashboard = collect_dashboard
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Static("", id="dashboard-summary")
+        yield Static(_render_summary(self._collect_dashboard(self.repo)), id="dashboard-summary")
         yield ListView(
             *(ListItem(Static(name), name=name) for name in SECTIONS),
             id="section-menu",

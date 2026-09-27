@@ -13,7 +13,8 @@ import pytest
 pytest.importorskip("textual")
 
 from harness.console.app import HarnessConsoleApp
-from harness.console.screens.dashboard import SECTIONS
+from harness.console.data import DashboardData
+from harness.console.screens.dashboard import SECTIONS, DashboardScreen
 from harness.console.screens.stub import StubScreen
 
 
@@ -46,3 +47,47 @@ def test_selecting_a_stub_section_pushes_its_stub_screen(tmp_path: Path) -> None
     is_stub, section_name = asyncio.run(scenario())
     assert is_stub
     assert section_name == "Harness"
+
+
+def _fake_dashboard_data() -> DashboardData:
+    return DashboardData(
+        ok=5,
+        warn=1,
+        fail=0,
+        skipped=2,
+        repo_map_tier="full",
+        harness_version="9.9.9",
+        drift_state="clean",
+        active_batches=3,
+    )
+
+
+def test_dashboard_screen_renders_injected_data_without_touching_the_repo(
+    tmp_path: Path,
+) -> None:
+    """A fake `collect_dashboard` proves the screen never needs a real health/drift/ledger
+    environment to be tested - the seam harness.console.screens.dashboard.DashboardScreen
+    accepts."""
+
+    async def scenario() -> str:
+        from textual.app import App
+        from textual.widgets import Static
+
+        screen = DashboardScreen(tmp_path, collect_dashboard=lambda _repo: _fake_dashboard_data())
+
+        class _HostApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen)
+
+        app = _HostApp()
+        async with app.run_test():
+            summary = app.screen.query_one("#dashboard-summary", Static)
+            return str(summary.content)
+
+    rendered = asyncio.run(scenario())
+    assert "ok=5" in rendered
+    assert "warn=1" in rendered
+    assert "fail=0" in rendered
+    assert "active batches: 3" in rendered
+    assert "9.9.9" in rendered
+    assert "clean" in rendered
