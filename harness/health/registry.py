@@ -22,6 +22,7 @@ from typing import Callable
 from .checks import directories as directory_checks
 from .checks import environment as environment_checks
 from .checks import files as files_checks
+from .checks import orchestration as orchestration_checks
 from .checks import repo_map as repo_map_checks
 from .checks import windows as windows_checks
 from .context import HealthContext
@@ -61,6 +62,11 @@ REGISTRY: list[tuple[str, CheckFn]] = [
     ("environment.pytest_temp", windows_checks.check_pytest_temp),
     ("environment.symlinks", windows_checks.check_symlinks),
     ("environment.hook_bash", windows_checks.check_hook_bash),
+    ("orchestration.ledger_summary", orchestration_checks.check_ledger_summary),
+    ("orchestration.blocked_batches", orchestration_checks.check_blocked_batches),
+    ("orchestration.stale_dispatches", orchestration_checks.check_stale_dispatches),
+    ("orchestration.orphaned_worktrees", orchestration_checks.check_orphaned_worktrees),
+    ("orchestration.disposable_data", orchestration_checks.check_disposable_data),
 ]
 
 FIXERS: dict[str, FixFn] = {
