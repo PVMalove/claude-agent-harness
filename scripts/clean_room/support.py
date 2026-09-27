@@ -70,6 +70,27 @@ def capture(cmd) -> str:
     return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
 
 
+def fail_json(cmd) -> dict:
+    """Запустить `harness health ... --json`, которая обязана упасть, и разобрать её JSON stdout."""
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode == 0:
+        sys.exit("command unexpectedly succeeded: " + " ".join(map(str, cmd)))
+    return json.loads(result.stdout)
+
+
+def capture_json(cmd) -> dict:
+    """Запустить `harness health ... --json`, которая обязана пройти, и разобрать её JSON stdout."""
+    return json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True).stdout)
+
+
+def find_check(report: dict, check_id: str) -> dict:
+    """Найти проверку по стабильному `id` в отчёте `harness health --json`."""
+    for check in report["checks"]:
+        if check["id"] == check_id:
+            return check
+    sys.exit(f"health --json report has no check with id {check_id!r}")
+
+
 def commit_map_for(brief: dict, commit_sha: str) -> list[dict]:
     """Обязательный `commit_map` отчёта developer для кандидата из одного коммита."""
     return [
