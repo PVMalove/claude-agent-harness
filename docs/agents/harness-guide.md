@@ -198,9 +198,16 @@ ledger о его записи (в самом отчёте её нет). Из о�
 хронология батча: создание и смены состояния (audit `transition`), диспатчи по ролям с маршрутом
 (`developer → code-review → qa`), отчёты, решения coordinator, оценки и эскалации риска. Раздел
 только читает ledger (lenient-чтение, как у `orchestration.*` в `harness health`): повреждённая
-запись пропускается, без ledger показывается «не найден или не инициализирован». `Harness`,
+запись пропускается, без ledger показывается «не найден или не инициализирован». В отчёте
+QA-диспатча и на экране «QA-логи» (кнопка или `F3`) видны итог и хвост логов QA-гейта
+(`qa-artifacts/<sha256>.log`: команды с exit-кодами и последние строки) и неудачные попытки
+qa-lane (`qa-lane/attempts/`). Отчёт или хронологию можно экспортировать в Markdown (`e`) — в
+`docs/tasks/<папка тикета>/artifacts/` (своя папка `issue-<N>-*`, папка эпика, где тикет лежит в
+`tickets/`, или новая `issue-<N>/`), без номера тикета — в `docs/tasks/console-exports/`; файл
+датирован и никогда не перезаписывается. Экспорт — общий `harness/console/export.py` плюс действие
+`harness/console/screens/export.py`, которое переиспользуют и другие разделы (Repo Map). `Harness`,
 `Orchestration` и `Repo Map` — пока заглушки «раздел ещё не реализован». Код разложен по шву
-stdlib/textual: `harness/console/{pin,runner,launcher,data,reports}.py` не импортируют `textual` и
+stdlib/textual: `harness/console/{pin,runner,launcher,data,reports,export}.py` не импортируют `textual` и
 тестируются без него; только `harness/console/app.py` и `harness/console/screens/*.py` его
 импортируют, и только внутри уже релончнутого процесса — Pilot-тесты (`tests/test_console_app.py`,
 `tests/test_console_reports_app.py`) пропускаются (`pytest.importorskip`), если textual не

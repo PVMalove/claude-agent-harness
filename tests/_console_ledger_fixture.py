@@ -3,11 +3,14 @@
 the coordinator's would, and a report's date and a batch's state changes come from that audit.
 
 Batch `batch-flow` (ticket #101) walks developer -> code-review -> qa to `completed`, with a
-developer risk escalation, a risk assessment and coordinator decisions between the roles. Batch
-`batch-stuck` (ticket #202) ends `blocked` on a developer report."""
+developer risk escalation, a risk assessment and coordinator decisions between the roles. Its QA
+dispatch first fails one qa-lane attempt, then persists a QA gate log under `qa-artifacts/` that its
+report points to by sha256, the way harness/orchestration/qa_lane.py does. Batch `batch-stuck`
+(ticket #202) ends `blocked` on a developer report."""
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,6 +25,14 @@ LONG_OUTPUT = (
     "Реализован раздел отчётов: список completion reports с фильтрами, чтение по секциям и "
     "хронология батча. " * 6
 ).strip()
+
+QA_LOG = (
+    "$ make lint\nexit_code=0\nAll checks passed!\n\n"
+    + "$ make test\nexit_code=0\n"
+    + "".join(f"tests/test_{index:02d}.py ....\n" for index in range(30))
+    + "412 passed in 9.81s\n"
+)
+QA_LOG_SHA256 = hashlib.sha256(QA_LOG.encode("utf-8")).hexdigest()
 
 
 def _now() -> str:
@@ -210,7 +221,25 @@ def build_reports_fixture(repo: Path) -> None:
     flow.decide("dispatch-review", "accept", next_role="qa")
     flow.save()
     flow.dispatch("dispatch-qa", "qa")
-    flow.report("dispatch-qa", "qa", "completed", output="QA lane зелёный")
+    ledger.write_immutable(
+        flow.root / "qa-lane" / "attempts" / "attempt-1.json",
+        {
+            "dispatch_id": "dispatch-qa",
+            "stage": "gate-run",
+            "failed_at": _now(),
+            "message": "clean-room checkout failed",
+            "remedy": "run the QA runner again",
+        },
+    )
+    artifact = flow.root / "qa-artifacts" / f"{QA_LOG_SHA256}.log"
+    ledger.write_artifact(artifact, QA_LOG)
+    flow.report(
+        "dispatch-qa",
+        "qa",
+        "completed",
+        output=f"QA gate passed; full sanitised output: {artifact.as_posix()} "
+        f"(sha256:{QA_LOG_SHA256})",
+    )
     flow.decide("dispatch-qa", "accept")
     flow.save("completed")
 

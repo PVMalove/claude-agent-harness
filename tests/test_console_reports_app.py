@@ -12,13 +12,15 @@ import pytest
 pytest.importorskip("textual")
 
 from textual.app import App
+from textual.pilot import Pilot
 from textual.widgets import Input, ListView, Static
 
-from _console_ledger_fixture import build_reports_fixture
+from _console_ledger_fixture import QA_LOG_SHA256, build_reports_fixture
 from harness.console.data import DashboardData
 from harness.console.screens.dashboard import SECTIONS, DashboardScreen
 from harness.console.screens.reports import (
     BatchTimelineScreen,
+    QaLogsScreen,
     ReportScreen,
     ReportsScreen,
 )
@@ -214,3 +216,91 @@ def test_reports_screen_without_a_ledger_says_so(tmp_path: Path) -> None:
     status, names = asyncio.run(scenario())
     assert status == "леджер оркестрации не найден или не инициализирован"
     assert names == []
+
+
+async def _open_report(app: App[None], pilot: Pilot[None], index: int) -> None:
+    report_list = app.screen.query_one("#report-list", ListView)
+    report_list.focus()
+    report_list.index = index
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+def test_qa_report_shows_its_gate_log_tail_and_attempts(tmp_path: Path) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> str:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test() as pilot:
+            await _open_report(app, pilot, 1)  # dispatch-qa
+            return _static_text(app, "#section-qa-log")
+
+    text = asyncio.run(scenario())
+    assert "попытки qa-lane: 1" in text
+    assert "gate-run: clean-room checkout failed" in text
+    assert "итог: passed — команд 2, с ошибкой 0" in text
+    assert text.rstrip().endswith("412 passed in 9.81s")
+
+
+def test_qa_logs_screen_lists_every_log_and_attempt(tmp_path: Path) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[bool, str]:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.press("f3")
+            await pilot.pause()
+            return isinstance(app.screen, QaLogsScreen), _static_text(app, "#qa-logs")
+
+    is_qa_logs, text = asyncio.run(scenario())
+    assert is_qa_logs
+    assert f"qa-artifacts/{QA_LOG_SHA256}.log" in text
+    assert "dispatch-qa · #101 · отчёт: completed" in text
+    assert "dispatch-qa · gate-run: clean-room checkout failed" in text
+
+
+def test_report_export_writes_markdown_into_the_ticket_folder(tmp_path: Path) -> None:
+    build_reports_fixture(tmp_path)
+    ticket_folder = tmp_path / "docs" / "tasks" / "issue-101-console-reports"
+    ticket_folder.mkdir(parents=True)
+
+    async def scenario() -> None:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test() as pilot:
+            await _open_report(app, pilot, 1)  # dispatch-qa
+            await pilot.press("e")
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    [exported] = (ticket_folder / "artifacts").glob("*.md")
+    assert exported.name.endswith("-report-dispatch-qa.md")
+    text = exported.read_text(encoding="utf-8")
+    assert text.startswith("# Completion report dispatch-qa\n")
+    assert "- **Ticket:** #101" in text
+    assert "## Output\n\nQA gate passed" in text
+    assert "## QA log\n\n```text\nпопытки qa-lane: 1" in text
+    assert "412 passed in 9.81s" in text
+
+
+def test_timeline_export_writes_markdown_table(tmp_path: Path) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> None:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test() as pilot:
+            batch_list = app.screen.query_one("#batch-list", ListView)
+            batch_list.focus()
+            batch_list.index = 1  # batch-flow
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, BatchTimelineScreen)
+            await pilot.press("e")
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    [exported] = (tmp_path / "docs" / "tasks" / "issue-101" / "artifacts").glob("*.md")
+    assert exported.name.endswith("-timeline-batch-flow.md")
+    text = exported.read_text(encoding="utf-8")
+    assert text.startswith("# Хронология батча batch-flow\n")
+    assert "- **Маршрут:** developer → code-review → qa" in text
+    assert "| Время | Тип | Роль | Событие |" in text
