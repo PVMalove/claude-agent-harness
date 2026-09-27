@@ -669,10 +669,13 @@ def check_agents_md(context: HealthContext) -> CheckResult:
     )
 
 
-def check_discovery_links(context: HealthContext) -> CheckResult:
+def broken_discovery_links(repo: Path) -> list[str]:
+    """One human-readable problem per discovery link that is missing, foreign, or unresolvable.
+
+    A missing link under a read-only parent is not reported (the installer skips it too)."""
     broken: list[str] = []
     for relative, target in DISCOVERY_LINKS.items():
-        path = context.repo / relative
+        path = repo / relative
         native_target = native_link_target(target)
         if not path.is_symlink() or os.readlink(path) != native_target:
             if (
@@ -684,6 +687,11 @@ def check_discovery_links(context: HealthContext) -> CheckResult:
             broken.append(f"неисправна discovery-ссылка: {relative} -> {target}")
         elif not path.is_dir():
             broken.append(f"discovery-ссылка не резолвится: {relative} -> {target}")
+    return broken
+
+
+def check_discovery_links(context: HealthContext) -> CheckResult:
+    broken = broken_discovery_links(context.repo)
     if broken:
         return CheckResult(
             id="files.discovery_links",

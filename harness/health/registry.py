@@ -14,6 +14,7 @@ from typing import Callable
 from .checks import environment as environment_checks
 from .checks import files as files_checks
 from .checks import repo_map as repo_map_checks
+from .checks import windows as windows_checks
 from .context import HealthContext
 from .model import CheckResult, JsonObject, Report
 
@@ -40,6 +41,11 @@ REGISTRY: list[CheckFn] = [
     environment_checks.check_uv,
     environment_checks.check_dev_environment,
     environment_checks.check_output_encoding,
+    windows_checks.check_long_paths,
+    windows_checks.check_path_length,
+    windows_checks.check_pytest_temp,
+    windows_checks.check_symlinks,
+    windows_checks.check_hook_bash,
 ]
 
 _LOCK_REL = Path(".harness/harness.lock")
