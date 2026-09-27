@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import runpy
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -84,3 +85,34 @@ def test_cmd_health_exits_0_when_nothing_fails(
     data = json.loads(capsys.readouterr().out)
     assert data["summary"] == {"ok": 0, "warn": 1, "fail": 0, "skipped": 0}
     assert exit_code == 0
+
+
+@pytest.mark.parametrize("lock_text", ["{broken", "[]"])
+def test_broken_lock_is_a_fail_result_not_a_crash(tmp_path: Path, lock_text: str) -> None:
+    """A lock that is not a JSON object is reported as `files.lock: fail` (with a remedy) while
+    every other check still runs, and `--json` stays valid JSON."""
+    _init_repo(tmp_path)
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / ".harness" / "harness.lock").write_text(lock_text, encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness"),
+            "health",
+            str(tmp_path),
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert result.returncode == 1, result.stderr
+    data = json.loads(result.stdout)
+    checks = {check["id"]: check for check in data["checks"]}
+    assert checks["files.lock"]["status"] == "fail"
+    assert "повреждён" in checks["files.lock"]["message"]
+    assert checks["files.lock"]["fix"] is not None
+    assert "repo_map.tier" in checks

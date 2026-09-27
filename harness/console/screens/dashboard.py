@@ -60,9 +60,7 @@ class DashboardScreen(Screen[None]):
         if name == "Diagnostics":
             from .diagnostics import DiagnosticsScreen
 
-            self.app.push_screen(
-                DiagnosticsScreen(self.repo, command_runner=self._command_runner)
-            )
+            self.app.push_screen(DiagnosticsScreen(self.repo))
         elif name == "Harness":
             from .harness import HarnessScreen
 

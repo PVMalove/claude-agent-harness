@@ -133,7 +133,9 @@ def test_ledger_summary_warns_on_legacy_state_requiring_migration(
 
     assert result.status == "warn"
     assert result.fix is not None
-    assert result.fix.command == "coordinator.py ledger migrate"
+    assert result.fix.command == (
+        "python .harness/orchestration/coordinator.py --repo <repo> ledger migrate"
+    )
 
 
 def test_ledger_summary_warns_on_a_stale_schema_version(tmp_path: Path) -> None:
@@ -154,7 +156,9 @@ def test_ledger_summary_warns_on_a_stale_schema_version(tmp_path: Path) -> None:
 
     assert result.status == "warn"
     assert result.fix is not None
-    assert result.fix.command == "coordinator.py ledger migrate"
+    assert result.fix.command == (
+        "python .harness/orchestration/coordinator.py --repo <repo> ledger migrate"
+    )
 
 
 def test_ledger_summary_reports_generation_schema_and_batch_counts(
@@ -435,6 +439,20 @@ def test_orphaned_worktrees_ok_when_referenced_by_an_active_batch(
     assert result.status == "ok"
 
 
+def test_orphaned_worktrees_skipped_when_git_worktree_list_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Story 21: "not checked" is never reported as "passed" - a failed `git worktree list`
+    means skipped."""
+    import harness.cleanup
+
+    monkeypatch.setattr(harness.cleanup, "_registered_worktrees", lambda repo: None)
+
+    result = checks.check_orphaned_worktrees(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
+
+    assert result.status == "skipped"
+
+
 # --- orchestration.disposable_data (DoD 5) ------------------------------------------------------
 
 
@@ -446,9 +464,10 @@ def test_disposable_data_ok_when_nothing_to_clean(tmp_path: Path) -> None:
     assert result.status == "ok"
 
 
-def test_disposable_data_warns_with_a_nonzero_size_and_a_cleanup_hint(
+def test_disposable_data_reports_a_nonzero_size_as_information_with_a_cleanup_hint(
     tmp_path: Path,
 ) -> None:
+    """Epic #341 severity rules: disposable data is informational - never a `warn`."""
     _init_repo(tmp_path)
     scratch = tmp_path / ".harness" / ".sandboxes" / "scratch"
     scratch.mkdir(parents=True)
@@ -459,7 +478,8 @@ def test_disposable_data_warns_with_a_nonzero_size_and_a_cleanup_hint(
 
     result = checks.check_disposable_data(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
 
-    assert result.status == "warn"
+    assert result.status == "ok"
+    assert "100 B" in result.message
     assert result.fix is not None
     assert result.fix.command == "harness cleanup <repo> --mode hard"
     assert stale_file.exists()  # preview only; nothing was removed

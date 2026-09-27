@@ -30,3 +30,6 @@ class HealthContext:
     # CLI forces UTF-8 on startup, which would otherwise hide a non-UTF-8 console from
     # environment.check_output_encoding). None means "read sys.stdout at check time".
     output_encoding: str | None = None
+    # Why .harness/harness.lock exists but could not be used (unreadable, not JSON, not an object);
+    # `lock` is None then too, so lock-dependent checks skip while files.check_lock reports `fail`.
+    lock_error: str | None = None

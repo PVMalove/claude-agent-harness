@@ -43,6 +43,10 @@ _REPO_MAP_POLICY_FIX = Fix(
 )
 
 _NO_LOCK_MESSAGE = "нет .harness/harness.lock"
+_REGISTRY_FIX = Fix(
+    text="пересоберите реестр скиллов (или запустите harness health --fix)",
+    command="harness registry <repo>",
+)
 _NO_ORCHESTRATION_CAPABILITY_MESSAGE = "backend-orchestration capability не выбрана"
 
 # --- Constants moved unchanged from harness/bin/harness ------------------------------------
@@ -632,12 +636,25 @@ def verification_routing_health(repo: Path) -> list[str]:
 
 
 def check_lock(context: HealthContext) -> CheckResult:
+    if context.lock_error is not None:
+        return CheckResult(
+            id="files.lock",
+            group="files",
+            status="fail",
+            message=f"повреждён .harness/harness.lock ({context.lock_error})",
+            fix=Fix(
+                text="восстановите lock из git; если его там нет, заново выполните harness init "
+                "с прежними --capability",
+                command="git checkout -- .harness/harness.lock",
+            ),
+        )
     if context.lock is None:
         return CheckResult(
             id="files.lock",
             group="files",
             status="fail",
             message="отсутствует .harness/harness.lock",
+            fix=Fix(text="установите харнесс в проект", command="harness init <repo>"),
         )
     return CheckResult(
         id="files.lock", group="files", status="ok", message="harness.lock присутствует"
@@ -652,6 +669,7 @@ def check_agents_md(context: HealthContext) -> CheckResult:
             group="files",
             status="fail",
             message="отсутствует AGENTS.md",
+            fix=Fix(text="восстановите управляемые файлы харнесса", command="harness update <repo>"),
         )
     agents_text = agents_path.read_text(encoding="utf-8")
     if _TEMPLATE_MARKER.search(agents_text):
@@ -660,6 +678,7 @@ def check_agents_md(context: HealthContext) -> CheckResult:
             group="files",
             status="fail",
             message="в AGENTS.md остались нерешённые плейсхолдеры шаблона",
+            fix=Fix(text="замените плейсхолдеры вида {{...}} в AGENTS.md значениями проекта"),
         )
     return CheckResult(
         id="files.agents_md",
@@ -698,6 +717,11 @@ def check_discovery_links(context: HealthContext) -> CheckResult:
             group="files",
             status="fail",
             message="; ".join(broken),
+            fix=Fix(
+                text="пересоздайте discovery-ссылки; на Windows сначала проверьте "
+                "environment.symlinks (Developer Mode)",
+                command="harness update <repo>",
+            ),
         )
     return CheckResult(
         id="files.discovery_links",
@@ -716,6 +740,10 @@ def check_project_json(context: HealthContext) -> CheckResult:
             group="files",
             status="fail",
             message="; ".join(problems),
+            fix=Fix(
+                text="исправьте .harness/project.json по схеме .harness/project.schema.json "
+                "и повторите harness health"
+            ),
         )
     if (context.repo / ".harness" / "project.json").is_file():
         return CheckResult(
@@ -837,6 +865,10 @@ def check_skill_snapshot(context: HealthContext) -> CheckResult:
             group="files",
             status="fail",
             message="в снэпшоте скиллов есть расхождения",
+            fix=Fix(
+                text="посмотрите расхождения через harness diff, затем восстановите снэпшот",
+                command="harness update <repo>",
+            ),
         )
     return CheckResult(
         id="files.skill_snapshot",
@@ -868,13 +900,15 @@ def check_skill_registry(context: HealthContext) -> CheckResult:
             group="files",
             status="fail",
             message=f"отсутствует {registry_rel}",
+            fix=_REGISTRY_FIX,
         )
     if registry_path.read_text(encoding="utf-8") != expected_registry:
         return CheckResult(
             id="files.skill_registry",
             group="files",
             status="fail",
-            message=f"устарел {registry_rel}; выполните harness registry",
+            message=f"устарел {registry_rel}",
+            fix=_REGISTRY_FIX,
         )
     return CheckResult(
         id="files.skill_registry",
@@ -925,6 +959,12 @@ def check_overlay_locks(context: HealthContext) -> CheckResult:
             group="files",
             status="fail",
             message="; ".join(problems),
+            fix=Fix(
+                text="исправьте overlay-локи в .harness/overlays (schema 1, overlay_id, source с "
+                "remote и revision без учётных данных); локи скиллов проекта пересоздаёт "
+                "harness lock-project-skills",
+                command="harness lock-project-skills <repo>",
+            ),
         )
     return CheckResult(
         id="files.overlay_locks",
@@ -950,6 +990,10 @@ def check_integrations(context: HealthContext) -> CheckResult:
             group="files",
             status="fail",
             message="; ".join(problems),
+            fix=Fix(
+                text="дополните .harness/integrations.json: у каждой интеграции id, kind, "
+                "runtimes, verify и secret_refs только с именами переменных окружения"
+            ),
         )
     return CheckResult(
         id="files.integrations",
@@ -989,7 +1033,7 @@ def check_verification_routing(context: HealthContext) -> CheckResult:
             id="files.verification_routing",
             group="files",
             status="warn",
-            message=lines[0],
+            message=lines[0].removeprefix("ПРЕДУПРЕЖДЕНИЕ: "),
             fix=Fix(text=remedy),
         )
     if not isinstance(config, dict) or not config.get("verification_commands"):

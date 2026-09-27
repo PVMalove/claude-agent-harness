@@ -45,6 +45,7 @@ testpaths = ["tests"]
 "tests/test_advisory.py" = ["E402"]
 "tests/test_console_app.py" = ["E402"]
 "tests/test_console_harness.py" = ["E402"]
+"tests/test_console_orchestration.py" = ["E402"]
 "tests/test_console_repo_map_app.py" = ["E402"]
 "tests/test_console_reports_app.py" = ["E402"]
 

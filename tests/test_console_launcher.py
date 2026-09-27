@@ -40,6 +40,8 @@ def test_build_relaunch_argv_pins_textual_and_never_touches_the_project() -> Non
     assert argv[1] == "run"
     # --no-project: uv run must never install or lock the surrounding project's own dependencies.
     assert "--no-project" in argv
+    # --python: reuse the interpreter that passed the Python >= 3.12 check, not uv's first find.
+    assert argv[argv.index("--python") + 1] == sys.executable
     assert argv[argv.index("--with") + 1] == f"textual=={TEXTUAL_PIN}"
     assert argv[-2:] == ["console", str(repo)]
     assert str(launcher.BIN_HARNESS_PATH) in argv

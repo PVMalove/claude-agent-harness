@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -34,11 +35,15 @@ def find_uv() -> str | None:
 def build_relaunch_argv(uv: str, repo: Path, extra_argv: Sequence[str] = ()) -> list[str]:
     """The exact relaunch command: `--no-project` so `uv run` never installs the surrounding
     project's own dependencies or touches its lock file, `--with textual==<pin>` so the one-off
-    environment carries only the pinned TUI dependency."""
+    environment carries only the pinned TUI dependency, and `--python <this interpreter>` so the
+    one-off environment reuses the interpreter that already passed the harness's Python >= 3.12
+    check instead of whichever one uv would discover first."""
     return [
         uv,
         "run",
         "--no-project",
+        "--python",
+        sys.executable,
         "--with",
         f"textual=={TEXTUAL_PIN}",
         "python",

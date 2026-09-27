@@ -86,14 +86,29 @@ class CatalogEntry:
         return shlex.join(self.cli_argv(repo, values))
 
 
-def process_argv(cli_argv: Sequence[str]) -> list[str]:
+def harness_python(repo: Path | None) -> str:
+    """The interpreter for a `python ...` CLI equivalent: the repository's own `.harness/.venv`
+    when it exists (the environment `make verify` uses - it has pytest, mypy and the rest of the
+    dev group), else the interpreter the console runs under. The console itself runs in a one-off
+    `uv run --with textual` environment that carries textual only."""
+    if repo is not None:
+        for candidate in (
+            repo / ".harness" / ".venv" / "bin" / "python",
+            repo / ".harness" / ".venv" / "Scripts" / "python.exe",
+        ):
+            if candidate.is_file():
+                return str(candidate)
+    return sys.executable
+
+
+def process_argv(cli_argv: Sequence[str], repo: Path | None = None) -> list[str]:
     """The process that runs a CLI equivalent: `harness` is this harness checkout's CLI and
-    `python` is the interpreter the console itself runs under."""
+    `python` is `harness_python(repo)`."""
     head, *rest = cli_argv
     if head == "harness":
         return [sys.executable, str(BIN_HARNESS_PATH), *rest]
     if head == "python":
-        return [sys.executable, *rest]
+        return [harness_python(repo), *rest]
     return list(cli_argv)
 
 

@@ -123,6 +123,18 @@ def test_process_argv_runs_the_cli_equivalent_under_this_interpreter() -> None:
     assert process_argv(["python", "scripts/verify.py"]) == [sys.executable, "scripts/verify.py"]
 
 
+def test_process_argv_prefers_the_repository_dev_environment(tmp_path: Path) -> None:
+    """The console runs in a one-off `uv run --with textual` environment without pytest/mypy, so
+    a `python` command such as verify runs under the repository's `.harness/.venv` when present."""
+    assert process_argv(["python", "x.py"], tmp_path) == [sys.executable, "x.py"]
+    venv_python = tmp_path / ".harness" / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+
+    assert process_argv(["python", "x.py"], tmp_path) == [str(venv_python), "x.py"]
+    assert process_argv(["harness", "diff", "r"], tmp_path)[0] == sys.executable
+
+
 def test_catalog_imports_without_textual() -> None:
     code = "import sys; sys.modules['textual'] = None; import harness.console.catalog"
     result = subprocess.run(

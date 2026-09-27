@@ -30,8 +30,8 @@ BACKEND_ORCHESTRATION_CAPABILITY = "backend-orchestration"
 _NO_ORCHESTRATION_CAPABILITY_MESSAGE = "backend-orchestration capability не выбрана"
 _MIGRATION_MESSAGE = "леджер оркестрации требует миграции схемы"
 _MIGRATION_FIX = Fix(
-    text="выполните coordinator.py ledger migrate",
-    command="coordinator.py ledger migrate",
+    text="выполните миграцию схемы леджера",
+    command="python .harness/orchestration/coordinator.py --repo <repo> ledger migrate",
 )
 
 
@@ -200,7 +200,10 @@ def check_blocked_batches(context: HealthContext) -> CheckResult:
             group="orchestration",
             status="warn",
             message="заблокированные батчи: " + ", ".join(blocked),
-            fix=Fix(text="разрешите блокировку через coordinator.py batch decide"),
+            fix=Fix(
+                text="разрешите блокировку через coordinator.py batch decide (в harness console: "
+                "Orchestration → «Решение по batch»)"
+            ),
         )
     return CheckResult(
         id=check_id,
@@ -321,7 +324,7 @@ def check_orphaned_worktrees(context: HealthContext) -> CheckResult:
         return CheckResult(
             id=check_id,
             group="orchestration",
-            status="ok",
+            status="skipped",
             message="не удалось определить осиротевшие воркдеревья (git или леджер недоступны)",
         )
     known = set(registered) | active
@@ -405,10 +408,12 @@ def check_disposable_data(context: HealthContext) -> CheckResult:
             status="ok",
             message="одноразовых данных для очистки нет",
         )
+    # Informational only (epic #341 severity rules): a Repo Map cache or parser bundle is normal,
+    # not a risk, so a non-empty plan never turns this check into a warning.
     return CheckResult(
         id=check_id,
         group="orchestration",
-        status="warn",
+        status="ok",
         message=f"одноразовых данных на {_human_size(total)}; ничего не удалено (только предпросмотр)",
         fix=Fix(
             text="просмотрите план очистки перед применением",

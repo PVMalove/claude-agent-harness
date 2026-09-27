@@ -34,7 +34,7 @@ if [ ! -f "$repo/.harness/project.json" ] || [ ! -x "$venv_bin/python" ]; then
   "$python_bin" "$repo/harness/bin/harness" init "$repo" --project-type software --stack python \
     --capability pvmalove-suite --capability backend-orchestration \
     --base-branch master --language ru \
-    --pr-base-branch integration/harness-console --qa-gate-command "make verify" >/dev/null
+    --pr-base-branch master --qa-gate-command "make verify" >/dev/null
   (cd "$repo" && make bootstrap PYTHON_BOOTSTRAP="$python_bin" >/dev/null)
   echo "harness installed into $repo"
 fi

@@ -153,7 +153,7 @@ class OrchestrationScreen(Screen[None]):
 
         def work() -> None:
             try:
-                result = self._command_runner(process_argv(cli_argv), cwd=self.repo)
+                result = self._command_runner(process_argv(cli_argv, self.repo), cwd=self.repo)
             except OSError as exc:
                 text = f"$ {cli_line}\nне удалось запустить: {exc}"
             else:

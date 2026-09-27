@@ -96,20 +96,30 @@ def _tracker_tool(tracker: Tracker) -> str:
     return "gh" if tracker == "github" else "glab"
 
 
+# What each check verifies, so a skipped line in the text report still names the skipped check.
+_SUBJECTS: dict[str, str] = {
+    "tracker.auth": "авторизация gh/glab",
+    "tracker.reachability": "достижимость origin",
+    "tracker.permissions": "права в репозитории",
+    "tracker.labels": "лейблы трекера",
+}
+
+
 def _offline_or_local(
     check_id: str, context: HealthContext
 ) -> tuple[Tracker, str | None, CheckResult | None]:
     """Shared early-exit ladder every tracker.* check starts with: offline, then a non-hosted
     (local) tracker. Returns the detected tracker/slug plus a skip result when the caller should
     stop; the caller proceeds only when the third element is None."""
+    subject = _SUBJECTS.get(check_id, check_id)
     if not context.online:
         return "local", None, _skip(
-            check_id, "офлайн: без --online проверки трекера не выполняются"
+            check_id, f"{subject}: не проверено (офлайн — без --online проверки трекера не выполняются)"
         )
     tracker, slug = detect_tracker(context)
     if tracker == "local":
         return tracker, slug, _skip(
-            check_id, "локальный трекер задач: онлайн-проверки не применимы"
+            check_id, f"{subject}: не проверено (локальный трекер задач — онлайн-проверки не применимы)"
         )
     return tracker, slug, None
 

@@ -14,9 +14,8 @@ from .screens.dashboard import DashboardScreen
 
 
 class HarnessConsoleApp(App[None]):
-    """Accepts an injected `command_runner`, threaded through to the Diagnostics screen's
-    "apply fixes" action and the Harness screen's commands, so a Pilot test never spawns a real
-    process."""
+    """Accepts an injected `command_runner`, threaded through to the screens that run catalog
+    commands (Harness, Orchestration, Repo Map), so a Pilot test never spawns a real process."""
 
     TITLE = "harness console"
 

@@ -123,6 +123,5 @@ def apply_local_fixes(repo: Path, *, online: bool = False) -> Report:
     """The in-process half of `harness health --fix` (#399): applies every check's `FIXERS`
     entry (creating missing `.harness` directories, regenerating the skill registry) and re-runs
     every check, the same `health.registry.run(..., fix=True)` call `harness health --fix` makes.
-    Shell-command fixes (`check.fix.command`) are not in `FIXERS` and stay outside this call - the
-    Diagnostics screen runs those itself through the injected CommandRunner."""
+    A check's `fix.command` is never run: it is a remedy the developer runs by hand."""
     return health_registry.run(repo, online=online, fix=True)

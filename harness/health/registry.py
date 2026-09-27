@@ -86,13 +86,20 @@ FIXERS: dict[str, FixFn] = {
 _LOCK_REL = Path(".harness/harness.lock")
 
 
-def _load_lock(repo: Path) -> JsonObject | None:
-    """Parse .harness/harness.lock once per run; a missing file means no lock, not a problem."""
+def _load_lock(repo: Path) -> tuple[JsonObject | None, str | None]:
+    """Parse .harness/harness.lock once per run as (lock, error). A missing file is (None, None);
+    a lock that cannot be read or is not a JSON object is (None, <reason>) - reported by
+    files.check_lock as `fail` instead of aborting the whole run before any check starts."""
     path = repo / _LOCK_REL
     if not path.is_file():
-        return None
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return data if isinstance(data, dict) else None
+        return None, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    if not isinstance(data, dict):
+        return None, "ожидался JSON-объект"
+    return data, None
 
 
 def run(
@@ -112,9 +119,11 @@ def run(
     `snapshot_diff` and `output_encoding` are forwarded to HealthContext unchanged; see its
     docstring - only harness/bin/harness's cmd_health supplies them today.
     """
+    lock, lock_error = _load_lock(repo)
     context = HealthContext(
         repo=repo,
-        lock=_load_lock(repo),
+        lock=lock,
+        lock_error=lock_error,
         online=online,
         snapshot_diff=snapshot_diff,
         output_encoding=output_encoding,

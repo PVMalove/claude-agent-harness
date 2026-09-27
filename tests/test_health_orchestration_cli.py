@@ -122,7 +122,7 @@ def test_health_json_reports_all_five_orchestration_checks_against_a_ledger_fixt
     )
     assert checks_by_id["orchestration.orphaned_worktrees"]["status"] == "warn"
     assert "orphan-1" in checks_by_id["orchestration.orphaned_worktrees"]["message"]
-    assert checks_by_id["orchestration.disposable_data"]["status"] in {"ok", "warn"}
+    assert checks_by_id["orchestration.disposable_data"]["status"] == "ok"
     # The CLI's own exit-code contract (mirrors test_health_cli.py): 1 only on a 'fail'.
     assert exit_code == (1 if data["summary"]["fail"] else 0)
     # Running health never mutates orchestration state or worktrees.

@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Sequence
 
 import pytest
 
@@ -130,25 +130,6 @@ def test_dashboard_screen_renders_injected_data_without_touching_the_repo(
     assert "clean" in rendered
 
 
-class _RecordingRunner:
-    """Test double for harness.console.runner.CommandRunner: records every call instead of
-    spawning a real process, so a Pilot test can drive "apply fixes" safely."""
-
-    def __init__(self) -> None:
-        self.calls: list[list[str]] = []
-
-    def __call__(
-        self,
-        argv: "Sequence[str]",
-        *,
-        env: "Mapping[str, str] | None" = None,
-        cwd: Path | None = None,
-    ) -> "subprocess.CompletedProcess[str]":
-        recorded = list(argv)
-        self.calls.append(recorded)
-        return subprocess.CompletedProcess(recorded, 0, "", "")
-
-
 def _fake_report(*, online: bool = False, fixes_applied: list[str] | None = None) -> Report:
     return Report(
         schema_version=1,
@@ -193,21 +174,30 @@ def test_diagnostics_screen_renders_the_full_report(tmp_path: Path) -> None:
     assert "echo installing-uv" in rendered
 
 
-def test_diagnostics_apply_fixes_asks_before_running_a_destructive_fix(
-    tmp_path: Path,
-) -> None:
-    """DoD/architect seed: apply-fixes must not run anything on the first press - only a second,
-    confirming press invokes the injected CommandRunner."""
+class _RecordingFixes:
+    """Test double for `apply_local_fixes`: records each call instead of touching the repo."""
+
+    def __init__(self, fixes_applied: list[str] | None = None) -> None:
+        self.calls: list[bool] = []
+        self._fixes_applied = fixes_applied
+
+    def __call__(self, repo: Path, *, online: bool = False) -> Report:
+        self.calls.append(online)
+        return _fake_report(online=online, fixes_applied=self._fixes_applied)
+
+
+def test_diagnostics_apply_fixes_asks_before_applying(tmp_path: Path) -> None:
+    """DoD/architect seed: apply-fixes must not change anything on the first press - only a
+    second, confirming press applies the `harness health --fix` fixers."""
 
     async def scenario() -> tuple[int, int]:
         from textual.app import App
 
-        runner = _RecordingRunner()
+        fixes = _RecordingFixes()
         screen = DiagnosticsScreen(
             tmp_path,
             collect_diagnostics=lambda repo, *, online=False: _fake_report(),
-            apply_local_fixes=lambda repo, *, online=False: _fake_report(),
-            command_runner=runner,
+            apply_local_fixes=fixes,
         )
 
         class _HostApp(App[None]):
@@ -219,11 +209,11 @@ def test_diagnostics_apply_fixes_asks_before_running_a_destructive_fix(
             await pilot.click("#apply-fixes")
             # Button's own brief "-active" press animation ignores a second click while it runs.
             await pilot.pause(0.4)
-            calls_after_first_press = len(runner.calls)
+            calls_after_first_press = len(fixes.calls)
 
             await pilot.click("#apply-fixes")
             await pilot.pause(0.4)
-            calls_after_second_press = len(runner.calls)
+            calls_after_second_press = len(fixes.calls)
 
         return calls_after_first_press, calls_after_second_press
 
@@ -232,78 +222,27 @@ def test_diagnostics_apply_fixes_asks_before_running_a_destructive_fix(
     assert after_second == 1
 
 
-def test_diagnostics_apply_fixes_merges_shell_and_local_fixers(tmp_path: Path) -> None:
-    """Apply fixes both runs each check's shell `command` (via the injected CommandRunner) and
-    calls `apply_local_fixes` - the in-process `FIXERS` half of `harness health --fix` (#399), e.g.
-    creating a missing `.harness` directory - and shows both in `fixes_applied`."""
-
-    async def scenario() -> str:
-        from textual.app import App
-        from textual.widgets import Static
-
-        runner = _RecordingRunner()
-        screen = DiagnosticsScreen(
-            tmp_path,
-            collect_diagnostics=lambda repo, *, online=False: _fake_report(),
-            apply_local_fixes=lambda repo, *, online=False: _fake_report(
-                fixes_applied=["создан каталог .harness"]
-            ),
-            command_runner=runner,
-        )
-
-        class _HostApp(App[None]):
-            def on_mount(self) -> None:
-                self.push_screen(screen)
-
-        app = _HostApp()
-        async with app.run_test() as pilot:
-            await pilot.click("#apply-fixes")
-            await pilot.pause(0.4)
-            await pilot.click("#apply-fixes")
-            await pilot.pause(0.4)
-            report_widget = app.screen.query_one("#diagnostics-report", Static)
-            return str(report_widget.content)
-
-    rendered = asyncio.run(scenario())
-    assert "echo installing-uv" in rendered
-    assert "создан каталог .harness" in rendered
-
-
-class _FailingRunner:
-    """Test double for CommandRunner: every call fails, so a Pilot test can prove a failed shell
-    remedy is neither recorded as applied nor silently dropped."""
-
-    def __init__(self) -> None:
-        self.calls: list[list[str]] = []
-
-    def __call__(
-        self,
-        argv: "Sequence[str]",
-        *,
-        env: "Mapping[str, str] | None" = None,
-        cwd: Path | None = None,
-    ) -> "subprocess.CompletedProcess[str]":
-        recorded = list(argv)
-        self.calls.append(recorded)
-        return subprocess.CompletedProcess(recorded, 1, "", "boom: uv install failed\n")
-
-
-def test_diagnostics_apply_fixes_reports_a_failed_shell_fix_instead_of_hiding_it(
-    tmp_path: Path,
+def test_diagnostics_apply_fixes_never_runs_remedy_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Standards fix: a shell remedy that exits non-zero must not land in `fixes_applied`, and
-    must be surfaced to the operator with its command and a short stderr tail."""
+    """Epic #341 out of scope: a check's `fix.command` (global git config, Windows registry, data
+    removal) is only shown, never executed - "apply fixes" is exactly `harness health --fix`."""
 
-    async def scenario() -> str:
+    async def scenario() -> tuple[str, list[list[str]]]:
         from textual.app import App
         from textual.widgets import Static
 
-        runner = _FailingRunner()
+        spawned: list[list[str]] = []
+
+        def recording_run(argv: "Sequence[str]", *args: object, **kwargs: object) -> object:
+            spawned.append(list(argv))
+            return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+        monkeypatch.setattr(subprocess, "run", recording_run)
         screen = DiagnosticsScreen(
             tmp_path,
             collect_diagnostics=lambda repo, *, online=False: _fake_report(),
-            apply_local_fixes=lambda repo, *, online=False: _fake_report(),
-            command_runner=runner,
+            apply_local_fixes=_RecordingFixes(fixes_applied=["создан каталог .harness"]),
         )
 
         class _HostApp(App[None]):
@@ -317,13 +256,44 @@ def test_diagnostics_apply_fixes_reports_a_failed_shell_fix_instead_of_hiding_it
             await pilot.click("#apply-fixes")
             await pilot.pause(0.4)
             report_widget = app.screen.query_one("#diagnostics-report", Static)
-            return str(report_widget.content)
+            return str(report_widget.content), spawned
 
-    rendered = asyncio.run(scenario())
-    assert "Применённые фиксы" not in rendered
-    assert "Не удалось применить" in rendered
+    rendered, calls = asyncio.run(scenario())
+    assert calls == []
+    assert "создан каталог .harness" in rendered
+    # the remedy command stays visible for the developer to run by hand
     assert "echo installing-uv" in rendered
-    assert "boom: uv install failed" in rendered
+
+
+def test_diagnostics_apply_fixes_keeps_online_mode(tmp_path: Path) -> None:
+    """After "online checks", apply-fixes runs `--online --fix` (label creation) - still only
+    after the confirming press."""
+
+    async def scenario() -> list[bool]:
+        from textual.app import App
+
+        fixes = _RecordingFixes()
+        screen = DiagnosticsScreen(
+            tmp_path,
+            collect_diagnostics=lambda repo, *, online=False: _fake_report(online=online),
+            apply_local_fixes=fixes,
+        )
+
+        class _HostApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen)
+
+        app = _HostApp()
+        async with app.run_test() as pilot:
+            await pilot.click("#online-checks")
+            await pilot.pause(0.4)
+            await pilot.click("#apply-fixes")
+            await pilot.pause(0.4)
+            await pilot.click("#apply-fixes")
+            await pilot.pause(0.4)
+        return fixes.calls
+
+    assert asyncio.run(scenario()) == [True]
 
 
 def test_diagnostics_online_checks_refetches_with_online_true(tmp_path: Path) -> None:

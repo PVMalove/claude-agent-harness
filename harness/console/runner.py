@@ -1,7 +1,7 @@
 """The command-runner seam the console uses for anything that spawns a process outside its own
-read-only data collection (harness.console.data): the `uv run` relaunch in launcher.py, the
-Diagnostics screen's "apply fixes" action and the catalog commands the Harness screen runs. A Pilot
-test injects a recording double here instead of touching the real environment or shell."""
+read-only data collection (harness.console.data): the `uv run` relaunch in launcher.py and the
+catalog commands the Harness, Orchestration and Repo Map screens run. A Pilot test injects a
+recording double here instead of touching the real environment or shell."""
 
 from __future__ import annotations
 
