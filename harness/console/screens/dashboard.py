@@ -13,6 +13,7 @@ from textual.widgets import Footer, Header, ListItem, ListView, Static
 
 from .. import data as console_data
 from ..data import DashboardData
+from ..runner import CommandRunner, default_runner
 from .stub import StubScreen
 
 SECTIONS = ("Diagnostics", "Harness", "Orchestration", "Reports", "Repo Map")
@@ -38,10 +39,12 @@ class DashboardScreen(Screen[None]):
         repo: Path,
         *,
         collect_dashboard: Callable[[Path], DashboardData] = console_data.collect_dashboard,
+        command_runner: CommandRunner = default_runner,
     ) -> None:
         super().__init__()
         self.repo = repo
         self._collect_dashboard = collect_dashboard
+        self._command_runner = command_runner
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -54,5 +57,11 @@ class DashboardScreen(Screen[None]):
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         name = event.item.name
-        if name is not None:
+        if name == "Diagnostics":
+            from .diagnostics import DiagnosticsScreen
+
+            self.app.push_screen(
+                DiagnosticsScreen(self.repo, command_runner=self._command_runner)
+            )
+        elif name is not None:
             self.app.push_screen(StubScreen(name))

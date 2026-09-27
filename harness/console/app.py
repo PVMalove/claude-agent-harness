@@ -14,8 +14,8 @@ from .screens.dashboard import DashboardScreen
 
 
 class HarnessConsoleApp(App[None]):
-    """Accepts an injected `command_runner` so Pilot tests never spawn a real process (see
-    harness/console/screens/diagnostics.py's "apply fixes" action, added in a later commit)."""
+    """Accepts an injected `command_runner`, threaded through to the Diagnostics screen's
+    "apply fixes" action, so a Pilot test never spawns a real process."""
 
     TITLE = "harness console"
 
@@ -25,7 +25,7 @@ class HarnessConsoleApp(App[None]):
         self.command_runner = command_runner
 
     def on_mount(self) -> None:
-        self.push_screen(DashboardScreen(self.repo))
+        self.push_screen(DashboardScreen(self.repo, command_runner=self.command_runner))
 
 
 def run(repo: Path, *, command_runner: CommandRunner = default_runner) -> int:
