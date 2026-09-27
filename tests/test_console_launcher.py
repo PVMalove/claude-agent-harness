@@ -102,7 +102,7 @@ def _init_repo(path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)
 
 
-def _kill_process_tree(proc: "subprocess.Popen[str]") -> None:
+def _kill_process_tree(proc: "subprocess.Popen[bytes]") -> None:
     if sys.platform == "win32":
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
     else:
