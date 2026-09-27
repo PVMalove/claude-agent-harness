@@ -64,6 +64,7 @@ REGISTRY: list[tuple[str, CheckFn]] = [
     ("environment.hook_bash", windows_checks.check_hook_bash),
     ("tracker.auth", tracker_checks.check_auth),
     ("tracker.reachability", tracker_checks.check_reachability),
+    ("tracker.permissions", tracker_checks.check_permissions),
 ]
 
 FIXERS: dict[str, FixFn] = {

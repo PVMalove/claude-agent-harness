@@ -12,10 +12,12 @@ budget checks/environment.py gives local tool invocations. A missing `gh`/`glab`
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.parse import quote
 
 from ..context import HealthContext
 from ..model import CheckResult
@@ -23,6 +25,12 @@ from ..model import CheckResult
 GROUP = "tracker"
 
 _ONLINE_TIMEOUT_SECONDS = 10
+
+# GitLab access_level thresholds (see GitLab's own Members API): Developer (30) can push and open
+# MRs; Reporter (20) cannot push but can still manage labels. This mirrors GitHub's push/triage
+# split one level down, per ticket #346's brief.
+_GITLAB_PUSH_ACCESS_LEVEL = 30
+_GITLAB_LABELS_ACCESS_LEVEL = 20
 
 Tracker = str  # "github" | "gitlab" | "local"
 
@@ -177,3 +185,110 @@ def check_reachability(context: HealthContext) -> CheckResult:
     return CheckResult(
         id=check_id, group=GROUP, status="ok", message="origin достижим (git ls-remote)"
     )
+
+
+# --- tracker.permissions --------------------------------------------------------------------------
+
+
+def _github_permissions(
+    executable: str, slug: str, cwd: Path
+) -> tuple[bool, bool] | None:
+    """(push, triage-or-above) from `gh api repos/{owner}/{repo}`'s `.permissions`, or None on
+    any failure to run/parse it. Only these two booleans ever leave this function."""
+    result = _run(
+        [executable, "api", f"repos/{slug}", "--jq", ".permissions"], cwd=cwd
+    )
+    if result is None or result.returncode != 0:
+        return None
+    try:
+        permissions = json.loads(result.stdout)
+    except ValueError:
+        return None
+    if not isinstance(permissions, dict):
+        return None
+    push = bool(permissions.get("push"))
+    triage = push or bool(permissions.get("triage")) or bool(permissions.get("maintain")) or bool(
+        permissions.get("admin")
+    )
+    return push, triage
+
+
+def _gitlab_permissions(
+    executable: str, slug: str, cwd: Path
+) -> tuple[bool, bool] | None:
+    """(push, triage-equivalent) from `glab api projects/:id`'s `.permissions`, mapped from the
+    higher of project_access/group_access's access_level. Developer (30) and up ~ push; Reporter
+    (20) and up ~ labels-only. None on any failure to run/parse it."""
+    result = _run([executable, "api", f"projects/{quote(slug, safe='')}"], cwd=cwd)
+    if result is None or result.returncode != 0:
+        return None
+    try:
+        project = json.loads(result.stdout)
+    except ValueError:
+        return None
+    if not isinstance(project, dict):
+        return None
+    permissions = project.get("permissions")
+    if not isinstance(permissions, dict):
+        return None
+    levels = []
+    for key in ("project_access", "group_access"):
+        access = permissions.get(key)
+        if isinstance(access, dict) and isinstance(access.get("access_level"), int):
+            levels.append(access["access_level"])
+    if not levels:
+        return None
+    access_level = max(levels)
+    return (
+        access_level >= _GITLAB_PUSH_ACCESS_LEVEL,
+        access_level >= _GITLAB_LABELS_ACCESS_LEVEL,
+    )
+
+
+def check_permissions(context: HealthContext) -> CheckResult:
+    check_id = "tracker.permissions"
+    tracker, slug, early = _offline_or_local(check_id, context)
+    if early is not None:
+        return early
+    tool = _tracker_tool(tracker)
+    executable = shutil.which(tool)
+    if executable is None:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message=f"{tool} не найден в PATH: права доступа не проверены",
+        )
+    if slug is None:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message="не удалось разобрать owner/repo из git remote -v: права доступа не проверены",
+        )
+    permissions = (
+        _github_permissions(executable, slug, context.repo)
+        if tracker == "github"
+        else _gitlab_permissions(executable, slug, context.repo)
+    )
+    if permissions is None:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message=f"не удалось получить права доступа через {tool}",
+        )
+    push, triage = permissions
+    if push and triage:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="ok",
+            message="прав достаточно для PR/комментариев и меток",
+        )
+    parts = []
+    parts.append(
+        "PR и комментарии доступны" if push else "недостаточно прав для PR/комментариев"
+    )
+    parts.append("метки доступны" if triage else "недостаточно прав для меток")
+    return CheckResult(id=check_id, group=GROUP, status="warn", message="; ".join(parts))
