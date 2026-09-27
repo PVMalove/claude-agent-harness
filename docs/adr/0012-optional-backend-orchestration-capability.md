@@ -9,7 +9,7 @@ profiles, контролируемые handoff и clean-room QA.
 
 `backend-orchestration` расширяет `pvmalove-suite` и поставляет шесть role manifests, schema и
 template `.harness/orchestration.json`, health validation, coordinator lifecycle, handoff rules,
-clean-room QA и optional Orca adapter. Конкретные provider определяет проект в provider profiles;
+clean-room QA и optional runtime adapter. Конкретные provider определяет проект в provider profiles;
 assignment plan каждой роли обязательно задаёт её model и effort.
 
 Coordinator ведёт lifecycle `planned → awaiting-approval ↔ active → completed | blocked | failed`.

@@ -1,7 +1,7 @@
 # harness/ становится обычным импортируемым Python-пакетом, без pip-установки
 
 Кросс-папочные импорты в `harness/*.py` держатся на ручных `sys.path.insert` (в `coordinator.py`,
-`orca_adapter.py`, `harness/bin/harness`) — ни `harness/`, ни его домен-подпапки
+`coordinator.py`, `harness/bin/harness`) — ни `harness/`, ни его домен-подпапки
 (`context_builder/`, `gate_runner/`, `orchestration/`, `reporting/`) не имеют `__init__.py`. Это
 мешает mypy резолвить модули между папками и держит граф импортов неявным.
 

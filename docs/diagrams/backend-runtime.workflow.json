@@ -33,7 +33,7 @@
     {"id": "approval", "lane": "human", "col": 1, "type": "security", "label": "Approve", "sublabel": "batch и dispatch", "tag": "человек", "width": 136},
     {"id": "assignment", "lane": "config", "col": 1, "type": "database", "label": "Назначение", "sublabel": "зона и транспорт", "tag": "опционально", "width": 136},
     {"id": "brief", "lane": "config", "col": 2, "type": "database", "label": "Immutable brief", "sublabel": "модель и effort", "width": 136},
-    {"id": "transport", "lane": "runtime", "col": 3, "type": "backend", "label": "Транспорт", "sublabel": "orca или in-process", "tag": "по роли", "width": 136},
+    {"id": "transport", "lane": "runtime", "col": 3, "type": "backend", "label": "Транспорт", "sublabel": "external или in-process", "tag": "по роли", "width": 136},
     {"id": "worker", "lane": "runtime", "col": 4, "type": "cloud", "label": "Роль", "sublabel": "воркер или субагент", "width": 136},
     {"id": "selfreport", "lane": "evidence", "col": 4, "type": "security", "label": "Self-report", "sublabel": "до реальной работы", "tag": "блокирует", "width": 136},
     {"id": "report", "lane": "evidence", "col": 5, "type": "messagebus", "label": "Отчёт", "sublabel": "одна запись", "width": 136}
@@ -50,7 +50,7 @@
   ],
   "cards": [
     {"dot": "amber", "title": "Конфиг необязателен", "items": ["Без конфига зона — весь репозиторий", "Модель и effort даёт вызывающая сессия", "Такой дефолт всегда идёт in-process"]},
-    {"dot": "violet", "title": "Транспорт выбирает проект", "items": ["orca запускает изолированного воркера", "in-process — субагент текущей сессии", "Оба получают один immutable brief"]},
+    {"dot": "violet", "title": "Транспорт выбирает проект", "items": ["external запускает проектного воркера", "in-process — субагент текущей сессии", "Оба получают один immutable brief"]},
     {"dot": "rose", "title": "Живость не предполагается", "items": ["Расхождение модели сразу блокирует dispatch", "Без подтверждённой модели отчёт не принимается", "Молчание дольше порога эскалируется человеку"]}
   ]
 }

@@ -20,7 +20,7 @@ model self-report и watchdog. Он не является второй копи�
 
 Полные правила принадлежат устанавливаемым модулям: `playbook.md` — lifecycle, authority,
 immutable brief, evidence, параллелизм и метрики; `roles/` — границы и доказательство каждой роли;
-`coordinator.py` — проверяемые переходы и audit; `orca_adapter.py` — только transport. При
+`coordinator.py` — проверяемые переходы и audit; проектный adapter — только transport. При
 противоречии приоритет у этих module-owned guidance и immutable records, а не у runtime adapter-а
 или краткого skill.
 
@@ -39,7 +39,6 @@ Role self-report, completion report и оценка coordinator-а не явля
   сам файл — только фасад: разбор аргументов, роутинг и вывод JSON. Сам lifecycle лежит рядом в
   `core/` (константы, конфигурация, git, workspace), `ledger/` (persistence) и `workflow/`
   (по модулю на стадию batch'а: планирование, бриф, доставка, решение, отчёт);
-- `.harness/orchestration/orca_adapter.py` — необязательная runtime-граница для Orca;
 - `.harness/orchestration.json` — project-owned конфигурация назначений, зон и проверок.
 
 Coordinator state, immutable briefs/reports и санитизированные QA-артефакты создаются локально в
@@ -99,9 +98,9 @@ python3 harness/bin/harness health /path/to/repository
 покрывает весь репозиторий, `verification_commands` берутся из `qa_gate_commands` в
 `.harness/project.json`, `concurrency_budget` равен 1, а `model`/`effort` роли приходят из вызывающей
 сессии (`dispatch create --model <model> --effort <effort>`). Транспорт в этом режиме всегда
-`in-process`: provider profile нет, значит и Orca-агента запускать нечем. `harness health` такой
+`in-process`: provider profile нет, значит и внешний worker запускать нечем. `harness health` такой
 проект принимает. Конфиг нужен, когда проекту нужны настоящие зоны, разные модели по ролям,
-Orca-транспорт или бюджет параллелизма больше единицы.
+внешний транспорт или бюджет параллелизма больше единицы.
 
 Запускайте coordinator-сессию с `medium` effort по умолчанию. Для architect в assignment plan также
 выбирайте `medium`; более высокий effort требует явного решения разработчика для названного
@@ -112,12 +111,10 @@ Orca-транспорт или бюджет параллелизма больш�
 назначить всегда: validator требует его, когда в конфиге есть назначения, поскольку это
 обязательный gate для high-risk работы.
 
-Ниже минимальный полный пример. Имена agent, model и effort принадлежат конкретному проекту.
-`agent` и fallback задаются в provider profile. Assignment plan каждой роли содержит именованные
+Ниже минимальный полный пример. Имена model и effort принадлежат конкретному проекту.
+Fallback задаётся в provider profile. Assignment plan каждой роли содержит именованные
 runtime-наборы (`codex`, `claude` и т.п.); в каждом обязательны `profiles`, `model` и `effort`.
 Выбранный runtime фиксируется в immutable brief и не меняется при failover profile.
-`agent` нужен только для последующего запуска через Orca, но показан сразу, чтобы один конфиг
-подходил обоим режимам.
 
 Если у роли несколько runtime, задайте `default_runtime` в её assignment plan; иначе каждый
 `dispatch create` обязан явно передать `--runtime`. Скрытого fallback на Codex нет. Для review,
@@ -139,7 +136,6 @@ worktree, branch и SHA; legacy projects могут включить это по
         "messaging-integration",
         "code-review"
       ],
-      "agent": "codex",
       "fallback": ["backend-fallback"],
       "known_limitations": ["Проект сам фиксирует доступные runtime limits"]
     },
@@ -152,14 +148,13 @@ worktree, branch и SHA; legacy projects могут включить это по
         "messaging-integration",
         "code-review"
       ],
-      "agent": "codex",
       "fallback": [],
       "known_limitations": ["Использовать только после безопасного отказа primary"]
     }
   },
   "assignment_plans": {
     "architect": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-architect-model", "effort": "medium"}, "claude": {"profiles": ["backend-claude"], "model": "project-architect-claude-model", "effort": "medium"}}},
-    "developer": {"zone": "payments", "write_paths": ["services/payments/**"], "transport": "orca", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-developer-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "sonnet", "effort": "xhigh"}}},
+    "developer": {"zone": "payments", "write_paths": ["services/payments/**"], "transport": "external", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-developer-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "sonnet", "effort": "xhigh"}}},
     "database-migrations": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-migration-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "project-migration-claude-model", "effort": "xhigh"}}},
     "messaging-integration": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-messaging-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-messaging-claude-model", "effort": "high"}}},
     "qa": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-qa-model", "effort": "medium"}, "claude": {"profiles": ["backend-claude"], "model": "project-qa-claude-model", "effort": "medium"}}},
@@ -180,7 +175,7 @@ worktree, branch и SHA; legacy projects могут включить это по
 субагента текущей coordinator-сессии в worktree того же batch. Оба варианта получают один и тот же
 immutable brief, обязаны пройти model self-report и вернуть completion report по общим правилам,
 поэтому логика coordinator-а от транспорта не зависит. `harness health` проверяет допустимость
-значения. Для изолированного worker укажите `"transport": "orca"` явно. Для `in-process` `dispatch send` только фиксирует handoff: следующим действием coordinator
+значения. Для внешнего worker укажите `"transport": "external"` явно и передайте проектный adapter. Для `in-process` `dispatch send` только фиксирует handoff: следующим действием coordinator
 немедленно запускает субагента по уже immutable brief, до любого поиска старых report/template или
 конфигурации. Architect собирает лишь targeted evidence для решения: его brief не содержит команд
 проверки, а отчёт сдаёт пустой `checks_run`. Полный набор
@@ -419,8 +414,7 @@ checks, раскрытые risks, risk triggers и findings любой оси re
     --batch <batch-id> --role developer --runtime codex --approved-by 'имя утверждающего' \
      --approved-at 2026-09-09T12:01:00Z --transition-digest <transition_digest>
    python .harness/orchestration/coordinator.py --repo . dispatch send \
-     --dispatch <dispatch-id> --adapter .harness/orchestration/orca_adapter.py \
-     --adapter-arg=--run --adapter-arg=<orca-run-id>
+     --dispatch <dispatch-id> --adapter <project-runtime-adapter>
    ```
 
    Для роли с `transport: "in-process"` adapter не передаётся вовсе: `dispatch send --dispatch <id>`
@@ -912,69 +906,14 @@ python .harness/orchestration/advisory.py classify-risk --text "data migration f
 основание создать dispatch, понизить риск, принять QA или изменить scope: единственный авторитетный
 источник риска остаётся `coordinator.py risk assess`.
 
-## 5. Необязательный запуск через Orca
+## 5. Необязательный внешний adapter
 
-`orca_adapter.py` — transport-only граница: он переводит **уже одобренный** JSON brief в Orca task и
-isolated worker. Он не выбирает scope, не запускает checks, не принимает report, не планирует
-следующий dispatch и не мержит PR. Перед запуском выполните
-`harness health`, проверьте, что profile выбранной роли содержит непустой `agent`,
-а assignment plan обязательно содержит role-level `model` и `effort`,
-а branch соответствует `branch_pattern` из `.harness/project.json` и не является base или
-`integration/*`.
-
-Пример brief для write-роли. Для developer work-dispatch `verification_commands` должен буквально
-совпадать с `developer_verification_commands` (либо с `verification_commands`, если focused-список
-не задан); для code-review work-dispatch — с `review_verification_commands` по тому же правилу;
-для остальных ролей — с `verification_commands`. `write_paths` — буквально с путями
-выбранной зоны. Не добавляйте
-поля или значения, похожие на секреты.
-
-```json
-{
-  "ticket": "#123",
-  "role": "developer",
-  "access": "write",
-  "zone": "payments",
-  "write_paths": ["services/payments/**"],
-  "branch": "feature/issue-123-payment-validation",
-  "worktree": "issue-123-payment-validation",
-  "definition_of_done": ["Добавить валидацию платежа и её тесты"],
-  "prohibited_changes": ["Не менять migration или публичный API"],
-  "verification_commands": ["python -m pytest"],
-  "required_gates": ["code-review, если найден high-risk trigger"],
-  "dependencies": ["none"],
-  "resolved_provider_profile": "backend-primary",
-  "resolved_model": "project-developer-model",
-  "resolved_effort": "xhigh",
-  "allowed_tools": ["Read", "Grep", "Glob", "Bash", "Edit", "Write"],
-  "context_budget": 150000,
-  "coordinator_approval": {
-    "approved_by": "имя утверждающего",
-    "approved_at": "2026-09-09T12:00:00Z"
-  }
-}
-```
-
-Сохраните этот JSON без последующего редактирования и передайте в adapter вместе с
-coordinator-owned Orca Run ID:
-
-```bash
-python .harness/orchestration/orca_adapter.py dispatch \
-  --repo . \
-  --brief approved-dispatch.json \
-  --run <orca-run-id>
-```
-
-Adapter проверяет approval, роль, zone, существование issue-ветки, путь, CLI-формат model, project checks,
-role-level model/effort и budget до создания task. Он считает только active supervised workers текущего
-Orca Run, поэтому завершённые или чужие сессии не исчерпывают budget. Он
-пишет новую immutable запись в `.harness/orca-dispatches/`. При явной недоступности agent/model он
-может перейти к project-configured fallback; при неопределённом результате не делает fallback,
-чтобы не создать дублирующий dispatch. Исчерпанный `concurrency_budget` также останавливает запуск
-до создания task.
-
-Для read-only роли укажите её `access: "read-only"` и не передавайте `write_paths`. После старта
-следите за результатом в Orca и всё равно получите completion report по правилам раздела 4.
+Для `transport: "external"` проект передаёт `--adapter <path>` в `dispatch send`. Это transport-only
+граница: coordinator
+передаёт этому исполняемому файлу одобренный immutable brief через `--repo` и `--brief`.
+Adapter отвечает за запуск worker в выбранной среде. Он не выбирает scope, не принимает report,
+не планирует следующий dispatch и не мержит PR. После запуска worker возвращает completion report
+по общим правилам раздела 4. Проверки доступа и среды запуска принадлежат проектному adapter.
 
 ## 6. Первый pilot и источник правил
 

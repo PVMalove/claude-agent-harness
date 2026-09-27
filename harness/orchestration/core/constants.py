@@ -43,7 +43,7 @@ NEXT_ACTION_DISPATCH_ROLE = {
     "publish": "developer",
 }
 DISPATCH_PURPOSES = {"work", "verification", "publish"}
-ROLE_TRANSPORTS = {"orca", "in-process"}
+ROLE_TRANSPORTS = {"in-process", "external"}
 DEFAULT_ZONE = "repository"
 DEFAULT_PROFILE = "session"
 # A developer can legitimately spend tens of minutes in one build, migration, or test command.

@@ -347,7 +347,7 @@ def build_parser(
     _common(dispatch_send)
     dispatch_send.add_argument("--dispatch", required=True)
     dispatch_send.add_argument(
-        "--adapter", help="runtime adapter; required for the orca transport only"
+        "--adapter", help="runtime adapter; required for the external transport only"
     )
     dispatch_send.add_argument("--adapter-arg", action="append")
     dispatch_send.add_argument(

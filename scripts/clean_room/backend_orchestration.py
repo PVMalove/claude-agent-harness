@@ -486,7 +486,6 @@ def run(ctx: SimpleNamespace) -> None:
                     "messaging-integration",
                     "code-review",
                 ],
-                "agent": "codex",
                 "fallback": [],
                 "known_limitations": ["project-defined limitations"],
             }
@@ -494,7 +493,7 @@ def run(ctx: SimpleNamespace) -> None:
         "assignment_plans": {
             role: {
                 "zone": "backend",
-                "transport": "orca",
+                "transport": "external",
                 "runtimes": {
                     "codex": {
                         "profiles": ["backend-default"],
