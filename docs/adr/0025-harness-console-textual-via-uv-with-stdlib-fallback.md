@@ -1,6 +1,6 @@
 # Harness console: TUI на textual через `uv run --with` с запасным stdlib-режимом
 
-Статус: proposed (принимается после одобрения PR по спецификации harness console).
+Статус: accepted.
 
 ## Контекст системы
 
