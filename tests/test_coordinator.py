@@ -4692,7 +4692,9 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
                 shutil.copy2(item, installed / item.name)
             elif item.is_dir() and (item / "__init__.py").is_file():
                 shutil.copytree(item, installed / item.name, ignore=ignore, dirs_exist_ok=True)
-        self.runtimes = installed / "orchestration" / "state" / workspace.RUNTIMES_DIR
+        # A short state root keeps ledger temp files under Windows MAX_PATH in deep test roots.
+        self.state_dir = self.tmp / "s"
+        self.runtimes = self.state_dir / workspace.RUNTIMES_DIR
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -4704,6 +4706,8 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
                 str(self.repo / ".harness" / "orchestration" / "coordinator.py"),
                 "--repo",
                 str(self.repo),
+                "--state-dir",
+                str(self.state_dir),
                 *arguments,
             ],
             capture_output=True,
