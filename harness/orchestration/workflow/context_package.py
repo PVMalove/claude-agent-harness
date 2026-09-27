@@ -219,7 +219,9 @@ def register_context_package(args: argparse.Namespace) -> JsonObject:
             min_starting_files=(
                 args.min_starting_files
                 if args.min_starting_files is not None
-                else _context_package_policy(core_config._config(repo))["min_starting_files"]
+                else _context_package_policy(core_config._config(repo))[
+                    "min_starting_files"
+                ]
             ),
             max_starting_files=args.max_starting_files,
             max_package_size_bytes=args.max_package_size_bytes,

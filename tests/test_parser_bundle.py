@@ -83,7 +83,9 @@ def test_tree_sitter_imports_are_confined_to_worker_process() -> None:
             if isinstance(node, ast.ImportFrom)
         ]
         assert not any(module.startswith("tree_sitter") for module in imports), path
-    worker = (ROOT / "harness" / "repo_map" / "tree_sitter_worker.py").read_text(encoding="utf-8")
+    worker = (ROOT / "harness" / "repo_map" / "tree_sitter_worker.py").read_text(
+        encoding="utf-8"
+    )
     assert "import tree_sitter" in worker
 
 
@@ -93,13 +95,15 @@ def test_default_registry_dir_and_bundle_cache_root(tmp_path: Path) -> None:
     )
     assert parser_bundle.bundle_cache_root(tmp_path) == expected_cache_root
     assert (
-        parser_bundle.default_registry_dir(tmp_path)
-        == expected_cache_root / "registry"
+        parser_bundle.default_registry_dir(tmp_path) == expected_cache_root / "registry"
     )
 
 
 def test_parse_lock_accepts_well_formed_json(tmp_path: Path) -> None:
-    lock_path = build_bundle_dir(tmp_path / "bundle", pair="cp312-any") / "parser_bundle.lock.json"
+    lock_path = (
+        build_bundle_dir(tmp_path / "bundle", pair="cp312-any")
+        / "parser_bundle.lock.json"
+    )
     lock = parser_bundle.parse_lock(lock_path.read_bytes())
     assert lock.core_version == "0.1.0"
     assert lock.worker_script == "worker.py"
@@ -108,7 +112,9 @@ def test_parse_lock_accepts_well_formed_json(tmp_path: Path) -> None:
     assert "cp312-any" in lock.wheelhouses
 
 
-def test_bundle_builder_requires_js_wheels_and_records_both_ts_dialects(tmp_path: Path) -> None:
+def test_bundle_builder_requires_js_wheels_and_records_both_ts_dialects(
+    tmp_path: Path,
+) -> None:
     wheels = tmp_path / "wheels"
     wheels.mkdir()
     names = (
@@ -123,21 +129,37 @@ def test_bundle_builder_requires_js_wheels_and_records_both_ts_dialects(tmp_path
     for name in names[:-1]:
         (wheels / name).write_bytes(name.encode())
     command = [
-        sys.executable, str(ROOT / "scripts" / "build_parser_bundle.py"),
-        "--wheelhouse", str(wheels), "--out", str(tmp_path / "bundle"),
-        "--pair", "cp312-linux_x86_64",
+        sys.executable,
+        str(ROOT / "scripts" / "build_parser_bundle.py"),
+        "--wheelhouse",
+        str(wheels),
+        "--out",
+        str(tmp_path / "bundle"),
+        "--pair",
+        "cp312-linux_x86_64",
     ]
     assert subprocess.run(command, capture_output=True, check=False).returncode != 0
     (wheels / names[-1]).write_bytes(names[-1].encode())
     assert subprocess.run(command, capture_output=True, check=False).returncode == 0
-    lock = parser_bundle.parse_lock((tmp_path / "bundle" / "parser_bundle.lock.json").read_bytes())
+    lock = parser_bundle.parse_lock(
+        (tmp_path / "bundle" / "parser_bundle.lock.json").read_bytes()
+    )
     assert {grammar.name for grammar in lock.grammars} == {
-        "python", "typescript", "tsx", "javascript", "go", "java", "csharp"
+        "python",
+        "typescript",
+        "tsx",
+        "javascript",
+        "go",
+        "java",
+        "csharp",
     }
     assert len(lock.wheelhouses["cp312-linux_x86_64"]) == 7
-    assert next(grammar for grammar in lock.grammars if grammar.name == "typescript").sha256 == next(
-        grammar for grammar in lock.grammars if grammar.name == "tsx"
-    ).sha256
+    assert (
+        next(
+            grammar for grammar in lock.grammars if grammar.name == "typescript"
+        ).sha256
+        == next(grammar for grammar in lock.grammars if grammar.name == "tsx").sha256
+    )
 
 
 def test_parse_lock_rejects_malformed_json() -> None:
@@ -157,16 +179,29 @@ def test_parse_lock_rejects_grammar_hash_from_another_distribution() -> None:
         "core_abi_range": "13-15",
         "worker_script": "worker.py",
         "script_sha256": "c" * 64,
-        "grammars": [{
-            "name": "typescript", "distribution": "tree_sitter_typescript",
-            "version": "0.23.2", "abi": 14, "extensions": [".ts"],
-            "sha256": grammar_hash,
-            "sha256_by_pair": {"cp312-any": core_hash},
-        }],
-        "wheelhouses": {"cp312-any": [
-            {"filename": "tree_sitter-0.26.0-cp312-cp312-any.whl", "sha256": core_hash},
-            {"filename": "tree_sitter_typescript-0.23.2-cp39-abi3-any.whl", "sha256": grammar_hash},
-        ]},
+        "grammars": [
+            {
+                "name": "typescript",
+                "distribution": "tree_sitter_typescript",
+                "version": "0.23.2",
+                "abi": 14,
+                "extensions": [".ts"],
+                "sha256": grammar_hash,
+                "sha256_by_pair": {"cp312-any": core_hash},
+            }
+        ],
+        "wheelhouses": {
+            "cp312-any": [
+                {
+                    "filename": "tree_sitter-0.26.0-cp312-cp312-any.whl",
+                    "sha256": core_hash,
+                },
+                {
+                    "filename": "tree_sitter_typescript-0.23.2-cp39-abi3-any.whl",
+                    "sha256": grammar_hash,
+                },
+            ]
+        },
     }
     with pytest.raises(parser_bundle.BundleFormatError, match="per-pair grammar hash"):
         parser_bundle.parse_lock(json.dumps(payload).encode())
@@ -180,21 +215,29 @@ def test_find_bundle_returns_first_directory_with_a_lock_file(tmp_path: Path) ->
     assert parser_bundle.find_bundle((empty_dir,)) is None
 
 
-def test_python_platform_tags_returns_a_cpython_tag_for_the_running_interpreter() -> None:
+def test_python_platform_tags_returns_a_cpython_tag_for_the_running_interpreter() -> (
+    None
+):
     python_tag, platform_tag = parser_bundle.python_platform_tags(sys.executable, 30)
     assert re.fullmatch(r"cp3\d+", python_tag)
     assert platform_tag
 
 
-def test_verify_wheelhouse_detects_missing_pair_and_hash_mismatch(tmp_path: Path) -> None:
+def test_verify_wheelhouse_detects_missing_pair_and_hash_mismatch(
+    tmp_path: Path,
+) -> None:
     pair = _running_pair()
     bundle_dir = build_bundle_dir(tmp_path / "bundle", pair=pair)
-    lock = parser_bundle.parse_lock((bundle_dir / "parser_bundle.lock.json").read_bytes())
+    lock = parser_bundle.parse_lock(
+        (bundle_dir / "parser_bundle.lock.json").read_bytes()
+    )
 
     ok = parser_bundle.verify_wheelhouse(lock, bundle_dir / "wheelhouse" / pair, pair)
     assert ok == {"ok": True, "reason": None}
 
-    missing = parser_bundle.verify_wheelhouse(lock, bundle_dir / "wheelhouse" / "cp1-nowhere", "cp1-nowhere")
+    missing = parser_bundle.verify_wheelhouse(
+        lock, bundle_dir / "wheelhouse" / "cp1-nowhere", "cp1-nowhere"
+    )
     assert missing == {
         "ok": False,
         "reason": "parser wheelhouse missing for interpreter/platform pair",
@@ -202,7 +245,9 @@ def test_verify_wheelhouse_detects_missing_pair_and_hash_mismatch(tmp_path: Path
 
     corrupted_dir = tmp_path / "corrupted" / pair
     corrupted_dir.mkdir(parents=True)
-    (corrupted_dir / "stubparser-1.0.0-py3-none-any.whl").write_bytes(b"not the real wheel")
+    (corrupted_dir / "stubparser-1.0.0-py3-none-any.whl").write_bytes(
+        b"not the real wheel"
+    )
     corrupted = parser_bundle.verify_wheelhouse(lock, corrupted_dir, pair)
     assert corrupted == {"ok": False, "reason": "parser bundle hash mismatch"}
 
@@ -211,7 +256,9 @@ def test_verify_wheelhouse_detects_missing_pair_and_hash_mismatch(tmp_path: Path
 def test_install_bundle_installs_offline_and_is_idempotent(tmp_path: Path) -> None:
     pair = _running_pair()
     bundle_dir = build_bundle_dir(tmp_path / "bundle", pair=pair)
-    lock = parser_bundle.parse_lock((bundle_dir / "parser_bundle.lock.json").read_bytes())
+    lock = parser_bundle.parse_lock(
+        (bundle_dir / "parser_bundle.lock.json").read_bytes()
+    )
     install_dir = tmp_path / "install"
 
     parser_bundle.install_bundle(
@@ -243,12 +290,16 @@ def test_concurrent_installers_share_one_completed_bundle(
 ) -> None:
     pair = _running_pair()
     bundle_dir = build_bundle_dir(tmp_path / "bundle", pair=pair)
-    lock = parser_bundle.parse_lock((bundle_dir / "parser_bundle.lock.json").read_bytes())
+    lock = parser_bundle.parse_lock(
+        (bundle_dir / "parser_bundle.lock.json").read_bytes()
+    )
     install_dir = tmp_path / "install"
     monkeypatch.setattr(shutil, "which", lambda _name: "uv")
     calls: list[list[str]] = []
 
-    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def fake_run(
+        cmd: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         calls.append(cmd)
         time.sleep(0.1)
         return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
@@ -257,8 +308,12 @@ def test_concurrent_installers_share_one_completed_bundle(
 
     def install() -> None:
         parser_bundle.install_bundle(
-            lock, bundle_dir / "wheelhouse" / pair, install_dir, sys.executable,
-            pair=pair, timeout_seconds=10,
+            lock,
+            bundle_dir / "wheelhouse" / pair,
+            install_dir,
+            sys.executable,
+            pair=pair,
+            timeout_seconds=10,
         )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
@@ -271,10 +326,14 @@ def test_concurrent_installers_share_one_completed_bundle(
 
 
 @pytest.mark.skipif(not _uv_available(), reason="uv is not on PATH")
-def test_run_bundle_parser_succeeds_and_uses_the_installed_package(tmp_path: Path) -> None:
+def test_run_bundle_parser_succeeds_and_uses_the_installed_package(
+    tmp_path: Path,
+) -> None:
     pair = _running_pair()
     bundle_dir = build_bundle_dir(tmp_path / "bundle", pair=pair)
-    lock = parser_bundle.parse_lock((bundle_dir / "parser_bundle.lock.json").read_bytes())
+    lock = parser_bundle.parse_lock(
+        (bundle_dir / "parser_bundle.lock.json").read_bytes()
+    )
     install_dir = tmp_path / "install"
     parser_bundle.install_bundle(
         lock,
@@ -345,7 +404,9 @@ def test_run_bundle_parser_degrades_on_subprocess_failure(tmp_path: Path) -> Non
     assert result == "parser subprocess failed"
 
 
-def test_run_bundle_parser_rejects_records_outside_the_facts_contract(tmp_path: Path) -> None:
+def test_run_bundle_parser_rejects_records_outside_the_facts_contract(
+    tmp_path: Path,
+) -> None:
     script_path, script_sha256 = write_worker_script(
         tmp_path, MALFORMED_FACTS_WORKER_SCRIPT_SOURCE, filename="malformed.py"
     )
@@ -417,7 +478,9 @@ def test_file_facts_accepts_a_complete_record() -> None:
     assert parser_bundle._file_facts(record) == record
 
 
-def test_run_bundle_parser_degrades_on_script_hash_mismatch_toctou(tmp_path: Path) -> None:
+def test_run_bundle_parser_degrades_on_script_hash_mismatch_toctou(
+    tmp_path: Path,
+) -> None:
     """A worker script swapped after `acquire_bundle` verified it must never be executed."""
     script_path, original_sha256 = write_worker_script(
         tmp_path, MINIMAL_WORKER_SCRIPT_SOURCE, filename="worker.py"
@@ -446,7 +509,9 @@ def test_run_bundle_parser_does_not_deadlock_on_large_request_with_slow_reader(
     the reader starts.
     """
     script_path, script_sha256 = write_worker_script(
-        tmp_path, OUTPUT_BEFORE_STDIN_DRAIN_WORKER_SCRIPT_SOURCE, filename="write_then_drain.py"
+        tmp_path,
+        OUTPUT_BEFORE_STDIN_DRAIN_WORKER_SCRIPT_SOURCE,
+        filename="write_then_drain.py",
     )
     # Several MB, well past typical OS pipe buffers (64KB on Windows/Linux).
     request: dict[str, object] = {"paths": {"a.stub": "x" * (8 * 1024 * 1024)}}
@@ -464,7 +529,9 @@ def test_run_bundle_parser_does_not_deadlock_on_large_request_with_slow_reader(
     assert result["files"] == {}
 
 
-def test_acquire_bundle_returns_offline_unavailable_when_nothing_is_found(tmp_path: Path) -> None:
+def test_acquire_bundle_returns_offline_unavailable_when_nothing_is_found(
+    tmp_path: Path,
+) -> None:
     result = parser_bundle.acquire_bundle(
         repo=tmp_path,
         registry_paths=(),
@@ -482,8 +549,17 @@ def test_linked_worktree_uses_main_checkout_bundle_registry_and_cache(
     subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
     subprocess.run(
         [
-            "git", "-C", str(repo), "-c", "user.name=Test",
-            "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "fixture",
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "fixture",
         ],
         check=True,
         capture_output=True,
@@ -512,7 +588,9 @@ def test_linked_worktree_uses_main_checkout_bundle_registry_and_cache(
 
     assert isinstance(result, parser_bundle.AppliedBundle)
     assert installed == [result.install_dir]
-    assert result.install_dir.is_relative_to(repo / ".harness" / ".sandboxes" / "cache" / "repo_map")
+    assert result.install_dir.is_relative_to(
+        repo / ".harness" / ".sandboxes" / "cache" / "repo_map"
+    )
     assert not (linked / ".harness").exists()
 
 
@@ -550,7 +628,9 @@ def _lock_payload(**overrides: object) -> dict[str, object]:
         "script_sha256": "a" * 64,
         "grammars": [],
         "wheelhouses": {
-            "cp312-any": [{"filename": "stubparser-1.0.0-py3-none-any.whl", "sha256": "b" * 64}]
+            "cp312-any": [
+                {"filename": "stubparser-1.0.0-py3-none-any.whl", "sha256": "b" * 64}
+            ]
         },
     }
     payload.update(overrides)
@@ -594,7 +674,11 @@ def test_parse_lock_rejects_unsafe_wheelhouse_filename(filename: str) -> None:
     with pytest.raises(parser_bundle.BundleFormatError):
         parser_bundle.parse_lock(
             json.dumps(
-                _lock_payload(wheelhouses={"cp312-any": [{"filename": filename, "sha256": "b" * 64}]})
+                _lock_payload(
+                    wheelhouses={
+                        "cp312-any": [{"filename": filename, "sha256": "b" * 64}]
+                    }
+                )
             ).encode()
         )
 
@@ -620,7 +704,10 @@ def test_parse_lock_rejects_unsafe_artifact_sha256(sha256: str) -> None:
                 _lock_payload(
                     wheelhouses={
                         "cp312-any": [
-                            {"filename": "stubparser-1.0.0-py3-none-any.whl", "sha256": sha256}
+                            {
+                                "filename": "stubparser-1.0.0-py3-none-any.whl",
+                                "sha256": sha256,
+                            }
                         ]
                     }
                 )
@@ -631,12 +718,20 @@ def test_parse_lock_rejects_unsafe_artifact_sha256(sha256: str) -> None:
 @pytest.mark.parametrize("sha256", _UNSAFE_SHA256_VALUES)
 def test_parse_lock_rejects_unsafe_script_sha256(sha256: str) -> None:
     with pytest.raises(parser_bundle.BundleFormatError):
-        parser_bundle.parse_lock(json.dumps(_lock_payload(script_sha256=sha256)).encode())
+        parser_bundle.parse_lock(
+            json.dumps(_lock_payload(script_sha256=sha256)).encode()
+        )
 
 
 @pytest.mark.parametrize("sha256", _UNSAFE_SHA256_VALUES)
 def test_parse_lock_rejects_unsafe_grammar_sha256(sha256: str) -> None:
-    grammar = {"name": "stub", "version": "1.0.0", "abi": 14, "sha256": sha256, "extensions": [".ts"]}
+    grammar = {
+        "name": "stub",
+        "version": "1.0.0",
+        "abi": 14,
+        "sha256": sha256,
+        "extensions": [".ts"],
+    }
     with pytest.raises(parser_bundle.BundleFormatError):
         parser_bundle.parse_lock(json.dumps(_lock_payload(grammars=[grammar])).encode())
 
@@ -650,7 +745,9 @@ def test_install_bundle_runs_uv_offline_and_strips_installer_env(
     """
     pair = _running_pair()
     bundle_dir = build_bundle_dir(tmp_path / "bundle", pair=pair)
-    lock = parser_bundle.parse_lock((bundle_dir / "parser_bundle.lock.json").read_bytes())
+    lock = parser_bundle.parse_lock(
+        (bundle_dir / "parser_bundle.lock.json").read_bytes()
+    )
     install_dir = tmp_path / "install"
 
     monkeypatch.setenv("UV_INDEX_URL", "http://example.invalid/simple")
@@ -662,7 +759,9 @@ def test_install_bundle_runs_uv_offline_and_strips_installer_env(
 
     captured: dict[str, object] = {}
 
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def fake_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         captured["cmd"] = cmd
         captured["env"] = kwargs.get("env")
         return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
@@ -681,7 +780,13 @@ def test_install_bundle_runs_uv_offline_and_strips_installer_env(
     cmd = captured["cmd"]
     assert isinstance(cmd, list)
     assert cmd[:3] == ["/opt/uv", "pip", "install"]
-    for flag in ("--offline", "--no-config", "--no-index", "--require-hashes", "--no-cache"):
+    for flag in (
+        "--offline",
+        "--no-config",
+        "--no-index",
+        "--require-hashes",
+        "--no-cache",
+    ):
         assert flag in cmd
     assert cmd[cmd.index("--python") + 1] == sys.executable
     assert cmd[cmd.index("--only-binary") + 1] == ":all:"
@@ -698,7 +803,9 @@ def test_install_bundle_without_uv_raises_install_error(
 ) -> None:
     pair = _running_pair()
     bundle_dir = build_bundle_dir(tmp_path / "bundle", pair=pair)
-    lock = parser_bundle.parse_lock((bundle_dir / "parser_bundle.lock.json").read_bytes())
+    lock = parser_bundle.parse_lock(
+        (bundle_dir / "parser_bundle.lock.json").read_bytes()
+    )
     monkeypatch.setattr(shutil, "which", lambda _name: None)
 
     with pytest.raises(parser_bundle.BundleInstallError, match="uv"):
@@ -720,7 +827,10 @@ def test_acquire_bundle_without_uv_degrades_with_reason(
     monkeypatch.setattr(shutil, "which", lambda _name: None)
 
     result = parser_bundle.acquire_bundle(
-        repo=tmp_path, registry_paths=(), python_executable=sys.executable, timeout_seconds=30
+        repo=tmp_path,
+        registry_paths=(),
+        python_executable=sys.executable,
+        timeout_seconds=30,
     )
     assert result == "uv executable unavailable"
 
@@ -736,6 +846,9 @@ def test_acquire_bundle_names_an_install_failure_instead_of_a_worker_failure(
     monkeypatch.setattr(parser_bundle, "install_bundle", failing_install)
 
     result = parser_bundle.acquire_bundle(
-        repo=tmp_path, registry_paths=(), python_executable=sys.executable, timeout_seconds=30
+        repo=tmp_path,
+        registry_paths=(),
+        python_executable=sys.executable,
+        timeout_seconds=30,
     )
     assert result == "parser bundle install failed"

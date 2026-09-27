@@ -39,13 +39,17 @@ def _report(*checks: CheckResult) -> Report:
 
 def test_render_text_groups_by_first_appearance_order() -> None:
     report = _report(
-        CheckResult(id="repo_map.tier", group="repo_map", status="ok", message="tier ok"),
+        CheckResult(
+            id="repo_map.tier", group="repo_map", status="ok", message="tier ok"
+        ),
         CheckResult(id="files.lock", group="files", status="ok", message="lock ok"),
     )
 
     text = render_text(report, stream=_FakeStream("utf-8"))
 
-    assert text.index(GROUP_LABELS_RU["repo_map"]) < text.index(GROUP_LABELS_RU["files"])
+    assert text.index(GROUP_LABELS_RU["repo_map"]) < text.index(
+        GROUP_LABELS_RU["files"]
+    )
 
 
 def test_render_text_uses_emoji_markers_on_a_utf8_stream() -> None:
@@ -53,7 +57,9 @@ def test_render_text_uses_emoji_markers_on_a_utf8_stream() -> None:
         CheckResult(id="files.a", group="files", status="ok", message="ok message"),
         CheckResult(id="files.b", group="files", status="warn", message="warn message"),
         CheckResult(id="files.c", group="files", status="fail", message="fail message"),
-        CheckResult(id="files.d", group="files", status="skipped", message="skipped message"),
+        CheckResult(
+            id="files.d", group="files", status="skipped", message="skipped message"
+        ),
     )
 
     text = render_text(report, stream=_FakeStream("utf-8"))
@@ -83,7 +89,10 @@ def test_render_text_falls_back_to_ascii_markers_on_a_non_utf8_stream() -> None:
 def test_render_text_prints_the_fix_line_with_the_exact_ticket_label() -> None:
     report = _report(
         CheckResult(
-            id="files.orchestration_config", group="files", status="fail", message="broken config",
+            id="files.orchestration_config",
+            group="files",
+            status="fail",
+            message="broken config",
             fix=Fix(text="почините конфиг"),
         ),
     )
@@ -96,7 +105,10 @@ def test_render_text_prints_the_fix_line_with_the_exact_ticket_label() -> None:
 def test_render_text_prints_the_fix_command_on_its_own_line_when_present() -> None:
     report = _report(
         CheckResult(
-            id="files.orchestration_config", group="files", status="fail", message="broken config",
+            id="files.orchestration_config",
+            group="files",
+            status="fail",
+            message="broken config",
             fix=Fix(text="почините конфиг", command="harness registry ."),
         ),
     )
@@ -116,4 +128,7 @@ def test_render_text_ends_with_the_summary_and_activation_footer() -> None:
     text = render_text(report, stream=_FakeStream("utf-8"))
 
     assert "Итого: ok=1 warn=0 fail=1 skipped=0" in text
-    assert "activation: verify advertised and invoked skills/integrations in a fresh runtime session" in text
+    assert (
+        "activation: verify advertised and invoked skills/integrations in a fresh runtime session"
+        in text
+    )

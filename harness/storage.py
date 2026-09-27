@@ -100,8 +100,10 @@ def sandboxes_health(repo: Path) -> list[str]:
     sandboxes = sandboxes_root(repo)
 
     if storage.is_symlink() or sandboxes.is_symlink():
-        return ["ПРЕДУПРЕЖДЕНИЕ: корень .harness/.sandboxes не должен быть symlink",
-                "КАК ИСПРАВИТЬ: замените symlink локальной директорией"]
+        return [
+            "ПРЕДУПРЕЖДЕНИЕ: корень .harness/.sandboxes не должен быть symlink",
+            "КАК ИСПРАВИТЬ: замените symlink локальной директорией",
+        ]
 
     try:
         rel_sandboxes = sandboxes.relative_to(repo).as_posix()
@@ -110,11 +112,19 @@ def sandboxes_health(repo: Path) -> list[str]:
 
     if sandboxes.exists():
         if not sandboxes.is_dir():
-            lines.append(f"ПРЕДУПРЕЖДЕНИЕ: {rel_sandboxes} существует, но не является директорией")
-            lines.append(f"КАК ИСПРАВИТЬ: удалите {rel_sandboxes} и создайте директорию")
+            lines.append(
+                f"ПРЕДУПРЕЖДЕНИЕ: {rel_sandboxes} существует, но не является директорией"
+            )
+            lines.append(
+                f"КАК ИСПРАВИТЬ: удалите {rel_sandboxes} и создайте директорию"
+            )
         elif not (os.access(sandboxes, os.R_OK) and os.access(sandboxes, os.W_OK)):
-            lines.append(f"ПРЕДУПРЕЖДЕНИЕ: отсутствует доступ на чтение/запись в {rel_sandboxes}")
-            lines.append(f"КАК ИСПРАВИТЬ: проверьте права доступа к директории {rel_sandboxes}")
+            lines.append(
+                f"ПРЕДУПРЕЖДЕНИЕ: отсутствует доступ на чтение/запись в {rel_sandboxes}"
+            )
+            lines.append(
+                f"КАК ИСПРАВИТЬ: проверьте права доступа к директории {rel_sandboxes}"
+            )
     else:
         parent = sandboxes.parent
         if parent.exists() and not os.access(parent, os.W_OK):
@@ -122,13 +132,12 @@ def sandboxes_health(repo: Path) -> list[str]:
                 rel_parent = parent.relative_to(repo).as_posix()
             except ValueError:
                 rel_parent = str(parent)
-            lines.append(f"ПРЕДУПРЕЖДЕНИЕ: невозможно создать {rel_sandboxes} в {rel_parent} (нет прав на запись)")
+            lines.append(
+                f"ПРЕДУПРЕЖДЕНИЕ: невозможно создать {rel_sandboxes} в {rel_parent} (нет прав на запись)"
+            )
             lines.append(f"КАК ИСПРАВИТЬ: проверьте права доступа к {rel_parent}")
 
-    legacy_found = [
-        name for name in LEGACY_STORAGE_DIRS
-        if (storage / name).exists()
-    ]
+    legacy_found = [name for name in LEGACY_STORAGE_DIRS if (storage / name).exists()]
     if legacy_found:
         lines.append(
             f"ПРЕДУПРЕЖДЕНИЕ: обнаружены устаревшие директории вне .sandboxes: {', '.join(sorted(legacy_found))}"
@@ -158,4 +167,3 @@ def validate_sandboxes(repo: Path, problems: list[str]) -> None:
         parent = sandboxes.parent
         if parent.exists() and not os.access(parent, os.W_OK):
             problems.append(f"cannot create {sandboxes} in {parent}: permission denied")
-

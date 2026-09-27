@@ -266,7 +266,9 @@ class ResolveAssignmentTests(unittest.TestCase):
     def test_external_transport_resolves_for_project_adapter(self) -> None:
         config = _config()
         config["assignment_plans"]["developer"]["transport"] = "external"
-        result = contract.resolve_assignment(config, _role(), "developer", "z", "claude")
+        result = contract.resolve_assignment(
+            config, _role(), "developer", "z", "claude"
+        )
         self.assertEqual(result["transport"], "external")
 
     def test_write_paths_outside_zone(self) -> None:
@@ -563,22 +565,16 @@ class ResolveMinRepoMapTierTests(unittest.TestCase):
             }
         }
         self.assertEqual(
-            contract.resolve_min_repo_map_tier(
-                config_with_role_override, "developer"
-            ),
+            contract.resolve_min_repo_map_tier(config_with_role_override, "developer"),
             "full",
         )
         self.assertEqual(
-            contract.resolve_min_repo_map_tier(
-                config_with_role_override, "architect"
-            ),
+            contract.resolve_min_repo_map_tier(config_with_role_override, "architect"),
             "minimal",
         )
         self.assertIsNone(contract.resolve_min_repo_map_tier({}, "developer"))
         self.assertIsNone(
-            contract.resolve_min_repo_map_tier(
-                {"repo_map_policy": {}}, "developer"
-            )
+            contract.resolve_min_repo_map_tier({"repo_map_policy": {}}, "developer")
         )
 
 

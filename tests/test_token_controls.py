@@ -120,12 +120,18 @@ class TokenControlTests(unittest.TestCase):
             repo = Path(tmp)
             (repo / ".harness").mkdir()
             (repo / ".harness" / "project.json").write_text("{}", encoding="utf-8")
-            batch = {"batch_id": "batch-1", "base_commit": "0" * 40, "context_packages": []}
+            batch = {
+                "batch_id": "batch-1",
+                "base_commit": "0" * 40,
+                "context_packages": [],
+            }
             with (
                 mock.patch.object(
                     config,
                     "_config",
-                    return_value={"context_package_policy": {"section_index_min_tokens": 1234}},
+                    return_value={
+                        "context_package_policy": {"section_index_min_tokens": 1234}
+                    },
                 ),
                 mock.patch.object(
                     context_package,

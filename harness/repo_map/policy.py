@@ -170,7 +170,9 @@ def path_allowed(path: str, policy: RepoMapPolicy) -> bool:
 
 def symbol_visible(name: str, policy: RepoMapPolicy) -> bool:
     """Проверить, что символ укладывается в `max_symbol_length` и не попадает под `redact_symbols`."""
-    return len(name) <= policy.max_symbol_length and not matches(name, policy.redact_symbols)
+    return len(name) <= policy.max_symbol_length and not matches(
+        name, policy.redact_symbols
+    )
 
 
 def _policy_error(message: str, remedy: str) -> PolicyError:
@@ -215,7 +217,9 @@ def _tier(value: object) -> Tier:
     return cast(Tier, value)
 
 
-def _read_policy_section(path: Path | None, *, explicit: bool) -> tuple[dict[str, object], bytes] | None:
+def _read_policy_section(
+    path: Path | None, *, explicit: bool
+) -> tuple[dict[str, object], bytes] | None:
     """Прочитать файл политики и вернуть секцию `repo_map_policy` вместе с исходными байтами.
 
     `None` означает переносимые значения по умолчанию: файла или секции нет, а путь не был задан явно.
@@ -270,7 +274,10 @@ def _policy_from_section(section: dict[str, object], raw: bytes) -> RepoMapPolic
             f"repo_map_policy has unknown fields: {', '.join(unknown)}",
             "remove unknown repo_map_policy fields and follow orchestration.schema.json",
         )
-    patterns = {field: _string_patterns(section.get(field, []), field) for field in _PATTERN_FIELDS}
+    patterns = {
+        field: _string_patterns(section.get(field, []), field)
+        for field in _PATTERN_FIELDS
+    }
     registry_paths = tuple(
         _non_empty_strings(
             section.get("parser_bundle_registry_paths", []),
@@ -284,7 +291,9 @@ def _policy_from_section(section: dict[str, object], raw: bytes) -> RepoMapPolic
     }
     max_tokens_value = section.get("max_tokens")
     max_tokens = (
-        _positive_int(max_tokens_value, "max_tokens") if max_tokens_value is not None else None
+        _positive_int(max_tokens_value, "max_tokens")
+        if max_tokens_value is not None
+        else None
     )
     return RepoMapPolicy(
         allow_paths=patterns["allow_paths"],

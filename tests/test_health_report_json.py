@@ -9,7 +9,12 @@ from harness.health.report_json import to_json
 def test_to_json_top_level_shape() -> None:
     report = Report(schema_version=1, repo="/repo/path", online=False)
     report.checks = [
-        CheckResult(id="files.lock", group="files", status="ok", message="harness.lock присутствует"),
+        CheckResult(
+            id="files.lock",
+            group="files",
+            status="ok",
+            message="harness.lock присутствует",
+        ),
     ]
 
     data = to_json(report)
@@ -36,21 +41,33 @@ def test_to_json_serializes_a_fix() -> None:
     report = Report(schema_version=1, repo="/repo", online=True)
     report.checks = [
         CheckResult(
-            id="files.orchestration_config", group="files", status="fail", message="broken",
+            id="files.orchestration_config",
+            group="files",
+            status="fail",
+            message="broken",
             fix=Fix(text="почините конфиг", command="harness registry ."),
         ),
     ]
 
     data = to_json(report)
 
-    assert data["checks"][0]["fix"] == {"text": "почините конфиг", "command": "harness registry ."}
+    assert data["checks"][0]["fix"] == {
+        "text": "почините конфиг",
+        "command": "harness registry .",
+    }
     assert data["online"] is True
 
 
 def test_to_json_fix_command_defaults_to_none() -> None:
     report = Report(schema_version=1, repo="/repo", online=False)
     report.checks = [
-        CheckResult(id="files.a", group="files", status="warn", message="m", fix=Fix(text="fix text")),
+        CheckResult(
+            id="files.a",
+            group="files",
+            status="warn",
+            message="m",
+            fix=Fix(text="fix text"),
+        ),
     ]
 
     data = to_json(report)

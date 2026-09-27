@@ -31,6 +31,7 @@ CORE_ABI_RANGE = "13-15"
 @dataclass(frozen=True)
 class GrammarPin:
     """Закреплённая грамматика: имя в lock, дистрибутив, версия, ABI и расширения файлов."""
+
     name: str
     distribution: str
     version: str
@@ -79,7 +80,8 @@ def build(wheelhouse: Path, out: Path, pair: str) -> Path:
     """Скопировать wheels и worker в `out` и записать lock для пары `pair`; вернуть путь к lock."""
     core = _single_wheel(wheelhouse, CORE_DISTRIBUTION, CORE_VERSION)
     grammar_wheels = {
-        pin.name: _single_wheel(wheelhouse, pin.distribution, pin.version) for pin in GRAMMARS
+        pin.name: _single_wheel(wheelhouse, pin.distribution, pin.version)
+        for pin in GRAMMARS
     }
     target = out / "wheelhouse" / pair
     target.mkdir(parents=True, exist_ok=True)
@@ -107,16 +109,22 @@ def build(wheelhouse: Path, out: Path, pair: str) -> Path:
         "wheelhouses": {pair: artifacts},
     }
     lock_path = out / "parser_bundle.lock.json"
-    lock_path.write_text(json.dumps(lock, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    lock_path.write_text(
+        json.dumps(lock, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return lock_path
 
 
 def main(argv: list[str] | None = None) -> int:
     """Точка входа CLI: собрать bundle и напечатать путь к lock."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
+    parser = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0] if __doc__ else None
+    )
     parser.add_argument("--wheelhouse", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--pair", help="interpreter/platform pair; defaults to this interpreter")
+    parser.add_argument(
+        "--pair", help="interpreter/platform pair; defaults to this interpreter"
+    )
     args = parser.parse_args(argv)
     lock_path = build(args.wheelhouse, args.out, args.pair or _running_pair())
     print(lock_path)

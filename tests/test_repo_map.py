@@ -198,15 +198,27 @@ def test_missing_bundle_keeps_python_typescript_and_javascript_path_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = tmp_path / "project"
-    commit = _commit_files(repo, {
-        "example.py": "def python_symbol(): pass\n",
-        "example.ts": "export function tsSymbol() {}\n",
-        "example.js": "export function jsSymbol() {}\n",
-    })
-    monkeypatch.setattr(parser_bundle, "acquire_bundle", lambda **_: "offline parser bundle unavailable")
-    result = json.loads(repo_map.build_map(
-        repo, commit, 4000, [], repo_map.RepoMapPolicy(tier="full"), cache_dir=tmp_path / "cache"
-    ))
+    commit = _commit_files(
+        repo,
+        {
+            "example.py": "def python_symbol(): pass\n",
+            "example.ts": "export function tsSymbol() {}\n",
+            "example.js": "export function jsSymbol() {}\n",
+        },
+    )
+    monkeypatch.setattr(
+        parser_bundle, "acquire_bundle", lambda **_: "offline parser bundle unavailable"
+    )
+    result = json.loads(
+        repo_map.build_map(
+            repo,
+            commit,
+            4000,
+            [],
+            repo_map.RepoMapPolicy(tier="full"),
+            cache_dir=tmp_path / "cache",
+        )
+    )
     assert result["tier"] == "minimal"
     assert result["parser"] == "path-only"
     assert result["edges"] == []
@@ -220,12 +232,20 @@ def test_full_cache_rebuilds_after_bundle_becomes_available(
     commit = _commit_files(repo, {"entry.py": "def entry(): pass\n"})
     cache_dir = tmp_path / "cache"
     policy = repo_map.RepoMapPolicy(tier="full")
-    monkeypatch.setattr(parser_bundle, "acquire_bundle", lambda **_: "offline parser bundle unavailable")
-    first = json.loads(repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir))
+    monkeypatch.setattr(
+        parser_bundle, "acquire_bundle", lambda **_: "offline parser bundle unavailable"
+    )
+    first = json.loads(
+        repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir)
+    )
     assert first["tier"] == "minimal"
     assert list(cache_dir.glob("*.json")) == []
-    calls = _fake_python_bundle(monkeypatch, {"entry.py": _facts(signatures=[("def entry()", ["entry"])])})
-    second = json.loads(repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir))
+    calls = _fake_python_bundle(
+        monkeypatch, {"entry.py": _facts(signatures=[("def entry()", ["entry"])])}
+    )
+    second = json.loads(
+        repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir)
+    )
     assert second["tier"] == "full"
     assert second["files"][0]["signatures"] == ["def entry()"]
     assert len(calls) == 1
@@ -238,15 +258,23 @@ def test_full_cache_identity_changes_when_bundle_bytes_change(
     commit = _commit_files(repo, {"entry.py": "def entry(): pass\n"})
     python_tag, platform_tag = parser_bundle.python_platform_tags(sys.executable, 30)
     bundle = build_bundle_dir(tmp_path / "bundle", pair=f"{python_tag}-{platform_tag}")
-    policy = repo_map.RepoMapPolicy(tier="full", parser_bundle_registry_paths=(str(bundle),))
+    policy = repo_map.RepoMapPolicy(
+        tier="full", parser_bundle_registry_paths=(str(bundle),)
+    )
     cache_dir = tmp_path / "cache"
     calls = _fake_python_bundle(monkeypatch, {"entry.py": _facts()})
     first = repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir)
-    assert repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir) == first
+    assert (
+        repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir) == first
+    )
     assert len(calls) == 1
     worker = bundle / "worker.py"
-    worker.write_text(worker.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
-    assert repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir) == first
+    worker.write_text(
+        worker.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8"
+    )
+    assert (
+        repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir) == first
+    )
     assert len(calls) == 2
 
 
@@ -344,7 +372,10 @@ def test_repo_map_cache_rejects_another_key_or_commit_even_with_a_valid_digest(
     envelope = json.loads(entry.read_text(encoding="utf-8"))
     envelope["key"] = "another-key"
     entry.write_text(json.dumps(envelope), encoding="utf-8")
-    assert repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir) == expected
+    assert (
+        repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir)
+        == expected
+    )
     assert len(calls) == 2
 
     envelope = json.loads(entry.read_text(encoding="utf-8"))
@@ -353,7 +384,10 @@ def test_repo_map_cache_rejects_another_key_or_commit_even_with_a_valid_digest(
     envelope["payload"] = json.dumps(payload)
     envelope["sha256"] = hashlib.sha256(envelope["payload"].encode()).hexdigest()
     entry.write_text(json.dumps(envelope), encoding="utf-8")
-    assert repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir) == expected
+    assert (
+        repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=cache_dir)
+        == expected
+    )
     assert len(calls) == 3
 
 
@@ -1119,14 +1153,22 @@ def test_full_tier_keeps_binary_files_as_path_only_records(
     requests = _fake_python_bundle(monkeypatch, {"main.py": _facts()})
     policy = repo_map.RepoMapPolicy(tier="full")
 
-    full = json.loads(repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=tmp_path / "c"))
+    full = json.loads(
+        repo_map.build_map(repo, commit, 4000, [], policy, cache_dir=tmp_path / "c")
+    )
     minimal = json.loads(
-        repo_map.build_map(repo, commit, 4000, [], repo_map.RepoMapPolicy(tier="minimal"))
+        repo_map.build_map(
+            repo, commit, 4000, [], repo_map.RepoMapPolicy(tier="minimal")
+        )
     )
 
     assert full["tier"] == "full"
-    assert [item["path"] for item in full["files"]] == [item["path"] for item in minimal["files"]]
-    assert {"path": "blob.dat", "signatures": [], "parser_status": "ok"} in full["files"]
+    assert [item["path"] for item in full["files"]] == [
+        item["path"] for item in minimal["files"]
+    ]
+    assert {"path": "blob.dat", "signatures": [], "parser_status": "ok"} in full[
+        "files"
+    ]
     requested = requests[0]["paths"]
     assert isinstance(requested, dict)
     assert set(requested) == {"main.py"}
@@ -1142,13 +1184,19 @@ def test_build_map_accepts_an_injected_parser_backend(tmp_path: Path) -> None:
 
         def parse(self, commit: str, paths: list[str]) -> ParseOutcome:
             records: dict[str, dict[str, object]] = {
-                path: {"path": path, "signatures": [], "parser_status": "ok"} for path in paths
+                path: {"path": path, "signatures": [], "parser_status": "ok"}
+                for path in paths
             }
             facts = {
                 "a.py": cast(FileFacts, _facts(imports=[("b", 0, [])])),
-                "b.py": cast(FileFacts, _facts(signatures=[("def b()", ["b"])], definitions=["b"])),
+                "b.py": cast(
+                    FileFacts,
+                    _facts(signatures=[("def b()", ["b"])], definitions=["b"]),
+                ),
             }
-            return ParseOutcome(True, "parser bundle applied", {}, records, facts, [], {".py": "python"})
+            return ParseOutcome(
+                True, "parser bundle applied", {}, records, facts, [], {".py": "python"}
+            )
 
     result = json.loads(
         repo_map.build_map(
@@ -1163,7 +1211,12 @@ def test_build_map_accepts_an_injected_parser_backend(tmp_path: Path) -> None:
     )
 
     assert result["tier"] == "full"
-    assert {"source": "a.py", "target": "b.py", "kind": "import", "confidence": "high"} in result["edges"]
+    assert {
+        "source": "a.py",
+        "target": "b.py",
+        "kind": "import",
+        "confidence": "high",
+    } in result["edges"]
 
 
 def test_full_tier_locates_the_bundle_once_for_cache_key_and_parse(
@@ -1189,7 +1242,12 @@ def test_full_tier_locates_the_bundle_once_for_cache_key_and_parse(
     monkeypatch.setattr(parser_bundle, "locate_bundle", _locate)
     monkeypatch.setattr(parser_bundle, "acquire_bundle", _acquire)
     repo_map.build_map(
-        repo, commit, 4000, [], repo_map.RepoMapPolicy(tier="full"), cache_dir=tmp_path / "c"
+        repo,
+        commit,
+        4000,
+        [],
+        repo_map.RepoMapPolicy(tier="full"),
+        cache_dir=tmp_path / "c",
     )
 
     assert located == [True]

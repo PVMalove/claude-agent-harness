@@ -38,7 +38,9 @@ class CleanupTests(unittest.TestCase):
         git(self.repo, "add", ".gitignore")
         git(self.repo, "commit", "-m", "test: initial fixture")
 
-    def test_soft_previews_old_runs_scratch_logs_and_legacy_dirs_but_keeps_active_run_and_ledger(self) -> None:
+    def test_soft_previews_old_runs_scratch_logs_and_legacy_dirs_but_keeps_active_run_and_ledger(
+        self,
+    ) -> None:
         root = self.repo / ".harness"
         sandboxes = root / ".sandboxes"
 
@@ -73,7 +75,9 @@ class CleanupTests(unittest.TestCase):
             directory.mkdir(parents=True, exist_ok=True)
 
         (old_run / "artifact.txt").write_text("done", encoding="utf-8")
-        (active_run / ".active.json").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+        (active_run / ".active.json").write_text(
+            json.dumps({"pid": os.getpid()}), encoding="utf-8"
+        )
         scratch_file.write_text("transient PR body", encoding="utf-8")
         log_file.write_text("test logs", encoding="utf-8")
         sandboxes_cache.write_text("rebuildable", encoding="utf-8")
@@ -144,7 +148,9 @@ class CleanupTests(unittest.TestCase):
             if os.name == "nt":
                 with mock.patch(
                     "harness.cleanup.os.kill",
-                    side_effect=AssertionError("Windows PID probe must not call os.kill"),
+                    side_effect=AssertionError(
+                        "Windows PID probe must not call os.kill"
+                    ),
                 ):
                     plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
             else:
@@ -186,8 +192,12 @@ class CleanupTests(unittest.TestCase):
         reports_item.write_text("report", encoding="utf-8")
 
         soft_plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
-        self.assertNotIn(str(cache_item), {item["path"] for item in soft_plan["remove"]})
-        self.assertNotIn(str(reports_item), {item["path"] for item in soft_plan["remove"]})
+        self.assertNotIn(
+            str(cache_item), {item["path"] for item in soft_plan["remove"]}
+        )
+        self.assertNotIn(
+            str(reports_item), {item["path"] for item in soft_plan["remove"]}
+        )
 
         hard_plan = plan_cleanup(self.repo, "hard", min_age_hours=0)
         self.assertIn(str(cache_item), {item["path"] for item in hard_plan["remove"]})
@@ -207,9 +217,13 @@ class CleanupTests(unittest.TestCase):
         self.assertTrue((registry / "bundle.lock").exists())
         self.assertFalse(reports_item.exists())
 
-    def test_hard_keeps_active_and_dirty_worktree_then_removes_local_branch_only(self) -> None:
+    def test_hard_keeps_active_and_dirty_worktree_then_removes_local_branch_only(
+        self,
+    ) -> None:
         remote = self.base / "origin.git"
-        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "init", "--bare", str(remote)], check=True, capture_output=True
+        )
         git(self.repo, "remote", "add", "origin", str(remote))
         git(self.repo, "push", "-u", "origin", "main")
         tree = self.repo / ".harness" / ".sandboxes" / "worktrees" / "issue-1-one"
@@ -223,17 +237,29 @@ class CleanupTests(unittest.TestCase):
         state = self.repo / ".harness" / "orchestration" / "state"
         records = state / "generations" / "generation-test" / "batches"
         records.mkdir(parents=True)
-        (state / "ledger.json").write_text(json.dumps({"generation": "generation-test"}), encoding="utf-8")
+        (state / "ledger.json").write_text(
+            json.dumps({"generation": "generation-test"}), encoding="utf-8"
+        )
         batch = records / "batch-test.json"
         batch.write_text(
-            json.dumps({"state": "awaiting-approval", "worktree": ".harness/.sandboxes/worktrees/issue-1-one"}),
+            json.dumps(
+                {
+                    "state": "awaiting-approval",
+                    "worktree": ".harness/.sandboxes/worktrees/issue-1-one",
+                }
+            ),
             encoding="utf-8",
         )
         plan = plan_cleanup(self.repo, "hard", min_age_hours=0)
         self.assertNotIn(str(tree), {item["path"] for item in plan["remove"]})
 
         batch.write_text(
-            json.dumps({"state": "completed", "worktree": ".harness/.sandboxes/worktrees/issue-1-one"}),
+            json.dumps(
+                {
+                    "state": "completed",
+                    "worktree": ".harness/.sandboxes/worktrees/issue-1-one",
+                }
+            ),
             encoding="utf-8",
         )
         (tree / "dirty.txt").write_text("keep", encoding="utf-8")
@@ -242,7 +268,12 @@ class CleanupTests(unittest.TestCase):
 
         (tree / "dirty.txt").unlink()
         git(self.repo, "push", "origin", "--delete", branch)
-        git(self.repo, "update-ref", f"refs/remotes/origin/{branch}", git(self.repo, "rev-parse", branch))
+        git(
+            self.repo,
+            "update-ref",
+            f"refs/remotes/origin/{branch}",
+            git(self.repo, "rev-parse", branch),
+        )
         stale_tracking = plan_cleanup(self.repo, "hard", min_age_hours=0)
         self.assertNotIn(str(tree), {item["path"] for item in stale_tracking["remove"]})
         git(self.repo, "push", "origin", branch)

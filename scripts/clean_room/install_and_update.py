@@ -191,7 +191,10 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("health did not mark the degraded Repo Map tier as a warning")
     if not repo_map_health["message"].startswith("Repo Map: tier=minimal"):
         sys.exit("health did not report the degraded Repo Map tier")
-    if "provenance: offline parser bundle unavailable" not in repo_map_health["message"]:
+    if (
+        "provenance: offline parser bundle unavailable"
+        not in repo_map_health["message"]
+    ):
         sys.exit("health did not report missing Repo Map bundle provenance")
     repo_map_fix = repo_map_health["fix"]["text"] if repo_map_health["fix"] else ""
     if "установите offline parser bundle" not in repo_map_fix:
@@ -208,7 +211,9 @@ def run(ctx: SimpleNamespace) -> None:
         / "registry"
     )
     corrupt_registry.mkdir(parents=True)
-    (corrupt_registry / "parser_bundle.lock.json").write_text("{invalid", encoding="utf-8")
+    (corrupt_registry / "parser_bundle.lock.json").write_text(
+        "{invalid", encoding="utf-8"
+    )
     corrupt_bundle_health = find_check(
         capture_json(HARNESS + ["health", str(pv_project), "--json"]), "repo_map.tier"
     )
@@ -392,9 +397,7 @@ def run(ctx: SimpleNamespace) -> None:
                 "pytest summary wrapper did not extract a structured failure diagnostic"
             )
     if "gho_abcdefghijklmnopqrstuvwxyz1234567890" in failing_summary.stdout:
-        sys.exit(
-            "pytest summary wrapper leaked a secret into its bounded summary"
-        )
+        sys.exit("pytest summary wrapper leaked a secret into its bounded summary")
     log_match = re.search(
         r"^Full log: (.+)$", failing_summary.stdout, flags=re.MULTILINE
     )

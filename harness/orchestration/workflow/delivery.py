@@ -301,9 +301,21 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
     root = _state_root(args, repo)
     config = core_config._config(repo)
     execution = _execution_policy(config)
-    timeout = args.timeout if args.timeout is not None else execution["dispatch_wait_timeout_seconds"]
-    interval = args.poll_interval if args.poll_interval is not None else execution["dispatch_poll_interval_seconds"]
-    threshold = args.stale_after if args.stale_after is not None else _attention_policy(config)["stale_dispatch_seconds"]
+    timeout = (
+        args.timeout
+        if args.timeout is not None
+        else execution["dispatch_wait_timeout_seconds"]
+    )
+    interval = (
+        args.poll_interval
+        if args.poll_interval is not None
+        else execution["dispatch_poll_interval_seconds"]
+    )
+    threshold = (
+        args.stale_after
+        if args.stale_after is not None
+        else _attention_policy(config)["stale_dispatch_seconds"]
+    )
     if any(
         isinstance(value, bool) or not isinstance(value, int) or value < 1
         for value in (timeout, interval, threshold)

@@ -96,9 +96,7 @@ def build_synthetic_wheel(dest_dir: Path) -> tuple[Path, str]:
     """Assemble a tiny pure-Python wheel with `zipfile` and return (path, sha256)."""
     wheel_path = dest_dir / WHEEL_FILENAME
     metadata = "Metadata-Version: 2.1\nName: stubparser\nVersion: 1.0.0\n"
-    wheel_meta = (
-        "Wheel-Version: 1.0\nGenerator: repo-map-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
-    )
+    wheel_meta = "Wheel-Version: 1.0\nGenerator: repo-map-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
     init_py = "STUB_PARSER_INSTALLED = True\n"
     record = (
         "stubparser/__init__.py,,\n"
@@ -115,7 +113,9 @@ def build_synthetic_wheel(dest_dir: Path) -> tuple[Path, str]:
     return wheel_path, digest
 
 
-def write_worker_script(dest_dir: Path, source: str, *, filename: str = "worker.py") -> tuple[Path, str]:
+def write_worker_script(
+    dest_dir: Path, source: str, *, filename: str = "worker.py"
+) -> tuple[Path, str]:
     script_path = dest_dir / filename
     script_path.write_text(source, encoding="utf-8", newline="\n")
     digest = hashlib.sha256(script_path.read_bytes()).hexdigest()

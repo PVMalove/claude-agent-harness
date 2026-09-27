@@ -466,7 +466,9 @@ class LifecycleLedger:
         pointer = self.pointer()
         if pointer is None or pointer["version"] == LEDGER_VERSION:
             return []
-        batches = self.root / GENERATIONS / self._pointer_generation(pointer) / "batches"
+        batches = (
+            self.root / GENERATIONS / self._pointer_generation(pointer) / "batches"
+        )
         return [_read(path, "batch record") for path in sorted(batches.glob("*.json"))]
 
     def migrate(self) -> JsonObject:
@@ -802,9 +804,19 @@ class LifecycleLedger:
             before_entries = before.get("dispatches")
             after_entries = after.get("dispatches")
             decisions = after.get("coordinator_decisions")
-            last_before = before_entries[-1] if isinstance(before_entries, list) and before_entries else None
-            last_after = after_entries[-1] if isinstance(after_entries, list) and after_entries else None
-            resume = decisions[-1] if isinstance(decisions, list) and decisions else None
+            last_before = (
+                before_entries[-1]
+                if isinstance(before_entries, list) and before_entries
+                else None
+            )
+            last_after = (
+                after_entries[-1]
+                if isinstance(after_entries, list) and after_entries
+                else None
+            )
+            resume = (
+                decisions[-1] if isinstance(decisions, list) and decisions else None
+            )
             if not (
                 isinstance(last_before, dict)
                 and last_before.get("state") == "blocked"

@@ -241,7 +241,9 @@ class ContextBuilderTests(ContextBuilderFixture):
     def test_byte_identical_seed_files_are_counted_once_and_noted_as_a_mirror(
         self,
     ) -> None:
-        guide = "".join(f"## Раздел {index}\n\nТекст раздела {index}.\n\n" for index in range(400))
+        guide = "".join(
+            f"## Раздел {index}\n\nТекст раздела {index}.\n\n" for index in range(400)
+        )
         snapshot = self._commit_mirror_pair(guide)
         one_copy = build_context_package(
             self.repo,
@@ -261,7 +263,8 @@ class ContextBuilderTests(ContextBuilderFixture):
 
         reasons = {item.path: item.reason for item in package.starting_files}
         self.assertEqual(
-            set(reasons), {"docs/agents/guide.md", "harness/project/docs-agents/guide.md"}
+            set(reasons),
+            {"docs/agents/guide.md", "harness/project/docs-agents/guide.md"},
         )
         self.assertNotIn("mirror", reasons["docs/agents/guide.md"])
         self.assertIn(
@@ -279,9 +282,7 @@ class ContextBuilderTests(ContextBuilderFixture):
         guide = "# Guide\n\n" + "".join(f"Строка {index}.\n" for index in range(400))
         after = self._commit_mirror_pair(guide)
 
-        package = build_context_package(
-            self.repo, before, after, min_starting_files=2
-        )
+        package = build_context_package(self.repo, before, after, min_starting_files=2)
 
         reasons = {item.path: item.reason for item in package.starting_files}
         self.assertIn(
@@ -571,7 +572,9 @@ class ContextBuilderTests(ContextBuilderFixture):
         self.assertEqual(package.file_hashes["pkg/base.py"], expected_hash)
 
     def test_redact_symbols_defaults_to_a_no_op(self) -> None:
-        self.assertEqual(_redact_symbols("def helper(): pass", ()), "def helper(): pass")
+        self.assertEqual(
+            _redact_symbols("def helper(): pass", ()), "def helper(): pass"
+        )
         self.assertEqual(_redact_symbols("", ("helper",)), "")
 
 
@@ -602,7 +605,9 @@ def _patch_repo_map_call(
             check=check,
         )
 
-    return patch("harness.context_builder.context_builder.subprocess.run", side_effect=_dispatch)
+    return patch(
+        "harness.context_builder.context_builder.subprocess.run", side_effect=_dispatch
+    )
 
 
 class RepoMapContractTests(ContextBuilderFixture):
@@ -615,12 +620,17 @@ class RepoMapContractTests(ContextBuilderFixture):
         with _patch_repo_map_call(fake):
             with self.assertRaises(ContextPackageError) as raised:
                 build_context_package(
-                    self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+                    self.repo,
+                    self.base_commit,
+                    self.candidate_commit,
+                    min_starting_files=1,
                 )
         self.assertIn("invalid JSON", raised.exception.message)
         self.assertTrue(raised.exception.remedy)
 
-    def test_a_missing_required_field_raises_a_contract_error_with_a_remedy(self) -> None:
+    def test_a_missing_required_field_raises_a_contract_error_with_a_remedy(
+        self,
+    ) -> None:
         incomplete = json.dumps({"schema_version": 1, "commit": "x" * 40})
         fake = subprocess.CompletedProcess(
             args=["repo_map"], returncode=0, stdout=incomplete, stderr=""
@@ -628,7 +638,10 @@ class RepoMapContractTests(ContextBuilderFixture):
         with _patch_repo_map_call(fake):
             with self.assertRaises(ContextPackageError) as raised:
                 build_context_package(
-                    self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+                    self.repo,
+                    self.base_commit,
+                    self.candidate_commit,
+                    min_starting_files=1,
                 )
         self.assertIn("contract violation", raised.exception.message)
         self.assertIn("repo_map.schema.json", raised.exception.remedy)
@@ -657,7 +670,10 @@ class RepoMapContractTests(ContextBuilderFixture):
         with _patch_repo_map_call(fake):
             with self.assertRaises(ContextPackageError) as raised:
                 build_context_package(
-                    self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+                    self.repo,
+                    self.base_commit,
+                    self.candidate_commit,
+                    min_starting_files=1,
                 )
         self.assertIn("schema_version", raised.exception.message)
         self.assertTrue(raised.exception.remedy)
@@ -686,13 +702,17 @@ class RepoMapContractTests(ContextBuilderFixture):
         for change in ({"tier": "unknown"}, {"edges": [{"source": 7}]}):
             with self.subTest(change=change):
                 fake = subprocess.CompletedProcess(
-                    args=["repo_map"], returncode=0,
-                    stdout=json.dumps({**valid, **change}), stderr="",
+                    args=["repo_map"],
+                    returncode=0,
+                    stdout=json.dumps({**valid, **change}),
+                    stderr="",
                 )
                 with _patch_repo_map_call(fake):
                     with self.assertRaises(ContextPackageError) as raised:
                         build_context_package(
-                            self.repo, self.base_commit, self.candidate_commit,
+                            self.repo,
+                            self.base_commit,
+                            self.candidate_commit,
                             min_starting_files=1,
                         )
                 self.assertIn("contract violation", raised.exception.message)
@@ -707,7 +727,10 @@ class RepoMapContractTests(ContextBuilderFixture):
         with _patch_repo_map_call(fake):
             with self.assertRaises(ContextPackageError) as raised:
                 build_context_package(
-                    self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+                    self.repo,
+                    self.base_commit,
+                    self.candidate_commit,
+                    min_starting_files=1,
                 )
         self.assertIn("something went wrong", raised.exception.message)
         self.assertIn("do the specific fix", raised.exception.remedy)
@@ -716,12 +739,18 @@ class RepoMapContractTests(ContextBuilderFixture):
         self,
     ) -> None:
         fake = subprocess.CompletedProcess(
-            args=["repo_map"], returncode=1, stdout="", stderr="totally unexpected crash\n"
+            args=["repo_map"],
+            returncode=1,
+            stdout="",
+            stderr="totally unexpected crash\n",
         )
         with _patch_repo_map_call(fake):
             with self.assertRaises(ContextPackageError) as raised:
                 build_context_package(
-                    self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+                    self.repo,
+                    self.base_commit,
+                    self.candidate_commit,
+                    min_starting_files=1,
                 )
         self.assertIn("totally unexpected crash", raised.exception.message)
         self.assertTrue(raised.exception.remedy)
@@ -843,7 +872,8 @@ class GuardHotPathTests(unittest.TestCase):
         fixture.setUp()
         try:
             with patch(
-                "harness.context_builder.context_builder.subprocess.run", side_effect=_spy
+                "harness.context_builder.context_builder.subprocess.run",
+                side_effect=_spy,
             ):
                 build_context_package(
                     fixture.repo,
@@ -875,7 +905,10 @@ class GuardHotPathTests(unittest.TestCase):
         fixture.setUp()
         try:
             build_context_package(
-                fixture.repo, fixture.base_commit, fixture.candidate_commit, min_starting_files=1
+                fixture.repo,
+                fixture.base_commit,
+                fixture.candidate_commit,
+                min_starting_files=1,
             )
         finally:
             fixture.tearDown()

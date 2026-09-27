@@ -50,11 +50,16 @@ def _lock_first_byte(handle: BinaryIO, *, acquire: bool) -> None:
     if sys.platform == "win32":
         import msvcrt
 
-        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK if acquire else msvcrt.LK_UNLCK, 1)
+        msvcrt.locking(
+            handle.fileno(), msvcrt.LK_NBLCK if acquire else msvcrt.LK_UNLCK, 1
+        )
     else:
         import fcntl
 
-        fcntl.flock(handle.fileno(), (fcntl.LOCK_EX | fcntl.LOCK_NB) if acquire else fcntl.LOCK_UN)
+        fcntl.flock(
+            handle.fileno(),
+            (fcntl.LOCK_EX | fcntl.LOCK_NB) if acquire else fcntl.LOCK_UN,
+        )
 
 
 @contextmanager
@@ -69,9 +74,13 @@ def _installation_lock(path: Path, timeout_seconds: int) -> Iterator[None]:
                 break
             except OSError as exc:
                 if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
-                    raise BundleInstallError("parser bundle installation lock failed") from exc
+                    raise BundleInstallError(
+                        "parser bundle installation lock failed"
+                    ) from exc
                 if time.monotonic() >= deadline:
-                    raise BundleInstallError("parser bundle installation lock timed out") from exc
+                    raise BundleInstallError(
+                        "parser bundle installation lock timed out"
+                    ) from exc
                 time.sleep(LOCK_POLL_SECONDS)
         try:
             yield
@@ -95,8 +104,12 @@ def install_bundle(
             timeout_seconds * INSTALL_LOCK_TIMEOUT_FACTOR,
         ):
             _install_bundle_unlocked(
-                lock, wheelhouse_dir, install_dir, python_executable,
-                pair=pair, timeout_seconds=timeout_seconds,
+                lock,
+                wheelhouse_dir,
+                install_dir,
+                python_executable,
+                pair=pair,
+                timeout_seconds=timeout_seconds,
             )
     except OSError as exc:
         raise BundleInstallError("parser bundle installation failed") from exc
@@ -112,7 +125,11 @@ def _requirements_text(lock: BundleLock, pair: str) -> str:
 
 
 def _uv_install_command(
-    uv: str, wheelhouse_dir: Path, python_executable: str, install_dir: Path, requirements: Path
+    uv: str,
+    wheelhouse_dir: Path,
+    python_executable: str,
+    install_dir: Path,
+    requirements: Path,
 ) -> list[str]:
     """Команда offline-установки: только локальный wheelhouse, хеши обязательны, только wheels."""
     return [
@@ -144,7 +161,11 @@ def _isolated_environment() -> dict[str, str]:
     UV_INDEX_URL, UV_FIND_LINKS, UV_CONFIG_FILE), так что окружение родителя не может повлиять на
     offline-установку с `--no-index`.
     """
-    return {key: value for key, value in os.environ.items() if not key.startswith(("UV_", "PIP_"))}
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("UV_", "PIP_"))
+    }
 
 
 def _install_bundle_unlocked(
@@ -158,7 +179,10 @@ def _install_bundle_unlocked(
 ) -> None:
     """Установить проверенные wheels через uv; вызывать под межпроцессной блокировкой."""
     marker = install_dir / INSTALL_MARKER_FILENAME
-    if marker.is_file() and marker.read_text(encoding="utf-8").strip() == lock.raw_sha256:
+    if (
+        marker.is_file()
+        and marker.read_text(encoding="utf-8").strip() == lock.raw_sha256
+    ):
         return
     uv = shutil.which("uv")
     if uv is None:
@@ -168,7 +192,9 @@ def _install_bundle_unlocked(
     requirements_path.write_text(_requirements_text(lock, pair), encoding="utf-8")
     try:
         result = subprocess.run(
-            _uv_install_command(uv, wheelhouse_dir, python_executable, install_dir, requirements_path),
+            _uv_install_command(
+                uv, wheelhouse_dir, python_executable, install_dir, requirements_path
+            ),
             capture_output=True,
             check=False,
             timeout=timeout_seconds,

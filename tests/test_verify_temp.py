@@ -87,7 +87,9 @@ class IsolatedTempEnvTest(unittest.TestCase):
             source = Path(temporary) / ("linked-worktree-" + "x" * 90) / "module.py"
             source.parent.mkdir()
             source.write_text("answer = 42\n", encoding="utf-8")
-            with mock.patch.object(verify, "_compiled_sources", return_value=[str(source)]):
+            with mock.patch.object(
+                verify, "_compiled_sources", return_value=[str(source)]
+            ):
                 verify._check_python_syntax()
                 self.assertEqual(list(source.parent.rglob("*.pyc")), [])
                 source.write_text("def broken(:\n", encoding="utf-8")
@@ -104,7 +106,9 @@ class WrittenPathBudgetTest(unittest.TestCase):
     RUN_ROOT_HEADROOM = 64
 
     def _written(self, root: Path, before: set[Path]) -> list[Path]:
-        return [path for path in root.rglob("*") if path.is_file() and path not in before]
+        return [
+            path for path in root.rglob("*") if path.is_file() and path not in before
+        ]
 
     def test_nothing_written_mirrors_a_deep_checkout(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
@@ -118,10 +122,14 @@ class WrittenPathBudgetTest(unittest.TestCase):
             (package / "__init__.py").write_text("", encoding="utf-8")
             (package / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
             before = set(base.rglob("*"))
-            env = verify.isolated_temp_env(dict(os.environ, PYTHONPATH=str(checkout)), run_tmp)
+            env = verify.isolated_temp_env(
+                dict(os.environ, PYTHONPATH=str(checkout)), run_tmp
+            )
 
             verify.check_syntax([str(package / "__init__.py"), str(package / "mod.py")])
-            subprocess.run([sys.executable, "-c", "import pkg.mod"], env=env, check=True)
+            subprocess.run(
+                [sys.executable, "-c", "import pkg.mod"], env=env, check=True
+            )
 
             written = self._written(base, before)
             self.assertEqual([path for path in written if path.suffix == ".pyc"], [])
@@ -170,7 +178,9 @@ class VerifyStageTimingTest(unittest.TestCase):
         run_ok.assert_called_once_with(["pytest"], env=None, stdout=None, cwd=None)
         printed.assert_called_once_with("[verify] pytest: passed in 2.50s")
 
-    def test_failed_stage_reports_its_name_and_duration_before_propagating(self) -> None:
+    def test_failed_stage_reports_its_name_and_duration_before_propagating(
+        self,
+    ) -> None:
         with (
             mock.patch.object(time, "perf_counter", side_effect=[10.0, 11.0]),
             mock.patch.object(process, "run_ok", side_effect=SystemExit(7)),

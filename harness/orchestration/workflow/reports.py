@@ -1027,7 +1027,9 @@ def _validate_report(
     checks = report["checks_run"]
     # Only a work role that owns no verification gate (the architect) reports an empty list; every
     # other role must report the non-empty command list its brief approved.
-    owns_no_gate = dispatch.get("purpose") == "work" and dispatch.get("role") in NO_GATE_WORK_ROLES
+    owns_no_gate = (
+        dispatch.get("purpose") == "work" and dispatch.get("role") in NO_GATE_WORK_ROLES
+    )
     if not isinstance(checks, list) or (not checks and not owns_no_gate):
         raise CoordinatorError(
             "completion report checks_run must be a non-empty list",

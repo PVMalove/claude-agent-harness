@@ -32,7 +32,11 @@ def test_output_is_byte_identical_across_cold_runs(
     policy = repo_map.load_policy(tmp_path / "orchestration.json", explicit=True)
     commit = result["commit"]
     assert isinstance(commit, str)
-    first = repo_map.build_map(repo, commit, 8000, [seed_path], policy, cache_dir=tmp_path / "cold-a")
-    second = repo_map.build_map(repo, commit, 8000, [seed_path], policy, cache_dir=tmp_path / "cold-b")
+    first = repo_map.build_map(
+        repo, commit, 8000, [seed_path], policy, cache_dir=tmp_path / "cold-a"
+    )
+    second = repo_map.build_map(
+        repo, commit, 8000, [seed_path], policy, cache_dir=tmp_path / "cold-b"
+    )
     assert first.encode("utf-8") == second.encode("utf-8")
     assert result["tier"] == "full"

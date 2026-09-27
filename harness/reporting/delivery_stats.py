@@ -1203,8 +1203,6 @@ def orchestration_metrics(
     }
 
 
-
-
 # -------------------------------------------------------------------------------------- summary
 
 
@@ -1230,7 +1228,6 @@ def cache_split(claude: JsonObject) -> str | JsonObject:
         "cache_write_percent": round(write * 100 / total, 3),
         "cache_read_percent": round(read * 100 / total, 3),
     }
-
 
 
 def build_report(args: argparse.Namespace) -> JsonObject:
@@ -1315,8 +1312,6 @@ def build_report(args: argparse.Namespace) -> JsonObject:
         "adr_added": len(volume["adr_added"]),
         "orchestration": orchestration_metrics(repo, numbers, orchestration_state),
     }
-
-
 
 
 def main_live_probe(argv: list[str]) -> int:

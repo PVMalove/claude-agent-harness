@@ -521,9 +521,12 @@ def run(ctx: SimpleNamespace) -> None:
         json.dumps(minimal_repo_map_policy, indent=2) + "\n", encoding="utf-8"
     )
     policy_health = find_check(
-        capture_json(HARNESS + ["health", str(orchestration_project), "--json"]), "repo_map.tier"
+        capture_json(HARNESS + ["health", str(orchestration_project), "--json"]),
+        "repo_map.tier",
     )
-    if not policy_health["message"].startswith("Repo Map: tier=minimal (requested by policy)"):
+    if not policy_health["message"].startswith(
+        "Repo Map: tier=minimal (requested by policy)"
+    ):
         sys.exit("health did not report the policy-required Repo Map tier")
     if "dispatch is limited to minimal path inventory" not in policy_health["message"]:
         sys.exit("health did not report Repo Map policy dispatch effect")

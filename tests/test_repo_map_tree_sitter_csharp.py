@@ -15,7 +15,7 @@ PACKAGE = {
         "    // this comment must not be serialized\n"
         "    public static string Render(string value, int retries = 3)\n"
         "    {\n"
-        "        string bodySecret = \"function bodies are never serialized\";\n"
+        '        string bodySecret = "function bodies are never serialized";\n'
         "        return bodySecret + value;\n"
         "    }\n\n"
         "    public static void OnlyHere() {}\n"
@@ -26,7 +26,7 @@ PACKAGE = {
         "{\n"
         "    public void Use()\n"
         "    {\n"
-        "        Helper.Render(\"x\", 1);\n"
+        '        Helper.Render("x", 1);\n'
         "        Helper.OnlyHere();\n"
         "    }\n"
         "}\n"
@@ -34,7 +34,9 @@ PACKAGE = {
 }
 
 
-def test_csharp_signatures_and_relations_come_from_tree_sitter(tmp_path: Path, bundle_dir: Path) -> None:
+def test_csharp_signatures_and_relations_come_from_tree_sitter(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
     raw, result = build_map(tmp_path, bundle_dir, PACKAGE)
 
     assert result["tier"] == "full"
@@ -106,7 +108,9 @@ def test_csharp_classes_under_a_file_scoped_namespace_are_mapped(
     } in records(result, "edges")
 
 
-def test_csharp_syntax_error_keeps_intact_definitions(tmp_path: Path, bundle_dir: Path) -> None:
+def test_csharp_syntax_error_keeps_intact_definitions(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
     _, result = build_map(
         tmp_path,
         bundle_dir,
@@ -135,7 +139,9 @@ def test_csharp_syntax_error_keeps_intact_definitions(tmp_path: Path, bundle_dir
     assert result["diagnostics"] == [{"code": "syntax_error", "path": "Broken.cs"}]
 
 
-def test_csharp_symbol_redaction_applies_to_tree_sitter_facts(tmp_path: Path, bundle_dir: Path) -> None:
+def test_csharp_symbol_redaction_applies_to_tree_sitter_facts(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
     raw, result = build_map(
         tmp_path,
         bundle_dir,

@@ -59,11 +59,15 @@ class VerificationCommandRoutingTest(unittest.TestCase):
     def test_brief_contract_and_dispatch_share_one_routing(self) -> None:
         legacy = {"verification_commands": self.full}
 
-        self.assertEqual(contract.role_verification_commands(legacy, "architect", "work"), [])
+        self.assertEqual(
+            contract.role_verification_commands(legacy, "architect", "work"), []
+        )
         self.assertEqual(
             contract.role_verification_commands(legacy, "developer", "work"), self.full
         )
-        self.assertEqual(contract.role_verification_commands(legacy, "qa", "work"), self.full)
+        self.assertEqual(
+            contract.role_verification_commands(legacy, "qa", "work"), self.full
+        )
 
     def test_recorded_architect_briefs_with_the_full_gate_stay_valid(self) -> None:
         legacy = {"verification_commands": self.full}
@@ -73,7 +77,8 @@ class VerificationCommandRoutingTest(unittest.TestCase):
             [[], self.full],
         )
         self.assertEqual(
-            contract.accepted_verification_commands(legacy, "developer", "work"), [self.full]
+            contract.accepted_verification_commands(legacy, "developer", "work"),
+            [self.full],
         )
 
 

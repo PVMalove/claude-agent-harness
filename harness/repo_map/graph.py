@@ -63,7 +63,9 @@ class Diagnostic(TypedDict):
 Edge = tuple[str, str, str, str]
 
 
-def visible_signatures(signatures: list[SignatureFact], policy: RepoMapPolicy) -> list[str]:
+def visible_signatures(
+    signatures: list[SignatureFact], policy: RepoMapPolicy
+) -> list[str]:
     """Оставить сигнатуры, чей текст укладывается в лимит, а каждый сериализуемый символ проходит политику."""
     return [
         signature["text"]
@@ -103,12 +105,16 @@ def import_modules(fact: ImportFact, module: str) -> list[str]:
 
 def _name_and_parts_visible(name: str, parts: list[str], policy: RepoMapPolicy) -> bool:
     """Проверить, что имя целиком и каждая его часть проходят политику символов."""
-    return symbol_visible(name, policy) and all(symbol_visible(part, policy) for part in parts)
+    return symbol_visible(name, policy) and all(
+        symbol_visible(part, policy) for part in parts
+    )
 
 
 def module_visible(module: str, policy: RepoMapPolicy) -> bool:
     """Применить политику символов к dotted-модулю и каждому его сегменту до создания ребра импорта."""
-    return _name_and_parts_visible(module, [part for part in module.split(".") if part], policy)
+    return _name_and_parts_visible(
+        module, [part for part in module.split(".") if part], policy
+    )
 
 
 def specifier_visible(specifier: str, policy: RepoMapPolicy) -> bool:
@@ -135,7 +141,9 @@ def js_import_target(source: str, specifier: str, paths: set[str]) -> str | None
     candidates = [base]
     if Path(base).suffix not in JS_EXTENSIONS:
         candidates.extend(f"{base}{extension}" for extension in JS_RESOLUTION_ORDER)
-        candidates.extend(f"{base}/index{extension}" for extension in JS_RESOLUTION_ORDER)
+        candidates.extend(
+            f"{base}/index{extension}" for extension in JS_RESOLUTION_ORDER
+        )
     return next((candidate for candidate in candidates if candidate in paths), None)
 
 
@@ -179,7 +187,11 @@ def _python_import_edges(
             if not module_visible(imported_module, policy):
                 continue
             target = modules.get(imported_module)
-            if target and target != path and module_visible(python_module(target), policy):
+            if (
+                target
+                and target != path
+                and module_visible(python_module(target), policy)
+            ):
                 edges.add((path, target, "import", "high"))
     return edges
 
@@ -202,7 +214,9 @@ def _name_ref_edges(
                 continue
             targets = definition_paths - {path}
             kind, confidence = (
-                ("unique-name-ref", "medium") if len(targets) == 1 else ("ambiguous-name-ref", "low")
+                ("unique-name-ref", "medium")
+                if len(targets) == 1
+                else ("ambiguous-name-ref", "low")
             )
             for target in targets:
                 edges.add((path, target, kind, confidence))
@@ -255,11 +269,15 @@ def _ranking_edges(paths: list[str], edges: list[EdgeRecord]) -> list[EdgeRecord
     return [
         edge
         for edge in edges
-        if edge["confidence"] != "low" and edge["source"] in known and edge["target"] in known
+        if edge["confidence"] != "low"
+        and edge["source"] in known
+        and edge["target"] in known
     ]
 
 
-def _seed_distances(paths: list[str], edges: list[EdgeRecord], seeds: list[str]) -> dict[str, int]:
+def _seed_distances(
+    paths: list[str], edges: list[EdgeRecord], seeds: list[str]
+) -> dict[str, int]:
     """Расстояние каждого достижимого файла до ближайшего seed по неориентированному графу."""
     neighbors: dict[str, set[str]] = {path: set() for path in paths}
     for edge in edges:
@@ -276,7 +294,9 @@ def _seed_distances(paths: list[str], edges: list[EdgeRecord], seeds: list[str])
     return distances
 
 
-def rank_paths(paths: list[str], edges: list[EdgeRecord], seeds: list[str]) -> list[str]:
+def rank_paths(
+    paths: list[str], edges: list[EdgeRecord], seeds: list[str]
+) -> list[str]:
     """Упорядочить файлы по важности для чтения.
 
     С seeds — по расстоянию в графе через рёбра высокой и средней уверенности, без seeds — по
@@ -285,7 +305,9 @@ def rank_paths(paths: list[str], edges: list[EdgeRecord], seeds: list[str]) -> l
     ranking_edges = _ranking_edges(paths, edges)
     if seeds:
         distances = _seed_distances(paths, ranking_edges, seeds)
-        return sorted(paths, key=lambda path: (distances.get(path, UNREACHABLE_DISTANCE), path))
+        return sorted(
+            paths, key=lambda path: (distances.get(path, UNREACHABLE_DISTANCE), path)
+        )
     indegree = dict.fromkeys(paths, 0)
     for edge in ranking_edges:
         indegree[edge["target"]] += 1

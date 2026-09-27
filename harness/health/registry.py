@@ -56,7 +56,9 @@ def run(
     `snapshot_diff` is forwarded to HealthContext unchanged; see its docstring - only
     harness/bin/harness's cmd_health supplies it today.
     """
-    context = HealthContext(repo=repo, lock=_load_lock(repo), online=online, snapshot_diff=snapshot_diff)
+    context = HealthContext(
+        repo=repo, lock=_load_lock(repo), online=online, snapshot_diff=snapshot_diff
+    )
     report = Report(schema_version=1, repo=str(repo), online=online)
     for check_fn in REGISTRY:
         report.checks.append(check_fn(context))

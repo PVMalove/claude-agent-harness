@@ -8,7 +8,9 @@ def test_missing_evidence_is_rendered_without_invented_zeroes() -> None:
         "epic": {"number": 7, "title": "Поставка"},
         "tickets_closed": 1,
         "tickets_total": 2,
-        "volume": {"totals": {"insertions": 1200, "deletions": 30, "files": 4, "commits": 3}},
+        "volume": {
+            "totals": {"insertions": 1200, "deletions": 30, "files": 4, "commits": 3}
+        },
         "adr_added": 0,
         "claude": {"status": MISSING, "reason": "нет логов"},
         "codex": {"status": MISSING, "reason": "нет сессий"},

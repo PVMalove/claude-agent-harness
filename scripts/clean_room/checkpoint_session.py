@@ -81,7 +81,9 @@ def run(ctx: SimpleNamespace) -> None:
             "output": f"{role_name} finished the requested step",
             "commit_sha": "not applicable — read-only role",
             "changed_files": [],
-            "checks_run": [] if role_name == "architect" else [
+            "checks_run": []
+            if role_name == "architect"
+            else [
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"

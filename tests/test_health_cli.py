@@ -15,7 +15,9 @@ from harness.health import registry as health_registry
 from harness.health.context import HealthContext
 from harness.health.model import CheckResult
 
-CLI = runpy.run_path(str(Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness"))
+CLI = runpy.run_path(
+    str(Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness")
+)
 
 
 def _init_repo(path: Path) -> None:
@@ -23,7 +25,9 @@ def _init_repo(path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)
 
 
-def test_cmd_health_exits_1_when_a_check_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cmd_health_exits_1_when_a_check_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     _init_repo(tmp_path)
 
     exit_code = CLI["cmd_health"](SimpleNamespace(repo=str(tmp_path), json=False))
@@ -47,7 +51,9 @@ def test_cmd_health_runs_every_check_without_early_exit(
     assert {"files.lock", "files.agents_md", "repo_map.tier"} <= ids
 
 
-def test_cmd_health_json_matches_schema_version_1(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cmd_health_json_matches_schema_version_1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     _init_repo(tmp_path)
 
     exit_code = CLI["cmd_health"](SimpleNamespace(repo=str(tmp_path), json=True))
@@ -67,7 +73,9 @@ def test_cmd_health_exits_0_when_nothing_fails(
     _init_repo(tmp_path)
 
     def _all_ok(_context: HealthContext) -> CheckResult:
-        return CheckResult(id="test.probe", group="test", status="warn", message="not a failure")
+        return CheckResult(
+            id="test.probe", group="test", status="warn", message="not a failure"
+        )
 
     monkeypatch.setattr(health_registry, "REGISTRY", [_all_ok])
 

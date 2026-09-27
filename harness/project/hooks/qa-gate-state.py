@@ -24,11 +24,13 @@ def worktrees(project: Path) -> list[tuple[Path, str]]:
     entries: list[tuple[Path, str]] = []
     path: Path | None = None
     branch = ""
-    for line in git(project, "worktree", "list", "--porcelain").decode().splitlines() + [""]:
+    for line in git(
+        project, "worktree", "list", "--porcelain"
+    ).decode().splitlines() + [""]:
         if line.startswith("worktree "):
             path = Path(line[9:]).resolve()
         elif line.startswith("branch refs/heads/"):
-            branch = line[len("branch refs/heads/"):]
+            branch = line[len("branch refs/heads/") :]
         elif not line:
             if path is not None:
                 entries.append((path, branch))
@@ -85,7 +87,11 @@ def checkout_for(project: Path, data: dict[str, object], command: str) -> Path:
     candidates = [Path(cwd)] if isinstance(cwd, str) else [Path(os.getcwd()), project]
     for candidate in candidates:
         requested = candidate.resolve()
-        matches = [path for path, _ in available if path == requested or path in requested.parents]
+        matches = [
+            path
+            for path, _ in available
+            if path == requested or path in requested.parents
+        ]
         if matches:
             return max(matches, key=lambda path: len(path.parts))
     raise ValueError("command cwd is not a checkout of this project")
@@ -108,13 +114,18 @@ def main() -> int:
     checkout = checkout_for(project, data, command)
     if mode == "mark":
         config = checkout / ".harness" / "project.json"
-        commands = json.loads(config.read_text(encoding="utf-8")).get("qa_gate_commands", [])
+        commands = json.loads(config.read_text(encoding="utf-8")).get(
+            "qa_gate_commands", []
+        )
         if not commands or commands[-1] not in command:
             return 0
     marker = checkout / ".claude" / ".qa-gate" / "passed"
     current = state(checkout)
     if mode == "require":
-        if not marker.is_file() or marker.read_text(encoding="utf-8").strip() != current:
+        if (
+            not marker.is_file()
+            or marker.read_text(encoding="utf-8").strip() != current
+        ):
             raise ValueError("сначала запусти skill qa-gate для checkout ветки PR")
     else:
         marker.parent.mkdir(parents=True, exist_ok=True)

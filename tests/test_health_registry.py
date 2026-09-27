@@ -58,10 +58,14 @@ def test_run_without_a_lock_file_builds_a_context_with_no_lock(
     assert [check.id for check in report.checks] == ["test.probe"]
 
 
-def test_run_parses_an_existing_lock_file_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_parses_an_existing_lock_file_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     lock_path = tmp_path / ".harness" / "harness.lock"
     lock_path.parent.mkdir(parents=True)
-    lock_path.write_text(json.dumps({"capabilities": ["pvmalove-suite"]}), encoding="utf-8")
+    lock_path.write_text(
+        json.dumps({"capabilities": ["pvmalove-suite"]}), encoding="utf-8"
+    )
     captured: list[HealthContext] = []
 
     def _capture(context: HealthContext) -> CheckResult:

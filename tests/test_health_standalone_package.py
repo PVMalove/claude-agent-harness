@@ -30,7 +30,9 @@ def _install_shipped_only_tree(tmp_path: Path) -> Path:
         shutil.copy(_REPO_ROOT / "harness" / name, installed / name)
     for name in _DIR_RESOURCES:
         shutil.copytree(_REPO_ROOT / "harness" / name, installed / name)
-    assert not (installed.parent / "harness").exists()  # no canonical harness/ next to it
+    assert not (
+        installed.parent / "harness"
+    ).exists()  # no canonical harness/ next to it
     return installed
 
 
@@ -46,7 +48,9 @@ def _load_standalone_health(installed: Path) -> ModuleType:
     aliased "harness" parent (see harness/health/__init__.py)."""
     health_dir = installed / "health"
     spec = importlib.util.spec_from_file_location(
-        "harness.health", health_dir / "__init__.py", submodule_search_locations=[str(health_dir)]
+        "harness.health",
+        health_dir / "__init__.py",
+        submodule_search_locations=[str(health_dir)],
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -69,10 +73,17 @@ def test_registry_runs_from_a_copied_health_only_tree_with_no_bin_harness(
     report = registry.run(target_repo)
 
     assert {check.group for check in report.checks} == {"files", "repo_map"}
-    assert {check.status for check in report.checks} <= {"ok", "warn", "fail", "skipped"}
+    assert {check.status for check in report.checks} <= {
+        "ok",
+        "warn",
+        "fail",
+        "skipped",
+    }
     # The one detection function that cannot ship (snapshot_diff needs harness/bin/harness's own
     # CAPABILITIES.json/source tree) degrades to 'skipped' instead of raising FileNotFoundError.
-    snapshot = next(check for check in report.checks if check.id == "files.skill_snapshot")
+    snapshot = next(
+        check for check in report.checks if check.id == "files.skill_snapshot"
+    )
     assert snapshot.status == "skipped"
 
 

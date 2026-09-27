@@ -67,7 +67,9 @@ class RuntimeAttestationTests(unittest.TestCase):
 
             self.assertEqual(proof["worktree"], str(worktree.resolve()))
 
-    def test_attestation_trusts_only_its_registered_git_paths_in_a_sandbox(self) -> None:
+    def test_attestation_trusts_only_its_registered_git_paths_in_a_sandbox(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             repo = Path(temporary) / "repo"
             repo.mkdir()
