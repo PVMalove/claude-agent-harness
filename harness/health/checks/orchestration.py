@@ -290,8 +290,72 @@ def check_stale_dispatches(context: HealthContext) -> CheckResult:
     )
 
 
+def _owner(path: Path) -> str:
+    try:
+        uid = path.stat().st_uid
+    except OSError:
+        return "неизвестен (доступ отсутствует)"
+    try:
+        import pwd
+    except ImportError:
+        return str(uid)
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return str(uid)
+
+
 def check_orphaned_worktrees(context: HealthContext) -> CheckResult:
-    return _skipped("orchestration.orphaned_worktrees")
+    check_id = "orchestration.orphaned_worktrees"
+    if not _has_capability(context):
+        return _skipped(check_id)
+    from harness.cleanup import _active_worktrees, _registered_worktrees
+    from harness.storage import sandboxes_root, storage_root
+
+    repo = context.repo
+    registered = _registered_worktrees(repo)
+    root = storage_root(repo)
+    active = _active_worktrees(root)
+    if registered is None or active is None:
+        return CheckResult(
+            id=check_id,
+            group="orchestration",
+            status="ok",
+            message="не удалось определить осиротевшие воркдеревья (git или леджер недоступны)",
+        )
+    known = set(registered) | active
+    worktree_dirs = [sandboxes_root(repo) / "worktrees", root / "worktrees"]
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for worktrees in worktree_dirs:
+        if not worktrees.is_dir() or worktrees.is_symlink():
+            continue
+        for entry in sorted(worktrees.iterdir()):
+            if not entry.is_dir() or entry.is_symlink():
+                continue
+            resolved = entry.resolve()
+            if resolved in known or resolved in seen:
+                continue
+            seen.add(resolved)
+            candidates.append(entry)
+    if not candidates:
+        return CheckResult(
+            id=check_id,
+            group="orchestration",
+            status="ok",
+            message="осиротевших воркдеревьев нет",
+        )
+    described = [f"{path} (owner={_owner(path)})" for path in candidates]
+    return CheckResult(
+        id=check_id,
+        group="orchestration",
+        status="warn",
+        message="осиротевшие каталоги воркдеревьев: " + "; ".join(described),
+        fix=Fix(
+            text="ничего не удалено; сначала git worktree prune, затем предпросмотр harness cleanup",
+            command="harness cleanup <repo> --mode hard",
+        ),
+    )
 
 
 def check_disposable_data(context: HealthContext) -> CheckResult:

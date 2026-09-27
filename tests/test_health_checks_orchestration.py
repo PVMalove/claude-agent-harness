@@ -5,6 +5,7 @@ capability exactly like `files.check_orchestration_config` already is."""
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Callable
@@ -31,6 +32,10 @@ _CHECK_FUNCTIONS: list[Callable[[HealthContext], CheckResult]] = [
 
 def _context(repo: Path, lock: dict[str, object] | None = None) -> HealthContext:
     return HealthContext(repo=repo, lock=lock, online=False)
+
+
+def _init_repo(path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
 
 
 def _ledger(repo: Path) -> LifecycleLedger:
@@ -317,3 +322,104 @@ def test_stale_dispatches_uses_the_project_configured_threshold_over_the_default
         _context(tmp_path, lock=_ORCHESTRATION_LOCK)
     )
     assert overridden_result.status == "warn"
+
+
+# --- orchestration.orphaned_worktrees (DoD 4) --------------------------------------------------
+
+
+def test_owner_reports_access_missing_on_a_stat_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _raise(_self: Path) -> int:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "stat", _raise)
+
+    assert checks._owner(tmp_path) == "неизвестен (доступ отсутствует)"
+
+
+def test_orphaned_worktrees_warns_with_owner_and_deletes_nothing(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    worktrees_dir = tmp_path / ".harness" / ".sandboxes" / "worktrees"
+    orphan = worktrees_dir / "orphan-1"
+    orphan.mkdir(parents=True)
+    marker = orphan / "marker.txt"
+    marker.write_text("keep me", encoding="utf-8")
+
+    result = checks.check_orphaned_worktrees(
+        _context(tmp_path, lock=_ORCHESTRATION_LOCK)
+    )
+
+    assert result.status == "warn"
+    assert "orphan-1" in result.message
+    assert "owner=" in result.message
+    assert result.fix is not None
+    assert result.fix.command == "harness cleanup <repo> --mode hard"
+    assert orphan.is_dir()
+    assert marker.read_text(encoding="utf-8") == "keep me"
+
+
+def test_orphaned_worktrees_ok_when_registered_by_git_worktree_list(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    (tmp_path / "README.md").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    worktree_path = tmp_path / ".harness" / ".sandboxes" / "worktrees" / "linked"
+    worktree_path.parent.mkdir(parents=True)
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "feature/issue-1-x", str(worktree_path)],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    result = checks.check_orphaned_worktrees(
+        _context(tmp_path, lock=_ORCHESTRATION_LOCK)
+    )
+
+    assert result.status == "ok"
+    assert worktree_path.is_dir()  # still present; nothing was pruned
+
+
+def test_orphaned_worktrees_ok_when_referenced_by_an_active_batch(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    ledger = _ledger(tmp_path)
+    worktree_path = tmp_path / ".harness" / ".sandboxes" / "worktrees" / "active-1"
+    worktree_path.mkdir(parents=True)
+    generation = ledger.records_root()
+    record: JsonObject = {
+        "batch_id": "batch-active",
+        "state": "active",
+        "coordinator_approval": None,
+        "dispatches": [],
+        "worktree": str(worktree_path),
+    }
+    ledger.write_immutable(
+        generation / "plans" / "batch-active.json", {"batch_id": "batch-active"}
+    )
+    ledger.write_immutable(generation / "batches" / "batch-active.json", record)
+
+    result = checks.check_orphaned_worktrees(
+        _context(tmp_path, lock=_ORCHESTRATION_LOCK)
+    )
+
+    assert result.status == "ok"
