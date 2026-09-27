@@ -1,4 +1,4 @@
-"""harness.console.export: the console's shared Markdown export (Reports now, Repo Map next). No
+"""harness.console.export: the console's shared Markdown export (Reports and Repo Map). No
 textual needed."""
 
 from __future__ import annotations

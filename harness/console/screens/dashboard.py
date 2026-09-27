@@ -1,6 +1,6 @@
 """The console's home screen: an offline dashboard summary plus the section menu - Diagnostics,
-Harness, Orchestration, Reports, Repo Map. Diagnostics, Harness and Reports have real screens; the
-rest stay stubs."""
+Harness, Orchestration, Reports, Repo Map. Diagnostics, Harness, Reports and Repo Map have real
+screens; Orchestration stays a stub."""
 
 from __future__ import annotations
 
@@ -71,5 +71,9 @@ class DashboardScreen(Screen[None]):
             from .reports import ReportsScreen
 
             self.app.push_screen(ReportsScreen(self.repo))
+        elif name == "Repo Map":
+            from .repo_map import RepoMapScreen
+
+            self.app.push_screen(RepoMapScreen(self.repo, command_runner=self._command_runner))
         elif name is not None:
             self.app.push_screen(StubScreen(name))

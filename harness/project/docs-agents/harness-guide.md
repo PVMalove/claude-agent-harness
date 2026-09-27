@@ -214,13 +214,25 @@ qa-lane (`qa-lane/attempts/`). Отчёт или хронологию можно
 `tickets/`, или новая `issue-<N>/`), без номера тикета — в `docs/tasks/console-exports/`; файл
 датирован и никогда не перезаписывается. Экспорт — общий `harness/console/export.py` плюс действие
 `harness/console/screens/export.py`, которое переиспользуют и другие разделы (Repo Map).
-`Orchestration` и `Repo Map` — пока заглушки «раздел ещё не реализован». Код разложен по шву
-stdlib/textual: `harness/console/{pin,runner,launcher,data,catalog,reports,export}.py` не
+`Repo Map` открывает карту для HEAD сразу, если в кэше результатов Repo Map
+(`.harness/.sandboxes/cache/repo_map/results`) есть проверенная запись для этого коммита
+(`read_cache` сверяет ключ, SHA-256, commit и схему; из нескольких записей берётся `tier=full`,
+затем самая свежая). Иначе действие «Построить карту» (`b`) после предупреждения, что в режиме
+`full` CLI может установить offline parser bundle, запускает Repo Map CLI
+(`python -B .harness/repo_map/repo_map.py --repo <repo> --commit <HEAD>`, без установленного CLI —
+копию из харнесса) через тот же исполнитель команд; отмена ничего не запускает. Вкладки: сводка
+(tier, причина деградации, commit, число файлов, рёбер и токенов, provenance парсера), дерево файлов
+с сигнатурами и `parser_status`, поиском символа по сигнатурам и связями выбранного файла по типу и
+уверенности, топ-10 «хабов» по входящей степени, диагностики. Карта экспортируется в Markdown (`e`)
+и в JSON (`j`, payload схемы v1 как есть) — в `docs/tasks/console-exports/`. Раздел читает только
+поля схемы v1 и принимает карту только после `harness.repo_map.contract.validation_error`.
+`Orchestration` — пока заглушка «раздел ещё не реализован». Код разложен по шву
+stdlib/textual: `harness/console/{pin,runner,launcher,data,catalog,reports,export,repo_map}.py` не
 импортируют `textual` и тестируются без него; только `harness/console/app.py` и
 `harness/console/screens/*.py` его импортируют, и только внутри уже релончнутого процесса —
 Pilot-тесты (`tests/test_console_app.py`, `tests/test_console_harness.py`,
-`tests/test_console_reports_app.py`) пропускаются (`pytest.importorskip`), если textual не
-установлен. `textual` — только в
+`tests/test_console_reports_app.py`, `tests/test_console_repo_map_app.py`) пропускаются
+(`pytest.importorskip`), если textual не установлен. `textual` — только в
 `[dependency-groups].dev` `pyproject.toml`, тем же pin'ом, что и в коде (`tests/test_console_pin.py`
 держит их равными).
 
