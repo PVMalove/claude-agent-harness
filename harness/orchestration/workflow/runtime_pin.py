@@ -17,6 +17,7 @@ from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
     _non_empty,
+    _read_object,
     _repo,
 )
 from harness.orchestration.core.workspace import (
@@ -40,6 +41,15 @@ def _pinned_hash(batch: JsonObject) -> str | None:
     return None
 
 
+def _payload_dispatch_id(args: argparse.Namespace) -> object:
+    """`report submit`, `dispatch checkpoint` and `dispatch telemetry` name their dispatch only
+    inside the JSON payload passed as --file."""
+    path = getattr(args, "file", None)
+    if not _non_empty(path):
+        return None
+    return _read_object(Path(path), "--file payload").get("dispatch_id")
+
+
 def _target_batch(args: argparse.Namespace, root: Path) -> JsonObject | None:
     """The batch a command acts on, or None when it names none or its records are unreadable --
     the command itself then reports that, on the installed runtime."""
@@ -47,6 +57,8 @@ def _target_batch(args: argparse.Namespace, root: Path) -> JsonObject | None:
         batch_id = getattr(args, "batch", None)
         if not _non_empty(batch_id):
             dispatch_id = getattr(args, "dispatch", None)
+            if not _non_empty(dispatch_id):
+                dispatch_id = _payload_dispatch_id(args)
             if not _non_empty(dispatch_id):
                 return None
             batch_id = _load_dispatch(root, dispatch_id).get("batch_id")

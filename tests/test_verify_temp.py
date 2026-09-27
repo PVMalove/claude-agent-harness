@@ -95,6 +95,55 @@ class IsolatedTempEnvTest(unittest.TestCase):
                     verify._check_python_syntax()
 
 
+class WrittenPathBudgetTest(unittest.TestCase):
+    """PYTHONPYCACHEPREFIX mirrors the absolute source path under the run root, so a QA checkout
+    nested in the same repository wrote a 260-char .pyc and failed without LongPathsEnabled (#381).
+    What verify's Python writes must be bounded by the run root, not by how deep the sources are."""
+
+    # Headroom for the run root's own files (mypy cache, pytest basetemp names), not for sources.
+    RUN_ROOT_HEADROOM = 64
+
+    def _written(self, root: Path, before: set[Path]) -> list[Path]:
+        return [path for path in root.rglob("*") if path.is_file() and path not in before]
+
+    def test_nothing_written_mirrors_a_deep_checkout(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            base = Path(temporary)
+            run_tmp = base / "v"
+            run_tmp.mkdir()
+            # A checkout deep enough that mirroring it under the run root would blow the headroom.
+            checkout = base / ("q" * 40) / ("c" * 40)
+            package = checkout / "pkg"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+            before = set(base.rglob("*"))
+            env = verify.isolated_temp_env(dict(os.environ, PYTHONPATH=str(checkout)), run_tmp)
+
+            verify.check_syntax([str(package / "__init__.py"), str(package / "mod.py")])
+            subprocess.run([sys.executable, "-c", "import pkg.mod"], env=env, check=True)
+
+            written = self._written(base, before)
+            self.assertEqual([path for path in written if path.suffix == ".pyc"], [])
+            longest = max((len(str(path)) for path in written), default=0)
+            self.assertLessEqual(longest, len(str(run_tmp)) + self.RUN_ROOT_HEADROOM)
+
+    def test_syntax_check_reports_the_broken_file(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            broken = Path(temporary) / "broken.py"
+            broken.write_text("def f(:\n", encoding="utf-8")
+            with (
+                mock.patch("sys.stderr") as stderr,
+                self.assertRaises(SystemExit) as raised,
+            ):
+                verify.check_syntax([str(broken)])
+
+            self.assertEqual(raised.exception.code, 1)
+            reported = "".join(call.args[0] for call in stderr.write.call_args_list)
+            self.assertIn("broken.py", reported)
+            self.assertEqual(list(Path(temporary).rglob("*.pyc")), [])
+
+
 class RemoveTreeTest(unittest.TestCase):
     def test_removes_read_only_files_like_git_objects(self) -> None:
         root = Path(tempfile.mkdtemp())

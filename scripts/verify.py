@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 MIN_PYTHON = (3, 12)
@@ -37,7 +38,8 @@ from scripts.verification.process import isolated_temp_env, remove_tree, run_ok,
 from scripts.verification.text_checks import check_no_todo, grep_contains, grep_line
 from scripts.verification.vendor_pin import check_vendor_pin
 
-__all__ = ["isolated_temp_env", "main", "remove_tree", "run_ok", "run_stage"]
+__all__ = ["check_syntax", "isolated_temp_env", "main", "remove_tree", "run_ok", "run_stage"]
+
 
 # Every Python entry point must compile before any stage runs: the extensionless CLIs and
 # each script module, including the packages the verification and clean-room scripts are split into.
@@ -53,7 +55,6 @@ _COMPILED_PACKAGES = (ROOT / "scripts" / "verification", ROOT / "scripts" / "cle
 
 def _prepare_run_root() -> tuple[Path, dict[str, str]]:
     """Создать короткий корень запуска до любого subprocess Python и окружение, изолированное в нём.
-
     Python subprocesses run without bytecode writes, avoiding MAX_PATH when the source is in a
     linked worktree. Syntax checks below compile in memory for the same reason.
     """
@@ -63,6 +64,19 @@ def _prepare_run_root() -> tuple[Path, dict[str, str]]:
     (run_tmp / ".active.json").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
     atexit.register(lambda: remove_tree(run_tmp) if run_tmp.exists() else None)
     return run_tmp, isolated_temp_env(dict(os.environ, PYTHONPATH=str(ROOT)), run_tmp)
+
+
+def check_syntax(sources: list[str]) -> None:
+    """Скомпилировать исходники в памяти, как `py_compile`, но без записи `.pyc` (#381)."""
+    failed = False
+    for source in sources:
+        try:
+            compile(Path(source).read_bytes(), source, "exec")
+        except (SyntaxError, ValueError) as error:
+            sys.stderr.write("".join(traceback.format_exception_only(error)))
+            failed = True
+    if failed:
+        sys.exit(1)
 
 
 def _compiled_sources() -> list[str]:
@@ -117,6 +131,7 @@ def _static_checks(test_env: dict[str, str]) -> None:
         stdout=subprocess.DEVNULL,
         env=test_env,
     )
+
     _check_python_syntax()
     _check_global_skills()
     run_ok([sys.executable, str(ROOT / "scripts" / "build_registry.py")], env=test_env)
