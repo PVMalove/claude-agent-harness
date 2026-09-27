@@ -36,7 +36,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run a command and print a bounded pytest-oriented summary.",
     )
-    parser.add_argument("--log-dir", default=".harness/test-logs")
+    parser.add_argument("--log-dir", default=".harness/.sandboxes/logs")
     parser.add_argument("--max-failures", type=int, default=10)
     parser.add_argument("--max-diagnostics", type=int, default=10)
     parser.add_argument("command", nargs=argparse.REMAINDER)

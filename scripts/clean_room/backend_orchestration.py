@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from harness.storage import storage_path
 from scripts.clean_room.support import (
     HARNESS,
     ROOT,
@@ -54,7 +55,7 @@ def run(ctx: SimpleNamespace) -> None:
         The coordinator refuses a report or checkpoint written outside the repository and its
         worktrees, which is what stops evidence from landing in a guessed home-directory folder.
         """
-        path = orchestration_project / ".harness" / "scratch" / "inbox" / name
+        path = storage_path(orchestration_project, "scratch", "inbox", name)
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 

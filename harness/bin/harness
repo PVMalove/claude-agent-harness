@@ -36,7 +36,7 @@ from harness.errors import HarnessError, print_and_exit
 from harness.orchestration.contract import health_problems
 from harness.cleanup import apply_cleanup, plan_cleanup
 from harness.repo_map import parser_bundle
-from harness.storage import sandboxes_health, validate_sandboxes
+from harness.storage import sandboxes_health, storage_path, validate_sandboxes
 
 CAPABILITIES_FILE = PACKAGE / "CAPABILITIES.json"
 VERSION_FILE = PACKAGE / "VERSION"
@@ -1025,20 +1025,10 @@ PROJECT_TEMPLATE_DIR = PACKAGE / "project"
 DOCS_TASKS_GITIGNORE_LINE = "/docs/tasks/"
 HARNESS_RUNTIME_GITIGNORE = """# Generated harness runtime data
 .sandboxes/
-.cache/
-tmp/
-reports/
-test-logs/
-worktrees/
 """
 RUNTIME_GITIGNORE_LINES = (
     DOCS_TASKS_GITIGNORE_LINE,
     "/.harness/.sandboxes/",
-    "/.harness/tmp/",
-    "/.harness/.cache/",
-    "/.harness/reports/",
-    "/.harness/test-logs/",
-    "/.harness/worktrees/",
 )
 
 
@@ -1079,7 +1069,7 @@ def scaffold_pvmalove_extras(
 ) -> list[str]:
     """Non-skill project files pvmalove-suite ships alongside the managed skill
     snapshot: docs, hooks, Claude Code subagents, a rule, .harness/project.json,
-    and two idempotent .gitignore protections (a nested .harness/scratch/.gitignore
+    and two idempotent .gitignore protections (a nested .harness/.sandboxes/scratch/.gitignore
     and a /docs/tasks/ line in the target project's root .gitignore).
     Written once if absent, like AGENTS.md/CLAUDE.md above - not tracked in
     harness.lock, never touched by update. See CONTEXT.md and docs/adr/0003.
@@ -1114,7 +1104,10 @@ def scaffold_pvmalove_extras(
             written.append(result)
 
     scratch_gitignore_result = _copy_if_absent(
-        PROJECT_TEMPLATE_DIR / "scratch/.gitignore", repo / ".harness/scratch/.gitignore", force=force_seed, differing=differing
+        PROJECT_TEMPLATE_DIR / "scratch/.gitignore",
+        storage_path(repo, "scratch", ".gitignore"),
+        force=force_seed,
+        differing=differing,
     )
     if scratch_gitignore_result:
         written.append(scratch_gitignore_result)

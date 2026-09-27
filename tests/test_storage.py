@@ -65,14 +65,12 @@ def test_storage_path_categories_and_boundary(tmp_path: Path) -> None:
         assert path.is_relative_to(tmp_path / ".harness" / ".sandboxes")
 
 
-def test_storage_path_legacy_categories(tmp_path: Path) -> None:
-    cache_path = storage_path(tmp_path, ".cache", "repo_map", "results")
-    assert cache_path == tmp_path / ".harness" / ".cache" / "repo_map" / "results"
-    assert cache_path.is_relative_to(tmp_path / ".harness")
+def test_storage_path_rejects_legacy_categories(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unknown storage category"):
+        storage_path(tmp_path, ".cache", "repo_map", "results")
 
-    tmp_path_res = storage_path(tmp_path, "tmp", "tests")
-    assert tmp_path_res == tmp_path / ".harness" / "tmp" / "tests"
-    assert tmp_path_res.is_relative_to(tmp_path / ".harness")
+    with pytest.raises(ValueError, match="unknown storage category"):
+        storage_path(tmp_path, "tmp", "tests")
 
 
 def test_storage_path_escape_and_invalid_components(tmp_path: Path) -> None:

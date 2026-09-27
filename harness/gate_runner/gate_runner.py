@@ -65,7 +65,7 @@ class CleanRoomPolicy:
 
     @contextmanager
     def checkout(self) -> Iterator[Path]:
-        temporary_parent = storage_path(self.repository, "tmp", "qa")
+        temporary_parent = storage_path(self.repository, "runs", "qa")
         temporary_parent.mkdir(parents=True, exist_ok=True)
         worktree_root = Path(
             tempfile.mkdtemp(prefix="agent-harness-qa-", dir=temporary_parent)

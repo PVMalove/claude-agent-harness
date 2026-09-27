@@ -14,8 +14,7 @@ SANDBOXES_DIR = ".sandboxes"
 SANDBOX_CATEGORIES = frozenset(
     {"cache", "logs", "scratch", "runs", "reports", "worktrees"}
 )
-LEGACY_CATEGORIES = frozenset({".cache", "tmp"})
-LEGACY_STORAGE_DIRS = (".cache", "test-logs", "tmp", "reports")
+LEGACY_STORAGE_DIRS = (".cache", "test-logs", "tmp", "reports", "scratch")
 
 
 def storage_root(repo: Path) -> Path:
@@ -72,9 +71,6 @@ def storage_path(repo: Path, *parts: str) -> Path:
     if category in SANDBOX_CATEGORIES:
         root = sandboxes_root(repo)
         root_name = "sandboxes root"
-    elif category in LEGACY_CATEGORIES:
-        root = storage_root(repo)
-        root_name = "storage root"
     else:
         raise ValueError(
             f"unknown storage category {category!r}, expected one of {sorted(SANDBOX_CATEGORIES)}"

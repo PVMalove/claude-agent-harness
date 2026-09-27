@@ -53,6 +53,7 @@ class CleanupTests(unittest.TestCase):
         legacy_tmp = root / "tmp"
         legacy_logs = root / "test-logs"
         legacy_reports = root / "reports"
+        legacy_scratch = root / "scratch"
         ledger = root / "orchestration" / "state" / "ledger.json"
 
         for directory in (
@@ -66,6 +67,7 @@ class CleanupTests(unittest.TestCase):
             legacy_tmp,
             legacy_logs,
             legacy_reports,
+            legacy_scratch,
             ledger.parent,
         ):
             directory.mkdir(parents=True, exist_ok=True)
@@ -81,6 +83,7 @@ class CleanupTests(unittest.TestCase):
         (legacy_tmp / "old_tmp.bin").write_text("old", encoding="utf-8")
         (legacy_logs / "old.log").write_text("old", encoding="utf-8")
         (legacy_reports / "old.html").write_text("old", encoding="utf-8")
+        (legacy_scratch / "old_scratch.txt").write_text("old", encoding="utf-8")
         ledger.write_text("durable", encoding="utf-8")
 
         plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
@@ -94,6 +97,7 @@ class CleanupTests(unittest.TestCase):
             str(legacy_tmp),
             str(legacy_logs),
             str(legacy_reports),
+            str(legacy_scratch),
         }
         self.assertEqual({item["path"] for item in plan["remove"]}, expected_remove)
 
@@ -103,6 +107,7 @@ class CleanupTests(unittest.TestCase):
         self.assertFalse(scratch_file.exists())
         self.assertFalse(log_file.exists())
         self.assertFalse(legacy_cache.exists())
+        self.assertFalse(legacy_scratch.exists())
         self.assertFalse(legacy_tmp.exists())
         self.assertFalse(legacy_logs.exists())
         self.assertFalse(legacy_reports.exists())

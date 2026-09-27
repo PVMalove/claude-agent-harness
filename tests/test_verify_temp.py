@@ -63,7 +63,7 @@ class IsolatedTempEnvTest(unittest.TestCase):
             project = Path(temporary) / "project"
             project.mkdir()
             subprocess.run(["git", "init", "-q", str(project)], check=True)
-            run_tmp = project / ".harness" / "tmp" / "tests" / "run"
+            run_tmp = project / ".harness" / ".sandboxes" / "runs" / "tests" / "run"
             nested = run_tmp / "not-a-repo"
             nested.mkdir(parents=True)
             env = verify.isolated_temp_env(dict(os.environ), run_tmp)

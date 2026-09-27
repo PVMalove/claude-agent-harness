@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from harness.storage import storage_path
 from scripts.clean_room.support import (
     BASH,
     HARNESS,
@@ -44,12 +45,12 @@ def run(ctx: SimpleNamespace) -> None:
     if not bounded_hook.is_file():
         sys.exit("pvmalove-suite init did not scaffold require-bounded-check.sh")
 
-    scratch_gitignore = pv_project / ".harness" / "scratch" / ".gitignore"
+    scratch_gitignore = storage_path(pv_project, "scratch", ".gitignore")
     if not scratch_gitignore.is_file():
-        sys.exit("pvmalove-suite init did not scaffold .harness/scratch/.gitignore")
+        sys.exit("pvmalove-suite init did not scaffold .harness/.sandboxes/scratch/.gitignore")
     if scratch_gitignore.read_text(encoding="utf-8") != "*\n!.gitignore\n":
         sys.exit(
-            "pvmalove-suite init scaffolded .harness/scratch/.gitignore with unexpected content"
+            "pvmalove-suite init scaffolded .harness/.sandboxes/scratch/.gitignore with unexpected content"
         )
 
     root_gitignore = pv_project / ".gitignore"
@@ -75,7 +76,7 @@ def run(ctx: SimpleNamespace) -> None:
     run_ok(HARNESS + ["update", str(pv_project)])
     if not scratch_gitignore.is_file():
         sys.exit(
-            "update did not retrofit .harness/scratch/.gitignore onto an already-installed project"
+            "update did not retrofit .harness/.sandboxes/scratch/.gitignore onto an already-installed project"
         )
     updated_gitignore_lines = root_gitignore.read_text(encoding="utf-8").splitlines()
     if "/docs/tasks/" not in updated_gitignore_lines:
@@ -136,10 +137,10 @@ def run(ctx: SimpleNamespace) -> None:
                 {"tool_input": {"file_path": str(harness_scratch_pr_body)}}
             ),
         ).returncode
-        != 0
+        == 0
     ):
         sys.exit(
-            "block-scratch-outside-docs-tasks.sh rejected a PR body in .harness/scratch/tmp/"
+            "block-scratch-outside-docs-tasks.sh allowed a PR body in the retired .harness/scratch/tmp/ path"
         )
     sandboxes_scratch_pr_body = (
         pv_project / ".harness" / ".sandboxes" / "scratch" / "tmp" / "pr-body-1-test.md"
