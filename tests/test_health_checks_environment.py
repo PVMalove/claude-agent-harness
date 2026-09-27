@@ -16,7 +16,7 @@ import pytest
 from harness.health.checks import environment
 from harness.health.context import HealthContext
 
-HARNESS = Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness"
+HARNESS = Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness.py"
 REAL_GIT = shutil.which("git")
 
 # A fake tool answers canned responses keyed by its arguments (for git: after the leading

@@ -19,7 +19,7 @@ from harness.health.checks import files, windows
 from harness.health.context import HealthContext
 from harness.health.model import CheckResult
 
-HARNESS = Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness"
+HARNESS = Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness.py"
 REAL_GIT = shutil.which("git")
 WINDOWS_CHECK_IDS = (
     "environment.long_paths",

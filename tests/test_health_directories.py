@@ -17,7 +17,7 @@ import pytest
 from harness.health.checks import directories
 from harness.health.context import HealthContext
 
-_HARNESS = Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness"
+_HARNESS = Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness.py"
 _DIRECTORY_IDS = {
     "directories.harness",
     "directories.sandboxes",

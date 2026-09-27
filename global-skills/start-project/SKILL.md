@@ -10,7 +10,7 @@ are outputs of project design, not prerequisites. Keep each phase read-only unti
 its proposed durable artifact.
 
 Resolve this skill's real path and verify that the public `agent-harness` root two levels above it
-contains `skills/REGISTRY.md` and `harness/bin/harness`. Its vendored workflows are a library: use
+contains `skills/REGISTRY.md` and `harness/bin/harness.py`. Its vendored workflows are a library: use
 the registry to locate and read only the exact `SKILL.md` needed for the current phase. This
 resolution is complete only when both files exist; otherwise report that the public package is
 incomplete instead of guessing another installation.
@@ -71,7 +71,7 @@ explicitly requests one.
    the confirmed manifest:
 
    ```bash
-   python3 "<resolved-agent-harness-root>/harness/bin/harness" init "<repo>" \
+   python3 "<resolved-agent-harness-root>/harness/bin/harness.py" init "<repo>" \
      --project-type <type> \
      --capability <selected-capability> \
      --base-branch <branch>
@@ -126,7 +126,7 @@ description: Начать новый проект с идеи или созда�
 её предложенный долговечный артефакт.
 
 Определите реальный путь этого навыка и убедитесь, что публичный корень `agent-harness` на два уровня выше него
-содержит `skills/REGISTRY.md` и `harness/bin/harness`. Его встроенные рабочие процессы — это библиотека: используйте
+содержит `skills/REGISTRY.md` и `harness/bin/harness.py`. Его встроенные рабочие процессы — это библиотека: используйте
 реестр, чтобы найти и прочитать только тот точный `SKILL.md`, который нужен для текущей фазы. Это
 определение считается завершенным только тогда, когда существуют оба файла; в противном случае сообщите, что публичный пакет
 неполный, вместо того чтобы угадывать другую установку.
@@ -187,7 +187,7 @@ description: Начать новый проект с идеи или созда�
    подтвержденный манифест:
 
    ```bash
-   python3 "<resolved-agent-harness-root>/harness/bin/harness" init "<repo>" \
+   python3 "<resolved-agent-harness-root>/harness/bin/harness.py" init "<repo>" \
      --project-type <type> \
      --capability <selected-capability> \
      --base-branch <branch>

@@ -23,7 +23,7 @@ from .runner import CommandRunner, default_runner
 # Set on the relaunched `uv run` subprocess's own environment so it knows not to relaunch again.
 RELAUNCH_ENV = "HARNESS_CONSOLE_RELAUNCHED"
 
-BIN_HARNESS_PATH = Path(__file__).resolve().parent.parent / "bin" / "harness"
+BIN_HARNESS_PATH = Path(__file__).resolve().parent.parent / "bin" / "harness.py"
 
 
 def find_uv() -> str | None:

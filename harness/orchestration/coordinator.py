@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import cast
 
-# `harness/bin/harness`'s package_files() copies this file verbatim into target projects as
+# `harness/bin/harness.py`'s package_files() copies this file verbatim into target projects as
 # `.harness/orchestration/coordinator.py` -- a different directory name than the source tree's
 # `harness/`. Alias `harness` to whichever of the two this file actually lives under so
 # `from harness...` resolves the same way in both places. See docs/adr/0018.

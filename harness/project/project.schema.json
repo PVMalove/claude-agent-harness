@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "harness project config",
-  "description": "Project-specific values pvmalove-suite's qa-gate, pr-composer, code-review, to-guide, and the check-branch-name.sh/check-worktree-branch-name.sh hooks read. Written once by 'harness init'/'adopt'/'update' when pvmalove-suite is selected (harness/bin/harness, scaffold_pvmalove_extras) and safe to hand-edit afterward - see docs/adr/0003 and CONTEXT.md (\"Проектный конфиг\"). This schema is editor-facing only (autocomplete/validation); 'harness health' enforces the same rules by hand, since this repo has no jsonschema dependency to load this file at runtime.",
+  "description": "Project-specific values pvmalove-suite's qa-gate, pr-composer, code-review, to-guide, and the check-branch-name.sh/check-worktree-branch-name.sh hooks read. Written once by 'harness init'/'adopt'/'update' when pvmalove-suite is selected (harness/bin/harness.py, scaffold_pvmalove_extras) and safe to hand-edit afterward - see docs/adr/0003 and CONTEXT.md (\"Проектный конфиг\"). This schema is editor-facing only (autocomplete/validation); 'harness health' enforces the same rules by hand, since this repo has no jsonschema dependency to load this file at runtime.",
   "type": "object",
   "additionalProperties": false,
   "required": ["language", "base_branch", "branch_pattern", "qa_gate_commands"],

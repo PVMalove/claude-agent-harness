@@ -1,7 +1,7 @@
 """harness/health/ ships into an installed project's `.harness/health/` the same way
 harness/repo_map/repo_map.py ships into `.harness/repo_map/repo_map.py` (ADR 0018's bootstrap
 alias) - see harness/health/__init__.py's docstring. This proves the shipped copy still runs with
-no `harness/bin/harness` and no canonical `harness/` package reachable, the scenario the harness
+no `harness/bin/harness.py` and no canonical `harness/` package reachable, the scenario the harness
 console (#348) will run in; it is what would have caught the old harness/health/checks/_cli.py
 bridge's FileNotFoundError (ticket #342 code review)."""
 
@@ -86,7 +86,7 @@ def test_registry_runs_from_a_copied_health_only_tree_with_no_bin_harness(
         "fail",
         "skipped",
     }
-    # The one detection function that cannot ship (snapshot_diff needs harness/bin/harness's own
+    # The one detection function that cannot ship (snapshot_diff needs harness/bin/harness.py's own
     # CAPABILITIES.json/source tree) degrades to 'skipped' instead of raising FileNotFoundError.
     snapshot = next(
         check for check in report.checks if check.id == "files.skill_snapshot"

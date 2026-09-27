@@ -3,7 +3,7 @@ here is importable and runnable with no `textual` installed - screens/*.py only 
 these functions return, never touch health-check logic or the packaging catalog directly.
 
 `harness.health.registry.run` (offline health checks) is called in-process, the same public entry
-point `harness/bin/harness`'s `cmd_health` uses. Drift status and active batch count are read
+point `harness/bin/harness.py`'s `cmd_health` uses. Drift status and active batch count are read
 through the packager's and coordinator's own `--json` CLIs by subprocess, rather than duplicating
 their capability-resolution/ledger logic inside the console (both stay optional facts: a project
 with no `.harness/harness.lock`, or no backend-orchestration, renders "не подключено").
@@ -22,7 +22,7 @@ from ..health.model import Report
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = _PACKAGE_ROOT / "VERSION"
-BIN_HARNESS_PATH = _PACKAGE_ROOT / "bin" / "harness"
+BIN_HARNESS_PATH = _PACKAGE_ROOT / "bin" / "harness.py"
 
 
 @dataclass(frozen=True)

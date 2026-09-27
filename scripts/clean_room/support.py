@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-HARNESS = [sys.executable, str(ROOT / "harness" / "bin" / "harness")]
+HARNESS = [sys.executable, str(ROOT / "harness" / "bin" / "harness.py")]
 INSTALL_GLOBAL = [sys.executable, str(ROOT / "bin" / "install-global")]
 
 

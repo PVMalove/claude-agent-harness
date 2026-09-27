@@ -31,7 +31,7 @@ cd claude-agent-harness
 
 ### Шаг 2 — команды CLI
 
-Все команды — `harness/bin/harness <command> <repo> [флаги]`, где `<repo>` — путь к целевому проекту (может быть где угодно на диске, не обязательно текущая директория). Ниже — все девять подкоманд, которые умеет CLI.
+Все команды — `harness/bin/harness.py <command> <repo> [флаги]`, где `<repo>` — путь к целевому проекту (может быть где угодно на диске, не обязательно текущая директория). Ниже — все девять подкоманд, которые умеет CLI.
 
 Если не уверены, что из пары нужно — четыре короткие таблицы, детали каждой команды/capability ниже:
 
@@ -78,7 +78,7 @@ clean-room QA для того же SHA. Report остаётся `reported` до 
 **`init` — первая установка в проект, где харнесса ещё нет.** Требует, чтобы `<repo>` уже был git-репозиторием; падает с «already exists; use update», если `.harness/harness.lock` уже есть.
 
 ```bash
-python3 harness/bin/harness init /path/to/repository \
+python3 harness/bin/harness.py init /path/to/repository \
   --project-type software \
   --stack python \
   --capability pvmalove-suite \
@@ -91,7 +91,7 @@ python3 harness/bin/harness init /path/to/repository \
 Windows (PowerShell) — та же схема для всех команд ниже: `python` вместо `python3`, обратная кавычка `` ` `` вместо `\` для переноса строк, `C:\path\to\repository` вместо `/path/to/repository`:
 
 ```powershell
-python harness\bin\harness init C:\path\to\repository `
+python harness\bin\harness.py init C:\path\to\repository `
   --project-type software `
   --stack python `
   --capability pvmalove-suite `
@@ -111,13 +111,13 @@ python harness\bin\harness init C:\path\to\repository `
 **`adopt` — установка в проект, где уже есть свои (не харнесс-управляемые) скиллы под теми же именами.** Не требует пустого `.harness/` (в отличие от `init`) — сохраняет все проектные скиллы, которых нет в выбранной capability; если что-то из выбранной capability совпадает по имени с уже существующим — падает со списком конфликтов, если не передан `--replace-conflicts` (тогда конфликтующие заменяются, остальное не тронуто). Те же `--capability`/pvmalove-флаги, что у `init`:
 
 ```bash
-python3 harness/bin/harness adopt /path/to/repository --capability pvmalove-suite --replace-conflicts
+python3 harness/bin/harness.py adopt /path/to/repository --capability pvmalove-suite --replace-conflicts
 ```
 
 **`diff` — сверить репозиторий с залоченным снимком:**
 
 ```bash
-python3 harness/bin/harness diff /path/to/repository [--json]
+python3 harness/bin/harness.py diff /path/to/repository [--json]
 ```
 
 Код выхода `0`, если чисто, `1` — если есть дрейф (локальные правки в managed-файлах, конфликты). `--json` — машиночитаемый вывод вместо человекочитаемого отчёта.
@@ -125,7 +125,7 @@ python3 harness/bin/harness diff /path/to/repository [--json]
 **`update` — подтянуть новую версию харнесса поверх существующей установки** (апстрим сдвинулся, или изменились первопартийные скиллы):
 
 ```bash
-python3 harness/bin/harness update /path/to/repository --capability pvmalove-suite [--force-managed-files] [--force-seed-files] [--force]
+python3 harness/bin/harness.py update /path/to/repository --capability pvmalove-suite [--force-managed-files] [--force-seed-files] [--force]
 ```
 
 Без флага `update` отказывается перезаписывать локально изменённые managed files — сначала покажет их (как `diff`) и остановится. `--force-managed-files` перезаписывает только managed snapshot, включая удаление файлов, которых больше нет в текущей версии выбранной capability. Seed-файлы (`docs/agents/`, hooks, rules, agents, `.harness/project.json` и `.harness/orchestration.json`) сохраняются; `--force-seed-files` перезаписывает только их, а `--force` объединяет оба действия и может потерять project-owned настройки. `.harness/overlays/project-local.lock` и `.harness/integrations.json` `update` не проверяет и не трогает — это отдельная от capability-снимка подсистема.
@@ -133,7 +133,7 @@ python3 harness/bin/harness update /path/to/repository --capability pvmalove-sui
 **`registry` — перегенерировать `.harness/skills/REGISTRY.md` вручную** (без пересборки самого снимка скиллов):
 
 ```bash
-python3 harness/bin/harness registry /path/to/repository
+python3 harness/bin/harness.py registry /path/to/repository
 ```
 
 `init`/`adopt`/`update` и так пишут этот файл сами при каждом запуске — отдельная команда нужна, когда надо обновить реестр без полного `update`, например сразу после `lock-project-skills` (ниже). Таблица строится сканированием `.harness/skills/*/SKILL.md` прямо с диска — попадают и capability-скиллы, и project-owned; это фоллбек-обнаружение для рантаймов без нативного project-скилл-рута (сейчас — только Hermes Agent, `docs/runtime-discovery.md`).
@@ -141,7 +141,7 @@ python3 harness/bin/harness registry /path/to/repository
 **`lock-project-skills` — зафиксировать хэши скиллов, которыми владеет сам проект:**
 
 ```bash
-python3 harness/bin/harness lock-project-skills /path/to/repository
+python3 harness/bin/harness.py lock-project-skills /path/to/repository
 ```
 
 Для каждой директории под `.harness/skills`, не входящей ни в одну выбранную capability (скилл, который владелец проекта положил туда вручную, а не получил через `init`/`adopt`), пересчитывает sha256 всех git-видимых файлов (`git ls-files --cached --others --exclude-standard` — gitignore'нутые артефакты вроде `node_modules` в лок не попадают и не создают ложный дрейф) и переписывает `.harness/overlays/project-local.lock` целиком по текущему состоянию диска — не merge, полная регенерация. Заодно перегенерирует `REGISTRY.md`. Каждый скилл под `.harness/skills`, не подтверждённый ни выбранной capability, ни этим локом, валит `harness health` с `project skills missing provenance lock`.
@@ -149,11 +149,11 @@ python3 harness/bin/harness lock-project-skills /path/to/repository
 **`health` — диагностика текущей установки:**
 
 ```bash
-python3 harness/bin/harness health /path/to/repository
-python3 harness/bin/harness health /path/to/repository --json
-python3 harness/bin/harness health /path/to/repository --fix
-python3 harness/bin/harness health /path/to/repository --online
-python3 harness/bin/harness health /path/to/repository --online --fix
+python3 harness/bin/harness.py health /path/to/repository
+python3 harness/bin/harness.py health /path/to/repository --json
+python3 harness/bin/harness.py health /path/to/repository --fix
+python3 harness/bin/harness.py health /path/to/repository --online
+python3 harness/bin/harness.py health /path/to/repository --online --fix
 ```
 
 Выполняет все проверки из реестра `harness/health/` (stdlib-only пакет, `harness/health/checks/*.py` — по одному модулю на группу) без раннего выхода: сломанная проверка не скрывает остальные. Код возврата `1`, только если у хотя бы одной проверки `status=fail`; `warn` и `skipped` на код возврата не влияют.
@@ -171,13 +171,13 @@ python3 harness/bin/harness health /path/to/repository --online --fix
 **`list` — какие скиллы сейчас установлены** (построчно, по алфавиту):
 
 ```bash
-python3 harness/bin/harness list /path/to/repository
+python3 harness/bin/harness.py list /path/to/repository
 ```
 
 **`console` — интерактивный TUI-пульт диагностики и оркестрации** (ADR 0025):
 
 ```bash
-python3 harness/bin/harness console /path/to/repository
+python3 harness/bin/harness.py console /path/to/repository
 ```
 
 Релончит сам себя через `uv run --no-project --with textual==<pin>` — pin версии textual живёт в
@@ -250,7 +250,7 @@ Pilot-тесты (`tests/test_console_app.py`, `tests/test_console_harness.py`,
 `[dependency-groups].dev` `pyproject.toml`, тем же pin'ом, что и в коде (`tests/test_console_pin.py`
 держит их равными).
 
-**Глобальный слой** — отдельная команда, `bin/install-global`, не `harness/bin/harness`: ставится один раз на машину, на пользователя (`~`), а не на конкретный репозиторий. По собственному описанию скрипта: «устанавливает минимальный instruction-профиль плюс `start-project`. Никогда не устанавливает MCP, модели, плагины, credentials или permissions».
+**Глобальный слой** — отдельная команда, `bin/install-global`, не `harness/bin/harness.py`: ставится один раз на машину, на пользователя (`~`), а не на конкретный репозиторий. По собственному описанию скрипта: «устанавливает минимальный instruction-профиль плюс `start-project`. Никогда не устанавливает MCP, модели, плагины, credentials или permissions».
 
 ```bash
 python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
@@ -273,7 +273,7 @@ python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claud
 
 Заодно чистит entry-скиллы прошлых версий инструмента, которых больше нет в `global-skills/` (`project-harness-bootstrap`, `skill-library`) — если по этому имени лежит symlink именно на них, снимает; если лежит что-то постороннее (не symlink, или symlink на чужую цель) — падает как конфликт и не трогает, чтобы не задеть чужой файл с тем же именем.
 
-`bin/install-global` — Python-скрипт (`#!/usr/bin/env python3`, standalone floor — 3.9+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness`: `python3 bin/install-global ...` (bash) или `python bin\install-global ...` / `py bin\install-global ...` (PowerShell/cmd), никакого отдельного `.sh`/`.ps1` не нужно. Метаданные проекта в `pyproject.toml` отдельно объявляют `requires-python >=3.14`. На Windows для создания настоящих символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с подсказкой.
+`bin/install-global` — Python-скрипт (`#!/usr/bin/env python3`, standalone floor — 3.9+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness.py`: `python3 bin/install-global ...` (bash) или `python bin\install-global ...` / `py bin\install-global ...` (PowerShell/cmd), никакого отдельного `.sh`/`.ps1` не нужно. Метаданные проекта в `pyproject.toml` отдельно объявляют `requires-python >=3.14`. На Windows для создания настоящих символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с подсказкой.
 
 **Как это подключено.** Скиллы физически лежат в `.harness/skills/*/SKILL.md` (управляются `.harness/harness.lock` — хэши файлов, версия, `source_revision`). Claude Code и Codex находят их через symlink'и в корне репозитория:
 

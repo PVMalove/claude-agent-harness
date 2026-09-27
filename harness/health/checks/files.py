@@ -1,18 +1,18 @@
-"""Group 'files': harness-file validations migrated from `harness/bin/harness`'s old `cmd_health`.
+"""Group 'files': harness-file validations migrated from `harness/bin/harness.py`'s old `cmd_health`.
 
 The detection functions below (native_link_target, digest, file_digest, relative_path,
 frontmatter_metadata, skill_inventory, project_registry, validate_hash, public_skill_names,
 project_skill_files, validate_overlay_locks, validate_integrations, validate_project_json,
 validate_orchestration_config, verification_routing_health) are unchanged copies of the functions
-`harness/bin/harness` used to define under the same names; `harness/bin/harness` now imports them
+`harness/bin/harness.py` used to define under the same names; `harness/bin/harness.py` now imports them
 from here instead of defining its own copy, so there is a single definition and this package works
 standalone once copied into an installed project's `.harness/health/` (no more loading
-`harness/bin/harness` by path - see docs/adr/0018 for the same bootstrap-alias approach
+`harness/bin/harness.py` by path - see docs/adr/0018 for the same bootstrap-alias approach
 `harness/repo_map/repo_map.py` already uses). What is new in the `check_*` functions themselves is
 only the `CheckResult` wrapping: a stable id, a group, a status, and - for branches that used to
 print nothing on success - a Russian ok/skipped message.
 
-`fail`/`git_command` are small, generic CLI helpers `harness/bin/harness` also defines and uses in
+`fail`/`git_command` are small, generic CLI helpers `harness/bin/harness.py` also defines and uses in
 ~30 unrelated packager call sites; they are mirrored here privately (as `_fail`/`_git_command`,
 byte-identical behavior) rather than moved, so the packager's own error-exit plumbing is untouched.
 """
@@ -49,7 +49,7 @@ _REGISTRY_FIX = Fix(
 )
 _NO_ORCHESTRATION_CAPABILITY_MESSAGE = "backend-orchestration capability не выбрана"
 
-# --- Constants moved unchanged from harness/bin/harness ------------------------------------
+# --- Constants moved unchanged from harness/bin/harness.py ------------------------------------
 
 REGISTRY_REL = Path(".harness/skills/REGISTRY.md")
 INTEGRATIONS_REL = Path(".harness/integrations.json")
@@ -81,7 +81,7 @@ STORY_POINTS_REQUIRED_FIELDS = (
 STORY_POINTS_ALLOWED_FIELDS = frozenset(STORY_POINTS_REQUIRED_FIELDS)
 
 
-# --- Detection helpers moved unchanged from harness/bin/harness ----------------------------
+# --- Detection helpers moved unchanged from harness/bin/harness.py ----------------------------
 
 
 def native_link_target(target: str) -> str:
@@ -212,7 +212,7 @@ def public_skill_names(lock: JsonObject) -> set[str]:
 
 
 def _fail(message: str) -> None:
-    """Mirrors harness/bin/harness's fail(): print to stderr and exit the process. Kept private
+    """Mirrors harness/bin/harness.py's fail(): print to stderr and exit the process. Kept private
     and local (not imported) because that function also serves ~30 unrelated packager call sites
     that stay in harness/bin/harness."""
     print(f"harness: {message}", file=sys.stderr)
@@ -220,7 +220,7 @@ def _fail(message: str) -> None:
 
 
 def _git_command(repo: Path, *arguments: str) -> list[str]:
-    """Mirrors harness/bin/harness's git_command(): trust only the checkout explicitly supplied to
+    """Mirrors harness/bin/harness.py's git_command(): trust only the checkout explicitly supplied to
     this operation."""
     checkout = repo.resolve()
     return ["git", "-c", f"safe.directory={checkout}", "-C", str(checkout), *arguments]
@@ -849,14 +849,14 @@ def check_skill_snapshot(context: HealthContext) -> CheckResult:
             message=_NO_LOCK_MESSAGE,
         )
     if context.snapshot_diff is None:
-        # snapshot_diff itself stays in harness/bin/harness (it re-derives the expected package
+        # snapshot_diff itself stays in harness/bin/harness.py (it re-derives the expected package
         # content from CAPABILITIES.json and the harness/ source tree, which never ships to an
         # installed project); only the canonical `harness health` CLI can supply it (see cmd_health).
         return CheckResult(
             id="files.skill_snapshot",
             group="files",
             status="skipped",
-            message="снэпшот скиллов доступен только из харнесс-пакетировщика (harness/bin/harness)",
+            message="снэпшот скиллов доступен только из харнесс-пакетировщика (harness/bin/harness.py)",
         )
     result = context.snapshot_diff(context.repo)
     if result["state"] != "clean":

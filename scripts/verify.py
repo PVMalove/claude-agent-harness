@@ -58,7 +58,7 @@ __all__ = [
 # Every Python entry point must compile before any stage runs: the extensionless CLIs and
 # each script module, including the packages the verification and clean-room scripts are split into.
 _COMPILED_SCRIPTS = (
-    ROOT / "harness" / "bin" / "harness",
+    ROOT / "harness" / "bin" / "harness.py",
     ROOT / "bin" / "install-global",
     ROOT / "scripts" / "build_registry.py",
     ROOT / "scripts" / "verify.py",

@@ -50,7 +50,7 @@ _SECTION_HEADING_RE: re.Pattern[str] = re.compile(r"^(#{1,3})\s+(.+?)\s*#*\s*$")
 _FENCE_RE: re.Pattern[str] = re.compile(r"^\s{0,3}(```|~~~)")
 
 # The Repo Map CLI is a sibling module; installed projects keep the same layout (see
-# harness/bin/harness resource packaging and scripts/test_clean_room.py).
+# harness/bin/harness.py resource packaging and scripts/test_clean_room.py).
 _REPO_MAP_SCRIPT: Path = (
     Path(__file__).resolve().parents[1] / "repo_map" / "repo_map.py"
 )

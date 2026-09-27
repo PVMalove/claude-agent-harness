@@ -9,7 +9,7 @@
 
 | Область | Внешний интерфейс | Оценка |
 | --- | --- | --- |
-| Установка и snapshot (`harness/bin/harness`, `harness/CAPABILITIES.json`) | CLI, каталог capability и файлы целевого `.harness` | Разделение источника и установленной копии последовательно; любое перемещение модулей требует clean-room проверки поставки. |
+| Установка и snapshot (`harness/bin/harness.py`, `harness/CAPABILITIES.json`) | CLI, каталог capability и файлы целевого `.harness` | Разделение источника и установленной копии последовательно; любое перемещение модулей требует clean-room проверки поставки. |
 | Orchestration (`contract.py`, `core/`, `ledger/`, `workflow/`, `coordinator.py`) | CLI-фасад coordinator, role manifest, ledger и JSON records | Слой уже разделён по назначению. Основной долг — длинные операции в `contract.py` и `workflow/`; автоматическое дробление по длине файла может размыть инварианты транзакций. |
 | Контекст (`context_builder/`, `repo_map/`) | JSON Context Package и Repo Map | Отдельные модули отвечают за выбор контекста и построение карты; PR #296 уже включён в выбранную базу. |
 | Evidence (`reporting/`, `gate_runner/`) | CLI `delivery_stats.py`, versioned baseline, HTML/terminal output | `delivery_stats.py` соединяет сбор доказательств, расчёты и форматирование в 1 926 строках. HTML уже выделен; терминальный вывод и расчёты имеют самостоятельные интерфейсы. |

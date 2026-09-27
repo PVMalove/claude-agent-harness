@@ -19,7 +19,7 @@ from harness.console import launcher
 from harness.console.pin import TEXTUAL_PIN
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_BIN_HARNESS = _REPO_ROOT / "harness" / "bin" / "harness"
+_BIN_HARNESS = _REPO_ROOT / "harness" / "bin" / "harness.py"
 
 
 def test_find_uv_uses_shutil_which() -> None:

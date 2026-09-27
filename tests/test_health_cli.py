@@ -4,6 +4,7 @@ runs every check without early exit, and exits 1 only when a check's status is '
 from __future__ import annotations
 
 import json
+import os
 import runpy
 import subprocess
 import sys
@@ -17,7 +18,7 @@ from harness.health.context import HealthContext
 from harness.health.model import CheckResult
 
 CLI = runpy.run_path(
-    str(Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness")
+    str(Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness.py")
 )
 
 
@@ -98,7 +99,7 @@ def test_broken_lock_is_a_fail_result_not_a_crash(tmp_path: Path, lock_text: str
     result = subprocess.run(
         [
             sys.executable,
-            str(Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness"),
+            str(Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness.py"),
             "health",
             str(tmp_path),
             "--json",
@@ -116,3 +117,29 @@ def test_broken_lock_is_a_fail_result_not_a_crash(tmp_path: Path, lock_text: str
     assert "повреждён" in checks["files.lock"]["message"]
     assert checks["files.lock"]["fix"] is not None
     assert "repo_map.tier" in checks
+
+
+@pytest.mark.parametrize("pythonpath_first", [True, False])
+def test_cli_imports_the_harness_package_not_itself(
+    tmp_path: Path, pythonpath_first: bool
+) -> None:
+    """`harness/bin/harness.py` shares its name with the `harness` package: run as a script its
+    own directory is on sys.path, so the CLI must still import the package - also when PYTHONPATH
+    already lists the repository root (as `make verify` exports it)."""
+    root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    if pythonpath_first:
+        env["PYTHONPATH"] = str(root)
+    result = subprocess.run(
+        [sys.executable, str(root / "harness" / "bin" / "harness.py"), "--help"],
+        cwd=root / "harness" / "bin",
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "health" in result.stdout

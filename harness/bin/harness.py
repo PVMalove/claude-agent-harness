@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 # Captured before the forced UTF-8 below so `harness health` can still warn about the console's
 # own encoding (harness.health.checks.environment.check_output_encoding).
@@ -30,14 +31,22 @@ if sys.version_info < MIN_PYTHON:
 
 PACKAGE = Path(__file__).resolve().parent.parent
 ROOT = PACKAGE.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+# Run as a script, this file's own directory is on sys.path, where `harness.py` would shadow the
+# `harness` package; ROOT goes first even when PYTHONPATH already lists it behind that directory.
+_BIN_DIR = Path(__file__).resolve().parent
+sys.path[:] = [
+    entry
+    for entry in sys.path
+    if entry != str(ROOT) and Path(entry or os.curdir).resolve() != _BIN_DIR
+]
+sys.path.insert(0, str(ROOT))
 from harness.errors import HarnessError, print_and_exit
 from harness.cleanup import apply_cleanup, plan_cleanup
 from harness.storage import storage_path
 from harness.health import registry as health_registry
 from harness.health import render as health_render
 from harness.health import report_json as health_report_json
+from harness.health.model import JsonObject
 from harness.health.checks.files import (
     BACKEND_ORCHESTRATION_CAPABILITY,
     DISCOVERY_LINKS,
@@ -58,7 +67,7 @@ LOCK_REL = Path(".harness/harness.lock")
 DEFAULT_CAPABILITY = "project-foundation"
 
 
-def fail(message: str) -> "NoReturn":
+def fail(message: str) -> NoReturn:
     print(f"harness: {message}", file=sys.stderr)
     raise SystemExit(1)
 
@@ -102,9 +111,9 @@ def source_revision() -> str:
     return result.stdout.strip() if result.returncode == 0 else "uncommitted"
 
 
-def capabilities() -> dict[str, dict]:
+def capabilities() -> dict[str, JsonObject]:
     try:
-        data = json.loads(CAPABILITIES_FILE.read_text(encoding="utf-8"))
+        data: object = json.loads(CAPABILITIES_FILE.read_text(encoding="utf-8"))
     except Exception as exc:
         fail(f"cannot read {CAPABILITIES_FILE}: {exc}")
     if not isinstance(data, dict):
@@ -135,7 +144,7 @@ def _resolve_resource_source(entry: str) -> Path:
     return source
 
 
-def resolve_capability_skills(name: str, catalog: dict, _stack: tuple[str, ...] = ()) -> dict[str, Path]:
+def resolve_capability_skills(name: str, catalog: dict[str, JsonObject], _stack: tuple[str, ...] = ()) -> dict[str, Path]:
     """Resolve one capability to {skill_name: source_path}, following `extends`
     (inherit another capability's resolved set), `overrides` (swap an inherited
     skill's source by name, e.g. vendor -> first-party) and `additions` (new
@@ -170,7 +179,7 @@ def resolve_capability_skills(name: str, catalog: dict, _stack: tuple[str, ...] 
     return resolved
 
 
-def resolve_capability_resources(name: str, catalog: dict, _stack: tuple[str, ...] = ()) -> dict[str, Path]:
+def resolve_capability_resources(name: str, catalog: dict[str, JsonObject], _stack: tuple[str, ...] = ()) -> dict[str, Path]:
     """Resolve managed non-skill resources for one capability and its parents.
 
     Resources retain their path below ``harness/`` when materialized below a
@@ -263,14 +272,17 @@ def render(template: str, values: dict[str, str]) -> str:
     return template
 
 
-def load_lock(repo: Path) -> dict | None:
+def load_lock(repo: Path) -> JsonObject | None:
     path = repo / LOCK_REL
     if not path.is_file():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data: object = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         fail(f"cannot read {path}: {exc}")
+    if not isinstance(data, dict):
+        fail(f"cannot read {path}: expected a JSON object")
+    return data
 
 
 def ensure_git_repo(repo: Path) -> None:
@@ -424,7 +436,7 @@ def record_integration(
     )
 
 
-def snapshot_diff(repo: Path, override: list[str] | None = None) -> dict:
+def snapshot_diff(repo: Path, override: list[str] | None = None) -> JsonObject:
     lock = load_lock(repo)
     if lock is None:
         return {"state": "missing", "detail": "no .harness/harness.lock"}
@@ -484,7 +496,7 @@ def snapshot_diff(repo: Path, override: list[str] | None = None) -> dict:
     }
 
 
-def print_diff(result: dict) -> None:
+def print_diff(result: JsonObject) -> None:
     print(f"state: {result['state']}")
     if "capabilities" in result:
         print(f"capabilities: {', '.join(result['capabilities'])}")
@@ -1042,7 +1054,8 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     try:
-        return args.func(args)
+        exit_code: int = args.func(args)
+        return exit_code
     except HarnessError as exc:
         return print_and_exit(exc)
 

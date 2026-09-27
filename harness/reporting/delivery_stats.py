@@ -30,7 +30,7 @@ if sys.version_info < MIN_PYTHON:
     )
     raise SystemExit(1)
 
-# `harness/bin/harness`'s package_files() copies this file verbatim into target projects as
+# `harness/bin/harness.py`'s package_files() copies this file verbatim into target projects as
 # `.harness/reporting/delivery_stats.py` -- a different directory name than the source tree's
 # `harness/`. Alias `harness` to whichever of the two this file actually lives under so
 # `from harness...` resolves the same way in both places. See docs/adr/0018.

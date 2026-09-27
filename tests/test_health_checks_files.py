@@ -1,5 +1,5 @@
 """Group 'files' health checks: each check wraps the unchanged validate_*/detection logic that
-lives directly in harness/health/checks/files.py (harness/bin/harness imports it from there - see
+lives directly in harness/health/checks/files.py (harness/bin/harness.py imports it from there - see
 that module's docstring) into a CheckResult."""
 
 from __future__ import annotations
@@ -133,7 +133,7 @@ def test_check_skill_snapshot_skipped_without_lock(tmp_path: Path) -> None:
 def test_check_skill_snapshot_skipped_without_injected_snapshot_diff(
     tmp_path: Path,
 ) -> None:
-    """snapshot_diff itself stays in harness/bin/harness (it needs CAPABILITIES.json and the
+    """snapshot_diff itself stays in harness/bin/harness.py (it needs CAPABILITIES.json and the
     harness/ source tree, neither of which ships to an installed project); only the canonical
     `harness health` CLI supplies it via HealthContext. Without it, the check degrades to
     'skipped' instead of raising - this is what makes the package work standalone."""

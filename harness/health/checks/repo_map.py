@@ -1,5 +1,5 @@
-"""Group 'repo_map': the Repo Map dispatch-tier check migrated from `harness/bin/harness`'s old
-`cmd_health` (`repo_map_health`). Detection logic is unchanged; `harness/bin/harness` now imports
+"""Group 'repo_map': the Repo Map dispatch-tier check migrated from `harness/bin/harness.py`'s old
+`cmd_health` (`repo_map_health`). Detection logic is unchanged; `harness/bin/harness.py` now imports
 it from here (single definition, see checks/files.py's module docstring for why)."""
 
 from __future__ import annotations

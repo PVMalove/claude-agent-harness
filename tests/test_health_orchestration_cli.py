@@ -15,7 +15,7 @@ from harness.orchestration.ledger.lifecycle import LifecycleLedger
 from harness.orchestration.ledger.lifecycle import JsonObject as LedgerJsonObject
 from harness.orchestration.ledger.lifecycle import JsonValue as LedgerJsonValue
 
-_HARNESS_BIN = Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness"
+_HARNESS_BIN = Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness.py"
 
 _ORCHESTRATION_CHECK_IDS = [
     "orchestration.ledger_summary",

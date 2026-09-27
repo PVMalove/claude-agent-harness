@@ -10,5 +10,5 @@ third_party/mattpocock-skills/** -text
 # LF regardless of a clone's core.autocrlf.
 bin/* text eol=lf
 scripts/* text eol=lf
-harness/bin/harness text eol=lf
+harness/bin/harness.py text eol=lf
 harness/project/hooks/*.sh text eol=lf

@@ -36,7 +36,7 @@ Architecture-схема показывает границу между исхо�
 
 > Используй `start-project`, чтобы помочь мне сформировать и начать этот проект.
 
-Скилл сам классифицирует работу (software, content, research, operations, personal или другой явный домен), держит раннюю идею в диалоге, пока она не готова стать чем-то постоянным, и по готовности первого durable-факта предлагает ровно один следующий артефакт: продолжить разговор, завести docs-only seed-репозиторий, или сразу собрать харнесс — вызывая `harness/bin/harness init` (раздел «Установка» ниже) от вашего имени. Имя capability и пути каталога знать не нужно — `start-project` выбирает их сам (по умолчанию `project-foundation` для доменно-нейтральных проектов; `mattpocock-suite`/`pvmalove-suite` — для инженерных). Если установлена опциональная личная/организационная надстройка, тот же запрос авторизует только выбор пакетов по каталогу — приватные знания остаются закрытыми.
+Скилл сам классифицирует работу (software, content, research, operations, personal или другой явный домен), держит раннюю идею в диалоге, пока она не готова стать чем-то постоянным, и по готовности первого durable-факта предлагает ровно один следующий артефакт: продолжить разговор, завести docs-only seed-репозиторий, или сразу собрать харнесс — вызывая `harness/bin/harness.py init` (раздел «Установка» ниже) от вашего имени. Имя capability и пути каталога знать не нужно — `start-project` выбирает их сам (по умолчанию `project-foundation` для доменно-нейтральных проектов; `mattpocock-suite`/`pvmalove-suite` — для инженерных). Если установлена опциональная личная/организационная надстройка, тот же запрос авторизует только выбор пакетов по каталогу — приватные знания остаются закрытыми.
 
 Для репозитория, где уже есть настоящий код и свои конвенции (а харнесса ещё нет) — тот же принцип, но `integrate-project`, устанавливается и триггерится так же:
 
@@ -148,13 +148,13 @@ Windows (PowerShell):
 python bin\install-global --target-home $HOME --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
 ```
 
-`bin/install-global` — Python-скрипт (`#!/usr/bin/env python3`, standalone floor — 3.9+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness` ниже; отдельного `.sh`/`.ps1` не нужно. Метаданные проекта в `pyproject.toml` отдельно объявляют `requires-python >=3.14`. На Windows для создания настоящих символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с подсказкой.
+`bin/install-global` — Python-скрипт (`#!/usr/bin/env python3`, standalone floor — 3.9+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness.py` ниже; отдельного `.sh`/`.ps1` не нужно. Метаданные проекта в `pyproject.toml` отдельно объявляют `requires-python >=3.14`. На Windows для создания настоящих символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с подсказкой.
 
 `bin/install-global` устанавливает только глобальный профиль и entry skills; MCP, plugins и project integrations он не устанавливает. Флаги `--check` (ничего не пишет, только сверяет), `--replace-conflicts` (перемещает конфликтующие файлы в backup) и `--skills-only` (без профиля) — полный разбор, что именно ставится каждому из пяти рантаймов и куда, в [docs/agents/harness-guide.md](./docs/agents/harness-guide.md), раздел 0.
 
 Харнесс проекта — личная сборка:
 ```bash
-python3 harness/bin/harness init /path/to/repository \
+python3 harness/bin/harness.py init /path/to/repository \
   --project-type software \
   --stack python \
   --capability pvmalove-suite \
@@ -166,7 +166,7 @@ python3 harness/bin/harness init /path/to/repository \
 
 Windows (PowerShell):
 ```powershell
-python harness\bin\harness init C:\path\to\repository `
+python harness\bin\harness.py init C:\path\to\repository `
   --project-type software `
   --stack python `
   --capability pvmalove-suite `
@@ -178,37 +178,37 @@ python harness\bin\harness init C:\path\to\repository `
 
 (флаги `--language`/`--pr-base-branch`/`--branch-pattern`/`--qa-gate-command` можно опустить — `harness init` спросит их интерактивно)
 
-Если PowerShell отвечает `python: The term 'python' is not recognized...` — сначала проверьте `[Environment]::GetEnvironmentVariable('Path','User')`: если Python там уже есть, но `Get-Command python,py` всё равно ничего не находит — откройте новое окно терминала (переменные окружения читаются один раз при старте процесса, старое окно их не подхватит само). Если Python в PATH действительно нет — установите его, либо вызывайте по полному пути, например `& "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" harness\bin\harness init ...`.
+Если PowerShell отвечает `python: The term 'python' is not recognized...` — сначала проверьте `[Environment]::GetEnvironmentVariable('Path','User')`: если Python там уже есть, но `Get-Command python,py` всё равно ничего не находит — откройте новое окно терминала (переменные окружения читаются один раз при старте процесса, старое окно их не подхватит само). Если Python в PATH действительно нет — установите его, либо вызывайте по полному пути, например `& "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" harness\bin\harness.py init ...`.
 
 Чистый апстрим без личных доработок — то же самое с `--capability mattpocock-suite`. Без `--capability` вообще — по умолчанию `project-foundation`, 5 лёгких скиллов на любой тип проекта, не только software.
 
 Проект, где под именами выбранной capability уже лежат свои (не харнесс-управляемые) скиллы — `adopt` вместо `init`: сохраняет всё остальное, конфликтующие имена без `--replace-conflicts` просто перечисляет и падает.
 
 ```bash
-python3 harness/bin/harness adopt /path/to/repository --capability pvmalove-suite --replace-conflicts
+python3 harness/bin/harness.py adopt /path/to/repository --capability pvmalove-suite --replace-conflicts
 ```
 
 Обновление и диагностика:
 
 ```bash
-python3 harness/bin/harness diff /path/to/repository
-python3 harness/bin/harness diff /path/to/repository --json
-python3 harness/bin/harness update /path/to/repository --capability pvmalove-suite
-python3 harness/bin/harness registry /path/to/repository
-python3 harness/bin/harness lock-project-skills /path/to/repository
-python3 harness/bin/harness health /path/to/repository
-python3 harness/bin/harness list /path/to/repository
+python3 harness/bin/harness.py diff /path/to/repository
+python3 harness/bin/harness.py diff /path/to/repository --json
+python3 harness/bin/harness.py update /path/to/repository --capability pvmalove-suite
+python3 harness/bin/harness.py registry /path/to/repository
+python3 harness/bin/harness.py lock-project-skills /path/to/repository
+python3 harness/bin/harness.py health /path/to/repository
+python3 harness/bin/harness.py list /path/to/repository
 ```
 
 Windows (PowerShell):
 ```powershell
-python harness\bin\harness diff C:\path\to\repository
-python harness\bin\harness diff C:\path\to\repository --json
-python harness\bin\harness update C:\path\to\repository --capability pvmalove-suite
-python harness\bin\harness registry C:\path\to\repository
-python harness\bin\harness lock-project-skills C:\path\to\repository
-python harness\bin\harness health C:\path\to\repository
-python harness\bin\harness list C:\path\to\repository
+python harness\bin\harness.py diff C:\path\to\repository
+python harness\bin\harness.py diff C:\path\to\repository --json
+python harness\bin\harness.py update C:\path\to\repository --capability pvmalove-suite
+python harness\bin\harness.py registry C:\path\to\repository
+python harness\bin\harness.py lock-project-skills C:\path\to\repository
+python harness\bin\harness.py health C:\path\to\repository
+python harness\bin\harness.py list C:\path\to\repository
 ```
 
 `harness init`/`adopt`/`update` всегда пишут в проект компактный `.harness/skills/REGISTRY.md` —

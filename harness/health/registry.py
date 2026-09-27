@@ -117,7 +117,7 @@ def run(
     the report shows the state after the fix.
 
     `snapshot_diff` and `output_encoding` are forwarded to HealthContext unchanged; see its
-    docstring - only harness/bin/harness's cmd_health supplies them today.
+    docstring - only harness/bin/harness.py's cmd_health supplies them today.
     """
     lock, lock_error = _load_lock(repo)
     context = HealthContext(

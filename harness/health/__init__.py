@@ -1,7 +1,7 @@
 """harness/health: a stdlib-only registry of `harness health` checks (see model.py for the result
 shape and registry.py for how checks are wired in).
 
-`harness/bin/harness` already puts the canonical repository root on `sys.path` before importing
+`harness/bin/harness.py` already puts the canonical repository root on `sys.path` before importing
 this package, so `import harness.health` works today without the block below. That block only
 matters once this package is copied byte-for-byte into an installed project's `.harness/health/`
 (the way CAPABILITIES.json resources already copy `harness/repo_map/repo_map.py`) and later

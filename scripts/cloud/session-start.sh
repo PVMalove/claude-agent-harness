@@ -31,7 +31,7 @@ if [ ! -f "$repo/.harness/project.json" ] || [ ! -x "$venv_bin/python" ]; then
   if [ ! -f "$repo/.harness/orchestration.json" ]; then
     cp "$here/orchestration.json" "$repo/.harness/orchestration.json"
   fi
-  "$python_bin" "$repo/harness/bin/harness" init "$repo" --project-type software --stack python \
+  "$python_bin" "$repo/harness/bin/harness.py" init "$repo" --project-type software --stack python \
     --capability pvmalove-suite --capability backend-orchestration \
     --base-branch master --language ru \
     --pr-base-branch master --qa-gate-command "make verify" >/dev/null

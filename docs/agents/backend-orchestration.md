@@ -63,7 +63,7 @@ Manifest определяет режим роли (`write` или `read-only`), 
 `pvmalove-suite` будет разрешена автоматически.
 
 ```bash
-python3 harness/bin/harness init /path/to/repository \
+python3 harness/bin/harness.py init /path/to/repository \
   --project-type software \
   --stack python \
   --capability backend-orchestration \
@@ -79,8 +79,8 @@ python3 harness/bin/harness init /path/to/repository \
 обновите выбранный набор capability:
 
 ```bash
-python3 harness/bin/harness diff /path/to/repository
-python3 harness/bin/harness update /path/to/repository --capability backend-orchestration
+python3 harness/bin/harness.py diff /path/to/repository
+python3 harness/bin/harness.py update /path/to/repository --capability backend-orchestration
 ```
 
 `update` не перезаписывает изменённые managed files без явного флага. `--force-managed-files`
@@ -89,7 +89,7 @@ python3 harness/bin/harness update /path/to/repository --capability backend-orch
 включения или изменения конфигурации выполните:
 
 ```bash
-python3 harness/bin/harness health /path/to/repository
+python3 harness/bin/harness.py health /path/to/repository
 ```
 
 ## 2. Настройка `.harness/orchestration.json`

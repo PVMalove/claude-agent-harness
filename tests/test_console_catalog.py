@@ -79,7 +79,7 @@ def test_harness_cli_argv_dispatches_to_the_named_function(entry: CatalogEntry) 
     cli = runpy.run_path(str(BIN_HARNESS_PATH))
     args = cli["parser"]().parse_args(entry.cli_argv(REPO)[1:])
     module, name = entry.function.split(":")
-    assert module == "harness/bin/harness"
+    assert module == "harness/bin/harness.py"
     assert args.func.__name__ == name
     assert args.repo == str(REPO)
 

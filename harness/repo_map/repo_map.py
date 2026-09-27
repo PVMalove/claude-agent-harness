@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-# `harness/bin/harness` copies this file verbatim into target projects as
+# `harness/bin/harness.py` copies this file verbatim into target projects as
 # `.harness/repo_map/repo_map.py`. Alias `harness` to whichever of the two this
 # file actually lives under so this standalone CLI has the same imports in both
 # source and installed layouts. See docs/adr/0018.

@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-HARNESS = Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness"
+HARNESS = Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness.py"
 REAL_GIT = shutil.which("git")
 
 _FAKE_TOOL = """

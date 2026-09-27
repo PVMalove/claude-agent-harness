@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 CLI = runpy.run_path(
-    str(Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness")
+    str(Path(__file__).resolve().parents[1] / "harness" / "bin" / "harness.py")
 )
 
 

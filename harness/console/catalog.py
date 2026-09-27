@@ -112,7 +112,7 @@ def process_argv(cli_argv: Sequence[str], repo: Path | None = None) -> list[str]
     return list(cli_argv)
 
 
-_HARNESS_CLI = "harness/bin/harness"
+_HARNESS_CLI = "harness/bin/harness.py"
 _COORDINATOR = "harness.orchestration.coordinator"
 _COORDINATOR_SCRIPT = ".harness/orchestration/coordinator.py"
 

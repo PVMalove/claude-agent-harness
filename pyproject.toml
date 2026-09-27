@@ -36,6 +36,7 @@ testpaths = ["tests"]
 [tool.ruff.lint.per-file-ignores]
 # Facade: `import x as x` marks explicit re-exports under mypy strict (no implicit reexport).
 # E402: all files below import after an intentional sys.path / importlib bootstrap block.
+"harness/bin/harness.py" = ["E402"]
 "harness/orchestration/coordinator.py" = ["PLC0414", "E402"]
 "harness/repo_map/repo_map.py" = ["E402"]
 "harness/reporting/delivery_stats.py" = ["E402"]

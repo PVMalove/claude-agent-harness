@@ -17,7 +17,7 @@ class HealthContext:
     `snapshot_diff` is optional and defaults to None: it is the one detection function that cannot
     move into this stdlib-only package (it re-derives expected package content from
     CAPABILITIES.json and the harness/ source tree, neither of which ships to an installed
-    project). Only the canonical `harness health` CLI (harness/bin/harness's cmd_health) supplies
+    project). Only the canonical `harness health` CLI (harness/bin/harness.py's cmd_health) supplies
     its own already-loaded snapshot_diff here; a shipped, standalone harness/health/ leaves it None
     and files.check_skill_snapshot reports 'skipped' instead of failing to import it.
     """

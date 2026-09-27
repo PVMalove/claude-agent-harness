@@ -10,7 +10,7 @@ agents. Он устанавливается в целевой Git-репозит
 Система состоит из трёх уровней: runtime предоставляет модель, инструменты, права и сессии;
 глобальный профиль предоставляет короткий межпроектный контракт и entry skills; харнесс проекта
 содержит выбранные capability, инструкции, проверки и lock-файлы. Глобальный слой устанавливается
-отдельно, а `harness/bin/harness` материализует проектный слой в конкретном репозитории.
+отдельно, а `harness/bin/harness.py` материализует проектный слой в конкретном репозитории.
 
 `harness/CAPABILITIES.json` является каталогом поставки. `init`, `adopt` и `update` разрешают
 выбранные capability, копируют их в проект и фиксируют состав в lock-файле. `diff` показывает
@@ -65,9 +65,9 @@ Batch принадлежит одному тикету, issue-ветке, worktr
 Для включения и проверки capability используются следующие команды:
 
 ```bash
-python3 harness/bin/harness init /path/to/repository --capability backend-orchestration ...
-python3 harness/bin/harness update /path/to/repository --capability backend-orchestration
-python3 harness/bin/harness health /path/to/repository
+python3 harness/bin/harness.py init /path/to/repository --capability backend-orchestration ...
+python3 harness/bin/harness.py update /path/to/repository --capability backend-orchestration
+python3 harness/bin/harness.py health /path/to/repository
 ```
 
 `harness health` также показывает доступный tier Repo Map, provenance parser bundle и ограничение

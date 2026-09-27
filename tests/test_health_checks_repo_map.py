@@ -1,5 +1,5 @@
 """Group 'repo_map' health check: wraps the unchanged repo_map_health detection logic already
-defined in harness/bin/harness (see harness/health/checks/_cli.py) into a CheckResult."""
+defined in harness/bin/harness.py (see harness/health/checks/_cli.py) into a CheckResult."""
 
 from __future__ import annotations
 
