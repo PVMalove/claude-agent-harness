@@ -105,10 +105,10 @@ class ReportsScreen(Screen[None]):
             for widget_id, _, key in _FILTERS
         }
         self.shown = console_reports.filter_reports(self.view.reports, **values)
+        self.query_one("#reports-status", Static).update(self._status())
         report_list = self.query_one("#report-list", ListView)
         await report_list.clear()
         await report_list.extend(self._report_items())
-        self.query_one("#reports-status", Static).update(self._status())
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         name = event.item.name

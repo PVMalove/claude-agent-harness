@@ -184,7 +184,6 @@ def test_diagnostics_apply_fixes_asks_before_running_a_destructive_fix(
 
     async def scenario() -> tuple[int, int]:
         from textual.app import App
-        from textual.widgets import Button
 
         runner = _RecordingRunner()
         screen = DiagnosticsScreen(
