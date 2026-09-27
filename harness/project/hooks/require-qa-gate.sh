@@ -6,8 +6,24 @@
 # skill runs in a forked sub-session (context: fork), whose session_id differs from the session
 # that later runs `gh pr create`, so a session-scoped marker could never match.
 INPUT=$(cat)
+PY="$(command -v python3 || command -v python)"
+if [ -z "$PY" ]; then
+  echo "Невозможно проверить требование qa-gate: Python 3.9+ не найден." >&2
+  exit 2
+fi
 
-if echo "$INPUT" | grep -qE '"command"[[:space:]]*:[[:space:]]*"[^"]*gh pr create'; then
+COMMAND="$(printf '%s' "$INPUT" | "$PY" -c '
+import json, sys
+try:
+    data = json.load(open(0, encoding="utf-8", errors="ignore"))
+    command = data.get("tool_input", {}).get("command", "")
+    if isinstance(command, str):
+        sys.stdout.write(command)
+except Exception:
+    pass
+')"
+
+if printf '%s\n' "$COMMAND" | grep -qE '\bgh[[:space:]]+pr[[:space:]]+create\b'; then
   PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"
   STATE="$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null):$(git -C "$PROJECT_DIR" diff HEAD 2>/dev/null | git -C "$PROJECT_DIR" hash-object --stdin 2>/dev/null)"
   MARKER="$PROJECT_DIR/.claude/.qa-gate/passed"
