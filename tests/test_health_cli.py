@@ -77,7 +77,7 @@ def test_cmd_health_exits_0_when_nothing_fails(
             id="test.probe", group="test", status="warn", message="not a failure"
         )
 
-    monkeypatch.setattr(health_registry, "REGISTRY", [_all_ok])
+    monkeypatch.setattr(health_registry, "REGISTRY", [("test.probe", _all_ok)])
 
     exit_code = CLI["cmd_health"](SimpleNamespace(repo=str(tmp_path), json=True))
 

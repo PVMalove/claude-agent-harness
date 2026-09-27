@@ -3,6 +3,9 @@
 No plugin auto-discovery: checks are wired in by explicit import, one entry per check function, so
 the registry stays auditable. Future check groups (#343-#347) add entries here without touching how
 already-registered checks run.
+
+Each entry declares the check's stable id up front, so a check that crashes is still reported under
+that id (as `fail`) instead of aborting the rest of the report.
 """
 
 from __future__ import annotations
@@ -20,32 +23,32 @@ from .model import CheckResult, JsonObject, Report
 
 CheckFn = Callable[[HealthContext], CheckResult]
 
-REGISTRY: list[CheckFn] = [
-    files_checks.check_lock,
-    files_checks.check_agents_md,
-    files_checks.check_discovery_links,
-    files_checks.check_project_json,
-    files_checks.check_sandboxes,
-    files_checks.check_orchestration_config,
-    files_checks.check_skill_snapshot,
-    files_checks.check_skill_registry,
-    files_checks.check_overlay_locks,
-    files_checks.check_integrations,
-    files_checks.check_verification_routing,
-    repo_map_checks.check_tier,
-    environment_checks.check_git,
-    environment_checks.check_git_identity,
-    environment_checks.check_gitattributes,
-    environment_checks.check_line_endings,
-    environment_checks.check_python,
-    environment_checks.check_uv,
-    environment_checks.check_dev_environment,
-    environment_checks.check_output_encoding,
-    windows_checks.check_long_paths,
-    windows_checks.check_path_length,
-    windows_checks.check_pytest_temp,
-    windows_checks.check_symlinks,
-    windows_checks.check_hook_bash,
+REGISTRY: list[tuple[str, CheckFn]] = [
+    ("files.lock", files_checks.check_lock),
+    ("files.agents_md", files_checks.check_agents_md),
+    ("files.discovery_links", files_checks.check_discovery_links),
+    ("files.project_json", files_checks.check_project_json),
+    ("files.sandboxes", files_checks.check_sandboxes),
+    ("files.orchestration_config", files_checks.check_orchestration_config),
+    ("files.skill_snapshot", files_checks.check_skill_snapshot),
+    ("files.skill_registry", files_checks.check_skill_registry),
+    ("files.overlay_locks", files_checks.check_overlay_locks),
+    ("files.integrations", files_checks.check_integrations),
+    ("files.verification_routing", files_checks.check_verification_routing),
+    ("repo_map.tier", repo_map_checks.check_tier),
+    ("environment.git", environment_checks.check_git),
+    ("environment.git_identity", environment_checks.check_git_identity),
+    ("environment.gitattributes", environment_checks.check_gitattributes),
+    ("environment.line_endings", environment_checks.check_line_endings),
+    ("environment.python", environment_checks.check_python),
+    ("environment.uv", environment_checks.check_uv),
+    ("environment.dev_env", environment_checks.check_dev_environment),
+    ("environment.output_encoding", environment_checks.check_output_encoding),
+    ("environment.long_paths", windows_checks.check_long_paths),
+    ("environment.path_length", windows_checks.check_path_length),
+    ("environment.pytest_temp", windows_checks.check_pytest_temp),
+    ("environment.symlinks", windows_checks.check_symlinks),
+    ("environment.hook_bash", windows_checks.check_hook_bash),
 ]
 
 _LOCK_REL = Path(".harness/harness.lock")
@@ -80,6 +83,24 @@ def run(
         output_encoding=output_encoding,
     )
     report = Report(schema_version=1, repo=str(repo), online=online)
-    for check_fn in REGISTRY:
-        report.checks.append(check_fn(context))
+    for check_id, check_fn in REGISTRY:
+        report.checks.append(_run_isolated(check_id, check_fn, context))
     return report
+
+
+def _run_isolated(check_id: str, check_fn: CheckFn, context: HealthContext) -> CheckResult:
+    """Run one check; a crash becomes its `fail` result so the remaining checks still run.
+
+    SystemExit is caught too: the helpers health shares with the packager (files._fail) exit the
+    process on error, which must not end a health run. KeyboardInterrupt still propagates.
+    """
+    try:
+        return check_fn(context)
+    except (Exception, SystemExit) as exc:
+        return CheckResult(
+            id=check_id,
+            group=check_id.partition(".")[0],
+            status="fail",
+            message=f"проверка {check_fn.__name__} аварийно завершилась: "
+            f"{type(exc).__name__}: {exc}",
+        )
