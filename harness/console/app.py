@@ -9,17 +9,18 @@ from pathlib import Path
 
 from textual.app import App
 
-from .runner import CommandRunner, default_runner
+from .runner import CommandRunner, capturing_runner
 from .screens.dashboard import DashboardScreen
 
 
 class HarnessConsoleApp(App[None]):
     """Accepts an injected `command_runner`, threaded through to the Diagnostics screen's
-    "apply fixes" action, so a Pilot test never spawns a real process."""
+    "apply fixes" action and the Harness screen's commands, so a Pilot test never spawns a real
+    process."""
 
     TITLE = "harness console"
 
-    def __init__(self, repo: Path, *, command_runner: CommandRunner = default_runner) -> None:
+    def __init__(self, repo: Path, *, command_runner: CommandRunner = capturing_runner) -> None:
         super().__init__()
         self.repo = repo
         self.command_runner = command_runner
@@ -28,7 +29,7 @@ class HarnessConsoleApp(App[None]):
         self.push_screen(DashboardScreen(self.repo, command_runner=self.command_runner))
 
 
-def run(repo: Path, *, command_runner: CommandRunner = default_runner) -> int:
+def run(repo: Path, *, command_runner: CommandRunner = capturing_runner) -> int:
     """harness.console.launcher.run_console's entry point once relaunched."""
     HarnessConsoleApp(repo, command_runner=command_runner).run()
     return 0
