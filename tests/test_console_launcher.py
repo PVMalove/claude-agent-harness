@@ -117,7 +117,7 @@ def _console_subprocess(repo: Path, *, path_env: str) -> "subprocess.CompletedPr
     env = dict(os.environ)
     env["PATH"] = path_env
     argv = [sys.executable, str(_BIN_HARNESS), "console", str(repo)]
-    with tempfile.TemporaryFile("w+") as stdout, tempfile.TemporaryFile("w+") as stderr:
+    with tempfile.TemporaryFile("w+", encoding="utf-8") as stdout, tempfile.TemporaryFile("w+", encoding="utf-8") as stderr:
         proc = subprocess.Popen(
             argv, stdout=stdout, stderr=stderr, env=env, start_new_session=True
         )
