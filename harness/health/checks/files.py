@@ -884,6 +884,26 @@ def check_skill_registry(context: HealthContext) -> CheckResult:
     )
 
 
+def fix_skill_registry(context: HealthContext, result: CheckResult) -> str | None:
+    """`harness health --fix`: regenerate a missing or stale REGISTRY.md, like `harness registry`.
+
+    Acts only on a `fail` whose expected content could be derived (an invalid skill tree stays a
+    `fail` for the developer to resolve); returns what was done, or None when nothing was.
+    """
+    if result.status != "fail":
+        return None
+    try:
+        expected_registry = project_registry(context.repo)
+    except ValueError:
+        return None
+    registry_path = context.repo / REGISTRY_REL
+    if registry_path.is_file() and registry_path.read_text(encoding="utf-8") == expected_registry:
+        return None
+    registry_path.parent.mkdir(parents=True, exist_ok=True)
+    registry_path.write_text(expected_registry, encoding="utf-8", newline="\n")
+    return f"пересобран {REGISTRY_REL.as_posix()}"
+
+
 def check_overlay_locks(context: HealthContext) -> CheckResult:
     if context.lock is None:
         return CheckResult(
