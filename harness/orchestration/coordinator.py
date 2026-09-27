@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import cast
@@ -220,6 +221,12 @@ from harness.orchestration.workflow.reports import (
     submit_report as submit_report,
 )
 from harness.orchestration.workflow.risk import assess_risk as assess_risk
+from harness.orchestration.workflow.runtime_pin import (
+    pinned_runtime_command as pinned_runtime_command,
+)
+from harness.orchestration.workflow.runtime_pin import (
+    restore_batch_runtime as restore_batch_runtime,
+)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -239,6 +246,9 @@ def main() -> int:
             pass
     args: argparse.Namespace = parser().parse_args()
     try:
+        pinned = pinned_runtime_command(args)
+        if pinned is not None:
+            return subprocess.call(pinned)
         output = args.handler(args)
     except HarnessError as exc:
         return print_and_exit(exc)

@@ -17,7 +17,9 @@ import hashlib
 import inspect
 import io
 import json
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -269,6 +271,27 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         on_disk = coordinator._read_object(batch_path, "batch")
         self.assertEqual(on_disk["state"], "planned")
         self.assertEqual(on_disk["dispatches"], [])
+
+    def test_dispatch_command_resolves_its_batch_pinned_runtime(self) -> None:
+        (self.repo / ".harness" / "orchestration" / "coordinator.py").write_text(
+            "# pinned entry point\n", encoding="utf-8"
+        )
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch_id = self._create_architect_dispatch(batch["batch_id"])["dispatch_id"]
+        args = _ns(repo=str(self.repo), state_dir=str(self.state_dir), dispatch=dispatch_id)
+        self.assertIsNone(coordinator.pinned_runtime_command(args))
+
+        (self.repo / ".harness" / "orchestration" / "roles" / "architect.md").write_text(
+            "reinstalled\n", encoding="utf-8"
+        )
+
+        command = coordinator.pinned_runtime_command(args)
+        assert command is not None
+        self.assertEqual(
+            Path(command[3]).relative_to(self.state_dir / workspace.RUNTIMES_DIR).parts[1:],
+            ("harness", "orchestration", "coordinator.py"),
+        )
 
     def test_batch_approve_transitions_state_via_ledger_replace(self) -> None:
         batch = self._create_batch()
@@ -4651,6 +4674,146 @@ class CoordinatorCliParserTests(unittest.TestCase):
             coordinator.parser().parse_args(
                 [*common, "--decision", "retry", "--reason-category", "flaky-network"]
             )
+
+
+class PinnedRuntimeSnapshotTests(unittest.TestCase):
+    """A batch finishes on the runtime it was planned under after the checkout's runtime is
+    reinstalled for another task (#369), driven through the installed coordinator CLI."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.tmp = Path(self._tmp.name)
+        self.repo = _init_repo(self.tmp)
+        (self.repo / ".git" / "info" / "exclude").write_text(".harness/\n", encoding="utf-8")
+        installed = self.repo / ".harness"
+        ignore = shutil.ignore_patterns("state", "__pycache__", "*.pyc")
+        for item in ORCHESTRATION_ROOT.parent.iterdir():
+            if item.is_file() and item.suffix == ".py":
+                shutil.copy2(item, installed / item.name)
+            elif item.is_dir() and (item / "__init__.py").is_file():
+                shutil.copytree(item, installed / item.name, ignore=ignore, dirs_exist_ok=True)
+        self.runtimes = installed / "orchestration" / "state" / workspace.RUNTIMES_DIR
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _coordinator(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(self.repo / ".harness" / "orchestration" / "coordinator.py"),
+                "--repo",
+                str(self.repo),
+                *arguments,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+    def _ok(self, *arguments: str) -> JsonObject:
+        result = self._coordinator(*arguments)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        return cast(JsonObject, json.loads(result.stdout))
+
+    def _create_batch(self, slug: str) -> str:
+        branch = f"feature/issue-369-{slug}"
+        worktree = self.tmp / slug
+        _git(self.repo, "worktree", "add", "-b", branch, str(worktree), "master")
+        batch = self._ok(
+            "batch", "create", "--ticket", "#369", "--branch", branch,
+            "--worktree", str(worktree), "--integration-ref", "master",
+            "--definition-of-done", "do the thing", "--prohibited-change", "secrets",
+            "--expected-file", "services/x.py", "--expected-service", "core",
+            "--expected-changed-lines", "10",
+        )
+        return cast(str, batch["batch_id"])
+
+    def _approve(self, batch_id: str) -> subprocess.CompletedProcess[str]:
+        return self._coordinator(
+            "batch", "approve", "--batch", batch_id, "--approved-by", "Malove",
+            "--approved-at", datetime.now(UTC).isoformat(),
+        )
+
+    def _reinstall_runtime(self) -> None:
+        """Stand in for 'harness update' from another branch: the installed approve differs."""
+        installed = self.repo / ".harness" / "orchestration" / "workflow" / "batch.py"
+        with installed.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n\ndef approve_batch(args: argparse.Namespace) -> JsonObject:\n"
+                "    return {'executed_by': 'reinstalled runtime'}\n"
+            )
+
+    def test_batch_finishes_on_its_pinned_runtime_after_a_reinstall(self) -> None:
+        planned_before = self._create_batch("before")
+        self._reinstall_runtime()
+
+        approved = self._approve(planned_before)
+        self.assertEqual(approved.returncode, 0, approved.stderr or approved.stdout)
+        self.assertEqual(json.loads(approved.stdout)["batch_id"], planned_before)
+
+        planned_after = self._create_batch("after")
+        self.assertEqual(
+            json.loads(self._approve(planned_after).stdout),
+            {"executed_by": "reinstalled runtime"},
+        )
+        self.assertEqual(len(list(self.runtimes.iterdir())), 2)
+
+    def test_runtime_hash_check_passes_inside_the_pinned_snapshot(self) -> None:
+        batch_id = self._create_batch("dispatch")
+        self.assertEqual(self._approve(batch_id).returncode, 0)
+        shape = (
+            "--batch", batch_id, "--role", "architect", "--runtime", "claude",
+            "--model", "sonnet", "--effort", "high",
+        )
+        proposal = self._ok("dispatch", "propose", *shape)
+        dispatch = self._ok(
+            "dispatch", "create", *shape,
+            "--transition-digest", cast(str, proposal["transition_digest"]),
+            "--approved-by", "Malove", "--approved-at", datetime.now(UTC).isoformat(),
+        )
+        self._reinstall_runtime()
+
+        sent = self._coordinator("dispatch", "send", "--dispatch", cast(str, dispatch["dispatch_id"]))
+
+        self.assertEqual(sent.returncode, 0, sent.stderr or sent.stdout)
+
+    def test_a_tampered_snapshot_is_refused(self) -> None:
+        batch_id = self._create_batch("tampered")
+        self._reinstall_runtime()
+        (snapshot,) = self.runtimes.iterdir()
+        (snapshot / "harness" / "orchestration" / "playbook.md").write_text(
+            "tampered\n", encoding="utf-8"
+        )
+
+        refused = self._approve(batch_id)
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("no longer matches", refused.stdout + refused.stderr)
+
+    def test_restore_runtime_recovers_a_batch_planned_without_a_snapshot(self) -> None:
+        batch_id = self._create_batch("legacy")
+        pinned = self.tmp / "pinned-harness"
+        shutil.copytree(
+            self.repo / ".harness",
+            pinned,
+            ignore=shutil.ignore_patterns("state", "__pycache__", "*.pyc"),
+        )
+        shutil.rmtree(self.runtimes)
+        self._reinstall_runtime()
+
+        mismatch = self._coordinator(
+            "batch", "restore-runtime", "--batch", batch_id,
+            "--from", str(self.repo / ".harness"),
+        )
+        self.assertNotEqual(mismatch.returncode, 0)
+        self.assertIn("does not match the pinned hash", mismatch.stdout + mismatch.stderr)
+
+        self._ok("batch", "restore-runtime", "--batch", batch_id, "--from", str(pinned))
+        approved = self._approve(batch_id)
+        self.assertEqual(approved.returncode, 0, approved.stderr or approved.stdout)
+        self.assertEqual(json.loads(approved.stdout)["batch_id"], batch_id)
 
 
 if __name__ == "__main__":
