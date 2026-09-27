@@ -5,7 +5,9 @@ capability exactly like `files.check_orchestration_config` already is."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Callable
@@ -423,3 +425,33 @@ def test_orphaned_worktrees_ok_when_referenced_by_an_active_batch(
     )
 
     assert result.status == "ok"
+
+
+# --- orchestration.disposable_data (DoD 5) ------------------------------------------------------
+
+
+def test_disposable_data_ok_when_nothing_to_clean(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+
+    result = checks.check_disposable_data(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
+
+    assert result.status == "ok"
+
+
+def test_disposable_data_warns_with_a_nonzero_size_and_a_cleanup_hint(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    scratch = tmp_path / ".harness" / ".sandboxes" / "scratch"
+    scratch.mkdir(parents=True)
+    stale_file = scratch / "old.txt"
+    stale_file.write_text("x" * 100, encoding="utf-8")
+    old_time = time.time() - 48 * 3600
+    os.utime(stale_file, (old_time, old_time))
+
+    result = checks.check_disposable_data(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
+
+    assert result.status == "warn"
+    assert result.fix is not None
+    assert result.fix.command == "harness cleanup <repo> --mode hard"
+    assert stale_file.exists()  # preview only; nothing was removed

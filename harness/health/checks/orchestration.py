@@ -358,5 +358,59 @@ def check_orphaned_worktrees(context: HealthContext) -> CheckResult:
     )
 
 
+def _human_size(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KB", "MB"):
+        if value < 1024:
+            return f"{int(value)} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GB"
+
+
 def check_disposable_data(context: HealthContext) -> CheckResult:
-    return _skipped("orchestration.disposable_data")
+    check_id = "orchestration.disposable_data"
+    if not _has_capability(context):
+        return _skipped(check_id)
+    from harness.cleanup import plan_cleanup
+
+    try:
+        plan = plan_cleanup(context.repo, mode="hard")
+    except ValueError as exc:
+        return CheckResult(
+            id=check_id,
+            group="orchestration",
+            status="fail",
+            message=f"не удалось построить план очистки: {exc}",
+        )
+    total = 0
+    for item in plan["remove"]:
+        path = Path(item["path"])
+        try:
+            if item["kind"] == "file":
+                total += path.stat().st_size
+            else:
+                for sub in path.rglob("*"):
+                    try:
+                        if sub.is_file():
+                            total += sub.stat().st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    if total == 0:
+        return CheckResult(
+            id=check_id,
+            group="orchestration",
+            status="ok",
+            message="одноразовых данных для очистки нет",
+        )
+    return CheckResult(
+        id=check_id,
+        group="orchestration",
+        status="warn",
+        message=f"одноразовых данных на {_human_size(total)}; ничего не удалено (только предпросмотр)",
+        fix=Fix(
+            text="просмотрите план очистки перед применением",
+            command="harness cleanup <repo> --mode hard",
+        ),
+    )
