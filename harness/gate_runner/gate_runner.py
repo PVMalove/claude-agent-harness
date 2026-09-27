@@ -65,8 +65,16 @@ class CleanRoomPolicy:
 
     @contextmanager
     def checkout(self) -> Iterator[Path]:
+        if (
+            not isinstance(self.candidate_commit, str)
+            or re.fullmatch(r"[0-9a-fA-F]{7,64}", self.candidate_commit.strip()) is None
+        ):
+            raise GateRunnerError(
+                "candidate_commit must be a hexadecimal commit SHA",
+                remedy="pass candidate_commit as a 7-64 character hex commit SHA",
+            )
+
         temporary_parent = storage_path(self.repository, "runs", "qa")
-        temporary_parent.mkdir(parents=True, exist_ok=True)
         worktree_root = Path(
             tempfile.mkdtemp(prefix="agent-harness-qa-", dir=temporary_parent)
         )
@@ -81,6 +89,7 @@ class CleanRoomPolicy:
                     "add",
                     "--detach",
                     str(checkout),
+                    "--",
                     self.candidate_commit,
                 ],
                 capture_output=True,
@@ -147,6 +156,7 @@ class CleanRoomPolicy:
                         "worktree",
                         "remove",
                         "--force",
+                        "--",
                         str(checkout),
                     ],
                     capture_output=True,

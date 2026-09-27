@@ -17,7 +17,9 @@ import hashlib
 import inspect
 import io
 import json
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -91,6 +93,17 @@ class ImmutableReportPersistenceTests(unittest.TestCase):
                 ledger.records_root() / "reports" / "dispatch-0123456789abcdef.json"
             )
             self.assertFalse(report_path.exists())
+
+
+class GitUtilsValidationTests(unittest.TestCase):
+    def test_fetch_ref_tip_rejects_invalid_refs(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            repo = Path(temporary)
+            for invalid in ("-v", "--help", "", 123):
+                with self.subTest(invalid=invalid):
+                    with self.assertRaises(coordinator.CoordinatorError) as raised:
+                        git_utils._fetch_ref_tip(repo, cast(str, invalid))
+                    self.assertIn("ref must be a non-empty string not starting with '-'", raised.exception.message)
 
 
 def _git(repo: Path, *arguments: str) -> str:
@@ -269,6 +282,65 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         on_disk = coordinator._read_object(batch_path, "batch")
         self.assertEqual(on_disk["state"], "planned")
         self.assertEqual(on_disk["dispatches"], [])
+
+    def test_dispatch_command_resolves_its_batch_pinned_runtime(self) -> None:
+        (self.repo / ".harness" / "orchestration" / "coordinator.py").write_text(
+            "# pinned entry point\n", encoding="utf-8"
+        )
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch_id = self._create_architect_dispatch(batch["batch_id"])["dispatch_id"]
+        args = _ns(repo=str(self.repo), state_dir=str(self.state_dir), dispatch=dispatch_id)
+        self.assertIsNone(coordinator.pinned_runtime_command(args))
+
+        (self.repo / ".harness" / "orchestration" / "roles" / "architect.md").write_text(
+            "reinstalled\n", encoding="utf-8"
+        )
+
+        command = coordinator.pinned_runtime_command(args)
+        assert command is not None
+        self.assertEqual(
+            Path(command[3]).relative_to(self.state_dir / workspace.RUNTIMES_DIR).parts[1:],
+            ("harness", "orchestration", "coordinator.py"),
+        )
+
+    def test_file_command_resolves_its_payload_dispatch_pinned_runtime(self) -> None:
+        """report submit, dispatch checkpoint and dispatch telemetry name their dispatch only
+        inside --file, so the batch is resolved from that payload (#377)."""
+        (self.repo / ".harness" / "orchestration" / "coordinator.py").write_text(
+            "# pinned entry point\n", encoding="utf-8"
+        )
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch_id = self._create_architect_dispatch(batch["batch_id"])["dispatch_id"]
+        payload = workspace._prepare_agent_inbox(self.repo) / f"{dispatch_id}.json"
+        payload.write_text(json.dumps({"dispatch_id": dispatch_id}), encoding="utf-8")
+        args = _ns(repo=str(self.repo), state_dir=str(self.state_dir), file=str(payload))
+        (self.repo / ".harness" / "orchestration" / "roles" / "architect.md").write_text(
+            "reinstalled\n", encoding="utf-8"
+        )
+
+        self.assertIsNotNone(coordinator.pinned_runtime_command(args))
+        # A payload naming no readable dispatch is the command's own error to report.
+        for unreadable in ("not json", "[]", "{}", '{"dispatch_id": "dispatch-missing"}'):
+            with self.subTest(payload=unreadable):
+                payload.write_text(unreadable, encoding="utf-8")
+                self.assertIsNone(coordinator.pinned_runtime_command(args))
+
+    def test_schema_upgrade_waits_for_batches_pinned_to_another_runtime(self) -> None:
+        batch = self._create_batch()
+        args = _ns(repo=str(self.repo), state_dir=str(self.state_dir))
+        architect = self.repo / ".harness" / "orchestration" / "roles" / "architect.md"
+        original = architect.read_text(encoding="utf-8")
+        architect.write_text("reinstalled\n", encoding="utf-8")
+
+        with mock.patch("harness.orchestration.ledger.lifecycle.LEDGER_VERSION", 99):
+            with self.assertRaises(coordinator.CoordinatorError) as refused:
+                coordinator.migrate_ledger(args)
+            self.assertIn(batch["batch_id"], refused.exception.message)
+
+            architect.write_text(original, encoding="utf-8")
+            self.assertTrue(coordinator.migrate_ledger(args)["migrated"])
 
     def test_batch_approve_transitions_state_via_ledger_replace(self) -> None:
         batch = self._create_batch()
@@ -878,7 +950,6 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "provider_profiles": {
                 "p": {
                     "capabilities": ["architecture-analysis", "code-review"],
-                    "agent": "claude",
                     "fallback": [],
                     "known_limitations": ["none"],
                 }
@@ -993,6 +1064,36 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "Repo Map tier 'minimal' for role 'architect' is below the configured minimum 'full'",
         )
         self.assertIn("repo_map_policy", caught.exception.remedy)
+
+        with self.assertRaises(coordinator.CoordinatorError):
+            coordinator.create_dispatch(
+                _ns(
+                    transition_digest="irrelevant-because-the-gate-runs-first",
+                    approved_by="Malove",
+                    approved_at="2026-09-17T00:00:00+00:00",
+                    **fields,
+                )
+            )
+
+    def test_dispatch_admission_rejects_a_context_package_above_the_role_context_budget(
+        self,
+    ) -> None:
+        """`context_package_policy.max_tokens` may exceed the role's `context_limit`; the package
+        must still fit the brief's `context_budget`, at `propose` and at `create`."""
+        self._configure_project(adaptive_continuation_policy={"context_limit": 1})
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        fields = self._architect_dispatch_fields(batch["batch_id"])
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator.create_dispatch(_ns(propose=True, **fields))
+
+        self.assertRegex(
+            caught.exception.message,
+            r"^Context Package estimate \d+ tokens exceeds the architect context budget of 1 tokens",
+        )
+        self.assertIn("expected_files", caught.exception.remedy)
+        self.assertIn("context_limit", caught.exception.remedy)
 
         with self.assertRaises(coordinator.CoordinatorError):
             coordinator.create_dispatch(
@@ -4651,6 +4752,187 @@ class CoordinatorCliParserTests(unittest.TestCase):
             coordinator.parser().parse_args(
                 [*common, "--decision", "retry", "--reason-category", "flaky-network"]
             )
+
+
+class PinnedRuntimeSnapshotTests(unittest.TestCase):
+    """A batch finishes on the runtime it was planned under after the checkout's runtime is
+    reinstalled for another task (#369), driven through the installed coordinator CLI."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.tmp = Path(self._tmp.name)
+        self.repo = _init_repo(self.tmp)
+        (self.repo / ".git" / "info" / "exclude").write_text(".harness/\n", encoding="utf-8")
+        installed = self.repo / ".harness"
+        ignore = shutil.ignore_patterns("state", "__pycache__", "*.pyc")
+        for item in ORCHESTRATION_ROOT.parent.iterdir():
+            if item.is_file() and item.suffix == ".py":
+                shutil.copy2(item, installed / item.name)
+            elif item.is_dir() and (item / "__init__.py").is_file():
+                shutil.copytree(item, installed / item.name, ignore=ignore, dirs_exist_ok=True)
+        # A short state root keeps ledger temp files under Windows MAX_PATH in deep test roots.
+        self.state_dir = self.tmp / "s"
+        self.runtimes = self.state_dir / workspace.RUNTIMES_DIR
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _coordinator(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(self.repo / ".harness" / "orchestration" / "coordinator.py"),
+                "--repo",
+                str(self.repo),
+                "--state-dir",
+                str(self.state_dir),
+                *arguments,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+    def _ok(self, *arguments: str) -> JsonObject:
+        result = self._coordinator(*arguments)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        return cast(JsonObject, json.loads(result.stdout))
+
+    def _create_batch(self, slug: str) -> str:
+        branch = f"feature/issue-369-{slug}"
+        worktree = self.tmp / slug
+        _git(self.repo, "worktree", "add", "-b", branch, str(worktree), "master")
+        batch = self._ok(
+            "batch", "create", "--ticket", "#369", "--branch", branch,
+            "--worktree", str(worktree), "--integration-ref", "master",
+            "--definition-of-done", "do the thing", "--prohibited-change", "secrets",
+            "--expected-file", "services/x.py", "--expected-service", "core",
+            "--expected-changed-lines", "10",
+        )
+        return cast(str, batch["batch_id"])
+
+    def _approve(self, batch_id: str) -> subprocess.CompletedProcess[str]:
+        return self._coordinator(
+            "batch", "approve", "--batch", batch_id, "--approved-by", "Malove",
+            "--approved-at", datetime.now(UTC).isoformat(),
+        )
+
+    def _reinstall_runtime(self) -> None:
+        """Stand in for 'harness update' from another branch: the installed approve differs."""
+        installed = self.repo / ".harness" / "orchestration" / "workflow" / "batch.py"
+        with installed.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n\ndef approve_batch(args: argparse.Namespace) -> JsonObject:\n"
+                "    return {'executed_by': 'reinstalled runtime'}\n"
+            )
+
+    def test_batch_finishes_on_its_pinned_runtime_after_a_reinstall(self) -> None:
+        planned_before = self._create_batch("before")
+        self._reinstall_runtime()
+
+        approved = self._approve(planned_before)
+        self.assertEqual(approved.returncode, 0, approved.stderr or approved.stdout)
+        self.assertEqual(json.loads(approved.stdout)["batch_id"], planned_before)
+
+        planned_after = self._create_batch("after")
+        self.assertEqual(
+            json.loads(self._approve(planned_after).stdout),
+            {"executed_by": "reinstalled runtime"},
+        )
+        self.assertEqual(len(list(self.runtimes.iterdir())), 2)
+
+    def _architect_dispatch(self, batch_id: str) -> JsonObject:
+        shape = (
+            "--batch", batch_id, "--role", "architect", "--runtime", "claude",
+            "--model", "sonnet", "--effort", "high",
+        )
+        proposal = self._ok("dispatch", "propose", *shape)
+        return self._ok(
+            "dispatch", "create", *shape,
+            "--transition-digest", cast(str, proposal["transition_digest"]),
+            "--approved-by", "Malove", "--approved-at", datetime.now(UTC).isoformat(),
+        )
+
+    def test_runtime_hash_check_passes_inside_the_pinned_snapshot(self) -> None:
+        batch_id = self._create_batch("dispatch")
+        self.assertEqual(self._approve(batch_id).returncode, 0)
+        dispatch = self._architect_dispatch(batch_id)
+        self._reinstall_runtime()
+
+        sent = self._coordinator("dispatch", "send", "--dispatch", cast(str, dispatch["dispatch_id"]))
+
+        self.assertEqual(sent.returncode, 0, sent.stderr or sent.stdout)
+
+    def test_report_submitted_by_file_runs_on_the_pinned_snapshot(self) -> None:
+        """report submit names its dispatch only inside --file (#377)."""
+        batch_id = self._create_batch("report")
+        self.assertEqual(self._approve(batch_id).returncode, 0)
+        brief = cast(JsonObject, self._architect_dispatch(batch_id)["brief"])
+        dispatch_id = cast(str, brief["dispatch_id"])
+        self._reinstall_runtime()
+        self._ok("dispatch", "send", "--dispatch", dispatch_id)
+        self._ok("dispatch", "self-report", "--dispatch", dispatch_id, "--model", "sonnet")
+        report = workspace._prepare_agent_inbox(self.repo) / f"{dispatch_id}.json"
+        report.write_text(
+            json.dumps(
+                {
+                    "dispatch_id": dispatch_id,
+                    "ticket": brief["ticket"],
+                    "role": "architect",
+                    "outcome": "completed",
+                    "output": "architecture decision recorded",
+                    "commit_sha": "not applicable — read-only role",
+                    "changed_files": [],
+                    "checks_run": [],
+                    "risks": "none",
+                    "blockers": "none",
+                    "next_coordinator_action": "dispatch developer",
+                    "report_language": "ru",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        submitted = self._ok("report", "submit", "--file", str(report))
+
+        self.assertEqual(submitted["state"], "reported")
+
+    def test_a_tampered_snapshot_is_refused(self) -> None:
+        batch_id = self._create_batch("tampered")
+        self._reinstall_runtime()
+        (snapshot,) = self.runtimes.iterdir()
+        (snapshot / "harness" / "orchestration" / "playbook.md").write_text(
+            "tampered\n", encoding="utf-8"
+        )
+
+        refused = self._approve(batch_id)
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("no longer matches", refused.stdout + refused.stderr)
+
+    def test_restore_runtime_recovers_a_batch_planned_without_a_snapshot(self) -> None:
+        batch_id = self._create_batch("legacy")
+        pinned = self.tmp / "pinned-harness"
+        shutil.copytree(
+            self.repo / ".harness",
+            pinned,
+            ignore=shutil.ignore_patterns("state", "__pycache__", "*.pyc"),
+        )
+        shutil.rmtree(self.runtimes)
+        self._reinstall_runtime()
+
+        mismatch = self._coordinator(
+            "batch", "restore-runtime", "--batch", batch_id,
+            "--from", str(self.repo / ".harness"),
+        )
+        self.assertNotEqual(mismatch.returncode, 0)
+        self.assertIn("does not match the pinned hash", mismatch.stdout + mismatch.stderr)
+
+        self._ok("batch", "restore-runtime", "--batch", batch_id, "--from", str(pinned))
+        approved = self._approve(batch_id)
+        self.assertEqual(approved.returncode, 0, approved.stderr or approved.stdout)
+        self.assertEqual(json.loads(approved.stdout)["batch_id"], batch_id)
 
 
 if __name__ == "__main__":

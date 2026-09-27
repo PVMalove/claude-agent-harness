@@ -140,10 +140,10 @@ _Avoid_: автоматический мержер, интегратор.
 
 **Ядро оркестрации** (orchestration core):
 Переносимый контракт ролей, назначений, batch и handoff, не зависящий от конкретного coding runtime.
-_Avoid_: Orca workflow, scheduler конкретного провайдера.
+_Avoid_: workflow конкретного провайдера, scheduler конкретного провайдера.
 
 **Runtime adapter**:
-Необязательная реализация ядра для конкретной среды запуска, например Orca; переводит назначение в
+Необязательная реализация ядра для конкретной среды запуска; переводит назначение в
 команды среды, но не определяет правила ролей или workflow.
 _Avoid_: ядро оркестрации, role manifest.
 
@@ -203,7 +203,7 @@ _Avoid_: свободный выбор агента воркером, role manif
 
 **Provider profile**:
 Именованная project-owned запись о доступном агенте: capability, default model, fallback и known
-limitations; при включённом Orca adapter добавляется agent identifier. Роль ссылается на требуемую
+limitations. Роль ссылается на требуемую
 capability, а не на provider profile напрямую.
 _Avoid_: agent name в role manifest, глобальная таблица моделей.
 
@@ -245,7 +245,7 @@ _Avoid_: специализация каждой сервисной правки
 
 **Backend orchestration capability**:
 Необязательная capability `backend-orchestration`, расширяющая `pvmalove-suite` и доставляющая
-role manifests, config contract, lifecycle, handoff и optional Orca adapter без изменения
+role manifests, config contract, lifecycle, handoff и optional runtime adapter без изменения
 существующих проектов. Практический порядок включения и запуска —
 `docs/agents/backend-orchestration.md`.
 _Avoid_: неявное включение orchestration, изменение базовой capability.
@@ -342,11 +342,11 @@ _Avoid_: QA или publish произвольного HEAD, reuse evidence дл�
 Git с checksum; canonical JSON report содержит только краткое evidence и ссылку на артефакт.
 _Avoid_: сырые логи в Git, report с секретами, удаление evidence ролью.
 
-**Orca adapter**:
-Необязательная runtime-граница в `backend-orchestration`: после ручного approval переводит валидный
-JSON brief в Orca task и isolated worker, фиксируя неизменяемую запись dispatch. Он не выбирает
-scope, не утверждает запуск, не выполняет project checks и не мержит PR.
-_Avoid_: обязательная Orca dependency, config-only ядро с командами Orca.
+**External runtime adapter**:
+Необязательная project-owned runtime-граница в `backend-orchestration`: после ручного approval
+передаёт валидный JSON brief во внешнюю среду запуска. Он не выбирает scope, не утверждает запуск,
+не выполняет project checks и не мержит PR.
+_Avoid_: обязательная зависимость от конкретного provider, config-only ядро с командами provider.
 
 **Role common contract** (`harness/orchestration/roles/_common.md`):
 Общий Markdown-контракт для всех ролей: handoff, completion report, branch/worktree, commit proof и
@@ -398,7 +398,7 @@ clean-room QA lane.
 _Avoid_: полагаться только на самодисциплину воркера слать heartbeat.
 
 **Role transport**:
-Project-owned выбор в assignment plan роли — исполнять её как Orca-dispatched isolated worker или как
+Project-owned выбор в assignment plan роли — исполнять её через project-owned внешний adapter или как
 in-process субагент текущей сессии. Оба варианта подчиняются одному brief/report контракту и обязаны
 проходить model self-report.
 _Avoid_: жёсткая привязка роли к одному транспортному механизму.

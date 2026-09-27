@@ -316,6 +316,18 @@ class GateRunnerTests(unittest.TestCase):
 
             self.assertEqual(result, win_python)
 
+    def test_clean_room_policy_rejects_invalid_candidate_commit(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            for invalid in ("-v", "not-a-hex-sha", "", 123):
+                with self.subTest(invalid=invalid):
+                    policy = CleanRoomPolicy(repo, cast(str, invalid))
+                    with self.assertRaises(GateRunnerError) as raised:
+                        with policy.checkout():
+                            pass
+                    self.assertIn("candidate_commit must be a hexadecimal commit SHA", raised.exception.message)
+
 
 if __name__ == "__main__":
     unittest.main()

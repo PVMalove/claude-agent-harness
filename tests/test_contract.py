@@ -263,6 +263,12 @@ class ResolveAssignmentTests(unittest.TestCase):
         error = self._fail(config, _role())
         self.assertEqual(error.message, "role 'developer' has an invalid transport")
 
+    def test_external_transport_resolves_for_project_adapter(self) -> None:
+        config = _config()
+        config["assignment_plans"]["developer"]["transport"] = "external"
+        result = contract.resolve_assignment(config, _role(), "developer", "z", "claude")
+        self.assertEqual(result["transport"], "external")
+
     def test_write_paths_outside_zone(self) -> None:
         config = _config()
         config["assignment_plans"]["developer"]["write_paths"] = ["docs/x"]

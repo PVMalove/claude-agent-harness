@@ -146,11 +146,11 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             + INTERNAL_INVARIANT_REMEDY,
         )
     adapter: Path | None = None
-    if transport == "orca":
+    if transport == "external":
         if not args.adapter:
             raise CoordinatorError(
-                "an orca-transport dispatch requires an explicit runtime adapter",
-                remedy="pass --adapter for an orca-transport dispatch",
+                "an external dispatch requires an explicit runtime adapter",
+                remedy="pass --adapter for an external dispatch",
             )
         adapter = Path(args.adapter).resolve()
         if not adapter.is_file():

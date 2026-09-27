@@ -25,7 +25,7 @@
     },
     "assignment_plans": {
       "type": "object",
-      "description": "Планы назначения ролей ('architect', 'developer', 'code-review', 'qa'). Определяют, какую область кода (zone) обрабатывает роль, какие рантаймы (например, 'claude', 'codex') доступны, с какой моделью, уровнем усилий ('effort') и транспортом ('orca' или 'in-process').",
+      "description": "Планы назначения ролей ('architect', 'developer', 'code-review', 'qa'). Определяют, какую область кода (zone) обрабатывает роль, какие рантаймы (например, 'claude', 'codex') доступны, с какой моделью, уровнем усилий ('effort') и транспортом ('in-process' или 'external').",
       "additionalProperties": {
         "$ref": "#/definitions/assignmentPlan"
       }
@@ -173,7 +173,8 @@
           "description": "Максимальное количество связанных тестов в пакете (целое число >= 1, по умолчанию 25)."
         },
         "min_starting_files": {"type": "integer", "minimum": 1, "default": 5, "description": "Минимальное количество стартовых файлов при ручной регистрации Context Package."},
-        "max_starting_files": {"type": "integer", "minimum": 1, "default": 10, "description": "Максимальное количество стартовых файлов в Context Package."}
+        "max_starting_files": {"type": "integer", "minimum": 1, "default": 10, "description": "Максимальное количество стартовых файлов в Context Package."},
+        "section_index_min_tokens": {"type": "integer", "minimum": 1, "default": 20000, "description": "Порог оценки токенов, начиная с которого Markdown-файл попадает в Context Package как оглавление разделов с диапазонами строк, а не целиком (целое число, по умолчанию 20000)."}
       }
     },
     "repo_map_policy": {
@@ -291,11 +292,6 @@
           },
           "description": "Поддерживаемые возможности провайдера. Варианты: 'architecture-analysis', 'backend-development', 'code-review', 'independent-verification'."
         },
-        "agent": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Идентификатор агента Orca для этого профиля."
-        },
         "fallback": {
           "type": "array",
           "items": {
@@ -334,9 +330,9 @@
           "description": "Уточнённый список путей для записи (находящийся внутри выделенной зоны)."
         },
         "transport": {
-          "enum": ["orca", "in-process"],
+          "enum": ["in-process", "external"],
           "default": "in-process",
-          "description": "Способ выполнения роли. Варианты: 'in-process' (подагент сессии координатора, по умолчанию), 'orca' (изолированный воркер через Orca)."
+          "description": "Способ выполнения роли: 'in-process' (подагент сессии координатора) или 'external' (проектный runtime adapter)."
         },
         "default_runtime": {
           "type": "string",

@@ -93,7 +93,8 @@ def count_skill_files(skills_dir: Path) -> int:
 
 
 def run_hook(
-    hook: Path, project_dir: Path, command: str, *, raw_payload=None, env_overrides=None
+    hook: Path, project_dir: Path, command: str, *, raw_payload=None, env_overrides=None,
+    cwd: Path | None = None,
 ):
     """Передать PreToolUse(Bash) hook тот же JSON, что отправляет Claude Code, с `CLAUDE_PROJECT_DIR`.
 
@@ -113,6 +114,7 @@ def run_hook(
         capture_output=True,
         text=True,
         env=env,
+        cwd=cwd,
         timeout=10,
         check=False,
     )
