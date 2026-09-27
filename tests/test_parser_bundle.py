@@ -87,6 +87,17 @@ def test_tree_sitter_imports_are_confined_to_worker_process() -> None:
     assert "import tree_sitter" in worker
 
 
+def test_default_registry_dir_and_bundle_cache_root(tmp_path: Path) -> None:
+    expected_cache_root = (
+        tmp_path / ".harness" / ".sandboxes" / "cache" / "repo_map" / "parser_bundle"
+    )
+    assert parser_bundle.bundle_cache_root(tmp_path) == expected_cache_root
+    assert (
+        parser_bundle.default_registry_dir(tmp_path)
+        == expected_cache_root / "registry"
+    )
+
+
 def test_parse_lock_accepts_well_formed_json(tmp_path: Path) -> None:
     lock_path = build_bundle_dir(tmp_path / "bundle", pair="cp312-any") / "parser_bundle.lock.json"
     lock = parser_bundle.parse_lock(lock_path.read_bytes())
@@ -501,7 +512,7 @@ def test_linked_worktree_uses_main_checkout_bundle_registry_and_cache(
 
     assert isinstance(result, parser_bundle.AppliedBundle)
     assert installed == [result.install_dir]
-    assert result.install_dir.is_relative_to(repo / ".harness" / ".cache" / "repo_map")
+    assert result.install_dir.is_relative_to(repo / ".harness" / ".sandboxes" / "cache" / "repo_map")
     assert not (linked / ".harness").exists()
 
 

@@ -168,12 +168,12 @@ class AppliedBundle:
 
 def default_registry_dir(repo: Path) -> Path:
     """Переносимый локальный registry bundle проекта; никогда не коммитится (`.harness/` в gitignore)."""
-    return storage_path(repo, ".cache", "repo_map", "parser_bundle", "registry")
+    return storage_path(repo, "cache", "repo_map", "parser_bundle", "registry")
 
 
 def bundle_cache_root(repo: Path) -> Path:
     """Общий каталог bundle: registry и установленные копии по lock и паре."""
-    return storage_path(repo, ".cache", "repo_map", "parser_bundle")
+    return storage_path(repo, "cache", "repo_map", "parser_bundle")
 
 
 def search_dirs(repo: Path, registry_paths: tuple[str, ...]) -> tuple[Path, ...]:

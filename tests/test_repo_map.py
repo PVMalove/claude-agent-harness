@@ -292,11 +292,23 @@ def test_default_result_cache_is_shared_by_linked_worktrees(tmp_path: Path) -> N
     policy = repo_map.RepoMapPolicy(tier="minimal")
 
     first = repo_map.build_map(repo, commit, 4000, [], policy)
-    cache = repo / ".harness" / ".cache" / "repo_map" / "results"
+    cache = repo / ".harness" / ".sandboxes" / "cache" / "repo_map" / "results"
     assert len(list(cache.glob("*.json"))) == 1
     assert repo_map.build_map(linked, commit, 4000, [], policy) == first
     assert len(list(cache.glob("*.json"))) == 1
     assert not (linked / ".harness").exists()
+
+
+def test_repo_map_default_cache_path_under_sandboxes(tmp_path: Path) -> None:
+    repo = tmp_path / "project"
+    commit = _commit_files(repo, {"main.py": "def run() -> None: pass\n"})
+    policy = repo_map.RepoMapPolicy(tier="minimal")
+
+    repo_map.build_map(repo, commit, 4000, [], policy)
+    expected_cache = repo / ".harness" / ".sandboxes" / "cache" / "repo_map" / "results"
+    assert expected_cache.is_dir()
+    assert len(list(expected_cache.glob("*.json"))) == 1
+    assert not (repo / ".harness" / ".cache").exists()
 
 
 def test_repo_map_cache_discards_tampered_entry_and_never_touches_repo(

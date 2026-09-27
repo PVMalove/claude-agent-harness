@@ -196,7 +196,8 @@ def run(ctx: SimpleNamespace) -> None:
     corrupt_registry = (
         pv_project
         / ".harness"
-        / ".cache"
+        / ".sandboxes"
+        / "cache"
         / "repo_map"
         / "parser_bundle"
         / "registry"
