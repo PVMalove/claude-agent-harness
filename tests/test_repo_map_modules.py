@@ -1,8 +1,6 @@
 """Модули Repo Map за пределами CLI: бюджет, чтение Git, worker и диагностика сбоев."""
 
 import importlib
-import importlib.machinery
-import importlib.util
 import io
 import json
 import random
@@ -14,11 +12,12 @@ from pathlib import Path
 import pytest
 from _parser_bundle_fixtures import build_bundle_dir, write_worker_script
 
+from harness.health.checks import files as files_check
+from harness.health.checks import repo_map as repo_map_check
+from harness.health.context import HealthContext
 from harness.repo_map import budget, bundle_worker, parser_bundle
 from harness.repo_map.git_source import Blob, read_blobs
 from harness.repo_map.graph import GRAMMAR_FAMILIES, Diagnostic, EdgeRecord
-
-ROOT = Path(__file__).resolve().parents[1]
 
 # The worker imports `tree_sitter*` for type checking only and is checked by the separate bundle mypy
 # run; importing it by name keeps the main mypy run from following it.
@@ -168,7 +167,6 @@ def test_supported_grammars_agree_between_worker_graph_and_protocol() -> None:
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="health reports a missing uv before the lock")
 def test_health_names_a_registry_stub_bundle_instead_of_reporting_full_tier(tmp_path: Path) -> None:
-    cli = _load_cli()
     project = tmp_path / "project"
     (project / ".harness" / "repo_map").mkdir(parents=True)
     (project / ".harness" / "repo_map" / "repo_map.py").write_text("", encoding="utf-8")
@@ -177,27 +175,22 @@ def test_health_names_a_registry_stub_bundle_instead_of_reporting_full_tier(tmp_
         parser_bundle.default_registry_dir(project), pair=f"{python_tag}-{platform_tag}"
     )
 
-    lines = getattr(cli, "repo_map_health")(project)
+    result = repo_map_check.check_tier(HealthContext(repo=project, lock=None, online=False))
 
-    assert lines[0] == "Repo Map: tier=minimal (parser bundle has no supported grammars)"
-    assert "тестовый stub" in lines[-1]
-
-
-def _load_cli() -> object:
-    loader = importlib.machinery.SourceFileLoader("harness_cli", str(ROOT / "harness" / "bin" / "harness"))
-    spec = importlib.util.spec_from_loader("harness_cli", loader)
-    assert spec is not None
-    cli = importlib.util.module_from_spec(spec)
-    loader.exec_module(cli)
-    return cli
+    assert result.status == "warn"
+    assert result.message.startswith("Repo Map: tier=minimal (parser bundle has no supported grammars)")
+    assert result.fix is not None and "тестовый stub" in result.fix.text
 
 
 def test_health_warns_when_the_developer_would_run_the_full_gate(tmp_path: Path) -> None:
-    cli = _load_cli()
     config = tmp_path / ".harness" / "orchestration.json"
     config.parent.mkdir(parents=True)
     config.write_text(json.dumps({"verification_commands": ["python scripts/verify.py"]}))
-    assert getattr(cli, "verification_routing_health")(tmp_path)[0].startswith("ПРЕДУПРЕЖДЕНИЕ")
+    lock = {"capabilities": ["backend-orchestration"]}
+
+    result = files_check.check_verification_routing(HealthContext(repo=tmp_path, lock=lock, online=False))
+    assert result.status == "warn"
+    assert result.fix is not None
 
     config.write_text(
         json.dumps(
@@ -207,7 +200,8 @@ def test_health_warns_when_the_developer_would_run_the_full_gate(tmp_path: Path)
             }
         )
     )
-    assert getattr(cli, "verification_routing_health")(tmp_path) == []
+    result = files_check.check_verification_routing(HealthContext(repo=tmp_path, lock=lock, online=False))
+    assert result.status == "ok"
 
 
 def test_failed_worker_run_keeps_the_tail_of_its_stderr(tmp_path: Path) -> None:

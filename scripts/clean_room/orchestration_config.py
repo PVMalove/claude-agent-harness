@@ -6,9 +6,19 @@ from types import SimpleNamespace
 
 from scripts.clean_room.support import (
     HARNESS,
-    fail_output,
+    fail_json,
+    find_check,
     run_ok,
 )
+
+_CHECK_ID = "files.orchestration_config"
+
+
+def _expect_fail_message(orchestration_project, needle: str, complaint: str) -> None:
+    report = fail_json(HARNESS + ["health", str(orchestration_project), "--json"])
+    check = find_check(report, _CHECK_ID)
+    if check["status"] != "fail" or needle not in check["message"]:
+        sys.exit(complaint)
 
 
 def run(ctx: SimpleNamespace) -> None:
@@ -33,20 +43,20 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_config.write_text(
         json.dumps(invalid_transport, indent=2) + "\n", encoding="utf-8"
     )
-    output = fail_output(HARNESS + ["health", str(orchestration_project)])
-    if "transport must be one of" not in output:
-        sys.exit("health accepted an unknown role transport")
+    _expect_fail_message(
+        orchestration_project, "transport must be one of", "health accepted an unknown role transport"
+    )
 
     missing_review_assignment = json.loads(json.dumps(valid_orchestration))
     del missing_review_assignment["assignment_plans"]["code-review"]
     orchestration_config.write_text(
         json.dumps(missing_review_assignment, indent=2) + "\n", encoding="utf-8"
     )
-    output = fail_output(HARNESS + ["health", str(orchestration_project)])
-    if "must include code-review for the mandatory high-risk role gate" not in output:
-        sys.exit(
-            "health allowed orchestration config without the code-review role gate"
-        )
+    _expect_fail_message(
+        orchestration_project,
+        "must include code-review for the mandatory high-risk role gate",
+        "health allowed orchestration config without the code-review role gate",
+    )
 
     role_path = orchestration_root / "roles" / "code-review.md"
     original_role = role_path.read_text(encoding="utf-8")
@@ -56,19 +66,21 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_config.write_text(
         json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8"
     )
-    output = fail_output(HARNESS + ["health", str(orchestration_project)])
-    if "code-review role manifest is missing required risk trigger" not in output:
-        sys.exit(
-            "health allowed code-review without the complete high-risk trigger contract"
-        )
+    _expect_fail_message(
+        orchestration_project,
+        "code-review role manifest is missing required risk trigger",
+        "health allowed code-review without the complete high-risk trigger contract",
+    )
     role_path.write_text(original_role, encoding="utf-8")
 
     role_path.write_text(
         original_role.replace("mode: read-only", "mode: write"), encoding="utf-8"
     )
-    output = fail_output(HARNESS + ["health", str(orchestration_project)])
-    if "code-review role manifest must remain read-only" not in output:
-        sys.exit("health allowed code-review with a write mode")
+    _expect_fail_message(
+        orchestration_project,
+        "code-review role manifest must remain read-only",
+        "health allowed code-review with a write mode",
+    )
     role_path.write_text(original_role, encoding="utf-8")
 
     role_path.write_text(
@@ -77,12 +89,11 @@ def run(ctx: SimpleNamespace) -> None:
         ),
         encoding="utf-8",
     )
-    output = fail_output(HARNESS + ["health", str(orchestration_project)])
-    if (
-        "code-review role manifest must require the code-review capability"
-        not in output
-    ):
-        sys.exit("health allowed code-review without its required capability")
+    _expect_fail_message(
+        orchestration_project,
+        "code-review role manifest must require the code-review capability",
+        "health allowed code-review without its required capability",
+    )
     role_path.write_text(original_role, encoding="utf-8")
 
     invalid_role = json.loads(json.dumps(valid_orchestration))
@@ -92,9 +103,9 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_config.write_text(
         json.dumps(invalid_role, indent=2) + "\n", encoding="utf-8"
     )
-    output = fail_output(HARNESS + ["health", str(orchestration_project)])
-    if "unknown role" not in output:
-        sys.exit("health did not explain unknown orchestration role")
+    _expect_fail_message(
+        orchestration_project, "unknown role", "health did not explain unknown orchestration role"
+    )
 
     invalid_profile = json.loads(json.dumps(valid_orchestration))
     invalid_profile["assignment_plans"]["developer"]["runtimes"]["codex"][
@@ -103,9 +114,9 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_config.write_text(
         json.dumps(invalid_profile, indent=2) + "\n", encoding="utf-8"
     )
-    output = fail_output(HARNESS + ["health", str(orchestration_project)])
-    if "unknown provider profile" not in output:
-        sys.exit("health did not explain unknown provider profile")
+    _expect_fail_message(
+        orchestration_project, "unknown provider profile", "health did not explain unknown provider profile"
+    )
 
     incompatible = json.loads(json.dumps(valid_orchestration))
     incompatible["provider_profiles"]["backend-default"]["capabilities"] = [
@@ -114,27 +125,29 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_config.write_text(
         json.dumps(incompatible, indent=2) + "\n", encoding="utf-8"
     )
-    output = fail_output(HARNESS + ["health", str(orchestration_project)])
-    if "incompatible capability" not in output:
-        sys.exit("health did not explain incompatible provider capability")
+    _expect_fail_message(
+        orchestration_project, "incompatible capability", "health did not explain incompatible provider capability"
+    )
 
     invalid_zone = json.loads(json.dumps(valid_orchestration))
     invalid_zone["assignment_plans"]["developer"]["zone"] = "missing-zone"
     orchestration_config.write_text(
         json.dumps(invalid_zone, indent=2) + "\n", encoding="utf-8"
     )
-    output = fail_output(HARNESS + ["health", str(orchestration_project)])
-    if "unknown backend zone" not in output:
-        sys.exit("health did not explain unknown backend zone")
+    _expect_fail_message(
+        orchestration_project, "unknown backend zone", "health did not explain unknown backend zone"
+    )
 
     policy_override = json.loads(json.dumps(valid_orchestration))
     policy_override["assignment_plans"]["developer"]["mode"] = "read-only"
     orchestration_config.write_text(
         json.dumps(policy_override, indent=2) + "\n", encoding="utf-8"
     )
-    output = fail_output(HARNESS + ["health", str(orchestration_project)])
-    if "cannot override role manifest" not in output:
-        sys.exit("health allowed an assignment to override role policy")
+    _expect_fail_message(
+        orchestration_project,
+        "cannot override role manifest",
+        "health allowed an assignment to override role policy",
+    )
 
     credential_field = json.loads(json.dumps(valid_orchestration))
     credential_field["provider_profiles"]["backend-default"]["api_key"] = (
@@ -143,6 +156,6 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_config.write_text(
         json.dumps(credential_field, indent=2) + "\n", encoding="utf-8"
     )
-    output = fail_output(HARNESS + ["health", str(orchestration_project)])
-    if "credentials" not in output:
-        sys.exit("health did not reject credential-shaped provider profile data")
+    _expect_fail_message(
+        orchestration_project, "credentials", "health did not reject credential-shaped provider profile data"
+    )

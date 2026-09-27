@@ -11,8 +11,9 @@ from harness.storage import storage_path
 from scripts.clean_room.support import (
     HARNESS,
     ROOT,
-    capture,
+    capture_json,
     fill_agents,
+    find_check,
     run_ok,
 )
 
@@ -519,10 +520,12 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_config.write_text(
         json.dumps(minimal_repo_map_policy, indent=2) + "\n", encoding="utf-8"
     )
-    policy_health = capture(HARNESS + ["health", str(orchestration_project)])
-    if "Repo Map: tier=minimal (requested by policy)" not in policy_health:
+    policy_health = find_check(
+        capture_json(HARNESS + ["health", str(orchestration_project), "--json"]), "repo_map.tier"
+    )
+    if not policy_health["message"].startswith("Repo Map: tier=minimal (requested by policy)"):
         sys.exit("health did not report the policy-required Repo Map tier")
-    if "dispatch is limited to minimal path inventory" not in policy_health:
+    if "dispatch is limited to minimal path inventory" not in policy_health["message"]:
         sys.exit("health did not report Repo Map policy dispatch effect")
     orchestration_config.write_text(
         json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8"
