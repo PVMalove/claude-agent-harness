@@ -48,22 +48,20 @@ def test_build_relaunch_argv_forwards_extra_argv() -> None:
     assert argv[-2:] == ["--foo", "bar"]
 
 
-def test_run_console_already_relaunched_runs_the_app_in_process() -> None:
+def test_run_console_already_relaunched_runs_the_injected_app_runner() -> None:
+    """Proves the "already relaunched" branch never needs `find_uv`/`runner` and dispatches to
+    `app_runner` - injected here instead of monkeypatching `sys.modules["harness.console.app"]`,
+    which is never safe to do in a process that may also run real textual Pilot tests."""
     repo = Path("/tmp/some-repo")
     calls: list[Path] = []
 
-    class _FakeAppModule:
-        @staticmethod
-        def run(passed_repo: Path) -> int:
-            calls.append(passed_repo)
-            return 0
+    def fake_app_runner(passed_repo: Path) -> int:
+        calls.append(passed_repo)
+        return 0
 
     with mock.patch.dict("os.environ", {launcher.RELAUNCH_ENV: "1"}):
         with mock.patch.object(launcher, "find_uv") as find_uv:
-            with mock.patch.dict(
-                "sys.modules", {"harness.console.app": _FakeAppModule}
-            ):
-                exit_code = launcher.run_console(repo)
+            exit_code = launcher.run_console(repo, app_runner=fake_app_runner)
             find_uv.assert_not_called()
 
     assert exit_code == 0
@@ -86,11 +84,10 @@ def test_run_console_relaunches_via_the_injected_runner_when_uv_is_found() -> No
             recorded_env.update(env)
         return subprocess.CompletedProcess(list(argv), 0, "", "")
 
-    import os as _os
-
-    _os.environ.pop(launcher.RELAUNCH_ENV, None)
-    with mock.patch.object(launcher, "find_uv", return_value="/usr/local/bin/uv"):
-        exit_code = launcher.run_console(repo, runner=fake_runner)
+    with mock.patch.dict("os.environ"):
+        os.environ.pop(launcher.RELAUNCH_ENV, None)
+        with mock.patch.object(launcher, "find_uv", return_value="/usr/local/bin/uv"):
+            exit_code = launcher.run_console(repo, runner=fake_runner)
 
     assert exit_code == 0
     assert recorded_argv[0] == "/usr/local/bin/uv"

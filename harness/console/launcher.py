@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from .pin import TEXTUAL_PIN
 from .runner import CommandRunner, default_runner
@@ -49,24 +49,30 @@ def build_relaunch_argv(uv: str, repo: Path, extra_argv: Sequence[str] = ()) -> 
     ]
 
 
+def _default_app_runner(repo: Path) -> int:
+    from . import app as console_app
+
+    return console_app.run(repo)
+
+
 def run_console(
     repo: Path,
     extra_argv: Sequence[str] = (),
     *,
     runner: CommandRunner = default_runner,
+    app_runner: Callable[[Path], int] = _default_app_runner,
 ) -> int:
     """Entry point `cmd_console` calls. Three paths:
 
-    1. Already relaunched (`RELAUNCH_ENV` set by our own subprocess call below): import and run
-       the real textual App in-process - this is the only path that ever imports `textual`.
+    1. Already relaunched (`RELAUNCH_ENV` set by our own subprocess call below): run the (real,
+       by default) textual App in-process via `app_runner` - the only path that ever imports
+       `textual`, and the only parameter a test overrides to avoid that import.
     2. `uv` not on PATH: print why and fall back to the stdlib `harness health` report.
     3. `uv` found: relaunch via `runner`; a non-zero exit (offline, resolution failure, ...) falls
        back the same way as (2). Diagnostics never depends on textual being installed.
     """
     if os.environ.get(RELAUNCH_ENV) == "1":
-        from . import app as console_app
-
-        return console_app.run(repo)
+        return app_runner(repo)
 
     uv = find_uv()
     if uv is None:
