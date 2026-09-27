@@ -2,8 +2,8 @@
 
 `harness/*.py` уже несёт почти повсеместные return-аннотации, но полагается на явный `Any` как
 клапан сброса (147 раз в `coordinator.py`, 44 — в `ledger.py`, 43 — в `qa_lane.py`), в том числе
-на границах с настоящим динамическим JSON (`orca_adapter.py`, `delivery_stats.py` читают внешний
-JSON от Orca/ledger). Сам по себе `mypy --strict` запрещает только implicit `Any` — явный `Any` он
+на границах с настоящим динамическим JSON (`coordinator.py`, `delivery_stats.py` читают внешний
+JSON от runtime/ledger). Сам по себе `mypy --strict` запрещает только implicit `Any` — явный `Any` он
 пропускает молча.
 
 Решили: включить `disallow_any_explicit` в конфиг mypy навсегда, а не только на время разовой

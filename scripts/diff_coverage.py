@@ -19,9 +19,12 @@ THRESHOLD_PERCENT = 70.0
 MAX_UNCOVERED_LINES = 25
 COVERAGE_DATA_FILE = ROOT / ".coverage"
 COVERAGE_JSON_FILE = ROOT / ".coverage.diff-coverage.json"
-# Verified by the clean-room run (scripts/verify.py), not by the unittest suite this gate measures, so
-# its changed lines could never count as covered.
-EXCLUDED_FROM_GATE = frozenset({"scripts/test_clean_room.py"})
+# Verified by the clean-room run (scripts/verify.py), not by the unittest suite this gate measures,
+# so their changed lines could never count as covered.
+EXCLUDED_FROM_GATE = frozenset({
+    "scripts/test_clean_room.py",
+    "harness/project/hooks/qa-gate-state.py",
+})
 # The clean-room scenarios `scripts/test_clean_room.py` runs, split into their own package.
 EXCLUDED_PREFIXES = ("scripts/clean_room/",)
 

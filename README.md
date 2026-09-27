@@ -96,7 +96,7 @@ first-party overrides → `harness init/update` → `.harness/skills` → native
 Hermes fallback. Схема не содержит секретов и не описывает их значения.
 
 Остальные визуальные карты — [резолв runtime и dispatch](./docs/diagrams/backend-runtime.workflow.html)
-(транспорт `orca` или `in-process`, self-report модели, heartbeat),
+(транспорт `external` или `in-process`, self-report модели, heartbeat),
 [жизненный цикл batch](./docs/diagrams/backend-batch.lifecycle.html) и
 [QA/создание PR](./docs/diagrams/qa-call-path.workflow.html), [полный harness workflow](./docs/diagrams/harness-guide-navigation.workflow.html),
 [контракт скила](./docs/diagrams/skill-contract-fill.workflow.html) и [поток capability](./docs/diagrams/capability-delivery.dataflow.html).

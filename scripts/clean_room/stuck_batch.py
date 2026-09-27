@@ -156,7 +156,7 @@ def run(ctx: SimpleNamespace) -> None:
         "--approved-at",
         "2026-09-09T16:00:30Z",
         "--reason",
-        "orca worker died before the model self-report",
+        "external worker died before the model self-report",
     )
     if abandoned.returncode != 0:
         sys.exit(
@@ -172,7 +172,7 @@ def run(ctx: SimpleNamespace) -> None:
     if (
         record["state"] != "failed"
         or record["abandoned"]["reason"]
-        != "orca worker died before the model self-report"
+        != "external worker died before the model self-report"
     ):
         sys.exit(
             "abandonment did not record its reason beside the approval: "

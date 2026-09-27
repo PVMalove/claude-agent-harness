@@ -62,7 +62,7 @@ def _gate_runner() -> ModuleType:
     gate_runner.py is an ordinary submodule of the ``harness``/``.harness`` package (it does
     ``from ..errors import HarnessError``), so it must be imported through that package rather
     than exec'd standalone -- alias ``harness`` to whichever of ``harness``/``.harness`` this
-    tool actually finds, mirroring the bootstrap in coordinator.py/orca_adapter.py/delivery_stats.py.
+    tool actually finds, mirroring the bootstrap in coordinator.py/delivery_stats.py.
     """
     global _GATE_RUNNER
     if _GATE_RUNNER is not None:

@@ -2,12 +2,12 @@
 
 ## Контекст
 
-Тикет `#366` в проекте `ProductsFlow_AI` прошёл через уже существующую `backend-orchestration` +
-Orca: brief был корректно approved, `required_gates` уже включали `code-review` и `qa`. Но
-`resolved_model` дошёл до Orca-воркера как отображаемое имя «Sonnet 5» вместо CLI-алиаса `sonnet`,
+Тикет `#366` в проекте `ProductsFlow_AI` прошёл через уже существующую `backend-orchestration` и
+внешний runtime: brief был корректно approved, `required_gates` уже включали `code-review` и `qa`. Но
+`resolved_model` дошёл до внешнего воркера как отображаемое имя «Sonnet 5» вместо CLI-алиаса `sonnet`,
 которым он верно задан в `.harness/orchestration.json`. Воркер не смог стартовать, не написал ни
 строчки кода, а watchdog на стороне coordinator отсутствовал — `playbook.md` определяет
-heartbeat-конвенцию только как обязанность самого Orca-воркера, без проверки на стороне coordinator.
+heartbeat-конвенцию только как обязанность самого внешнего воркера, без проверки на стороне coordinator.
 В результате ушло около 30% пятичасового окна впустую. Отдельно, сам `/implement` (без
 `backend-orchestration`) никогда не имел architect-шага и гейтов вовсе — путь, который пользователь
 интуитивно ожидал от команды `implement <issue>`, никогда не существовал.
@@ -22,7 +22,7 @@ heartbeat-конвенцию только как обязанность само
 (ручной CLI или скрипт `/implement`). Каждый dispatch — независимо от транспорта — обязан пройти
 model self-report (сверка фактически активной модели с `resolved_model` brief) и подчиняется
 dispatch watchdog на стороне coordinator-сессии, обобщающему уже существующий QA-lease-expiry.
-Транспорт (Orca-dispatched isolated worker или in-process субагент) становится per-role выбором в
+Транспорт (внешний isolated worker или in-process субагент) становится per-role выбором в
 assignment plan, а не жёстко зашитым механизмом. Проект без `.harness/orchestration.json`
 по-прежнему получает рабочий дефолт: zone = весь репозиторий, model/effort роли = текущая сессия.
 Прежний однопроходный upstream-флоу переезжает в новый skill `fast-implement`.

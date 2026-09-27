@@ -1091,7 +1091,9 @@ def scaffold_pvmalove_extras(
         if result:
             written.append(result)
 
-    for hook in sorted((PROJECT_TEMPLATE_DIR / "hooks").glob("*.sh")):
+    for hook in sorted((PROJECT_TEMPLATE_DIR / "hooks").iterdir()):
+        if not hook.is_file() or hook.suffix not in {".sh", ".py"}:
+            continue
         result = _copy_if_absent(hook, repo / ".claude/hooks" / hook.name, executable=True, force=force_seed, differing=differing)
         if result:
             written.append(result)
