@@ -180,6 +180,47 @@ def test_missing_git_fails_and_skips_git_dependent_checks(tmp_path: Path) -> Non
     assert checks["environment.uv"]["status"] == "ok"
 
 
+def test_missing_git_with_a_project_local_skill_still_prints_the_full_report(
+    tmp_path: Path,
+) -> None:
+    """files.overlay_locks inventories project-local skills through git (#394); without git that
+    check crashes, and the registry must report it instead of aborting the whole run."""
+    repo = _repo(tmp_path / "repo")
+    harness_dir = repo / ".harness"
+    skill = harness_dir / "skills" / "local-skill" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: local-skill\ndescription: A project-local skill.\n---\n",
+        encoding="utf-8",
+    )
+    (harness_dir / "harness.lock").write_text("{}\n", encoding="utf-8")
+    overlays = harness_dir / "overlays"
+    overlays.mkdir()
+    (overlays / "local.lock.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "overlay_id": "local",
+                "source": {"type": "project-local"},
+                "skills": [{"name": "local-skill", "files": {"SKILL.md": "0" * 64}}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    uv_bin = tmp_path / "uv-bin"
+    _fake_uv(uv_bin)
+
+    exit_code, checks = _health(repo, uv_bin)
+
+    assert exit_code == 1
+    assert checks["environment.git"]["status"] == "fail"
+    overlay_locks = checks["files.overlay_locks"]
+    assert overlay_locks["status"] == "fail"
+    assert "check_overlay_locks" in str(overlay_locks["message"])
+    assert checks["environment.uv"]["status"] == "ok"
+    assert "environment.output_encoding" in checks
+
+
 def test_git_present_reports_its_version(tmp_path: Path) -> None:
     repo = _repo(tmp_path / "repo")
     bin_dir = tmp_path / "bin"
