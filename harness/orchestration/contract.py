@@ -2,7 +2,7 @@
 
 Runtime entry points deliberately adapt this module instead of restating role authority.  The
 module has no dependency on a coordinator state store or a particular runtime, so health checks,
-in-process handoff and Orca receive the same policy outcome for the same project inputs.
+in-process handoffs receive the same policy outcome for the same project inputs.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from .extensions import DEFAULT_EXTENSION, EXTENSION_KINDS, EXTENSION_NAME
 
 ROLE_MODES = {"write", "read-only"}
-ROLE_TRANSPORTS = {"orca", "in-process"}
+ROLE_TRANSPORTS = {"in-process", "external"}
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
 # ``input_tokens`` and friends are accounting fields, not secrets.  Match token-shaped
 # credentials precisely so policy can safely validate token budgets and provider telemetry.
@@ -911,7 +911,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
             problems.append(f"provider profile {profile_id!r} must be an object")
             continue
         extra_profile = sorted(
-            set(profile) - {"capabilities", "agent", "fallback", "known_limitations"}
+            set(profile) - {"capabilities", "fallback", "known_limitations"}
         )
         if extra_profile:
             problems.append(
@@ -930,11 +930,6 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
             )
             capabilities = []
         profile_capabilities[profile_id] = set(capabilities)
-        agent = profile.get("agent")
-        if agent is not None and not non_empty(agent):
-            problems.append(
-                f"provider profile {profile_id!r} agent must be a non-empty string"
-            )
         if not string_list(profile.get("fallback")):
             problems.append(
                 f"provider profile {profile_id!r} fallback must be a list of profile IDs"

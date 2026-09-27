@@ -7,8 +7,8 @@ batches и handoff без передачи authority runtime-specific transport.
 
 ## Действующий контракт
 
-Portable orchestration core определяет роли, assignments, batches, dispatches и handoff. Orca
-подключается только как optional runtime adapter. Человек утверждает каждый dispatch; проектная
+Portable orchestration core определяет роли, assignments, batches, dispatches и handoff. Внешняя среда
+подключается только через optional runtime adapter. Человек утверждает каждый dispatch; проектная
 конфигурация разрешает роль, agent, model, fallback и допустимый one-run override.
 
 ## Операционные последствия

@@ -82,7 +82,7 @@ post-integration defect rate между continuation- и single-session-batch), 
 - **Context Package как внешний артефакт вне ledger**, проверяемый отдельным CLI без lifecycle.
   Отклонено: не согласуется с узкой ownership-границей ADR-0015 — ledger владеет versioned lifecycle
   и immutable audit, а не отдельный внешний модуль.
-- **`orca_adapter` получает ответственность за компоновку provider-native prompt** (переупорядочивание
+- **Runtime adapter получает ответственность за компоновку provider-native prompt** (переупорядочивание
   контента под кэш-стратегию провайдера). Отклонено: расширяет заявленную ADR-0015 узкую границу
   adapter ("только переводит already-approved brief, не определяет форму").
 - **Rebase при устаревшем base выполняет coordinator/человек напрямую через git CLI**, минуя dispatch.

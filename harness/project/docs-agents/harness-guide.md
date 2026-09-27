@@ -55,7 +55,7 @@ cd claude-agent-harness
 | Даёт | `grilling`, `handoff`, `writing-for-agents`, `research`, `domain-modeling` | Полный pipeline спека→тикеты→implement→commit+push (разделы 1-5) + личные доработки (раздел 7) |
 | Проектные файлы | Нет | `.harness/project.json`, hooks, `docs/agents/*.md` (см. ниже) |
 
-`backend-orchestration` расширяет `pvmalove-suite`, поэтому выбирается одной capability — `--capability backend-orchestration`, а не вместе с `pvmalove-suite`. Она добавляет role manifest'ы, `.harness/orchestration.json`, playbook и optional Orca adapter; не запускает воркеры без явно одобренного dispatch. Полный порядок действий, включая пример конфигурации и immutable brief, — в [отдельном руководстве](./backend-orchestration.md).
+`backend-orchestration` расширяет `pvmalove-suite`, поэтому выбирается одной capability — `--capability backend-orchestration`, а не вместе с `pvmalove-suite`. Она добавляет role manifest'ы, `.harness/orchestration.json` и playbook; не запускает воркеры без явно одобренного dispatch. Полный порядок действий, включая пример конфигурации и immutable brief, — в [отдельном руководстве](./backend-orchestration.md).
 
 Это строго opt-in маршрут: он включается только при выбранной capability; `.harness/orchestration.json`
 не обязателен — без него zone по умолчанию весь репозиторий, а `model`/`effort` роли берутся из
@@ -461,10 +461,10 @@ opt-in, а отправить пользователя на `/fast-implement`.
 - **Dispatch watchdog.** Роль шлёт `dispatch heartbeat`, coordinator-сессия опрашивает
   `dispatch status --batch <id> [--stale-after <sec>]`; `stale` — блокер, который выносится
   разработчику, а не повод молча ждать.
-- **Транспорт — выбор проекта.** `assignment_plans.<role>.transport` = `orca` (isolated worker через
-  `orca_adapter.py`) или `in-process` (субагент текущей сессии в worktree того же batch). Оба
+- **Транспорт — выбор проекта.** `assignment_plans.<role>.transport` = `external` (worker через
+  проектный adapter) или `in-process` (субагент текущей сессии в worktree того же batch). Оба
   варианта работают с одним и тем же immutable brief и обязаны пройти model self-report. Без поля
-  transport — включая configured project — выбирается `in-process`; `orca` указывают явно. Для него `dispatch send` лишь фиксирует handoff: следующим действием
+  transport — включая configured project — выбирается `in-process`; `external` указывают явно. Для `in-process` `dispatch send` лишь фиксирует handoff: следующим действием
   coordinator немедленно запускает субагента по этому brief, не читая старые dispatch/report/template.
 - **Discovery Context.** `/implement` использует переданный тикетом контекст, а coordinator может
   зарегистрировать Context Package через `context-package register`. Package строится без LLM из

@@ -393,8 +393,7 @@ def _resolve_assignment(
                 "without .harness/orchestration.json the invoking session must supply --model and --effort",
                 remedy="pass --model and --effort explicitly, or create .harness/orchestration.json with an assignment plan",
             )
-        # No project-owned provider profile exists, so the only honest transport is the invoking
-        # session itself; an Orca worker would have no agent to start.
+        # No project-owned provider profile exists; the invoking session handles the role.
         return (
             role,
             {"paths": ["**"]},

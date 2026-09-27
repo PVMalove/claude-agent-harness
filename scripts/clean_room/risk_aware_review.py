@@ -17,18 +17,16 @@ from scripts.clean_room.support import (
 def run(ctx: SimpleNamespace) -> None:
     """Композитное review с учётом риска.
 
-    Читает из контекста: `adapter_run`, `coordinator_path`, `coordinator_run`, `fake_adapter`,
-    `fake_adapter_log`, `fake_orca_log`, `legacy_batch`, `legacy_batch_id`, `legacy_plan`,
+    Читает из контекста: `coordinator_path`, `coordinator_run`, `fake_adapter`,
+    `fake_adapter_log`, `legacy_batch`, `legacy_batch_id`, `legacy_plan`,
     `lifecycle_records`, `orchestration_config`, `orchestration_project`, `orchestration_remote`,
     `staged_payload`, `state_root`, `sync_origin_base`, `test_root`, `valid_orchestration`.
     Передаёт дальше: `qa_id`, `shared_worktree`.
     """
-    adapter_run = ctx.adapter_run
     coordinator_path = ctx.coordinator_path
     coordinator_run = ctx.coordinator_run
     fake_adapter = ctx.fake_adapter
     fake_adapter_log = ctx.fake_adapter_log
-    fake_orca_log = ctx.fake_orca_log
     legacy_batch = ctx.legacy_batch
     legacy_batch_id = ctx.legacy_batch_id
     legacy_plan = ctx.legacy_plan
@@ -396,8 +394,8 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("coordinator rejected a valid architect dispatch: " + architect.stderr)
     architect_record = json.loads(architect.stdout)
     architect_id = architect_record["dispatch_id"]
-    if architect_record["brief"]["resolved_transport"] != "orca":
-        sys.exit("configured assignment plan did not default to the orca transport")
+    if architect_record["brief"]["resolved_transport"] != "external":
+        sys.exit("configured assignment plan did not select the external transport")
     architect_sent = coordinator_run(
         "dispatch", "send", "--dispatch", architect_id, "--adapter", str(fake_adapter)
     )
@@ -838,27 +836,6 @@ def run(ctx: SimpleNamespace) -> None:
             "coordinator rejected a correctly pinned review checkout: "
             + review_sent.stderr
         )
-    runtime_review = adapter_run(
-        lifecycle_records(state_root) / "dispatches" / f"{review_id}.json",
-        repo=mismatched_checkout,
-    )
-    if runtime_review.returncode != 0:
-        sys.exit(
-            "Orca adapter rejected the coordinator review brief: "
-            + runtime_review.stderr
-        )
-    runtime_calls = [
-        json.loads(line)
-        for line in fake_orca_log.read_text(encoding="utf-8").splitlines()
-    ]
-    runtime_worker_calls = [call for call in runtime_calls if call[1] == "worker-start"]
-    if (
-        not runtime_worker_calls
-        or runtime_worker_calls[-1][runtime_worker_calls[-1].index("--base-branch") + 1]
-        != candidate_sha
-    ):
-        sys.exit("Orca adapter did not pin the runtime worker to candidate_commit")
-
     review_report_file = staged_payload("review-report.json")
     review_payload = {
         "dispatch_id": review_id,

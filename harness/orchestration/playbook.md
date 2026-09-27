@@ -2,7 +2,7 @@
 
 This playbook is the runtime-neutral coordination contract for the optional
 `backend-orchestration` capability. It is a manual protocol for a coordinator; it does not
-dispatch work, select a provider, or require an Orca adapter. A runtime adapter may translate
+dispatch work, select a provider, or require a runtime adapter. An adapter may translate
 these records into its own commands later, but it must preserve the rules below.
 
 ## Authority and invariants
@@ -196,7 +196,7 @@ does not change state on a timeout by itself.
 
 The transport carrying a role — an externally dispatched isolated worker, or an in-process subagent
 of the coordinator session — is a project choice recorded in the assignment plan. An omitted
-transport resolves to `in-process`; `orca` must be selected explicitly before an external worker can
+transport resolves to `in-process`; `external` must be selected explicitly before an external worker can
 start. It changes nothing
 above: the same immutable brief goes out, the same self-report and heartbeat are required, and the
 same completion report comes back. For an in-process handoff, `dispatch send` records the brief but
@@ -358,7 +358,7 @@ notes, and the same counting rules across the period.
   `accept`, from the coordinator's recorded decision rather than a QA role's own outcome claim.
 
 The baseline is evidence for later targets, not a hidden limit. It must not prescribe a provider,
-model, Orca behavior, or hard-coded concurrency or token number.
+model, external runtime behavior, or hard-coded concurrency or token number.
 
 Use the accompanying [pilot guide](pilot.md) to record the first observation period with the same
 counting rules and missing-data treatment across batches.

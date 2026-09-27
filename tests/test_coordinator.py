@@ -939,7 +939,6 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "provider_profiles": {
                 "p": {
                     "capabilities": ["architecture-analysis", "code-review"],
-                    "agent": "claude",
                     "fallback": [],
                     "known_limitations": ["none"],
                 }
