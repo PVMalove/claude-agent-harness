@@ -56,7 +56,7 @@ def _prepare_run_root() -> tuple[Path, dict[str, str]]:
 
     py_compile и mypy тоже пишут байткод; кэш рядом с исходниками падает в ограниченных worktree.
     """
-    tests_root = storage_path(ROOT, "tmp", "tests")
+    tests_root = storage_path(ROOT, "runs", "tests")
     tests_root.mkdir(parents=True, exist_ok=True)
     run_tmp = Path(tempfile.mkdtemp(prefix="v", dir=tests_root))
     (run_tmp / ".active.json").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")

@@ -113,7 +113,7 @@ def main() -> int:
         f"upstream has moved: pinned {pinned_ref} ({pinned_revision}) -> latest {latest_tag} ({latest_sha})"
     )
 
-    drift_root = storage_path(ROOT, "tmp", "drift")
+    drift_root = storage_path(ROOT, "runs", "drift")
     drift_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="d", dir=drift_root) as tmp:
         clone_dir = Path(tmp) / "upstream"
