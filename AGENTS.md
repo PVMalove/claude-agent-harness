@@ -24,7 +24,8 @@ logs.
 - `third_party/mattpocock-skills/` — upstream manifest, lock, license, and checksums;
   `.github/workflows/` — CI.
 - `harness/CAPABILITIES.json` is the capability source of truth. `.harness/` and root
-  `.agents/`/`.claude/` are generated or runtime state, not source trees.
+  `.agents/`/`.claude/` are generated or runtime state, not source trees; the one tracked file
+  there is `.claude/settings.json`, which wires the cloud SessionStart hook.
 
 ## Search and skill routing
 
@@ -44,7 +45,9 @@ When a task matches a skill, open only its relevant `SKILL.md` through `.agents/
 - Preserve unrelated dirty changes and live worktrees. Keep credentials and secrets out of Git,
   logs, and reports. Ask before irreversible or hard-to-recover actions.
 - Keep global instructions short and cross-project. Exclude personal knowledge, machine state,
-  and project-specific integrations. Do not update profiles or projects from session-start hooks.
+  and project-specific integrations. Do not update profiles or projects from session-start hooks;
+  the only exception, `scripts/cloud/session-start.sh`, installs gitignored runtime state into a
+  cloud clone that has none and never edits tracked files or an existing project config.
 - Never edit `skills/vendor/` manually. Replace a complete pinned snapshot only; use exact upstream
   revisions and retain license and provenance files.
 - For implementation or delivery, follow `docs/agents/git-workflow.md`: issue first, use the epic's
@@ -63,8 +66,8 @@ When a task matches a skill, open only its relevant `SKILL.md` through `.agents/
   anything under `skills/`, run `scripts/verify.py` before completion; `scripts/test_clean_room.py` is
   the faster local loop. On failure, inspect the immediate error, form a direct hypothesis, fix it,
   and report what was not checked.
-- Treat `harness/project/project.schema.json` and `validate_project_json` in `harness/health/checks/files.py`
-  as one contract. After changing either or hand-editing `.harness/project.json`, run `harness health`
+- Treat `harness/project/project.schema.json` and `validate_project_json` in
+  `harness/health/project_files.py` as one contract. After changing either or hand-editing `.harness/project.json`, run `harness health`
   for the target repository; keep the schema, template, validator, and relevant guide text aligned.
 
 ## Subagents

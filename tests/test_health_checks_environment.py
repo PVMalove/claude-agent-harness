@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -491,3 +492,11 @@ def test_output_encoding_falls_back_to_sys_stdout(
 
     assert result.status == "warn"
     assert "latin-1" in result.message
+
+
+def test_os_is_reported_as_information(tmp_path: Path) -> None:
+    result = environment.check_os(HealthContext(repo=tmp_path, lock=None, online=False))
+
+    assert result.id == "environment.os"
+    assert result.status == "ok"
+    assert platform.system() in result.message

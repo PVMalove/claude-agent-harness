@@ -14,12 +14,13 @@ import pytest
 
 pytest.importorskip("textual")
 
+from textual.pilot import Pilot
+
 from harness.console.app import HarnessConsoleApp
 from harness.console.data import DashboardData
 from harness.console.screens.dashboard import SECTIONS, DashboardScreen
 from harness.console.screens.diagnostics import DiagnosticsScreen
 from harness.console.screens.harness import HarnessScreen
-from harness.console.screens.stub import StubScreen
 from harness.health.model import CheckResult, Fix, Report
 
 
@@ -33,25 +34,6 @@ def test_dashboard_shows_the_section_menu_in_order(tmp_path: Path) -> None:
             return [item.name for item in menu.children]
 
     assert asyncio.run(scenario()) == list(SECTIONS)
-
-
-def test_stub_screen_names_the_section_it_stands_in_for() -> None:
-    """No menu section is a stub today; StubScreen stays the dashboard's fallback for a section
-    name without a real screen."""
-
-    async def scenario() -> str:
-        from textual.app import App
-        from textual.widgets import Static
-
-        class _HostApp(App[None]):
-            def on_mount(self) -> None:
-                self.push_screen(StubScreen("Future section"))
-
-        app = _HostApp()
-        async with app.run_test():
-            return str(app.screen.query_one("#stub-message", Static).content)
-
-    assert asyncio.run(scenario()) == "Future section: раздел ещё не реализован"
 
 
 def test_selecting_harness_pushes_the_harness_screen(tmp_path: Path) -> None:
@@ -110,7 +92,7 @@ def test_dashboard_screen_renders_injected_data_without_touching_the_repo(
         from textual.app import App
         from textual.widgets import Static
 
-        screen = DashboardScreen(tmp_path, collect_dashboard=lambda _repo: _fake_dashboard_data())
+        screen = DashboardScreen(tmp_path, collect_dashboard=lambda _repo, *, online=False: _fake_dashboard_data())
 
         class _HostApp(App[None]):
             def on_mount(self) -> None:
@@ -128,6 +110,13 @@ def test_dashboard_screen_renders_injected_data_without_touching_the_repo(
     assert "active batches: 3" in rendered
     assert "9.9.9" in rendered
     assert "clean" in rendered
+
+
+async def _settle(pilot: "Pilot[None]", delay: float | None = None) -> None:
+    """Let a click land, then wait for the screen's worker thread (health runs off the UI thread)."""
+    await pilot.pause(delay)
+    await pilot.app.workers.wait_for_complete()
+    await pilot.pause()
 
 
 def _fake_report(*, online: bool = False, fixes_applied: list[str] | None = None) -> Report:
@@ -163,7 +152,8 @@ def test_diagnostics_screen_renders_the_full_report(tmp_path: Path) -> None:
                 self.push_screen(screen)
 
         app = _HostApp()
-        async with app.run_test():
+        async with app.run_test() as pilot:
+            await _settle(pilot)
             report_widget = app.screen.query_one("#diagnostics-report", Static)
             return str(report_widget.content)
 
@@ -206,13 +196,14 @@ def test_diagnostics_apply_fixes_asks_before_applying(tmp_path: Path) -> None:
 
         app = _HostApp()
         async with app.run_test() as pilot:
+            await _settle(pilot)
             await pilot.click("#apply-fixes")
             # Button's own brief "-active" press animation ignores a second click while it runs.
-            await pilot.pause(0.4)
+            await _settle(pilot, 0.4)
             calls_after_first_press = len(fixes.calls)
 
             await pilot.click("#apply-fixes")
-            await pilot.pause(0.4)
+            await _settle(pilot, 0.4)
             calls_after_second_press = len(fixes.calls)
 
         return calls_after_first_press, calls_after_second_press
@@ -251,10 +242,11 @@ def test_diagnostics_apply_fixes_never_runs_remedy_commands(
 
         app = _HostApp()
         async with app.run_test() as pilot:
+            await _settle(pilot)
             await pilot.click("#apply-fixes")
-            await pilot.pause(0.4)
+            await _settle(pilot, 0.4)
             await pilot.click("#apply-fixes")
-            await pilot.pause(0.4)
+            await _settle(pilot, 0.4)
             report_widget = app.screen.query_one("#diagnostics-report", Static)
             return str(report_widget.content), spawned
 
@@ -285,12 +277,13 @@ def test_diagnostics_apply_fixes_keeps_online_mode(tmp_path: Path) -> None:
 
         app = _HostApp()
         async with app.run_test() as pilot:
+            await _settle(pilot)
             await pilot.click("#online-checks")
-            await pilot.pause(0.4)
+            await _settle(pilot, 0.4)
             await pilot.click("#apply-fixes")
-            await pilot.pause(0.4)
+            await _settle(pilot, 0.4)
             await pilot.click("#apply-fixes")
-            await pilot.pause(0.4)
+            await _settle(pilot, 0.4)
         return fixes.calls
 
     assert asyncio.run(scenario()) == [True]
@@ -314,10 +307,80 @@ def test_diagnostics_online_checks_refetches_with_online_true(tmp_path: Path) ->
 
         app = _HostApp()
         async with app.run_test() as pilot:
+            await _settle(pilot)
             await pilot.click("#online-checks")
-            await pilot.pause()
+            await _settle(pilot)
 
         return seen_online
 
     seen_online = asyncio.run(scenario())
     assert seen_online == [False, True]
+
+
+def test_dashboard_online_checks_action_reruns_with_online_and_shows_the_cli(
+    tmp_path: Path,
+) -> None:
+    """Story 42: online checks run from the dashboard with one action; story 51: its CLI
+    equivalent is shown next to it."""
+
+    async def scenario() -> tuple[list[bool], str, str]:
+        from textual.app import App
+        from textual.widgets import Static
+
+        seen_online: list[bool] = []
+
+        def fake_collect(_repo: Path, *, online: bool = False) -> DashboardData:
+            seen_online.append(online)
+            return _fake_dashboard_data()
+
+        class _HostApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(DashboardScreen(tmp_path, collect_dashboard=fake_collect))
+
+        app = _HostApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.click("#dashboard-online")
+            await _settle(pilot)
+            summary = str(app.screen.query_one("#dashboard-summary", Static).content)
+            cli = str(app.screen.query_one("#dashboard-online-cli", Static).content)
+        return seen_online, summary, cli
+
+    seen_online, summary, cli = asyncio.run(scenario())
+    assert seen_online == [False, True]
+    assert "health (online)" in summary
+    assert "harness health" in cli and "--online" in cli
+
+
+def test_diagnostics_shows_cli_equivalents_and_exports_the_report(tmp_path: Path) -> None:
+    """Story 51: every action shows its CLI equivalent; story 57: the health report exports to a
+    dated Markdown file in the common console-exports folder under docs/tasks/."""
+
+    async def scenario() -> tuple[str, str]:
+        from textual.app import App
+        from textual.widgets import Static
+
+        screen = DiagnosticsScreen(
+            tmp_path, collect_diagnostics=lambda repo, *, online=False: _fake_report()
+        )
+
+        class _HostApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen)
+
+        app = _HostApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _settle(pilot)
+            online_cli = str(app.screen.query_one("#online-checks-cli", Static).content)
+            fix_cli = str(app.screen.query_one("#apply-fixes-cli", Static).content)
+            await pilot.click("#export")
+            await _settle(pilot)
+        return online_cli, fix_cli
+
+    online_cli, fix_cli = asyncio.run(scenario())
+    assert online_cli.endswith("--online")
+    assert fix_cli.endswith("--fix")
+    exported = list((tmp_path / "docs" / "tasks" / "console-exports").glob("*health-report.md"))
+    assert len(exported) == 1
+    text = exported[0].read_text(encoding="utf-8")
+    assert text.startswith("# Health-отчёт")
+    assert "environment.uv" in text

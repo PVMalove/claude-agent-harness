@@ -19,7 +19,7 @@ from harness.storage import sandboxes_root, storage_root
 
 from ..context import HealthContext
 from ..model import CheckResult, Fix
-from .files import BACKEND_ORCHESTRATION_CAPABILITY, _NO_ORCHESTRATION_CAPABILITY_MESSAGE
+from ..project_files import BACKEND_ORCHESTRATION_CAPABILITY
 
 _GROUP = "directories"
 
@@ -169,7 +169,7 @@ def make_check(check_id: str) -> Callable[[HealthContext], CheckResult]:
                 id=check_id,
                 group=_GROUP,
                 status="skipped",
-                message=_NO_ORCHESTRATION_CAPABILITY_MESSAGE,
+                message=context.no_orchestration_message(),
             )
         return directory_result(check_id, context.repo, resolve(context))
 

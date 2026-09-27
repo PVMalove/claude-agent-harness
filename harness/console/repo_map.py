@@ -20,6 +20,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from .json_fields import strings, text
 from ..repo_map.cache import read_cache
 from ..repo_map.contract import validation_error
 from ..storage import storage_path
@@ -95,16 +96,6 @@ def _dicts(value: object) -> list[dict[str, object]]:
     )
 
 
-def _text(value: object) -> str:
-    return value if isinstance(value, str) else ""
-
-
-def _strings(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list):
-        return ()
-    return tuple(item for item in value if isinstance(item, str))
-
-
 def parse_map(payload: object, *, origin: str) -> RepoMapView | str:
     """A view of a schema v1 payload, or the contract violation that rejects it."""
     problem = validation_error(payload)
@@ -113,23 +104,23 @@ def parse_map(payload: object, *, origin: str) -> RepoMapView | str:
     assert isinstance(payload, dict)
     files = tuple(
         MapFile(
-            path=_text(item.get("path")),
-            signatures=_strings(item.get("signatures")),
-            parser_status=_text(item.get("parser_status")) or None,
+            path=text(item.get("path")),
+            signatures=tuple(strings(item.get("signatures"))),
+            parser_status=text(item.get("parser_status")) or None,
         )
         for item in _dicts(payload["files"])
     )
     edges = tuple(
         MapEdge(
-            _text(item.get("source")),
-            _text(item.get("target")),
-            _text(item.get("kind")),
-            _text(item.get("confidence")),
+            text(item.get("source")),
+            text(item.get("target")),
+            text(item.get("kind")),
+            text(item.get("confidence")),
         )
         for item in _dicts(payload["edges"])
     )
     diagnostics = tuple(
-        MapDiagnostic(_text(item.get("code")) or "?", _text(item.get("path")))
+        MapDiagnostic(text(item.get("code")) or "?", text(item.get("path")))
         for item in _dicts(payload["diagnostics"])
     )
     provenance = payload["parser_provenance"]
@@ -137,10 +128,10 @@ def parse_map(payload: object, *, origin: str) -> RepoMapView | str:
     return RepoMapView(
         payload=payload,
         origin=origin,
-        commit=_text(payload["commit"]),
-        tier=_text(payload["tier"]),
-        parser=_text(payload["parser"]),
-        degradation_reason=_text(payload["degradation_reason"]),
+        commit=text(payload["commit"]),
+        tier=text(payload["tier"]),
+        parser=text(payload["parser"]),
+        degradation_reason=text(payload["degradation_reason"]),
         estimated_tokens=estimated if isinstance(estimated, int) else 0,
         provenance=provenance if isinstance(provenance, dict) else {},
         files=files,

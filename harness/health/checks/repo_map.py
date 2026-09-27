@@ -1,6 +1,6 @@
 """Group 'repo_map': the Repo Map dispatch-tier check migrated from `harness/bin/harness.py`'s old
 `cmd_health` (`repo_map_health`). Detection logic is unchanged; `harness/bin/harness.py` now imports
-it from here (single definition, see checks/files.py's module docstring for why)."""
+it from here (single definition, see harness/health/project_files.py's module docstring for why)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from harness.repo_map import parser_bundle
 
 from ..context import HealthContext
 from ..model import CheckResult, Fix, Status
-from .files import ORCHESTRATION_CONFIG_REL
+from ..project_files import ORCHESTRATION_CONFIG_REL
 
 REPO_MAP_REL = Path(".harness/repo_map/repo_map.py")
 REPO_MAP_REGISTRY_REL = Path(

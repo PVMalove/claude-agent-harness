@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import subprocess
 import time
 from datetime import UTC, datetime, timedelta
@@ -15,7 +16,7 @@ from typing import Callable
 import pytest
 
 from harness.health.checks import orchestration as checks
-from harness.health.context import HealthContext
+from harness.health.context import HealthContext, shell_join
 from harness.health.model import CheckResult
 from harness.orchestration.core.constants import STATE_REL
 from harness.orchestration.ledger.lifecycle import JsonObject, JsonValue, LifecycleLedger
@@ -133,8 +134,16 @@ def test_ledger_summary_warns_on_legacy_state_requiring_migration(
 
     assert result.status == "warn"
     assert result.fix is not None
-    assert result.fix.command == (
-        "python .harness/orchestration/coordinator.py --repo <repo> ledger migrate"
+    # Runnable as printed from any directory: interpreter and coordinator path are absolute.
+    assert result.fix.command == shell_join(
+        [
+            sys.executable,
+            str(tmp_path / ".harness" / "orchestration" / "coordinator.py"),
+            "--repo",
+            str(tmp_path),
+            "ledger",
+            "migrate",
+        ]
     )
 
 
@@ -156,8 +165,16 @@ def test_ledger_summary_warns_on_a_stale_schema_version(tmp_path: Path) -> None:
 
     assert result.status == "warn"
     assert result.fix is not None
-    assert result.fix.command == (
-        "python .harness/orchestration/coordinator.py --repo <repo> ledger migrate"
+    # Runnable as printed from any directory: interpreter and coordinator path are absolute.
+    assert result.fix.command == shell_join(
+        [
+            sys.executable,
+            str(tmp_path / ".harness" / "orchestration" / "coordinator.py"),
+            "--repo",
+            str(tmp_path),
+            "ledger",
+            "migrate",
+        ]
     )
 
 
@@ -370,7 +387,7 @@ def test_orphaned_worktrees_warns_with_owner_and_deletes_nothing(
     assert "orphan-1" in result.message
     assert "owner=" in result.message
     assert result.fix is not None
-    assert result.fix.command == "harness cleanup <repo> --mode hard"
+    assert result.fix.command == shell_join(["harness", "cleanup", str(tmp_path), "--mode", "hard"])
     assert orphan.is_dir()
     assert marker.read_text(encoding="utf-8") == "keep me"
 
@@ -480,6 +497,7 @@ def test_disposable_data_reports_a_nonzero_size_as_information_with_a_cleanup_hi
 
     assert result.status == "ok"
     assert "100 B" in result.message
-    assert result.fix is not None
-    assert result.fix.command == "harness cleanup <repo> --mode hard"
+    # An informational `ok` carries no "Как исправить" remedy; the preview hint is in the message.
+    assert result.fix is None
+    assert shell_join(["harness", "cleanup", str(tmp_path), "--mode", "hard"]) in result.message
     assert stale_file.exists()  # preview only; nothing was removed

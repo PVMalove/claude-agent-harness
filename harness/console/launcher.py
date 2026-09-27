@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -22,6 +23,9 @@ from .runner import CommandRunner, default_runner
 
 # Set on the relaunched `uv run` subprocess's own environment so it knows not to relaunch again.
 RELAUNCH_ENV = "HARNESS_CONSOLE_RELAUNCHED"
+# A marker file the relaunched process creates once it reaches the TUI: a non-zero exit after that
+# is the TUI's own failure, not a failed `uv run --with textual` start, so it gets no fallback.
+STARTED_ENV = "HARNESS_CONSOLE_STARTED_FILE"
 
 BIN_HARNESS_PATH = Path(__file__).resolve().parent.parent / "bin" / "harness.py"
 
@@ -73,10 +77,17 @@ def run_console(
        by default) textual App in-process via `app_runner` - the only path that ever imports
        `textual`, and the only parameter a test overrides to avoid that import.
     2. `uv` not on PATH: print why and fall back to the stdlib `harness health` report.
-    3. `uv` found: relaunch via `runner`; a non-zero exit (offline, resolution failure, ...) falls
-       back the same way as (2). Diagnostics never depends on textual being installed.
+    3. `uv` found: relaunch via `runner`; a non-zero exit before the TUI started (offline,
+       resolution failure, ...) falls back the same way as (2). Diagnostics never depends on
+       textual being installed. A non-zero exit after the TUI started only reports the exit code.
     """
     if os.environ.get(RELAUNCH_ENV) == "1":
+        started = os.environ.get(STARTED_ENV)
+        if started:
+            try:
+                Path(started).touch()
+            except OSError:
+                pass
         return app_runner(repo)
 
     uv = find_uv()
@@ -90,23 +101,30 @@ def run_console(
     argv = build_relaunch_argv(uv, repo, extra_argv)
     env = dict(os.environ)
     env[RELAUNCH_ENV] = "1"
-    result = runner(argv, env=env)
+    # A process-liveness marker, not a task artifact: it lives only for this call.
+    with tempfile.TemporaryDirectory(prefix="harness-console-") as marker_dir:
+        marker = Path(marker_dir) / "started"
+        env[STARTED_ENV] = str(marker)
+        result = runner(argv, env=env)
+        tui_started = marker.exists()
     if result.returncode != 0:
-        _print_fallback(
-            repo,
-            "harness console: не удалось запустить textual через uv "
-            f"(uv run завершился с кодом {result.returncode}) — показан отчёт harness health",
-        )
+        if tui_started:
+            print(f"harness console завершился с кодом {result.returncode}")
+        else:
+            _print_fallback(
+                repo,
+                "harness console: не удалось запустить textual через uv "
+                f"(uv run завершился с кодом {result.returncode}) — показан отчёт harness health",
+            )
     return result.returncode
 
 
 def _print_fallback(repo: Path, reason: str) -> None:
-    """Print the reason, then the same text report `harness health` prints - via its two public
-    entry points (harness.health.registry.run / harness.health.render.render_text), never a
-    reimplementation of check logic."""
+    """Print the reason, then the same text report `harness health` prints - the console's
+    `run_health` (the CLI's own run, skill-snapshot drift included) rendered by
+    harness.health.render.render_text, never a reimplementation of check logic."""
     print(reason)
-    from ..health import registry as health_registry
     from ..health import render as health_render
+    from .data import run_health
 
-    report = health_registry.run(repo)
-    print(health_render.render_text(report), end="")
+    print(health_render.render_text(run_health(repo)), end="")

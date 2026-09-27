@@ -108,13 +108,20 @@ def path_headroom(repo_path: str) -> int:
 
 
 def check_path_length(context: HealthContext) -> CheckResult:
-    if not _is_windows():
-        return _skipped("environment.path_length", "запас длины пути")
+    """Epic #341 lists the repository root length against 260 outside its Windows-only block, so the
+    length and headroom are reported on every OS; only Windows, where MAX_PATH applies, can warn."""
     repo_path = str(context.repo.resolve())
     headroom = path_headroom(repo_path)
     shown = (
         f"путь репозитория {len(repo_path)} символов, запас до {MAX_PATH}: {headroom}"
     )
+    if not _is_windows():
+        return CheckResult(
+            id="environment.path_length",
+            group=GROUP,
+            status="ok",
+            message=f"{shown} (MAX_PATH ограничивает только Windows)",
+        )
     if headroom >= MIN_PATH_HEADROOM:
         return CheckResult(
             id="environment.path_length",

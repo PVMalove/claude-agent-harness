@@ -15,7 +15,8 @@ from typing import Callable
 
 import pytest
 
-from harness.health.checks import files, windows
+from harness.health import project_files as files
+from harness.health.checks import windows
 from harness.health.context import HealthContext
 from harness.health.model import CheckResult
 
@@ -76,9 +77,12 @@ def test_windows_checks_are_skipped_outside_windows(tmp_path: Path) -> None:
     checks = _health(_repo(tmp_path / "repo"))
 
     for check_id in WINDOWS_CHECK_IDS:
+        if check_id == "environment.path_length":
+            continue  # reported on every OS (epic #341), only never warns outside Windows
         assert checks[check_id]["status"] == "skipped", check_id
         assert checks[check_id]["group"] == "environment"
         assert checks[check_id]["fix"] is None
+    assert checks["environment.path_length"]["status"] == "ok"
 
 
 @only_windows
@@ -221,7 +225,6 @@ def _context(repo: Path) -> HealthContext:
     "check",
     [
         windows.check_long_paths,
-        windows.check_path_length,
         windows.check_pytest_temp,
         windows.check_symlinks,
         windows.check_hook_bash,
@@ -265,6 +268,18 @@ def test_path_length_warns_below_minimum_headroom(
 
     assert result.status == "warn"
     assert result.fix is not None
+    assert str(len(str(tmp_path.resolve()))) in result.message
+
+
+def test_path_length_is_reported_but_never_warns_outside_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(windows, "_is_windows", lambda: False)
+    monkeypatch.setattr(windows, "MIN_PATH_HEADROOM", 10_000)
+
+    result = windows.check_path_length(_context(tmp_path))
+
+    assert result.status == "ok"
     assert str(len(str(tmp_path.resolve()))) in result.message
 
 

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.console.coordinator_catalog import COORDINATOR_COMMANDS, CoordinatorCommand
+from harness.console.coordinator_catalog import COORDINATOR_COMMANDS, CoordinatorCommand, subparser
 from harness.console.catalog import Reversibility
 from harness.orchestration import coordinator
 
@@ -62,6 +62,18 @@ MINIMAL_VALUES = {
         "changed_file": "a.py",
     },
     "context-package-register": {"batch": "batch-1", "candidate_commit": "abc123"},
+    "batch-list": {"open": "1"},
+    "batch-resume": {"batch": "batch-1", "reason": "why"},
+    "batch-attention-check": {"batch": "batch-1"},
+    "batch-attention-resolve": {
+        "batch": "batch-1",
+        "note": "handled",
+        "approved_by": "dev",
+        "approved_at": "now",
+    },
+    "dispatch-status": {},
+    "qa-status": {},
+    "ledger-status": {},
 }
 
 EXPECTED_HANDLER = {
@@ -75,6 +87,13 @@ EXPECTED_HANDLER = {
     "dispatch-send": "send_dispatch",
     "risk-assess": "assess_risk",
     "context-package-register": "register_context_package",
+    "batch-list": "list_batches",
+    "batch-resume": "resume_batch",
+    "batch-attention-check": "attention_check",
+    "batch-attention-resolve": "attention_resolve",
+    "dispatch-status": "dispatch_status",
+    "qa-status": "qa_status",
+    "ledger-status": "ledger_status",
 }
 
 EXPECTED_REVERSIBILITY = {
@@ -88,10 +107,17 @@ EXPECTED_REVERSIBILITY = {
     "dispatch-send": Reversibility.EXTERNAL_CHANGE,
     "risk-assess": Reversibility.REVERSIBLE,
     "context-package-register": Reversibility.REVERSIBLE,
+    "batch-list": Reversibility.REVERSIBLE,
+    "batch-resume": Reversibility.REVERSIBLE,
+    "batch-attention-check": Reversibility.REVERSIBLE,
+    "batch-attention-resolve": Reversibility.TERMINAL_COORDINATOR_ACTION,
+    "dispatch-status": Reversibility.REVERSIBLE,
+    "qa-status": Reversibility.REVERSIBLE,
+    "ledger-status": Reversibility.REVERSIBLE,
 }
 
 
-def test_catalog_covers_exactly_the_nine_in_scope_coordinator_subcommands() -> None:
+def test_catalog_covers_exactly_the_operator_facing_coordinator_subcommands() -> None:
     assert set(ENTRIES) == set(EXPECTED_REVERSIBILITY)
     assert len(ENTRIES) == len(COORDINATOR_COMMANDS)
 
@@ -101,19 +127,7 @@ def test_reversibility_matches_the_approved_architect_design() -> None:
 
 
 def _live_actions(entry: CoordinatorCommand) -> list[argparse.Action]:
-    root = coordinator.parser()
-    group_action = next(
-        action
-        for action in root._actions  # noqa: SLF001
-        if isinstance(action, argparse._SubParsersAction) and entry.path[0] in action.choices
-    )
-    group_parser = group_action.choices[entry.path[0]]
-    sub_action = next(
-        action
-        for action in group_parser._actions  # noqa: SLF001
-        if isinstance(action, argparse._SubParsersAction) and entry.path[1] in action.choices
-    )
-    return list(sub_action.choices[entry.path[1]]._actions)  # noqa: SLF001
+    return list(subparser(coordinator.parser(), entry.path)._actions)  # noqa: SLF001
 
 
 @pytest.mark.parametrize("entry", COORDINATOR_COMMANDS, ids=lambda e: e.key)
@@ -163,3 +177,13 @@ def test_coordinator_catalog_imports_without_textual() -> None:
         [sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, check=False
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_value_less_flag_is_passed_alone_only_when_set() -> None:
+    """`batch list --open` is a store_true flag: never prefilled, never given a value."""
+    entry = ENTRIES["batch-list"]
+    open_field = next(field for field in entry.fields if field.dest == "open")
+    assert open_field.takes_value is False
+    assert open_field.default is None
+    assert entry.cli_argv(REPO, {"open": "1"})[-1] == "--open"
+    assert "--open" not in entry.cli_argv(REPO, {"open": ""})

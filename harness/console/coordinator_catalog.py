@@ -1,15 +1,16 @@
 """The Orchestration section's command catalog: plain stdlib data introspected from the live
-coordinator argument parser (`harness.orchestration.coordinator.parser()`), covering the nine
-in-scope coordinator subcommands (batch create/approve/abandon/decide/decision-packet, dispatch
-create/cancel/send, risk assess, context-package register).
+coordinator argument parser (`harness.orchestration.coordinator.parser()`), covering the
+operator-facing coordinator subcommands listed in `_TARGETS` (batch, decide, decision packet,
+dispatch, qa status, risk, context-package, ledger status).
 
 Unlike `harness/console/catalog.py`, whose `CatalogEntry.argv` is hand-written, every
 `CoordinatorCommand.fields` tuple here is built by walking the real `argparse.ArgumentParser` the
-coordinator CLI itself builds, so a required argument, a `choices=` restriction or an `append`
-action added to the coordinator's parser is reflected here without hand-editing this module.
+coordinator CLI itself builds, so a required argument, a `choices=` restriction, an `append` action
+or a value-less flag added to the coordinator's parser is reflected here without hand-editing this
+module.
 `tests/test_console_coordinator_catalog.py` proves this stays in sync (a drift test). The console
 never reimplements coordinator logic: it runs the same `python .harness/orchestration/coordinator.py
---repo {repo} <group> <sub> ...` CLI as a process (see `process_argv`), exactly the convention
+--repo {repo} <subcommand path> ...` CLI as a process (see `process_argv`), exactly the convention
 `harness/console/catalog.py` already uses for the `ledger-*` entries.
 
 `Reversibility` and `CONFIRMATION_REASONS` are reused from `.catalog`, not copied."""
@@ -34,44 +35,75 @@ _COORDINATOR_SCRIPT = ".harness/orchestration/coordinator.py"
 # console never asks for these, so they are never turned into a `CoordinatorField`.
 _SKIPPED_DESTS = frozenset({"help", "repo", "state_dir"})
 
-# (key, cli_group, cli_sub, title, ui_group) for the nine in-scope coordinator subcommands. The
-# primary name is used even where the parser also registers an alias (`batch create`/`plan`,
-# `dispatch create`/`approve`): `argparse` shares one subparser instance across every alias, so
-# looking it up by either name returns the identical object.
-_TARGETS: tuple[tuple[str, str, str, str, str], ...] = (
-    ("batch-create", "batch", "create", "Создать batch", "batch"),
-    ("batch-approve", "batch", "approve", "Утвердить batch", "batch"),
-    ("batch-abandon", "batch", "abandon", "Отказаться от batch", "batch"),
-    ("batch-decide", "batch", "decide", "Решение по batch", "decide"),
-    ("batch-decision-packet", "batch", "decision-packet", "Пакет решения", "packet"),
-    ("dispatch-create", "dispatch", "create", "Создать dispatch", "dispatch"),
-    ("dispatch-cancel", "dispatch", "cancel", "Отменить dispatch", "dispatch"),
-    ("dispatch-send", "dispatch", "send", "Отправить dispatch", "dispatch"),
-    ("risk-assess", "risk", "assess", "Оценить риск", "risk"),
-    (
+@dataclass(frozen=True)
+class _Target:
+    """One in-scope coordinator subcommand: its CLI path, menu title, menu group and confirmation
+    class. The primary name is used where the parser also registers an alias (`batch create`/
+    `plan`, `dispatch create`/`approve`): `argparse` shares one subparser instance across aliases."""
+
+    key: str
+    path: tuple[str, ...]
+    title: str
+    group: str
+    reversibility: Reversibility
+
+
+_REVERSIBLE = Reversibility.REVERSIBLE
+_TERMINAL = Reversibility.TERMINAL_COORDINATOR_ACTION
+
+# Operator-facing subcommands only. Worker-side commands (dispatch heartbeat/self-report/checkpoint,
+# report submit, qa run/evidence, ...) are sent by the dispatched role itself, never from the console.
+# Terminal coordinator decisions and cancellation ask for confirmation, an external transport change
+# asks too (a different reason), and everything else stays reversible.
+_TARGETS: tuple[_Target, ...] = (
+    _Target("batch-list", ("batch", "list"), "Список batch", "batch", _REVERSIBLE),
+    _Target("batch-create", ("batch", "create"), "Создать batch", "batch", _REVERSIBLE),
+    _Target("batch-approve", ("batch", "approve"), "Утвердить batch", "batch", _TERMINAL),
+    _Target("batch-abandon", ("batch", "abandon"), "Отказаться от batch", "batch", _TERMINAL),
+    _Target("batch-resume", ("batch", "resume"), "Возобновить batch", "batch", _REVERSIBLE),
+    _Target(
+        "batch-attention-check",
+        ("batch", "attention", "check"),
+        "Проверить, требует ли batch внимания",
+        "batch",
+        _REVERSIBLE,
+    ),
+    _Target(
+        "batch-attention-resolve",
+        ("batch", "attention", "resolve"),
+        "Снять сигнал внимания с batch",
+        "batch",
+        _TERMINAL,
+    ),
+    _Target("batch-decide", ("batch", "decide"), "Решение по batch", "decide", _TERMINAL),
+    _Target(
+        "batch-decision-packet",
+        ("batch", "decision-packet"),
+        "Пакет решения",
+        "packet",
+        _REVERSIBLE,
+    ),
+    _Target("dispatch-status", ("dispatch", "status"), "Статус dispatch", "dispatch", _REVERSIBLE),
+    _Target("dispatch-create", ("dispatch", "create"), "Создать dispatch", "dispatch", _TERMINAL),
+    _Target("dispatch-cancel", ("dispatch", "cancel"), "Отменить dispatch", "dispatch", _TERMINAL),
+    _Target(
+        "dispatch-send",
+        ("dispatch", "send"),
+        "Отправить dispatch",
+        "dispatch",
+        Reversibility.EXTERNAL_CHANGE,
+    ),
+    _Target("qa-status", ("qa", "status"), "Статус QA lane", "qa", _REVERSIBLE),
+    _Target("risk-assess", ("risk", "assess"), "Оценить риск", "risk", _REVERSIBLE),
+    _Target(
         "context-package-register",
-        "context-package",
-        "register",
+        ("context-package", "register"),
         "Зарегистрировать Context Package",
         "context-package",
+        _REVERSIBLE,
     ),
+    _Target("ledger-status", ("ledger", "status"), "Состояние ledger", "ledger", _REVERSIBLE),
 )
-
-# Confirmation classes for the nine in-scope subcommands (approved architect design for #350):
-# terminal coordinator decisions and cancellation ask for confirmation, an external transport
-# change asks too (a different reason), and everything else stays reversible.
-_REVERSIBILITY: dict[tuple[str, str], Reversibility] = {
-    ("batch", "approve"): Reversibility.TERMINAL_COORDINATOR_ACTION,
-    ("batch", "abandon"): Reversibility.TERMINAL_COORDINATOR_ACTION,
-    ("batch", "decide"): Reversibility.TERMINAL_COORDINATOR_ACTION,
-    ("dispatch", "create"): Reversibility.TERMINAL_COORDINATOR_ACTION,
-    ("dispatch", "cancel"): Reversibility.TERMINAL_COORDINATOR_ACTION,
-    ("dispatch", "send"): Reversibility.EXTERNAL_CHANGE,
-    ("batch", "create"): Reversibility.REVERSIBLE,
-    ("batch", "decision-packet"): Reversibility.REVERSIBLE,
-    ("risk", "assess"): Reversibility.REVERSIBLE,
-    ("context-package", "register"): Reversibility.REVERSIBLE,
-}
 
 
 @dataclass(frozen=True)
@@ -85,17 +117,20 @@ class CoordinatorField:
     choices: tuple[str, ...] | None
     help: str
     default: str | None
+    # False for a value-less flag such as `--open` (store_true): it is passed alone when set.
+    takes_value: bool = True
 
 
 @dataclass(frozen=True)
 class CoordinatorCommand:
     """A coordinator subcommand the console's Orchestration section can run. `path` is the
-    `(group, sub)` pair passed to the coordinator CLI, e.g. `("batch", "decide")`."""
+    subcommand path passed to the coordinator CLI, e.g. `("batch", "decide")` or
+    `("batch", "attention", "check")`."""
 
     key: str
     title: str
     group: str
-    path: tuple[str, str]
+    path: tuple[str, ...]
     reversibility: Reversibility
     fields: tuple[CoordinatorField, ...]
 
@@ -111,7 +146,10 @@ class CoordinatorCommand:
         argv = ["python", _COORDINATOR_SCRIPT, "--repo", str(repo), *self.path]
         for field in self.fields:
             raw = filled.get(field.dest, "")
-            if field.repeatable:
+            if not field.takes_value:
+                if raw.strip():
+                    argv.append(field.flag)
+            elif field.repeatable:
                 for line in raw.splitlines():
                     line = line.strip()
                     if line:
@@ -126,14 +164,17 @@ class CoordinatorCommand:
         return shlex.join(self.cli_argv(repo, values))
 
 
-def _subparser(root: argparse.ArgumentParser, group: str, sub: str) -> argparse.ArgumentParser:
-    for action in root._actions:  # noqa: SLF001 - introspecting argparse's own tree by design
-        if isinstance(action, argparse._SubParsersAction) and group in action.choices:
-            group_parser = action.choices[group]
-            for inner in group_parser._actions:  # noqa: SLF001
-                if isinstance(inner, argparse._SubParsersAction) and sub in inner.choices:
-                    return cast(argparse.ArgumentParser, inner.choices[sub])
-    raise KeyError(f"no such coordinator subcommand: {group} {sub}")
+def subparser(root: argparse.ArgumentParser, path: tuple[str, ...]) -> argparse.ArgumentParser:
+    """The parser of the coordinator subcommand at `path`, walking argparse's own tree."""
+    parser = root
+    for name in path:
+        for action in parser._actions:  # noqa: SLF001 - introspecting argparse's own tree by design
+            if isinstance(action, argparse._SubParsersAction) and name in action.choices:
+                parser = cast(argparse.ArgumentParser, action.choices[name])
+                break
+        else:
+            raise KeyError(f"no such coordinator subcommand: {' '.join(path)}")
+    return parser
 
 
 def _fields(sub_parser: argparse.ArgumentParser) -> tuple[CoordinatorField, ...]:
@@ -144,8 +185,9 @@ def _fields(sub_parser: argparse.ArgumentParser) -> tuple[CoordinatorField, ...]
         if action.dest in _SKIPPED_DESTS:
             continue
         flag = action.option_strings[-1] if action.option_strings else action.dest
+        takes_value = action.nargs != 0
         default = None
-        if action.default is not None and action.default is not argparse.SUPPRESS:
+        if takes_value and action.default is not None and action.default is not argparse.SUPPRESS:
             default = str(action.default)
         choices = tuple(str(choice) for choice in action.choices) if action.choices else None
         fields.append(
@@ -157,6 +199,7 @@ def _fields(sub_parser: argparse.ArgumentParser) -> tuple[CoordinatorField, ...]
                 choices=choices,
                 help=action.help or "",
                 default=default,
+                takes_value=takes_value,
             )
         )
     return tuple(fields)
@@ -165,16 +208,15 @@ def _fields(sub_parser: argparse.ArgumentParser) -> tuple[CoordinatorField, ...]
 def _build_commands() -> tuple[CoordinatorCommand, ...]:
     root = coordinator.parser()
     commands: list[CoordinatorCommand] = []
-    for key, group, sub, title, ui_group in _TARGETS:
-        sub_parser = _subparser(root, group, sub)
+    for target in _TARGETS:
         commands.append(
             CoordinatorCommand(
-                key=key,
-                title=title,
-                group=ui_group,
-                path=(group, sub),
-                reversibility=_REVERSIBILITY[(group, sub)],
-                fields=_fields(sub_parser),
+                key=target.key,
+                title=target.title,
+                group=target.group,
+                path=target.path,
+                reversibility=target.reversibility,
+                fields=_fields(subparser(root, target.path)),
             )
         )
     return tuple(commands)

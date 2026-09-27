@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
+from .json_fields import strings, text
+from ..gate_runner.gate_runner import parse_command_log
 from ..orchestration.core.constants import STATE_REL
 from .export import MarkdownDocument, MarkdownSection
 from ..orchestration.ledger.lifecycle import JsonObject, JsonValue, LifecycleLedger
@@ -28,8 +30,6 @@ from ..orchestration.ledger.lifecycle import JsonObject, JsonValue, LifecycleLed
 REPORT_SECTIONS = ("Output", "Checks", "Risks", "Blockers", "Next action")
 QA_LOG_TAIL_LINES = 15
 _QA_SHA256 = re.compile(r"sha256:([0-9a-f]{64})")
-_QA_COMMAND = re.compile(r"^\$ (.*)$")
-_QA_EXIT = re.compile(r"^exit_code=(-?\d+)$")
 _ROLE_FLOW_SEPARATOR = " → "
 
 
@@ -118,16 +118,6 @@ class LedgerView:
         return _build_timeline(self, batch)
 
 
-def _text(value: JsonValue | None, default: str = "") -> str:
-    return value if isinstance(value, str) else default
-
-
-def _strings(value: JsonValue | None) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str)]
-
-
 def _objects(value: JsonValue | None) -> list[JsonObject]:
     if not isinstance(value, list):
         return []
@@ -154,14 +144,14 @@ def _audit_index(root: Path) -> dict[str, list[JsonObject]]:
         if isinstance(path, str):
             index.setdefault(path, []).append(event)
     for events in index.values():
-        events.sort(key=lambda item: _text(item.get("at")))
+        events.sort(key=lambda item: text(item.get("at")))
     return index
 
 
 def _first_write_at(view: LedgerView, relative: str) -> str:
     for event in view._audit.get(relative, []):
         if event.get("action") in {"immutable-record", "immutable-artifact"}:
-            return _text(event.get("at"))
+            return text(event.get("at"))
     return ""
 
 
@@ -188,9 +178,9 @@ def load_ledger_view(repo: Path) -> LedgerView:
         view.batches.append(
             BatchSummary(
                 batch_id=batch_id,
-                ticket=_text(record.get("ticket"), "?"),
-                state=_text(record.get("state"), "?"),
-                created_at=_text(record.get("created_at"))
+                ticket=text(record.get("ticket"), "?"),
+                state=text(record.get("state"), "?"),
+                created_at=text(record.get("created_at"))
                 or _first_write_at(view, f"batches/{batch_id}.json"),
             )
         )
@@ -203,12 +193,12 @@ def load_ledger_view(repo: Path) -> LedgerView:
         view.reports.append(
             ReportEntry(
                 dispatch_id=dispatch_id,
-                batch_id=_text(dispatch.get("batch_id")),
-                ticket=_text(report.get("ticket"), "?"),
-                role=_text(report.get("role"), "?"),
-                outcome=_text(report.get("outcome"), "?"),
+                batch_id=text(dispatch.get("batch_id")),
+                ticket=text(report.get("ticket"), "?"),
+                role=text(report.get("role"), "?"),
+                outcome=text(report.get("outcome"), "?"),
                 reported_at=_first_write_at(view, f"reports/{dispatch_id}.json")
-                or _text(dispatch.get("created_at")),
+                or text(dispatch.get("created_at")),
                 report=report,
             )
         )
@@ -217,24 +207,12 @@ def load_ledger_view(repo: Path) -> LedgerView:
     return view
 
 
-def _qa_commands(lines: list[str]) -> list[tuple[str, int]]:
-    commands: list[tuple[str, int]] = []
-    for index, line in enumerate(lines):
-        command = _QA_COMMAND.match(line)
-        if command is None or index + 1 >= len(lines):
-            continue
-        exit_code = _QA_EXIT.match(lines[index + 1])
-        if exit_code is not None:
-            commands.append((command.group(1), int(exit_code.group(1))))
-    return commands
-
-
 def _load_qa(view: LedgerView, root: Path) -> None:
     reports_by_sha = {
         match.group(1): entry
         for entry in view.reports
         if entry.role == "qa"
-        and (match := _QA_SHA256.search(_text(entry.report.get("output")))) is not None
+        and (match := _QA_SHA256.search(text(entry.report.get("output")))) is not None
     }
     for path in sorted((root / "qa-artifacts").glob("*.log")):
         try:
@@ -250,7 +228,7 @@ def _load_qa(view: LedgerView, root: Path) -> None:
                 dispatch_id=entry.dispatch_id if entry else None,
                 ticket=entry.ticket if entry else "?",
                 outcome=entry.outcome if entry else "нет отчёта",
-                commands=_qa_commands(lines),
+                commands=parse_command_log(lines),
                 tail=lines[-QA_LOG_TAIL_LINES:],
                 total_lines=len(lines),
             )
@@ -259,10 +237,10 @@ def _load_qa(view: LedgerView, root: Path) -> None:
     for record in _read_directory(root, "qa-lane/attempts"):
         view.qa_attempts.append(
             QaAttempt(
-                dispatch_id=_text(record.get("dispatch_id"), "?"),
-                stage=_text(record.get("stage"), "?"),
-                failed_at=_text(record.get("failed_at")),
-                message=_text(record.get("message")),
+                dispatch_id=text(record.get("dispatch_id"), "?"),
+                stage=text(record.get("stage"), "?"),
+                failed_at=text(record.get("failed_at")),
+                message=text(record.get("message")),
             )
         )
     view.qa_attempts.sort(key=lambda attempt: attempt.failed_at, reverse=True)
@@ -338,25 +316,25 @@ def _checks_text(report: JsonObject) -> str:
     if not checks:
         return "проверки не запускались"
     return "\n".join(
-        f"• {_text(check.get('command'), '?')} — {_text(check.get('result'), '?')}: "
-        f"{_text(check.get('evidence'))}"
+        f"• {text(check.get('command'), '?')} — {text(check.get('result'), '?')}: "
+        f"{text(check.get('evidence'))}"
         for check in checks
     )
 
 
 def _review_text(review: JsonObject) -> str:
-    lines = [f"candidate: {_text(review.get('candidate_commit'), '?')}"]
+    lines = [f"candidate: {text(review.get('candidate_commit'), '?')}"]
     for axis in ("standards", "spec"):
         evidence = review.get(axis)
         if not isinstance(evidence, dict):
             continue
         findings = _objects(evidence.get("findings"))
         lines.append(
-            f"{axis}: {_text(evidence.get('severity'), '?')}, находок: {len(findings)}"
+            f"{axis}: {text(evidence.get('severity'), '?')}, находок: {len(findings)}"
         )
         lines.extend(
-            f"  [{_text(item.get('severity'), '?')}] {_text(item.get('summary'))}: "
-            f"{_text(item.get('evidence'))}"
+            f"  [{text(item.get('severity'), '?')}] {text(item.get('summary'))}: "
+            f"{text(item.get('evidence'))}"
             for item in findings
         )
     return "\n".join(lines)
@@ -365,7 +343,7 @@ def _review_text(review: JsonObject) -> str:
 def report_sections(report: JsonObject) -> list[tuple[str, str]]:
     """The report body in reading order: the five REPORT_SECTIONS, plus Review when present."""
     sections = [
-        ("Output", _text(report.get("output"))),
+        ("Output", text(report.get("output"))),
         ("Checks", _checks_text(report)),
     ]
     review = report.get("review")
@@ -373,20 +351,20 @@ def report_sections(report: JsonObject) -> list[tuple[str, str]]:
         sections.append(("Review", _review_text(review)))
     sections.extend(
         [
-            ("Risks", _text(report.get("risks"))),
-            ("Blockers", _text(report.get("blockers"))),
-            ("Next action", _text(report.get("next_coordinator_action"))),
+            ("Risks", text(report.get("risks"))),
+            ("Blockers", text(report.get("blockers"))),
+            ("Next action", text(report.get("next_coordinator_action"))),
         ]
     )
     return sections
 
 
 def report_header(entry: ReportEntry) -> str:
-    files = ", ".join(_strings(entry.report.get("changed_files")))
+    files = ", ".join(strings(entry.report.get("changed_files")))
     return (
         f"{entry.ticket} · {entry.role} · {entry.outcome} · {entry.reported_at or 'дата неизвестна'}\n"
         f"dispatch: {entry.dispatch_id}  batch: {entry.batch_id or '?'}\n"
-        f"commit: {_text(entry.report.get('commit_sha'), '—')}  файлы: {files or '—'}"
+        f"commit: {text(entry.report.get('commit_sha'), '—')}  файлы: {files or '—'}"
     )
 
 
@@ -400,11 +378,11 @@ def _build_timeline(view: LedgerView, batch: JsonObject) -> BatchTimeline:
         details = audit.get("details")
         if audit.get("action") != "transition" or not isinstance(details, dict):
             continue
-        before, after = _text(details.get("from")), _text(details.get("to"))
+        before, after = text(details.get("from")), text(details.get("to"))
         if before and after and before != after:
             events.append(
                 TimelineEvent(
-                    at=_text(audit.get("at")),
+                    at=text(audit.get("at")),
                     kind="state",
                     text=f"состояние: {before} → {after}",
                 )
@@ -413,18 +391,18 @@ def _build_timeline(view: LedgerView, batch: JsonObject) -> BatchTimeline:
     role_flow: list[str] = []
     report_times: dict[str, str] = {}
     for entry in _objects(batch.get("dispatches")):
-        dispatch_id = _text(entry.get("dispatch_id"))
+        dispatch_id = text(entry.get("dispatch_id"))
         dispatch = view._dispatches.get(dispatch_id, {})
-        role = _text(entry.get("role")) or _text(dispatch.get("role"), "?")
+        role = text(entry.get("role")) or text(dispatch.get("role"), "?")
         role_flow.append(role)
-        purpose = _text(dispatch.get("purpose"))
+        purpose = text(dispatch.get("purpose"))
         events.append(
             TimelineEvent(
-                at=_text(dispatch.get("created_at")),
+                at=text(dispatch.get("created_at")),
                 kind="dispatch",
                 role=role,
                 text=f"{role}{f' ({purpose})' if purpose and purpose != 'work' else ''}: "
-                f"{dispatch_id}, итог: {_text(entry.get('state'), '?')}",
+                f"{dispatch_id}, итог: {text(entry.get('state'), '?')}",
             )
         )
         report = next(
@@ -442,42 +420,42 @@ def _build_timeline(view: LedgerView, batch: JsonObject) -> BatchTimeline:
             )
 
     for decision in _objects(batch.get("coordinator_decisions")):
-        parts = [f"решение coordinator: {_text(decision.get('decision'), '?')}"]
-        next_role = _text(decision.get("next_role"))
+        parts = [f"решение coordinator: {text(decision.get('decision'), '?')}"]
+        next_role = text(decision.get("next_role"))
         if next_role:
             parts.append(f"→ {next_role}")
-        approved_by = _text(decision.get("approved_by"))
+        approved_by = text(decision.get("approved_by"))
         if approved_by:
             parts.append(f"({approved_by})")
-        note = _text(decision.get("note"))
+        note = text(decision.get("note"))
         if note and note != "none":
             parts.append(f"— {note}")
         events.append(
             TimelineEvent(
-                at=_text(decision.get("approved_at")),
+                at=text(decision.get("approved_at")),
                 kind="decision",
                 text=" ".join(parts),
             )
         )
 
     for assessment in _objects(batch.get("risk_assessments")):
-        risk = view._risks.get(_text(assessment.get("risk_assessment_id")), {})
-        triggers = _strings(assessment.get("matched_triggers"))
+        risk = view._risks.get(text(assessment.get("risk_assessment_id")), {})
+        triggers = strings(assessment.get("matched_triggers"))
         review = (
             "нужен review" if assessment.get("review_required") else "review не нужен"
         )
         events.append(
             TimelineEvent(
-                at=_text(risk.get("created_at")),
+                at=text(risk.get("created_at")),
                 kind="risk",
                 text=f"оценка риска: {', '.join(triggers) or 'триггеров нет'}; {review}",
             )
         )
     for escalation in _objects(batch.get("risk_escalations")):
-        triggers = _strings(escalation.get("triggers"))
+        triggers = strings(escalation.get("triggers"))
         events.append(
             TimelineEvent(
-                at=report_times.get(_text(escalation.get("dispatch_id")), ""),
+                at=report_times.get(text(escalation.get("dispatch_id")), ""),
                 kind="risk",
                 role="developer",
                 text=f"эскалация риска: {', '.join(triggers)}",
@@ -505,8 +483,8 @@ def report_document(view: LedgerView, entry: ReportEntry) -> MarkdownDocument:
     for title, body in report_sections(report):
         if title == "Checks" and checks:
             body = "\n".join(
-                f"- `{_text(check.get('command'), '?')}` — {_text(check.get('result'), '?')}: "
-                f"{_text(check.get('evidence'))}"
+                f"- `{text(check.get('command'), '?')}` — {text(check.get('result'), '?')}: "
+                f"{text(check.get('evidence'))}"
                 for check in checks
             )
         sections.append(MarkdownSection(title, body, preformatted=title == "Review"))
@@ -524,8 +502,8 @@ def report_document(view: LedgerView, entry: ReportEntry) -> MarkdownDocument:
             ("Reported at", entry.reported_at or "неизвестно"),
             ("Dispatch", entry.dispatch_id),
             ("Batch", entry.batch_id or "?"),
-            ("Commit", _text(report.get("commit_sha"), "—")),
-            ("Changed files", ", ".join(_strings(report.get("changed_files"))) or "—"),
+            ("Commit", text(report.get("commit_sha"), "—")),
+            ("Changed files", ", ".join(strings(report.get("changed_files"))) or "—"),
         ],
         sections=sections,
     )

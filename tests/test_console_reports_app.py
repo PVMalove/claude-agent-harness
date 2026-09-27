@@ -51,7 +51,7 @@ def test_dashboard_reports_section_opens_the_reports_screen(tmp_path: Path) -> N
     async def scenario() -> bool:
         screen = DashboardScreen(
             tmp_path,
-            collect_dashboard=lambda _repo: DashboardData(
+            collect_dashboard=lambda _repo, *, online=False: DashboardData(
                 0, 0, 0, 0, "-", "0", "-", None
             ),
         )
@@ -298,7 +298,7 @@ def test_timeline_export_writes_markdown_table(tmp_path: Path) -> None:
             await pilot.pause()
 
     asyncio.run(scenario())
-    [exported] = (tmp_path / "docs" / "tasks" / "issue-101" / "artifacts").glob("*.md")
+    [exported] = (tmp_path / "docs" / "tasks" / "issue-101-console-export" / "artifacts").glob("*.md")
     assert exported.name.endswith("-timeline-batch-flow.md")
     text = exported.read_text(encoding="utf-8")
     assert text.startswith("# Хронология батча batch-flow\n")

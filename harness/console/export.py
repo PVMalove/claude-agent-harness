@@ -5,8 +5,9 @@ A screen describes its content as a `MarkdownDocument`; `export_markdown` render
 new dated file (`export_text` writes any other rendered text, such as Repo Map's JSON, the same
 way) under the target repository's `docs/tasks/` (see docs/agents/artifacts.md): the
 ticket's own folder `docs/tasks/issue-<N>-*/artifacts/`, the epic folder that holds the ticket under
-`tickets/`, or a new `docs/tasks/issue-<N>/artifacts/`; without a ticket number,
-`docs/tasks/console-exports/`. An existing file is never overwritten.
+`tickets/`, or a new `docs/tasks/issue-<N>-console-export/artifacts/` (artifacts.md: a folder name
+carries the issue ID and a descriptive name); without a ticket number, the common
+`docs/tasks/console-exports/` folder epic #341 specifies. An existing file is never overwritten.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from pathlib import Path
 
 TASKS_REL = Path("docs") / "tasks"
 NO_TICKET_DIR = "console-exports"
+NEW_TICKET_DIR_SLUG = "console-export"
 _TICKET_NUMBER = re.compile(r"(\d+)\D*$")
 _BACKTICKS = re.compile(r"`+")
 
@@ -85,7 +87,7 @@ def export_directory(repo: Path, ticket: str | None) -> Path:
     )
     if holders:
         return holders[0] / "artifacts"
-    return tasks / f"issue-{number}" / "artifacts"
+    return tasks / f"issue-{number}-{NEW_TICKET_DIR_SLUG}" / "artifacts"
 
 
 def _safe_slug(slug: str) -> str:

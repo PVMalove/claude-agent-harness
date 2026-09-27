@@ -1,5 +1,5 @@
 """`harness health <repo> --json` end to end against a real lifecycle ledger fixture (#347): the
-five `orchestration.*` checks report non-trivial results through the real CLI subprocess, exactly
+six `orchestration.*` checks report non-trivial results through the real CLI subprocess, exactly
 as tests/test_health_cli.py already does for the rest of the report."""
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ _HARNESS_BIN = Path(__file__).resolve().parents[1] / "harness" / "bin" / "harnes
 
 _ORCHESTRATION_CHECK_IDS = [
     "orchestration.ledger_summary",
+    "orchestration.unfinished_batches",
     "orchestration.blocked_batches",
     "orchestration.stale_dispatches",
     "orchestration.orphaned_worktrees",
@@ -45,6 +46,9 @@ def _write_batch(
     state: str,
     dispatches: list[LedgerJsonObject] | None = None,
     worktree: str = "",
+    ticket: str = "",
+    branch: str = "",
+    created_at: str = "",
 ) -> None:
     dispatch_entries: list[LedgerJsonValue] = list(dispatches or [])
     record: LedgerJsonObject = {
@@ -55,6 +59,9 @@ def _write_batch(
         # harness.cleanup._active_worktrees reads batch["worktree"] for every non-terminal
         # batch; a real fixture always has one, so every non-terminal batch below sets it too.
         "worktree": worktree,
+        "ticket": ticket,
+        "branch": branch,
+        "created_at": created_at,
     }
     ledger.write_immutable(
         generation / "plans" / f"{batch_id}.json", {"batch_id": batch_id}
@@ -78,6 +85,10 @@ def _build_ledger_fixture(repo: Path) -> None:
         "batch-live",
         "active",
         dispatches=[{"dispatch_id": "dispatch-stale", "state": "working"}],
+        ticket="#101",
+        branch="feature/issue-101-live",
+        worktree=".harness/.sandboxes/worktrees/issue-101",
+        created_at="2020-01-01T00:00:00+00:00",
     )
     ledger.write_immutable(
         generation / "dispatch-status" / "dispatch-stale.json",
@@ -100,7 +111,7 @@ def _run_health_json(repo: Path) -> tuple[int, JsonObject]:
     return result.returncode, json.loads(result.stdout)
 
 
-def test_health_json_reports_all_five_orchestration_checks_against_a_ledger_fixture(
+def test_health_json_reports_every_orchestration_check_against_a_ledger_fixture(
     tmp_path: Path,
 ) -> None:
     _init_repo(tmp_path)
@@ -114,6 +125,11 @@ def test_health_json_reports_all_five_orchestration_checks_against_a_ledger_fixt
     checks_by_id = {check["id"]: check for check in data["checks"]}
     assert checks_by_id["orchestration.ledger_summary"]["status"] == "ok"
     assert "completed=1" in checks_by_id["orchestration.ledger_summary"]["message"]
+    unfinished = checks_by_id["orchestration.unfinished_batches"]
+    assert unfinished["status"] == "ok"  # informational: ticket, branch, worktree, age
+    for detail in ("batch-live", "#101", "feature/issue-101-live", "issue-101", "возраст="):
+        assert detail in unfinished["message"]
+    assert "batch-completed" not in unfinished["message"]
     assert checks_by_id["orchestration.blocked_batches"]["status"] == "warn"
     assert "batch-blocked" in checks_by_id["orchestration.blocked_batches"]["message"]
     assert checks_by_id["orchestration.stale_dispatches"]["status"] == "warn"

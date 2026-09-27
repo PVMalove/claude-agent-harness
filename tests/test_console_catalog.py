@@ -42,6 +42,7 @@ def test_catalog_covers_every_harness_and_ledger_command() -> None:
         "ledger-migrate",
         "ledger-clean",
         "ledger-reset",
+        "worktree-remove",
     } <= ENTRIES.keys()
     assert len(ENTRIES) == len(HARNESS_COMMANDS)
 
@@ -59,6 +60,7 @@ def test_irreversible_commands_carry_their_confirmation_class() -> None:
         "cleanup-hard-apply": Reversibility.DELETES_LOCAL_DATA,
         "ledger-clean": Reversibility.DELETES_LOCAL_DATA,
         "ledger-reset": Reversibility.DELETES_LOCAL_DATA,
+        "worktree-remove": Reversibility.DELETES_LOCAL_DATA,
     }
     assert set(CONFIRMATION_REASONS) == set(Reversibility) - {Reversibility.REVERSIBLE}
 
@@ -123,16 +125,32 @@ def test_process_argv_runs_the_cli_equivalent_under_this_interpreter() -> None:
     assert process_argv(["python", "scripts/verify.py"]) == [sys.executable, "scripts/verify.py"]
 
 
-def test_process_argv_prefers_the_repository_dev_environment(tmp_path: Path) -> None:
+def test_only_verify_runs_under_the_repository_dev_environment(tmp_path: Path) -> None:
     """The console runs in a one-off `uv run --with textual` environment without pytest/mypy, so
-    a `python` command such as verify runs under the repository's `.harness/.venv` when present."""
-    assert process_argv(["python", "x.py"], tmp_path) == [sys.executable, "x.py"]
-    venv_python = tmp_path / ".harness" / ".venv" / "bin" / "python"
+    verify alone runs under the repository's `.harness/.venv`; coordinator, Repo Map and the
+    parser bundle keep the console's interpreter (a bundle built for another interpreter would not
+    load in the Repo Map screen, which runs under this one)."""
+    venv_python = tmp_path / ".harness" / ".venv" / (
+        "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
+    )
     venv_python.parent.mkdir(parents=True)
     venv_python.write_text("", encoding="utf-8")
 
-    assert process_argv(["python", "x.py"], tmp_path) == [str(venv_python), "x.py"]
-    assert process_argv(["harness", "diff", "r"], tmp_path)[0] == sys.executable
+    assert [key for key, entry in ENTRIES.items() if entry.dev_environment] == ["verify"]
+    assert process_argv(["python", "x.py"], tmp_path, dev_environment=True) == [
+        str(venv_python),
+        "x.py",
+    ]
+    assert process_argv(["python", "x.py"], tmp_path) == [sys.executable, "x.py"]
+
+
+def test_worktree_removal_runs_git_after_confirmation() -> None:
+    entry = ENTRIES["worktree-remove"]
+    assert entry.inputs == ("worktree",)
+    assert entry.cli_argv(REPO, {"worktree": "wt"}) == [
+        "git", "-C", str(REPO), "worktree", "remove", "wt",
+    ]
+    assert process_argv(entry.cli_argv(REPO, {"worktree": "wt"}))[0] == "git"
 
 
 def test_catalog_imports_without_textual() -> None:

@@ -16,12 +16,15 @@ import json
 import re
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Literal
 from urllib.parse import quote
 
 from ..context import HealthContext
 from ..labels_table import parse_canonical_labels
 from ..model import CheckResult, Fix
+from ..process import run_tool
 
 GROUP = "tracker"
 
@@ -34,7 +37,7 @@ _TRIAGE_LABELS_REL = Path("docs/agents/triage-labels.md")
 _GITLAB_PUSH_ACCESS_LEVEL = 30
 _GITLAB_LABELS_ACCESS_LEVEL = 20
 
-Tracker = str  # "github" | "gitlab" | "local"
+Tracker = Literal["github", "gitlab", "local"]
 
 _GITHUB_REMOTE = re.compile(r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/.\s]+)")
 _GITLAB_REMOTE = re.compile(r"gitlab\.[^/:\s]+[:/](?P<owner>[^/]+)/(?P<repo>[^/.\s]+)")
@@ -44,21 +47,8 @@ def _run(
     argv: list[str], *, cwd: Path | None = None
 ) -> subprocess.CompletedProcess[str] | None:
     """Run one tracker CLI/git call with the tracker-check timeout; None when it cannot be
-    started or does not finish in time. Never raises: a missing tool or a stalled network call
-    becomes a `warn`/`fail` CheckResult, not an exception (see registry.py's isolation)."""
-    try:
-        return subprocess.run(
-            argv,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_ONLINE_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    started or does not finish in time."""
+    return run_tool(argv, timeout=_ONLINE_TIMEOUT_SECONDS, cwd=cwd)
 
 
 def detect_tracker(context: HealthContext) -> tuple[Tracker, str | None]:
@@ -93,7 +83,7 @@ def _skip(check_id: str, message: str) -> CheckResult:
 
 
 def _tracker_tool(tracker: Tracker) -> str:
-    return "gh" if tracker == "github" else "glab"
+    return _HOSTS[tracker].tool
 
 
 # What each check verifies, so a skipped line in the text report still names the skipped check.
@@ -122,6 +112,17 @@ def _offline_or_local(
             check_id, f"{subject}: не проверено (локальный трекер задач — онлайн-проверки не применимы)"
         )
     return tracker, slug, None
+
+
+@dataclass(frozen=True)
+class _Host:
+    """Everything that differs between GitHub (`gh`) and GitLab (`glab`) for these checks."""
+
+    tool: str
+    permissions: Callable[[str, str, Path], tuple[bool, bool] | None]
+    labels_endpoint: Callable[[str], str]
+    # `gh label create <name>` takes the name positionally, `glab label create --name <name>`.
+    label_name_args: Callable[[str], list[str]]
 
 
 # --- tracker.auth --------------------------------------------------------------------------------
@@ -278,11 +279,7 @@ def check_permissions(context: HealthContext) -> CheckResult:
             status="warn",
             message="не удалось разобрать owner/repo из git remote -v: права доступа не проверены",
         )
-    permissions = (
-        _github_permissions(executable, slug, context.repo)
-        if tracker == "github"
-        else _gitlab_permissions(executable, slug, context.repo)
-    )
+    permissions = _HOSTS[tracker].permissions(executable, slug, context.repo)
     if permissions is None:
         return CheckResult(
             id=check_id,
@@ -309,6 +306,22 @@ def check_permissions(context: HealthContext) -> CheckResult:
 # --- tracker.labels --------------------------------------------------------------------------------
 
 
+_HOSTS: dict[str, _Host] = {
+    "github": _Host(
+        tool="gh",
+        permissions=_github_permissions,
+        labels_endpoint=lambda slug: f"repos/{slug}/labels",
+        label_name_args=lambda name: [name],
+    ),
+    "gitlab": _Host(
+        tool="glab",
+        permissions=_gitlab_permissions,
+        labels_endpoint=lambda slug: f"projects/{quote(slug, safe='')}/labels",
+        label_name_args=lambda name: ["--name", name],
+    ),
+}
+
+
 def _list_repo_labels(
     tracker: Tracker, executable: str, slug: str, cwd: Path
 ) -> list[tuple[str, str]] | None:
@@ -319,15 +332,7 @@ def _list_repo_labels(
     single page too), so a repository with more labels than that default is not misread as
     missing them all past the cutoff - which would otherwise make `--fix` try to recreate labels
     that already exist."""
-    if tracker == "github":
-        argv = [executable, "api", "--paginate", f"repos/{slug}/labels"]
-    else:
-        argv = [
-            executable,
-            "api",
-            "--paginate",
-            f"projects/{quote(slug, safe='')}/labels",
-        ]
+    argv = [executable, "api", "--paginate", _HOSTS[tracker].labels_endpoint(slug)]
     result = _run(argv, cwd=cwd)
     if result is None or result.returncode != 0:
         return None
@@ -436,7 +441,7 @@ def check_labels(context: HealthContext) -> CheckResult:
     fix = (
         Fix(
             text="создайте отсутствующие метки с каноническими цветами",
-            command="harness health <repo> --online --fix",
+            command=context.harness_command("health", str(context.repo), "--online", "--fix"),
         )
         if missing
         else None
@@ -465,20 +470,8 @@ def fix_labels(context: HealthContext, result: CheckResult) -> str | None:
     missing, _mismatched = diff
     created = []
     for name, color in missing:
-        if tracker == "github":
-            argv = [executable, "label", "create", name, "--color", color, "-R", slug]
-        else:
-            argv = [
-                executable,
-                "label",
-                "create",
-                "--name",
-                name,
-                "--color",
-                color,
-                "-R",
-                slug,
-            ]
+        argv = [executable, "label", "create", *_HOSTS[tracker].label_name_args(name)]
+        argv += ["--color", color, "-R", slug]
         outcome = _run(argv, cwd=context.repo)
         if outcome is not None and outcome.returncode == 0:
             created.append(f"{name} ({color})")

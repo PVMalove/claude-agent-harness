@@ -1,6 +1,6 @@
-"""Group 'files' health checks: each check wraps the unchanged validate_*/detection logic that
-lives directly in harness/health/checks/files.py (harness/bin/harness.py imports it from there - see
-that module's docstring) into a CheckResult."""
+"""Group 'files' health checks: each check wraps the validate_*/detection logic of
+harness/health/project_files.py (shared with harness/bin/harness.py - see that module's docstring)
+into a CheckResult."""
 
 from __future__ import annotations
 
@@ -38,6 +38,10 @@ def test_check_agents_md_fails_when_missing(tmp_path: Path) -> None:
     assert result.id == "files.agents_md"
     assert result.status == "fail"
     assert "отсутствует AGENTS.md" in result.message
+    # Only `harness init` writes AGENTS.md and it refuses once a lock exists, so the remedy restores
+    # the file itself instead of pointing at `harness update`, which never writes it.
+    assert result.fix is not None
+    assert result.fix.command == "git checkout -- AGENTS.md"
 
 
 def test_check_agents_md_fails_on_unresolved_template_markers(tmp_path: Path) -> None:
@@ -63,6 +67,9 @@ def test_check_discovery_links_fails_when_absent(tmp_path: Path) -> None:
     assert result.id == "files.discovery_links"
     assert result.status == "fail"
     assert "неисправна discovery-ссылка" in result.message
+    # `harness update` refuses to replace an existing wrong link, so the remedy says to remove it.
+    assert result.fix is not None
+    assert "удалите" in result.fix.text
 
 
 def test_check_project_json_ok_when_absent(tmp_path: Path) -> None:

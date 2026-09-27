@@ -80,7 +80,7 @@ def test_dashboard_repo_map_section_opens_the_repo_map_screen(tmp_path: Path) ->
     async def scenario() -> bool:
         screen = DashboardScreen(
             tmp_path,
-            collect_dashboard=lambda _repo: DashboardData(
+            collect_dashboard=lambda _repo, *, online=False: DashboardData(
                 0, 0, 0, 0, "-", "0", "-", None
             ),
             command_runner=_RecordingRunner(),

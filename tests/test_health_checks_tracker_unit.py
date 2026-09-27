@@ -150,7 +150,7 @@ def _many_labels(count: int) -> list[dict[str, str]]:
     ("gitlab", "glab", "projects/acme%2Fwidgets/labels"),
 ])
 def test_list_repo_labels_reads_every_page_past_the_default_cap(
-    tracker_name: str,
+    tracker_name: tracker.Tracker,
     tool: str,
     api_path: str,
     tmp_path: Path,

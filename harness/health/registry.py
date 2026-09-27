@@ -28,6 +28,7 @@ from .checks import tracker as tracker_checks
 from .checks import windows as windows_checks
 from .context import HealthContext
 from .model import CheckResult, JsonObject, Report
+from . import project_files
 
 CheckFn = Callable[[HealthContext], CheckResult]
 # Applies the fix for one check result; returns a human description of what it did, or None.
@@ -50,6 +51,7 @@ REGISTRY: list[tuple[str, CheckFn]] = [
         for check_id in directory_checks.DIRECTORY_PATHS
     ),
     ("repo_map.tier", repo_map_checks.check_tier),
+    ("environment.os", environment_checks.check_os),
     ("environment.git", environment_checks.check_git),
     ("environment.git_identity", environment_checks.check_git_identity),
     ("environment.gitattributes", environment_checks.check_gitattributes),
@@ -68,6 +70,7 @@ REGISTRY: list[tuple[str, CheckFn]] = [
     ("tracker.permissions", tracker_checks.check_permissions),
     ("tracker.labels", tracker_checks.check_labels),
     ("orchestration.ledger_summary", orchestration_checks.check_ledger_summary),
+    ("orchestration.unfinished_batches", orchestration_checks.check_unfinished_batches),
     ("orchestration.blocked_batches", orchestration_checks.check_blocked_batches),
     ("orchestration.stale_dispatches", orchestration_checks.check_stale_dispatches),
     ("orchestration.orphaned_worktrees", orchestration_checks.check_orphaned_worktrees),
@@ -83,19 +86,16 @@ FIXERS: dict[str, FixFn] = {
     "tracker.labels": tracker_checks.fix_labels,
 }
 
-_LOCK_REL = Path(".harness/harness.lock")
-
-
 def _load_lock(repo: Path) -> tuple[JsonObject | None, str | None]:
     """Parse .harness/harness.lock once per run as (lock, error). A missing file is (None, None);
     a lock that cannot be read or is not a JSON object is (None, <reason>) - reported by
     files.check_lock as `fail` instead of aborting the whole run before any check starts."""
-    path = repo / _LOCK_REL
+    path = repo / project_files.LOCK_REL
     if not path.is_file():
         return None, None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         return None, f"{type(exc).__name__}: {exc}"
     if not isinstance(data, dict):
         return None, "ожидался JSON-объект"
@@ -109,6 +109,7 @@ def run(
     snapshot_diff: Callable[[Path], JsonObject] | None = None,
     output_encoding: str | None = None,
     fix: bool = False,
+    harness_cli: tuple[str, ...] = ("harness",),
 ) -> Report:
     """Build one HealthContext and run every registered check, without early exit.
 
@@ -116,8 +117,8 @@ def run(
     runs; whatever the action did is appended to `report.fixes_applied` and the check is re-run so
     the report shows the state after the fix.
 
-    `snapshot_diff` and `output_encoding` are forwarded to HealthContext unchanged; see its
-    docstring - only harness/bin/harness.py's cmd_health supplies them today.
+    `snapshot_diff`, `output_encoding` and `harness_cli` are forwarded to HealthContext unchanged;
+    see its docstring - only harness/bin/harness.py's cmd_health and the console supply them.
     """
     lock, lock_error = _load_lock(repo)
     context = HealthContext(
@@ -127,13 +128,14 @@ def run(
         online=online,
         snapshot_diff=snapshot_diff,
         output_encoding=output_encoding,
+        harness_cli=harness_cli,
     )
     report = Report(schema_version=1, repo=str(repo), online=online)
     for check_id, check_fn in REGISTRY:
         result = _run_isolated(check_id, check_fn, context)
         fixer = FIXERS.get(check_id) if fix else None
         if fixer is not None:
-            applied = _apply_isolated(check_id, fixer, context, result)
+            applied = _apply_isolated(fixer, context, result)
             if applied is not None:
                 report.fixes_applied.append(applied)
                 result = _run_isolated(check_id, check_fn, context)
@@ -141,9 +143,7 @@ def run(
     return report
 
 
-def _apply_isolated(
-    check_id: str, fixer: FixFn, context: HealthContext, result: CheckResult
-) -> str | None:
+def _apply_isolated(fixer: FixFn, context: HealthContext, result: CheckResult) -> str | None:
     """Run one fix action; a crash leaves the check's own result in place instead of ending the run."""
     try:
         return fixer(context, result)
@@ -154,8 +154,9 @@ def _apply_isolated(
 def _run_isolated(check_id: str, check_fn: CheckFn, context: HealthContext) -> CheckResult:
     """Run one check; a crash becomes its `fail` result so the remaining checks still run.
 
-    SystemExit is caught too: the helpers health shares with the packager (files._fail) exit the
-    process on error, which must not end a health run. KeyboardInterrupt still propagates.
+    SystemExit is caught too: the helpers health shares with the packager (project_files.fail)
+    exit the process on error, which must not end a health run. KeyboardInterrupt still
+    propagates.
     """
     try:
         return check_fn(context)

@@ -70,7 +70,7 @@ def test_ticket_export_uses_the_epic_folder_that_holds_the_ticket(
 
 def test_ticket_without_a_folder_gets_a_new_one(tmp_path: Path) -> None:
     assert export_directory(tmp_path, "#352") == (
-        tmp_path / "docs" / "tasks" / "issue-352" / "artifacts"
+        tmp_path / "docs" / "tasks" / "issue-352-console-export" / "artifacts"
     )
 
 

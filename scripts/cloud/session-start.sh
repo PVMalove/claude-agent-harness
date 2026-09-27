@@ -26,29 +26,24 @@ if [ -z "$python_bin" ]; then
   exit 0
 fi
 
-if [ ! -f "$repo/.harness/project.json" ] || [ ! -x "$venv_bin/python" ]; then
+# Bootstraps only the gitignored runtime state of this clone (.harness/, .claude/ hooks) and never
+# edits a tracked file or an existing project config: the AGENTS.md exception for this hook.
+if [ ! -f "$repo/.harness/harness.lock" ]; then
   mkdir -p "$repo/.harness"
   if [ ! -f "$repo/.harness/orchestration.json" ]; then
     cp "$here/orchestration.json" "$repo/.harness/orchestration.json"
   fi
+  # Cloud threads work on claude/... branches, so the pattern is set once, at install time.
   "$python_bin" "$repo/harness/bin/harness.py" init "$repo" --project-type software --stack python \
     --capability pvmalove-suite --capability backend-orchestration \
     --base-branch master --language ru \
-    --pr-base-branch master --qa-gate-command "make verify" >/dev/null
-  (cd "$repo" && make bootstrap PYTHON_BOOTSTRAP="$python_bin" >/dev/null)
+    --pr-base-branch master --branch-pattern "^(feature/issue-[0-9]+-.+|claude/.+)" \
+    --qa-gate-command "make verify" </dev/null >/dev/null
   echo "harness installed into $repo"
 fi
-
-# Cloud threads work on claude/... branches.
-"$python_bin" - "$repo/.harness/project.json" <<'EOF'
-import json, sys
-from pathlib import Path
-
-project = Path(sys.argv[1])
-data = json.loads(project.read_text(encoding="utf-8"))
-data["branch_pattern"] = "^(feature/issue-[0-9]+-.+|claude/.+)"
-project.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-EOF
+if [ ! -x "$venv_bin/python" ]; then
+  (cd "$repo" && make bootstrap PYTHON_BOOTSTRAP="$python_bin" >/dev/null)
+fi
 
 # Verification commands in orchestration.json call bare `python`; take it from .harness/.venv.
 if [ -n "${CLAUDE_ENV_FILE:-}" ]; then

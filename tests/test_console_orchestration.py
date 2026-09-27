@@ -289,3 +289,28 @@ def test_context_package_register_required_fields_validated_no_confirmation(tmp_
         },
     )
     assert runner.calls == [process_argv(expected)]
+
+
+# -- batch: batch list (a value-less flag) --------------------------------------------------
+
+
+def test_batch_list_open_checkbox_passes_the_flag_alone(tmp_path: Path) -> None:
+    """`--open` is a store_true flag: the form shows a checkbox, and ticking it adds `--open`
+    with no value (a prefilled "False" value would make the coordinator reject the command)."""
+    runner = _RecordingRunner()
+
+    async def scenario() -> None:
+        from textual.widgets import Checkbox
+
+        app = _host(tmp_path, runner)
+        async with app.run_test(size=(120, 60)) as pilot:
+            await _choose(pilot, app, "batch-list")
+            assert not app.screen.query("#confirmation-reason")
+            app.screen.query_one("#input-open", Checkbox).value = True
+            await pilot.click("#run")
+            await _settle(pilot, app)
+
+    asyncio.run(scenario())
+    expected = _entry("batch-list").cli_argv(tmp_path, {"open": "1"})
+    assert expected[-1] == "--open"
+    assert runner.calls == [process_argv(expected)]

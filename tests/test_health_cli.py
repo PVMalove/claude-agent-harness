@@ -88,7 +88,9 @@ def test_cmd_health_exits_0_when_nothing_fails(
     assert exit_code == 0
 
 
-@pytest.mark.parametrize("lock_text", ["{broken", "[]"])
+@pytest.mark.parametrize(
+    "lock_text", ["{broken", "[]", "[" * 100_000], ids=["invalid", "not-object", "too-deep"]
+)
 def test_broken_lock_is_a_fail_result_not_a_crash(tmp_path: Path, lock_text: str) -> None:
     """A lock that is not a JSON object is reported as `files.lock: fail` (with a remedy) while
     every other check still runs, and `--json` stays valid JSON."""
@@ -117,6 +119,12 @@ def test_broken_lock_is_a_fail_result_not_a_crash(tmp_path: Path, lock_text: str
     assert "повреждён" in checks["files.lock"]["message"]
     assert checks["files.lock"]["fix"] is not None
     assert "repo_map.tier" in checks
+    # Lock-dependent checks point at the broken lock instead of claiming the lock is missing or
+    # that backend-orchestration was never selected.
+    for check_id in ("files.skill_registry", "files.orchestration_config", "orchestration.ledger_summary"):
+        assert checks[check_id]["status"] == "skipped"
+        assert "повреждён" in checks[check_id]["message"]
+    assert not any("не выбрана" in check["message"] for check in data["checks"])
 
 
 @pytest.mark.parametrize("pythonpath_first", [True, False])

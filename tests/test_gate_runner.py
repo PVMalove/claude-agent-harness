@@ -339,3 +339,12 @@ class GateRunnerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_command_log_round_trips_between_writer_and_reader() -> None:
+    """The QA log format has one owner: the console reads it back with the writer's own parser."""
+    from harness.gate_runner.gate_runner import format_command_log, parse_command_log
+
+    log = format_command_log("make test", 0, "ok") + format_command_log("make lint", 2, "E1\nE2")
+
+    assert parse_command_log(log.splitlines()) == [("make test", 0), ("make lint", 2)]

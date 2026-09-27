@@ -12,6 +12,7 @@ from __future__ import annotations
 import codecs
 import locale
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from ..context import HealthContext
 from ..model import CheckResult, Fix
+from ..process import run_tool
 
 GROUP = "environment"
 
@@ -40,27 +42,14 @@ _UV_INSTALL_FIX = Fix(
 def _run(
     argv: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str] | None:
-    """Run a tool; None when it cannot be started or does not finish in time."""
-    try:
-        return subprocess.run(
-            argv,
-            cwd=cwd,
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_TOOL_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    """Run a local tool with this group's timeout; None when it cannot start or finish."""
+    return run_tool(argv, timeout=_TOOL_TIMEOUT_SECONDS, cwd=cwd, env=env)
 
 
 def _git(
     context: HealthContext, *arguments: str
 ) -> subprocess.CompletedProcess[str] | None:
-    """Invoke git against the explicit repository only (same trust rule as checks/files.py)."""
+    """Invoke git against the explicit repository only (same trust rule as project_files.git_command)."""
     executable = shutil.which("git")
     if executable is None:
         return None
@@ -106,6 +95,16 @@ def _is_git_worktree(context: HealthContext) -> bool:
 
 
 # --- git ---------------------------------------------------------------------------------------
+
+
+def check_os(_context: HealthContext) -> CheckResult:
+    """Informational: the OS and its version, so a report shows which platform rules applied."""
+    release = platform.release()
+    version = platform.version()
+    details = " ".join(part for part in (platform.system() or os.name, release) if part)
+    if version and version != release:
+        details = f"{details} ({version})"
+    return CheckResult(id="environment.os", group=GROUP, status="ok", message=f"ОС: {details}")
 
 
 def check_git(_context: HealthContext) -> CheckResult:

@@ -27,12 +27,14 @@ from ..context import HealthContext
 from ..model import CheckResult, Fix, JsonObject
 
 BACKEND_ORCHESTRATION_CAPABILITY = "backend-orchestration"
-_NO_ORCHESTRATION_CAPABILITY_MESSAGE = "backend-orchestration capability не выбрана"
 _MIGRATION_MESSAGE = "леджер оркестрации требует миграции схемы"
-_MIGRATION_FIX = Fix(
-    text="выполните миграцию схемы леджера",
-    command="python .harness/orchestration/coordinator.py --repo <repo> ledger migrate",
-)
+
+
+def _migration_fix(context: HealthContext) -> Fix:
+    return Fix(
+        text="выполните миграцию схемы леджера",
+        command=context.coordinator_command("ledger", "migrate"),
+    )
 
 
 def _has_capability(context: HealthContext) -> bool:
@@ -42,12 +44,12 @@ def _has_capability(context: HealthContext) -> bool:
     )
 
 
-def _skipped(check_id: str) -> CheckResult:
+def _skipped(check_id: str, context: HealthContext) -> CheckResult:
     return CheckResult(
         id=check_id,
         group="orchestration",
         status="skipped",
-        message=_NO_ORCHESTRATION_CAPABILITY_MESSAGE,
+        message=context.no_orchestration_message(),
     )
 
 
@@ -99,7 +101,7 @@ class _LedgerState:
 def check_ledger_summary(context: HealthContext) -> CheckResult:
     check_id = "orchestration.ledger_summary"
     if not _has_capability(context):
-        return _skipped(check_id)
+        return _skipped(check_id, context)
     state = _LedgerState(context.repo)
     if state.unreadable:
         return CheckResult(
@@ -114,7 +116,7 @@ def check_ledger_summary(context: HealthContext) -> CheckResult:
             group="orchestration",
             status="warn",
             message=_MIGRATION_MESSAGE,
-            fix=_MIGRATION_FIX,
+            fix=_migration_fix(context),
         )
     if state.status.get("generation") is None:
         return CheckResult(
@@ -146,6 +148,74 @@ def check_ledger_summary(context: HealthContext) -> CheckResult:
     )
 
 
+def _age(created_at: object) -> str:
+    """Human age of an ISO timestamp, or "?" when it is missing or unparsable."""
+    from datetime import UTC, datetime
+
+    if not isinstance(created_at, str):
+        return "?"
+    try:
+        created = datetime.fromisoformat(created_at)
+    except ValueError:
+        return "?"
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    seconds = max(0, int((datetime.now(UTC) - created).total_seconds()))
+    if seconds < 3600:
+        return f"{seconds // 60}м"
+    if seconds < 86400:
+        return f"{seconds // 3600}ч"
+    return f"{seconds // 86400}д"
+
+
+def check_unfinished_batches(context: HealthContext) -> CheckResult:
+    """Informational: every batch still in flight with its ticket, branch, worktree and age. Blocked
+    batches are warned about by check_blocked_batches, stalled dispatches by check_stale_dispatches."""
+    check_id = "orchestration.unfinished_batches"
+    if not _has_capability(context):
+        return _skipped(check_id, context)
+    state = _LedgerState(context.repo)
+    if state.unreadable:
+        return CheckResult(
+            id=check_id,
+            group="orchestration",
+            status="fail",
+            message=f"леджер оркестрации недоступен: {state.error}",
+        )
+    if state.needs_migration:
+        return CheckResult(
+            id=check_id,
+            group="orchestration",
+            status="warn",
+            message=_MIGRATION_MESSAGE,
+            fix=_migration_fix(context),
+        )
+    from harness.orchestration.core.constants import TERMINAL_BATCH_STATES
+
+    unfinished = [
+        batch for batch in state.batches if batch.get("state") not in TERMINAL_BATCH_STATES
+    ]
+    if not unfinished:
+        return CheckResult(
+            id=check_id,
+            group="orchestration",
+            status="ok",
+            message="незавершённых батчей нет",
+        )
+    described = [
+        f"{batch.get('batch_id', '?')} [{batch.get('state', '?')}] "
+        f"ticket={batch.get('ticket') or '?'} branch={batch.get('branch') or '?'} "
+        f"worktree={batch.get('worktree') or '?'} возраст={_age(batch.get('created_at'))}"
+        for batch in sorted(unfinished, key=lambda batch: str(batch.get("created_at", "")))
+    ]
+    return CheckResult(
+        id=check_id,
+        group="orchestration",
+        status="ok",
+        message=f"незавершённые батчи ({len(unfinished)}): " + "; ".join(described),
+    )
+
+
 def _attention_policy_threshold(repo: Path) -> int:
     """Resolve `attention_policy.stale_dispatch_seconds` the same way the coordinator does:
     a positive integer override in `.harness/orchestration.json`, else the built-in default."""
@@ -171,7 +241,7 @@ def _attention_policy_threshold(repo: Path) -> int:
 def check_blocked_batches(context: HealthContext) -> CheckResult:
     check_id = "orchestration.blocked_batches"
     if not _has_capability(context):
-        return _skipped(check_id)
+        return _skipped(check_id, context)
     state = _LedgerState(context.repo)
     if state.unreadable:
         return CheckResult(
@@ -186,7 +256,7 @@ def check_blocked_batches(context: HealthContext) -> CheckResult:
             group="orchestration",
             status="warn",
             message=_MIGRATION_MESSAGE,
-            fix=_MIGRATION_FIX,
+            fix=_migration_fix(context),
         )
     blocked = sorted(
         batch_id
@@ -216,7 +286,7 @@ def check_blocked_batches(context: HealthContext) -> CheckResult:
 def check_stale_dispatches(context: HealthContext) -> CheckResult:
     check_id = "orchestration.stale_dispatches"
     if not _has_capability(context):
-        return _skipped(check_id)
+        return _skipped(check_id, context)
     state = _LedgerState(context.repo)
     if state.unreadable:
         return CheckResult(
@@ -231,7 +301,7 @@ def check_stale_dispatches(context: HealthContext) -> CheckResult:
             group="orchestration",
             status="warn",
             message=_MIGRATION_MESSAGE,
-            fix=_MIGRATION_FIX,
+            fix=_migration_fix(context),
         )
     if state.records_root is None:
         return CheckResult(
@@ -312,7 +382,7 @@ def _owner(path: Path) -> str:
 def check_orphaned_worktrees(context: HealthContext) -> CheckResult:
     check_id = "orchestration.orphaned_worktrees"
     if not _has_capability(context):
-        return _skipped(check_id)
+        return _skipped(check_id, context)
     from harness.cleanup import _active_worktrees, _registered_worktrees
     from harness.storage import sandboxes_root, storage_root
 
@@ -357,7 +427,7 @@ def check_orphaned_worktrees(context: HealthContext) -> CheckResult:
         message="осиротевшие каталоги воркдеревьев: " + "; ".join(described),
         fix=Fix(
             text="ничего не удалено; сначала git worktree prune, затем предпросмотр harness cleanup",
-            command="harness cleanup <repo> --mode hard",
+            command=context.harness_command("cleanup", str(repo), "--mode", "hard"),
         ),
     )
 
@@ -374,7 +444,7 @@ def _human_size(size: int) -> str:
 def check_disposable_data(context: HealthContext) -> CheckResult:
     check_id = "orchestration.disposable_data"
     if not _has_capability(context):
-        return _skipped(check_id)
+        return _skipped(check_id, context)
     from harness.cleanup import plan_cleanup
 
     try:
@@ -409,14 +479,15 @@ def check_disposable_data(context: HealthContext) -> CheckResult:
             message="одноразовых данных для очистки нет",
         )
     # Informational only (epic #341 severity rules): a Repo Map cache or parser bundle is normal,
-    # not a risk, so a non-empty plan never turns this check into a warning.
+    # not a risk, so a non-empty plan is neither a warning nor a "Как исправить" remedy - the
+    # cleanup hint is part of the message.
+    preview = context.harness_command("cleanup", str(context.repo), "--mode", "hard")
     return CheckResult(
         id=check_id,
         group="orchestration",
         status="ok",
-        message=f"одноразовых данных на {_human_size(total)}; ничего не удалено (только предпросмотр)",
-        fix=Fix(
-            text="просмотрите план очистки перед применением",
-            command="harness cleanup <repo> --mode hard",
+        message=(
+            f"одноразовых данных на {_human_size(total)} (информация, ничего не удалено); "
+            f"предпросмотр очистки: {preview}"
         ),
     )

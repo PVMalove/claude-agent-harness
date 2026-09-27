@@ -18,6 +18,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from ..gate_runner.gate_runner import project_python
 from .launcher import BIN_HARNESS_PATH
 
 
@@ -60,10 +61,21 @@ class CatalogEntry:
     reversibility: Reversibility
     function: str
     typed_confirmation: str | None = None
+    # Runs `python` under the repository's dev environment (`.harness/.venv`: pytest, mypy, ...)
+    # instead of the console's own interpreter - only for this repository's verification script.
+    dev_environment: bool = False
 
     @property
     def needs_confirmation(self) -> bool:
         return self.reversibility is not Reversibility.REVERSIBLE
+
+    def available(self, repo: Path) -> bool:
+        """Whether this command can run in `repo`: a `python <script>` entry needs its script
+        (scripts/verify.py and scripts/build_parser_bundle.py exist only in the canonical
+        harness repository, .harness/... scripts only where their capability is installed)."""
+        if self.argv[0] != "python":
+            return True
+        return (repo / self.argv[1]).is_file()
 
     @property
     def inputs(self) -> tuple[str, ...]:
@@ -86,29 +98,19 @@ class CatalogEntry:
         return shlex.join(self.cli_argv(repo, values))
 
 
-def harness_python(repo: Path | None) -> str:
-    """The interpreter for a `python ...` CLI equivalent: the repository's own `.harness/.venv`
-    when it exists (the environment `make verify` uses - it has pytest, mypy and the rest of the
-    dev group), else the interpreter the console runs under. The console itself runs in a one-off
-    `uv run --with textual` environment that carries textual only."""
-    if repo is not None:
-        for candidate in (
-            repo / ".harness" / ".venv" / "bin" / "python",
-            repo / ".harness" / ".venv" / "Scripts" / "python.exe",
-        ):
-            if candidate.is_file():
-                return str(candidate)
-    return sys.executable
-
-
-def process_argv(cli_argv: Sequence[str], repo: Path | None = None) -> list[str]:
+def process_argv(
+    cli_argv: Sequence[str], repo: Path | None = None, *, dev_environment: bool = False
+) -> list[str]:
     """The process that runs a CLI equivalent: `harness` is this harness checkout's CLI and
-    `python` is `harness_python(repo)`."""
+    `python` is the interpreter the console itself runs under - or, for a `dev_environment` entry,
+    the repository's `.harness/.venv` (the same rule the QA gate runner uses)."""
     head, *rest = cli_argv
     if head == "harness":
         return [sys.executable, str(BIN_HARNESS_PATH), *rest]
     if head == "python":
-        return [harness_python(repo), *rest]
+        if dev_environment and repo is not None:
+            return [str(project_python(repo)), *rest]
+        return [sys.executable, *rest]
     return list(cli_argv)
 
 
@@ -236,6 +238,14 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("python", "scripts/verify.py"),
         Reversibility.REVERSIBLE,
         "scripts/verify.py:main",
+        dev_environment=True,
+    ),
+    CatalogEntry(
+        "worktree-remove",
+        "Удалить worktree",
+        ("git", "-C", "{repo}", "worktree", "remove", "{worktree}"),
+        Reversibility.DELETES_LOCAL_DATA,
+        "git:worktree remove",
     ),
     CatalogEntry(
         "ledger-migrate",

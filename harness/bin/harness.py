@@ -10,7 +10,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import NoReturn
 
 # Captured before the forced UTF-8 below so `harness health` can still warn about the console's
 # own encoding (harness.health.checks.environment.check_output_encoding).
@@ -47,13 +46,16 @@ from harness.health import registry as health_registry
 from harness.health import render as health_render
 from harness.health import report_json as health_report_json
 from harness.health.model import JsonObject
-from harness.health.checks.files import (
+from harness.health.project_files import (
     BACKEND_ORCHESTRATION_CAPABILITY,
     DISCOVERY_LINKS,
     INTEGRATIONS_REL,
+    LOCK_REL,
     REGISTRY_REL,
     digest,
+    fail,
     file_digest,
+    git_command,
     native_link_target,
     project_registry,
     project_skill_files,
@@ -63,19 +65,9 @@ from harness.health.checks.files import (
 
 CAPABILITIES_FILE = PACKAGE / "CAPABILITIES.json"
 VERSION_FILE = PACKAGE / "VERSION"
-LOCK_REL = Path(".harness/harness.lock")
+# How printed remedies invoke this CLI: the running interpreter and this script, runnable as shown.
+HARNESS_CLI = (sys.executable, str(Path(__file__).resolve()))
 DEFAULT_CAPABILITY = "project-foundation"
-
-
-def fail(message: str) -> NoReturn:
-    print(f"harness: {message}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def git_command(repo: Path, *arguments: str) -> list[str]:
-    """Trust only the checkout explicitly supplied to this packager operation."""
-    checkout = repo.resolve()
-    return ["git", "-c", f"safe.directory={checkout}", "-C", str(checkout), *arguments]
 
 
 def write_registry(repo: Path) -> None:
@@ -912,6 +904,7 @@ def cmd_health(args: argparse.Namespace) -> int:
         output_encoding=ORIGINAL_STDOUT_ENCODING,
         fix=getattr(args, "fix", False),
         online=getattr(args, "online", False),
+        harness_cli=HARNESS_CLI,
     )
     if args.json:
         print(json.dumps(health_report_json.to_json(report), ensure_ascii=False))

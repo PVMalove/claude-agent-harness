@@ -16,7 +16,7 @@ pytest.importorskip("textual")
 
 from textual.app import App
 from textual.pilot import Pilot
-from textual.widgets import Input, ListView, Static
+from textual.widgets import Input, ListItem, ListView, Static
 
 from harness.console.catalog import (
     HARNESS_COMMANDS,
@@ -52,8 +52,10 @@ class _HostApp(App[None]):
 
 
 def _select(app: App[None], key: str, entries: Sequence[CatalogEntry]) -> None:
+    """Highlight `key` by its menu item, since the menu lists only commands available here."""
+    assert key in {entry.key for entry in entries}
     menu = app.screen.query_one("#command-menu", ListView)
-    menu.index = [entry.key for entry in entries].index(key)
+    menu.index = [item.name for item in menu.query(ListItem)].index(key)
 
 
 async def _choose(pilot: Pilot[None], app: App[None], key: str, entries: Sequence[CatalogEntry]) -> None:
@@ -132,8 +134,17 @@ def test_confirming_an_irreversible_command_runs_it(tmp_path: Path) -> None:
     assert runner.calls == [process_argv(["harness", "init", str(tmp_path)])]
 
 
+def _with_script(repo: Path, relative: str) -> Path:
+    """The Harness screen offers a `python <script>` command only where its script exists."""
+    script = repo / relative
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("", encoding="utf-8")
+    return repo
+
+
 def test_ledger_reset_requires_typing_reset(tmp_path: Path) -> None:
     runner = _RecordingRunner()
+    _with_script(tmp_path, ".harness/orchestration/coordinator.py")
 
     async def scenario() -> list[int]:
         app = _HostApp(HarnessScreen(tmp_path, command_runner=runner))
@@ -162,6 +173,7 @@ def test_ledger_reset_requires_typing_reset(tmp_path: Path) -> None:
 
 def test_a_command_with_inputs_asks_for_them_before_running(tmp_path: Path) -> None:
     runner = _RecordingRunner()
+    _with_script(tmp_path, "scripts/build_parser_bundle.py")
 
     async def scenario() -> None:
         app = _HostApp(HarnessScreen(tmp_path, command_runner=runner))
@@ -177,3 +189,17 @@ def test_a_command_with_inputs_asks_for_them_before_running(tmp_path: Path) -> N
     asyncio.run(scenario())
     expected = _entry("parser-bundle").cli_argv(tmp_path, {"wheelhouse": "wheels"})
     assert runner.calls == [process_argv(expected)]
+
+
+def test_commands_whose_script_is_absent_are_not_offered(tmp_path: Path) -> None:
+    """verify and parser-bundle exist only in the canonical harness repository: in a target project
+    they would always fail with "can't open file", so the menu hides them."""
+
+    async def scenario() -> list[str]:
+        app = _HostApp(HarnessScreen(tmp_path, command_runner=_RecordingRunner()))
+        async with app.run_test(size=(120, 40)):
+            return [item.name or "" for item in app.screen.query(ListItem)]
+
+    offered = asyncio.run(scenario())
+    assert "verify" not in offered and "parser-bundle" not in offered
+    assert "diff" in offered and "worktree-remove" in offered
