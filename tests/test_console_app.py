@@ -35,23 +35,23 @@ def test_dashboard_shows_the_section_menu_in_order(tmp_path: Path) -> None:
     assert asyncio.run(scenario()) == list(SECTIONS)
 
 
-def test_selecting_a_stub_section_pushes_its_stub_screen(tmp_path: Path) -> None:
-    async def scenario() -> tuple[bool, str]:
-        from textual.widgets import ListView
+def test_stub_screen_names_the_section_it_stands_in_for() -> None:
+    """No menu section is a stub today; StubScreen stays the dashboard's fallback for a section
+    name without a real screen."""
 
-        app = HarnessConsoleApp(tmp_path)
-        async with app.run_test() as pilot:
-            menu = app.screen.query_one("#section-menu", ListView)
-            menu.index = SECTIONS.index("Orchestration")
-            await pilot.press("enter")
-            await pilot.pause()
-            return isinstance(app.screen, StubScreen), getattr(
-                app.screen, "section_name", ""
-            )
+    async def scenario() -> str:
+        from textual.app import App
+        from textual.widgets import Static
 
-    is_stub, section_name = asyncio.run(scenario())
-    assert is_stub
-    assert section_name == "Orchestration"
+        class _HostApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(StubScreen("Future section"))
+
+        app = _HostApp()
+        async with app.run_test():
+            return str(app.screen.query_one("#stub-message", Static).content)
+
+    assert asyncio.run(scenario()) == "Future section: раздел ещё не реализован"
 
 
 def test_selecting_harness_pushes_the_harness_screen(tmp_path: Path) -> None:
@@ -65,6 +65,23 @@ def test_selecting_harness_pushes_the_harness_screen(tmp_path: Path) -> None:
             await pilot.press("enter")
             await pilot.pause()
             return isinstance(app.screen, HarnessScreen)
+
+    assert asyncio.run(scenario())
+
+
+def test_selecting_orchestration_pushes_the_orchestration_screen(tmp_path: Path) -> None:
+    async def scenario() -> bool:
+        from textual.widgets import ListView
+
+        from harness.console.screens.orchestration import OrchestrationScreen
+
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test() as pilot:
+            menu = app.screen.query_one("#section-menu", ListView)
+            menu.index = SECTIONS.index("Orchestration")
+            await pilot.press("enter")
+            await pilot.pause()
+            return isinstance(app.screen, OrchestrationScreen)
 
     assert asyncio.run(scenario())
 
