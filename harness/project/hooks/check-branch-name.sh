@@ -2,14 +2,42 @@
 # PreToolUse(Bash): enforces the branch_pattern from .harness/project.json, and that the
 # numeric ID it encodes is a real, registered tracker issue ("Issue First", docs/agents/git-workflow.md).
 INPUT=$(cat)
+PY="$(command -v python3 || command -v python)"
+if [ -z "$PY" ]; then
+  echo "Невозможно проверить имя ветки: Python 3.9+ не найден." >&2
+  exit 2
+fi
 
-if echo "$INPUT" | grep -qE '"command"[[:space:]]*:[[:space:]]*"[^"]*git (checkout -b|switch -c)'; then
-  RAW=$(echo "$INPUT" | grep -oE '"command"[[:space:]]*:[[:space:]]*"[^"]*"')
-  BRANCH=$(echo "$RAW" | sed -E 's/.*git (checkout -b|switch -c)[[:space:]]+([^ "]+).*/\2/')
+BRANCH="$(printf '%s' "$INPUT" | "$PY" -c '
+import json, shlex, sys
+try:
+    data = json.load(open(0, encoding="utf-8", errors="ignore"))
+    cmd = data.get("tool_input", {}).get("command", "")
+    if not isinstance(cmd, str):
+        sys.exit(0)
+    tokens = shlex.split(cmd)
+    for i, t in enumerate(tokens):
+        if t in ("checkout", "switch") and i > 0 and tokens[i-1] == "git":
+            for j in range(i+1, len(tokens)):
+                if tokens[j] in ("-b", "-B", "-c", "-C", "--create", "--force-create") and j + 1 < len(tokens):
+                    sys.stdout.write(tokens[j+1])
+                    sys.exit(0)
+except Exception:
+    pass
+')"
 
+if [ -n "$BRANCH" ]; then
   REPO_DIR="${CLAUDE_PROJECT_DIR:-.}"
   PROJECT_JSON="$REPO_DIR/.harness/project.json"
-  PATTERN=$(grep -oE '"branch_pattern"[[:space:]]*:[[:space:]]*"[^"]*"' "$PROJECT_JSON" 2>/dev/null | sed -E 's/.*"branch_pattern"[[:space:]]*:[[:space:]]*"(.*)"/\1/')
+  PATTERN="$( [ -f "$PROJECT_JSON" ] && "$PY" -c '
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8", errors="ignore") as f:
+        data = json.load(f)
+        sys.stdout.write(str(data.get("branch_pattern", "")))
+except Exception:
+    pass
+' "$PROJECT_JSON" )"
   PATTERN=${PATTERN:-^feature/issue-[0-9]+-.+}
 
   if ! echo "$BRANCH" | grep -qE "$PATTERN"; then

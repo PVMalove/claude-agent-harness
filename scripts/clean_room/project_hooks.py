@@ -43,6 +43,62 @@ def run(ctx: SimpleNamespace) -> None:
     bounded_hook = pv_project / ".claude" / "hooks" / "require-bounded-check.sh"
     if not bounded_hook.is_file():
         sys.exit("pvmalove-suite init did not scaffold require-bounded-check.sh")
+    dangerous_hook = pv_project / ".claude" / "hooks" / "block-dangerous-git.sh"
+    if not dangerous_hook.is_file():
+        sys.exit("pvmalove-suite init did not scaffold block-dangerous-git.sh")
+    qa_gate_hook = pv_project / ".claude" / "hooks" / "require-qa-gate.sh"
+    if not qa_gate_hook.is_file():
+        sys.exit("pvmalove-suite init did not scaffold require-qa-gate.sh")
+
+    # A PR launched from the primary checkout can explicitly target a tested linked worktree.
+    # Its QA marker must belong to that checkout, even when the primary checkout is dirty.
+    subprocess.run(["git", "add", "-A"], cwd=pv_project, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "test fixture"],
+        cwd=pv_project,
+        check=True,
+    )
+    linked = test_root / "linked"
+    linked_branch = "feature/issue-373-linked"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", linked_branch, str(linked)],
+        cwd=pv_project,
+        check=True,
+    )
+    require_gate = pv_project / ".claude" / "hooks" / "require-qa-gate.sh"
+    record_gate = pv_project / ".claude" / "hooks" / "record-qa-gate-pass.sh"
+    mark_gate = pv_project / ".claude" / "hooks" / "mark-qa-gate-passed.sh"
+    project_json.write_text(project_json.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    pr_command = f"gh pr create --head {linked_branch} --body-file pr-body.md"
+    pr_payload = json.dumps({"cwd": str(pv_project), "tool_input": {"command": pr_command}})
+    if run_hook(record_gate, pv_project, "", cwd=pv_project).returncode:
+        sys.exit("could not record primary checkout QA marker")
+    if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode == 0:
+        sys.exit("primary checkout QA marker opened a linked-worktree PR")
+    if run_hook(record_gate, pv_project, "", cwd=linked).returncode:
+        sys.exit("could not record linked-worktree QA marker")
+    if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode:
+        sys.exit("linked-worktree QA marker did not permit its PR")
+    local_pr_payload = json.dumps(
+        {"cwd": str(linked), "tool_input": {"command": "gh pr create --body-file pr-body.md"}}
+    )
+    if run_hook(require_gate, pv_project, "", raw_payload=local_pr_payload).returncode:
+        sys.exit("QA marker did not permit PR from the linked checkout cwd")
+    unknown_pr_payload = json.dumps(
+        {"cwd": str(linked), "tool_input": {"command": "gh pr create --head feature/issue-999-missing"}}
+    )
+    if run_hook(require_gate, pv_project, "", raw_payload=unknown_pr_payload).returncode == 0:
+        sys.exit("unknown PR head reused a linked-worktree QA marker")
+    (linked / ".claude" / ".qa-gate" / "passed").unlink()
+    mark_payload = json.dumps({"cwd": str(linked), "tool_input": {"command": "echo test"}})
+    if run_hook(mark_gate, pv_project, "", raw_payload=mark_payload).returncode:
+        sys.exit("could not mark linked-worktree QA pass")
+    if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode:
+        sys.exit("fallback QA marker did not permit linked-worktree PR")
+    linked_config = linked / ".harness" / "project.json"
+    linked_config.write_text(linked_config.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode == 0:
+        sys.exit("stale linked-worktree QA marker opened a PR")
 
     # A PR launched from the primary checkout can explicitly target a tested linked worktree.
     # Its QA marker must belong to that checkout, even when the primary checkout is dirty.
@@ -380,6 +436,39 @@ def run(ctx: SimpleNamespace) -> None:
             "block-public-attribution.sh allowed an unreadable PR body-file expression"
         )
 
+    escaped_clean_commit = json.dumps(
+        {"tool_input": {"command": 'git commit -m "feat: parse \\"complex\\" json"'}}
+    )
+    if (
+        run_hook(metadata_hook, pv_project, "", raw_payload=escaped_clean_commit).returncode
+        != 0
+    ):
+        sys.exit("block-public-attribution.sh rejected a clean commit with escaped quotes")
+    multiline_clean_payload = json.dumps(
+        {"tool_input": {"command": 'git commit -m "feat: valid commit message"'}},
+        indent=2,
+    )
+    if (
+        run_hook(metadata_hook, pv_project, "", raw_payload=multiline_clean_payload).returncode
+        != 0
+    ):
+        sys.exit("block-public-attribution.sh rejected a multiline JSON payload")
+    multiline_attribution_payload = json.dumps(
+        {
+            "tool_input": {
+                "command": "git commit -m \"feat: line 1\n\nCo-Authored-By: Claude <noreply@anthropic.com>\""
+            }
+        },
+        indent=2,
+    )
+    if (
+        run_hook(metadata_hook, pv_project, "", raw_payload=multiline_attribution_payload).returncode
+        == 0
+    ):
+        sys.exit(
+            "block-public-attribution.sh allowed forbidden attribution in multiline commit payload"
+        )
+
     # .harness/project.json is present, with branch_pattern set above to a distinctive regex
     # that differs from the hook's own built-in default - prove the configured value, not the
     # default, is what actually gets enforced.
@@ -398,6 +487,46 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit(
             f"check-branch-name.sh rejected a switch command matching the configured pattern: {result.stderr}"
         )
+
+    # Escaped quotes, multiline JSON, and Git command flags in check-branch-name.sh:
+    escaped_branch_payload = json.dumps(
+        {"tool_input": {"command": 'git checkout -b "release/rel-1-test"'}}
+    )
+    if run_hook(hook, pv_project, "", raw_payload=escaped_branch_payload).returncode != 0:
+        sys.exit("check-branch-name.sh rejected a branch name enclosed in escaped quotes")
+    escaped_invalid_payload = json.dumps(
+        {"tool_input": {"command": 'git checkout -b "feature/invalid-branch"'}}
+    )
+    if run_hook(hook, pv_project, "", raw_payload=escaped_invalid_payload).returncode == 0:
+        sys.exit("check-branch-name.sh allowed an invalid branch name enclosed in escaped quotes")
+    multiline_branch_payload = json.dumps(
+        {"tool_input": {"command": "git checkout -b release/rel-1-test"}},
+        indent=2,
+    )
+    if run_hook(hook, pv_project, "", raw_payload=multiline_branch_payload).returncode != 0:
+        sys.exit("check-branch-name.sh rejected a multiline JSON payload")
+    if (
+        run_hook(
+            hook, pv_project, "git checkout -b release/rel-1-test --track origin/master"
+        ).returncode
+        != 0
+    ):
+        sys.exit("check-branch-name.sh rejected checkout -b with trailing --track flag")
+    if (
+        run_hook(
+            hook, pv_project, "git switch -c release/rel-1-test -t origin/master"
+        ).returncode
+        != 0
+    ):
+        sys.exit("check-branch-name.sh rejected switch -c with trailing -t flag")
+    if run_hook(hook, pv_project, "git switch -C release/rel-1-test").returncode != 0:
+        sys.exit("check-branch-name.sh rejected switch -C (force create)")
+    if run_hook(hook, pv_project, "git checkout -B release/rel-1-test").returncode != 0:
+        sys.exit("check-branch-name.sh rejected checkout -B (force create)")
+    if run_hook(hook, pv_project, "git checkout -b -f").returncode == 0:
+        sys.exit("check-branch-name.sh allowed a flag '-f' as a branch name")
+    if run_hook(hook, pv_project, "git checkout -b --orphan").returncode == 0:
+        sys.exit("check-branch-name.sh allowed a flag '--orphan' as a branch name")
 
     # The direct-commit guard must protect both the configured base branch and every epic
     # integration branch, while allowing an issue branch to push normally.
@@ -424,6 +553,95 @@ def run(ctx: SimpleNamespace) -> None:
     ):
         sys.exit("block-direct-master.sh allowed a push to an integration branch")
 
+    # Escaped quotes, multiline JSON, and Git command flags in block-direct-master.sh:
+    escaped_push_ok = json.dumps(
+        {"tool_input": {"command": 'git push origin "release/rel-1-test"'}}
+    )
+    if run_hook(direct_hook, pv_project, "", raw_payload=escaped_push_ok).returncode != 0:
+        sys.exit("block-direct-master.sh rejected a valid push with escaped quotes")
+    escaped_push_blocked = json.dumps(
+        {"tool_input": {"command": 'git push origin "HEAD:main"'}}
+    )
+    if (
+        run_hook(direct_hook, pv_project, "", raw_payload=escaped_push_blocked).returncode
+        == 0
+    ):
+        sys.exit("block-direct-master.sh allowed a push to main with escaped quotes")
+    escaped_integration_blocked = json.dumps(
+        {"tool_input": {"command": 'git push origin "HEAD:integration/payments"'}}
+    )
+    if (
+        run_hook(
+            direct_hook, pv_project, "", raw_payload=escaped_integration_blocked
+        ).returncode
+        == 0
+    ):
+        sys.exit(
+            "block-direct-master.sh allowed a push to integration branch with escaped quotes"
+        )
+    multiline_push_ok = json.dumps(
+        {"tool_input": {"command": "git push origin release/rel-1-test"}},
+        indent=2,
+    )
+    if (
+        run_hook(direct_hook, pv_project, "", raw_payload=multiline_push_ok).returncode
+        != 0
+    ):
+        sys.exit("block-direct-master.sh rejected a multiline JSON push payload")
+    multiline_push_blocked = json.dumps(
+        {"tool_input": {"command": "git push origin HEAD:main"}},
+        indent=2,
+    )
+    if (
+        run_hook(direct_hook, pv_project, "", raw_payload=multiline_push_blocked).returncode
+        == 0
+    ):
+        sys.exit("block-direct-master.sh allowed a multiline JSON push to main")
+    if (
+        run_hook(direct_hook, pv_project, "git push -u origin release/rel-1-test").returncode
+        != 0
+    ):
+        sys.exit("block-direct-master.sh rejected git push with -u flag")
+    if (
+        run_hook(
+            direct_hook,
+            pv_project,
+            "git push --force-with-lease origin release/rel-1-test",
+        ).returncode
+        != 0
+    ):
+        sys.exit(
+            "block-direct-master.sh rejected git push with --force-with-lease flag"
+        )
+    if (
+        run_hook(
+            direct_hook, pv_project, "git push --set-upstream origin release/rel-1-test"
+        ).returncode
+        != 0
+    ):
+        sys.exit("block-direct-master.sh rejected git push with --set-upstream flag")
+    if run_hook(direct_hook, pv_project, "git push -f origin HEAD:main").returncode == 0:
+        sys.exit("block-direct-master.sh allowed git push -f to main")
+    if (
+        run_hook(direct_hook, pv_project, "git push --force origin master").returncode
+        == 0
+    ):
+        sys.exit("block-direct-master.sh allowed git push --force origin master")
+    if (
+        run_hook(
+            direct_hook, pv_project, "git push origin HEAD:refs/heads/master"
+        ).returncode
+        == 0
+    ):
+        sys.exit("block-direct-master.sh allowed git push to refs/heads/master")
+    if (
+        run_hook(
+            direct_hook, pv_project, "git push origin HEAD:refs/heads/integration/auth"
+        ).returncode
+        == 0
+    ):
+        sys.exit("block-direct-master.sh allowed git push to refs/heads/integration/auth")
+
     # Remove .harness/project.json entirely - the hook must fall back to its own built-in
     # default pattern instead of crashing or blocking every branch name.
     saved_project_json = project_json.read_text(encoding="utf-8")
@@ -438,3 +656,97 @@ def run(ctx: SimpleNamespace) -> None:
             f"check-branch-name.sh did not fall back to its default pattern: {result.stderr}"
         )
     project_json.write_text(saved_project_json, encoding="utf-8")
+
+    # block-dangerous-git.sh: safe commands, destructive commands, escaped quotes, multiline JSON
+    if run_hook(dangerous_hook, pv_project, "git status").returncode != 0:
+        sys.exit("block-dangerous-git.sh blocked git status")
+    if run_hook(dangerous_hook, pv_project, "git checkout -b release/rel-1-test").returncode != 0:
+        sys.exit("block-dangerous-git.sh blocked git checkout -b")
+    if run_hook(dangerous_hook, pv_project, "git branch -d old-feature").returncode != 0:
+        sys.exit("block-dangerous-git.sh blocked safe git branch -d")
+    if run_hook(dangerous_hook, pv_project, "git reset --soft HEAD~1").returncode != 0:
+        sys.exit("block-dangerous-git.sh blocked safe git reset --soft")
+    if run_hook(dangerous_hook, pv_project, "git checkout -- file.py").returncode != 0:
+        sys.exit("block-dangerous-git.sh blocked safe git checkout of a specific file")
+
+    for destructive_cmd in (
+        "git reset --hard HEAD~1",
+        "git clean -f",
+        "git clean -fd",
+        "git branch -D old-branch",
+        "git checkout .",
+        "git restore .",
+    ):
+        if run_hook(dangerous_hook, pv_project, destructive_cmd).returncode == 0:
+            sys.exit(f"block-dangerous-git.sh allowed destructive command: {destructive_cmd}")
+
+    escaped_safe_commit = json.dumps(
+        {"tool_input": {"command": 'git commit -m "feat: \\"fix\\" something"'}}
+    )
+    if run_hook(dangerous_hook, pv_project, "", raw_payload=escaped_safe_commit).returncode != 0:
+        sys.exit("block-dangerous-git.sh rejected safe commit with escaped quotes")
+    escaped_destructive_subshell = json.dumps(
+        {"tool_input": {"command": 'bash -c "git reset --hard HEAD"'}}
+    )
+    if run_hook(dangerous_hook, pv_project, "", raw_payload=escaped_destructive_subshell).returncode == 0:
+        sys.exit("block-dangerous-git.sh allowed destructive command inside escaped quotes")
+
+    multiline_safe_commit = json.dumps(
+        {"tool_input": {"command": "git commit -m \"feat: line 1\n\nline 2 of message\""}},
+        indent=2,
+    )
+    if run_hook(dangerous_hook, pv_project, "", raw_payload=multiline_safe_commit).returncode != 0:
+        sys.exit("block-dangerous-git.sh rejected safe multiline commit payload")
+    multiline_destructive_payload = json.dumps(
+        {"tool_input": {"command": "git reset --hard HEAD"}},
+        indent=2,
+    )
+    if run_hook(dangerous_hook, pv_project, "", raw_payload=multiline_destructive_payload).returncode == 0:
+        sys.exit("block-dangerous-git.sh allowed destructive command in multiline JSON payload")
+
+    # require-qa-gate.sh: blocks gh pr create without marker, allows with valid marker
+    if run_hook(qa_gate_hook, pv_project, "git status").returncode != 0:
+        sys.exit("require-qa-gate.sh blocked an unrelated git status command")
+    if run_hook(qa_gate_hook, pv_project, "gh pr create --body-file pr-body.md").returncode == 0:
+        sys.exit("require-qa-gate.sh allowed gh pr create without QA gate passed marker")
+
+    escaped_pr_create = json.dumps(
+        {"tool_input": {"command": 'gh pr create --title "My \\"Special\\" PR" --body-file "pr-body.md"'}}
+    )
+    if run_hook(qa_gate_hook, pv_project, "", raw_payload=escaped_pr_create).returncode == 0:
+        sys.exit("require-qa-gate.sh allowed gh pr create with escaped quotes without marker")
+
+    multiline_pr_create = json.dumps(
+        {"tool_input": {"command": "gh pr create --body-file pr-body.md"}},
+        indent=2,
+    )
+    if run_hook(qa_gate_hook, pv_project, "", raw_payload=multiline_pr_create).returncode == 0:
+        sys.exit("require-qa-gate.sh allowed multiline JSON gh pr create without marker")
+
+    head_proc = subprocess.run(
+        ["git", "-C", str(pv_project), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    head_sha = head_proc.stdout.strip()
+    diff_proc = subprocess.run(
+        ["git", "-C", str(pv_project), "diff", "HEAD"],
+        capture_output=True,
+        check=False,
+    )
+    diff_bytes = diff_proc.stdout if diff_proc.returncode == 0 else b""
+    diff_hash = subprocess.run(
+        ["git", "-C", str(pv_project), "hash-object", "--stdin"],
+        input=diff_bytes,
+        capture_output=True,
+        check=True,
+    ).stdout.decode().strip()
+    qa_marker = pv_project / ".claude" / ".qa-gate" / "passed"
+    qa_marker.parent.mkdir(parents=True, exist_ok=True)
+    qa_marker.write_text(f"{head_sha}:{diff_hash}", encoding="utf-8")
+    try:
+        if run_hook(qa_gate_hook, pv_project, "gh pr create --body-file pr-body.md").returncode != 0:
+            sys.exit("require-qa-gate.sh blocked gh pr create with valid qa-gate marker")
+    finally:
+        qa_marker.unlink(missing_ok=True)

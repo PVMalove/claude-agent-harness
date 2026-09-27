@@ -45,8 +45,13 @@ def _head_commit(repo: Path) -> str | None:
 def _fetch_ref_tip(repo: Path, ref: str) -> str:
     """The current commit an integration ref points to on origin, fetched fresh — never a locally
     cached remote-tracking branch, which is exactly the staleness this gate exists to catch."""
+    if not isinstance(ref, str) or ref.startswith("-") or not ref.strip():
+        raise CoordinatorError(
+            "ref must be a non-empty string not starting with '-'",
+            remedy="pass a valid ref name (e.g. 'master' or 'main')",
+        )
     try:
-        _git(repo, "fetch", "origin", ref)
+        _git(repo, "fetch", "origin", "--", ref)
     except CoordinatorError as exc:
         raise CoordinatorError(
             f"could not fetch origin {ref!r}: {exc}",
@@ -57,19 +62,19 @@ def _fetch_ref_tip(repo: Path, ref: str) -> str:
 
 def _commit_changed_files(repo: Path, commit: str) -> list[str]:
     output = _git(
-        repo, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", commit
+        repo, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", commit, "--"
     )
     return [line.replace("\\", "/") for line in output.splitlines() if line.strip()]
 
 
 def _commit_parent(repo: Path, commit: str) -> str | None:
-    output = _git(repo, "rev-list", "--parents", "-n", "1", commit).split()
+    output = _git(repo, "rev-list", "--parents", "-n", "1", commit, "--").split()
     return output[1] if len(output) > 1 else None
 
 
 def _git_is_ancestor(repo: Path, base: str, candidate: str) -> bool:
     result = subprocess.run(
-        ["git", "-C", str(repo), "merge-base", "--is-ancestor", base, candidate],
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", "--", base, candidate],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -84,7 +89,7 @@ def _git_is_ancestor(repo: Path, base: str, candidate: str) -> bool:
 
 
 def _changed_files_between(repo: Path, base: str, candidate: str) -> list[str]:
-    output = _git(repo, "diff", "--name-only", "--no-renames", base, candidate)
+    output = _git(repo, "diff", "--name-only", "--no-renames", base, candidate, "--")
     return [line.replace("\\", "/") for line in output.splitlines() if line.strip()]
 
 
@@ -93,7 +98,7 @@ def _commits_between(repo: Path, base: str, candidate: str) -> list[str]:
     return [
         line
         for line in _git(
-            repo, "rev-list", "--reverse", f"{base}..{candidate}"
+            repo, "rev-list", "--reverse", f"{base}..{candidate}", "--"
         ).splitlines()
         if line
     ]
@@ -103,11 +108,11 @@ def _commit_evidence(repo: Path, base: str | None, commit: str) -> str:
     if base:
         return "\n".join(
             (
-                _git(repo, "log", "--format=%B", f"{base}..{commit}"),
-                _git(repo, "diff", "--no-ext-diff", "--no-renames", base, commit),
+                _git(repo, "log", "--format=%B", f"{base}..{commit}", "--"),
+                _git(repo, "diff", "--no-ext-diff", "--no-renames", base, commit, "--"),
             )
         )
-    return _git(repo, "show", "--format=%B", "--no-ext-diff", "--no-renames", commit)
+    return _git(repo, "show", "--format=%B", "--no-ext-diff", "--no-renames", commit, "--")
 
 
 def _candidate_commit(repo: Path, value: object) -> str:

@@ -81,7 +81,8 @@ def checkout_for(project: Path, data: dict[str, object], command: str) -> Path:
     tool_cwd = tool_input.get("cwd") if isinstance(tool_input, dict) else None
     payload_cwd = data.get("cwd")
     cwd = payload_cwd if isinstance(payload_cwd, str) else tool_cwd
-    requested = Path(cwd if isinstance(cwd, str) else os.getcwd()).resolve()
+    # Hooks may omit cwd while CLAUDE_PROJECT_DIR identifies the target checkout.
+    requested = Path(cwd if isinstance(cwd, str) else project).resolve()
     matches = [path for path, _ in available if path == requested or path in requested.parents]
     if matches:
         return max(matches, key=lambda path: len(path.parts))
