@@ -53,13 +53,16 @@ def isolated_temp_env(base: Mapping[str, str], run_tmp: Path) -> dict[str, str]:
     USERNAME и TEMP (песочницы агентов работают под отдельными локальными пользователями). Python
     3.13+ создаёт его только для владельца на Windows, поэтому первая учётная запись блокирует
     остальные с WinError 5.
+
+    Байткод не пишется вовсе: PYTHONPYCACHEPREFIX зеркалирует под собой полный абсолютный путь
+    исходника, и QA checkout внутри того же репозитория выходил за MAX_PATH (#381).
     """
     return dict(
         base,
         TMP=str(run_tmp),
         TEMP=str(run_tmp),
         TMPDIR=str(run_tmp),
-        PYTHONPYCACHEPREFIX=str(run_tmp / "pycache"),
+        PYTHONDONTWRITEBYTECODE="1",
         MYPY_CACHE_DIR=str(run_tmp / "mypy"),
         GIT_CEILING_DIRECTORIES=os.pathsep.join(
             part for part in (base.get("GIT_CEILING_DIRECTORIES", ""), str(run_tmp)) if part
