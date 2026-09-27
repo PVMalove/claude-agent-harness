@@ -65,6 +65,7 @@ REGISTRY: list[tuple[str, CheckFn]] = [
     ("tracker.auth", tracker_checks.check_auth),
     ("tracker.reachability", tracker_checks.check_reachability),
     ("tracker.permissions", tracker_checks.check_permissions),
+    ("tracker.labels", tracker_checks.check_labels),
 ]
 
 FIXERS: dict[str, FixFn] = {
