@@ -6,7 +6,7 @@ from __future__ import annotations
 import sys
 from typing import Protocol
 
-from harness.health.model import Report, Status
+from .model import Report, Status
 
 
 class _EncodingAware(Protocol):

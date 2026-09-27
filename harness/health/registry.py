@@ -11,10 +11,10 @@ import json
 from pathlib import Path
 from typing import Callable
 
-from harness.health.checks import files as files_checks
-from harness.health.checks import repo_map as repo_map_checks
-from harness.health.context import HealthContext
-from harness.health.model import CheckResult, JsonObject, Report
+from .checks import files as files_checks
+from .checks import repo_map as repo_map_checks
+from .context import HealthContext
+from .model import CheckResult, JsonObject, Report
 
 CheckFn = Callable[[HealthContext], CheckResult]
 

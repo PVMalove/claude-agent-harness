@@ -12,9 +12,9 @@ import json
 import os
 import re
 
-from harness.health.checks._cli import cli
-from harness.health.context import HealthContext
-from harness.health.model import CheckResult, Fix
+from ._cli import cli
+from ..context import HealthContext
+from ..model import CheckResult, Fix
 
 _TEMPLATE_MARKER = re.compile(r"{{[^{}\n]+}}")
 

@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from harness.health.checks._cli import cli
-from harness.health.context import HealthContext
-from harness.health.model import CheckResult, Fix, Status
+from ._cli import cli
+from ..context import HealthContext
+from ..model import CheckResult, Fix, Status
 
 _REMEDY_PREFIX = "КАК ИСПРАВИТЬ: "
 

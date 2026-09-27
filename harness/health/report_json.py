@@ -3,7 +3,7 @@ Report, independent of the Russian text rendering in render.py."""
 
 from __future__ import annotations
 
-from harness.health.model import JsonObject, Report
+from .model import JsonObject, Report
 
 
 def to_json(report: Report) -> JsonObject:
