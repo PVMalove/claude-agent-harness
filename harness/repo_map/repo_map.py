@@ -179,7 +179,7 @@ def build_map(
         backend = BundleParserBackend(repo, effective_policy)
     elif effective_policy.tier == "minimal":
         backend = None
-    root = cache_dir if cache_dir is not None else storage_path(repo, ".cache", "repo_map", "results")
+    root = cache_dir if cache_dir is not None else storage_path(repo, "cache", "repo_map", "results")
     key = cache_key(
         pinned,
         normalized_seeds,

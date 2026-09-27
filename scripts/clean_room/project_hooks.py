@@ -141,6 +141,63 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit(
             "block-scratch-outside-docs-tasks.sh rejected a PR body in .harness/scratch/tmp/"
         )
+    sandboxes_scratch_pr_body = (
+        pv_project / ".harness" / ".sandboxes" / "scratch" / "tmp" / "pr-body-1-test.md"
+    )
+    if (
+        run_hook(
+            scratch_hook,
+            pv_project,
+            "",
+            raw_payload=json.dumps(
+                {"tool_input": {"file_path": str(sandboxes_scratch_pr_body)}}
+            ),
+        ).returncode
+        != 0
+    ):
+        sys.exit(
+            "block-scratch-outside-docs-tasks.sh rejected a PR body in .harness/.sandboxes/scratch/tmp/"
+        )
+    sandboxes_cache_path = (
+        pv_project
+        / ".harness"
+        / ".sandboxes"
+        / "cache"
+        / "repo_map"
+        / "results"
+        / "test.json"
+    )
+    if (
+        run_hook(
+            scratch_hook,
+            pv_project,
+            "",
+            raw_payload=json.dumps(
+                {"tool_input": {"file_path": str(sandboxes_cache_path)}}
+            ),
+        ).returncode
+        != 0
+    ):
+        sys.exit(
+            "block-scratch-outside-docs-tasks.sh rejected a cache path in .harness/.sandboxes/cache/"
+        )
+    sandboxes_invalid_scratch = (
+        pv_project / ".harness" / ".sandboxes" / "scratch" / "tmp" / "notes.md"
+    )
+    if (
+        run_hook(
+            scratch_hook,
+            pv_project,
+            "",
+            raw_payload=json.dumps(
+                {"tool_input": {"file_path": str(sandboxes_invalid_scratch)}}
+            ),
+        ).returncode
+        == 0
+    ):
+        sys.exit(
+            "block-scratch-outside-docs-tasks.sh allowed a non-PR file in .harness/.sandboxes/scratch/tmp/"
+        )
     docs_pr_body = pv_project / "docs" / "tasks" / "pr-body-1-test.md"
     if (
         run_hook(

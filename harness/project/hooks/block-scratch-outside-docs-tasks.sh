@@ -26,16 +26,20 @@ if [ $? -ne 0 ]; then
 fi
 
 if echo "$FILE_PATH" | grep -qiE 'pr-body|pr-comment|issue-comment'; then
-  if printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/scratch/tmp/'; then
+  if printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/(\.sandboxes/)?scratch/tmp/'; then
     exit 0
   fi
-  echo "git-workflow.md §1: тело PR/комментария пишется только в .harness/scratch/tmp/ (например, .harness/scratch/tmp/pr-body-<issue>-<slug>.md), не в docs/tasks/; удали его после успешного gh/glab: $FILE_PATH" >&2
+  echo "git-workflow.md §1: тело PR/комментария пишется только в .harness/scratch/tmp/ или .harness/.sandboxes/scratch/tmp/ (например, .harness/.sandboxes/scratch/tmp/pr-body-<issue>-<slug>.md), не в docs/tasks/; удали его после успешного gh/glab: $FILE_PATH" >&2
   exit 2
 fi
 
+if printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/\.sandboxes/(cache|logs|runs|reports|worktrees)(/|$)'; then
+  exit 0
+fi
+
 if ! printf '%s' "$FILE_PATH" | grep -qiE '(^|/)(\.scratch|\.claude|\.agents)/(tmp|scratch|temp)(/|$)' && printf '%s' "$FILE_PATH" | grep -qiE '(AppData.(Local|Roaming).Temp|/tmp/|/scratchpad/)'; then
-  if printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/scratch/tmp/'; then
-    echo "git-workflow.md §1: .harness/scratch/tmp/ разрешён только для тела PR/issue-комментария — имя файла должно содержать pr-body, pr-comment или issue-comment (например, .harness/scratch/tmp/issue-comment-<issue>-<slug>.md); любой другой скретч-файл в этой директории отклоняется, даже если директория верная. Для прочих скретч-файлов используй docs/tasks/ или путь вне репозитория: $FILE_PATH" >&2
+  if printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/(\.sandboxes/)?scratch/tmp/'; then
+    echo "git-workflow.md §1: .harness/scratch/tmp/ (или .harness/.sandboxes/scratch/tmp/) разрешён только для тела PR/issue-комментария — имя файла должно содержать pr-body, pr-comment или issue-comment (например, .harness/.sandboxes/scratch/tmp/issue-comment-<issue>-<slug>.md); любой другой скретч-файл в этой директории отклоняется, даже если директория верная. Для прочих скретч-файлов используй docs/tasks/ или путь вне репозитория: $FILE_PATH" >&2
   else
     echo "artifacts.md: спецификации и скретчпады пишем в docs/tasks/, не в системный temp: $FILE_PATH" >&2
   fi

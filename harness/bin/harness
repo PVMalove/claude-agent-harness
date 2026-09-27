@@ -761,7 +761,7 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
 ORCHESTRATION_CONFIG_REL = Path(".harness/orchestration.json")
 ORCHESTRATION_SCHEMA_REL = Path(".harness/orchestration/orchestration.schema.json")
 REPO_MAP_REL = Path(".harness/repo_map/repo_map.py")
-REPO_MAP_REGISTRY_REL = Path(".harness/.cache/repo_map/parser_bundle/registry")
+REPO_MAP_REGISTRY_REL = Path(".harness/.sandboxes/cache/repo_map/parser_bundle/registry")
 
 
 def repo_map_health(repo: Path) -> list[str]:
@@ -813,7 +813,7 @@ def repo_map_health(repo: Path) -> list[str]:
     degradation_reason: str | None
     remedy = (
         "КАК ИСПРАВИТЬ: установите offline parser bundle в "
-        ".harness/.cache/repo_map/parser_bundle/registry и повторите harness health"
+        f"{REPO_MAP_REGISTRY_REL.as_posix()} и повторите harness health"
     )
     if isinstance(located, str):
         degradation_reason = located
