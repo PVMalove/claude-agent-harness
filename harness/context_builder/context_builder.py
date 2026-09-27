@@ -51,11 +51,11 @@ _FENCE_RE: re.Pattern[str] = re.compile(r"^\s{0,3}(```|~~~)")
 
 # The Repo Map CLI is a sibling module; installed projects keep the same layout (see
 # harness/bin/harness resource packaging and scripts/test_clean_room.py).
-_REPO_MAP_SCRIPT: Path = Path(__file__).resolve().parents[1] / "repo_map" / "repo_map.py"
-
-_REPO_MAP_CONTRACT_REMEDY = (
-    "inspect harness/repo_map/repo_map.schema.json and the Repo Map CLI output for a contract drift"
+_REPO_MAP_SCRIPT: Path = (
+    Path(__file__).resolve().parents[1] / "repo_map" / "repo_map.py"
 )
+
+_REPO_MAP_CONTRACT_REMEDY = "inspect harness/repo_map/repo_map.schema.json and the Repo Map CLI output for a contract drift"
 
 
 @dataclass(frozen=True)
@@ -667,7 +667,12 @@ def build_context_package(
     starting_paths: list[str] = [item.path for item in starting_files]
 
     symbol_graph: dict[str, dict[str, list[str]]] = _bounded_symbol_graph(
-        import_graph, imported_by, reference_graph, referenced_by, starting_paths, symbol_graph_depth
+        import_graph,
+        imported_by,
+        reference_graph,
+        referenced_by,
+        starting_paths,
+        symbol_graph_depth,
     )
     changed_paths: set[str] = {path for path, _ in changed}
     dependency_paths: list[str] = sorted(

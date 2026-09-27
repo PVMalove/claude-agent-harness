@@ -166,6 +166,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             / "generations"
             / json.loads(pointer.read_text(encoding="utf-8"))["generation"]
         )
+
     ctx.coordinator_path = coordinator_path
     ctx.coordinator_run = coordinator_run
     ctx.fake_adapter = fake_adapter

@@ -807,10 +807,9 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 required_tier = resolve_min_repo_map_tier(config, role_name)
                 if required_tier is not None:
                     actual_tier = _context_package_tier(context_package)
-                    if (
-                        REPO_MAP_TIER_ORDER.index(actual_tier)
-                        < REPO_MAP_TIER_ORDER.index(required_tier)
-                    ):
+                    if REPO_MAP_TIER_ORDER.index(
+                        actual_tier
+                    ) < REPO_MAP_TIER_ORDER.index(required_tier):
                         raise CoordinatorError(
                             f"Repo Map tier {actual_tier!r} for role {role_name!r} is below "
                             f"the configured minimum {required_tier!r}",
@@ -863,7 +862,11 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         # frozen into the brief so a later project-config edit cannot silently change an active
         # worker's liveness contract.
         heartbeat_every = max(
-            1, min(orchestration_policy["attention"]["heartbeat_interval_seconds"], stale_after // 3)
+            1,
+            min(
+                orchestration_policy["attention"]["heartbeat_interval_seconds"],
+                stale_after // 3,
+            ),
         )
         brief: JsonObject = {
             "dispatch_id": dispatch_id,

@@ -80,7 +80,9 @@ def fail_json(cmd) -> dict:
 
 def capture_json(cmd) -> dict:
     """Запустить `harness health ... --json`, которая обязана пройти, и разобрать её JSON stdout."""
-    return json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True).stdout)
+    return json.loads(
+        subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+    )
 
 
 def find_check(report: dict, check_id: str) -> dict:
@@ -114,7 +116,12 @@ def count_skill_files(skills_dir: Path) -> int:
 
 
 def run_hook(
-    hook: Path, project_dir: Path, command: str, *, raw_payload=None, env_overrides=None,
+    hook: Path,
+    project_dir: Path,
+    command: str,
+    *,
+    raw_payload=None,
+    env_overrides=None,
     cwd: Path | None = None,
 ):
     """Передать PreToolUse(Bash) hook тот же JSON, что отправляет Claude Code, с `CLAUDE_PROJECT_DIR`.

@@ -19,7 +19,7 @@ def test_unsupported_language_file_stays_path_only_under_full_tier(
         bundle_dir,
         {
             "pkg/helper.go": (
-                "package pkg\n\nfunc Render(value int) string {\n\treturn \"\"\n}\n"
+                'package pkg\n\nfunc Render(value int) string {\n\treturn ""\n}\n'
             ),
             "script.rb": "def render(value)\n  value.to_s\nend\n",
         },
@@ -35,5 +35,7 @@ def test_unsupported_language_file_stays_path_only_under_full_tier(
     assert ruby_file == {"path": "script.rb", "signatures": [], "parser_status": "ok"}
 
     edges = records(result, "edges")
-    assert not any(edge["source"] == "script.rb" or edge["target"] == "script.rb" for edge in edges)
+    assert not any(
+        edge["source"] == "script.rb" or edge["target"] == "script.rb" for edge in edges
+    )
     assert result["diagnostics"] == []

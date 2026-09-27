@@ -14,11 +14,14 @@ VENDOR_SNAPSHOT = ROOT / "skills" / "vendor" / "mattpocock"
 
 def _manifest_skills() -> list[str]:
     """Скиллы закреплённого plugin.json и проверка совпадения с mattpocock-suite в CAPABILITIES.json."""
-    plugin = json.loads((VENDOR_MANIFEST_DIR / "plugin.json").read_text(encoding="utf-8"))
+    plugin = json.loads(
+        (VENDOR_MANIFEST_DIR / "plugin.json").read_text(encoding="utf-8")
+    )
     capabilities = json.loads(CAPABILITIES.read_text(encoding="utf-8"))
     expected = [entry.removeprefix("./skills/") for entry in plugin["skills"]]
     actual = [
-        entry.removeprefix("vendor/mattpocock/") for entry in capabilities["mattpocock-suite"]["skills"]
+        entry.removeprefix("vendor/mattpocock/")
+        for entry in capabilities["mattpocock-suite"]["skills"]
     ]
     if expected != actual:
         sys.exit("mattpocock-suite does not match the pinned plugin manifest")
@@ -27,7 +30,9 @@ def _manifest_skills() -> list[str]:
 
 def _check_checksums() -> None:
     """Сверить каждый файл snapshot с SHA256SUMS и число файлов с числом строк."""
-    checksum_lines = (VENDOR_MANIFEST_DIR / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+    checksum_lines = (
+        (VENDOR_MANIFEST_DIR / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+    )
     vendor_files = sorted(path for path in VENDOR_SNAPSHOT.rglob("*") if path.is_file())
     if len(checksum_lines) != len(vendor_files):
         sys.exit(
@@ -45,5 +50,7 @@ def check_vendor_pin() -> None:
     expected = _manifest_skills()
     skills = sorted(VENDOR_SNAPSHOT.rglob("SKILL.md"))
     if len(skills) != len(expected):
-        sys.exit(f"vendor count mismatch: manifest={len(expected)} snapshot={len(skills)}")
+        sys.exit(
+            f"vendor count mismatch: manifest={len(expected)} snapshot={len(skills)}"
+        )
     _check_checksums()

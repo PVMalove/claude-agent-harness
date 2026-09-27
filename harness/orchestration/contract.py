@@ -1181,8 +1181,14 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     if isinstance(context_policy, dict):
         minimum_files = context_policy.get("min_starting_files")
         maximum_files = context_policy.get("max_starting_files")
-        if _is_int(minimum_files) and _is_int(maximum_files) and minimum_files > maximum_files:
-            problems.append("orchestration context_package_policy.min_starting_files must not exceed max_starting_files")
+        if (
+            _is_int(minimum_files)
+            and _is_int(maximum_files)
+            and minimum_files > maximum_files
+        ):
+            problems.append(
+                "orchestration context_package_policy.min_starting_files must not exceed max_starting_files"
+            )
         maximum = context_policy.get("max_tokens")
         window = context_policy.get("context_window_tokens")
         reserve = context_policy.get("reserved_prompt_tokens")

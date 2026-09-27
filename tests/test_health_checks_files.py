@@ -108,12 +108,16 @@ def test_check_orchestration_config_skipped_without_capability(tmp_path: Path) -
     result = checks.check_orchestration_config(_context(tmp_path))
     assert result.status == "skipped"
 
-    result = checks.check_orchestration_config(_context(tmp_path, lock=_NO_CAPABILITY_LOCK))
+    result = checks.check_orchestration_config(
+        _context(tmp_path, lock=_NO_CAPABILITY_LOCK)
+    )
     assert result.status == "skipped"
 
 
 def test_check_orchestration_config_fails_without_schema_file(tmp_path: Path) -> None:
-    result = checks.check_orchestration_config(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
+    result = checks.check_orchestration_config(
+        _context(tmp_path, lock=_ORCHESTRATION_LOCK)
+    )
 
     assert result.id == "files.orchestration_config"
     assert result.status == "fail"
@@ -126,7 +130,9 @@ def test_check_skill_snapshot_skipped_without_lock(tmp_path: Path) -> None:
     assert result.status == "skipped"
 
 
-def test_check_skill_snapshot_skipped_without_injected_snapshot_diff(tmp_path: Path) -> None:
+def test_check_skill_snapshot_skipped_without_injected_snapshot_diff(
+    tmp_path: Path,
+) -> None:
     """snapshot_diff itself stays in harness/bin/harness (it needs CAPABILITIES.json and the
     harness/ source tree, neither of which ships to an installed project); only the canonical
     `harness health` CLI supplies it via HealthContext. Without it, the check degrades to
@@ -140,7 +146,10 @@ def test_check_skill_snapshot_skipped_without_injected_snapshot_diff(tmp_path: P
 
 def test_check_skill_snapshot_uses_the_injected_snapshot_diff(tmp_path: Path) -> None:
     context = HealthContext(
-        repo=tmp_path, lock={}, online=False, snapshot_diff=lambda _repo: {"state": "drift"}
+        repo=tmp_path,
+        lock={},
+        online=False,
+        snapshot_diff=lambda _repo: {"state": "drift"},
     )
 
     result = checks.check_skill_snapshot(context)
@@ -148,7 +157,10 @@ def test_check_skill_snapshot_uses_the_injected_snapshot_diff(tmp_path: Path) ->
     assert result.status == "fail"
 
     context = HealthContext(
-        repo=tmp_path, lock={}, online=False, snapshot_diff=lambda _repo: {"state": "clean"}
+        repo=tmp_path,
+        lock={},
+        online=False,
+        snapshot_diff=lambda _repo: {"state": "clean"},
     )
 
     result = checks.check_skill_snapshot(context)
@@ -203,13 +215,17 @@ def test_check_verification_routing_skipped_without_capability(tmp_path: Path) -
 
 
 def test_check_verification_routing_skipped_without_config_file(tmp_path: Path) -> None:
-    result = checks.check_verification_routing(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
+    result = checks.check_verification_routing(
+        _context(tmp_path, lock=_ORCHESTRATION_LOCK)
+    )
 
     assert result.status == "skipped"
     assert "orchestration.json" in result.message
 
 
-def test_check_verification_routing_ok_when_developer_commands_set(tmp_path: Path) -> None:
+def test_check_verification_routing_ok_when_developer_commands_set(
+    tmp_path: Path,
+) -> None:
     config = tmp_path / ".harness" / "orchestration.json"
     config.parent.mkdir(parents=True)
     config.write_text(
@@ -222,17 +238,26 @@ def test_check_verification_routing_ok_when_developer_commands_set(tmp_path: Pat
         encoding="utf-8",
     )
 
-    result = checks.check_verification_routing(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
+    result = checks.check_verification_routing(
+        _context(tmp_path, lock=_ORCHESTRATION_LOCK)
+    )
 
     assert result.status == "ok"
 
 
-def test_check_verification_routing_warns_without_developer_commands(tmp_path: Path) -> None:
+def test_check_verification_routing_warns_without_developer_commands(
+    tmp_path: Path,
+) -> None:
     config = tmp_path / ".harness" / "orchestration.json"
     config.parent.mkdir(parents=True)
-    config.write_text(json.dumps({"verification_commands": ["python scripts/verify.py"]}), encoding="utf-8")
+    config.write_text(
+        json.dumps({"verification_commands": ["python scripts/verify.py"]}),
+        encoding="utf-8",
+    )
 
-    result = checks.check_verification_routing(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
+    result = checks.check_verification_routing(
+        _context(tmp_path, lock=_ORCHESTRATION_LOCK)
+    )
 
     assert result.status == "warn"
     assert result.fix is not None

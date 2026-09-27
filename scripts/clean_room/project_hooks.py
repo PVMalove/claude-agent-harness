@@ -55,7 +55,16 @@ def run(ctx: SimpleNamespace) -> None:
     # Its QA marker must belong to that checkout, even when the primary checkout is dirty.
     subprocess.run(["git", "add", "-A"], cwd=pv_project, check=True)
     subprocess.run(
-        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "test fixture"],
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "test fixture",
+        ],
         cwd=pv_project,
         check=True,
     )
@@ -69,9 +78,13 @@ def run(ctx: SimpleNamespace) -> None:
     require_gate = pv_project / ".claude" / "hooks" / "require-qa-gate.sh"
     record_gate = pv_project / ".claude" / "hooks" / "record-qa-gate-pass.sh"
     mark_gate = pv_project / ".claude" / "hooks" / "mark-qa-gate-passed.sh"
-    project_json.write_text(project_json.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    project_json.write_text(
+        project_json.read_text(encoding="utf-8") + "\n", encoding="utf-8"
+    )
     pr_command = f"gh pr create --head {linked_branch} --body-file pr-body.md"
-    pr_payload = json.dumps({"cwd": str(pv_project), "tool_input": {"command": pr_command}})
+    pr_payload = json.dumps(
+        {"cwd": str(pv_project), "tool_input": {"command": pr_command}}
+    )
     if run_hook(record_gate, pv_project, "", cwd=pv_project).returncode:
         sys.exit("could not record primary checkout QA marker")
     if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode == 0:
@@ -81,29 +94,46 @@ def run(ctx: SimpleNamespace) -> None:
     if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode:
         sys.exit("linked-worktree QA marker did not permit its PR")
     local_pr_payload = json.dumps(
-        {"cwd": str(linked), "tool_input": {"command": "gh pr create --body-file pr-body.md"}}
+        {
+            "cwd": str(linked),
+            "tool_input": {"command": "gh pr create --body-file pr-body.md"},
+        }
     )
     if run_hook(require_gate, pv_project, "", raw_payload=local_pr_payload).returncode:
         sys.exit("QA marker did not permit PR from the linked checkout cwd")
     unknown_pr_payload = json.dumps(
-        {"cwd": str(linked), "tool_input": {"command": "gh pr create --head feature/issue-999-missing"}}
+        {
+            "cwd": str(linked),
+            "tool_input": {"command": "gh pr create --head feature/issue-999-missing"},
+        }
     )
-    if run_hook(require_gate, pv_project, "", raw_payload=unknown_pr_payload).returncode == 0:
+    if (
+        run_hook(
+            require_gate, pv_project, "", raw_payload=unknown_pr_payload
+        ).returncode
+        == 0
+    ):
         sys.exit("unknown PR head reused a linked-worktree QA marker")
     (linked / ".claude" / ".qa-gate" / "passed").unlink()
-    mark_payload = json.dumps({"cwd": str(linked), "tool_input": {"command": "echo test"}})
+    mark_payload = json.dumps(
+        {"cwd": str(linked), "tool_input": {"command": "echo test"}}
+    )
     if run_hook(mark_gate, pv_project, "", raw_payload=mark_payload).returncode:
         sys.exit("could not mark linked-worktree QA pass")
     if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode:
         sys.exit("fallback QA marker did not permit linked-worktree PR")
     linked_config = linked / ".harness" / "project.json"
-    linked_config.write_text(linked_config.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    linked_config.write_text(
+        linked_config.read_text(encoding="utf-8") + "\n", encoding="utf-8"
+    )
     if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode == 0:
         sys.exit("stale linked-worktree QA marker opened a PR")
 
     scratch_gitignore = storage_path(pv_project, "scratch", ".gitignore")
     if not scratch_gitignore.is_file():
-        sys.exit("pvmalove-suite init did not scaffold .harness/.sandboxes/scratch/.gitignore")
+        sys.exit(
+            "pvmalove-suite init did not scaffold .harness/.sandboxes/scratch/.gitignore"
+        )
     if scratch_gitignore.read_text(encoding="utf-8") != "*\n!.gitignore\n":
         sys.exit(
             "pvmalove-suite init scaffolded .harness/.sandboxes/scratch/.gitignore with unexpected content"
@@ -216,17 +246,39 @@ def run(ctx: SimpleNamespace) -> None:
             "block-scratch-outside-docs-tasks.sh rejected a PR body in .harness/.sandboxes/scratch/tmp/"
         )
     nested_non_body = sandboxes_scratch_pr_body.parent / "pr-body-dir" / "notes.md"
-    if run_hook(
-        scratch_hook, pv_project, "",
-        raw_payload=json.dumps({"tool_input": {"file_path": str(nested_non_body)}}),
-    ).returncode == 0:
-        sys.exit("block-scratch-outside-docs-tasks.sh accepted a filename without a body marker")
-    escaped_body = pv_project.parent / "outside" / ".harness" / ".sandboxes" / "scratch" / "tmp" / "pr-body-1.md"
-    if run_hook(
-        scratch_hook, pv_project, "",
-        raw_payload=json.dumps({"tool_input": {"file_path": str(escaped_body)}}),
-    ).returncode == 0:
-        sys.exit("block-scratch-outside-docs-tasks.sh accepted a path outside the project")
+    if (
+        run_hook(
+            scratch_hook,
+            pv_project,
+            "",
+            raw_payload=json.dumps({"tool_input": {"file_path": str(nested_non_body)}}),
+        ).returncode
+        == 0
+    ):
+        sys.exit(
+            "block-scratch-outside-docs-tasks.sh accepted a filename without a body marker"
+        )
+    escaped_body = (
+        pv_project.parent
+        / "outside"
+        / ".harness"
+        / ".sandboxes"
+        / "scratch"
+        / "tmp"
+        / "pr-body-1.md"
+    )
+    if (
+        run_hook(
+            scratch_hook,
+            pv_project,
+            "",
+            raw_payload=json.dumps({"tool_input": {"file_path": str(escaped_body)}}),
+        ).returncode
+        == 0
+    ):
+        sys.exit(
+            "block-scratch-outside-docs-tasks.sh accepted a path outside the project"
+        )
     sandboxes_cache_path = (
         pv_project
         / ".harness"
@@ -460,29 +512,37 @@ def run(ctx: SimpleNamespace) -> None:
         {"tool_input": {"command": 'git commit -m "feat: parse \\"complex\\" json"'}}
     )
     if (
-        run_hook(metadata_hook, pv_project, "", raw_payload=escaped_clean_commit).returncode
+        run_hook(
+            metadata_hook, pv_project, "", raw_payload=escaped_clean_commit
+        ).returncode
         != 0
     ):
-        sys.exit("block-public-attribution.sh rejected a clean commit with escaped quotes")
+        sys.exit(
+            "block-public-attribution.sh rejected a clean commit with escaped quotes"
+        )
     multiline_clean_payload = json.dumps(
         {"tool_input": {"command": 'git commit -m "feat: valid commit message"'}},
         indent=2,
     )
     if (
-        run_hook(metadata_hook, pv_project, "", raw_payload=multiline_clean_payload).returncode
+        run_hook(
+            metadata_hook, pv_project, "", raw_payload=multiline_clean_payload
+        ).returncode
         != 0
     ):
         sys.exit("block-public-attribution.sh rejected a multiline JSON payload")
     multiline_attribution_payload = json.dumps(
         {
             "tool_input": {
-                "command": "git commit -m \"feat: line 1\n\nCo-Authored-By: Claude <noreply@anthropic.com>\""
+                "command": 'git commit -m "feat: line 1\n\nCo-Authored-By: Claude <noreply@anthropic.com>"'
             }
         },
         indent=2,
     )
     if (
-        run_hook(metadata_hook, pv_project, "", raw_payload=multiline_attribution_payload).returncode
+        run_hook(
+            metadata_hook, pv_project, "", raw_payload=multiline_attribution_payload
+        ).returncode
         == 0
     ):
         sys.exit(
@@ -512,18 +572,31 @@ def run(ctx: SimpleNamespace) -> None:
     escaped_branch_payload = json.dumps(
         {"tool_input": {"command": 'git checkout -b "release/rel-1-test"'}}
     )
-    if run_hook(hook, pv_project, "", raw_payload=escaped_branch_payload).returncode != 0:
-        sys.exit("check-branch-name.sh rejected a branch name enclosed in escaped quotes")
+    if (
+        run_hook(hook, pv_project, "", raw_payload=escaped_branch_payload).returncode
+        != 0
+    ):
+        sys.exit(
+            "check-branch-name.sh rejected a branch name enclosed in escaped quotes"
+        )
     escaped_invalid_payload = json.dumps(
         {"tool_input": {"command": 'git checkout -b "feature/invalid-branch"'}}
     )
-    if run_hook(hook, pv_project, "", raw_payload=escaped_invalid_payload).returncode == 0:
-        sys.exit("check-branch-name.sh allowed an invalid branch name enclosed in escaped quotes")
+    if (
+        run_hook(hook, pv_project, "", raw_payload=escaped_invalid_payload).returncode
+        == 0
+    ):
+        sys.exit(
+            "check-branch-name.sh allowed an invalid branch name enclosed in escaped quotes"
+        )
     multiline_branch_payload = json.dumps(
         {"tool_input": {"command": "git checkout -b release/rel-1-test"}},
         indent=2,
     )
-    if run_hook(hook, pv_project, "", raw_payload=multiline_branch_payload).returncode != 0:
+    if (
+        run_hook(hook, pv_project, "", raw_payload=multiline_branch_payload).returncode
+        != 0
+    ):
         sys.exit("check-branch-name.sh rejected a multiline JSON payload")
     if (
         run_hook(
@@ -577,13 +650,18 @@ def run(ctx: SimpleNamespace) -> None:
     escaped_push_ok = json.dumps(
         {"tool_input": {"command": 'git push origin "release/rel-1-test"'}}
     )
-    if run_hook(direct_hook, pv_project, "", raw_payload=escaped_push_ok).returncode != 0:
+    if (
+        run_hook(direct_hook, pv_project, "", raw_payload=escaped_push_ok).returncode
+        != 0
+    ):
         sys.exit("block-direct-master.sh rejected a valid push with escaped quotes")
     escaped_push_blocked = json.dumps(
         {"tool_input": {"command": 'git push origin "HEAD:main"'}}
     )
     if (
-        run_hook(direct_hook, pv_project, "", raw_payload=escaped_push_blocked).returncode
+        run_hook(
+            direct_hook, pv_project, "", raw_payload=escaped_push_blocked
+        ).returncode
         == 0
     ):
         sys.exit("block-direct-master.sh allowed a push to main with escaped quotes")
@@ -613,12 +691,16 @@ def run(ctx: SimpleNamespace) -> None:
         indent=2,
     )
     if (
-        run_hook(direct_hook, pv_project, "", raw_payload=multiline_push_blocked).returncode
+        run_hook(
+            direct_hook, pv_project, "", raw_payload=multiline_push_blocked
+        ).returncode
         == 0
     ):
         sys.exit("block-direct-master.sh allowed a multiline JSON push to main")
     if (
-        run_hook(direct_hook, pv_project, "git push -u origin release/rel-1-test").returncode
+        run_hook(
+            direct_hook, pv_project, "git push -u origin release/rel-1-test"
+        ).returncode
         != 0
     ):
         sys.exit("block-direct-master.sh rejected git push with -u flag")
@@ -640,7 +722,10 @@ def run(ctx: SimpleNamespace) -> None:
         != 0
     ):
         sys.exit("block-direct-master.sh rejected git push with --set-upstream flag")
-    if run_hook(direct_hook, pv_project, "git push -f origin HEAD:main").returncode == 0:
+    if (
+        run_hook(direct_hook, pv_project, "git push -f origin HEAD:main").returncode
+        == 0
+    ):
         sys.exit("block-direct-master.sh allowed git push -f to main")
     if (
         run_hook(direct_hook, pv_project, "git push --force origin master").returncode
@@ -660,7 +745,9 @@ def run(ctx: SimpleNamespace) -> None:
         ).returncode
         == 0
     ):
-        sys.exit("block-direct-master.sh allowed git push to refs/heads/integration/auth")
+        sys.exit(
+            "block-direct-master.sh allowed git push to refs/heads/integration/auth"
+        )
 
     # Remove .harness/project.json entirely - the hook must fall back to its own built-in
     # default pattern instead of crashing or blocking every branch name.
@@ -680,9 +767,17 @@ def run(ctx: SimpleNamespace) -> None:
     # block-dangerous-git.sh: safe commands, destructive commands, escaped quotes, multiline JSON
     if run_hook(dangerous_hook, pv_project, "git status").returncode != 0:
         sys.exit("block-dangerous-git.sh blocked git status")
-    if run_hook(dangerous_hook, pv_project, "git checkout -b release/rel-1-test").returncode != 0:
+    if (
+        run_hook(
+            dangerous_hook, pv_project, "git checkout -b release/rel-1-test"
+        ).returncode
+        != 0
+    ):
         sys.exit("block-dangerous-git.sh blocked git checkout -b")
-    if run_hook(dangerous_hook, pv_project, "git branch -d old-feature").returncode != 0:
+    if (
+        run_hook(dangerous_hook, pv_project, "git branch -d old-feature").returncode
+        != 0
+    ):
         sys.exit("block-dangerous-git.sh blocked safe git branch -d")
     if run_hook(dangerous_hook, pv_project, "git reset --soft HEAD~1").returncode != 0:
         sys.exit("block-dangerous-git.sh blocked safe git reset --soft")
@@ -698,50 +793,103 @@ def run(ctx: SimpleNamespace) -> None:
         "git restore .",
     ):
         if run_hook(dangerous_hook, pv_project, destructive_cmd).returncode == 0:
-            sys.exit(f"block-dangerous-git.sh allowed destructive command: {destructive_cmd}")
+            sys.exit(
+                f"block-dangerous-git.sh allowed destructive command: {destructive_cmd}"
+            )
 
     escaped_safe_commit = json.dumps(
         {"tool_input": {"command": 'git commit -m "feat: \\"fix\\" something"'}}
     )
-    if run_hook(dangerous_hook, pv_project, "", raw_payload=escaped_safe_commit).returncode != 0:
+    if (
+        run_hook(
+            dangerous_hook, pv_project, "", raw_payload=escaped_safe_commit
+        ).returncode
+        != 0
+    ):
         sys.exit("block-dangerous-git.sh rejected safe commit with escaped quotes")
     escaped_destructive_subshell = json.dumps(
         {"tool_input": {"command": 'bash -c "git reset --hard HEAD"'}}
     )
-    if run_hook(dangerous_hook, pv_project, "", raw_payload=escaped_destructive_subshell).returncode == 0:
-        sys.exit("block-dangerous-git.sh allowed destructive command inside escaped quotes")
+    if (
+        run_hook(
+            dangerous_hook, pv_project, "", raw_payload=escaped_destructive_subshell
+        ).returncode
+        == 0
+    ):
+        sys.exit(
+            "block-dangerous-git.sh allowed destructive command inside escaped quotes"
+        )
 
     multiline_safe_commit = json.dumps(
-        {"tool_input": {"command": "git commit -m \"feat: line 1\n\nline 2 of message\""}},
+        {
+            "tool_input": {
+                "command": 'git commit -m "feat: line 1\n\nline 2 of message"'
+            }
+        },
         indent=2,
     )
-    if run_hook(dangerous_hook, pv_project, "", raw_payload=multiline_safe_commit).returncode != 0:
+    if (
+        run_hook(
+            dangerous_hook, pv_project, "", raw_payload=multiline_safe_commit
+        ).returncode
+        != 0
+    ):
         sys.exit("block-dangerous-git.sh rejected safe multiline commit payload")
     multiline_destructive_payload = json.dumps(
         {"tool_input": {"command": "git reset --hard HEAD"}},
         indent=2,
     )
-    if run_hook(dangerous_hook, pv_project, "", raw_payload=multiline_destructive_payload).returncode == 0:
-        sys.exit("block-dangerous-git.sh allowed destructive command in multiline JSON payload")
+    if (
+        run_hook(
+            dangerous_hook, pv_project, "", raw_payload=multiline_destructive_payload
+        ).returncode
+        == 0
+    ):
+        sys.exit(
+            "block-dangerous-git.sh allowed destructive command in multiline JSON payload"
+        )
 
     # require-qa-gate.sh: blocks gh pr create without marker, allows with valid marker
     if run_hook(qa_gate_hook, pv_project, "git status").returncode != 0:
         sys.exit("require-qa-gate.sh blocked an unrelated git status command")
-    if run_hook(qa_gate_hook, pv_project, "gh pr create --body-file pr-body.md").returncode == 0:
-        sys.exit("require-qa-gate.sh allowed gh pr create without QA gate passed marker")
+    if (
+        run_hook(
+            qa_gate_hook, pv_project, "gh pr create --body-file pr-body.md"
+        ).returncode
+        == 0
+    ):
+        sys.exit(
+            "require-qa-gate.sh allowed gh pr create without QA gate passed marker"
+        )
 
     escaped_pr_create = json.dumps(
-        {"tool_input": {"command": 'gh pr create --title "My \\"Special\\" PR" --body-file "pr-body.md"'}}
+        {
+            "tool_input": {
+                "command": 'gh pr create --title "My \\"Special\\" PR" --body-file "pr-body.md"'
+            }
+        }
     )
-    if run_hook(qa_gate_hook, pv_project, "", raw_payload=escaped_pr_create).returncode == 0:
-        sys.exit("require-qa-gate.sh allowed gh pr create with escaped quotes without marker")
+    if (
+        run_hook(qa_gate_hook, pv_project, "", raw_payload=escaped_pr_create).returncode
+        == 0
+    ):
+        sys.exit(
+            "require-qa-gate.sh allowed gh pr create with escaped quotes without marker"
+        )
 
     multiline_pr_create = json.dumps(
         {"tool_input": {"command": "gh pr create --body-file pr-body.md"}},
         indent=2,
     )
-    if run_hook(qa_gate_hook, pv_project, "", raw_payload=multiline_pr_create).returncode == 0:
-        sys.exit("require-qa-gate.sh allowed multiline JSON gh pr create without marker")
+    if (
+        run_hook(
+            qa_gate_hook, pv_project, "", raw_payload=multiline_pr_create
+        ).returncode
+        == 0
+    ):
+        sys.exit(
+            "require-qa-gate.sh allowed multiline JSON gh pr create without marker"
+        )
 
     head_proc = subprocess.run(
         ["git", "-C", str(pv_project), "rev-parse", "HEAD"],
@@ -756,17 +904,28 @@ def run(ctx: SimpleNamespace) -> None:
         check=False,
     )
     diff_bytes = diff_proc.stdout if diff_proc.returncode == 0 else b""
-    diff_hash = subprocess.run(
-        ["git", "-C", str(pv_project), "hash-object", "--stdin"],
-        input=diff_bytes,
-        capture_output=True,
-        check=True,
-    ).stdout.decode().strip()
+    diff_hash = (
+        subprocess.run(
+            ["git", "-C", str(pv_project), "hash-object", "--stdin"],
+            input=diff_bytes,
+            capture_output=True,
+            check=True,
+        )
+        .stdout.decode()
+        .strip()
+    )
     qa_marker = pv_project / ".claude" / ".qa-gate" / "passed"
     qa_marker.parent.mkdir(parents=True, exist_ok=True)
     qa_marker.write_text(f"{head_sha}:{diff_hash}", encoding="utf-8")
     try:
-        if run_hook(qa_gate_hook, pv_project, "gh pr create --body-file pr-body.md").returncode != 0:
-            sys.exit("require-qa-gate.sh blocked gh pr create with valid qa-gate marker")
+        if (
+            run_hook(
+                qa_gate_hook, pv_project, "gh pr create --body-file pr-body.md"
+            ).returncode
+            != 0
+        ):
+            sys.exit(
+                "require-qa-gate.sh blocked gh pr create with valid qa-gate marker"
+            )
     finally:
         qa_marker.unlink(missing_ok=True)

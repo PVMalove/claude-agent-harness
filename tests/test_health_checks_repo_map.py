@@ -20,9 +20,13 @@ def test_check_tier_skipped_when_repo_map_not_installed(tmp_path: Path) -> None:
 
 def test_check_tier_warns_when_policy_requests_minimal(tmp_path: Path) -> None:
     (tmp_path / ".harness" / "repo_map").mkdir(parents=True)
-    (tmp_path / ".harness" / "repo_map" / "repo_map.py").write_text("", encoding="utf-8")
+    (tmp_path / ".harness" / "repo_map" / "repo_map.py").write_text(
+        "", encoding="utf-8"
+    )
     orchestration = tmp_path / ".harness" / "orchestration.json"
-    orchestration.write_text('{"repo_map_policy": {"tier": "minimal"}}', encoding="utf-8")
+    orchestration.write_text(
+        '{"repo_map_policy": {"tier": "minimal"}}', encoding="utf-8"
+    )
 
     result = checks.check_tier(HealthContext(repo=tmp_path, lock=None, online=False))
 

@@ -13,8 +13,12 @@ ALWAYS_SENT_INSTRUCTION_FILES = [
     ROOT / "AGENTS.md",
     ROOT / "harness" / "orchestration" / "playbook.md",
 ] + sorted((ROOT / "harness" / "orchestration" / "roles").glob("*.md"))
-_TIMESTAMP_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:?\d{2})?\b")
-_DISPATCH_ID_RE = re.compile(r"\b(?:batch|dispatch)-[0-9a-fA-F][0-9a-fA-F-]{5,}\b", re.IGNORECASE)
+_TIMESTAMP_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:?\d{2})?\b"
+)
+_DISPATCH_ID_RE = re.compile(
+    r"\b(?:batch|dispatch)-[0-9a-fA-F][0-9a-fA-F-]{5,}\b", re.IGNORECASE
+)
 _HEX_TOKEN_RE = re.compile(r"\b[0-9a-fA-F]{7,40}\b")
 
 
@@ -24,10 +28,14 @@ def _line_problems(path: Path, lineno: int, line: str) -> list[str]:
     if _TIMESTAMP_RE.search(line):
         problems.append(f"{path}:{lineno}: looks like a timestamp: {line.strip()}")
     if _DISPATCH_ID_RE.search(line):
-        problems.append(f"{path}:{lineno}: looks like a batch/dispatch identifier: {line.strip()}")
+        problems.append(
+            f"{path}:{lineno}: looks like a batch/dispatch identifier: {line.strip()}"
+        )
     for token in _HEX_TOKEN_RE.findall(line):
         if any(ch.isdigit() for ch in token):
-            problems.append(f"{path}:{lineno}: looks like a commit SHA ({token}): {line.strip()}")
+            problems.append(
+                f"{path}:{lineno}: looks like a commit SHA ({token}): {line.strip()}"
+            )
     return problems
 
 

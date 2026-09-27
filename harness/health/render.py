@@ -15,6 +15,7 @@ class _EncodingAware(Protocol):
     @property
     def encoding(self) -> str | None: ...
 
+
 _MARKERS: dict[Status, str] = {"ok": "✅", "warn": "⚠️", "fail": "❌"}
 _ASCII_MARKERS: dict[Status, str] = {"ok": "[OK]", "warn": "[WARN]", "fail": "[FAIL]"}
 _SKIPPED_MARKER = "-"

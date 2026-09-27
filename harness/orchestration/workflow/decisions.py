@@ -90,7 +90,10 @@ def _auto_accept_policy(
 ) -> str | None:
     """Return the policy authorized to decide this clean, non-milestone report."""
     policy = config.get("approval_policy")
-    if policy != batch.get("approval_policy") or policy not in {"low_risk", "milestone"}:
+    if policy != batch.get("approval_policy") or policy not in {
+        "low_risk",
+        "milestone",
+    }:
         return None
     if (
         report.get("outcome") != "completed"
@@ -100,7 +103,9 @@ def _auto_accept_policy(
         or dispatch.get("purpose") == "publish"
     ):
         return None
-    if policy == "low_risk" and batch.get("zone") not in config.get("low_risk_zones", []):
+    if policy == "low_risk" and batch.get("zone") not in config.get(
+        "low_risk_zones", []
+    ):
         return None
     if policy == "milestone":
         if dispatch.get("role") == "qa" or batch.get("risk_reassessment_required"):
@@ -266,8 +271,7 @@ def _developer_retry_count(batch: JsonObject) -> int:
 
 def _developer_retry_budget_exhausted(config: JsonObject, batch: JsonObject) -> bool:
     return (
-        _developer_retry_count(batch)
-        >= _retry_policy(config)["max_developer_retries"]
+        _developer_retry_count(batch) >= _retry_policy(config)["max_developer_retries"]
     )
 
 
@@ -558,7 +562,10 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     "policy auto-accept requires a clean non-milestone completed report",
                     remedy="leave this report for an explicit coordinator decision",
                 )
-            approval = {"approved_by": f"policy:{accepted_policy}", "approved_at": utils._now()}
+            approval = {
+                "approved_by": f"policy:{accepted_policy}",
+                "approved_at": utils._now(),
+            }
         else:
             approval = _approval(args)
         decision = {

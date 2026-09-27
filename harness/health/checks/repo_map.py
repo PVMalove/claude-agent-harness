@@ -16,7 +16,9 @@ from ..model import CheckResult, Fix, Status
 from .files import ORCHESTRATION_CONFIG_REL
 
 REPO_MAP_REL = Path(".harness/repo_map/repo_map.py")
-REPO_MAP_REGISTRY_REL = Path(".harness/.sandboxes/cache/repo_map/parser_bundle/registry")
+REPO_MAP_REGISTRY_REL = Path(
+    ".harness/.sandboxes/cache/repo_map/parser_bundle/registry"
+)
 
 _REMEDY_PREFIX = "КАК ИСПРАВИТЬ: "
 
@@ -37,7 +39,9 @@ def repo_map_health(repo: Path) -> list[str]:
     if policy_path.is_file():
         try:
             decoded = json.loads(policy_path.read_text(encoding="utf-8"))
-            if isinstance(decoded, dict) and isinstance(decoded.get("repo_map_policy"), dict):
+            if isinstance(decoded, dict) and isinstance(
+                decoded.get("repo_map_policy"), dict
+            ):
                 policy = decoded["repo_map_policy"]
                 has_policy = True
         except (OSError, json.JSONDecodeError):
@@ -54,12 +58,12 @@ def repo_map_health(repo: Path) -> list[str]:
         ]
 
     configured_paths = policy.get("parser_bundle_registry_paths", [])
-    registry_paths = tuple(
-        item for item in configured_paths if isinstance(item, str)
-    ) if isinstance(configured_paths, list) else ()
-    dispatch_policy = (
-        "dispatch may use full parser-backed Repo Map and degrades to minimal when the bundle is unavailable"
+    registry_paths = (
+        tuple(item for item in configured_paths if isinstance(item, str))
+        if isinstance(configured_paths, list)
+        else ()
     )
+    dispatch_policy = "dispatch may use full parser-backed Repo Map and degrades to minimal when the bundle is unavailable"
     timeout = policy.get("parser_bundle_timeout_seconds", 30)
     located = parser_bundle.locate_bundle(
         repo=repo,
@@ -78,7 +82,9 @@ def repo_map_health(repo: Path) -> list[str]:
         degradation_reason = parser_bundle.check_bundle(located)
         if degradation_reason is None and shutil.which("uv") is None:
             degradation_reason = "uv executable unavailable"
-        if degradation_reason is None and not parser_bundle.supports_real_sources(located.lock):
+        if degradation_reason is None and not parser_bundle.supports_real_sources(
+            located.lock
+        ):
             degradation_reason = "parser bundle has no supported grammars"
             remedy = (
                 "КАК ИСПРАВИТЬ: registry содержит bundle без поддерживаемых грамматик "
@@ -116,7 +122,9 @@ def check_tier(context: HealthContext) -> CheckResult:
     lines = repo_map_health(context.repo)
     if not lines:
         return CheckResult(
-            id="repo_map.tier", group="repo_map", status="skipped",
+            id="repo_map.tier",
+            group="repo_map",
+            status="skipped",
             message="Repo Map не установлен в проект",
         )
     status: Status = "ok" if lines[0].startswith("Repo Map: tier=full") else "warn"
@@ -127,4 +135,6 @@ def check_tier(context: HealthContext) -> CheckResult:
             if line.startswith(_REMEDY_PREFIX):
                 fix = Fix(text=line.removeprefix(_REMEDY_PREFIX))
                 break
-    return CheckResult(id="repo_map.tier", group="repo_map", status=status, message=message, fix=fix)
+    return CheckResult(
+        id="repo_map.tier", group="repo_map", status=status, message=message, fix=fix
+    )

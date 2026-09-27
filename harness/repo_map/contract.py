@@ -10,7 +10,9 @@ from pathlib import Path
 @lru_cache(maxsize=1)
 def _schema() -> dict[str, object]:
     """Загрузить схему рядом с CLI один раз на процесс."""
-    value: object = json.loads(Path(__file__).with_name("repo_map.schema.json").read_text(encoding="utf-8"))
+    value: object = json.loads(
+        Path(__file__).with_name("repo_map.schema.json").read_text(encoding="utf-8")
+    )
     if not isinstance(value, dict):
         raise TypeError("Repo Map schema must be a JSON object")
     return value

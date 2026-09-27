@@ -321,4 +321,3 @@ SCRATCH_REL = SANDBOXES_REL / "scratch"
 AGENT_INBOX_REL = SCRATCH_REL / "inbox"
 # Cyrillic in a brief means the coordinator leaked its own report language into an agent handoff.
 NON_ENGLISH_BRIEF_PATTERN = re.compile(r"[\u0400-\u04FF\u0500-\u052F]")
-

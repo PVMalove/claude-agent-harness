@@ -1,6 +1,6 @@
 [project]
 name = "claude-agent-harness"
-version = "1.2.0"
+version = "1.3.5"
 requires-python = ">=3.12"
 dependencies = []
 
@@ -35,7 +35,14 @@ testpaths = ["tests"]
 
 [tool.ruff.lint.per-file-ignores]
 # Facade: `import x as x` marks explicit re-exports under mypy strict (no implicit reexport).
-"harness/orchestration/coordinator.py" = ["PLC0414"]
+# E402: all files below import after an intentional sys.path / importlib bootstrap block.
+"harness/orchestration/coordinator.py" = ["PLC0414", "E402"]
+"harness/repo_map/repo_map.py" = ["E402"]
+"harness/reporting/delivery_stats.py" = ["E402"]
+"scripts/check_upstream_drift.py" = ["E402"]
+"scripts/test_clean_room.py" = ["E402"]
+"scripts/verify.py" = ["E402"]
+"tests/test_advisory.py" = ["E402"]
 
 [dependency-groups]
 dev = [

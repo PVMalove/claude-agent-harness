@@ -27,7 +27,9 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / ".github" / "parser-bundle-release-wheels.json"
 PYTHON_TAGS = ("cp312", "cp313", "cp314")
 PLATFORMS = ("win_amd64", "linux_x86_64", "macos_arm64")
-MATRIX = tuple(f"{python_tag}-{platform}" for platform in PLATFORMS for python_tag in PYTHON_TAGS)
+MATRIX = tuple(
+    f"{python_tag}-{platform}" for platform in PLATFORMS for python_tag in PYTHON_TAGS
+)
 PACKAGES = {
     "tree_sitter": CORE_VERSION,
     "tree_sitter_python": "0.25.0",
@@ -44,6 +46,7 @@ EXPECTED_WHEEL_COUNT = len(MATRIX) + (len(PACKAGES) - 1) * len(PLATFORMS)
 
 class WheelPin(TypedDict):
     """Запись манифеста релизных wheels: дистрибутив, версия, файл, SHA-256, URL PyPI и пары."""
+
     distribution: str
     version: str
     filename: str
@@ -72,7 +75,12 @@ def _manifest(path: Path) -> list[WheelPin]:
     validated: list[WheelPin] = []
     for wheel in wheels:
         if not isinstance(wheel, dict) or set(wheel) != {
-            "distribution", "version", "filename", "sha256", "url", "pairs"
+            "distribution",
+            "version",
+            "filename",
+            "sha256",
+            "url",
+            "pairs",
         }:
             raise ValueError("invalid release wheel entry")
         distribution = wheel["distribution"]
@@ -82,28 +90,52 @@ def _manifest(path: Path) -> list[WheelPin]:
         url = wheel["url"]
         pairs = wheel["pairs"]
         if not isinstance(distribution, str) or PACKAGES.get(distribution) != version:
-            raise ValueError("release wheel distribution or version differs from parser pins")
-        if not isinstance(filename, str) or Path(filename).name != filename or not filename.endswith(".whl"):
+            raise ValueError(
+                "release wheel distribution or version differs from parser pins"
+            )
+        if (
+            not isinstance(filename, str)
+            or Path(filename).name != filename
+            or not filename.endswith(".whl")
+        ):
             raise ValueError("unsafe release wheel filename")
         if not filename.startswith(f"{distribution}-{version}-") or filename in seen:
             raise ValueError("duplicate or mismatched release wheel filename")
         if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise ValueError("invalid release wheel hash")
-        if not isinstance(url, str) or not url.startswith("https://files.pythonhosted.org/") or not url.endswith("/" + filename):
+        if (
+            not isinstance(url, str)
+            or not url.startswith("https://files.pythonhosted.org/")
+            or not url.endswith("/" + filename)
+        ):
             raise ValueError("release wheel URL must identify the pinned PyPI file")
-        if not isinstance(pairs, list) or not pairs or not all(isinstance(pair, str) for pair in pairs) or len(set(pairs)) != len(pairs):
+        if (
+            not isinstance(pairs, list)
+            or not pairs
+            or not all(isinstance(pair, str) for pair in pairs)
+            or len(set(pairs)) != len(pairs)
+        ):
             raise ValueError("invalid release wheel pair list")
         for pair in pairs:
             if pair not in coverage or distribution in coverage[pair]:
-                raise ValueError("release wheel matrix has a missing or duplicate distribution")
+                raise ValueError(
+                    "release wheel matrix has a missing or duplicate distribution"
+                )
             python_tag, platform = pair.split("-", 1)
             if platform == "win_amd64" and not filename.endswith("win_amd64.whl"):
                 raise ValueError("release wheel platform mismatch")
-            if platform == "linux_x86_64" and ("manylinux" not in filename or not filename.endswith("x86_64.whl")):
+            if platform == "linux_x86_64" and (
+                "manylinux" not in filename or not filename.endswith("x86_64.whl")
+            ):
                 raise ValueError("release wheel platform mismatch")
-            if platform == "macos_arm64" and not filename.endswith("macosx_11_0_arm64.whl"):
+            if platform == "macos_arm64" and not filename.endswith(
+                "macosx_11_0_arm64.whl"
+            ):
                 raise ValueError("release wheel platform mismatch")
-            if distribution == "tree_sitter" and f"-{python_tag}-{python_tag}-" not in filename:
+            if (
+                distribution == "tree_sitter"
+                and f"-{python_tag}-{python_tag}-" not in filename
+            ):
                 raise ValueError("release core wheel interpreter mismatch")
             if distribution != "tree_sitter" and "-abi3-" not in filename:
                 raise ValueError("release grammar wheel must be abi3")
@@ -119,10 +151,17 @@ def _requirements(wheels: list[WheelPin]) -> str:
     """Сформировать requirements с хешами всех wheels каждого закреплённого дистрибутива."""
     lines = []
     for distribution, version in sorted(PACKAGES.items()):
-        hashes = sorted({str(wheel["sha256"]) for wheel in wheels if wheel["distribution"] == distribution})
-        lines.append(f"{distribution.replace('_', '-')}=={version} " + " ".join(
-            f"--hash=sha256:{digest}" for digest in hashes
-        ))
+        hashes = sorted(
+            {
+                str(wheel["sha256"])
+                for wheel in wheels
+                if wheel["distribution"] == distribution
+            }
+        )
+        lines.append(
+            f"{distribution.replace('_', '-')}=={version} "
+            + " ".join(f"--hash=sha256:{digest}" for digest in hashes)
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -155,11 +194,14 @@ def build_release(
     if out.exists():
         raise ValueError("release output already exists")
     out.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="parser-release-", dir=out.parent) as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="parser-release-", dir=out.parent
+    ) as temporary:
         staging = Path(temporary) / "bundle"
         staging.mkdir()
         by_pair = {
-            pair: [wheel for wheel in wheels if pair in wheel["pairs"]] for pair in MATRIX
+            pair: [wheel for wheel in wheels if pair in wheel["pairs"]]
+            for pair in MATRIX
         }
         wheelhouses: dict[str, list[dict[str, str]]] = {}
         for pair in MATRIX:
@@ -169,23 +211,33 @@ def build_release(
             for wheel in sorted(by_pair[pair], key=lambda item: str(item["filename"])):
                 filename = str(wheel["filename"])
                 shutil.copyfile(wheelhouse / filename, target / filename)
-                wheelhouses[pair].append({"filename": filename, "sha256": str(wheel["sha256"])})
+                wheelhouses[pair].append(
+                    {"filename": filename, "sha256": str(wheel["sha256"])}
+                )
         shutil.copyfile(WORKER, staging / WORKER.name)
         grammars = []
         for pin in GRAMMARS:
             hashes = {
-                pair: str(next(wheel for wheel in by_pair[pair] if wheel["distribution"] == pin.distribution)["sha256"])
+                pair: str(
+                    next(
+                        wheel
+                        for wheel in by_pair[pair]
+                        if wheel["distribution"] == pin.distribution
+                    )["sha256"]
+                )
                 for pair in MATRIX
             }
-            grammars.append({
-                "name": pin.name,
-                "distribution": pin.distribution,
-                "version": pin.version,
-                "abi": pin.abi,
-                "extensions": list(pin.extensions),
-                "sha256": hashes[MATRIX[0]],
-                "sha256_by_pair": hashes,
-            })
+            grammars.append(
+                {
+                    "name": pin.name,
+                    "distribution": pin.distribution,
+                    "version": pin.version,
+                    "abi": pin.abi,
+                    "extensions": list(pin.extensions),
+                    "sha256": hashes[MATRIX[0]],
+                    "sha256_by_pair": hashes,
+                }
+            )
         lock = {
             "core_version": CORE_VERSION,
             "core_abi_range": CORE_ABI_RANGE,
@@ -200,10 +252,24 @@ def build_release(
         requirements = staging / "parser_bundle.requirements.txt"
         requirements.write_text(_requirements(wheels), encoding="utf-8")
         sbom_path = staging / "parser_bundle.sbom.cdx.json"
-        if runner([
-            cyclonedx, "requirements", str(requirements), "--spec-version", "1.6",
-            "--output-format", "JSON", "--output-reproducible", "--output-file", str(sbom_path),
-        ]) != 0 or not sbom_path.is_file():
+        if (
+            runner(
+                [
+                    cyclonedx,
+                    "requirements",
+                    str(requirements),
+                    "--spec-version",
+                    "1.6",
+                    "--output-format",
+                    "JSON",
+                    "--output-reproducible",
+                    "--output-file",
+                    str(sbom_path),
+                ]
+            )
+            != 0
+            or not sbom_path.is_file()
+        ):
             raise ValueError("CycloneDX generation failed")
         sbom = json.loads(sbom_path.read_text(encoding="utf-8"))
         if sbom.get("bomFormat") != "CycloneDX" or sbom.get("specVersion") != "1.6":
@@ -211,22 +277,49 @@ def build_release(
         components = sbom.get("components")
         if not isinstance(components, list):
             raise ValueError("CycloneDX generator omitted components")  # noqa: TRY004
-        components.extend({
-            "type": "file",
-            "name": str(wheel["filename"]),
-            "bom-ref": "wheel:" + str(wheel["filename"]),
-            "hashes": [{"alg": "SHA-256", "content": wheel["sha256"]}],
-            "properties": [{"name": "harness:parser-bundle:pairs", "value": ",".join(wheel["pairs"])}],
-        } for wheel in wheels)
-        sbom_path.write_text(json.dumps(sbom, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        components.extend(
+            {
+                "type": "file",
+                "name": str(wheel["filename"]),
+                "bom-ref": "wheel:" + str(wheel["filename"]),
+                "hashes": [{"alg": "SHA-256", "content": wheel["sha256"]}],
+                "properties": [
+                    {
+                        "name": "harness:parser-bundle:pairs",
+                        "value": ",".join(wheel["pairs"]),
+                    }
+                ],
+            }
+            for wheel in wheels
+        )
+        sbom_path.write_text(
+            json.dumps(sbom, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         audit_cache = staging / ".audit-cache"
         audit_cache.mkdir()
         audit_path = staging / "parser_bundle.audit.json"
-        if runner([
-            pip_audit, "-r", str(requirements), "--require-hashes", "--disable-pip",
-            "--cache-dir", str(audit_cache), "--format", "json", "--output", str(audit_path),
-        ]) != 0 or not audit_path.is_file():
-            raise ValueError("pip-audit failed or could not reach the vulnerability service")
+        if (
+            runner(
+                [
+                    pip_audit,
+                    "-r",
+                    str(requirements),
+                    "--require-hashes",
+                    "--disable-pip",
+                    "--cache-dir",
+                    str(audit_cache),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(audit_path),
+                ]
+            )
+            != 0
+            or not audit_path.is_file()
+        ):
+            raise ValueError(
+                "pip-audit failed or could not reach the vulnerability service"
+            )
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
         dependencies = audit.get("dependencies")
         expected_dependencies = {
@@ -234,10 +327,14 @@ def build_release(
         }
         audited_dependencies: dict[str, str] = {}
         if not isinstance(dependencies, list):
-            raise ValueError("pip-audit result is incomplete or reports vulnerabilities")  # noqa: TRY004
+            raise ValueError(
+                "pip-audit result is incomplete or reports vulnerabilities"
+            )  # noqa: TRY004
         for item in dependencies:
             if not isinstance(item, dict):
-                raise ValueError("pip-audit result is incomplete or reports vulnerabilities")  # noqa: TRY004
+                raise ValueError(
+                    "pip-audit result is incomplete or reports vulnerabilities"
+                )  # noqa: TRY004
             name = item.get("name")
             version = item.get("version")
             vulns = item.get("vulns")
@@ -248,10 +345,14 @@ def build_release(
                 or vulns
                 or name in audited_dependencies
             ):
-                raise ValueError("pip-audit result is incomplete or reports vulnerabilities")
+                raise ValueError(
+                    "pip-audit result is incomplete or reports vulnerabilities"
+                )
             audited_dependencies[name] = version
         if audited_dependencies != expected_dependencies:
-            raise ValueError("pip-audit result is incomplete or reports vulnerabilities")
+            raise ValueError(
+                "pip-audit result is incomplete or reports vulnerabilities"
+            )
         shutil.rmtree(audit_cache)
         staging.rename(out)
     return out
@@ -259,7 +360,9 @@ def build_release(
 
 def main() -> int:
     """Точка входа CLI: собрать релиз и напечатать путь к нему."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
+    parser = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0] if __doc__ else None
+    )
     parser.add_argument("--wheelhouse", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()

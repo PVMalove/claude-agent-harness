@@ -44,7 +44,9 @@ def run(ctx: SimpleNamespace) -> None:
         json.dumps(invalid_transport, indent=2) + "\n", encoding="utf-8"
     )
     _expect_fail_message(
-        orchestration_project, "transport must be one of", "health accepted an unknown role transport"
+        orchestration_project,
+        "transport must be one of",
+        "health accepted an unknown role transport",
     )
 
     missing_review_assignment = json.loads(json.dumps(valid_orchestration))
@@ -104,7 +106,9 @@ def run(ctx: SimpleNamespace) -> None:
         json.dumps(invalid_role, indent=2) + "\n", encoding="utf-8"
     )
     _expect_fail_message(
-        orchestration_project, "unknown role", "health did not explain unknown orchestration role"
+        orchestration_project,
+        "unknown role",
+        "health did not explain unknown orchestration role",
     )
 
     invalid_profile = json.loads(json.dumps(valid_orchestration))
@@ -115,7 +119,9 @@ def run(ctx: SimpleNamespace) -> None:
         json.dumps(invalid_profile, indent=2) + "\n", encoding="utf-8"
     )
     _expect_fail_message(
-        orchestration_project, "unknown provider profile", "health did not explain unknown provider profile"
+        orchestration_project,
+        "unknown provider profile",
+        "health did not explain unknown provider profile",
     )
 
     incompatible = json.loads(json.dumps(valid_orchestration))
@@ -126,7 +132,9 @@ def run(ctx: SimpleNamespace) -> None:
         json.dumps(incompatible, indent=2) + "\n", encoding="utf-8"
     )
     _expect_fail_message(
-        orchestration_project, "incompatible capability", "health did not explain incompatible provider capability"
+        orchestration_project,
+        "incompatible capability",
+        "health did not explain incompatible provider capability",
     )
 
     invalid_zone = json.loads(json.dumps(valid_orchestration))
@@ -135,7 +143,9 @@ def run(ctx: SimpleNamespace) -> None:
         json.dumps(invalid_zone, indent=2) + "\n", encoding="utf-8"
     )
     _expect_fail_message(
-        orchestration_project, "unknown backend zone", "health did not explain unknown backend zone"
+        orchestration_project,
+        "unknown backend zone",
+        "health did not explain unknown backend zone",
     )
 
     policy_override = json.loads(json.dumps(valid_orchestration))
@@ -157,5 +167,7 @@ def run(ctx: SimpleNamespace) -> None:
         json.dumps(credential_field, indent=2) + "\n", encoding="utf-8"
     )
     _expect_fail_message(
-        orchestration_project, "credentials", "health did not reject credential-shaped provider profile data"
+        orchestration_project,
+        "credentials",
+        "health did not reject credential-shaped provider profile data",
     )

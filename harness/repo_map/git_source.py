@@ -32,7 +32,9 @@ class Blob:
     content: bytes | None
 
 
-def run_git(repo: Path, timeout_seconds: int, *args: str, stdin: bytes | None = None) -> bytes:
+def run_git(
+    repo: Path, timeout_seconds: int, *args: str, stdin: bytes | None = None
+) -> bytes:
     """Выполнить Git-команду в `repo` с таймаутом и вернуть stdout.
 
     Ошибка или превышение таймаута поднимают `RepoMapGitError` с рекомендацией.
@@ -60,9 +62,11 @@ def run_git(repo: Path, timeout_seconds: int, *args: str, stdin: bytes | None = 
 
 def resolve_commit(repo: Path, commit: str, timeout_seconds: int) -> str:
     """Разрешить ссылку на коммит в полный SHA."""
-    return run_git(
-        repo, timeout_seconds, "rev-parse", "--verify", f"{commit}^{{commit}}"
-    ).decode().strip()
+    return (
+        run_git(repo, timeout_seconds, "rev-parse", "--verify", f"{commit}^{{commit}}")
+        .decode()
+        .strip()
+    )
 
 
 def tracked_paths(repo: Path, commit: str, timeout_seconds: int) -> list[str]:
@@ -75,7 +79,9 @@ def tracked_paths(repo: Path, commit: str, timeout_seconds: int) -> list[str]:
 
 def _object_names(commit: str, paths: list[str]) -> bytes:
     """Входные строки `git cat-file` для путей коммита."""
-    return "".join(f"{commit}:{path}\n" for path in paths).encode("utf-8", "surrogateescape")
+    return "".join(f"{commit}:{path}\n" for path in paths).encode(
+        "utf-8", "surrogateescape"
+    )
 
 
 def _batch_timeout(timeout_seconds: int, count: int) -> int:
@@ -99,7 +105,9 @@ def _read_header(output: bytes, position: int) -> tuple[tuple[bytes, int] | None
     return ((fields[1], int(fields[2])) if found else None), end + 1
 
 
-def blob_sizes(repo: Path, commit: str, paths: list[str], timeout_seconds: int) -> dict[str, int | None]:
+def blob_sizes(
+    repo: Path, commit: str, paths: list[str], timeout_seconds: int
+) -> dict[str, int | None]:
     """Размеры blob'ов по путям одним `git cat-file --batch-check`; `None` для не-blob объектов."""
     if not paths:
         return {}
@@ -118,7 +126,9 @@ def blob_sizes(repo: Path, commit: str, paths: list[str], timeout_seconds: int) 
     return sizes
 
 
-def blob_contents(repo: Path, commit: str, paths: list[str], timeout_seconds: int) -> dict[str, bytes | None]:
+def blob_contents(
+    repo: Path, commit: str, paths: list[str], timeout_seconds: int
+) -> dict[str, bytes | None]:
     """Содержимое blob'ов по путям одним `git cat-file --batch`; `None` для не-blob объектов."""
     if not paths:
         return {}
@@ -144,7 +154,12 @@ def blob_contents(repo: Path, commit: str, paths: list[str], timeout_seconds: in
 
 
 def read_blobs(
-    repo: Path, commit: str, paths: list[str], *, max_file_bytes: int, timeout_seconds: int
+    repo: Path,
+    commit: str,
+    paths: list[str],
+    *,
+    max_file_bytes: int,
+    timeout_seconds: int,
 ) -> dict[str, Blob]:
     """Прочитать размеры всех файлов и содержимое тех, что не больше `max_file_bytes`.
 
@@ -154,11 +169,9 @@ def read_blobs(
     batchable = [path for path in paths if "\n" not in path]
     sizes = blob_sizes(repo, commit, batchable, timeout_seconds)
     small = [
-        path for path in batchable
+        path
+        for path in batchable
         if (size := sizes[path]) is not None and size <= max_file_bytes
     ]
     contents = blob_contents(repo, commit, small, timeout_seconds)
-    return {
-        path: Blob(sizes.get(path), contents.get(path))
-        for path in paths
-    }
+    return {path: Blob(sizes.get(path), contents.get(path)) for path in paths}

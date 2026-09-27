@@ -43,7 +43,9 @@ def _reference_selection(
     for path in ordered:
         candidate = selected | {path}
         payload["files"] = [files[item] for item in ordered if item in candidate]
-        payload["edges"] = [e for e in edges if e["source"] in candidate and e["target"] in candidate]
+        payload["edges"] = [
+            e for e in edges if e["source"] in candidate and e["target"] in candidate
+        ]
         payload["diagnostics"] = [d for d in diagnostics if d["path"] in candidate]
         trial, size = budget.sized(payload)
         if size <= max_tokens:
@@ -52,7 +54,9 @@ def _reference_selection(
 
 
 @pytest.mark.parametrize("seed", range(25))
-def test_linear_budget_selects_exactly_what_full_reserialization_selects(seed: int) -> None:
+def test_linear_budget_selects_exactly_what_full_reserialization_selects(
+    seed: int,
+) -> None:
     rng = random.Random(seed)
     paths = [f"pkg/модуль_{index}_{'x' * rng.randrange(40)}.py" for index in range(30)]
     files: dict[str, dict[str, object]] = {
@@ -131,7 +135,11 @@ def test_worker_skips_only_the_files_of_a_grammar_missing_from_the_bundle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request = {
-        "paths": {"main.py": "cHJpbnQoKQ==", "main.go": "cGFja2FnZSBt", "note.txt": "aGk="},
+        "paths": {
+            "main.py": "cHJpbnQoKQ==",
+            "main.go": "cGFja2FnZSBt",
+            "note.txt": "aGk=",
+        },
         "languages": {".py": "python", ".go": "go", ".txt": "unknown"},
     }
     loaded: list[str] = []
@@ -141,32 +149,46 @@ def test_worker_skips_only_the_files_of_a_grammar_missing_from_the_bundle(
         return None if grammar == "go" else object()
 
     monkeypatch.setattr(worker, "_load_parser", _load)
-    monkeypatch.setattr(worker, "_file_facts", lambda _parser, _content, language: {"grammar": language})
+    monkeypatch.setattr(
+        worker, "_file_facts", lambda _parser, _content, language: {"grammar": language}
+    )
     monkeypatch.setattr(sys, "argv", ["tree_sitter_worker.py", "unused"])
-    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(request).encode())))
+    monkeypatch.setattr(
+        sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(request).encode()))
+    )
     output = io.StringIO()
     monkeypatch.setattr(sys, "stdout", output)
 
     worker.main()
 
-    assert json.loads(output.getvalue()) == {"files": {"main.py": {"grammar": "python"}}}
+    assert json.loads(output.getvalue()) == {
+        "files": {"main.py": {"grammar": "python"}}
+    }
     assert sorted(loaded) == ["go", "python"]
 
 
 def test_worker_without_request_languages_uses_the_compatible_default() -> None:
     assert worker._request_languages({"paths": {}}) == worker._DEFAULT_LANGUAGES
-    assert worker._request_languages({"languages": {".stub": "stub-lang"}}) == {".stub": "stub-lang"}
+    assert worker._request_languages({"languages": {".stub": "stub-lang"}}) == {
+        ".stub": "stub-lang"
+    }
 
 
 def test_supported_grammars_agree_between_worker_graph_and_protocol() -> None:
     assert set(worker._LANGUAGE_EXTRACTORS) == set(bundle_worker.SUPPORTED_GRAMMARS)
     assert set(worker._GRAMMAR_PACKAGES) == set(bundle_worker.SUPPORTED_GRAMMARS)
     assert set(GRAMMAR_FAMILIES) == set(bundle_worker.SUPPORTED_GRAMMARS)
-    assert set(worker._DEFAULT_LANGUAGES.values()) <= set(bundle_worker.SUPPORTED_GRAMMARS)
+    assert set(worker._DEFAULT_LANGUAGES.values()) <= set(
+        bundle_worker.SUPPORTED_GRAMMARS
+    )
 
 
-@pytest.mark.skipif(shutil.which("uv") is None, reason="health reports a missing uv before the lock")
-def test_health_names_a_registry_stub_bundle_instead_of_reporting_full_tier(tmp_path: Path) -> None:
+@pytest.mark.skipif(
+    shutil.which("uv") is None, reason="health reports a missing uv before the lock"
+)
+def test_health_names_a_registry_stub_bundle_instead_of_reporting_full_tier(
+    tmp_path: Path,
+) -> None:
     project = tmp_path / "project"
     (project / ".harness" / "repo_map").mkdir(parents=True)
     (project / ".harness" / "repo_map" / "repo_map.py").write_text("", encoding="utf-8")
@@ -175,20 +197,30 @@ def test_health_names_a_registry_stub_bundle_instead_of_reporting_full_tier(tmp_
         parser_bundle.default_registry_dir(project), pair=f"{python_tag}-{platform_tag}"
     )
 
-    result = repo_map_check.check_tier(HealthContext(repo=project, lock=None, online=False))
+    result = repo_map_check.check_tier(
+        HealthContext(repo=project, lock=None, online=False)
+    )
 
     assert result.status == "warn"
-    assert result.message.startswith("Repo Map: tier=minimal (parser bundle has no supported grammars)")
+    assert result.message.startswith(
+        "Repo Map: tier=minimal (parser bundle has no supported grammars)"
+    )
     assert result.fix is not None and "тестовый stub" in result.fix.text
 
 
-def test_health_warns_when_the_developer_would_run_the_full_gate(tmp_path: Path) -> None:
+def test_health_warns_when_the_developer_would_run_the_full_gate(
+    tmp_path: Path,
+) -> None:
     config = tmp_path / ".harness" / "orchestration.json"
     config.parent.mkdir(parents=True)
-    config.write_text(json.dumps({"verification_commands": ["python scripts/verify.py"]}))
+    config.write_text(
+        json.dumps({"verification_commands": ["python scripts/verify.py"]})
+    )
     lock = {"capabilities": ["backend-orchestration"]}
 
-    result = files_check.check_verification_routing(HealthContext(repo=tmp_path, lock=lock, online=False))
+    result = files_check.check_verification_routing(
+        HealthContext(repo=tmp_path, lock=lock, online=False)
+    )
     assert result.status == "warn"
     assert result.fix is not None
 
@@ -200,7 +232,9 @@ def test_health_warns_when_the_developer_would_run_the_full_gate(tmp_path: Path)
             }
         )
     )
-    result = files_check.check_verification_routing(HealthContext(repo=tmp_path, lock=lock, online=False))
+    result = files_check.check_verification_routing(
+        HealthContext(repo=tmp_path, lock=lock, online=False)
+    )
     assert result.status == "ok"
 
 

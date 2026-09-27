@@ -253,7 +253,9 @@ def run_gate(
                 else subprocess.list2cmdline(prepared)
             )
             approved_text = (
-                command if isinstance(command, str) else subprocess.list2cmdline(command)
+                command
+                if isinstance(command, str)
+                else subprocess.list2cmdline(command)
             )
             result: subprocess.CompletedProcess[str] = subprocess.run(
                 prepared,

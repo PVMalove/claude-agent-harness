@@ -25,7 +25,9 @@ WorkerFailure = Literal[
 ParserStatus = Literal["ok", "syntax_error", "invalid_encoding"]
 # Grammar names the tree-sitter worker has extractors for; a lock naming none of them cannot map any
 # real source file (a test stub bundle, for example).
-SUPPORTED_GRAMMARS = frozenset({"python", "typescript", "tsx", "javascript", "go", "java", "csharp"})
+SUPPORTED_GRAMMARS = frozenset(
+    {"python", "typescript", "tsx", "javascript", "go", "java", "csharp"}
+)
 
 # Size of one read from a worker pipe.
 STDOUT_CHUNK_BYTES = 65536
@@ -122,7 +124,9 @@ def _file_facts(value: object) -> FileFacts | None:
         return None
     signatures = [_signature_fact(item) for item in raw_signatures]
     imports = [_import_fact(item) for item in raw_imports]
-    if any(item is None for item in signatures) or any(item is None for item in imports):
+    if any(item is None for item in signatures) or any(
+        item is None for item in imports
+    ):
         return None
     return {
         "parser_status": cast(ParserStatus, status),
@@ -213,7 +217,9 @@ def _collect_stdout(
             return "parser subprocess exceeded output size limit"
 
 
-def _record_failure(error_log: Path | None, reason: WorkerFailure, stderr_tail: bytes) -> None:
+def _record_failure(
+    error_log: Path | None, reason: WorkerFailure, stderr_tail: bytes
+) -> None:
     """Записать причину сбоя и хвост stderr worker в диагностический лог, если он задан."""
     if error_log is None:
         return
@@ -258,7 +264,9 @@ def run_bundle_parser(
         )
     except OSError:
         return "parser subprocess failed"
-    assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+    assert (
+        proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+    )
     deadline = time.monotonic() + timeout_seconds
     output_queue: queue.Queue[bytes | None] = queue.Queue()
     stderr_tail = bytearray()
@@ -266,9 +274,13 @@ def run_bundle_parser(
         target=_read_stderr_tail, args=(proc.stderr, stderr_tail), daemon=True
     )
     threads = (
-        threading.Thread(target=_read_stdout, args=(proc.stdout, output_queue), daemon=True),
         threading.Thread(
-            target=_write_stdin, args=(proc.stdin, json.dumps(request).encode("utf-8")), daemon=True
+            target=_read_stdout, args=(proc.stdout, output_queue), daemon=True
+        ),
+        threading.Thread(
+            target=_write_stdin,
+            args=(proc.stdin, json.dumps(request).encode("utf-8")),
+            daemon=True,
         ),
         stderr_reader,
     )
