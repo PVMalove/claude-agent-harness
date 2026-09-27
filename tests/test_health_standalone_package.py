@@ -77,6 +77,7 @@ def test_registry_runs_from_a_copied_health_only_tree_with_no_bin_harness(
         "directories",
         "repo_map",
         "environment",
+        "tracker",
         "orchestration",
     }
     assert {check.status for check in report.checks} <= {
@@ -152,6 +153,10 @@ def test_registry_runs_without_crashing_even_with_a_lock_file_present(
         "environment.pytest_temp",
         "environment.symlinks",
         "environment.hook_bash",
+        "tracker.auth",
+        "tracker.reachability",
+        "tracker.permissions",
+        "tracker.labels",
         "orchestration.ledger_summary",
         "orchestration.blocked_batches",
         "orchestration.stale_dispatches",

@@ -24,6 +24,7 @@ from .checks import environment as environment_checks
 from .checks import files as files_checks
 from .checks import orchestration as orchestration_checks
 from .checks import repo_map as repo_map_checks
+from .checks import tracker as tracker_checks
 from .checks import windows as windows_checks
 from .context import HealthContext
 from .model import CheckResult, JsonObject, Report
@@ -62,6 +63,10 @@ REGISTRY: list[tuple[str, CheckFn]] = [
     ("environment.pytest_temp", windows_checks.check_pytest_temp),
     ("environment.symlinks", windows_checks.check_symlinks),
     ("environment.hook_bash", windows_checks.check_hook_bash),
+    ("tracker.auth", tracker_checks.check_auth),
+    ("tracker.reachability", tracker_checks.check_reachability),
+    ("tracker.permissions", tracker_checks.check_permissions),
+    ("tracker.labels", tracker_checks.check_labels),
     ("orchestration.ledger_summary", orchestration_checks.check_ledger_summary),
     ("orchestration.blocked_batches", orchestration_checks.check_blocked_batches),
     ("orchestration.stale_dispatches", orchestration_checks.check_stale_dispatches),
@@ -75,6 +80,7 @@ FIXERS: dict[str, FixFn] = {
         check_id: directory_checks.make_fix(check_id)
         for check_id in directory_checks.DIRECTORY_PATHS
     },
+    "tracker.labels": tracker_checks.fix_labels,
 }
 
 _LOCK_REL = Path(".harness/harness.lock")
