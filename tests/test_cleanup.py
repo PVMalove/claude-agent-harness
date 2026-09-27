@@ -174,9 +174,12 @@ class CleanupTests(unittest.TestCase):
 
     def test_hard_cleans_sandboxes_cache_and_reports_and_requires_confirm(self) -> None:
         sandboxes = self.repo / ".harness" / ".sandboxes"
-        cache_item = sandboxes / "cache" / "repo_map"
+        cache_item = sandboxes / "cache" / "repo_map" / "results"
         cache_item.mkdir(parents=True, exist_ok=True)
         (cache_item / "cached.json").write_text("{}", encoding="utf-8")
+        registry = sandboxes / "cache" / "repo_map" / "parser_bundle" / "registry"
+        registry.mkdir(parents=True)
+        (registry / "bundle.lock").write_text("offline source", encoding="utf-8")
 
         reports_item = sandboxes / "reports" / "summary.html"
         reports_item.parent.mkdir(parents=True, exist_ok=True)
@@ -201,6 +204,7 @@ class CleanupTests(unittest.TestCase):
         result = apply_cleanup(self.repo, hard_plan, confirm="HARD")
         self.assertFalse(result["failed"])
         self.assertFalse(cache_item.exists())
+        self.assertTrue((registry / "bundle.lock").exists())
         self.assertFalse(reports_item.exists())
 
     def test_hard_keeps_active_and_dirty_worktree_then_removes_local_branch_only(self) -> None:

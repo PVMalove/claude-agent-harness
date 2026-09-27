@@ -16,10 +16,13 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
+from harness.repo_map.bundle_install import INSTALL_DIR_HASH_PREFIX
+from harness.repo_map.bundle_lock import LOCK_FILENAME, BundleFormatError, parse_lock
 from harness.storage import LEGACY_STORAGE_DIRS, sandboxes_root, storage_root
 
 TERMINAL_BATCH_STATES = {"completed", "failed", "abandoned", "not-required"}
 LEGACY_TOP_LEVEL_DIRS = LEGACY_STORAGE_DIRS
+_INSTALL_DIR_RE = re.compile(rf"[0-9a-f]{{{INSTALL_DIR_HASH_PREFIX}}}-cp[0-9]+-[A-Za-z0-9_]+")
 
 
 class CleanupItem(TypedDict):
@@ -200,11 +203,32 @@ def _branch_allowed(root: Path, branch: str) -> bool:
         return re.fullmatch(r"feature/issue-[0-9]+-.+", branch) is not None
 
 
+def _stale_bundle_installs(bundle_root: Path, min_age_hours: float) -> list[Path]:
+    """Найти устаревшие установки bundle, сохранив локальный offline registry."""
+    if not bundle_root.is_dir() or bundle_root.is_symlink():
+        return []
+    try:
+        lock = parse_lock((bundle_root / "registry" / LOCK_FILENAME).read_bytes())
+        current = lock.raw_sha256[:INSTALL_DIR_HASH_PREFIX]
+    except (OSError, BundleFormatError):
+        current = None
+    return [
+        path for path in sorted(bundle_root.iterdir())
+        if path.is_dir()
+        and _INSTALL_DIR_RE.fullmatch(path.name)
+        and path.name.split("-", 1)[0] != current
+        and _inside(bundle_root, path)
+        and _old_enough(path, min_age_hours)
+    ]
+
+
 def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> CleanupPlan:
     """Return exact deletions and skips; never mutate the filesystem."""
     if mode not in {"soft", "hard"} or min_age_hours < 0:
         raise ValueError("cleanup mode must be soft or hard and minimum age cannot be negative")
     checkout = repo.expanduser().resolve()
+    if storage_root(checkout).is_symlink() or sandboxes_root(checkout).is_symlink():
+        raise ValueError("storage root must not be a symlink")
     root = storage_root(checkout).resolve()
     sandboxes = sandboxes_root(checkout).resolve()
     remove: list[CleanupItem] = []
@@ -273,6 +297,17 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
             parent = sandboxes / category
             if parent.is_dir() and not parent.is_symlink():
                 for entry in sorted(parent.iterdir()):
+                    if (category == "cache" and entry.name == "repo_map"
+                            and entry.is_dir() and not entry.is_symlink() and _inside(root, entry)):
+                        results = entry / "results"
+                        if results.is_dir() and not results.is_symlink() and _inside(root, results):
+                            remove.append({"kind": "directory", "path": str(results)})
+                        bundle_root = entry / "parser_bundle"
+                        remove.extend(
+                            {"kind": "directory", "path": str(path)}
+                            for path in _stale_bundle_installs(bundle_root, min_age_hours)
+                        )
+                        continue
                     if entry.is_file() and _inside(root, entry):
                         remove.append({"kind": "file", "path": str(entry)})
                     elif entry.is_dir() and not entry.is_symlink() and _inside(root, entry):
