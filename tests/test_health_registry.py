@@ -51,7 +51,7 @@ def test_run_without_a_lock_file_builds_a_context_with_no_lock(
         captured.append(context)
         return CheckResult(id="test.probe", group="test", status="ok", message="ok")
 
-    monkeypatch.setattr(registry, "REGISTRY", [_capture])
+    monkeypatch.setattr(registry, "REGISTRY", [("test.probe", _capture)])
     report = registry.run(tmp_path)
 
     assert captured == [HealthContext(repo=tmp_path, lock=None, online=False)]
@@ -72,10 +72,70 @@ def test_run_parses_an_existing_lock_file_once(
         captured.append(context)
         return CheckResult(id="test.probe", group="test", status="ok", message="ok")
 
-    monkeypatch.setattr(registry, "REGISTRY", [_capture])
+    monkeypatch.setattr(registry, "REGISTRY", [("test.probe", _capture)])
     registry.run(tmp_path)
 
     assert captured[0].lock == {"capabilities": ["pvmalove-suite"]}
+
+
+def _ok(check_id: str) -> registry.CheckFn:
+    def _check(_context: HealthContext) -> CheckResult:
+        return CheckResult(id=check_id, group="test", status="ok", message="ok")
+
+    return _check
+
+
+@pytest.mark.parametrize(
+    "error", [RuntimeError("boom"), FileNotFoundError("git"), SystemExit(1)]
+)
+def test_a_crashing_check_becomes_a_fail_and_the_run_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
+    def check_crashes(_context: HealthContext) -> CheckResult:
+        raise error
+
+    monkeypatch.setattr(
+        registry,
+        "REGISTRY",
+        [
+            ("test.before", _ok("test.before")),
+            ("test.crashes", check_crashes),
+            ("test.after", _ok("test.after")),
+        ],
+    )
+    report = registry.run(tmp_path)
+
+    assert [check.id for check in report.checks] == [
+        "test.before",
+        "test.crashes",
+        "test.after",
+    ]
+    crashed = report.checks[1]
+    assert crashed.group == "test"
+    assert crashed.status == "fail"
+    assert "check_crashes" in crashed.message
+    assert type(error).__name__ in crashed.message
+
+
+def test_keyboard_interrupt_is_not_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _interrupted(_context: HealthContext) -> CheckResult:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(registry, "REGISTRY", [("test.interrupted", _interrupted)])
+
+    with pytest.raises(KeyboardInterrupt):
+        registry.run(tmp_path)
+
+
+def test_every_registered_id_matches_the_id_its_check_returns(tmp_path: Path) -> None:
+    """The crash fallback reports under the declared id, so it must be the check's real id."""
+    report = registry.run(tmp_path)
+
+    assert [check.id for check in report.checks] == [
+        check_id for check_id, _ in registry.REGISTRY
+    ]
 
 
 def test_summary_counts_every_status(tmp_path: Path) -> None:
