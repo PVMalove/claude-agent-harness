@@ -140,6 +140,13 @@ def test_bash_on_path_before_system32_is_ok(tmp_path: Path) -> None:
     assert str(bash).casefold() in str(hook_bash["message"]).casefold()
 
 
+def _with_program_files(env: dict[str, str], program_files: Path) -> None:
+    # A 64-bit Windows process gets ProgramFiles re-derived from ProgramW6432 at startup, so an
+    # override of ProgramFiles alone never reaches the child: set both, as on a real machine.
+    env["ProgramFiles"] = str(program_files)
+    env["ProgramW6432"] = str(program_files)
+
+
 def _no_git_install(tmp_path: Path) -> dict[str, str]:
     empty = tmp_path / "empty"
     empty.mkdir(exist_ok=True)
@@ -159,7 +166,7 @@ def test_missing_bash_warns_and_points_to_git_bash(tmp_path: Path) -> None:
     program_files = tmp_path / "pf"
     git_bash = _fake_exe(program_files / "Git" / "bin" / "bash.exe")
     env = _no_git_install(tmp_path)
-    env["ProgramFiles"] = str(program_files)
+    _with_program_files(env, program_files)
     env["PATH"] = str(tmp_path / "empty")
 
     checks = _health(_repo(tmp_path / "repo"), env)
@@ -180,7 +187,7 @@ def test_wsl_bash_stub_on_path_fails(tmp_path: Path, git_bash_installed: bool) -
     if git_bash_installed:
         program_files = tmp_path / "pf"
         _fake_exe(program_files / "Git" / "bin" / "bash.exe")
-        env["ProgramFiles"] = str(program_files)
+        _with_program_files(env, program_files)
     env["PATH"] = str(system32)
 
     checks = _health(_repo(tmp_path / "repo"), env)
@@ -454,6 +461,19 @@ def test_git_bash_candidates_from_mingw_git() -> None:
     candidates = windows.git_bash_candidates("C:\\Git\\mingw64\\bin\\git.exe", {})
 
     assert "C:\\Git\\bin\\bash.exe" in candidates
+
+
+@only_windows
+def test_find_git_bash_under_program_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git_bash = _fake_exe(tmp_path / "pf" / "Git" / "bin" / "bash.exe")
+    for variable, value in _no_git_install(tmp_path).items():
+        monkeypatch.setenv(variable, value)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "pf"))
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    assert windows._find_git_bash() == str(git_bash)
 
 
 def _hook_bash(
