@@ -55,14 +55,13 @@ def run_console(
     *,
     runner: CommandRunner = default_runner,
 ) -> int:
-    """Entry point `cmd_console` calls. Two paths so far:
+    """Entry point `cmd_console` calls. Three paths:
 
     1. Already relaunched (`RELAUNCH_ENV` set by our own subprocess call below): import and run
        the real textual App in-process - this is the only path that ever imports `textual`.
-    2. `uv` found: relaunch via `runner` and return its exit code.
-
-    The no-`uv`/relaunch-failure fallback (print the reason, then the stdlib `harness health`
-    report) is added in the next commit.
+    2. `uv` not on PATH: print why and fall back to the stdlib `harness health` report.
+    3. `uv` found: relaunch via `runner`; a non-zero exit (offline, resolution failure, ...) falls
+       back the same way as (2). Diagnostics never depends on textual being installed.
     """
     if os.environ.get(RELAUNCH_ENV) == "1":
         from . import app as console_app
@@ -71,10 +70,32 @@ def run_console(
 
     uv = find_uv()
     if uv is None:
+        _print_fallback(
+            repo,
+            "harness console: uv не найден в PATH — TUI недоступен, показан отчёт harness health",
+        )
         return 1
 
     argv = build_relaunch_argv(uv, repo, extra_argv)
     env = dict(os.environ)
     env[RELAUNCH_ENV] = "1"
     result = runner(argv, env=env)
+    if result.returncode != 0:
+        _print_fallback(
+            repo,
+            "harness console: не удалось запустить textual через uv "
+            f"(uv run завершился с кодом {result.returncode}) — показан отчёт harness health",
+        )
     return result.returncode
+
+
+def _print_fallback(repo: Path, reason: str) -> None:
+    """Print the reason, then the same text report `harness health` prints - via its two public
+    entry points (harness.health.registry.run / harness.health.render.render_text), never a
+    reimplementation of check logic."""
+    print(reason)
+    from ..health import registry as health_registry
+    from ..health import render as health_render
+
+    report = health_registry.run(repo)
+    print(health_render.render_text(report), end="")

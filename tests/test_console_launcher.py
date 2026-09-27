@@ -4,13 +4,19 @@
 
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
+import sys
 from pathlib import Path
 from typing import Mapping, Sequence
 from unittest import mock
 
 from harness.console import launcher
 from harness.console.pin import TEXTUAL_PIN
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_BIN_HARNESS = _REPO_ROOT / "harness" / "bin" / "harness"
 
 
 def test_find_uv_uses_shutil_which() -> None:
@@ -89,3 +95,69 @@ def test_run_console_relaunches_via_the_injected_runner_when_uv_is_found() -> No
     assert exit_code == 0
     assert recorded_argv[0] == "/usr/local/bin/uv"
     assert recorded_env[launcher.RELAUNCH_ENV] == "1"
+
+
+def _init_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+
+
+def _console_subprocess(repo: Path, *, path_env: str) -> "subprocess.CompletedProcess[str]":
+    env = dict(os.environ)
+    env["PATH"] = path_env
+    return subprocess.run(
+        [sys.executable, str(_BIN_HARNESS), "console", str(repo)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+
+
+def test_console_prints_reason_and_health_report_when_uv_is_missing(
+    tmp_path: Path,
+) -> None:
+    """DoD: 'When uv is missing ... the command prints the reason and the text `harness health`
+    report' - proved end to end through a real subprocess, PATH scrubbed of uv entirely."""
+    repo = tmp_path / "target-repo"
+    _init_repo(repo)
+
+    scrubbed_path = os.pathsep.join(
+        entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if entry and not (Path(entry) / "uv").exists()
+    )
+
+    result = _console_subprocess(repo, path_env=scrubbed_path)
+
+    assert result.returncode == 1
+    assert "uv не найден" in result.stdout
+    # The same marker tests/test_health_cli.py asserts for a real `harness health` run.
+    assert "Итого:" in result.stdout
+
+
+def test_console_prints_reason_and_health_report_when_relaunch_fails(
+    tmp_path: Path,
+) -> None:
+    """DoD: 'or the textual install fails, the command prints the reason and the text
+    `harness health` report' - a fake `uv` script first on PATH exits non-zero, simulating an
+    offline/failed `uv run --with textual==<pin>`."""
+    repo = tmp_path / "target-repo"
+    _init_repo(repo)
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_uv = fake_bin / "uv"
+    fake_uv.write_text(
+        "#!/bin/sh\necho 'fake uv: textual resolution failed (offline)' >&2\nexit 7\n",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(fake_uv.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    path_env = os.pathsep.join([str(fake_bin), os.environ.get("PATH", "")])
+    result = _console_subprocess(repo, path_env=path_env)
+
+    assert result.returncode == 7
+    assert "не удалось запустить textual через uv" in result.stdout
+    assert "fake uv: textual resolution failed" in result.stderr
+    assert "Итого:" in result.stdout
