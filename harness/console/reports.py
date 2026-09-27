@@ -9,19 +9,27 @@ of aborting the screen. Nothing here writes, migrates or locks the ledger.
 A completion report carries no timestamp of its own (see
 harness/orchestration/workflow/reports.py `_persist_report`), so its date is the ledger's own
 append-only audit entry for `reports/<dispatch_id>.json`; batch state changes come from the same
-audit's `transition` entries.
+audit's `transition` entries. QA gate logs (`qa-artifacts/<sha256>.log`, written by
+harness/orchestration/qa_lane.py) are linked to their QA report through the `sha256:<digest>` its
+Output field names; failed qa-lane attempts (`qa-lane/attempts/*.json`) through their `dispatch_id`.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
 from ..orchestration.core.constants import STATE_REL
+from .export import MarkdownDocument, MarkdownSection
 from ..orchestration.ledger.lifecycle import JsonObject, JsonValue, LifecycleLedger
 
 REPORT_SECTIONS = ("Output", "Checks", "Risks", "Blockers", "Next action")
+QA_LOG_TAIL_LINES = 15
+_QA_SHA256 = re.compile(r"sha256:([0-9a-f]{64})")
+_QA_COMMAND = re.compile(r"^\$ (.*)$")
+_QA_EXIT = re.compile(r"^exit_code=(-?\d+)$")
 _ROLE_FLOW_SEPARATOR = " → "
 
 
@@ -63,6 +71,31 @@ class BatchTimeline:
     events: list[TimelineEvent]
 
 
+@dataclass(frozen=True)
+class QaAttempt:
+    """A qa-lane run that stopped before its QA report was persisted."""
+
+    dispatch_id: str
+    stage: str
+    failed_at: str
+    message: str
+
+
+@dataclass(frozen=True)
+class QaRun:
+    """One QA gate log. `dispatch_id` is None for a log no QA report points to (the run failed
+    after persisting it); `commands` are (command, exit code) pairs parsed from the log itself."""
+
+    artifact: str
+    logged_at: str
+    dispatch_id: str | None
+    ticket: str
+    outcome: str
+    commands: list[tuple[str, int]]
+    tail: list[str]
+    total_lines: int
+
+
 @dataclass
 class LedgerView:
     """Every record the Reports section needs, read once. `unavailable` is a human-readable reason
@@ -70,6 +103,8 @@ class LedgerView:
 
     reports: list[ReportEntry] = field(default_factory=list)
     batches: list[BatchSummary] = field(default_factory=list)
+    qa_runs: list[QaRun] = field(default_factory=list)
+    qa_attempts: list[QaAttempt] = field(default_factory=list)
     unavailable: str | None = None
     _batch_records: dict[str, JsonObject] = field(default_factory=dict)
     _dispatches: dict[str, JsonObject] = field(default_factory=dict)
@@ -178,7 +213,102 @@ def load_ledger_view(repo: Path) -> LedgerView:
             )
         )
     view.reports.sort(key=lambda entry: entry.reported_at, reverse=True)
+    _load_qa(view, root)
     return view
+
+
+def _qa_commands(lines: list[str]) -> list[tuple[str, int]]:
+    commands: list[tuple[str, int]] = []
+    for index, line in enumerate(lines):
+        command = _QA_COMMAND.match(line)
+        if command is None or index + 1 >= len(lines):
+            continue
+        exit_code = _QA_EXIT.match(lines[index + 1])
+        if exit_code is not None:
+            commands.append((command.group(1), int(exit_code.group(1))))
+    return commands
+
+
+def _load_qa(view: LedgerView, root: Path) -> None:
+    reports_by_sha = {
+        match.group(1): entry
+        for entry in view.reports
+        if entry.role == "qa"
+        and (match := _QA_SHA256.search(_text(entry.report.get("output")))) is not None
+    }
+    for path in sorted((root / "qa-artifacts").glob("*.log")):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        relative = f"qa-artifacts/{path.name}"
+        entry = reports_by_sha.get(path.stem)
+        view.qa_runs.append(
+            QaRun(
+                artifact=relative,
+                logged_at=_first_write_at(view, relative),
+                dispatch_id=entry.dispatch_id if entry else None,
+                ticket=entry.ticket if entry else "?",
+                outcome=entry.outcome if entry else "нет отчёта",
+                commands=_qa_commands(lines),
+                tail=lines[-QA_LOG_TAIL_LINES:],
+                total_lines=len(lines),
+            )
+        )
+    view.qa_runs.sort(key=lambda run: run.logged_at, reverse=True)
+    for record in _read_directory(root, "qa-lane/attempts"):
+        view.qa_attempts.append(
+            QaAttempt(
+                dispatch_id=_text(record.get("dispatch_id"), "?"),
+                stage=_text(record.get("stage"), "?"),
+                failed_at=_text(record.get("failed_at")),
+                message=_text(record.get("message")),
+            )
+        )
+    view.qa_attempts.sort(key=lambda attempt: attempt.failed_at, reverse=True)
+
+
+def qa_run_text(run: QaRun) -> str:
+    """The log's verdict, then its tail."""
+    failed = [(command, code) for command, code in run.commands if code != 0]
+    verdict = "failed" if failed else "passed"
+    summary = f"итог: {verdict} — команд {len(run.commands)}, с ошибкой {len(failed)}"
+    if failed:
+        summary += (
+            " ("
+            + ", ".join(f"{command}: exit {code}" for command, code in failed)
+            + ")"
+        )
+    lines = [
+        f"{run.artifact} · {run.logged_at or 'время ?'} · "
+        f"{run.dispatch_id or 'без отчёта'} · {run.ticket} · отчёт: {run.outcome}",
+        summary,
+        f"хвост лога (последние {len(run.tail)} из {run.total_lines} строк):",
+        *(f"  {line}" for line in run.tail),
+    ]
+    return "\n".join(lines)
+
+
+def qa_attempts_text(attempts: list[QaAttempt]) -> str:
+    return "\n".join(
+        [f"попытки qa-lane: {len(attempts)}"]
+        + [
+            f"  {attempt.failed_at or 'время ?'} · {attempt.dispatch_id} · "
+            f"{attempt.stage}: {attempt.message}"
+            for attempt in attempts
+        ]
+    )
+
+
+def qa_log_text(view: LedgerView, dispatch_id: str) -> str:
+    """Everything the ledger holds about one QA dispatch's runs; empty for a non-QA dispatch."""
+    runs = [run for run in view.qa_runs if run.dispatch_id == dispatch_id]
+    attempts = [item for item in view.qa_attempts if item.dispatch_id == dispatch_id]
+    if not runs and not attempts:
+        return ""
+    return "\n\n".join(
+        [qa_attempts_text(attempts), *(qa_run_text(run) for run in runs)]
+    )
 
 
 def filter_reports(
@@ -361,3 +491,66 @@ def _build_timeline(view: LedgerView, batch: JsonObject) -> BatchTimeline:
 
 def role_flow_text(timeline: BatchTimeline) -> str:
     return _ROLE_FLOW_SEPARATOR.join(timeline.role_flow) or "диспатчей ещё не было"
+
+
+def _cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ")
+
+
+def report_document(view: LedgerView, entry: ReportEntry) -> MarkdownDocument:
+    """A completion report (plus its QA log for a QA dispatch) as an exportable document."""
+    report = entry.report
+    checks = _objects(report.get("checks_run"))
+    sections: list[MarkdownSection] = []
+    for title, body in report_sections(report):
+        if title == "Checks" and checks:
+            body = "\n".join(
+                f"- `{_text(check.get('command'), '?')}` — {_text(check.get('result'), '?')}: "
+                f"{_text(check.get('evidence'))}"
+                for check in checks
+            )
+        sections.append(MarkdownSection(title, body, preformatted=title == "Review"))
+    qa_log = qa_log_text(view, entry.dispatch_id)
+    if qa_log:
+        sections.append(MarkdownSection("QA log", qa_log, preformatted=True))
+    return MarkdownDocument(
+        title=f"Completion report {entry.dispatch_id}",
+        slug=f"report-{entry.dispatch_id}",
+        ticket=entry.ticket,
+        meta=[
+            ("Ticket", entry.ticket),
+            ("Role", entry.role),
+            ("Outcome", entry.outcome),
+            ("Reported at", entry.reported_at or "неизвестно"),
+            ("Dispatch", entry.dispatch_id),
+            ("Batch", entry.batch_id or "?"),
+            ("Commit", _text(report.get("commit_sha"), "—")),
+            ("Changed files", ", ".join(_strings(report.get("changed_files"))) or "—"),
+        ],
+        sections=sections,
+    )
+
+
+def timeline_document(timeline: BatchTimeline) -> MarkdownDocument:
+    batch = timeline.batch
+    rows = [
+        "| Время | Тип | Роль | Событие |",
+        "| --- | --- | --- | --- |",
+        *(
+            f"| {_cell(event.at or '?')} | {event.kind} | {_cell(event.role or '—')} "
+            f"| {_cell(event.text)} |"
+            for event in timeline.events
+        ),
+    ]
+    return MarkdownDocument(
+        title=f"Хронология батча {batch.batch_id}",
+        slug=f"timeline-{batch.batch_id}",
+        ticket=batch.ticket,
+        meta=[
+            ("Ticket", batch.ticket),
+            ("Batch", batch.batch_id),
+            ("State", batch.state),
+            ("Маршрут", role_flow_text(timeline)),
+        ],
+        sections=[MarkdownSection("События", "\n".join(rows))],
+    )

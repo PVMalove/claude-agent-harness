@@ -1,6 +1,8 @@
 """Reports section: completion reports from the selected ledger generation, filterable by ticket,
 role, outcome and date; one report read section by section (text wraps to the screen width); and a
-batch chronology - states, dispatches by role, coordinator decisions and risks. All facts come from
+batch chronology - states, dispatches by role, coordinator decisions and risks; QA gate logs (verdict
+and tail) with failed qa-lane attempts. A report or a chronology exports to Markdown (`e`) through
+the shared screens/export.py action. All facts come from
 harness.console.reports; these screens only render them. Report text is untrusted role output, so
 every widget renders it with `markup=False`."""
 
@@ -17,6 +19,7 @@ from textual.widgets import Button, Footer, Header, Input, ListItem, ListView, S
 
 from .. import reports as console_reports
 from ..reports import BatchTimeline, LedgerView, ReportEntry
+from .export import EXPORT_BINDING_KEY, export_document
 
 _FILTERS = (
     ("filter-ticket", "тикет", "ticket"),
@@ -38,7 +41,10 @@ def _section_id(title: str) -> str:
 class ReportsScreen(Screen[None]):
     """The report list with its filters, and the batch list that opens a chronology."""
 
-    BINDINGS = [Binding("escape", "app.pop_screen", "Назад")]
+    BINDINGS = [
+        Binding("escape", "app.pop_screen", "Назад"),
+        Binding("f3", "open_qa_logs", "QA-логи"),
+    ]
     DEFAULT_CSS = """
     ReportsScreen #report-filters { height: auto; }
     ReportsScreen #report-filters Input { width: 1fr; }
@@ -65,6 +71,7 @@ class ReportsScreen(Screen[None]):
                 yield Input(placeholder=placeholder, id=widget_id)
         yield Static("Completion reports", classes="list-title")
         yield ListView(*self._report_items(), id="report-list")
+        yield Button("QA-логи", id="open-qa-logs")
         yield Static("Батчи (хронология)", classes="list-title")
         yield ListView(
             *(
@@ -109,11 +116,18 @@ class ReportsScreen(Screen[None]):
             return
         if event.list_view.id == "report-list":
             entry = next(item for item in self.view.reports if item.dispatch_id == name)
-            self.app.push_screen(ReportScreen(entry, self.view))
+            self.app.push_screen(ReportScreen(entry, self.view, self.repo))
         elif event.list_view.id == "batch-list":
             timeline = self.view.timeline(name)
             if timeline is not None:
-                self.app.push_screen(BatchTimelineScreen(timeline))
+                self.app.push_screen(BatchTimelineScreen(timeline, self.repo))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "open-qa-logs":
+            self.action_open_qa_logs()
+
+    def action_open_qa_logs(self) -> None:
+        self.app.push_screen(QaLogsScreen(self.view))
 
 
 class ReportScreen(Screen[None]):
@@ -122,16 +136,19 @@ class ReportScreen(Screen[None]):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Назад"),
         Binding("b", "open_timeline", "Хронология батча"),
+        Binding(EXPORT_BINDING_KEY, "export", "Экспорт в Markdown"),
     ]
     DEFAULT_CSS = """
     ReportScreen .section-title { margin-top: 1; text-style: bold; }
     ReportScreen .section-body { padding-left: 2; }
+    ReportScreen .actions { height: auto; }
     """
 
-    def __init__(self, entry: ReportEntry, view: LedgerView) -> None:
+    def __init__(self, entry: ReportEntry, view: LedgerView, repo: Path) -> None:
         super().__init__()
         self.entry = entry
         self.view = view
+        self.repo = repo
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -149,19 +166,34 @@ class ReportScreen(Screen[None]):
                     classes="section-body",
                     markup=False,
                 )
-        yield Button("Хронология батча", id="open-timeline")
+            qa_log = console_reports.qa_log_text(self.view, self.entry.dispatch_id)
+            if qa_log:
+                yield Static("QA log", classes="section-title")
+                yield Static(
+                    qa_log, id="section-qa-log", classes="section-body", markup=False
+                )
+        with Horizontal(classes="actions"):
+            yield Button("Хронология батча", id="open-timeline")
+            yield Button("Экспорт в Markdown", id="export")
         yield Footer()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "open-timeline":
             self.action_open_timeline()
+        elif event.button.id == "export":
+            self.action_export()
+
+    def action_export(self) -> None:
+        export_document(
+            self, self.repo, console_reports.report_document(self.view, self.entry)
+        )
 
     def action_open_timeline(self) -> None:
         timeline = self.view.timeline(self.entry.batch_id)
         if timeline is None:
             self.notify("батч этого отчёта не найден в ledger", severity="warning")
             return
-        self.app.push_screen(BatchTimelineScreen(timeline))
+        self.app.push_screen(BatchTimelineScreen(timeline, self.repo))
 
 
 def _render_timeline(timeline: BatchTimeline) -> str:
@@ -178,15 +210,51 @@ def _render_timeline(timeline: BatchTimeline) -> str:
 
 
 class BatchTimelineScreen(Screen[None]):
-    BINDINGS = [Binding("escape", "app.pop_screen", "Назад")]
+    BINDINGS = [
+        Binding("escape", "app.pop_screen", "Назад"),
+        Binding(EXPORT_BINDING_KEY, "export", "Экспорт в Markdown"),
+    ]
 
-    def __init__(self, timeline: BatchTimeline) -> None:
+    def __init__(self, timeline: BatchTimeline, repo: Path) -> None:
         super().__init__()
         self.timeline = timeline
+        self.repo = repo
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield VerticalScroll(
             Static(_render_timeline(self.timeline), id="batch-timeline", markup=False)
+        )
+        yield Footer()
+
+    def action_export(self) -> None:
+        export_document(
+            self, self.repo, console_reports.timeline_document(self.timeline)
+        )
+
+
+def _render_qa_logs(view: LedgerView) -> str:
+    if view.unavailable:
+        return view.unavailable
+    parts = [console_reports.qa_attempts_text(view.qa_attempts)]
+    parts.extend(console_reports.qa_run_text(run) for run in view.qa_runs)
+    if not view.qa_runs:
+        parts.append("QA-логов в ledger нет")
+    return "\n\n".join(parts)
+
+
+class QaLogsScreen(Screen[None]):
+    """Every QA gate log in the generation (newest first) and every failed qa-lane attempt."""
+
+    BINDINGS = [Binding("escape", "app.pop_screen", "Назад")]
+
+    def __init__(self, view: LedgerView) -> None:
+        super().__init__()
+        self.view = view
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield VerticalScroll(
+            Static(_render_qa_logs(self.view), id="qa-logs", markup=False)
         )
         yield Footer()
