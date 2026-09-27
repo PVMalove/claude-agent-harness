@@ -340,6 +340,14 @@ def test_owner_reports_access_missing_on_a_stat_error(
     assert checks._owner(tmp_path) == "неизвестен (доступ отсутствует)"
 
 
+def test_owner_falls_back_to_uid_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("sys.platform", "win32")
+
+    assert checks._owner(tmp_path) == str(tmp_path.stat().st_uid)
+
+
 def test_orphaned_worktrees_warns_with_owner_and_deletes_nothing(
     tmp_path: Path,
 ) -> None:

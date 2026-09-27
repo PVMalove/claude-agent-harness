@@ -20,6 +20,7 @@ Every check only reads state: ledger records, `git worktree list --porcelain`, a
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from ..context import HealthContext
@@ -295,10 +296,10 @@ def _owner(path: Path) -> str:
         uid = path.stat().st_uid
     except OSError:
         return "неизвестен (доступ отсутствует)"
-    try:
-        import pwd
-    except ImportError:
+    if sys.platform == "win32":
         return str(uid)
+    import pwd
+
     try:
         return pwd.getpwuid(uid).pw_name
     except KeyError:
