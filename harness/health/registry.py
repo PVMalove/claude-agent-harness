@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Callable
 
+from .checks import environment as environment_checks
 from .checks import files as files_checks
 from .checks import repo_map as repo_map_checks
 from .context import HealthContext
@@ -31,6 +32,14 @@ REGISTRY: list[CheckFn] = [
     files_checks.check_integrations,
     files_checks.check_verification_routing,
     repo_map_checks.check_tier,
+    environment_checks.check_git,
+    environment_checks.check_git_identity,
+    environment_checks.check_gitattributes,
+    environment_checks.check_line_endings,
+    environment_checks.check_python,
+    environment_checks.check_uv,
+    environment_checks.check_dev_environment,
+    environment_checks.check_output_encoding,
 ]
 
 _LOCK_REL = Path(".harness/harness.lock")
@@ -50,14 +59,19 @@ def run(
     *,
     online: bool = False,
     snapshot_diff: Callable[[Path], JsonObject] | None = None,
+    output_encoding: str | None = None,
 ) -> Report:
     """Build one HealthContext and run every registered check, without early exit.
 
-    `snapshot_diff` is forwarded to HealthContext unchanged; see its docstring - only
-    harness/bin/harness's cmd_health supplies it today.
+    `snapshot_diff` and `output_encoding` are forwarded to HealthContext unchanged; see its
+    docstring - only harness/bin/harness's cmd_health supplies them today.
     """
     context = HealthContext(
-        repo=repo, lock=_load_lock(repo), online=online, snapshot_diff=snapshot_diff
+        repo=repo,
+        lock=_load_lock(repo),
+        online=online,
+        snapshot_diff=snapshot_diff,
+        output_encoding=output_encoding,
     )
     report = Report(schema_version=1, repo=str(repo), online=online)
     for check_fn in REGISTRY:

@@ -11,6 +11,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Captured before the forced UTF-8 below so `harness health` can still warn about the console's
+# own encoding (harness.health.checks.environment.check_output_encoding).
+ORIGINAL_STDOUT_ENCODING: str | None = getattr(sys.stdout, "encoding", None)
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -891,7 +894,9 @@ def cmd_health(args: argparse.Namespace) -> int:
     least one check's status is 'fail'; 'warn' and 'skipped' do not affect it.
     """
     repo = Path(args.repo).expanduser().resolve()
-    report = health_registry.run(repo, snapshot_diff=snapshot_diff)
+    report = health_registry.run(
+        repo, snapshot_diff=snapshot_diff, output_encoding=ORIGINAL_STDOUT_ENCODING
+    )
     if args.json:
         print(json.dumps(health_report_json.to_json(report), ensure_ascii=False))
     else:
