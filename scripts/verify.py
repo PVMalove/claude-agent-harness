@@ -58,7 +58,7 @@ def _prepare_run_root() -> tuple[Path, dict[str, str]]:
     Python subprocesses run without bytecode writes, avoiding MAX_PATH when the source is in a
     linked worktree. Syntax checks below compile in memory for the same reason.
     """
-    tests_root = storage_path(ROOT, "tmp", "tests")
+    tests_root = storage_path(ROOT, "runs", "tests")
     tests_root.mkdir(parents=True, exist_ok=True)
     run_tmp = Path(tempfile.mkdtemp(prefix="v", dir=tests_root))
     (run_tmp / ".active.json").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")

@@ -127,7 +127,7 @@ def main():
         test_root = Path(run_root) / "c"
         test_root.mkdir()
     else:
-        tests_root = storage_path(ROOT, "tmp", "tests")
+        tests_root = storage_path(ROOT, "runs", "tests")
         tests_root.mkdir(parents=True, exist_ok=True)
         test_root = Path(tempfile.mkdtemp(prefix="c", dir=tests_root))
     try:

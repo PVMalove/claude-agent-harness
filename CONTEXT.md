@@ -24,12 +24,19 @@ _Avoid_: инсталляция, харнесс без уточнения «пр
 в этом репозитории, другое — про артефакт, который харнесс устанавливает в целевой репозиторий.
 _Avoid_: харнесс без уточнения «Python-пакет» или «проекта».
 
-**Харнесс-скретч** (`.harness/scratch/tmp/`):
-Единый, runtime-независимый корень для одноразового тела PR/комментария (`pr-body-<issue>-<slug>.md`),
-удаляемого сразу после успешной публикации и сохраняемого при сбое для повторной попытки. Не
+**Песочницы харнесса** (`.harness/.sandboxes/`):
+Единая структурированная директория для всех временных данных и кэшей харнесса: `cache/` (кэши repo_map
+и parser_bundle), `logs/` (логи тестов и выполнения), `scratch/` (инбокс и транзитные PR/issue-комментарии),
+`runs/` (временные тестовые и QA окружения), `reports/` (генерируемые отчёты) и `worktrees/` (управляемые
+Git worktree). Очищается через `harness cleanup` (в режимах `soft` и `hard`), предотвращая засорение корня `.harness`.
+_Avoid_: `.harness/.cache/`, `.harness/test-logs/`, `.harness/tmp/`, `.harness/reports/`, `.harness/scratch/` — упразднённые разбросанные директории.
+
+**Харнесс-скретч** (`.harness/.sandboxes/scratch/tmp/`):
+Единый, runtime-независимый корень внутри `.harness/.sandboxes/` для одноразового тела PR/комментария (`pr-body-<issue>-<slug>.md`),
+удаляемого сразу после успешной публикации и сохраняемого при сбое для повторной попытки (ранее `.harness/scratch/tmp/`). Не
 хранит черновики спек/тикетов (см. `docs/tasks/`), QA/orchestration evidence и не смешивается с
 durable-записью локального трекера (см. [ADR 0017](docs/adr/0017-unified-harness-scratch-for-ephemeral-artifacts.md)).
-_Avoid_: `.claude/tmp/`, `.agents/tmp/`, `.scratch/tmp/` — упразднённые per-runtime пути.
+_Avoid_: `.claude/tmp/`, `.agents/tmp/`, `.scratch/tmp/`, `.harness/scratch/tmp/` — упразднённые per-runtime и legacy пути.
 
 **Постоянный локальный архив задач** (`docs/tasks/issue-<N-или-slug>-<slug>/`):
 Не эфемерный черновик под удаление, а gitignored (не коммитится, но и не удаляется инструментами)

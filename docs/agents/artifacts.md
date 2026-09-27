@@ -2,27 +2,30 @@
 
 ## Local runtime storage
 
-Generated runtime data belongs under the main checkout's `.harness/`, shared by its linked
-worktrees. The layout is `tmp/tests/` for verification runs, `tmp/qa/` for QA checkouts,
-`tmp/drift/` for upstream checks, `.cache/` for rebuildable caches, `test-logs/` for test logs,
-`reports/` for generated reports, `worktrees/` for managed issue checkouts, and
-`scratch/` for one-shot publication drafts and role inboxes. `orchestration/state/` is the
-durable ledger and is never part of cleanup.
+Generated runtime data belongs under the main checkout's `.harness/.sandboxes/`, shared by its linked
+worktrees. The layout is `runs/` for disposable environments (e.g. `runs/tests/` for verification runs,
+`runs/qa/` for QA checkouts, `runs/drift/` for upstream checks), `cache/` for rebuildable caches
+(e.g. `cache/repo_map/`), `logs/` for test and execution logs, `reports/` for generated reports,
+`worktrees/` for managed issue checkouts, and `scratch/` for one-shot publication drafts (`scratch/tmp/`)
+and role inboxes (`scratch/inbox/`). `.harness/orchestration/state/` is the durable ledger and is never
+part of cleanup.
 
-Use `harness cleanup <repo> --mode soft` to preview removal of old completed temporary runs and
-rebuildable cache. Add `--apply` to execute it. `--mode hard` also previews archived reports,
-test logs, and old clean managed worktrees with their local branches. Execute hard cleanup with
-`--apply --confirm HARD`. Both modes default to a 24-hour minimum age for temporary data and
-worktrees; adjust with `--min-age-hours`. Active runs, ledger-referenced worktrees, dirty trees,
-and branches with commits absent from `origin` are preserved. Remote branches are never deleted.
+Use `harness cleanup <repo> --mode soft` to preview removal of expired temporary runs (`runs/` >24h),
+scratch files (`scratch/`), expired logs (`logs/` >24h), and legacy top-level directories outside
+`.sandboxes/` (`.cache`, `test-logs`, `tmp`, `reports`, `scratch`). Add `--apply` to execute it. `--mode hard`
+also previews clearing rebuildable caches (`cache/`), reports (`reports/`), and old clean managed
+worktrees (`worktrees/`). Execute hard cleanup with `--apply --confirm HARD`. Both modes default to a
+24-hour minimum age for temporary data and worktrees; adjust with `--min-age-hours`. Active runs,
+ledger-referenced worktrees, dirty trees, and branches with commits absent from `origin` are preserved.
+Remote branches are never deleted.
 
 System-wide architecture and the boundary between source documents and local evidence are described
 in [current-state.md](./current-state.md). This guide defines only task artifacts and scratchpads.
 
 * **Storage Location:** NEVER use system temporary directories (e.g., `AppData/Local/Temp`, `/tmp`) for saving specifications, scratchpads, or intermediate files.
 * **Project Directory:** All intermediate task-related documents MUST be saved locally inside the project repository in the `docs/tasks/` directory (create it if it doesn't exist).
-* **PR bodies:** A PR body or comment — including a `task-report::required` completion report posted as an issue comment — is one-shot publication metadata, not a task artifact. Save it only under `.harness/scratch/tmp/`, never in `docs/tasks/`; delete it after the `gh`/`glab` command succeeds and keep it when the command fails so it can be retried.
-  * **Filename is enforced, not just the directory:** `block-scratch-outside-docs-tasks.sh` only allows a file under `.harness/scratch/tmp/` when its *basename* contains `pr-body`, `pr-comment`, or `issue-comment` (case-insensitive) — e.g. `.harness/scratch/tmp/pr-body-<issue>-<slug>.md` or `.harness/scratch/tmp/issue-comment-<issue>-<slug>.md`. A differently-named file in that same, otherwise-correct directory (e.g. `report-<issue>-completion.md`, `notes.md`) is rejected by the hook exactly like a generic system-temp path — the fix is renaming the file, not changing the directory.
+* **PR bodies:** A PR body or comment — including a `task-report::required` completion report posted as an issue comment — is one-shot publication metadata, not a task artifact. Save it only under `.harness/.sandboxes/scratch/tmp/`, never in `docs/tasks/`; delete it after the `gh`/`glab` command succeeds and keep it when the command fails so it can be retried.
+  * **Filename is enforced, not just the directory:** `block-scratch-outside-docs-tasks.sh` only allows a file under `.harness/.sandboxes/scratch/tmp/` when its *basename* contains `pr-body`, `pr-comment`, or `issue-comment` (case-insensitive) — e.g. `.harness/.sandboxes/scratch/tmp/pr-body-<issue>-<slug>.md` or `.harness/.sandboxes/scratch/tmp/issue-comment-<issue>-<slug>.md`. A differently-named file in that same, otherwise-correct directory (e.g. `report-<issue>-completion.md`, `notes.md`) is rejected by the hook exactly like a generic system-temp path — the fix is renaming the file, not changing the directory.
 * **Pre-publish only:** `docs/tasks/` holds drafts and scratchpads *before* a spec or ticket is published to the issue tracker — never treat it as the tracker of record. Once published, the durable record lives with that tracker instead: the issue itself for GitHub/GitLab, or `.scratch/<feature-slug>/spec.md` and `.scratch/<feature-slug>/issues/` for the local markdown tracker (see `docs/agents/issue-tracker.md`) — which doesn't use `docs/tasks/` at all.
 * **Naming Convention:** Every specification or scratchpad MUST include the tracker issue ID (if it exists) and a descriptive name — this names both the file and the folder that contains it (see below). If the ID isn't known yet, use a descriptive slug and rename both once it's generated.
   * *Example:* `issue-45-search-pagination`.
@@ -39,4 +42,4 @@ in [current-state.md](./current-state.md). This guide defines only task artifact
       artifacts/
         discovery-context.md
     ```
-* **Workflow:** During `/to-spec` or when creating a scratchpad or, creating roadmaps (`/wayfinder`), explicitly write the file to its own folder under `docs/tasks/` (inside the epic folder if one applies). Never commit these files — `docs/tasks/` is gitignored by design. This is not a scratch draft under deletion, though: unlike the one-shot PR/comment body under `.harness/scratch/tmp/` (deleted right after publication succeeds), the contents of `docs/tasks/` are a permanent local archive — no skill or tool deletes them after a spec or ticket is published. If something needs a permanent, *committed* trail in the repository itself, that belongs in `docs/adr/` via `domain-modeling`, not here.
+* **Workflow:** During `/to-spec` or when creating a scratchpad or, creating roadmaps (`/wayfinder`), explicitly write the file to its own folder under `docs/tasks/` (inside the epic folder if one applies). Never commit these files — `docs/tasks/` is gitignored by design. This is not a scratch draft under deletion, though: unlike the one-shot PR/comment body under `.harness/.sandboxes/scratch/tmp/` (deleted right after publication succeeds), the contents of `docs/tasks/` are a permanent local archive — no skill or tool deletes them after a spec or ticket is published. If something needs a permanent, *committed* trail in the repository itself, that belongs in `docs/adr/` via `domain-modeling`, not here.

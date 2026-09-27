@@ -12,7 +12,7 @@ reports addressed to the coordinator must be written in Russian and include `"re
 Do not translate commands, paths, commit IDs, test names, or quoted source evidence.
 
 Write the completion report, and any checkpoint, to the absolute `report_staging_path` named in the
-brief (`.harness/scratch/inbox/<dispatch_id>.json`) and hand that same path to
+brief (`.harness/.sandboxes/scratch/inbox/<dispatch_id>.json`) and hand that same path to
 `report submit --file`. Never resolve a relative reporting path against the current directory and
 never invent a location of your own: a payload written outside the repository or its worktrees —
 a home-directory folder, the system temp — is rejected, and the coordinator cannot find evidence

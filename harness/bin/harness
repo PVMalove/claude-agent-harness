@@ -36,6 +36,7 @@ from harness.errors import HarnessError, print_and_exit
 from harness.orchestration.contract import health_problems
 from harness.cleanup import apply_cleanup, plan_cleanup
 from harness.repo_map import parser_bundle
+from harness.storage import sandboxes_health, storage_path, validate_sandboxes
 
 CAPABILITIES_FILE = PACKAGE / "CAPABILITIES.json"
 VERSION_FILE = PACKAGE / "VERSION"
@@ -761,7 +762,7 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
 ORCHESTRATION_CONFIG_REL = Path(".harness/orchestration.json")
 ORCHESTRATION_SCHEMA_REL = Path(".harness/orchestration/orchestration.schema.json")
 REPO_MAP_REL = Path(".harness/repo_map/repo_map.py")
-REPO_MAP_REGISTRY_REL = Path(".harness/.cache/repo_map/parser_bundle/registry")
+REPO_MAP_REGISTRY_REL = Path(".harness/.sandboxes/cache/repo_map/parser_bundle/registry")
 
 
 def repo_map_health(repo: Path) -> list[str]:
@@ -813,7 +814,7 @@ def repo_map_health(repo: Path) -> list[str]:
     degradation_reason: str | None
     remedy = (
         "КАК ИСПРАВИТЬ: установите offline parser bundle в "
-        ".harness/.cache/repo_map/parser_bundle/registry и повторите harness health"
+        f"{REPO_MAP_REGISTRY_REL.as_posix()} и повторите harness health"
     )
     if isinstance(located, str):
         degradation_reason = located
@@ -887,6 +888,10 @@ def _health_remedy(problem: str) -> str | None:
             "исправьте значение repo_map_policy в .harness/orchestration.json "
             "по схеме .harness/orchestration/orchestration.schema.json и повторите harness health"
         )
+    if "exists but is not a directory" in problem:
+        return "удалите файл и создайте директорию .harness/.sandboxes"
+    if "no read/write access" in problem or "permission denied" in problem:
+        return "проверьте права доступа к хранилищу .harness"
     return None
 
 
@@ -1019,19 +1024,11 @@ BACKEND_ORCHESTRATION_CAPABILITY = "backend-orchestration"
 PROJECT_TEMPLATE_DIR = PACKAGE / "project"
 DOCS_TASKS_GITIGNORE_LINE = "/docs/tasks/"
 HARNESS_RUNTIME_GITIGNORE = """# Generated harness runtime data
-.cache/
-tmp/
-reports/
-test-logs/
-worktrees/
+.sandboxes/
 """
 RUNTIME_GITIGNORE_LINES = (
     DOCS_TASKS_GITIGNORE_LINE,
-    "/.harness/tmp/",
-    "/.harness/.cache/",
-    "/.harness/reports/",
-    "/.harness/test-logs/",
-    "/.harness/worktrees/",
+    "/.harness/.sandboxes/",
 )
 
 
@@ -1072,7 +1069,7 @@ def scaffold_pvmalove_extras(
 ) -> list[str]:
     """Non-skill project files pvmalove-suite ships alongside the managed skill
     snapshot: docs, hooks, Claude Code subagents, a rule, .harness/project.json,
-    and two idempotent .gitignore protections (a nested .harness/scratch/.gitignore
+    and two idempotent .gitignore protections (a nested .harness/.sandboxes/scratch/.gitignore
     and a /docs/tasks/ line in the target project's root .gitignore).
     Written once if absent, like AGENTS.md/CLAUDE.md above - not tracked in
     harness.lock, never touched by update. See CONTEXT.md and docs/adr/0003.
@@ -1109,7 +1106,10 @@ def scaffold_pvmalove_extras(
             written.append(result)
 
     scratch_gitignore_result = _copy_if_absent(
-        PROJECT_TEMPLATE_DIR / "scratch/.gitignore", repo / ".harness/scratch/.gitignore", force=force_seed, differing=differing
+        PROJECT_TEMPLATE_DIR / "scratch/.gitignore",
+        storage_path(repo, "scratch", ".gitignore"),
+        force=force_seed,
+        differing=differing,
     )
     if scratch_gitignore_result:
         written.append(scratch_gitignore_result)
@@ -1437,6 +1437,7 @@ def cmd_health(args: argparse.Namespace) -> int:
         elif not path.is_dir():
             problems.append(f"discovery link does not resolve: {relative} -> {target}")
     validate_project_json(repo, problems)
+    validate_sandboxes(repo, problems)
     if lock:
         if BACKEND_ORCHESTRATION_CAPABILITY in (lock.get("capabilities") or []):
             validate_orchestration_config(repo, problems)
@@ -1466,6 +1467,8 @@ def cmd_health(args: argparse.Namespace) -> int:
     if lock and BACKEND_ORCHESTRATION_CAPABILITY in (lock.get("capabilities") or []):
         for line in verification_routing_health(repo):
             print(line)
+    for line in sandboxes_health(repo):
+        print(line)
     skill_count = len(skill_inventory(repo))
     print(f"files: healthy ({skill_count} skills, {integration_count} integrations): {repo}")
     print("activation: verify advertised and invoked skills/integrations in a fresh runtime session")
@@ -1501,7 +1504,7 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         plan = plan_cleanup(Path(args.repo), args.mode, min_age_hours=args.min_age_hours)
         print(json.dumps({"plan": plan}, ensure_ascii=False, indent=2))
         if args.apply:
-            result = apply_cleanup(Path(args.repo), plan)
+            result = apply_cleanup(Path(args.repo), plan, confirm=args.confirm)
             print(json.dumps({"result": result}, ensure_ascii=False, indent=2))
             return 1 if result["failed"] else 0
         return 0

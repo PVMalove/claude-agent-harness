@@ -583,8 +583,8 @@ production-кода требует полного review.
 
 ### `pr-composer` (subagent, `.claude/agents/pr-composer.md`)
 
-- **Назначение:** заполняет структурированный PR-шаблон из `docs/agents/git-workflow.md` §3 (язык — из `.harness/project.json`) — в изолированном контексте, чтобы полный diff и история коммитов не засоряли основную сессию. PR не открывает: сохраняет тело только в `.harness/scratch/tmp/pr-body-<issue>-<slug>.md` и возвращает этот путь; вызвавшая сессия передаёт его в `gh pr create --body-file` и удаляет файл лишь после успешной публикации.
-- **Вход:** номер issue, точная integration-ветка эпика из тикета/родительского эпика (для задачи вне эпика — `base_branch` из `.harness/project.json`), путь `.harness/scratch/tmp/pr-body-<issue>-<slug>.md`, результат последнего `qa-gate` этой сессии, если он запускался — используется для секции «Проверка»; не запускался — честно пишет это в раздел рисков, а не выдумывает покрытие тестами.
+- **Назначение:** заполняет структурированный PR-шаблон из `docs/agents/git-workflow.md` §3 (язык — из `.harness/project.json`) — в изолированном контексте, чтобы полный diff и история коммитов не засоряли основную сессию. PR не открывает: сохраняет тело только в `.harness/.sandboxes/scratch/tmp/pr-body-<issue>-<slug>.md` и возвращает этот путь; вызвавшая сессия передаёт его в `gh pr create --body-file` и удаляет файл лишь после успешной публикации.
+- **Вход:** номер issue, точная integration-ветка эпика из тикета/родительского эпика (для задачи вне эпика — `base_branch` из `.harness/project.json`), путь `.harness/.sandboxes/scratch/tmp/pr-body-<issue>-<slug>.md`, результат последнего `qa-gate` этой сессии, если он запускался — используется для секции «Проверка»; не запускался — честно пишет это в раздел рисков, а не выдумывает покрытие тестами.
 - Запускается вручную в программе из `/to-pull-requests`, если `git-workflow.md` требует структурированный шаблон, а не короткое summary.
 
 ### `/to-pull-requests` (skill)
@@ -632,14 +632,14 @@ production-кода требует полного review.
 
 Итог по закрытому эпику: сколько это стоило. Читает только локальные данные — транскрипты сессий
 Claude Code, сессии Codex, историю git и трекер, — пишет один автономный HTML-дашборд в
-`.harness/reports/delivery-stats/` и печатает короткую сводку. Наружу ничего не отправляет.
+`.harness/.sandboxes/reports/delivery-stats/` и печатает короткую сводку. Наружу ничего не отправляет.
 
 ```bash
-python .harness/reporting/delivery_stats.py --repo . --epic 81 --html .harness/reports/delivery-stats/epic-81.html
+python .harness/reporting/delivery_stats.py --repo . --epic 81 --html .harness/.sandboxes/reports/delivery-stats/epic-81.html
 ```
 
 Для сопоставимых завершённых эпиков можно сохранить versioned baseline через
-`--save-baseline .harness/reports/delivery-stats/epic-81.baseline.json`, а в следующем отчёте передать его с
+`--save-baseline .harness/.sandboxes/reports/delivery-stats/epic-81.baseline.json`, а в следующем отчёте передать его с
 `--baseline <файл>`. Dashboard и JSON тогда показывают provider totals обеих сторон вместе с
 `exact`/`estimated` attribution; разница не вычисляется, если telemetry хотя бы одной стороны нет.
 
@@ -744,7 +744,7 @@ coordinator-recorded причину compaction/restart, долю review diff в�
 | `block-pr-merge.sh` | `PreToolUse(Bash)` | `gh pr merge` — безусловно, мердж только вручную. |
 | `check-branch-name.sh` | `PreToolUse(Bash)` | `git checkout -b`/`git switch -c <имя>`, не соответствующее `branch_pattern` из `.harness/project.json`. |
 | `check-worktree-branch-name.sh` | `PreToolUse(EnterWorktree)` | То же правило имени для нативного worktree-инструмента (раздел 10). |
-| `block-scratch-outside-docs-tasks.sh` | `PreToolUse(Write\|Edit)` | Запись task-артефактов в системные temp-директории вместо `docs/tasks/`, а PR-тел/комментариев — вне `.harness/scratch/tmp/`. |
+| `block-scratch-outside-docs-tasks.sh` | `PreToolUse(Write\|Edit)` | Запись task-артефактов в системные temp-директории вместо `docs/tasks/`, а PR-тел/комментариев — вне `.harness/.sandboxes/scratch/tmp/`. |
 | `require-qa-gate.sh` | `PreToolUse(Bash)` | `gh pr create`, если `qa-gate` ещё не запускался/провалился для текущего состояния рабочего дерева (маркер пишет сам скилл `qa-gate` через `record-qa-gate-pass.sh` после успеха последней команды из `qa_gate_commands` — `mark-qa-gate-passed.sh`, `PostToolUse(Bash)`, дублирует эту запись как fallback для прямого запуска команд в основной сессии, без гарантии сработать внутри форкнутой сессии скилла). |
 | `block-dangerous-git.sh` | `PreToolUse(Bash)` | `git reset --hard`, `git clean -f`/`-fd`, `git branch -D`, `git checkout .`, `git restore .` — адаптировано из апстримного скилла `git-guardrails-claude-code`, не входит в вендоренный `mattpocock-suite`. В отличие от апстрима **не** блокирует `git push` целиком — `git-workflow.md` требует пуш issue-веток; push в `base_branch` и `integration/*` отдельно закрыт `block-direct-master.sh`. |
 | `count-skill-usage.sh` | `PreToolUse(Skill)` | Ничего не блокирует — аналитика на будущее: считает частоту вызова каждого скилла в `.claude/.skill-usage.json`. |

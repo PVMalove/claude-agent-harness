@@ -37,7 +37,7 @@ python .harness/repo_map/repo_map.py --repo . --commit (git rev-parse HEAD)
 | `--seed` | Повторяемый; приоритетные относительные пути. Несуществующие и отфильтрованные отбрасываются, повторы удаляются. |
 | `--max-tokens` | Бюджет. Порядок выбора: CLI → `repo_map_policy.max_tokens` → 4000. CLI не может превысить значение из политики. |
 | `--policy` | Файл политики. По умолчанию `.harness/orchestration.json`, если он существует. |
-| `--cache-dir` | Каталог кэша вместо `.harness/.cache/repo_map/results`. |
+| `--cache-dir` | Каталог кэша вместо `.harness/.sandboxes/cache/repo_map/results`. |
 
 Код выхода `0` означает, что на stdout записан JSON [схемы версии 1](repo_map.schema.json). Ошибка
 политики или ввода даёт ненулевой код и сообщение `HarnessError` с рекомендацией (`remedy`).
@@ -142,7 +142,7 @@ worker возвращает для них пустой список импорт
 
 ## Bundle, кэш и деградация
 
-Полный режим ищет `parser_bundle.lock.json` сначала в `.harness/.cache/repo_map/parser_bundle/registry/`
+Полный режим ищет `parser_bundle.lock.json` сначала в `.harness/.sandboxes/cache/repo_map/parser_bundle/registry/`
 (`bundle_source: local-cache`), затем в каталогах `parser_bundle_registry_paths`
 (`internal-registry`). Проверяются SHA-256 worker и wheels для пары `cpXY-<platform>`, которую
 возвращает интерпретатор, запускающий worker. Установка:
@@ -156,7 +156,7 @@ worker возвращает для них пустой список импорт
 `harness cleanup` удаляет install-каталоги `<хеш lock>-<пара>`, которые не соответствуют текущему
 lock локального registry. Registry и другие каталоги не трогаются.
 
-Кэш результатов лежит в `.harness/.cache/repo_map/results` основного checkout; связанные worktree
+Кэш результатов лежит в `.harness/.sandboxes/cache/repo_map/results` основного checkout; связанные worktree
 используют общий каталог. Ключ включает коммит, нормализованные seeds, бюджет, всю политику, байты
 всех модулей пакета `harness/repo_map` и схемы, версию оценщика токенов, а в полном режиме ещё и
 идентичность backend (для bundle — каталог, lock, worker и wheels пары). Полезная нагрузка защищена SHA-256 и повторно проверяется по схеме.
@@ -180,7 +180,7 @@ bundle, а не тестовый stub. `harness health` распознаёт loc
 сверьте SHA-256 и выполните:
 
 ```powershell
-.harness/.venv/Scripts/python.exe scripts/build_parser_bundle.py --wheelhouse <каталог wheels> --out .harness/.cache/repo_map/parser_bundle/registry
+.harness/.venv/Scripts/python.exe scripts/build_parser_bundle.py --wheelhouse <каталог wheels> --out .harness/.sandboxes/cache/repo_map/parser_bundle/registry
 ```
 
 После изменения `tree_sitter_worker.py` bundle нужно пересобрать: registry хранит собственную копию
@@ -190,9 +190,9 @@ worker с её SHA-256 в lock, поэтому старый bundle продол�
 во временный репозиторий теста иначе упирается в MAX_PATH и даёт `parser bundle install failed`.
 
 ```powershell
-$env:HARNESS_PARSER_BUNDLE_DIR = (Resolve-Path .harness/.cache/repo_map/parser_bundle/registry).Path
+$env:HARNESS_PARSER_BUNDLE_DIR = (Resolve-Path .harness/.sandboxes/cache/repo_map/parser_bundle/registry).Path
 $env:PYTHONPATH = "."
-.harness/.venv/Scripts/python.exe -m pytest -q -n 4 --basetemp .harness/scratch/pt tests/test_repo_map.py tests/test_parser_bundle.py tests/test_repo_map_tree_sitter.py tests/test_repo_map_tree_sitter_go.py tests/test_repo_map_tree_sitter_java.py tests/test_repo_map_tree_sitter_csharp.py tests/test_repo_map_tree_sitter_unsupported.py tests/test_repo_map_tree_sitter_determinism.py
+.harness/.venv/Scripts/python.exe -m pytest -q -n 4 --basetemp .harness/.sandboxes/scratch/pt tests/test_repo_map.py tests/test_parser_bundle.py tests/test_repo_map_tree_sitter.py tests/test_repo_map_tree_sitter_go.py tests/test_repo_map_tree_sitter_java.py tests/test_repo_map_tree_sitter_csharp.py tests/test_repo_map_tree_sitter_unsupported.py tests/test_repo_map_tree_sitter_determinism.py
 ```
 
 Полный `scripts/verify.py` — это gate QA и CI. Для итераций разработчика он не нужен (см.

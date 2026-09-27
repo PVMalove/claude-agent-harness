@@ -73,8 +73,8 @@ class CleanRoomPolicy:
                 "candidate_commit must be a hexadecimal commit SHA",
                 remedy="pass candidate_commit as a 7-64 character hex commit SHA",
             )
-        temporary_parent = storage_path(self.repository, "tmp", "qa")
-        temporary_parent.mkdir(parents=True, exist_ok=True)
+
+        temporary_parent = storage_path(self.repository, "runs", "qa")
         worktree_root = Path(
             tempfile.mkdtemp(prefix="agent-harness-qa-", dir=temporary_parent)
         )
