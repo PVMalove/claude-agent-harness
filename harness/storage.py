@@ -20,23 +20,28 @@ LEGACY_STORAGE_DIRS = (".cache", "test-logs", "tmp", "reports", "scratch")
 def storage_root(repo: Path) -> Path:
     """Найти общий `.harness` для корня репозитория и связанных worktree."""
     checkout = repo.expanduser().resolve()
-    result = subprocess.run(
-        [
-            "git",
-            "-c",
-            f"safe.directory={checkout}",
-            "-C",
-            str(checkout),
-            "rev-parse",
-            "--show-toplevel",
-            "--git-common-dir",
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                f"safe.directory={checkout}",
+                "-C",
+                str(checkout),
+                "rev-parse",
+                "--show-toplevel",
+                "--git-common-dir",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        # No runnable git (reported by `harness health` as environment.git): a linked worktree
+        # cannot be resolved, so fall back to the checkout's own storage like a git error does.
+        return checkout / ".harness"
     if result.returncode != 0:
         return checkout / ".harness"
     lines = result.stdout.splitlines()

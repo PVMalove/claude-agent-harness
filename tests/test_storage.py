@@ -35,6 +35,17 @@ def test_nested_directory_does_not_inherit_parent_repository_cache(
     assert storage_root(nested) == nested / ".harness"
 
 
+def test_storage_root_without_runnable_git_uses_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def missing_git(*_args: object, **_kwargs: object) -> None:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(subprocess, "run", missing_git)
+
+    assert storage_root(tmp_path) == tmp_path.resolve() / ".harness"
+
+
 def test_sandboxes_root_and_categories(tmp_path: Path) -> None:
     assert SANDBOXES_DIR == ".sandboxes"
     expected_categories = {"cache", "logs", "scratch", "runs", "reports", "worktrees"}

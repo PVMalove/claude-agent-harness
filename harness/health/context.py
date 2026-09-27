@@ -26,3 +26,7 @@ class HealthContext:
     lock: JsonObject | None
     online: bool
     snapshot_diff: Callable[[Path], JsonObject] | None = None
+    # stdout's encoding as the caller saw it, before any in-process reconfiguration (the canonical
+    # CLI forces UTF-8 on startup, which would otherwise hide a non-UTF-8 console from
+    # environment.check_output_encoding). None means "read sys.stdout at check time".
+    output_encoding: str | None = None

@@ -26,6 +26,7 @@ _SKIPPED_MARKER = "-"
 GROUP_LABELS_RU: dict[str, str] = {
     "files": "Файлы харнесса",
     "repo_map": "Repo Map",
+    "environment": "Окружение",
 }
 
 _ACTIVATION_FOOTER = "activation: verify advertised and invoked skills/integrations in a fresh runtime session"
