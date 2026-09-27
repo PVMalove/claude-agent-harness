@@ -72,7 +72,11 @@ def test_registry_runs_from_a_copied_health_only_tree_with_no_bin_harness(
     target_repo.mkdir()
     report = registry.run(target_repo)
 
-    assert {check.group for check in report.checks} == {"files", "repo_map"}
+    assert {check.group for check in report.checks} == {
+        "files",
+        "repo_map",
+        "environment",
+    }
     assert {check.status for check in report.checks} <= {
         "ok",
         "warn",
@@ -124,4 +128,12 @@ def test_registry_runs_without_crashing_even_with_a_lock_file_present(
         "files.integrations",
         "files.verification_routing",
         "repo_map.tier",
+        "environment.git",
+        "environment.git_identity",
+        "environment.gitattributes",
+        "environment.line_endings",
+        "environment.python",
+        "environment.uv",
+        "environment.dev_env",
+        "environment.output_encoding",
     }
