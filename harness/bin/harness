@@ -899,6 +899,7 @@ def cmd_health(args: argparse.Namespace) -> int:
         snapshot_diff=snapshot_diff,
         output_encoding=ORIGINAL_STDOUT_ENCODING,
         fix=getattr(args, "fix", False),
+        online=getattr(args, "online", False),
     )
     if args.json:
         print(json.dumps(health_report_json.to_json(report), ensure_ascii=False))
@@ -1018,6 +1019,13 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="create missing .harness directories and regenerate a stale skill registry; "
         "system settings and worktrees are never changed",
+    )
+    health.add_argument(
+        "--online",
+        action="store_true",
+        help="also run the tracker group: gh/glab auth, permissions, reachability and label "
+        "checks against GitHub/GitLab (10s timeout each); without it every tracker.* check is "
+        "skipped",
     )
     health.set_defaults(func=cmd_health)
 
