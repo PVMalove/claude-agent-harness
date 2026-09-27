@@ -188,14 +188,23 @@ python3 harness/bin/harness console /path/to/repository
 не зависит от textual. Домашний экран — дашборд (offline-счётчики `ok`/`warn`/`fail`/`skipped`,
 число открытых backend-orchestration batch или «не подключено», tier Repo Map, версия харнесса и
 статус дрейфа) с меню из пяти разделов: `Diagnostics`, `Harness`, `Orchestration`, `Reports`,
-`Repo Map`. Полностью реализован только `Diagnostics` — полный отчёт `harness health`, действие
-«online checks» (повторный вызов с проверками из сети) и «apply fixes» (выполняет remedy-команды
-проверок через внедряемый command runner, требует повторного нажатия-подтверждения перед
-выполнением); остальные четыре раздела — заглушки «раздел ещё не реализован». Код разложен по шву
-stdlib/textual: `harness/console/{pin,runner,launcher,data}.py` не импортируют `textual` и
+`Repo Map`. `Diagnostics` — полный отчёт `harness health`, действие «online checks» (повторный
+вызов с проверками из сети) и «apply fixes» (выполняет remedy-команды проверок через внедряемый
+command runner, требует повторного нажатия-подтверждения перед выполнением). `Reports` — completion
+reports из выбранного поколения ledger оркестрации с фильтрами по тикету, роли, outcome и дате
+(префикс ISO-даты); отчёт читается по секциям Output, Checks (и Review, если есть), Risks,
+Blockers, Next action с переносом строк по ширине экрана. Дата отчёта берётся из audit-записи
+ledger о его записи (в самом отчёте её нет). Из отчёта (`b`) или из списка батчей открывается
+хронология батча: создание и смены состояния (audit `transition`), диспатчи по ролям с маршрутом
+(`developer → code-review → qa`), отчёты, решения coordinator, оценки и эскалации риска. Раздел
+только читает ledger (lenient-чтение, как у `orchestration.*` в `harness health`): повреждённая
+запись пропускается, без ledger показывается «не найден или не инициализирован». `Harness`,
+`Orchestration` и `Repo Map` — пока заглушки «раздел ещё не реализован». Код разложен по шву
+stdlib/textual: `harness/console/{pin,runner,launcher,data,reports}.py` не импортируют `textual` и
 тестируются без него; только `harness/console/app.py` и `harness/console/screens/*.py` его
-импортируют, и только внутри уже релончнутого процесса — Pilot-тесты (`tests/test_console_app.py`)
-пропускаются (`pytest.importorskip`), если textual не установлен. `textual` — только в
+импортируют, и только внутри уже релончнутого процесса — Pilot-тесты (`tests/test_console_app.py`,
+`tests/test_console_reports_app.py`) пропускаются (`pytest.importorskip`), если textual не
+установлен. `textual` — только в
 `[dependency-groups].dev` `pyproject.toml`, тем же pin'ом, что и в коде (`tests/test_console_pin.py`
 держит их равными).
 
