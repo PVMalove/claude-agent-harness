@@ -512,19 +512,19 @@ def verification_routing_health(repo: Path) -> list[str]:
 
 def check_lock(context: HealthContext) -> CheckResult:
     if context.lock is None:
-        return CheckResult(id="files.lock", group="files", status="fail", message="missing .harness/harness.lock")
+        return CheckResult(id="files.lock", group="files", status="fail", message="отсутствует .harness/harness.lock")
     return CheckResult(id="files.lock", group="files", status="ok", message="harness.lock присутствует")
 
 
 def check_agents_md(context: HealthContext) -> CheckResult:
     agents_path = context.repo / "AGENTS.md"
     if not agents_path.is_file():
-        return CheckResult(id="files.agents_md", group="files", status="fail", message="missing AGENTS.md")
+        return CheckResult(id="files.agents_md", group="files", status="fail", message="отсутствует AGENTS.md")
     agents_text = agents_path.read_text(encoding="utf-8")
     if _TEMPLATE_MARKER.search(agents_text):
         return CheckResult(
             id="files.agents_md", group="files", status="fail",
-            message="AGENTS.md contains unresolved template markers",
+            message="в AGENTS.md остались нерешённые плейсхолдеры шаблона",
         )
     return CheckResult(
         id="files.agents_md", group="files", status="ok",
@@ -540,9 +540,9 @@ def check_discovery_links(context: HealthContext) -> CheckResult:
         if not path.is_symlink() or os.readlink(path) != native_target:
             if not path.exists() and path.parent.exists() and not os.access(path.parent, os.W_OK):
                 continue
-            broken.append(f"broken discovery link: {relative} -> {target}")
+            broken.append(f"неисправна discovery-ссылка: {relative} -> {target}")
         elif not path.is_dir():
-            broken.append(f"discovery link does not resolve: {relative} -> {target}")
+            broken.append(f"discovery-ссылка не резолвится: {relative} -> {target}")
     if broken:
         return CheckResult(id="files.discovery_links", group="files", status="fail", message="; ".join(broken))
     return CheckResult(
@@ -596,7 +596,7 @@ def check_skill_snapshot(context: HealthContext) -> CheckResult:
     result = context.snapshot_diff(context.repo)
     if result["state"] != "clean":
         return CheckResult(
-            id="files.skill_snapshot", group="files", status="fail", message="managed skill snapshot has drift"
+            id="files.skill_snapshot", group="files", status="fail", message="в снэпшоте скиллов есть расхождения"
         )
     return CheckResult(
         id="files.skill_snapshot", group="files", status="ok", message="снэпшот скиллов без расхождений"
@@ -614,12 +614,12 @@ def check_skill_registry(context: HealthContext) -> CheckResult:
     registry_path = context.repo / registry_rel
     if not registry_path.is_file():
         return CheckResult(
-            id="files.skill_registry", group="files", status="fail", message=f"missing {registry_rel}"
+            id="files.skill_registry", group="files", status="fail", message=f"отсутствует {registry_rel}"
         )
     if registry_path.read_text(encoding="utf-8") != expected_registry:
         return CheckResult(
             id="files.skill_registry", group="files", status="fail",
-            message=f"stale {registry_rel}; run harness registry",
+            message=f"устарел {registry_rel}; выполните harness registry",
         )
     return CheckResult(id="files.skill_registry", group="files", status="ok", message="реестр скиллов актуален")
 

@@ -37,7 +37,7 @@ def test_check_agents_md_fails_when_missing(tmp_path: Path) -> None:
 
     assert result.id == "files.agents_md"
     assert result.status == "fail"
-    assert "missing AGENTS.md" in result.message
+    assert "отсутствует AGENTS.md" in result.message
 
 
 def test_check_agents_md_fails_on_unresolved_template_markers(tmp_path: Path) -> None:
@@ -46,7 +46,7 @@ def test_check_agents_md_fails_on_unresolved_template_markers(tmp_path: Path) ->
     result = checks.check_agents_md(_context(tmp_path))
 
     assert result.status == "fail"
-    assert "unresolved template markers" in result.message
+    assert "нерешённые плейсхолдеры" in result.message
 
 
 def test_check_agents_md_ok_when_resolved(tmp_path: Path) -> None:
@@ -62,7 +62,7 @@ def test_check_discovery_links_fails_when_absent(tmp_path: Path) -> None:
 
     assert result.id == "files.discovery_links"
     assert result.status == "fail"
-    assert "broken discovery link" in result.message
+    assert "неисправна discovery-ссылка" in result.message
 
 
 def test_check_project_json_ok_when_absent(tmp_path: Path) -> None:

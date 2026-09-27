@@ -30,7 +30,7 @@ def test_cmd_health_exits_1_when_a_check_fails(tmp_path: Path, capsys: pytest.Ca
 
     assert exit_code == 1
     out = capsys.readouterr().out
-    assert "missing .harness/harness.lock" in out
+    assert "отсутствует .harness/harness.lock" in out
     assert "Итого:" in out
 
 
