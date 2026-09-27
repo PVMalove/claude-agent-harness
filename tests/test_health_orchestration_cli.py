@@ -94,6 +94,7 @@ def _run_health_json(repo: Path) -> tuple[int, JsonObject]:
         [sys.executable, str(_HARNESS_BIN), "health", str(repo), "--json"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     return result.returncode, json.loads(result.stdout)
