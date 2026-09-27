@@ -145,12 +145,149 @@ def check_ledger_summary(context: HealthContext) -> CheckResult:
     )
 
 
+def _attention_policy_threshold(repo: Path) -> int:
+    """Resolve `attention_policy.stale_dispatch_seconds` the same way the coordinator does:
+    a positive integer override in `.harness/orchestration.json`, else the built-in default."""
+    import json
+
+    from harness.orchestration.core.constants import DEFAULT_ATTENTION_POLICY
+
+    config_path = repo / ".harness" / "orchestration.json"
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        config = None
+    attention = config.get("attention_policy") if isinstance(config, dict) else None
+    if isinstance(attention, dict):
+        value = attention.get("stale_dispatch_seconds")
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+            return value
+    threshold = DEFAULT_ATTENTION_POLICY["stale_dispatch_seconds"]
+    assert isinstance(threshold, int)
+    return threshold
+
+
 def check_blocked_batches(context: HealthContext) -> CheckResult:
-    return _skipped("orchestration.blocked_batches")
+    check_id = "orchestration.blocked_batches"
+    if not _has_capability(context):
+        return _skipped(check_id)
+    state = _LedgerState(context.repo)
+    if state.unreadable:
+        return CheckResult(
+            id=check_id,
+            group="orchestration",
+            status="fail",
+            message=f"леджер оркестрации недоступен: {state.error}",
+        )
+    if state.needs_migration:
+        return CheckResult(
+            id=check_id,
+            group="orchestration",
+            status="warn",
+            message=_MIGRATION_MESSAGE,
+            fix=_MIGRATION_FIX,
+        )
+    blocked = sorted(
+        batch_id
+        for batch in state.batches
+        if batch.get("state") == "blocked"
+        and isinstance(batch_id := batch.get("batch_id"), str)
+    )
+    if blocked:
+        return CheckResult(
+            id=check_id,
+            group="orchestration",
+            status="warn",
+            message="заблокированные батчи: " + ", ".join(blocked),
+            fix=Fix(text="разрешите блокировку через coordinator.py batch decide"),
+        )
+    return CheckResult(
+        id=check_id,
+        group="orchestration",
+        status="ok",
+        message="заблокированных батчей нет",
+    )
 
 
 def check_stale_dispatches(context: HealthContext) -> CheckResult:
-    return _skipped("orchestration.stale_dispatches")
+    check_id = "orchestration.stale_dispatches"
+    if not _has_capability(context):
+        return _skipped(check_id)
+    state = _LedgerState(context.repo)
+    if state.unreadable:
+        return CheckResult(
+            id=check_id,
+            group="orchestration",
+            status="fail",
+            message=f"леджер оркестрации недоступен: {state.error}",
+        )
+    if state.needs_migration:
+        return CheckResult(
+            id=check_id,
+            group="orchestration",
+            status="warn",
+            message=_MIGRATION_MESSAGE,
+            fix=_MIGRATION_FIX,
+        )
+    if state.records_root is None:
+        return CheckResult(
+            id=check_id,
+            group="orchestration",
+            status="ok",
+            message="леджер оркестрации ещё не инициализирован (диспатчей нет)",
+        )
+    from harness.orchestration.core.constants import (
+        LIVE_DISPATCH_STATES,
+        TERMINAL_BATCH_STATES,
+    )
+    from harness.orchestration.core.utils import CoordinatorError, _silent_seconds
+    from harness.orchestration.ledger.lifecycle import LifecycleLedger
+
+    threshold = _attention_policy_threshold(context.repo)
+    root = state.records_root
+    stale: list[str] = []
+    for batch in state.batches:
+        if batch.get("state") in TERMINAL_BATCH_STATES:
+            continue
+        entries = batch.get("dispatches")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            dispatch_id = entry.get("dispatch_id")
+            if not isinstance(dispatch_id, str):
+                continue
+            status = LifecycleLedger.read_record_lenient(
+                root / "dispatch-status" / f"{dispatch_id}.json"
+            )
+            if status is None or status.get("state") not in LIVE_DISPATCH_STATES:
+                continue
+            try:
+                silent = _silent_seconds(status)
+            except CoordinatorError:
+                continue
+            if silent >= threshold:
+                stale.append(f"{dispatch_id} ({silent}s)")
+    if stale:
+        return CheckResult(
+            id=check_id,
+            group="orchestration",
+            status="warn",
+            message="диспатчи без heartbeat дольше порога: " + ", ".join(sorted(stale)),
+            fix=Fix(
+                text=(
+                    f"порог {threshold}s из attention_policy.stale_dispatch_seconds; "
+                    "проверьте застрявшего воркера"
+                )
+            ),
+        )
+    return CheckResult(
+        id=check_id,
+        group="orchestration",
+        status="ok",
+        message="все активные диспатчи посылают heartbeat вовремя",
+    )
 
 
 def check_orphaned_worktrees(context: HealthContext) -> CheckResult:

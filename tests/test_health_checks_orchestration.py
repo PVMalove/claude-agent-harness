@@ -5,6 +5,7 @@ capability exactly like `files.check_orchestration_config` already is."""
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -56,6 +57,15 @@ def _write_batch(
         generation / "plans" / f"{batch_id}.json", {"batch_id": batch_id}
     )
     ledger.write_immutable(generation / "batches" / f"{batch_id}.json", record)
+
+
+def _write_dispatch_status(
+    ledger: LifecycleLedger, dispatch_id: str, status: JsonObject
+) -> None:
+    generation = ledger.records_root()
+    ledger.write_immutable(
+        generation / "dispatch-status" / f"{dispatch_id}.json", status
+    )
 
 
 # --- capability gating (DoD 1) ----------------------------------------------------------------
@@ -155,3 +165,155 @@ def test_ledger_summary_reports_generation_schema_and_batch_counts(
     assert "completed=1" in result.message
     assert "abandoned=1" in result.message
     assert "active=1" in result.message
+
+
+# --- orchestration.blocked_batches (DoD 3) ------------------------------------------------------
+
+
+def test_blocked_batches_warns_and_names_only_the_blocked_batch(
+    tmp_path: Path,
+) -> None:
+    ledger = _ledger(tmp_path)
+    _write_batch(ledger, "batch-blocked", "blocked")
+    _write_batch(ledger, "batch-active", "active")
+
+    result = checks.check_blocked_batches(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
+
+    assert result.status == "warn"
+    assert "batch-blocked" in result.message
+    assert "batch-active" not in result.message
+
+
+def test_blocked_batches_ok_when_none_are_blocked(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    _write_batch(ledger, "batch-active", "active")
+
+    result = checks.check_blocked_batches(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
+
+    assert result.status == "ok"
+
+
+def test_blocked_batches_fails_on_an_unreadable_ledger(tmp_path: Path) -> None:
+    pointer = tmp_path / ".harness" / "orchestration" / "state" / "ledger.json"
+    pointer.parent.mkdir(parents=True)
+    pointer.write_text("not json", encoding="utf-8")
+
+    result = checks.check_blocked_batches(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
+
+    assert result.status == "fail"
+
+
+# --- orchestration.stale_dispatches (DoD 3, architect risk #3) ---------------------------------
+
+
+def test_stale_dispatches_warns_past_the_threshold(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    _write_batch(
+        ledger,
+        "batch-live",
+        "active",
+        dispatches=[{"dispatch_id": "dispatch-stale", "state": "working"}],
+    )
+    _write_dispatch_status(
+        ledger,
+        "dispatch-stale",
+        {
+            "dispatch_id": "dispatch-stale",
+            "state": "working",
+            "heartbeat_at": "2020-01-01T00:00:00+00:00",
+        },
+    )
+
+    result = checks.check_stale_dispatches(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
+
+    assert result.status == "warn"
+    assert "dispatch-stale" in result.message
+
+
+def test_stale_dispatches_ok_when_heartbeat_is_recent(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    recent = datetime.now(UTC).isoformat()
+    _write_batch(
+        ledger,
+        "batch-live",
+        "active",
+        dispatches=[{"dispatch_id": "dispatch-fresh", "state": "working"}],
+    )
+    _write_dispatch_status(
+        ledger,
+        "dispatch-fresh",
+        {"dispatch_id": "dispatch-fresh", "state": "working", "heartbeat_at": recent},
+    )
+
+    result = checks.check_stale_dispatches(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
+
+    assert result.status == "ok"
+
+
+def test_stale_dispatches_ignores_dispatches_of_terminal_batches(
+    tmp_path: Path,
+) -> None:
+    ledger = _ledger(tmp_path)
+    _write_batch(
+        ledger,
+        "batch-done",
+        "completed",
+        dispatches=[{"dispatch_id": "dispatch-old", "state": "reported"}],
+    )
+    _write_dispatch_status(
+        ledger,
+        "dispatch-old",
+        {
+            "dispatch_id": "dispatch-old",
+            # Even a "working" status record on a terminal batch must not be flagged: the batch
+            # itself, not the dispatch's own last recorded state, decides whether it is in scope.
+            "state": "working",
+            "heartbeat_at": "2020-01-01T00:00:00+00:00",
+        },
+    )
+
+    result = checks.check_stale_dispatches(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
+
+    assert result.status == "ok"
+
+
+def test_stale_dispatches_uses_the_project_configured_threshold_over_the_default(
+    tmp_path: Path,
+) -> None:
+    """Architect risk #3: the threshold must actually come from
+    .harness/orchestration.json when set, not silently fall back to the built-in default."""
+    ledger = _ledger(tmp_path)
+    ten_minutes_ago = (datetime.now(UTC) - timedelta(seconds=600)).isoformat()
+    _write_batch(
+        ledger,
+        "batch-live",
+        "active",
+        dispatches=[{"dispatch_id": "dispatch-recent", "state": "working"}],
+    )
+    _write_dispatch_status(
+        ledger,
+        "dispatch-recent",
+        {
+            "dispatch_id": "dispatch-recent",
+            "state": "working",
+            "heartbeat_at": ten_minutes_ago,
+        },
+    )
+
+    # The built-in default (3600s) tolerates a 600s-old heartbeat.
+    default_result = checks.check_stale_dispatches(
+        _context(tmp_path, lock=_ORCHESTRATION_LOCK)
+    )
+    assert default_result.status == "ok"
+
+    # A project override lowers the threshold below 600s, so the same heartbeat now warns.
+    config_path = tmp_path / ".harness" / "orchestration.json"
+    config_path.write_text(
+        json.dumps({"attention_policy": {"stale_dispatch_seconds": 60}}),
+        encoding="utf-8",
+    )
+
+    overridden_result = checks.check_stale_dispatches(
+        _context(tmp_path, lock=_ORCHESTRATION_LOCK)
+    )
+    assert overridden_result.status == "warn"
