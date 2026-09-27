@@ -47,6 +47,8 @@ from harness.orchestration.core.utils import (
 from harness.orchestration.core.workspace import (
     _harness_runtime_sha256,
     _reject_non_english,
+    _runtime_snapshot_root,
+    _store_runtime_snapshot,
     _required_base_branch,
     _validate_branch,
     _validate_worktree,
@@ -310,6 +312,9 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
     }
     _reject_sensitive(record, "batch")
     root = _state_root(args, repo)
+    _store_runtime_snapshot(
+        root, _runtime_snapshot_root(repo).parent, record["harness_runtime_sha256"]
+    )
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         try:

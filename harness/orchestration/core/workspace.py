@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shutil
+import uuid
 from pathlib import Path
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
@@ -31,6 +33,9 @@ from harness.orchestration.core.utils import (
 # The orchestration package's own directory: `harness/orchestration/` in this repository, and
 # `.harness/orchestration/` once packaged into a target project.
 MODULE_ROOT = Path(__file__).resolve().parents[1]
+# Under the coordinator state root: one immutable runtime snapshot per pinned hash.
+RUNTIMES_DIR = "runtimes"
+RUNTIME_VOLATILE_PARTS = frozenset({"state", "__pycache__"})
 
 
 def _agent_inbox(repo: Path) -> Path:
@@ -103,26 +108,72 @@ def _agent_authored_file(repo: Path, value: str, label: str) -> Path:
 
 
 def _runtime_snapshot_root(repo: Path) -> Path:
+    # A pinned snapshot's bootstrap (workflow/runtime_pin.py) replaces this function so the
+    # snapshot hashes itself -- including snapshots of runtimes older than that bootstrap.
     installed = repo / ".harness/orchestration"
     return installed if installed.is_dir() else MODULE_ROOT
 
 
 def _harness_runtime_sha256(repo: Path) -> str:
-    """Hash the coordinator runtime without volatile state so a batch cannot span an update."""
-    root = _runtime_snapshot_root(repo)
-    digest = hashlib.sha256()
-    for path in sorted(
+    """Hash the whole harness runtime package -- the coordinator and every package it imports
+    (gate runner, context builder, ...) -- without volatile state, so a batch cannot span an
+    update of any of them."""
+    return _runtime_package_sha256(_runtime_snapshot_root(repo).parent)
+
+
+def _runtime_matches(repo: Path, expected: str) -> bool:
+    return expected in _runtime_hashes(_runtime_snapshot_root(repo).parent)
+
+
+def _runtime_hashes(package: Path) -> set[str]:
+    """Every pin `package` satisfies: its whole-package hash, and the `orchestration/`-only hash
+    batches planned before the pin covered the whole package still carry."""
+    return {
+        _runtime_package_sha256(package),
+        _runtime_tree_sha256(package / "orchestration"),
+    }
+
+
+def _runtime_files(package: Path) -> list[Path]:
+    """The runtime package at `package` (the directory holding `orchestration/`): its top-level
+    modules and every subpackage, without volatile state or bytecode."""
+    files: list[Path] = []
+    for item in package.iterdir():
+        if item.is_file() and item.suffix == ".py":
+            files.append(item)
+        elif item.is_dir() and (
+            item.name == "orchestration" or (item / "__init__.py").is_file()
+        ):
+            files.extend(_tree_files(item))
+    return sorted(files)
+
+
+def _tree_files(root: Path) -> list[Path]:
+    return sorted(
         item
         for item in root.rglob("*")
         if item.is_file()
-        and not {"state", "__pycache__"}.intersection(item.relative_to(root).parts)
+        and not RUNTIME_VOLATILE_PARTS.intersection(item.relative_to(root).parts)
         and item.suffix != ".pyc"
-    ):
+    )
+
+
+def _files_sha256(root: Path, files: list[Path]) -> str:
+    digest = hashlib.sha256()
+    for path in files:
         digest.update(path.relative_to(root).as_posix().encode("utf-8"))
         digest.update(b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _runtime_package_sha256(package: Path) -> str:
+    return _files_sha256(package, _runtime_files(package))
+
+
+def _runtime_tree_sha256(root: Path) -> str:
+    return _files_sha256(root, _tree_files(root))
 
 
 def _validate_harness_runtime_snapshot(repo: Path, batch: JsonObject) -> None:
@@ -137,13 +188,73 @@ def _validate_harness_runtime_snapshot(repo: Path, batch: JsonObject) -> None:
             remedy="the batch's recorded harness runtime snapshot hash is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
-    actual = _harness_runtime_sha256(repo)
-    if actual != expected:
+    if not _runtime_matches(repo, expected):
         raise CoordinatorError(
             "the harness runtime changed after this batch was planned; do not spend a worker on recovery. "
             "Finish with the pinned harness revision or abandon and re-plan the batch.",
-            remedy="finish this batch with the pinned harness revision, or abandon and re-plan it under the current one",
+            remedy="restore the pinned runtime with 'batch restore-runtime --batch "
+            f"{batch.get('batch_id')} --from <.harness directory of the pinned revision>', "
+            "or abandon and re-plan the batch under the current one",
         )
+
+
+def _pinned_runtime_dir(state_root: Path, sha256: str) -> Path:
+    # A 16-hex key keeps the snapshot's deepest paths under Windows MAX_PATH; the full hash is
+    # still verified before the snapshot runs.
+    return state_root / RUNTIMES_DIR / sha256[:16]
+
+
+def _pinned_runtime_entry(state_root: Path, sha256: str) -> Path | None:
+    """The pinned snapshot's coordinator, after proving the snapshot still hashes to the pin."""
+    snapshot = _pinned_runtime_dir(state_root, sha256) / "harness"
+    entry = snapshot / "orchestration" / "coordinator.py"
+    if not entry.is_file():
+        return None
+    if sha256 not in _runtime_hashes(snapshot):
+        raise CoordinatorError(
+            f"the pinned runtime snapshot {snapshot} no longer matches the batch's runtime hash",
+            remedy=f"delete {snapshot.parent} and restore it with 'batch restore-runtime', "
+            "or abandon and re-plan the batch",
+        )
+    return entry
+
+
+def _store_runtime_snapshot(state_root: Path, source: Path, sha256: str) -> Path:
+    """Keep an immutable copy of the harness package at `source` (the directory that holds
+    `orchestration/`) so a batch can finish on its pinned runtime after the checkout's runtime is
+    reinstalled.  Snapshots are content-addressed: batches on one runtime share one copy."""
+    target = _pinned_runtime_dir(state_root, sha256)
+    if target.is_dir():
+        if sha256 not in _runtime_hashes(target / "harness"):
+            raise CoordinatorError(
+                f"the stored runtime snapshot {target} does not match hash {sha256}",
+                remedy=f"delete {target} and retry",
+            )
+        return target
+    if sha256 not in _runtime_hashes(source):
+        raise CoordinatorError(
+            f"the runtime at {source} does not match the pinned hash {sha256}",
+            remedy="pass the .harness directory installed from the revision the batch was planned on",
+        )
+    staging = target.with_name(f"{target.name}.tmp-{uuid.uuid4().hex[:8]}")
+    package = staging / "harness"
+    try:
+        for path in _runtime_files(source):
+            copy = package / path.relative_to(source)
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, copy)
+        if sha256 not in _runtime_hashes(package):
+            raise CoordinatorError(
+                f"the runtime at {source} changed while it was being copied",
+                remedy="retry once the runtime is no longer being reinstalled",
+            )
+        staging.rename(target)
+    except OSError:
+        if not target.is_dir():
+            raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return target
 
 
 def _required_base_branch(repo: Path) -> str:

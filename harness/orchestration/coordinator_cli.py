@@ -141,6 +141,21 @@ def build_parser(
     batch_resume.add_argument("--batch", required=True)
     batch_resume.add_argument("--reason", required=True)
     batch_resume.set_defaults(handler=handlers.resume_batch)
+    batch_restore_runtime = batch_commands.add_parser(
+        "restore-runtime",
+        help="store the pinned runtime snapshot a batch needs after the installed runtime changed",
+    )
+    _common(batch_restore_runtime)
+    batch_restore_runtime.add_argument("--batch", required=True)
+    batch_restore_runtime.add_argument(
+        "--from",
+        dest="source",
+        required=True,
+        help=".harness directory installed from the revision the batch was planned on",
+    )
+    batch_restore_runtime.set_defaults(
+        handler=handlers.restore_batch_runtime, installed_runtime_only=True
+    )
     batch_not_required = batch_commands.add_parser(
         "not-required",
         help="record that the pinned snapshot needs no implementation",

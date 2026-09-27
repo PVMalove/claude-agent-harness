@@ -460,6 +460,15 @@ class LifecycleLedger:
             "audit_records": len(list((root / "audit").glob("*.json"))),
         }
 
+    def upgrade_source_batches(self) -> list[JsonObject]:
+        """The batches of the older-schema generation ``migrate`` would upgrade; empty when no
+        schema upgrade is pending."""
+        pointer = self.pointer()
+        if pointer is None or pointer["version"] == LEDGER_VERSION:
+            return []
+        batches = self.root / GENERATIONS / self._pointer_generation(pointer) / "batches"
+        return [_read(path, "batch record") for path in sorted(batches.glob("*.json"))]
+
     def migrate(self) -> JsonObject:
         """Explicitly select a current-schema generation, from legacy (pre-ledger) state or from an
         older-schema generation already selected by an earlier harness version.  Either source is

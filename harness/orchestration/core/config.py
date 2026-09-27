@@ -115,9 +115,7 @@ def _config(repo: Path) -> JsonObject:
         repo / ".harness/orchestration.json", "project orchestration config"
     )
     _reject_sensitive(value, "project orchestration config")
-    problems = health_problems(
-        repo / ".harness/orchestration.json", repo / ".harness/orchestration/roles"
-    )
+    problems = health_problems(repo / ".harness/orchestration.json", _roles_dir(repo))
     if problems:
         raise CoordinatorError(
             "invalid project orchestration config: " + "; ".join(problems),
@@ -287,9 +285,17 @@ def _is_test_path(path: str, patterns: list[str]) -> bool:
     return any(fnmatchcase(path, pattern) for pattern in patterns)
 
 
+def _roles_dir(repo: Path) -> Path:
+    """The role manifests of the runtime actually running -- a batch's pinned snapshot reads its
+    own, not the ones a later reinstall left in the checkout."""
+    from harness.orchestration.core import workspace  # workspace imports this module
+
+    return workspace._runtime_snapshot_root(repo) / "roles"
+
+
 def _role(repo: Path, name: str) -> JsonObject:
     try:
-        return load_role_manifest(repo / ".harness/orchestration/roles" / f"{name}.md")
+        return load_role_manifest(_roles_dir(repo) / f"{name}.md")
     except ContractError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
