@@ -39,36 +39,15 @@ if [ ! -f "$repo/.harness/project.json" ] || [ ! -x "$venv_bin/python" ]; then
   echo "harness installed into $repo"
 fi
 
-# Cloud threads work on claude/... branches; the committed .claude/settings.json (this hook)
-# is recorded in the integrations inventory so `harness health` stays clean.
-"$python_bin" - "$repo" <<'EOF'
-import hashlib, json, sys
+# Cloud threads work on claude/... branches.
+"$python_bin" - "$repo/.harness/project.json" <<'EOF'
+import json, sys
 from pathlib import Path
 
-repo = Path(sys.argv[1])
-project = repo / ".harness/project.json"
+project = Path(sys.argv[1])
 data = json.loads(project.read_text(encoding="utf-8"))
 data["branch_pattern"] = "^(feature/issue-[0-9]+-.+|claude/.+)"
 project.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-settings = Path(".claude/settings.json")
-inventory = repo / ".harness/integrations.json"
-if (repo / settings).is_file():
-    doc = json.loads(inventory.read_text(encoding="utf-8")) if inventory.is_file() else {}
-    entries = [e for e in doc.get("integrations") or [] if e.get("id") != "cloud-session-start"]
-    entries.append({
-        "id": "cloud-session-start",
-        "kind": "hook",
-        "runtimes": ["claude"],
-        "config": settings.as_posix(),
-        "sha256": hashlib.sha256((repo / settings).read_bytes()).hexdigest(),
-        "secret_refs": [],
-        "verify": "Start a Claude Code on the web session and confirm ~/.harness-setup-ok exists.",
-    })
-    inventory.write_text(
-        json.dumps({"schema": 1, "integrations": entries}, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
 EOF
 
 # Verification commands in orchestration.json call bare `python`; take it from .harness/.venv.
