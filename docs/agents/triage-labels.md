@@ -105,8 +105,9 @@ An unlabeled issue is implicitly "needs triage" — there's no dedicated label f
 2. `/to-spec` applies `status::specs` when it publishes a fresh epic issue directly (skipping step 1's routing when the maintainer starts from `/to-spec` rather than from an inbound issue).
 3. Once specified, place the ticket in `status::ready` (nothing blocking it) or `status::blocked` (a dependency, or missing info from you — either way, post triage notes).
 4. `status::blocked` → `status::ready` once the blocker clears or you reply.
-5. `status::ready` → `status::in-progress` when a session (agent or you) picks it up — `/implement` sets this.
-6. Rejected at any point → apply `resolution::wontfix`, drop the `status::*` label, close.
+5. `status::ready` → `status::in-progress` when a session (agent or you) picks it up — `/implement` and `/fast-implement` set this in pre-flight, before the issue branch or any file edit. The label is replaced, never added: a ticket carries exactly one `status::*` label.
+6. Merged and closed → the ticket keeps `status::in-progress`; the closed state is its terminal `done`. In the same step `/to-pull-requests` moves every open ticket whose blockers are now all closed from `status::blocked` to `status::ready`.
+7. Rejected at any point → apply `resolution::wontfix`, drop the `status::*` label, close.
 
 Apply `task-report::required` by default when `/to-spec` or `/to-tickets` create a ticket, unless told to skip it.
 

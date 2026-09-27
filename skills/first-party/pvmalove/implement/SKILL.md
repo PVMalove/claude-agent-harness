@@ -40,7 +40,11 @@ command for them without that approval. `ledger clean` only removes orphaned evi
 ## Coordinator contract
 
 Resolve the tracker ticket, issue branch and blockers without opening a second batch for the same
-work. Before `batch create`, run the batch-level preflight with bounded expected files, services and
+work. Ticket status is part of that pre-flight, before `batch create` and before the issue branch
+exists: check the ticket's blockers whatever its current label (any still open → stop, name them,
+and make sure it carries `status::blocked`); otherwise replace its `status::*` label with
+`status::in-progress` exactly as `/fast-implement` Phase 1 steps 2–3 do, and confirm it is the
+only `status::*` label. A failed label write is a blocker, not a warning. Before `batch create`, run the batch-level preflight with bounded expected files, services and
 diff size. If it rejects the ticket, split it with `/to-tickets`; never ask an architect to discover
 whether an oversized ticket should have been split.
 
@@ -100,4 +104,6 @@ notes.
 ## Wrap-up
 
 After an accepted publish, offer `/to-pull-requests <ticket>`. Do not invoke it automatically, open
-or merge a PR, write to an integration branch, or close the ticket in this skill.
+or merge a PR, write to an integration branch, or close the ticket in this skill. Leave
+`status::in-progress` on the ticket: closing it and moving its unblocked dependents to
+`status::ready` belong to `/to-pull-requests` after the merge.

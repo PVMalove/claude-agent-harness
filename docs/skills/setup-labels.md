@@ -14,7 +14,7 @@
 ```text
 ---
 name: setup-labels
-description: Создайте или обновите GitHub-метки этого репозитория (workflow::*, hitl/afk, task-report::required, out-of-scope, wayfinder:*), чтобы они соответствовали docs/agents/triage-labels.md. Запускайте один раз для каждого репозитория перед первым использованием triage, to-spec, to-tickets, implement, to-guide или wayfinder.
+description: Создайте или обновите GitHub-метки этого репозитория (status::*, hitl/afk, task-report::required, out-of-scope, wayfinder:*), чтобы они соответствовали docs/agents/triage-labels.md. Запускайте один раз для каждого репозитория перед первым использованием triage, to-spec, to-tickets, implement, to-guide или wayfinder.
 disable-model-invocation: true
 ---
 

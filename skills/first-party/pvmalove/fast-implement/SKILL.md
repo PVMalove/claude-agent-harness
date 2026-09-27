@@ -28,14 +28,14 @@ A strict pipeline, resolved in order: **Pre-flight** (confirm the ticket is actu
         - **Local tracker:** read each `.scratch/<feature>/issues/NN-*.md` file in filename order — a purely linear chain — and take the first one that is `**Workflow:** status::ready`, `**Execution:** afk`, and `**Pipeline:** pipeline::fast`. If tickets remain but every `status::ready` one is `hitl`, say so — naming them — and point at `/to-guide` instead of picking one; if `afk` ones remain but none carry `**Pipeline:** pipeline::fast`, say so — naming them — and point at `/implement` instead.
         - Once chosen this way, treat the ticket exactly like one named explicitly for the rest of this process.
     - **Nothing is named:** when this repo defines a git workflow doc (e.g. `docs/agents/git-workflow.md`) with an "Issue First" rule, stop and ask the user to name an existing ticket or run `/to-spec`/`/to-tickets` first — don't start the work. Otherwise, skip this check entirely.
-2. **Check blockers**, on the resolved ticket. If it carries `status::blocked` (see `docs/agents/triage-labels.md`), check its blockers using this repo's tracker (native GitHub/GitLab dependency links, or the `Blocked by:`/`**Blocked by:**` field — see `docs/agents/issue-tracker.md`).
-    - Any blocker still open → stop and tell the user which ones. Don't start the work.
-    - All blockers closed/resolved → clear the block before proceeding:
-        - **GitHub/GitLab:** replace the `status::blocked` label with `status::ready`.
-        - **Local tracker:** set the file's `**Workflow:**` line to `status::ready`.
-3. **Mark it in progress**, once you actually start work:
-    - **GitHub/GitLab:** set the `status::in-progress` label.
+2. **Check blockers**, on the resolved ticket, whatever its current `status::*` label. Read its blockers from this repo's tracker (native GitHub/GitLab dependency links, or the `Blocked by:`/`**Blocked by:**` field — see `docs/agents/issue-tracker.md`).
+    - Any blocker still open → stop and tell the user which ones. Don't start the work. If the ticket isn't already `status::blocked`, set it (same label swap as step 3).
+    - All blockers closed/resolved (or none) → continue. A `status::blocked` ticket passes through `status::ready` in step 3.
+3. **Mark it in progress — mandatory, before creating the issue branch or editing any file.** This is not deferred to "later" and is not optional in a cloud or single-session run. A ticket carries exactly one `status::*` label (see `docs/agents/triage-labels.md`), so replace, don't add:
+    - **GitHub:** `gh issue edit <n> --remove-label status::ready --remove-label status::blocked --add-label status::in-progress`, then confirm with `gh issue view <n> --json labels --jq '[.labels[].name]'` that `status::in-progress` is the only `status::*` label.
+    - **GitLab:** `glab issue update <n> --unlabel status::ready,status::blocked --label status::in-progress`, and confirm the same way.
     - **Local tracker:** set the file's `**Workflow:**` line to `status::in-progress`.
+    - If the label write fails, stop and report it; don't start coding on an unmarked ticket.
 4. **Git pre-flight, before editing files:**
     - Resolve the exact integration branch from the ticket's `## Integration Branch` section or,
       for a child ticket that omits it, from its parent epic. An absent value is a blocker; do not
@@ -56,4 +56,4 @@ A strict pipeline, resolved in order: **Pre-flight** (confirm the ticket is actu
 
 ### Phase 3: PR & Wrap-up
 
-After a successful push, offer `/to-pull-requests <ticket>` as the next command. Do not invoke it automatically, open a PR, run `qa-gate`, or close the ticket in this skill.
+After a successful push, offer `/to-pull-requests <ticket>` as the next command. Do not invoke it automatically, open a PR, run `qa-gate`, or close the ticket in this skill. Leave `status::in-progress` on the ticket: this skill never removes it. Closing the ticket and moving its unblocked dependents to `status::ready` belong to `/to-pull-requests` after the merge.
