@@ -895,7 +895,10 @@ def cmd_health(args: argparse.Namespace) -> int:
     """
     repo = Path(args.repo).expanduser().resolve()
     report = health_registry.run(
-        repo, snapshot_diff=snapshot_diff, output_encoding=ORIGINAL_STDOUT_ENCODING
+        repo,
+        snapshot_diff=snapshot_diff,
+        output_encoding=ORIGINAL_STDOUT_ENCODING,
+        fix=getattr(args, "fix", False),
     )
     if args.json:
         print(json.dumps(health_report_json.to_json(report), ensure_ascii=False))
@@ -999,6 +1002,12 @@ def parser() -> argparse.ArgumentParser:
     health = commands.add_parser("health")
     health.add_argument("repo")
     health.add_argument("--json", action="store_true", help="print the schema_version-1 --json report")
+    health.add_argument(
+        "--fix",
+        action="store_true",
+        help="create missing .harness directories and regenerate a stale skill registry; "
+        "system settings and worktrees are never changed",
+    )
     health.set_defaults(func=cmd_health)
 
     list_cmd = commands.add_parser("list")

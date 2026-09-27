@@ -74,6 +74,7 @@ def test_registry_runs_from_a_copied_health_only_tree_with_no_bin_harness(
 
     assert {check.group for check in report.checks} == {
         "files",
+        "directories",
         "repo_map",
         "environment",
     }
@@ -127,6 +128,15 @@ def test_registry_runs_without_crashing_even_with_a_lock_file_present(
         "files.overlay_locks",
         "files.integrations",
         "files.verification_routing",
+        "directories.harness",
+        "directories.sandboxes",
+        "directories.cache",
+        "directories.logs",
+        "directories.scratch",
+        "directories.runs",
+        "directories.reports",
+        "directories.worktrees",
+        "directories.orchestration_state",
         "repo_map.tier",
         "environment.git",
         "environment.git_identity",

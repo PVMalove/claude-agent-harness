@@ -33,7 +33,7 @@ def test_run_wires_every_registered_group(tmp_path: Path) -> None:
     report = registry.run(tmp_path)
 
     groups = {check.group for check in report.checks}
-    assert groups == {"files", "repo_map", "environment"}
+    assert groups == {"files", "directories", "repo_map", "environment"}
 
 
 def test_run_passes_online_through_to_the_report(tmp_path: Path) -> None:
@@ -149,3 +149,49 @@ def test_summary_counts_every_status(tmp_path: Path) -> None:
     ]
 
     assert report.summary() == {"ok": 2, "warn": 1, "fail": 1, "skipped": 1}
+
+
+def test_fix_actions_run_only_with_fix_and_recheck_the_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixed: list[bool] = []
+
+    def check(_context: HealthContext) -> CheckResult:
+        return CheckResult(
+            id="test.fixable", group="test", status="ok" if fixed else "fail", message="m"
+        )
+
+    def fix(_context: HealthContext, result: CheckResult) -> str | None:
+        assert result.status == "fail"
+        fixed.append(True)
+        return "починено"
+
+    monkeypatch.setattr(registry, "REGISTRY", [("test.fixable", check)])
+    monkeypatch.setattr(registry, "FIXERS", {"test.fixable": fix})
+
+    assert registry.run(tmp_path).fixes_applied == []
+    assert fixed == []
+
+    report = registry.run(tmp_path, fix=True)
+
+    assert report.fixes_applied == ["починено"]
+    assert [check.status for check in report.checks] == ["ok"]
+
+
+def test_a_crashing_fix_action_keeps_the_check_result_and_the_run_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fix_crashes(_context: HealthContext, _result: CheckResult) -> str | None:
+        raise OSError("read-only")
+
+    monkeypatch.setattr(
+        registry,
+        "REGISTRY",
+        [("test.before", _ok("test.before")), ("test.after", _ok("test.after"))],
+    )
+    monkeypatch.setattr(registry, "FIXERS", {"test.before": fix_crashes})
+
+    report = registry.run(tmp_path, fix=True)
+
+    assert [check.id for check in report.checks] == ["test.before", "test.after"]
+    assert report.fixes_applied == []
