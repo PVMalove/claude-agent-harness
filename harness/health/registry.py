@@ -23,6 +23,7 @@ from .checks import directories as directory_checks
 from .checks import environment as environment_checks
 from .checks import files as files_checks
 from .checks import repo_map as repo_map_checks
+from .checks import tracker as tracker_checks
 from .checks import windows as windows_checks
 from .context import HealthContext
 from .model import CheckResult, JsonObject, Report
@@ -61,6 +62,8 @@ REGISTRY: list[tuple[str, CheckFn]] = [
     ("environment.pytest_temp", windows_checks.check_pytest_temp),
     ("environment.symlinks", windows_checks.check_symlinks),
     ("environment.hook_bash", windows_checks.check_hook_bash),
+    ("tracker.auth", tracker_checks.check_auth),
+    ("tracker.reachability", tracker_checks.check_reachability),
 ]
 
 FIXERS: dict[str, FixFn] = {

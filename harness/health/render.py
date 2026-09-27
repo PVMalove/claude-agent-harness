@@ -28,6 +28,7 @@ GROUP_LABELS_RU: dict[str, str] = {
     "repo_map": "Repo Map",
     "environment": "Окружение",
     "directories": "Каталоги харнесса",
+    "tracker": "Трекер задач",
 }
 
 _ACTIVATION_FOOTER = "activation: verify advertised and invoked skills/integrations in a fresh runtime session"
