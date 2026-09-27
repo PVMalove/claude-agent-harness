@@ -33,7 +33,7 @@ def test_run_wires_every_registered_group(tmp_path: Path) -> None:
     report = registry.run(tmp_path)
 
     groups = {check.group for check in report.checks}
-    assert groups == {"files", "directories", "repo_map", "environment", "tracker"}
+    assert groups == {"files", "directories", "repo_map", "environment", "tracker", "orchestration"}
 
 
 def test_run_passes_online_through_to_the_report(tmp_path: Path) -> None:

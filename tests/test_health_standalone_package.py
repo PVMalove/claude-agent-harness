@@ -78,6 +78,7 @@ def test_registry_runs_from_a_copied_health_only_tree_with_no_bin_harness(
         "repo_map",
         "environment",
         "tracker",
+        "orchestration",
     }
     assert {check.status for check in report.checks} <= {
         "ok",
@@ -156,4 +157,9 @@ def test_registry_runs_without_crashing_even_with_a_lock_file_present(
         "tracker.reachability",
         "tracker.permissions",
         "tracker.labels",
+        "orchestration.ledger_summary",
+        "orchestration.blocked_batches",
+        "orchestration.stale_dispatches",
+        "orchestration.orphaned_worktrees",
+        "orchestration.disposable_data",
     }

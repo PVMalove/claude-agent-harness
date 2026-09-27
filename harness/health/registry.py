@@ -22,6 +22,7 @@ from typing import Callable
 from .checks import directories as directory_checks
 from .checks import environment as environment_checks
 from .checks import files as files_checks
+from .checks import orchestration as orchestration_checks
 from .checks import repo_map as repo_map_checks
 from .checks import tracker as tracker_checks
 from .checks import windows as windows_checks
@@ -66,6 +67,11 @@ REGISTRY: list[tuple[str, CheckFn]] = [
     ("tracker.reachability", tracker_checks.check_reachability),
     ("tracker.permissions", tracker_checks.check_permissions),
     ("tracker.labels", tracker_checks.check_labels),
+    ("orchestration.ledger_summary", orchestration_checks.check_ledger_summary),
+    ("orchestration.blocked_batches", orchestration_checks.check_blocked_batches),
+    ("orchestration.stale_dispatches", orchestration_checks.check_stale_dispatches),
+    ("orchestration.orphaned_worktrees", orchestration_checks.check_orphaned_worktrees),
+    ("orchestration.disposable_data", orchestration_checks.check_disposable_data),
 ]
 
 FIXERS: dict[str, FixFn] = {

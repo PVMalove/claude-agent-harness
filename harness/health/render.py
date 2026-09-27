@@ -29,6 +29,7 @@ GROUP_LABELS_RU: dict[str, str] = {
     "environment": "Окружение",
     "directories": "Каталоги харнесса",
     "tracker": "Трекер задач",
+    "orchestration": "Оркестрация",
 }
 
 _ACTIVATION_FOOTER = "activation: verify advertised and invoked skills/integrations in a fresh runtime session"
