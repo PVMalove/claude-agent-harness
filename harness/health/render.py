@@ -27,6 +27,7 @@ GROUP_LABELS_RU: dict[str, str] = {
     "files": "Файлы харнесса",
     "repo_map": "Repo Map",
     "environment": "Окружение",
+    "directories": "Каталоги харнесса",
 }
 
 _ACTIVATION_FOOTER = "activation: verify advertised and invoked skills/integrations in a fresh runtime session"
@@ -77,6 +78,9 @@ def render_text(report: Report, *, stream: _EncodingAware | None = None) -> str:
                 lines.append(f"-> Как исправить: {check.fix.text}")
                 if check.fix.command:
                     lines.append(f"   {check.fix.command}")
+    if report.fixes_applied:
+        lines.append("== Исправлено (--fix) ==")
+        lines.extend(f"- {applied}" for applied in report.fixes_applied)
     summary = report.summary()
     lines.append(
         "Итого: ok={ok} warn={warn} fail={fail} skipped={skipped}".format(**summary)
