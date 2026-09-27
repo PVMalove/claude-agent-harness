@@ -226,13 +226,26 @@ qa-lane (`qa-lane/attempts/`). Отчёт или хронологию можно
 уверенности, топ-10 «хабов» по входящей степени, диагностики. Карта экспортируется в Markdown (`e`)
 и в JSON (`j`, payload схемы v1 как есть) — в `docs/tasks/console-exports/`. Раздел читает только
 поля схемы v1 и принимает карту только после `harness.repo_map.contract.validation_error`.
-`Orchestration` — пока заглушка «раздел ещё не реализован». Код разложен по шву
-stdlib/textual: `harness/console/{pin,runner,launcher,data,catalog,reports,export,repo_map}.py` не
-импортируют `textual` и тестируются без него; только `harness/console/app.py` и
+`Orchestration` — команды coordinator из `harness/console/coordinator_catalog.py`: batch
+create/approve/abandon/decide/decision-packet, dispatch create/cancel/send, risk assess,
+context-package register. Каждая запись — тоже stdlib-данные, но не написана руками: поля (флаг,
+обязательность, `choices`, `append`) получены обходом `_actions` реального
+`coordinator.parser()`, так что новый обязательный аргумент или `choices` в парсере coordinator
+без ручной правки этого модуля отражаются в каталоге (дрейф-тест). Пульт запускает тот же CLI-процесс
+`python .harness/orchestration/coordinator.py --repo {repo} <группа> <команда> ...`, что и
+`ledger-*` в разделе `Harness`, не повторяя логику и инварианты coordinator (approvals, idempotency
+keys). Класс обратимости — как у `Harness`; терминальные решения coordinator (`batch
+approve/abandon/decide`, `dispatch create/cancel`) и внешнее изменение (`dispatch send`) требуют
+подтверждения, отмена ничего не запускает; `batch create`, `batch decision-packet`, `risk assess` и
+`context-package register` остаются обратимыми, но форма всё равно проверяет обязательные поля.
+Код разложен по шву
+stdlib/textual: `harness/console/{pin,runner,launcher,data,catalog,coordinator_catalog,reports,export,repo_map}.py`
+не импортируют `textual` и тестируются без него; только `harness/console/app.py` и
 `harness/console/screens/*.py` его импортируют, и только внутри уже релончнутого процесса —
 Pilot-тесты (`tests/test_console_app.py`, `tests/test_console_harness.py`,
-`tests/test_console_reports_app.py`, `tests/test_console_repo_map_app.py`) пропускаются
-(`pytest.importorskip`), если textual не установлен. `textual` — только в
+`tests/test_console_orchestration.py`, `tests/test_console_reports_app.py`,
+`tests/test_console_repo_map_app.py`) пропускаются (`pytest.importorskip`), если textual не
+установлен. `textual` — только в
 `[dependency-groups].dev` `pyproject.toml`, тем же pin'ом, что и в коде (`tests/test_console_pin.py`
 держит их равными).
 

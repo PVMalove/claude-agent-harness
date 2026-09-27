@@ -1,5 +1,6 @@
 """One shared "not yet implemented" screen for every console section that has no real screen of
-its own yet (Orchestration - see harness/console/screens/dashboard.py)."""
+its own yet. Every section in harness/console/screens/dashboard.py has one today; this stays the
+fallback for a section name without a screen."""
 
 from __future__ import annotations
 
