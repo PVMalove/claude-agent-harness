@@ -293,6 +293,21 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             ("harness", "orchestration", "coordinator.py"),
         )
 
+    def test_schema_upgrade_waits_for_batches_pinned_to_another_runtime(self) -> None:
+        batch = self._create_batch()
+        args = _ns(repo=str(self.repo), state_dir=str(self.state_dir))
+        architect = self.repo / ".harness" / "orchestration" / "roles" / "architect.md"
+        original = architect.read_text(encoding="utf-8")
+        architect.write_text("reinstalled\n", encoding="utf-8")
+
+        with mock.patch("harness.orchestration.ledger.lifecycle.LEDGER_VERSION", 99):
+            with self.assertRaises(coordinator.CoordinatorError) as refused:
+                coordinator.migrate_ledger(args)
+            self.assertIn(batch["batch_id"], refused.exception.message)
+
+            architect.write_text(original, encoding="utf-8")
+            self.assertTrue(coordinator.migrate_ledger(args)["migrated"])
+
     def test_batch_approve_transitions_state_via_ledger_replace(self) -> None:
         batch = self._create_batch()
 

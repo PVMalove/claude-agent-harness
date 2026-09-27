@@ -22,8 +22,8 @@ from harness.orchestration.core.utils import (
 from harness.orchestration.core.workspace import (
     MODULE_ROOT,
     RUNTIMES_DIR,
-    _harness_runtime_sha256,
     _pinned_runtime_entry,
+    _runtime_matches,
     _store_runtime_snapshot,
 )
 from harness.orchestration.ledger.ledger_ops import (
@@ -91,7 +91,7 @@ def pinned_runtime_command(args: argparse.Namespace) -> list[str] | None:
     root = _state_root(args, repo)
     batch = _target_batch(args, root)
     expected = _pinned_hash(batch) if batch is not None else None
-    if expected is None or expected == _harness_runtime_sha256(repo):
+    if expected is None or _runtime_matches(repo, expected):
         return None
     entry = _pinned_runtime_entry(root, expected)
     if entry is None:
