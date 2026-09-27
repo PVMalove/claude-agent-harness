@@ -31,7 +31,7 @@ cd claude-agent-harness
 
 ### Шаг 2 — команды CLI
 
-Все команды — `harness/bin/harness <command> <repo> [флаги]`, где `<repo>` — путь к целевому проекту (может быть где угодно на диске, не обязательно текущая директория). Ниже — все восемь подкоманд, которые умеет CLI.
+Все команды — `harness/bin/harness <command> <repo> [флаги]`, где `<repo>` — путь к целевому проекту (может быть где угодно на диске, не обязательно текущая директория). Ниже — все девять подкоманд, которые умеет CLI.
 
 Если не уверены, что из пары нужно — четыре короткие таблицы, детали каждой команды/capability ниже:
 
@@ -169,6 +169,31 @@ python3 harness/bin/harness health /path/to/repository --fix
 ```bash
 python3 harness/bin/harness list /path/to/repository
 ```
+
+**`console` — интерактивный TUI-пульт диагностики и оркестрации** (ADR 0025):
+
+```bash
+python3 harness/bin/harness console /path/to/repository
+```
+
+Релончит сам себя через `uv run --no-project --with textual==<pin>` — pin версии textual живёт в
+`harness/console/pin.py`, а не в `pyproject.toml`; `--no-project` гарантирует, что `uv run` не
+трогает зависимости и lock целевого проекта (`dependencies` харнесса остаются `[]`). Если `uv` не
+найден в PATH или установка textual не удалась (нет сети), пульт печатает причину и текстовый
+отчёт `harness health` — тот же самый, что даёт обычная команда `health` выше; диагностика никогда
+не зависит от textual. Домашний экран — дашборд (offline-счётчики `ok`/`warn`/`fail`/`skipped`,
+число открытых backend-orchestration batch или «не подключено», tier Repo Map, версия харнесса и
+статус дрейфа) с меню из пяти разделов: `Diagnostics`, `Harness`, `Orchestration`, `Reports`,
+`Repo Map`. Полностью реализован только `Diagnostics` — полный отчёт `harness health`, действие
+«online checks» (повторный вызов с проверками из сети) и «apply fixes» (выполняет remedy-команды
+проверок через внедряемый command runner, требует повторного нажатия-подтверждения перед
+выполнением); остальные четыре раздела — заглушки «раздел ещё не реализован». Код разложен по шву
+stdlib/textual: `harness/console/{pin,runner,launcher,data}.py` не импортируют `textual` и
+тестируются без него; только `harness/console/app.py` и `harness/console/screens/*.py` его
+импортируют, и только внутри уже релончнутого процесса — Pilot-тесты (`tests/test_console_app.py`)
+пропускаются (`pytest.importorskip`), если textual не установлен. `textual` — только в
+`[dependency-groups].dev` `pyproject.toml`, тем же pin'ом, что и в коде (`tests/test_console_pin.py`
+держит их равными).
 
 **Глобальный слой** — отдельная команда, `bin/install-global`, не `harness/bin/harness`: ставится один раз на машину, на пользователя (`~`), а не на конкретный репозиторий. По собственному описанию скрипта: «устанавливает минимальный instruction-профиль плюс `start-project`. Никогда не устанавливает MCP, модели, плагины, credentials или permissions».
 
