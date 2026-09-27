@@ -18,6 +18,7 @@ from harness.console.app import HarnessConsoleApp
 from harness.console.data import DashboardData
 from harness.console.screens.dashboard import SECTIONS, DashboardScreen
 from harness.console.screens.diagnostics import DiagnosticsScreen
+from harness.console.screens.harness import HarnessScreen
 from harness.console.screens.stub import StubScreen
 from harness.health.model import CheckResult, Fix, Report
 
@@ -41,7 +42,7 @@ def test_selecting_a_stub_section_pushes_its_stub_screen(tmp_path: Path) -> None
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test() as pilot:
             menu = app.screen.query_one("#section-menu", ListView)
-            menu.index = SECTIONS.index("Harness")
+            menu.index = SECTIONS.index("Orchestration")
             await pilot.press("enter")
             await pilot.pause()
             return isinstance(app.screen, StubScreen), getattr(
@@ -50,7 +51,22 @@ def test_selecting_a_stub_section_pushes_its_stub_screen(tmp_path: Path) -> None
 
     is_stub, section_name = asyncio.run(scenario())
     assert is_stub
-    assert section_name == "Harness"
+    assert section_name == "Orchestration"
+
+
+def test_selecting_harness_pushes_the_harness_screen(tmp_path: Path) -> None:
+    async def scenario() -> bool:
+        from textual.widgets import ListView
+
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test() as pilot:
+            menu = app.screen.query_one("#section-menu", ListView)
+            menu.index = SECTIONS.index("Harness")
+            await pilot.press("enter")
+            await pilot.pause()
+            return isinstance(app.screen, HarnessScreen)
+
+    assert asyncio.run(scenario())
 
 
 def _fake_dashboard_data() -> DashboardData:
