@@ -293,6 +293,29 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             ("harness", "orchestration", "coordinator.py"),
         )
 
+    def test_file_command_resolves_its_payload_dispatch_pinned_runtime(self) -> None:
+        """report submit, dispatch checkpoint and dispatch telemetry name their dispatch only
+        inside --file, so the batch is resolved from that payload (#377)."""
+        (self.repo / ".harness" / "orchestration" / "coordinator.py").write_text(
+            "# pinned entry point\n", encoding="utf-8"
+        )
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        dispatch_id = self._create_architect_dispatch(batch["batch_id"])["dispatch_id"]
+        payload = workspace._prepare_agent_inbox(self.repo) / f"{dispatch_id}.json"
+        payload.write_text(json.dumps({"dispatch_id": dispatch_id}), encoding="utf-8")
+        args = _ns(repo=str(self.repo), state_dir=str(self.state_dir), file=str(payload))
+        (self.repo / ".harness" / "orchestration" / "roles" / "architect.md").write_text(
+            "reinstalled\n", encoding="utf-8"
+        )
+
+        self.assertIsNotNone(coordinator.pinned_runtime_command(args))
+        # A payload naming no readable dispatch is the command's own error to report.
+        for unreadable in ("not json", "[]", "{}", '{"dispatch_id": "dispatch-missing"}'):
+            with self.subTest(payload=unreadable):
+                payload.write_text(unreadable, encoding="utf-8")
+                self.assertIsNone(coordinator.pinned_runtime_command(args))
+
     def test_schema_upgrade_waits_for_batches_pinned_to_another_runtime(self) -> None:
         batch = self._create_batch()
         args = _ns(repo=str(self.repo), state_dir=str(self.state_dir))
@@ -4809,24 +4832,61 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
         )
         self.assertEqual(len(list(self.runtimes.iterdir())), 2)
 
-    def test_runtime_hash_check_passes_inside_the_pinned_snapshot(self) -> None:
-        batch_id = self._create_batch("dispatch")
-        self.assertEqual(self._approve(batch_id).returncode, 0)
+    def _architect_dispatch(self, batch_id: str) -> JsonObject:
         shape = (
             "--batch", batch_id, "--role", "architect", "--runtime", "claude",
             "--model", "sonnet", "--effort", "high",
         )
         proposal = self._ok("dispatch", "propose", *shape)
-        dispatch = self._ok(
+        return self._ok(
             "dispatch", "create", *shape,
             "--transition-digest", cast(str, proposal["transition_digest"]),
             "--approved-by", "Malove", "--approved-at", datetime.now(UTC).isoformat(),
         )
+
+    def test_runtime_hash_check_passes_inside_the_pinned_snapshot(self) -> None:
+        batch_id = self._create_batch("dispatch")
+        self.assertEqual(self._approve(batch_id).returncode, 0)
+        dispatch = self._architect_dispatch(batch_id)
         self._reinstall_runtime()
 
         sent = self._coordinator("dispatch", "send", "--dispatch", cast(str, dispatch["dispatch_id"]))
 
         self.assertEqual(sent.returncode, 0, sent.stderr or sent.stdout)
+
+    def test_report_submitted_by_file_runs_on_the_pinned_snapshot(self) -> None:
+        """report submit names its dispatch only inside --file (#377)."""
+        batch_id = self._create_batch("report")
+        self.assertEqual(self._approve(batch_id).returncode, 0)
+        brief = cast(JsonObject, self._architect_dispatch(batch_id)["brief"])
+        dispatch_id = cast(str, brief["dispatch_id"])
+        self._reinstall_runtime()
+        self._ok("dispatch", "send", "--dispatch", dispatch_id)
+        self._ok("dispatch", "self-report", "--dispatch", dispatch_id, "--model", "sonnet")
+        report = workspace._prepare_agent_inbox(self.repo) / f"{dispatch_id}.json"
+        report.write_text(
+            json.dumps(
+                {
+                    "dispatch_id": dispatch_id,
+                    "ticket": brief["ticket"],
+                    "role": "architect",
+                    "outcome": "completed",
+                    "output": "architecture decision recorded",
+                    "commit_sha": "not applicable — read-only role",
+                    "changed_files": [],
+                    "checks_run": [],
+                    "risks": "none",
+                    "blockers": "none",
+                    "next_coordinator_action": "dispatch developer",
+                    "report_language": "ru",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        submitted = self._ok("report", "submit", "--file", str(report))
+
+        self.assertEqual(submitted["state"], "reported")
 
     def test_a_tampered_snapshot_is_refused(self) -> None:
         batch_id = self._create_batch("tampered")
