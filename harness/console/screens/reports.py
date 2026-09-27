@@ -1,0 +1,192 @@
+"""Reports section: completion reports from the selected ledger generation, filterable by ticket,
+role, outcome and date; one report read section by section (text wraps to the screen width); and a
+batch chronology - states, dispatches by role, coordinator decisions and risks. All facts come from
+harness.console.reports; these screens only render them. Report text is untrusted role output, so
+every widget renders it with `markup=False`."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Callable
+
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, VerticalScroll
+from textual.screen import Screen
+from textual.widgets import Button, Footer, Header, Input, ListItem, ListView, Static
+
+from .. import reports as console_reports
+from ..reports import BatchTimeline, LedgerView, ReportEntry
+
+_FILTERS = (
+    ("filter-ticket", "тикет", "ticket"),
+    ("filter-role", "роль", "role"),
+    ("filter-outcome", "outcome", "outcome"),
+    ("filter-date", "дата (2026-09-27)", "date"),
+)
+
+
+def _report_label(entry: ReportEntry) -> str:
+    date = entry.reported_at[:16].replace("T", " ") if entry.reported_at else "дата ?"
+    return f"{date} · {entry.ticket} · {entry.role} · {entry.outcome} · {entry.dispatch_id}"
+
+
+def _section_id(title: str) -> str:
+    return "section-" + title.lower().replace(" ", "-")
+
+
+class ReportsScreen(Screen[None]):
+    """The report list with its filters, and the batch list that opens a chronology."""
+
+    BINDINGS = [Binding("escape", "app.pop_screen", "Назад")]
+    DEFAULT_CSS = """
+    ReportsScreen #report-filters { height: auto; }
+    ReportsScreen #report-filters Input { width: 1fr; }
+    ReportsScreen ListView { height: auto; max-height: 50%; }
+    ReportsScreen .list-title { margin-top: 1; text-style: bold; }
+    """
+
+    def __init__(
+        self,
+        repo: Path,
+        *,
+        load_view: Callable[[Path], LedgerView] = console_reports.load_ledger_view,
+    ) -> None:
+        super().__init__()
+        self.repo = repo
+        self.view = load_view(repo)
+        self.shown: list[ReportEntry] = list(self.view.reports)
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Static(self._status(), id="reports-status", markup=False)
+        with Horizontal(id="report-filters"):
+            for widget_id, placeholder, _ in _FILTERS:
+                yield Input(placeholder=placeholder, id=widget_id)
+        yield Static("Completion reports", classes="list-title")
+        yield ListView(*self._report_items(), id="report-list")
+        yield Static("Батчи (хронология)", classes="list-title")
+        yield ListView(
+            *(
+                ListItem(
+                    Static(
+                        f"{batch.ticket} · {batch.state} · {batch.batch_id}",
+                        markup=False,
+                    ),
+                    name=batch.batch_id,
+                )
+                for batch in self.view.batches
+            ),
+            id="batch-list",
+        )
+        yield Footer()
+
+    def _status(self) -> str:
+        if self.view.unavailable:
+            return self.view.unavailable
+        return f"отчётов: {len(self.shown)} из {len(self.view.reports)}"
+
+    def _report_items(self) -> list[ListItem]:
+        return [
+            ListItem(Static(_report_label(entry), markup=False), name=entry.dispatch_id)
+            for entry in self.shown
+        ]
+
+    async def on_input_changed(self, event: Input.Changed) -> None:
+        values = {
+            key: self.query_one(f"#{widget_id}", Input).value
+            for widget_id, _, key in _FILTERS
+        }
+        self.shown = console_reports.filter_reports(self.view.reports, **values)
+        report_list = self.query_one("#report-list", ListView)
+        await report_list.clear()
+        await report_list.extend(self._report_items())
+        self.query_one("#reports-status", Static).update(self._status())
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        name = event.item.name
+        if name is None:
+            return
+        if event.list_view.id == "report-list":
+            entry = next(item for item in self.view.reports if item.dispatch_id == name)
+            self.app.push_screen(ReportScreen(entry, self.view))
+        elif event.list_view.id == "batch-list":
+            timeline = self.view.timeline(name)
+            if timeline is not None:
+                self.app.push_screen(BatchTimelineScreen(timeline))
+
+
+class ReportScreen(Screen[None]):
+    """One completion report, section by section; every section wraps to the screen width."""
+
+    BINDINGS = [
+        Binding("escape", "app.pop_screen", "Назад"),
+        Binding("b", "open_timeline", "Хронология батча"),
+    ]
+    DEFAULT_CSS = """
+    ReportScreen .section-title { margin-top: 1; text-style: bold; }
+    ReportScreen .section-body { padding-left: 2; }
+    """
+
+    def __init__(self, entry: ReportEntry, view: LedgerView) -> None:
+        super().__init__()
+        self.entry = entry
+        self.view = view
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with VerticalScroll(id="report-body"):
+            yield Static(
+                console_reports.report_header(self.entry),
+                id="report-header",
+                markup=False,
+            )
+            for title, body in console_reports.report_sections(self.entry.report):
+                yield Static(title, classes="section-title", markup=False)
+                yield Static(
+                    body or "—",
+                    id=_section_id(title),
+                    classes="section-body",
+                    markup=False,
+                )
+        yield Button("Хронология батча", id="open-timeline")
+        yield Footer()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "open-timeline":
+            self.action_open_timeline()
+
+    def action_open_timeline(self) -> None:
+        timeline = self.view.timeline(self.entry.batch_id)
+        if timeline is None:
+            self.notify("батч этого отчёта не найден в ledger", severity="warning")
+            return
+        self.app.push_screen(BatchTimelineScreen(timeline))
+
+
+def _render_timeline(timeline: BatchTimeline) -> str:
+    batch = timeline.batch
+    lines = [
+        f"{batch.ticket} · {batch.batch_id} · состояние: {batch.state}",
+        f"маршрут: {console_reports.role_flow_text(timeline)}",
+        "",
+    ]
+    for event in timeline.events:
+        when = event.at[:19].replace("T", " ") if event.at else "время ?"
+        lines.append(f"{when}  [{event.kind}] {event.text}")
+    return "\n".join(lines)
+
+
+class BatchTimelineScreen(Screen[None]):
+    BINDINGS = [Binding("escape", "app.pop_screen", "Назад")]
+
+    def __init__(self, timeline: BatchTimeline) -> None:
+        super().__init__()
+        self.timeline = timeline
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield VerticalScroll(
+            Static(_render_timeline(self.timeline), id="batch-timeline", markup=False)
+        )
+        yield Footer()
