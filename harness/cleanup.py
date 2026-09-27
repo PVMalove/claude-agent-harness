@@ -16,10 +16,10 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
-from harness.storage import sandboxes_root, storage_root
+from harness.storage import LEGACY_STORAGE_DIRS, sandboxes_root, storage_root
 
 TERMINAL_BATCH_STATES = {"completed", "failed", "abandoned", "not-required"}
-LEGACY_TOP_LEVEL_DIRS = (".cache", "test-logs", "tmp", "reports")
+LEGACY_TOP_LEVEL_DIRS = LEGACY_STORAGE_DIRS
 
 
 class CleanupItem(TypedDict):

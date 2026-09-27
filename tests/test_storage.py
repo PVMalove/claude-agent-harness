@@ -10,9 +10,11 @@ import pytest
 from harness.storage import (
     SANDBOX_CATEGORIES,
     SANDBOXES_DIR,
+    sandboxes_health,
     sandboxes_root,
     storage_path,
     storage_root,
+    validate_sandboxes,
 )
 from harness.orchestration.core.constants import (
     AGENT_INBOX_REL,
@@ -97,4 +99,72 @@ def test_orchestration_constants_sandboxes_paths() -> None:
     assert SANDBOXES_REL == Path(".harness") / ".sandboxes"
     assert SCRATCH_REL == Path(".harness") / ".sandboxes" / "scratch"
     assert AGENT_INBOX_REL == Path(".harness") / ".sandboxes" / "scratch" / "inbox"
+
+
+def test_sandboxes_health_clean_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "clean_repo"
+    repo.mkdir()
+    (repo / ".harness").mkdir()
+    (repo / ".harness" / ".sandboxes").mkdir()
+    assert sandboxes_health(repo) == []
+
+
+def test_sandboxes_health_warns_on_legacy_directories(tmp_path: Path) -> None:
+    repo = tmp_path / "legacy_repo"
+    repo.mkdir()
+    harness_dir = repo / ".harness"
+    harness_dir.mkdir()
+    (harness_dir / ".sandboxes").mkdir()
+    for legacy_name in (".cache", "test-logs", "tmp", "reports"):
+        (harness_dir / legacy_name).mkdir()
+
+    diagnostics = sandboxes_health(repo)
+    assert len(diagnostics) == 2
+    assert diagnostics[0].startswith("ПРЕДУПРЕЖДЕНИЕ: обнаружены устаревшие директории вне .sandboxes:")
+    assert ".cache" in diagnostics[0]
+    assert "test-logs" in diagnostics[0]
+    assert "tmp" in diagnostics[0]
+    assert "reports" in diagnostics[0]
+    assert diagnostics[1] == "КАК ИСПРАВИТЬ: выполните harness cleanup для очистки устаревших данных"
+
+
+def test_sandboxes_health_warns_on_invalid_sandboxes(tmp_path: Path) -> None:
+    repo = tmp_path / "invalid_sandboxes_repo"
+    repo.mkdir()
+    harness_dir = repo / ".harness"
+    harness_dir.mkdir()
+    (harness_dir / ".sandboxes").write_text("not a directory", encoding="utf-8")
+
+    diagnostics = sandboxes_health(repo)
+    assert any("ПРЕДУПРЕЖДЕНИЕ" in d and "не является директорией" in d for d in diagnostics)
+    assert any("КАК ИСПРАВИТЬ" in d and "удалите" in d for d in diagnostics)
+
+    problems: list[str] = []
+    validate_sandboxes(repo, problems)
+    assert len(problems) == 1
+    assert "exists but is not a directory" in problems[0]
+
+
+def test_sandboxes_health_in_worktree(tmp_path: Path) -> None:
+    repo = tmp_path / "main_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test User"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    (repo / "README.md").write_text("main", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+
+    worktree = tmp_path / "wt"
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", str(worktree)], check=True)
+
+    harness_dir = repo / ".harness"
+    harness_dir.mkdir(exist_ok=True)
+    (harness_dir / ".sandboxes").mkdir(exist_ok=True)
+
+    assert sandboxes_health(worktree) == []
+
+    (harness_dir / "tmp").mkdir()
+    diagnostics = sandboxes_health(worktree)
+    assert any("обнаружены устаревшие директории" in d for d in diagnostics)
 
