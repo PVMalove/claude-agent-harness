@@ -1,5 +1,6 @@
-"""Group 'files' health checks: each check wraps the unchanged validate_*/repo_map detection logic
-already defined in harness/bin/harness (see harness/health/checks/_cli.py) into a CheckResult."""
+"""Group 'files' health checks: each check wraps the unchanged validate_*/detection logic that
+lives directly in harness/health/checks/files.py (harness/bin/harness imports it from there - see
+that module's docstring) into a CheckResult."""
 
 from __future__ import annotations
 
@@ -123,6 +124,36 @@ def test_check_skill_snapshot_skipped_without_lock(tmp_path: Path) -> None:
 
     assert result.id == "files.skill_snapshot"
     assert result.status == "skipped"
+
+
+def test_check_skill_snapshot_skipped_without_injected_snapshot_diff(tmp_path: Path) -> None:
+    """snapshot_diff itself stays in harness/bin/harness (it needs CAPABILITIES.json and the
+    harness/ source tree, neither of which ships to an installed project); only the canonical
+    `harness health` CLI supplies it via HealthContext. Without it, the check degrades to
+    'skipped' instead of raising - this is what makes the package work standalone."""
+    result = checks.check_skill_snapshot(_context(tmp_path, lock={}))
+
+    assert result.id == "files.skill_snapshot"
+    assert result.status == "skipped"
+    assert "харнесс-пакетировщика" in result.message
+
+
+def test_check_skill_snapshot_uses_the_injected_snapshot_diff(tmp_path: Path) -> None:
+    context = HealthContext(
+        repo=tmp_path, lock={}, online=False, snapshot_diff=lambda _repo: {"state": "drift"}
+    )
+
+    result = checks.check_skill_snapshot(context)
+
+    assert result.status == "fail"
+
+    context = HealthContext(
+        repo=tmp_path, lock={}, online=False, snapshot_diff=lambda _repo: {"state": "clean"}
+    )
+
+    result = checks.check_skill_snapshot(context)
+
+    assert result.status == "ok"
 
 
 def test_check_skill_registry_skipped_without_lock(tmp_path: Path) -> None:

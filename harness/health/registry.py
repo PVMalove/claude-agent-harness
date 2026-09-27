@@ -44,9 +44,18 @@ def _load_lock(repo: Path) -> JsonObject | None:
     return data if isinstance(data, dict) else None
 
 
-def run(repo: Path, *, online: bool = False) -> Report:
-    """Build one HealthContext and run every registered check, without early exit."""
-    context = HealthContext(repo=repo, lock=_load_lock(repo), online=online)
+def run(
+    repo: Path,
+    *,
+    online: bool = False,
+    snapshot_diff: Callable[[Path], JsonObject] | None = None,
+) -> Report:
+    """Build one HealthContext and run every registered check, without early exit.
+
+    `snapshot_diff` is forwarded to HealthContext unchanged; see its docstring - only
+    harness/bin/harness's cmd_health supplies it today.
+    """
+    context = HealthContext(repo=repo, lock=_load_lock(repo), online=online, snapshot_diff=snapshot_diff)
     report = Report(schema_version=1, repo=str(repo), online=online)
     for check_fn in REGISTRY:
         report.checks.append(check_fn(context))
