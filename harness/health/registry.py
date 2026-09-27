@@ -74,6 +74,7 @@ FIXERS: dict[str, FixFn] = {
         check_id: directory_checks.make_fix(check_id)
         for check_id in directory_checks.DIRECTORY_PATHS
     },
+    "tracker.labels": tracker_checks.fix_labels,
 }
 
 _LOCK_REL = Path(".harness/harness.lock")

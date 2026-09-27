@@ -434,3 +434,44 @@ def check_labels(context: HealthContext) -> CheckResult:
     return CheckResult(
         id=check_id, group=GROUP, status="warn", message="; ".join(parts), fix=fix
     )
+
+
+def fix_labels(context: HealthContext, result: CheckResult) -> str | None:
+    """`harness health --online --fix`: create every missing canonical label with its canonical
+    color. An existing label with a mismatched color is never touched - only creation, never
+    `label edit`/`--force` (ticket #346)."""
+    if result.status != "warn":
+        return None
+    tracker, slug = detect_tracker(context)
+    if tracker == "local" or slug is None:
+        return None
+    tool = _tracker_tool(tracker)
+    executable = shutil.which(tool)
+    if executable is None:
+        return None
+    diff = _label_diff(context, tracker, executable, slug)
+    if diff is None:
+        return None
+    missing, _mismatched = diff
+    created = []
+    for name, color in missing:
+        if tracker == "github":
+            argv = [executable, "label", "create", name, "--color", color, "-R", slug]
+        else:
+            argv = [
+                executable,
+                "label",
+                "create",
+                "--name",
+                name,
+                "--color",
+                color,
+                "-R",
+                slug,
+            ]
+        outcome = _run(argv, cwd=context.repo)
+        if outcome is not None and outcome.returncode == 0:
+            created.append(f"{name} ({color})")
+    if not created:
+        return None
+    return "созданы метки: " + ", ".join(created)
