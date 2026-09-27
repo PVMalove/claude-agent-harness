@@ -1,5 +1,5 @@
 """One shared "not yet implemented" screen for every console section that has no real screen of
-its own yet (Orchestration, Reports, Repo Map - see harness/console/app.py)."""
+its own yet (Orchestration, Repo Map - see harness/console/screens/dashboard.py)."""
 
 from __future__ import annotations
 
