@@ -1,0 +1,198 @@
+{
+  "$schema": "./orchestration/orchestration.schema.json",
+  "provider_profiles": {
+    "claude-profile": {
+      "capabilities": [
+        "architecture-analysis",
+        "backend-development",
+        "code-review",
+        "independent-verification"
+      ],
+      "fallback": [],
+      "known_limitations": []
+    },
+    "codex-profile": {
+      "capabilities": [
+        "architecture-analysis",
+        "backend-development",
+        "code-review",
+        "independent-verification"
+      ],
+      "fallback": [],
+      "known_limitations": []
+    }
+  },
+  "assignment_plans": {
+    "architect": {
+      "zone": "repository",
+      "runtimes": {
+        "claude": {
+          "profiles": [
+            "claude-profile"
+          ],
+          "model": "claude-sonnet-5",
+          "effort": "medium"
+        },
+        "codex": {
+          "profiles": [
+            "codex-profile"
+          ],
+          "model": "gpt-6-sol",
+          "effort": "medium"
+        }
+      }
+    },
+    "developer": {
+      "zone": "repository",
+      "runtimes": {
+        "claude": {
+          "profiles": [
+            "claude-profile"
+          ],
+          "model": "claude-sonnet-5",
+          "effort": "medium"
+        },
+        "codex": {
+          "profiles": [
+            "codex-profile"
+          ],
+          "model": "gpt-6-sol",
+          "effort": "medium"
+        }
+      }
+    },
+    "code-review": {
+      "zone": "repository",
+      "runtimes": {
+        "claude": {
+          "profiles": [
+            "claude-profile"
+          ],
+          "model": "claude-sonnet-5",
+          "effort": "medium"
+        },
+        "codex": {
+          "profiles": [
+            "codex-profile"
+          ],
+          "model": "gpt-6-sol",
+          "effort": "medium"
+        }
+      }
+    },
+    "qa": {
+      "zone": "repository",
+      "runtimes": {
+        "claude": {
+          "profiles": [
+            "claude-profile"
+          ],
+          "model": "claude-haiku-4-5-20251001",
+          "effort": "high"
+        },
+        "codex": {
+          "profiles": [
+            "codex-profile"
+          ],
+          "model": "gpt-6-luna",
+          "effort": "high"
+        }
+      }
+    }
+  },
+  "backend_zones": {
+    "repository": {
+      "paths": [
+        "**"
+      ]
+    }
+  },
+  "concurrency_budget": 1,
+  "approval_policy": "low_risk",
+  "low_risk_zones": [
+    "repository"
+  ],
+  "worker_attestation_required": true,
+  "communication_policy": {
+    "agent_to_agent_language": "en",
+    "coordinator_report_language": "ru"
+  },
+  "context_package_policy": {
+    "max_tokens": 260000,
+    "context_window_tokens": 300000,
+    "reserved_prompt_tokens": 20000,
+    "symbol_graph_depth": 2,
+    "max_related_tests": 25,
+    "min_starting_files": 5,
+    "max_starting_files": 10
+  },
+  "adaptive_continuation_policy": {
+    "context_limit": 200000,
+    "tdd_cycle_count": 5,
+    "failure_log_bytes": 50000,
+    "context_warn_ratio": 0.75
+  },
+  "repo_map_policy": {
+    "allow_paths": [],
+    "deny_paths": [],
+    "redact_paths": [],
+    "redact_symbols": [],
+    "max_files": 10000,
+    "max_file_bytes": 2000000,
+    "max_path_length": 4096,
+    "max_symbol_length": 256,
+    "max_signature_length": 2048,
+    "timeout_seconds": 30,
+    "max_tokens": 8000,
+    "tier": "full"
+  },
+  "continuation_policy": {
+    "max_continuations": 6,
+    "max_rate_limit_resumes": 3
+  },
+  "retry_policy": {
+    "max_developer_retries": 3
+  },
+  "execution_policy": {
+    "dispatch_wait_timeout_seconds": 60,
+    "dispatch_poll_interval_seconds": 5,
+    "qa_lease_seconds": 1800,
+    "rate_limit_retry_seconds": 60
+  },
+  "attention_policy": {
+    "retry_queue_seconds": 18000,
+    "max_infrastructure_retries": 3,
+    "stale_dispatch_seconds": 7200,
+    "heartbeat_interval_seconds": 300
+  },
+  "approval_ttl_seconds": 14400,
+  "extensions": {
+    "transport_health": "none",
+    "verification_environment_health": "none",
+    "retry_reason_classifier": "none",
+    "context_telemetry_provider": "none",
+    "human_notifier": "none"
+  },
+  "preflight_policy": {
+    "require_estimates": true,
+    "max_definition_of_done_items": 8,
+    "max_dependencies": 5,
+    "max_expected_files": 25,
+    "max_expected_services": 2,
+    "max_expected_changed_lines": 2000,
+    "max_expected_context_tokens": 150000,
+    "estimated_tokens_per_changed_line": 20,
+    "estimated_tokens_per_file": 2000
+  },
+  "developer_verification_commands": [
+    "python -m mypy",
+    "python -m pytest -q -n 4 tests"
+  ],
+  "review_verification_commands": [
+    "python -m mypy",
+    "python -m pytest -q -n 4 tests"
+  ],
+  "verification_commands": [
+    "python scripts/verify.py"
+  ]
+}
