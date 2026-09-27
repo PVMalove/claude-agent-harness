@@ -7,8 +7,11 @@ only ones allowed to discard state -- each behind its own explicit subcommand.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
+from harness.orchestration.core.constants import TERMINAL_BATCH_STATES
 from harness.orchestration.core.utils import CoordinatorError, JsonObject, _repo
+from harness.orchestration.core.workspace import _runtime_matches
 from harness.orchestration.ledger.ledger_ops import _ledger_lock, _state_root
 from harness.orchestration.ledger.lifecycle import LedgerError, LifecycleLedger
 
@@ -32,9 +35,28 @@ def migrate_ledger(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         try:
+            _refuse_upgrade_under_pinned_batches(repo, ledger)
             return ledger.migrate()
         except LedgerError as exc:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+
+
+def _refuse_upgrade_under_pinned_batches(repo: Path, ledger: LifecycleLedger) -> None:
+    """An unfinished batch pinned to another runtime reads the ledger in its own schema version;
+    upgrading the schema under it would strand it exactly as a runtime reinstall once did."""
+    stranded = [
+        str(batch.get("batch_id"))
+        for batch in ledger.upgrade_source_batches()
+        if batch.get("state") not in TERMINAL_BATCH_STATES
+        and isinstance(pinned := batch.get("harness_runtime_sha256"), str)
+        and not _runtime_matches(repo, pinned)
+    ]
+    if stranded:
+        raise CoordinatorError(
+            "ledger migrate is refused while batches pinned to another harness runtime are "
+            "unfinished: " + ", ".join(stranded),
+            remedy="finish or abandon the listed batches on their pinned runtime, then migrate",
+        )
 
 
 def reset_ledger(args: argparse.Namespace) -> JsonObject:

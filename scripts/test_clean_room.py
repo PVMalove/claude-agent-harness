@@ -41,9 +41,7 @@ from scripts.clean_room import (
     global_install,
     install_and_update,
     ledger_migration,
-    orca_adapter,
     orchestration_config,
-    policy_contract,
     project_hooks,
     risk_aware_review,
     stuck_batch,
@@ -55,8 +53,6 @@ from scripts.clean_room import (
 SCENARIOS = (
     install_and_update,
     backend_orchestration,
-    orca_adapter,
-    policy_contract,
     coordinator_seam,
     ledger_migration,
     risk_aware_review,

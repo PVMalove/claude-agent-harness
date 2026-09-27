@@ -1,7 +1,7 @@
 # Общий harness.errors.HarnessError(.message, .remedy) вместо 9 независимых классов ошибок
 
 Девять модулей харнесса (`coordinator.py`, `ledger.py`, `contract.py`, `dispatch_preflight.py`,
-`orca_adapter.py`, `gate_runner.py`, `context_builder.py`, `delivery_stats.py`,
+`coordinator.py`, `gate_runner.py`, `context_builder.py`, `delivery_stats.py`,
 `runtime_attestation.py`) держат девять независимых классов ошибок, все наследуются напрямую от
 `Exception` без общего предка. По выборке из ~298 мест `raise` в этих модулях сообщения почти
 всегда описывают, что нарушено (`"risk assessment schema mismatch"`), но не говорят, что агенту с
@@ -12,7 +12,7 @@
 инвариантов — типовой текст про баг, а не пропуск поля). Все 9 существующих классов ошибок
 переходят на наследование от него. Единый хелпер печати (`print_and_exit` или аналог) в том же
 модуле используется всеми 5 независимыми CLI-точками входа
-(`coordinator.py`, `orca_adapter.py`, `delivery_stats.py`, `advisory.py`, `harness/bin/harness`)
+(`coordinator.py`, `delivery_stats.py`, `advisory.py`, `harness/bin/harness`)
 вместо раздельного `print(f"ERROR: {exc}", ...)` в каждой.
 
 ## Considered Options

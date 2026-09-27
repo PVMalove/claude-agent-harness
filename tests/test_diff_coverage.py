@@ -258,7 +258,7 @@ class ChangedLinesTests(unittest.TestCase):
 
         self.assertEqual(changed, {"tool.py": {2}})
 
-    def test_the_clean_room_script_is_not_gated(self) -> None:
+    def test_clean_room_verified_files_are_not_gated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._git(root, "init", "-q")
@@ -268,6 +268,9 @@ class ChangedLinesTests(unittest.TestCase):
             )
             scenario = root / "scripts" / "clean_room" / "scenario.py"
             scenario.write_text("c = 1\n", encoding="utf-8")
+            hook = root / "harness" / "project" / "hooks" / "qa-gate-state.py"
+            hook.parent.mkdir(parents=True)
+            hook.write_text("d = 1\n", encoding="utf-8")
             (root / "other.py").write_text("b = 1\n", encoding="utf-8")
             self._git(root, "add", "-A")
             self._git(root, "commit", "-q", "-m", "base")
@@ -276,6 +279,7 @@ class ChangedLinesTests(unittest.TestCase):
                 "a = 2\n", encoding="utf-8"
             )
             scenario.write_text("c = 2\n", encoding="utf-8")
+            hook.write_text("d = 2\n", encoding="utf-8")
             (root / "other.py").write_text("b = 2\n", encoding="utf-8")
             self._git(root, "add", "-A")
             self._git(root, "commit", "-q", "-m", "change")

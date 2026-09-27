@@ -99,7 +99,7 @@ python .harness/orchestration/coordinator.py --repo . batch decide ...
 (`dispatch self-report`): расхождение с `resolved_model` brief переводит его в `blocked` и закрывает
 приём completion report. Пока роль работает, она шлёт `dispatch heartbeat`, а coordinator опрашивает
 `dispatch status --stale-after <sec>` — обобщение QA-lease-expiry на любой dispatch. Транспорт роли
-(`orca` или `in-process`) выбирается в assignment plan и не меняет контракт brief/report.
+(`external` или `in-process`) выбирается в assignment plan и не меняет контракт brief/report.
 
 ### Discovery Context и Context Package
 
@@ -145,7 +145,7 @@ reported triggers. Оценка определяет, когда двухосе�
 для любого кандидата, и конвейер `/implement` запускает его всегда. Затем следует
 обязательный clean-room QA для того же SHA. После accepted QA coordinator создаёт publish dispatch;
 только developer publish отправляет этот SHA. PR остаётся отдельным ручным этапом
-`/to-pull-requests`. Optional Orca adapter доставляет только уже одобренный brief: он не выбирает
+`/to-pull-requests`. Необязательный проектный adapter доставляет только уже одобренный brief: он не выбирает
 scope, не принимает report, не запускает проверки или следующий dispatch и не создаёт и не мержит
 PR. Полный операционный маршрут описан в [backend-orchestration.md](./backend-orchestration.md).
 

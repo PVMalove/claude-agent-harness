@@ -28,6 +28,7 @@ from harness.orchestration.core.config import (
     _project,
     _reject_sensitive,
     _resolve_assignment,
+    _roles_dir,
 )
 from harness.orchestration.core.constants import (
     ATTENTION_EVENT_KINDS,
@@ -894,7 +895,7 @@ def _validate_dispatch(
                 dispatch,
                 _project(repo),
                 config,
-                repo / ".harness/orchestration/roles",
+                _roles_dir(repo),
             )
         except ContractError as exc:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
