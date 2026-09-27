@@ -1177,6 +1177,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
                 "max_related_tests",
                 "min_starting_files",
                 "max_starting_files",
+                "section_index_min_tokens",
             },
         )
     )
