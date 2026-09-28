@@ -41,6 +41,12 @@ sys.path[:] = [
 sys.path.insert(0, str(ROOT))
 from harness.errors import HarnessError, print_and_exit
 from harness.cleanup import apply_cleanup, plan_cleanup
+from harness.uninstall import (
+    CLAUDE_MD_SEED,
+    CONFIRM_WORD,
+    apply_uninstall,
+    plan_uninstall,
+)
 from harness.storage import storage_path
 from harness.health import registry as health_registry
 from harness.health import render as health_render
@@ -809,9 +815,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     claude = repo / "CLAUDE.md"
     if not claude.exists():
-        claude.write_text(
-            "# Claude Code\n\n@AGENTS.md\n", encoding="utf-8", newline="\n"
-        )
+        claude.write_text(CLAUDE_MD_SEED, encoding="utf-8", newline="\n")
 
     written = write_snapshot(repo, selected, force=False)
     written.extend(
@@ -1075,6 +1079,24 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         fail(str(exc))
 
 
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    """Показать план полного удаления харнесса или применить его с подтверждением."""
+    repo = Path(args.repo).expanduser().resolve()
+    ensure_git_repo(repo)
+    if args.apply and args.confirm != CONFIRM_WORD:
+        fail(f"uninstall requires --confirm {CONFIRM_WORD}")
+    plan = plan_uninstall(repo)
+    print(json.dumps({"plan": plan}, ensure_ascii=False, indent=2))
+    if not args.apply:
+        return 1 if plan["blocked"] else 0
+    try:
+        result = apply_uninstall(repo, plan, confirm=args.confirm)
+    except ValueError as exc:
+        fail(str(exc))
+    print(json.dumps({"result": result}, ensure_ascii=False, indent=2))
+    return 1 if result["failed"] else 0
+
+
 def parser() -> argparse.ArgumentParser:
     """Сконфигурировать парсер аргументов командной строки CLI harness."""
     root = argparse.ArgumentParser(prog="harness")
@@ -1091,6 +1113,18 @@ def parser() -> argparse.ArgumentParser:
     )
     cleanup.add_argument("--confirm", help="pass HARD when applying hard cleanup")
     cleanup.set_defaults(func=cmd_cleanup)
+
+    uninstall = commands.add_parser(
+        "uninstall", help="preview or remove everything the harness installed"
+    )
+    uninstall.add_argument("repo")
+    uninstall.add_argument(
+        "--apply", action="store_true", help="apply the printed uninstall plan"
+    )
+    uninstall.add_argument(
+        "--confirm", help=f"pass {CONFIRM_WORD} when applying the uninstall"
+    )
+    uninstall.set_defaults(func=cmd_uninstall)
 
     init = commands.add_parser("init")
     init.add_argument("repo")

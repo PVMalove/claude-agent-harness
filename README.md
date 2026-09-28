@@ -170,7 +170,10 @@ python harness\bin\harness.py health C:\path\to\repository
 Без `--capability` устанавливается доменно-нейтральная `project-foundation`. Полный закреплённый
 upstream-набор предоставляет `mattpocock-suite`; `backend-orchestration` добавляет coordinator и
 роли поверх `pvmalove-suite`. `harness diff` показывает изменения управляемого снимка,
-`harness update` обновляет его с сохранением локальных правок. Команды и параметры описаны в
+`harness update` обновляет его с сохранением локальных правок. `harness uninstall` полностью удаляет
+харнесс из проекта: без `--apply` показывает план, с `--apply --confirm UNINSTALL` удаляет `.harness/`,
+discovery-ссылки, seed-файлы и строки харнесса в `.gitignore`; изменённые проектом файлы предварительно
+копируются в `.harness-uninstall-backup/`. Команды и параметры описаны в
 [справочнике](./harness/docs/harness-guide.md).
 
 В целевой проект переносятся только выбранные ресурсы `harness/`, skills и шаблоны
@@ -244,7 +247,7 @@ Repo Map, версия харнесса и состояние дрейфа сн�
 | Раздел | Содержание |
 |---|---|
 | `Diagnostics` | Полный отчёт `health`, действия «online checks» и «apply fixes» (`health --fix`, требует повторного нажатия). |
-| `Harness` | Состояние установки (версия, capability, скиллы, управляемые файлы, дата lock) и сводка использования пайплайна; команды CLI: init, update (в том числе `--force-managed-files` и `--force-seed-files`), diff, adopt, очистка `.harness` soft/hard (план и применение), registry, lock-project-skills, list, health, Repo Map, ledger и удаление worktree. |
+| `Harness` | Состояние установки (версия, capability, скиллы, управляемые файлы, дата lock) и сводка использования пайплайна; команды CLI: init, update (в том числе `--force-managed-files` и `--force-seed-files`), diff, adopt, очистка `.harness` soft/hard (план и применение), удаление харнесса из проекта (план и применение), registry, lock-project-skills, list, health, Repo Map, ledger и удаление worktree. |
 | `Orchestration` | Статистика пайплайна (запуски, тикеты, состояния, диспатчи по ролям, итоги отчётов, QA) и история batch с фильтром по состоянию — выбор batch открывает хронологию; команды coordinator: batch, dispatch, qa status, risk assess, context-package, ledger status. |
 | `Reports` | Отчёты ролей из леджера с фильтрами по тикету, роли, outcome и дате, хронология batch и QA-логи. |
 | `Repo Map` | Карта репозитория для HEAD: сводка, дерево файлов с сигнатурами, поиск символов, связи, хабы. |
@@ -256,7 +259,7 @@ Repo Map, версия харнесса и состояние дрейфа сн�
 
 Для каждой команды пульт отображает CLI-эквивалент и запускает тот же CLI-процесс. Команды из
 «Как исправить» отображаются, но не выполняются. Перед необратимыми действиями пульт запрашивает
-подтверждение; для `ledger reset` и hard cleanup требуется ввод `RESET` или `HARD`. Экспорты
+подтверждение; для `ledger reset`, hard cleanup и удаления харнесса требуется ввод `RESET`, `HARD` или `UNINSTALL`. Экспорты
 сохраняются в `docs/tasks/<папка тикета>/artifacts/` или `docs/tasks/console-exports/`; существующие
 файлы не перезаписываются.
 
