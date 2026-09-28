@@ -88,9 +88,9 @@ class OrchestrationScreen(CommandMenuScreen):
     (выбор batch открывает его хронологию) и список команд координатора."""
 
     DEFAULT_CSS = """
-    OrchestrationScreen #pipeline-history { height: auto; max-height: 40%; margin: 0 1; }
-    OrchestrationScreen #state-filter { width: 32; height: auto; border-title-color: $primary; }
-    OrchestrationScreen #batch-history { width: 1fr; height: auto; border-title-color: $primary; }
+    OrchestrationScreen #pipeline-history { height: 11; max-height: 40%; margin: 0 1; }
+    OrchestrationScreen #state-filter { width: 32; height: 100%; border-title-color: $primary; }
+    OrchestrationScreen #batch-history { width: 1fr; height: 100%; border-title-color: $primary; }
     """
 
     def __init__(

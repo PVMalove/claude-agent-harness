@@ -107,7 +107,7 @@ class DashboardScreen(Screen[None]):
         }
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Header(icon=brand.MENU_ICON)
         with Horizontal(id="brand"):
             yield Static(_render_mark(), id="brand-mark")
             yield Static(

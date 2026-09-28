@@ -42,7 +42,7 @@ CONFIRMATION_REASONS = {
         "Команда меняет внешнюю систему: это видят другие люди или это расходует токены."
     ),
     Reversibility.OVERWRITES_MANAGED_FILES: (
-        "Команда перезаписывает управляемые файлы харнесса — незакоммиченные правки в них пропадут."
+        "Команда перезаписывает файлы харнесса в проекте (управляемые или seed) — незакоммиченные правки в них пропадут."
     ),
 }
 
@@ -134,6 +134,13 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         f"{_HARNESS_CLI}:cmd_update",
     ),
     CatalogEntry(
+        "update-force-seed",
+        "Обновить харнесс с перезаписью seed-файлов",
+        ("harness", "update", "{repo}", "--force-seed-files"),
+        Reversibility.OVERWRITES_MANAGED_FILES,
+        f"{_HARNESS_CLI}:cmd_update",
+    ),
+    CatalogEntry(
         "diff",
         "Дрейф управляемых файлов",
         ("harness", "diff", "{repo}"),
@@ -146,6 +153,44 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "adopt", "{repo}"),
         Reversibility.OVERWRITES_MANAGED_FILES,
         f"{_HARNESS_CLI}:cmd_adopt",
+    ),
+    CatalogEntry(
+        "cleanup",
+        "Очистка .harness (soft): план",
+        ("harness", "cleanup", "{repo}"),
+        Reversibility.REVERSIBLE,
+        f"{_HARNESS_CLI}:cmd_cleanup",
+    ),
+    CatalogEntry(
+        "cleanup-hard",
+        "Очистка .harness (hard): план",
+        ("harness", "cleanup", "{repo}", "--mode", "hard"),
+        Reversibility.REVERSIBLE,
+        f"{_HARNESS_CLI}:cmd_cleanup",
+    ),
+    CatalogEntry(
+        "cleanup-apply",
+        "Очистка .harness (soft): применить",
+        ("harness", "cleanup", "{repo}", "--apply"),
+        Reversibility.DELETES_LOCAL_DATA,
+        f"{_HARNESS_CLI}:cmd_cleanup",
+    ),
+    CatalogEntry(
+        "cleanup-hard-apply",
+        "Очистка .harness (hard): применить",
+        (
+            "harness",
+            "cleanup",
+            "{repo}",
+            "--mode",
+            "hard",
+            "--apply",
+            "--confirm",
+            "HARD",
+        ),
+        Reversibility.DELETES_LOCAL_DATA,
+        f"{_HARNESS_CLI}:cmd_cleanup",
+        typed_confirmation="HARD",
     ),
     CatalogEntry(
         "registry",
@@ -188,37 +233,6 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "health", "{repo}", "--online", "--fix"),
         Reversibility.EXTERNAL_CHANGE,
         f"{_HARNESS_CLI}:cmd_health",
-    ),
-    CatalogEntry(
-        "cleanup",
-        "План очистки .harness",
-        ("harness", "cleanup", "{repo}"),
-        Reversibility.REVERSIBLE,
-        f"{_HARNESS_CLI}:cmd_cleanup",
-    ),
-    CatalogEntry(
-        "cleanup-apply",
-        "Очистить .harness (soft)",
-        ("harness", "cleanup", "{repo}", "--apply"),
-        Reversibility.DELETES_LOCAL_DATA,
-        f"{_HARNESS_CLI}:cmd_cleanup",
-    ),
-    CatalogEntry(
-        "cleanup-hard-apply",
-        "Очистить .harness (hard)",
-        (
-            "harness",
-            "cleanup",
-            "{repo}",
-            "--mode",
-            "hard",
-            "--apply",
-            "--confirm",
-            "HARD",
-        ),
-        Reversibility.DELETES_LOCAL_DATA,
-        f"{_HARNESS_CLI}:cmd_cleanup",
-        typed_confirmation="HARD",
     ),
     CatalogEntry(
         "repo-map",

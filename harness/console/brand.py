@@ -41,6 +41,9 @@ LOGO = (
 
 PRODUCT = "Agent Harness console"
 
+# The header's menu button (opens the command palette): a hamburger instead of textual's circle.
+MENU_ICON = "☰"
+
 
 @dataclass(frozen=True)
 class BannerInfo:

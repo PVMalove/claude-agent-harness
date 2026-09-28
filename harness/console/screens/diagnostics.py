@@ -136,7 +136,7 @@ class DiagnosticsScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         """Формирует структуру виджетов экрана диагностики."""
-        yield Header()
+        yield Header(icon=brand.MENU_ICON)
         yield VerticalScroll(Static(_RUNNING, id="diagnostics-report", markup=False))
         yield Button("Online checks", id="online-checks")
         yield Static(

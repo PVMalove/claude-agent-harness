@@ -29,6 +29,7 @@ def test_catalog_covers_every_harness_and_ledger_command() -> None:
     assert {
         "init",
         "update",
+        "update-force-seed",
         "diff",
         "adopt",
         "registry",
@@ -36,6 +37,9 @@ def test_catalog_covers_every_harness_and_ledger_command() -> None:
         "list",
         "health",
         "cleanup",
+        "cleanup-hard",
+        "cleanup-apply",
+        "cleanup-hard-apply",
         "repo-map",
         "parser-bundle",
         "verify",
@@ -57,6 +61,7 @@ def test_irreversible_commands_carry_their_confirmation_class() -> None:
     assert irreversible == {
         "init": Reversibility.OVERWRITES_MANAGED_FILES,
         "update": Reversibility.OVERWRITES_MANAGED_FILES,
+        "update-force-seed": Reversibility.OVERWRITES_MANAGED_FILES,
         "adopt": Reversibility.OVERWRITES_MANAGED_FILES,
         "health-online-fix": Reversibility.EXTERNAL_CHANGE,
         "cleanup-apply": Reversibility.DELETES_LOCAL_DATA,
@@ -73,6 +78,8 @@ def test_typed_confirmations_match_the_cli_safeguard_words() -> None:
     reset = ENTRIES["ledger-reset"]
     assert reset.typed_confirmation == "RESET"
     assert reset.argv[-2:] == ("--confirm", "RESET")
+    assert ENTRIES["update-force-seed"].argv[-1] == "--force-seed-files"
+    assert ENTRIES["cleanup-hard"].argv[-2:] == ("--mode", "hard")
     hard = ENTRIES["cleanup-hard-apply"]
     assert hard.typed_confirmation == "HARD"
     assert hard.argv[-2:] == ("--confirm", "HARD")

@@ -9,6 +9,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, Markdown
 
 from ..help_text import HELP_MARKDOWN
+from .. import brand
 
 
 class HelpScreen(Screen[None]):
@@ -19,7 +20,7 @@ class HelpScreen(Screen[None]):
     """
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Header(icon=brand.MENU_ICON)
         with VerticalScroll(id="help-scroll"):
             yield Markdown(HELP_MARKDOWN, id="help-text")
         yield Footer()

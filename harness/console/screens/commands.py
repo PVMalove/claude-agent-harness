@@ -18,6 +18,7 @@ from textual.widgets import Button, Footer, Header, ListItem, ListView, Static
 
 from ..catalog import CONFIRMATION_REASONS, Reversibility
 from ..runner import CommandRunner
+from .. import brand
 
 _OUTPUT_TAIL_LINES = 200
 
@@ -87,7 +88,13 @@ class CommandMenuScreen(Screen[None]):
         height: auto; margin: 0 1; padding: 0 1;
         border: round $primary 50%; border-title-color: $primary;
     }
-    CommandMenuScreen #command-menu { height: auto; max-height: 40%; border-title-color: $primary; }
+    CommandMenuScreen #command-menu {
+        height: 1fr; min-height: 6; margin: 0 1; border-title-color: $primary;
+    }
+    CommandMenuScreen #command-output-scroll {
+        height: auto; max-height: 40%; margin: 0 1; padding: 0 1;
+        border: round $panel-lighten-2; border-title-color: $primary;
+    }
     """
 
     def __init__(self, repo: Path, *, command_runner: CommandRunner) -> None:
@@ -106,7 +113,7 @@ class CommandMenuScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         """Формирует структуру виджетов экрана меню команд."""
-        yield Header()
+        yield Header(icon=brand.MENU_ICON)
         yield from self.overview()
         menu = ListView(
             *(
@@ -117,7 +124,11 @@ class CommandMenuScreen(Screen[None]):
         )
         menu.border_title = "Команды"
         yield menu
-        yield VerticalScroll(Static("", id="command-output", markup=False))
+        output = VerticalScroll(
+            Static("", id="command-output", markup=False), id="command-output-scroll"
+        )
+        output.border_title = "Вывод"
+        yield output
         yield Footer()
 
     def run_process(self, cli_line: str, argv: list[str]) -> None:

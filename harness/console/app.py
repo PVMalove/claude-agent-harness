@@ -47,11 +47,24 @@ class HarnessConsoleApp(App[None]):
     # registered theme, so widgets keep textual's own focus and hover states.
     CSS = """
     Screen { background: $background; }
-    Header { background: $panel; color: $primary; text-style: bold; }
+    Header {
+        height: 3; margin: 0 1; background: $panel; color: $primary; text-style: bold;
+        border: round $primary 60%;
+    }
     Footer { background: $panel; }
     ListView { background: $background; border: round $panel-lighten-2; }
     ListView:focus { border: round $primary; }
-    ListView > ListItem { padding: 0 1; }
+    ListView > ListItem { padding: 0 1; background: transparent; }
+    /* The selected item keeps the frame's background: it is marked by colour, not a fill. */
+    ListView > ListItem.-highlight, ListView:focus > ListItem.-highlight,
+    ListView > ListItem:hover {
+        background: transparent; color: $primary; text-style: bold;
+    }
+    Tree > .tree--cursor, Tree:focus > .tree--cursor, Tree > .tree--highlight,
+    Tree > .tree--highlight-line {
+        background: transparent; color: $primary; text-style: bold;
+    }
+    Tab.-active, Tab:hover { background: transparent; color: $primary; text-style: bold; }
     Input, TextArea { border: round $panel-lighten-2; }
     Input:focus, TextArea:focus { border: round $primary; }
     Button { border: round $primary 60%; background: $background; color: $primary; min-width: 16; }

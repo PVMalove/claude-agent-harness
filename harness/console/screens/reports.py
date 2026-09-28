@@ -19,6 +19,7 @@ from textual.widgets import Button, Footer, Header, Input, ListItem, ListView, S
 
 from .. import reports as console_reports
 from ..reports import BatchTimeline, LedgerView, ReportEntry
+from .. import brand
 from .export import EXPORT_BINDING_KEY, export_document
 
 _FILTERS = (
@@ -64,7 +65,7 @@ class ReportsScreen(Screen[None]):
         self.shown: list[ReportEntry] = list(self.view.reports)
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Header(icon=brand.MENU_ICON)
         yield Static(self._status(), id="reports-status", markup=False)
         with Horizontal(id="report-filters"):
             for widget_id, placeholder, _ in _FILTERS:
@@ -151,7 +152,7 @@ class ReportScreen(Screen[None]):
         self.repo = repo
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Header(icon=brand.MENU_ICON)
         with VerticalScroll(id="report-body"):
             yield Static(
                 console_reports.report_header(self.entry),
@@ -221,7 +222,7 @@ class BatchTimelineScreen(Screen[None]):
         self.repo = repo
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Header(icon=brand.MENU_ICON)
         yield VerticalScroll(
             Static(_render_timeline(self.timeline), id="batch-timeline", markup=False)
         )
@@ -253,7 +254,7 @@ class QaLogsScreen(Screen[None]):
         self.view = view
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Header(icon=brand.MENU_ICON)
         yield VerticalScroll(
             Static(_render_qa_logs(self.view), id="qa-logs", markup=False)
         )
