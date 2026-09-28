@@ -59,7 +59,7 @@ __all__ = [
 # each script module, including the packages the verification and clean-room scripts are split into.
 _COMPILED_SCRIPTS = (
     ROOT / "harness" / "bin" / "harness.py",
-    ROOT / "bin" / "install-global",
+    ROOT / "bin" / "install-global.py",
     ROOT / "scripts" / "build_registry.py",
     ROOT / "scripts" / "verify.py",
     ROOT / "scripts" / "test_clean_room.py",

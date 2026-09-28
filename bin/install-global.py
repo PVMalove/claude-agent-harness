@@ -12,7 +12,7 @@ from pathlib import Path
 MIN_PYTHON = (3, 12)  # same floor as pyproject.toml, harness/bin/harness.py, scripts/test_clean_room
 if sys.version_info < MIN_PYTHON:
     sys.stderr.write(
-        "[ERROR] install-global requires Python %s+ (found %s).\n"
+        "[ERROR] install-global.py requires Python %s+ (found %s).\n"
         % (".".join(map(str, MIN_PYTHON)), sys.version.split()[0])
     )
     sys.exit(1)
@@ -95,9 +95,9 @@ def install_link(source: Path, target: Path, check: bool, replace: bool, target_
         return True
     except OSError as e:
         hint = (
-            f"\n      On Windows this needs either Developer Mode enabled, or this terminal\n"
-            f"      launched as Administrator (right-click Terminal/PowerShell/cmd -> "
-            f"\"Run as administrator\") - then re-run this command."
+            "\n      On Windows this needs either Developer Mode enabled, or this terminal\n"
+            "      launched as Administrator (right-click Terminal/PowerShell/cmd -> "
+            "\"Run as administrator\") - then re-run this command."
             if sys.platform == "win32"
             else ""
         )

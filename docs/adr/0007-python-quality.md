@@ -8,7 +8,7 @@ CLI, установщик, проверки и импортируемый пак
 ## Действующий контракт
 
 Минимальная версия — Python 3.12 в `pyproject.toml`, `harness/bin/harness.py`,
-`bin/install-global` и `scripts/test_clean_room.py`. Конфигурация mypy задаёт Python 3.12,
+`bin/install-global.py` и `scripts/test_clean_room.py`. Конфигурация mypy задаёт Python 3.12,
 `strict` и `disallow_any_explicit`: новый явный `Any` становится ошибкой; динамический JSON
 проверяется при входе, а точечное исключение типизации требует объяснения. Tree-sitter worker
 проверяется отдельно от основного набора модулей с установленным bundle.

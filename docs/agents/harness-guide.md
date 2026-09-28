@@ -259,10 +259,10 @@ Pilot-тесты (`tests/test_console_app.py`, `tests/test_console_harness.py`,
 `[dependency-groups].dev` `pyproject.toml`, тем же pin'ом, что и в коде (`tests/test_console_pin.py`
 держит их равными).
 
-**Глобальный слой** — отдельная команда, `bin/install-global`, не `harness/bin/harness.py`: ставится один раз на машину, на пользователя (`~`), а не на конкретный репозиторий. По собственному описанию скрипта: «устанавливает минимальный instruction-профиль плюс `start-project`. Никогда не устанавливает MCP, модели, плагины, credentials или permissions».
+**Глобальный слой** — отдельная команда, `bin/install-global.py`, не `harness/bin/harness.py`: ставится один раз на машину, на пользователя (`~`), а не на конкретный репозиторий. По собственному описанию скрипта: «устанавливает минимальный instruction-профиль плюс `start-project`. Никогда не устанавливает MCP, модели, плагины, credentials или permissions».
 
 ```bash
-python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claude
+python3 bin/install-global.py --target-home "$HOME" --runtime codex --runtime claude
 ```
 
 `--runtime` повторяем. Для проверенных runtime `codex` и `claude` команда ставит профиль из `global/AGENTS.md` и symlink на `global-skills/start-project` в discovery-корень. В CLI есть маршруты для других runtime, но совместимость v1.0.0 для них не заявлена:
@@ -279,7 +279,7 @@ python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claud
 
 Заодно чистит entry-скиллы прошлых версий инструмента, которых больше нет в `global-skills/` (`project-harness-bootstrap`, `skill-library`) — если по этому имени лежит symlink именно на них, снимает; если лежит что-то постороннее (не symlink, или symlink на чужую цель) — падает как конфликт и не трогает, чтобы не задеть чужой файл с тем же именем.
 
-`bin/install-global` — Python-скрипт (`#!/usr/bin/env python3`, standalone floor — 3.12+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness.py`: `python3 bin/install-global ...` (bash) или `python bin\install-global ...` / `py bin\install-global ...` (PowerShell/cmd), никакого отдельного `.sh`/`.ps1` не нужно. Метаданные проекта в `pyproject.toml` отдельно объявляют `requires-python >=3.12`. На Windows для создания настоящих символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с подсказкой.
+`bin/install-global.py` — Python-скрипт (`#!/usr/bin/env python3`, standalone floor — 3.12+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness.py`: `python3 bin/install-global.py ...` (bash) или `python bin\install-global.py ...` / `py bin\install-global.py ...` (PowerShell/cmd), никакого отдельного `.sh`/`.ps1` не нужно. Метаданные проекта в `pyproject.toml` отдельно объявляют `requires-python >=3.12`. На Windows для создания настоящих символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с подсказкой.
 
 **Как это подключено.** Скиллы физически лежат в `.harness/skills/*/SKILL.md` (управляются `.harness/harness.lock` — хэши файлов, версия, `source_revision`). Claude Code и Codex находят их через symlink'и в корне репозитория:
 
@@ -298,7 +298,7 @@ python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claud
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
-| `[ERROR] harness requires Python 3.12+ (found ...)` (то же для `install-global`) | Установленный `python`/`python3` старше 3.12 | Обновить Python — CLI сам откажется на старой версии, не притворяясь, что всё в порядке. |
+| `[ERROR] harness requires Python 3.12+ (found ...)` (то же для `install-global.py`) | Установленный `python`/`python3` старше 3.12 | Обновить Python — CLI сам откажется на старой версии, не притворяясь, что всё в порядке. |
 | PowerShell: `python: The term 'python' is not recognized...` | В PATH нет `python`/`py` | Проверить `[Environment]::GetEnvironmentVariable('Path','User')`; если Python там есть — открыть новое окно терминала (PATH читается один раз при старте процесса, старое окно не подхватит); если нет — установить Python или вызвать по полному пути (`& "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" ...`). |
 | `not a Git repository: <path> (run 'git init' there first)` | `init`/`adopt`/`update` нацелены на путь без git-репозитория | `git init` в целевом каталоге, затем повторить команду. |
 | `project harness already exists; use 'harness update <repo>'` | `init` на репозитории, где `.harness/harness.lock` уже есть | Запустить показанную команду `harness update` вместо `init`. |
@@ -307,8 +307,8 @@ python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claud
 | `local skill changes would be overwritten; review them or use --force` | `update` — на диске есть локальные правки managed-файлов | Изучить напечатанный diff; для snapshot повторить с `--force-managed-files`, для snapshot и seed — с `--force`. |
 | `discovery path already exists and is not managed: <path> (...)` | `.agents/skills`/`.claude/skills` — что-то постороннее на месте discovery-symlink'а | Подсказка в скобках зависит от команды: `init` — убрать вручную или использовать `adopt`; `adopt` — `--replace-conflicts`; `update` — `--force`. |
 | `.harness/project.json has unknown field(s): <name>` | В конфиг добавлено поле, которого нет в строгом контракте | Удалить поле либо реализовать его одновременно в `project.schema.json`, шаблоне, валидаторе и потребителе; для существующего контракта допустимы только `language`, `base_branch`, `branch_pattern`, `qa_gate_commands`, `$schema`, `story_points` и `shell`. |
-| `install-global`: `[CONFLICT] ... (re-run with --replace-conflicts ...)` | На месте профиля/симлинка глобального слоя уже что-то другое | Повторить с `--replace-conflicts` — сначала бэкапит в `~/.agent-harness-backups/<timestamp>/...`. |
-| `install-global`: `[ERROR] Failed to create symlink: ...` + подсказка про Developer Mode (только Windows) | Windows требует включённый Developer Mode либо администраторские права для символьных ссылок на директории | Включить Developer Mode (Settings → For developers) либо перезапустить терминал от имени администратора. |
+| `install-global.py`: `[CONFLICT] ... (re-run with --replace-conflicts ...)` | На месте профиля/симлинка глобального слоя уже что-то другое | Повторить с `--replace-conflicts` — сначала бэкапит в `~/.agent-harness-backups/<timestamp>/...`. |
+| `install-global.py`: `[ERROR] Failed to create symlink: ...` + подсказка про Developer Mode (только Windows) | Windows требует включённый Developer Mode либо администраторские права для символьных ссылок на директории | Включить Developer Mode (Settings → For developers) либо перезапустить терминал от имени администратора. |
 
 ---
 

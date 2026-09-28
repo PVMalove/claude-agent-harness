@@ -11,7 +11,7 @@ Agent Harness v1.0.0 предназначен для Claude Code и Codex. Ус�
 
 `harness init`, `adopt` и `update` создают или проверяют проектные ссылки и записывают
 `.harness/skills/REGISTRY.md` с именами, путями и описаниями установленного набора.
-`harness health` проверяет целостность файлов и ссылок. `bin/install-global` создаёт
+`harness health` проверяет целостность файлов и ссылок. `bin/install-global.py` создаёт
 глобальный профиль и ссылку на `global-skills/start-project` для выбранного runtime.
 
 Обнаружение skill не загружает его полное тело в каждую сессию: runtime использует

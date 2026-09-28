@@ -11,7 +11,7 @@
     "quality_profile": "showcase"
   },
   "components": [
-    { "id": "owner", "type": "external", "label": "Владелец проекта", "pos": [40, 390], "size": [180, 80], "sources": [{ "path": "bin/install-global", "label": "Глобальная установка" }] },
+    { "id": "owner", "type": "external", "label": "Владелец проекта", "pos": [40, 390], "size": [180, 80], "sources": [{ "path": "bin/install-global.py", "label": "Глобальная установка" }] },
     { "id": "cli", "type": "backend", "label": "harness CLI", "pos": [290, 390], "size": [220, 80], "sources": [{ "path": "harness/bin/harness.py", "label": "CLI" }] },
     { "id": "capabilities", "type": "database", "label": "CAPABILITIES.json", "pos": [560, 210], "size": [210, 80], "sources": [{ "path": "harness/CAPABILITIES.json", "label": "Каталог" }] },
     { "id": "sources", "type": "backend", "label": "Пакеты skills", "pos": [560, 560], "size": [210, 80], "sources": [{ "path": "skills/first-party/pvmalove/implement/SKILL.md", "label": "First-party skill" }] },
