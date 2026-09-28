@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-# `harness/bin/harness` copies this file verbatim into target projects as
+# `harness/bin/harness.py` copies this file verbatim into target projects as
 # `.harness/repo_map/repo_map.py`. Alias `harness` to whichever of the two this
 # file actually lives under so this standalone CLI has the same imports in both
 # source and installed layouts. See docs/adr/0018.
@@ -112,7 +112,10 @@ def _build_map(
         "parser": parser,
         "degradation_reason": degradation_reason,
         "token_estimator_version": TOKEN_ESTIMATOR_VERSION,
-        "parser_provenance": {**_policy_provenance(policy, max_tokens), **bundle_provenance},
+        "parser_provenance": {
+            **_policy_provenance(policy, max_tokens),
+            **bundle_provenance,
+        },
         "files": [],
         "edges": [],
         "diagnostics": [],
@@ -143,7 +146,8 @@ def _check_budget(max_tokens: int, policy: RepoMapPolicy) -> None:
 def _allowed_paths(repo: Path, pinned: str, policy: RepoMapPolicy) -> list[str]:
     """Tracked-пути коммита, разрешённые политикой, с проверкой лимита `max_files`."""
     paths = [
-        path for path in tracked_paths(repo, pinned, policy.timeout_seconds)
+        path
+        for path in tracked_paths(repo, pinned, policy.timeout_seconds)
         if path_allowed(path, policy)
     ]
     if len(paths) > policy.max_files:
@@ -179,7 +183,11 @@ def build_map(
         backend = BundleParserBackend(repo, effective_policy)
     elif effective_policy.tier == "minimal":
         backend = None
-    root = cache_dir if cache_dir is not None else storage_path(repo, "cache", "repo_map", "results")
+    root = (
+        cache_dir
+        if cache_dir is not None
+        else storage_path(repo, "cache", "repo_map", "results")
+    )
     key = cache_key(
         pinned,
         normalized_seeds,
@@ -188,9 +196,13 @@ def build_map(
         backend.identity() if backend is not None else None,
     )
     cached = read_cache(root, key, pinned)
-    if cached is not None and (backend is None or json.loads(cached).get("tier") == "full"):
+    if cached is not None and (
+        backend is None or json.loads(cached).get("tier") == "full"
+    ):
         return cached
-    result = _build_map(pinned, paths, max_tokens, normalized_seeds, effective_policy, backend)
+    result = _build_map(
+        pinned, paths, max_tokens, normalized_seeds, effective_policy, backend
+    )
     if backend is None or json.loads(result)["tier"] == "full":
         write_cache(root, key, result)
     return result

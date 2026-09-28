@@ -12,7 +12,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from scripts.verification.paths import CAPABILITIES, DOCS_AGENTS_TEMPLATE, HARNESS_GUIDE, ROOT
+from scripts.verification.paths import (
+    CAPABILITIES,
+    DOCS_AGENTS_TEMPLATE,
+    HARNESS_GUIDE,
+    ROOT,
+)
 from scripts.verification.text_checks import normalized_text
 
 RETIRED_PATH_INVENTORY_TERM = re.compile(r"filtered\s+Repo\s+Map", re.IGNORECASE)
@@ -78,7 +83,9 @@ def check_no_retired_path_inventory_term() -> None:
             if path.is_file() and RETIRED_PATH_INVENTORY_TERM.search(
                 path.read_text(encoding="utf-8", errors="replace")
             ):
-                sys.exit(f'{path}: retired term "filtered Repo Map"; use "Path inventory"')
+                sys.exit(
+                    f'{path}: retired term "filtered Repo Map"; use "Path inventory"'
+                )
 
 
 def check_docs_agents_enumeration() -> None:
@@ -144,7 +151,9 @@ def check_pvmalove_additions_docs_sync() -> None:
         )
 
 
-def _check_listed(doc: Path, text: str, pattern: str, kind: str, expected: frozenset[str]) -> None:
+def _check_listed(
+    doc: Path, text: str, pattern: str, kind: str, expected: frozenset[str]
+) -> None:
     """Сверить список имён в прозе документа с ожидаемым набором из CAPABILITIES.json."""
     match = re.search(pattern, text)
     if not match:
@@ -173,4 +182,6 @@ def check_pvmalove_suite_summary_sync() -> None:
             "overrides",
             suite.overrides,
         )
-        _check_listed(doc, text, r"доп\. скиллы:\s*(.+?)\.", "additions", suite.additions)
+        _check_listed(
+            doc, text, r"доп\. скиллы:\s*(.+?)\.", "additions", suite.additions
+        )

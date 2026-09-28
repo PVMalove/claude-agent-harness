@@ -411,9 +411,7 @@ def build_parser(
     dispatch_wait.add_argument("--dispatch", required=True)
     dispatch_wait.add_argument("--timeout", type=int)
     dispatch_wait.add_argument("--poll-interval", type=int)
-    dispatch_wait.add_argument(
-        "--stale-after", type=int
-    )
+    dispatch_wait.add_argument("--stale-after", type=int)
     dispatch_wait.set_defaults(handler=handlers.wait_dispatch)
     dispatch_pressure = dispatch_commands.add_parser(
         "context-pressure",
@@ -472,9 +470,7 @@ def build_parser(
     _common(dispatch_status_command)
     dispatch_status_command.add_argument("--dispatch")
     dispatch_status_command.add_argument("--batch")
-    dispatch_status_command.add_argument(
-        "--stale-after", type=int
-    )
+    dispatch_status_command.add_argument("--stale-after", type=int)
     dispatch_status_command.set_defaults(handler=handlers.dispatch_status)
     dispatch_publish = dispatch_commands.add_parser("publish")
     _common(dispatch_publish)

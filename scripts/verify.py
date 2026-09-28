@@ -33,24 +33,41 @@ from scripts.verification.docs_sync import (
     check_pvmalove_override_docs_sync,
     check_pvmalove_suite_summary_sync,
 )
-from scripts.verification.instructions import check_no_dispatch_specific_data_in_always_sent_files
-from scripts.verification.process import isolated_temp_env, remove_tree, run_ok, run_stage
+from scripts.verification.instructions import (
+    check_no_dispatch_specific_data_in_always_sent_files,
+)
+from scripts.verification.process import (
+    isolated_temp_env,
+    remove_tree,
+    run_ok,
+    run_stage,
+)
 from scripts.verification.text_checks import check_no_todo, grep_contains, grep_line
 from scripts.verification.vendor_pin import check_vendor_pin
 
-__all__ = ["check_syntax", "isolated_temp_env", "main", "remove_tree", "run_ok", "run_stage"]
+__all__ = [
+    "check_syntax",
+    "isolated_temp_env",
+    "main",
+    "remove_tree",
+    "run_ok",
+    "run_stage",
+]
 
 
 # Every Python entry point must compile before any stage runs: the extensionless CLIs and
 # each script module, including the packages the verification and clean-room scripts are split into.
 _COMPILED_SCRIPTS = (
-    ROOT / "harness" / "bin" / "harness",
+    ROOT / "harness" / "bin" / "harness.py",
     ROOT / "bin" / "install-global",
     ROOT / "scripts" / "build_registry.py",
     ROOT / "scripts" / "verify.py",
     ROOT / "scripts" / "test_clean_room.py",
 )
-_COMPILED_PACKAGES = (ROOT / "scripts" / "verification", ROOT / "scripts" / "clean_room")
+_COMPILED_PACKAGES = (
+    ROOT / "scripts" / "verification",
+    ROOT / "scripts" / "clean_room",
+)
 
 
 def _prepare_run_root() -> tuple[Path, dict[str, str]]:
@@ -61,7 +78,9 @@ def _prepare_run_root() -> tuple[Path, dict[str, str]]:
     tests_root = storage_path(ROOT, "runs", "tests")
     tests_root.mkdir(parents=True, exist_ok=True)
     run_tmp = Path(tempfile.mkdtemp(prefix="v", dir=tests_root))
-    (run_tmp / ".active.json").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    (run_tmp / ".active.json").write_text(
+        json.dumps({"pid": os.getpid()}), encoding="utf-8"
+    )
     atexit.register(lambda: remove_tree(run_tmp) if run_tmp.exists() else None)
     return run_tmp, isolated_temp_env(dict(os.environ, PYTHONPATH=str(ROOT)), run_tmp)
 
@@ -81,7 +100,9 @@ def check_syntax(sources: list[str]) -> None:
 
 def _compiled_sources() -> list[str]:
     """Файлы, которые должны компилироваться без ошибок."""
-    modules = [path for package in _COMPILED_PACKAGES for path in sorted(package.glob("*.py"))]
+    modules = [
+        path for package in _COMPILED_PACKAGES for path in sorted(package.glob("*.py"))
+    ]
     return [str(path) for path in (*_COMPILED_SCRIPTS, *modules)]
 
 
@@ -102,7 +123,10 @@ def _check_global_skills() -> None:
     grep_contains(start_project, "Prove each layer separately")
     grep_contains(integrate_project, "Audit is read-only")
     grep_contains(ROOT / "docs" / "skills" / "implement.md", "module-owned guidance")
-    grep_contains(ROOT / "docs" / "skills" / "pilot.md", "самоотчёт роли не является token telemetry")
+    grep_contains(
+        ROOT / "docs" / "skills" / "pilot.md",
+        "самоотчёт роли не является token telemetry",
+    )
 
 
 def _check_documentation() -> None:
@@ -127,7 +151,12 @@ def _check_documentation() -> None:
 def _static_checks(test_env: dict[str, str]) -> None:
     """Быстрые проверки до тестов: JSON каталога, компиляция, скиллы, реестр и документация."""
     run_ok(
-        [sys.executable, "-m", "json.tool", str(ROOT / "harness" / "CAPABILITIES.json")],
+        [
+            sys.executable,
+            "-m",
+            "json.tool",
+            str(ROOT / "harness" / "CAPABILITIES.json"),
+        ],
         stdout=subprocess.DEVNULL,
         env=test_env,
     )

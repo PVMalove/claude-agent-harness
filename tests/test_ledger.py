@@ -53,7 +53,9 @@ class ValueObjectRoundTripTests(unittest.TestCase):
                     raise PermissionError(13, "transient sharing conflict")
                 replace(src, dst)
 
-            with patch("harness.orchestration.ledger.lifecycle.os.replace", conflict_once):
+            with patch(
+                "harness.orchestration.ledger.lifecycle.os.replace", conflict_once
+            ):
                 LifecycleLedger._replace_with_windows_retry(source, target)
 
             self.assertEqual(attempts, 2)

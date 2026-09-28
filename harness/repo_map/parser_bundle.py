@@ -179,7 +179,8 @@ def bundle_cache_root(repo: Path) -> Path:
 def search_dirs(repo: Path, registry_paths: tuple[str, ...]) -> tuple[Path, ...]:
     """Каталоги поиска bundle: локальный registry, затем `parser_bundle_registry_paths` (относительные — от репозитория)."""
     extra = tuple(
-        Path(path) if Path(path).is_absolute() else repo / path for path in registry_paths
+        Path(path) if Path(path).is_absolute() else repo / path
+        for path in registry_paths
     )
     return (default_registry_dir(repo), *extra)
 
@@ -192,7 +193,9 @@ def find_bundle(dirs: tuple[Path, ...]) -> Path | None:
     return None
 
 
-def python_platform_tags(python_executable: str, timeout_seconds: int) -> tuple[str, str]:
+def python_platform_tags(
+    python_executable: str, timeout_seconds: int
+) -> tuple[str, str]:
     """Вернуть пару (python_tag, platform_tag) интерпретатора, который будет запускать worker.
 
     Теги берутся коротким subprocess `-c` этого интерпретатора, а не из текущего процесса: загрузчик и
@@ -221,16 +224,23 @@ def python_platform_tags(python_executable: str, timeout_seconds: int) -> tuple[
         or len(decoded) != 2
         or not all(isinstance(item, str) for item in decoded)
     ):
-        raise BundleFormatError("could not determine python/platform tags: malformed output")
+        raise BundleFormatError(
+            "could not determine python/platform tags: malformed output"
+        )
     python_tag, platform_tag = cast(list[str], decoded)
     return python_tag, platform_tag
 
 
-def verify_wheelhouse(lock: BundleLock, wheelhouse_dir: Path, pair: str) -> VerifyResult:
+def verify_wheelhouse(
+    lock: BundleLock, wheelhouse_dir: Path, pair: str
+) -> VerifyResult:
     """Проверить SHA-256 каждого артефакта, нужного паре интерпретатор/платформа."""
     artifacts = lock.wheelhouses.get(pair)
     if artifacts is None or not wheelhouse_dir.is_dir():
-        return {"ok": False, "reason": "parser wheelhouse missing for interpreter/platform pair"}
+        return {
+            "ok": False,
+            "reason": "parser wheelhouse missing for interpreter/platform pair",
+        }
     for artifact in artifacts:
         artifact_path = wheelhouse_dir / artifact.filename
         if not artifact_path.is_file():
@@ -270,8 +280,15 @@ def locate_bundle(
     except (OSError, BundleFormatError):
         return "offline parser bundle unavailable"
     try:
-        python_tag, platform_tag = python_platform_tags(python_executable, timeout_seconds)
-    except (OSError, subprocess.TimeoutExpired, BundleFormatError, json.JSONDecodeError):
+        python_tag, platform_tag = python_platform_tags(
+            python_executable, timeout_seconds
+        )
+    except (
+        OSError,
+        subprocess.TimeoutExpired,
+        BundleFormatError,
+        json.JSONDecodeError,
+    ):
         return "parser subprocess failed"
     return LocatedBundle(
         directory=bundle_dir,
@@ -325,7 +342,9 @@ def acquire_bundle(
     if problem is not None:
         return problem
     lock = located.lock
-    install_dir = bundle_cache_root(repo) / install_dir_name(lock, located.pair) / "install"
+    install_dir = (
+        bundle_cache_root(repo) / install_dir_name(lock, located.pair) / "install"
+    )
     try:
         install_bundle(
             lock,
@@ -380,7 +399,9 @@ def build_provenance(
                 "abi": grammar.abi,
                 "sha256": (
                     grammar.sha256_by_pair[f"{python_tag}-{platform_tag}"]
-                    if grammar.sha256_by_pair is not None and python_tag is not None and platform_tag is not None
+                    if grammar.sha256_by_pair is not None
+                    and python_tag is not None
+                    and platform_tag is not None
                     else grammar.sha256
                 ),
             }

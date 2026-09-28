@@ -30,7 +30,7 @@ if sys.version_info < MIN_PYTHON:
     )
     raise SystemExit(1)
 
-# `harness/bin/harness`'s package_files() copies this file verbatim into target projects as
+# `harness/bin/harness.py`'s package_files() copies this file verbatim into target projects as
 # `.harness/reporting/delivery_stats.py` -- a different directory name than the source tree's
 # `harness/`. Alias `harness` to whichever of the two this file actually lives under so
 # `from harness...` resolves the same way in both places. See docs/adr/0018.
@@ -1203,8 +1203,6 @@ def orchestration_metrics(
     }
 
 
-
-
 # -------------------------------------------------------------------------------------- summary
 
 
@@ -1230,7 +1228,6 @@ def cache_split(claude: JsonObject) -> str | JsonObject:
         "cache_write_percent": round(write * 100 / total, 3),
         "cache_read_percent": round(read * 100 / total, 3),
     }
-
 
 
 def build_report(args: argparse.Namespace) -> JsonObject:
@@ -1315,8 +1312,6 @@ def build_report(args: argparse.Namespace) -> JsonObject:
         "adr_added": len(volume["adr_added"]),
         "orchestration": orchestration_metrics(repo, numbers, orchestration_state),
     }
-
-
 
 
 def main_live_probe(argv: list[str]) -> int:

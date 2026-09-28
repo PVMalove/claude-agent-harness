@@ -140,7 +140,9 @@ def run(ctx: SimpleNamespace) -> None:
             "output": f"{role_name} finished the requested step",
             "commit_sha": "not applicable — read-only role",
             "changed_files": [],
-            "checks_run": [] if role_name == "architect" else [
+            "checks_run": []
+            if role_name == "architect"
+            else [
                 {
                     "command": "python developer_check.py"
                     if role_name == "developer"
@@ -332,7 +334,9 @@ def run(ctx: SimpleNamespace) -> None:
             "the coordinator repinned the base directly instead of requiring a developer rebase"
         )
     if blocked_batch_record.get("rebase_target_commit") != drifted_sha:
-        sys.exit("a stale-base block did not record the integration tip the rebase must land on")
+        sys.exit(
+            "a stale-base block did not record the integration tip the rebase must land on"
+        )
 
     # The block is cleared only by a developer dispatch — never a coordinator/human git operation.
     still_blocked_publish = coordinator_run(
@@ -468,15 +472,25 @@ def run(ctx: SimpleNamespace) -> None:
         encoding="utf-8",
     )
     unrebased_submit = coordinator_run(
-        "--state-dir", str(stale_state), "report", "submit", "--file", str(unrebased_file)
+        "--state-dir",
+        str(stale_state),
+        "report",
+        "submit",
+        "--file",
+        str(unrebased_file),
     )
-    if unrebased_submit.returncode == 0 or "integration tip" not in unrebased_submit.stderr:
+    if (
+        unrebased_submit.returncode == 0
+        or "integration tip" not in unrebased_submit.stderr
+    ):
         sys.exit(
             "coordinator accepted a rebase report whose candidate lacks the moved integration tip: "
             + unrebased_submit.stderr
         )
     subprocess.run(
-        ["git", "reset", "-q", "--hard", stale_sha], cwd=orchestration_project, check=True
+        ["git", "reset", "-q", "--hard", stale_sha],
+        cwd=orchestration_project,
+        check=True,
     )
 
     # A real rebase: the candidate now contains the upstream commit, which must not be counted as

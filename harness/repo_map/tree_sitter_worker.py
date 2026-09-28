@@ -53,10 +53,19 @@ _NAMED_BINDINGS = frozenset(
     }
 )
 _STORE_CONTAINERS = frozenset(
-    {"pattern_list", "tuple_pattern", "list_pattern", "tuple", "list", "parenthesized_expression"}
+    {
+        "pattern_list",
+        "tuple_pattern",
+        "list_pattern",
+        "tuple",
+        "list",
+        "parenthesized_expression",
+    }
 )
 # Identifiers nested in these nodes name modules or packages, never a referenced symbol.
-_PYTHON_IMPORT_CONTEXT = frozenset({"import_statement", "import_from_statement", "dotted_name"})
+_PYTHON_IMPORT_CONTEXT = frozenset(
+    {"import_statement", "import_from_statement", "dotted_name"}
+)
 _GO_IMPORT_CONTEXT = frozenset({"import_declaration"})
 _JAVA_IMPORT_CONTEXT = frozenset({"import_declaration", "package_declaration"})
 _CS_IMPORT_CONTEXT = frozenset({"using_directive"})
@@ -97,7 +106,9 @@ def _qualified(owner: str, name: Node | None) -> str:
 
 def _class_text(name: Node | None, bases: list[str]) -> str:
     """Текст сигнатуры класса с базовыми типами в скобках, если они есть."""
-    return f"class {_text(name)}({', '.join(bases)})" if bases else f"class {_text(name)}"
+    return (
+        f"class {_text(name)}({', '.join(bases)})" if bases else f"class {_text(name)}"
+    )
 
 
 def _walk(node: Node) -> Iterator[Node]:
@@ -116,7 +127,13 @@ def _symbols(nodes: list[Node | None]) -> list[str]:
         if part is None:
             continue
         for node in _walk(part):
-            if node.type in ("identifier", "type_identifier", "property_identifier", "string_content", "string_fragment"):
+            if node.type in (
+                "identifier",
+                "type_identifier",
+                "property_identifier",
+                "string_content",
+                "string_fragment",
+            ):
                 found.append(_text(node))
     return found
 
@@ -203,22 +220,34 @@ def _imports(root: Node) -> list[dict[str, object]]:
     for node in _walk(root):
         if node.type == "import_statement":
             for name in node.children_by_field_name("name"):
-                target = name.child_by_field_name("name") if name.type == "aliased_import" else name
+                target = (
+                    name.child_by_field_name("name")
+                    if name.type == "aliased_import"
+                    else name
+                )
                 found.append({"module": _text(target), "level": 0, "names": []})
         elif node.type == "import_from_statement":
             module = node.child_by_field_name("module_name")
             level = 0
             module_text = _text(module)
             if module is not None and module.type == "relative_import":
-                prefix = next((c for c in module.children if c.type == "import_prefix"), None)
+                prefix = next(
+                    (c for c in module.children if c.type == "import_prefix"), None
+                )
                 level = len(_text(prefix))
-                dotted = next((c for c in module.children if c.type == "dotted_name"), None)
+                dotted = next(
+                    (c for c in module.children if c.type == "dotted_name"), None
+                )
                 module_text = _text(dotted)
             names: list[str] = []
             if any(child.type == "wildcard_import" for child in node.children):
                 names.append("*")
             for name in node.children_by_field_name("name"):
-                target = name.child_by_field_name("name") if name.type == "aliased_import" else name
+                target = (
+                    name.child_by_field_name("name")
+                    if name.type == "aliased_import"
+                    else name
+                )
                 names.append(_text(target))
             found.append({"module": module_text, "level": level, "names": names})
     return found
@@ -232,7 +261,12 @@ def _is_store(node: Node) -> bool:
         child, parent = parent, parent.parent
     if parent is None:
         return False
-    if parent.type in ("assignment", "augmented_assignment", "for_statement", "for_in_clause"):
+    if parent.type in (
+        "assignment",
+        "augmented_assignment",
+        "for_statement",
+        "for_in_clause",
+    ):
         return parent.child_by_field_name("left") == child
     if parent.type == "named_expression":
         return parent.child_by_field_name("name") == child
@@ -258,7 +292,10 @@ def _is_reference(node: Node) -> bool:
 def _names(root: Node) -> tuple[list[str], list[str]]:
     """Определения и ссылки Python-модуля."""
     return _collect_names(
-        root, ("function_definition", "class_definition"), ("identifier",), _is_reference
+        root,
+        ("function_definition", "class_definition"),
+        ("identifier",),
+        _is_reference,
     )
 
 
@@ -280,7 +317,9 @@ def _js_parameter(node: Node) -> tuple[str, list[Node | None]]:
     return _text(node), [node]
 
 
-def _js_callable_signature(node: Node, name: Node | None, owner: str = "") -> dict[str, object]:
+def _js_callable_signature(
+    node: Node, name: Node | None, owner: str = ""
+) -> dict[str, object]:
     """Сигнатура функции, стрелочной функции или метода JS/TS."""
     parameters = node.child_by_field_name("parameters")
     return_type = node.child_by_field_name("return_type")
@@ -291,8 +330,14 @@ def _js_callable_signature(node: Node, name: Node | None, owner: str = "") -> di
         rendered.append(value)
         exposed.extend(parts)
     qualified = _qualified(owner, name)
-    keyword = "method" if owner else ("const" if node.type == "arrow_function" else "function")
-    async_prefix = "async " if any(child.type == "async" for child in node.children) else ""
+    keyword = (
+        "method"
+        if owner
+        else ("const" if node.type == "arrow_function" else "function")
+    )
+    async_prefix = (
+        "async " if any(child.type == "async" for child in node.children) else ""
+    )
     suffix = _text(return_type)
     return {
         "text": f"{async_prefix}{keyword} {qualified}({', '.join(rendered)}){suffix}",
@@ -304,14 +349,20 @@ def _js_signatures(root: Node) -> list[dict[str, object]]:
     """Функции, классы с методами и стрелочные константы верхнего уровня JS/TS, включая экспорт."""
     found: list[dict[str, object]] = []
     for top in root.named_children:
-        node = top.child_by_field_name("declaration") if top.type == "export_statement" else top
+        node = (
+            top.child_by_field_name("declaration")
+            if top.type == "export_statement"
+            else top
+        )
         if node is None or node.has_error:
             continue
         if node.type == "function_declaration":
             found.append(_js_callable_signature(node, node.child_by_field_name("name")))
         elif node.type == "class_declaration":
             name = node.child_by_field_name("name")
-            heritage = next((c for c in node.named_children if c.type == "class_heritage"), None)
+            heritage = next(
+                (c for c in node.named_children if c.type == "class_heritage"), None
+            )
             prefix = f"class {_text(name)}"
             if heritage is not None:
                 prefix += f" {_text(heritage)}"
@@ -320,7 +371,9 @@ def _js_signatures(root: Node) -> list[dict[str, object]]:
             for member in body.named_children if body is not None else []:
                 if member.type == "method_definition" and not member.has_error:
                     found.append(
-                        _js_callable_signature(member, member.child_by_field_name("name"), _text(name))
+                        _js_callable_signature(
+                            member, member.child_by_field_name("name"), _text(name)
+                        )
                     )
         elif node.type in {"lexical_declaration", "variable_declaration"}:
             for variable in node.named_children:
@@ -328,7 +381,11 @@ def _js_signatures(root: Node) -> list[dict[str, object]]:
                     continue
                 value = variable.child_by_field_name("value")
                 name = variable.child_by_field_name("name")
-                if value is not None and value.type == "arrow_function" and name is not None:
+                if (
+                    value is not None
+                    and value.type == "arrow_function"
+                    and name is not None
+                ):
                     found.append(_js_callable_signature(value, name))
     return found
 
@@ -341,7 +398,9 @@ def _js_imports(root: Node) -> list[dict[str, object]]:
             continue
         source = node.child_by_field_name("source")
         if source is not None:
-            found.append({"module": _text(source).strip("\"'"), "level": 0, "names": []})
+            found.append(
+                {"module": _text(source).strip("\"'"), "level": 0, "names": []}
+            )
     return found
 
 
@@ -352,7 +411,11 @@ def _js_names(root: Node) -> tuple[list[str], list[str]]:
     for node in _walk(root):
         if node.has_error:
             continue
-        if node.type in {"function_declaration", "class_declaration", "method_definition"}:
+        if node.type in {
+            "function_declaration",
+            "class_declaration",
+            "method_definition",
+        }:
             name = node.child_by_field_name("name")
             if name is not None:
                 definitions.add(_text(name))
@@ -365,10 +428,16 @@ def _js_names(root: Node) -> tuple[list[str], list[str]]:
             if parent is None:
                 continue
             if parent.child_by_field_name("name") == node and parent.type in {
-                "function_declaration", "class_declaration", "method_definition", "variable_declarator"
+                "function_declaration",
+                "class_declaration",
+                "method_definition",
+                "variable_declarator",
             }:
                 continue
-            if parent.type in {"member_expression", "subscript_expression"} and parent.child_by_field_name("property") == node:
+            if (
+                parent.type in {"member_expression", "subscript_expression"}
+                and parent.child_by_field_name("property") == node
+            ):
                 continue
             if not _has_ancestor(node, _JS_NON_REFERENCE_CONTEXT):
                 references.add(_text(node))
@@ -413,7 +482,11 @@ def _go_type_signature(node: Node) -> dict[str, object] | None:
     """Сигнатура `struct` или `interface` Go; `None` для остальных типов."""
     name = node.child_by_field_name("name")
     kind = node.child_by_field_name("type")
-    if name is None or kind is None or kind.type not in ("struct_type", "interface_type"):
+    if (
+        name is None
+        or kind is None
+        or kind.type not in ("struct_type", "interface_type")
+    ):
         return None
     keyword = "struct" if kind.type == "struct_type" else "interface"
     return {"text": f"type {_text(name)} {keyword}", "symbols": _symbols([name])}
@@ -448,10 +521,14 @@ def _go_is_reference(node: Node) -> bool:
     ):
         return False
     if parent.type in (
-        "parameter_declaration", "variadic_parameter_declaration"
+        "parameter_declaration",
+        "variadic_parameter_declaration",
     ) and node in parent.children_by_field_name("name"):
         return False
-    if parent.type == "selector_expression" and parent.child_by_field_name("field") == node:
+    if (
+        parent.type == "selector_expression"
+        and parent.child_by_field_name("field") == node
+    ):
         return False
     return not _has_ancestor(node, _GO_IMPORT_CONTEXT)
 
@@ -508,7 +585,11 @@ def _member_callable_signature(
         rendered.append(text)
         exposed.extend(parts)
     qualified = _qualified(owner, name)
-    keyword = "constructor" if is_constructor else ("static method" if is_static else "method")
+    keyword = (
+        "constructor"
+        if is_constructor
+        else ("static method" if is_static else "method")
+    )
     suffix = f": {_text(returns)}" if returns is not None else ""
     text = f"{keyword} {qualified}({', '.join(rendered)}){suffix}"
     return {"text": text, "symbols": ([owner] if owner else []) + _symbols(exposed)}
@@ -521,8 +602,12 @@ def _java_parameter(node: Node) -> tuple[str, list[Node | None]]:
 
 def _java_callable_signature(node: Node, owner: str) -> dict[str, object]:
     """Сигнатура метода или конструктора Java с признаком `static`."""
-    modifiers = next((child for child in node.children if child.type == "modifiers"), None)
-    is_static = modifiers is not None and any(child.type == "static" for child in modifiers.children)
+    modifiers = next(
+        (child for child in node.children if child.type == "modifiers"), None
+    )
+    is_static = modifiers is not None and any(
+        child.type == "static" for child in modifiers.children
+    )
     return _member_callable_signature(
         node, owner, node.child_by_field_name("type"), is_static, _java_parameter
     )
@@ -542,7 +627,10 @@ def _java_class_signature(node: Node) -> dict[str, object]:
         type_list = next(iter(interfaces.named_children), None)
         if type_list is not None:
             bases.extend(_text(item) for item in type_list.named_children)
-    return {"text": _class_text(name, bases), "symbols": _symbols([name, superclass, interfaces])}
+    return {
+        "text": _class_text(name, bases),
+        "symbols": _symbols([name, superclass, interfaces]),
+    }
 
 
 def _java_signatures(root: Node) -> list[dict[str, object]]:
@@ -558,7 +646,10 @@ def _java_signatures(root: Node) -> list[dict[str, object]]:
         owner = _text(node.child_by_field_name("name"))
         body = node.child_by_field_name("body")
         for member in body.named_children if body is not None else []:
-            if member.type in ("method_declaration", "constructor_declaration") and not member.has_error:
+            if (
+                member.type in ("method_declaration", "constructor_declaration")
+                and not member.has_error
+            ):
                 found.append(_java_callable_signature(member, owner))
     return found
 
@@ -569,15 +660,22 @@ def _java_is_reference(node: Node) -> bool:
     if parent is None:
         return False
     if (
-        parent.type in ("class_declaration", "method_declaration", "constructor_declaration")
+        parent.type
+        in ("class_declaration", "method_declaration", "constructor_declaration")
         and parent.child_by_field_name("name") == node
     ):
         return False
     if parent.type == "formal_parameter" and parent.child_by_field_name("name") == node:
         return False
-    if parent.type == "variable_declarator" and parent.child_by_field_name("name") == node:
+    if (
+        parent.type == "variable_declarator"
+        and parent.child_by_field_name("name") == node
+    ):
         return False
-    if parent.type == "method_invocation" and parent.child_by_field_name("name") == node:
+    if (
+        parent.type == "method_invocation"
+        and parent.child_by_field_name("name") == node
+    ):
         return False
     if parent.type == "field_access" and parent.child_by_field_name("field") == node:
         return False
@@ -601,7 +699,9 @@ def _cs_parameter(node: Node) -> tuple[str, list[Node | None]]:
     type_node = node.child_by_field_name("type")
     name = node.child_by_field_name("name")
     has_default = any(child.type == "=" for child in node.children)
-    rendered = f"{_text(type_node)} {_text(name)}" if type_node is not None else _text(name)
+    rendered = (
+        f"{_text(type_node)} {_text(name)}" if type_node is not None else _text(name)
+    )
     if has_default:
         rendered += "=..."
     return rendered, [type_node, name]
@@ -620,8 +720,14 @@ def _cs_callable_signature(node: Node, owner: str) -> dict[str, object]:
 def _cs_class_signature(node: Node) -> dict[str, object]:
     """Сигнатура класса C# со списком базовых типов."""
     name = node.child_by_field_name("name")
-    base_list = next((child for child in node.children if child.type == "base_list"), None)
-    bases = [_text(item) for item in base_list.named_children] if base_list is not None else []
+    base_list = next(
+        (child for child in node.children if child.type == "base_list"), None
+    )
+    bases = (
+        [_text(item) for item in base_list.named_children]
+        if base_list is not None
+        else []
+    )
     return {"text": _class_text(name, bases), "symbols": _symbols([name, base_list])}
 
 
@@ -633,7 +739,11 @@ def _cs_top_level_classes(root: Node) -> Iterator[Node]:
         elif node.type == "namespace_declaration":
             body = node.child_by_field_name("body")
             if body is not None:
-                yield from (child for child in body.named_children if child.type == "class_declaration")
+                yield from (
+                    child
+                    for child in body.named_children
+                    if child.type == "class_declaration"
+                )
 
 
 def _cs_signatures(root: Node) -> list[dict[str, object]]:
@@ -646,7 +756,10 @@ def _cs_signatures(root: Node) -> list[dict[str, object]]:
         owner = _text(node.child_by_field_name("name"))
         body = node.child_by_field_name("body")
         for member in body.named_children if body is not None else []:
-            if member.type in ("method_declaration", "constructor_declaration") and not member.has_error:
+            if (
+                member.type in ("method_declaration", "constructor_declaration")
+                and not member.has_error
+            ):
                 found.append(_cs_callable_signature(member, owner))
     return found
 
@@ -657,15 +770,27 @@ def _cs_is_reference(node: Node) -> bool:
     if parent is None:
         return False
     if (
-        parent.type in ("class_declaration", "method_declaration", "constructor_declaration", "namespace_declaration")
+        parent.type
+        in (
+            "class_declaration",
+            "method_declaration",
+            "constructor_declaration",
+            "namespace_declaration",
+        )
         and parent.child_by_field_name("name") == node
     ):
         return False
     if parent.type == "parameter" and parent.child_by_field_name("name") == node:
         return False
-    if parent.type == "variable_declarator" and parent.child_by_field_name("name") == node:
+    if (
+        parent.type == "variable_declarator"
+        and parent.child_by_field_name("name") == node
+    ):
         return False
-    if parent.type == "member_access_expression" and parent.child_by_field_name("name") == node:
+    if (
+        parent.type == "member_access_expression"
+        and parent.child_by_field_name("name") == node
+    ):
         return False
     return not _has_ancestor(node, _CS_IMPORT_CONTEXT)
 

@@ -45,7 +45,9 @@ class HarnessRuntimeSnapshotTests(unittest.TestCase):
             repo = Path(temporary)
             package = repo / ".harness"
             (package / "orchestration").mkdir(parents=True)
-            (package / "orchestration" / "runner.py").write_text("A = 1\n", encoding="utf-8")
+            (package / "orchestration" / "runner.py").write_text(
+                "A = 1\n", encoding="utf-8"
+            )
             (package / "gate_runner").mkdir()
             (package / "gate_runner" / "__init__.py").write_text("", encoding="utf-8")
             gate = package / "gate_runner" / "gate.py"
@@ -73,7 +75,9 @@ class RoleManifestSourceTests(unittest.TestCase):
             pinned = Path(temporary) / "snapshot" / "orchestration"
             (pinned / "roles").mkdir(parents=True)
 
-            with mock.patch.object(workspace, "_runtime_snapshot_root", return_value=pinned):
+            with mock.patch.object(
+                workspace, "_runtime_snapshot_root", return_value=pinned
+            ):
                 self.assertEqual(config._roles_dir(repo), pinned / "roles")
             self.assertEqual(
                 config._roles_dir(repo), repo / ".harness" / "orchestration" / "roles"

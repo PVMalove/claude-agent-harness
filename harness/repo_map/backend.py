@@ -73,7 +73,9 @@ class BundleParserBackend:
         self._repo = repo
         self._policy = policy
         self._python = python_executable
-        self._located: parser_bundle.LocatedBundle | parser_bundle.DegradationReason | None = None
+        self._located: (
+            parser_bundle.LocatedBundle | parser_bundle.DegradationReason | None
+        ) = None
 
     def _locate(self) -> parser_bundle.LocatedBundle | parser_bundle.DegradationReason:
         """Найти bundle один раз и запомнить результат."""
@@ -112,7 +114,11 @@ class BundleParserBackend:
                 continue
             records[path] = _record(path)
             content = blob.content
-            if content is None or b"\0" in content or Path(path).suffix not in extensions:
+            if (
+                content is None
+                or b"\0" in content
+                or Path(path).suffix not in extensions
+            ):
                 continue
             request[path] = base64.b64encode(content).decode("ascii")
         return records, diagnostics, request
@@ -134,7 +140,11 @@ class BundleParserBackend:
         )
         if isinstance(bundle, str):
             provenance = parser_bundle.build_provenance(
-                None, bundle_mode="degraded", bundle_source="none", python_tag=None, platform_tag=None
+                None,
+                bundle_mode="degraded",
+                bundle_source="none",
+                python_tag=None,
+                platform_tag=None,
             )
             return ParseOutcome.degraded(bundle, provenance)
         blobs = read_blobs(
@@ -144,7 +154,9 @@ class BundleParserBackend:
             max_file_bytes=policy.max_file_bytes,
             timeout_seconds=policy.timeout_seconds,
         )
-        records, diagnostics, request = self._records(paths, blobs, bundle.worker_extensions)
+        records, diagnostics, request = self._records(
+            paths, blobs, bundle.worker_extensions
+        )
         parse_result = parser_bundle.run_bundle_parser(
             self._python,
             bundle.worker_script,
@@ -165,7 +177,9 @@ class BundleParserBackend:
         if isinstance(parse_result, str):
             return ParseOutcome.degraded(parse_result, provenance)
         facts = {
-            path: record for path, record in parse_result["files"].items() if path in request
+            path: record
+            for path, record in parse_result["files"].items()
+            if path in request
         }
         return ParseOutcome(
             True,

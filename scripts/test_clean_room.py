@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end clean-room проверка: harness/bin/harness, bin/install-global и hooks проекта.
+"""End-to-end clean-room проверка: harness/bin/harness.py, bin/install-global и hooks проекта.
 
 Сценарии живут в пакете `scripts/clean_room` и выполняются по порядку `SCENARIOS` против
 одноразовых репозиториев; проверяется итоговое состояние файлов и реальное поведение hooks.

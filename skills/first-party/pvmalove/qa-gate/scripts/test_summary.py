@@ -115,7 +115,11 @@ def collect_diagnostics(lines: list[str], max_diagnostics: int) -> list[str]:
 
     def add(kind: str, message: str) -> None:
         entry = f"{kind}: {message.strip()}"
-        if message.strip() and entry not in diagnostics and len(diagnostics) < max_diagnostics:
+        if (
+            message.strip()
+            and entry not in diagnostics
+            and len(diagnostics) < max_diagnostics
+        ):
             diagnostics.append(entry)
 
     for line in lines:
@@ -139,7 +143,10 @@ def collect_diagnostics(lines: list[str], max_diagnostics: int) -> list[str]:
 
         tool_error = TOOL_ERROR_RE.match(stripped)
         if tool_error:
-            add("Error", f"{tool_error.group('location')}: {tool_error.group('message')}")
+            add(
+                "Error",
+                f"{tool_error.group('location')}: {tool_error.group('message')}",
+            )
             continue
 
         error_message = ERROR_MESSAGE_RE.match(stripped)
@@ -249,9 +256,7 @@ def main(argv: list[str]) -> int:
         if runner_file is None:
             raise RuntimeError("shared gate-runner has no file path")
         log_dir = storage_path(Path(runner_file).resolve().parents[2], "logs")
-    return summarize(
-        args.command, log_dir, args.max_failures, args.max_diagnostics
-    )
+    return summarize(args.command, log_dir, args.max_failures, args.max_diagnostics)
 
 
 if __name__ == "__main__":

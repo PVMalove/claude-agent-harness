@@ -12,7 +12,7 @@
 инвариантов — типовой текст про баг, а не пропуск поля). Все 9 существующих классов ошибок
 переходят на наследование от него. Единый хелпер печати (`print_and_exit` или аналог) в том же
 модуле используется всеми 5 независимыми CLI-точками входа
-(`coordinator.py`, `delivery_stats.py`, `advisory.py`, `harness/bin/harness`)
+(`coordinator.py`, `delivery_stats.py`, `advisory.py`, `harness/bin/harness.py`)
 вместо раздельного `print(f"ERROR: {exc}", ...)` в каждой.
 
 ## Considered Options

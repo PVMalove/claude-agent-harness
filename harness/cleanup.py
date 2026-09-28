@@ -22,7 +22,9 @@ from harness.storage import LEGACY_STORAGE_DIRS, sandboxes_root, storage_root
 
 TERMINAL_BATCH_STATES = {"completed", "failed", "abandoned", "not-required"}
 LEGACY_TOP_LEVEL_DIRS = LEGACY_STORAGE_DIRS
-_INSTALL_DIR_RE = re.compile(rf"[0-9a-f]{{{INSTALL_DIR_HASH_PREFIX}}}-cp[0-9]+-[A-Za-z0-9_]+")
+_INSTALL_DIR_RE = re.compile(
+    rf"[0-9a-f]{{{INSTALL_DIR_HASH_PREFIX}}}-cp[0-9]+-[A-Za-z0-9_]+"
+)
 
 
 class CleanupItem(TypedDict):
@@ -61,7 +63,10 @@ def _inside(root: Path, candidate: Path) -> bool:
     if candidate.is_symlink():
         return False
     try:
-        return candidate.resolve().is_relative_to(root.resolve()) and candidate.resolve() != root.resolve()
+        return (
+            candidate.resolve().is_relative_to(root.resolve())
+            and candidate.resolve() != root.resolve()
+        )
     except OSError:
         return False
 
@@ -147,7 +152,9 @@ def _active_worktrees(root: Path) -> set[Path] | None:
     try:
         if pointer.exists():
             generation = json.loads(pointer.read_text(encoding="utf-8"))["generation"]
-            if not isinstance(generation, str) or not re.fullmatch(r"generation-[A-Za-z0-9-]+", generation):
+            if not isinstance(generation, str) or not re.fullmatch(
+                r"generation-[A-Za-z0-9-]+", generation
+            ):
                 return None
             records = state / "generations" / generation / "batches"
         else:
@@ -159,7 +166,11 @@ def _active_worktrees(root: Path) -> set[Path] | None:
             batch = json.loads(record.read_text(encoding="utf-8"))
             if batch["state"] not in TERMINAL_BATCH_STATES:
                 worktree = Path(batch["worktree"])
-                active.add((worktree if worktree.is_absolute() else root.parent / worktree).resolve())
+                active.add(
+                    (
+                        worktree if worktree.is_absolute() else root.parent / worktree
+                    ).resolve()
+                )
         return active
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -176,7 +187,12 @@ def _branch_recoverable(repo: Path, branch: str) -> bool:
     try:
         remote = subprocess.run(
             [
-                "git", "-C", str(repo.resolve()), "ls-remote", "--exit-code", "origin",
+                "git",
+                "-C",
+                str(repo.resolve()),
+                "ls-remote",
+                "--exit-code",
+                "origin",
                 f"refs/heads/{upstream_ref.removeprefix('origin/')}",
             ],
             capture_output=True,
@@ -189,9 +205,14 @@ def _branch_recoverable(repo: Path, branch: str) -> bool:
         )
     except subprocess.TimeoutExpired:
         return False
-    if remote.returncode != 0 or remote.stdout.split("\t", 1)[0] != tracking.stdout.strip():
+    if (
+        remote.returncode != 0
+        or remote.stdout.split("\t", 1)[0] != tracking.stdout.strip()
+    ):
         return False
-    return _git(repo, "merge-base", "--is-ancestor", branch, upstream_ref).returncode == 0
+    return (
+        _git(repo, "merge-base", "--is-ancestor", branch, upstream_ref).returncode == 0
+    )
 
 
 def _branch_allowed(root: Path, branch: str) -> bool:
@@ -213,7 +234,8 @@ def _stale_bundle_installs(bundle_root: Path, min_age_hours: float) -> list[Path
     except (OSError, BundleFormatError):
         current = None
     return [
-        path for path in sorted(bundle_root.iterdir())
+        path
+        for path in sorted(bundle_root.iterdir())
         if path.is_dir()
         and _INSTALL_DIR_RE.fullmatch(path.name)
         and path.name.split("-", 1)[0] != current
@@ -225,7 +247,9 @@ def _stale_bundle_installs(bundle_root: Path, min_age_hours: float) -> list[Path
 def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> CleanupPlan:
     """Return exact deletions and skips; never mutate the filesystem."""
     if mode not in {"soft", "hard"} or min_age_hours < 0:
-        raise ValueError("cleanup mode must be soft or hard and minimum age cannot be negative")
+        raise ValueError(
+            "cleanup mode must be soft or hard and minimum age cannot be negative"
+        )
     checkout = repo.expanduser().resolve()
     if storage_root(checkout).is_symlink() or sandboxes_root(checkout).is_symlink():
         raise ValueError("storage root must not be a symlink")
@@ -238,6 +262,7 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
     # 1. Runs: .sandboxes/runs
     runs_dir = sandboxes / "runs"
     if runs_dir.is_dir() and not runs_dir.is_symlink():
+
         def _process_run_entry(path: Path, is_qa: bool = False) -> None:
             if path.is_symlink() or not _inside(root, path):
                 skipped.append({"path": str(path), "reason": "not a local directory"})
@@ -245,15 +270,30 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
                 if _old_enough(path, min_age_hours):
                     remove.append({"kind": "file", "path": str(path)})
                 else:
-                    skipped.append({"path": str(path), "reason": "active or newer than minimum age"})
+                    skipped.append(
+                        {
+                            "path": str(path),
+                            "reason": "active or newer than minimum age",
+                        }
+                    )
             elif path.is_dir():
                 if is_qa and (
                     registered is None
                     or any(tree.is_relative_to(path.resolve()) for tree in registered)
                 ):
-                    skipped.append({"path": str(path), "reason": "registered QA worktree or Git unavailable"})
+                    skipped.append(
+                        {
+                            "path": str(path),
+                            "reason": "registered QA worktree or Git unavailable",
+                        }
+                    )
                 elif _run_active(path) or not _old_enough(path, min_age_hours):
-                    skipped.append({"path": str(path), "reason": "active or newer than minimum age"})
+                    skipped.append(
+                        {
+                            "path": str(path),
+                            "reason": "active or newer than minimum age",
+                        }
+                    )
                 else:
                     remove.append({"kind": "directory", "path": str(path)})
 
@@ -274,19 +314,34 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
         parent = sandboxes / category
         if parent.is_dir() and not parent.is_symlink():
             for path in sorted(parent.rglob("*")):
-                if path.is_file() and _inside(root, path) and _old_enough(path, min_age_hours):
+                if (
+                    path.is_file()
+                    and _inside(root, path)
+                    and _old_enough(path, min_age_hours)
+                ):
                     remove.append({"kind": "file", "path": str(path)})
 
     # 3. Legacy top-level folders outside .sandboxes: (.cache, test-logs, tmp, reports)
     for name in LEGACY_TOP_LEVEL_DIRS:
         legacy_dir = root / name
-        if legacy_dir.is_dir() and not legacy_dir.is_symlink() and _inside(root, legacy_dir):
+        if (
+            legacy_dir.is_dir()
+            and not legacy_dir.is_symlink()
+            and _inside(root, legacy_dir)
+        ):
             if (
                 not _old_enough(legacy_dir, min_age_hours)
                 or _run_active(legacy_dir)
-                or any(_run_active(sub) for sub in legacy_dir.rglob("*") if sub.is_dir())
+                or any(
+                    _run_active(sub) for sub in legacy_dir.rglob("*") if sub.is_dir()
+                )
             ):
-                skipped.append({"path": str(legacy_dir), "reason": "active or newer than minimum age"})
+                skipped.append(
+                    {
+                        "path": str(legacy_dir),
+                        "reason": "active or newer than minimum age",
+                    }
+                )
             else:
                 remove.append({"kind": "directory", "path": str(legacy_dir)})
 
@@ -297,20 +352,35 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
             parent = sandboxes / category
             if parent.is_dir() and not parent.is_symlink():
                 for entry in sorted(parent.iterdir()):
-                    if (category == "cache" and entry.name == "repo_map"
-                            and entry.is_dir() and not entry.is_symlink() and _inside(root, entry)):
+                    if (
+                        category == "cache"
+                        and entry.name == "repo_map"
+                        and entry.is_dir()
+                        and not entry.is_symlink()
+                        and _inside(root, entry)
+                    ):
                         results = entry / "results"
-                        if results.is_dir() and not results.is_symlink() and _inside(root, results):
+                        if (
+                            results.is_dir()
+                            and not results.is_symlink()
+                            and _inside(root, results)
+                        ):
                             remove.append({"kind": "directory", "path": str(results)})
                         bundle_root = entry / "parser_bundle"
                         remove.extend(
                             {"kind": "directory", "path": str(path)}
-                            for path in _stale_bundle_installs(bundle_root, min_age_hours)
+                            for path in _stale_bundle_installs(
+                                bundle_root, min_age_hours
+                            )
                         )
                         continue
                     if entry.is_file() and _inside(root, entry):
                         remove.append({"kind": "file", "path": str(entry)})
-                    elif entry.is_dir() and not entry.is_symlink() and _inside(root, entry):
+                    elif (
+                        entry.is_dir()
+                        and not entry.is_symlink()
+                        and _inside(root, entry)
+                    ):
                         remove.append({"kind": "directory", "path": str(entry)})
 
         # 5. Worktrees: .sandboxes/worktrees (and legacy root/worktrees)
@@ -323,7 +393,12 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
             if not worktrees.is_dir() or worktrees.is_symlink():
                 continue
             if registered is None or active is None:
-                skipped.append({"path": str(worktrees), "reason": "Git or ledger state unavailable"})
+                skipped.append(
+                    {
+                        "path": str(worktrees),
+                        "reason": "Git or ledger state unavailable",
+                    }
+                )
             else:
                 for path, branch in registered.items():
                     if path == checkout or not path.is_relative_to(worktrees.resolve()):
@@ -337,7 +412,11 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
                         reason = "detached or unowned local branch"
                     elif not _old_enough(path, min_age_hours):
                         reason = "worktree newer than minimum age"
-                    elif (status := _git(path, "status", "--porcelain", "--untracked-files=all")).returncode != 0:
+                    elif (
+                        status := _git(
+                            path, "status", "--porcelain", "--untracked-files=all"
+                        )
+                    ).returncode != 0:
                         reason = "worktree status unavailable"
                     elif status.stdout.strip():
                         reason = "worktree has uncommitted changes"
@@ -347,11 +426,21 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
                         skipped.append({"path": str(path), "reason": reason})
                     else:
                         assert branch is not None
-                        remove.append({"kind": "worktree", "path": str(path), "branch": branch})
-    return {"mode": mode, "root": str(root), "min_age_hours": min_age_hours, "remove": remove, "skipped": skipped}
+                        remove.append(
+                            {"kind": "worktree", "path": str(path), "branch": branch}
+                        )
+    return {
+        "mode": mode,
+        "root": str(root),
+        "min_age_hours": min_age_hours,
+        "remove": remove,
+        "skipped": skipped,
+    }
 
 
-def _clear_read_only(func: Callable[[str], object], path: str, _exc: BaseException) -> None:
+def _clear_read_only(
+    func: Callable[[str], object], path: str, _exc: BaseException
+) -> None:
     os.chmod(path, stat.S_IWRITE)
     func(path)
 
@@ -389,10 +478,16 @@ def apply_cleanup(
                     raise OSError("local branch no longer matches its origin upstream")
                 result = _git(checkout, "branch", "-D", branch)
                 if result.returncode != 0:
-                    raise OSError(result.stderr.strip() or "local branch removal failed")
+                    raise OSError(
+                        result.stderr.strip() or "local branch removal failed"
+                    )
             elif item["kind"] == "directory":
                 # Windows needs an extended-length path for nested test fixtures.
-                target = "\\\\?\\" + str(path) if os.name == "nt" and not str(path).startswith("\\\\?\\") else path
+                target = (
+                    "\\\\?\\" + str(path)
+                    if os.name == "nt" and not str(path).startswith("\\\\?\\")
+                    else path
+                )
                 shutil.rmtree(target, onexc=_clear_read_only)
             else:
                 path.unlink()

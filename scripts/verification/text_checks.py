@@ -35,7 +35,9 @@ def check_no_todo(base: Path) -> None:
             continue
         for lineno, line in enumerate(path.read_bytes().split(b"\n"), 1):
             if b"TODO" in line:
-                found.append(f"{path}:{lineno}:{line.decode('utf-8', errors='backslashreplace')}")
+                found.append(
+                    f"{path}:{lineno}:{line.decode('utf-8', errors='backslashreplace')}"
+                )
     if found:
         print("\n".join(found))
         sys.exit("global-skills still contains TODO markers")

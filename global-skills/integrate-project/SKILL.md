@@ -10,7 +10,7 @@ knows about itself. Read real files before asking; treat the repository, not the
 primary source of truth.
 
 Resolve this skill's real path and verify that the public `agent-harness` root two levels above it
-contains `skills/REGISTRY.md` and `harness/bin/harness`. This resolution is complete only when both
+contains `skills/REGISTRY.md` and `harness/bin/harness.py`. This resolution is complete only when both
 files exist; otherwise report that the public package is incomplete instead of guessing another
 installation.
 
@@ -85,7 +85,7 @@ description: Аудит существующей, уже значительно�
 
 Интегрируйте переносимый каркас (harness) в кодовую базу, которая уже существует, не пытаясь угадать, что проект уже знает о самом себе. Читайте реальные файлы, прежде чем спрашивать; относитесь к репозиторию, а не к разговору, как к первичному источнику истины.
 
-Определите реальный путь этого навыка и убедитесь, что публичный корень `agent-harness` двумя уровнями выше содержит `skills/REGISTRY.md` и `harness/bin/harness`. Это разрешение завершено только тогда, когда существуют оба файла; в противном случае сообщите, что публичный пакет неполон, вместо того чтобы предполагать другую установку.
+Определите реальный путь этого навыка и убедитесь, что публичный корень `agent-harness` двумя уровнями выше содержит `skills/REGISTRY.md` и `harness/bin/harness.py`. Это разрешение завершено только тогда, когда существуют оба файла; в противном случае сообщите, что публичный пакет неполон, вместо того чтобы предполагать другую установку.
 
 ## Аудит
 

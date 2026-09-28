@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-HARNESS = [sys.executable, str(ROOT / "harness" / "bin" / "harness")]
+HARNESS = [sys.executable, str(ROOT / "harness" / "bin" / "harness.py")]
 INSTALL_GLOBAL = [sys.executable, str(ROOT / "bin" / "install-global")]
 
 
@@ -70,6 +70,29 @@ def capture(cmd) -> str:
     return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
 
 
+def fail_json(cmd) -> dict:
+    """Запустить `harness health ... --json`, которая обязана упасть, и разобрать её JSON stdout."""
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode == 0:
+        sys.exit("command unexpectedly succeeded: " + " ".join(map(str, cmd)))
+    return json.loads(result.stdout)
+
+
+def capture_json(cmd) -> dict:
+    """Запустить `harness health ... --json`, которая обязана пройти, и разобрать её JSON stdout."""
+    return json.loads(
+        subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+    )
+
+
+def find_check(report: dict, check_id: str) -> dict:
+    """Найти проверку по стабильному `id` в отчёте `harness health --json`."""
+    for check in report["checks"]:
+        if check["id"] == check_id:
+            return check
+    sys.exit(f"health --json report has no check with id {check_id!r}")
+
+
 def commit_map_for(brief: dict, commit_sha: str) -> list[dict]:
     """Обязательный `commit_map` отчёта developer для кандидата из одного коммита."""
     return [
@@ -93,7 +116,12 @@ def count_skill_files(skills_dir: Path) -> int:
 
 
 def run_hook(
-    hook: Path, project_dir: Path, command: str, *, raw_payload=None, env_overrides=None,
+    hook: Path,
+    project_dir: Path,
+    command: str,
+    *,
+    raw_payload=None,
+    env_overrides=None,
     cwd: Path | None = None,
 ):
     """Передать PreToolUse(Bash) hook тот же JSON, что отправляет Claude Code, с `CLAUDE_PROJECT_DIR`.

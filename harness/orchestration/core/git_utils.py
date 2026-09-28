@@ -112,7 +112,9 @@ def _commit_evidence(repo: Path, base: str | None, commit: str) -> str:
                 _git(repo, "diff", "--no-ext-diff", "--no-renames", base, commit, "--"),
             )
         )
-    return _git(repo, "show", "--format=%B", "--no-ext-diff", "--no-renames", commit, "--")
+    return _git(
+        repo, "show", "--format=%B", "--no-ext-diff", "--no-renames", commit, "--"
+    )
 
 
 def _candidate_commit(repo: Path, value: object) -> str:

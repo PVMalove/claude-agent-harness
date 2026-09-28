@@ -73,7 +73,11 @@ def read_cache(cache_dir: Path, key: str, pinned: str) -> str | None:
             return None
         payload = envelope.get("payload")
         digest = envelope.get("sha256")
-        if envelope.get("key") != key or not isinstance(payload, str) or not isinstance(digest, str):
+        if (
+            envelope.get("key") != key
+            or not isinstance(payload, str)
+            or not isinstance(digest, str)
+        ):
             return None
         if hashlib.sha256(payload.encode("utf-8")).hexdigest() != digest:
             return None
@@ -100,7 +104,9 @@ def write_cache(cache_dir: Path, key: str, payload: str) -> None:
             sort_keys=True,
             separators=(",", ":"),
         )
-        descriptor, temporary = tempfile.mkstemp(dir=cache_dir, prefix=f".{key}.", suffix=".tmp")
+        descriptor, temporary = tempfile.mkstemp(
+            dir=cache_dir, prefix=f".{key}.", suffix=".tmp"
+        )
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(envelope)
         Path(temporary).replace(cache_dir / f"{key}.json")

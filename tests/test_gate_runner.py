@@ -273,7 +273,9 @@ class GateRunnerTests(unittest.TestCase):
             # Create .harness/.venv/bin/python (the contract path)
             harness_python = checkout / ".harness" / ".venv" / "bin" / "python"
             harness_python.parent.mkdir(parents=True)
-            harness_python.write_text("#!/bin/sh\necho harness-venv\n", encoding="utf-8")
+            harness_python.write_text(
+                "#!/bin/sh\necho harness-venv\n", encoding="utf-8"
+            )
             harness_python.chmod(0o755)
 
             with mock.patch("harness.gate_runner.gate_runner.sys") as mock_sys:
@@ -296,8 +298,11 @@ class GateRunnerTests(unittest.TestCase):
 
             # With no .harness/.venv, should fall back to sys.executable, not root .venv
             result = _clean_room_python(checkout)
-            self.assertNotEqual(result, wrong_python,
-                "must not use root-level .venv — contract is .harness/.venv")
+            self.assertNotEqual(
+                result,
+                wrong_python,
+                "must not use root-level .venv — contract is .harness/.venv",
+            )
 
     def test_clean_room_python_resolves_windows_path_under_harness_venv(self) -> None:
         """On win32 the interpreter lives at .harness/.venv/Scripts/python.exe."""
@@ -326,8 +331,20 @@ class GateRunnerTests(unittest.TestCase):
                     with self.assertRaises(GateRunnerError) as raised:
                         with policy.checkout():
                             pass
-                    self.assertIn("candidate_commit must be a hexadecimal commit SHA", raised.exception.message)
+                    self.assertIn(
+                        "candidate_commit must be a hexadecimal commit SHA",
+                        raised.exception.message,
+                    )
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_command_log_round_trips_between_writer_and_reader() -> None:
+    """The QA log format has one owner: the console reads it back with the writer's own parser."""
+    from harness.gate_runner.gate_runner import format_command_log, parse_command_log
+
+    log = format_command_log("make test", 0, "ok") + format_command_log("make lint", 2, "E1\nE2")
+
+    assert parse_command_log(log.splitlines()) == [("make test", 0), ("make lint", 2)]

@@ -103,7 +103,10 @@ class GitUtilsValidationTests(unittest.TestCase):
                 with self.subTest(invalid=invalid):
                     with self.assertRaises(coordinator.CoordinatorError) as raised:
                         git_utils._fetch_ref_tip(repo, cast(str, invalid))
-                    self.assertIn("ref must be a non-empty string not starting with '-'", raised.exception.message)
+                    self.assertIn(
+                        "ref must be a non-empty string not starting with '-'",
+                        raised.exception.message,
+                    )
 
 
 def _git(repo: Path, *arguments: str) -> str:
@@ -290,17 +293,21 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         batch = self._create_batch()
         self._approve_batch(batch["batch_id"])
         dispatch_id = self._create_architect_dispatch(batch["batch_id"])["dispatch_id"]
-        args = _ns(repo=str(self.repo), state_dir=str(self.state_dir), dispatch=dispatch_id)
+        args = _ns(
+            repo=str(self.repo), state_dir=str(self.state_dir), dispatch=dispatch_id
+        )
         self.assertIsNone(coordinator.pinned_runtime_command(args))
 
-        (self.repo / ".harness" / "orchestration" / "roles" / "architect.md").write_text(
-            "reinstalled\n", encoding="utf-8"
-        )
+        (
+            self.repo / ".harness" / "orchestration" / "roles" / "architect.md"
+        ).write_text("reinstalled\n", encoding="utf-8")
 
         command = coordinator.pinned_runtime_command(args)
         assert command is not None
         self.assertEqual(
-            Path(command[3]).relative_to(self.state_dir / workspace.RUNTIMES_DIR).parts[1:],
+            Path(command[3])
+            .relative_to(self.state_dir / workspace.RUNTIMES_DIR)
+            .parts[1:],
             ("harness", "orchestration", "coordinator.py"),
         )
 
@@ -315,14 +322,21 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         dispatch_id = self._create_architect_dispatch(batch["batch_id"])["dispatch_id"]
         payload = workspace._prepare_agent_inbox(self.repo) / f"{dispatch_id}.json"
         payload.write_text(json.dumps({"dispatch_id": dispatch_id}), encoding="utf-8")
-        args = _ns(repo=str(self.repo), state_dir=str(self.state_dir), file=str(payload))
-        (self.repo / ".harness" / "orchestration" / "roles" / "architect.md").write_text(
-            "reinstalled\n", encoding="utf-8"
+        args = _ns(
+            repo=str(self.repo), state_dir=str(self.state_dir), file=str(payload)
         )
+        (
+            self.repo / ".harness" / "orchestration" / "roles" / "architect.md"
+        ).write_text("reinstalled\n", encoding="utf-8")
 
         self.assertIsNotNone(coordinator.pinned_runtime_command(args))
         # A payload naming no readable dispatch is the command's own error to report.
-        for unreadable in ("not json", "[]", "{}", '{"dispatch_id": "dispatch-missing"}'):
+        for unreadable in (
+            "not json",
+            "[]",
+            "{}",
+            '{"dispatch_id": "dispatch-missing"}',
+        ):
             with self.subTest(payload=unreadable):
                 payload.write_text(unreadable, encoding="utf-8")
                 self.assertIsNone(coordinator.pinned_runtime_command(args))
@@ -597,7 +611,9 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "commit_plan": [{"id": "step-1"}],
         }
 
-        coordinator._validate_report(report, dispatch, {"mode": "write", "name": "developer"})
+        coordinator._validate_report(
+            report, dispatch, {"mode": "write", "name": "developer"}
+        )
 
     def test_qa_lane_bridge_surface_has_no_path_builders(self) -> None:
         """``qa_lane.py`` constructs its own ``LifecycleLedger`` and Value Objects directly (issue
@@ -1338,7 +1354,10 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
                 "execution_policy": {"dispatch_wait_timeout_seconds": 0}
             },
             "starting_files_inverted": {
-                "context_package_policy": {"min_starting_files": 11, "max_starting_files": 10}
+                "context_package_policy": {
+                    "min_starting_files": 11,
+                    "max_starting_files": 10,
+                }
             },
             "ttl_zero": {"approval_ttl_seconds": 0},
             "ttl_bool": {"approval_ttl_seconds": True},
@@ -1381,7 +1400,9 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         self.assertEqual(
             config._attention_policy(template), template["attention_policy"]
         )
-        self.assertEqual(config._execution_policy(template), template["execution_policy"])
+        self.assertEqual(
+            config._execution_policy(template), template["execution_policy"]
+        )
 
     def test_cli_uses_config_for_unspecified_execution_limits(self) -> None:
         parser = coordinator_cli.build_parser(coordinator, constants)
@@ -1837,7 +1858,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         stored = self._batch_record(batch["batch_id"])
         self.assertTrue(result["auto_accepted"])
-        self.assertEqual(stored["dispatches"][0]["decision"]["approved_by"], "policy:milestone")
+        self.assertEqual(
+            stored["dispatches"][0]["decision"]["approved_by"], "policy:milestone"
+        )
         self.assertEqual(stored["next_action"], "developer")
         self.assertEqual(stored["dispatches"][-1]["role"], "developer")
         self.assertEqual(stored["dispatches"][-1]["state"], "approved")
@@ -1846,14 +1869,28 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._patch_config(approval_policy="milestone")
         plan = self._batch_plan()
         plan["definition_of_done"] = ["add simple marker"]
-        _git(self.repo, "worktree", "add", "-b", self.branch, str(self.worktree), "master")
+        _git(
+            self.repo,
+            "worktree",
+            "add",
+            "-b",
+            self.branch,
+            str(self.worktree),
+            "master",
+        )
         batch = coordinator.create_batch(self._args(**plan))
-        coordinator.approve_batch(self._args(batch=batch["batch_id"], **self._approval()))
+        coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], **self._approval())
+        )
         self.batch_id = batch["batch_id"]
         architect = self._dispatch(batch["batch_id"], "architect")["brief"]
         self._start(architect["dispatch_id"])
-        self._submit(architect["dispatch_id"], self._base_report(architect, "architect"))
-        developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1]["dispatch_id"]
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1][
+            "dispatch_id"
+        ]
         developer = coordinator._read_object(
             self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
         )
@@ -1868,7 +1905,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertTrue(result["auto_accepted"])
         self.assertEqual(stored["next_action"], "qa")
         self.assertEqual(len(stored["dispatches"]), 2)
-        with self.assertRaisesRegex(coordinator.CoordinatorError, "requires --approved-by"):
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "requires --approved-by"
+        ):
             coordinator.create_dispatch(
                 self._args(
                     transition_digest=None,
@@ -1884,15 +1923,21 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         ):
             qa_result = coordinator.run_qa(self._args(dispatch=qa["dispatch_id"]))
         self.assertNotIn("auto_accepted", qa_result)
-        self.assertNotIn("decision", self._batch_record(batch["batch_id"])["dispatches"][-1])
+        self.assertNotIn(
+            "decision", self._batch_record(batch["batch_id"])["dispatches"][-1]
+        )
 
     def test_milestone_report_with_risk_trigger_waits_for_decision(self) -> None:
         self._patch_config(approval_policy="milestone")
         batch = self._create_batch()
         architect = self._dispatch(batch["batch_id"], "architect")["brief"]
         self._start(architect["dispatch_id"])
-        self._submit(architect["dispatch_id"], self._base_report(architect, "architect"))
-        developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1]["dispatch_id"]
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1][
+            "dispatch_id"
+        ]
         developer = coordinator._read_object(
             self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
         )
@@ -2016,7 +2061,15 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
         plan = self._batch_plan()
         plan["definition_of_done"] = ["add simple marker"]
-        _git(self.repo, "worktree", "add", "-b", self.branch, str(self.worktree), "master")
+        _git(
+            self.repo,
+            "worktree",
+            "add",
+            "-b",
+            self.branch,
+            str(self.worktree),
+            "master",
+        )
         batch = coordinator.create_batch(self._args(**plan))
         coordinator.approve_batch(
             self._args(batch=batch["batch_id"], **self._approval())
@@ -2024,15 +2077,21 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.batch_id = batch["batch_id"]
         architect = self._dispatch(batch["batch_id"], "architect")["brief"]
         self._start(architect["dispatch_id"])
-        self._submit(architect["dispatch_id"], self._base_report(architect, "architect"))
-        developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1]["dispatch_id"]
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1][
+            "dispatch_id"
+        ]
         developer = coordinator._read_object(
             self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
         )
         self._start(developer_id)
         candidate, changed = self._developer_commit("x")
 
-        self._submit(developer_id, self._developer_report(developer, candidate, changed))
+        self._submit(
+            developer_id, self._developer_report(developer, candidate, changed)
+        )
 
         stored = self._batch_record(batch["batch_id"])
         self.assertEqual(stored["risk_assessments"][0]["review_required"], False)
@@ -2072,15 +2131,23 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         batch = self._create_batch()
         architect = self._dispatch(batch["batch_id"], "architect")["brief"]
         self._start(architect["dispatch_id"])
-        self._submit(architect["dispatch_id"], self._base_report(architect, "architect"))
-        developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1]["dispatch_id"]
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1][
+            "dispatch_id"
+        ]
         developer = coordinator._read_object(
             self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
         )
         self._start(developer_id)
         candidate, changed = self._developer_commit("x")
-        self._submit(developer_id, self._developer_report(developer, candidate, changed))
-        self.assertEqual(self._batch_record(batch["batch_id"])["next_action"], "code-review")
+        self._submit(
+            developer_id, self._developer_report(developer, candidate, changed)
+        )
+        self.assertEqual(
+            self._batch_record(batch["batch_id"])["next_action"], "code-review"
+        )
         review = self._reported_review(
             batch["batch_id"],
             candidate,
@@ -2092,7 +2159,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         stored = self._batch_record(batch["batch_id"])
         entry = next(
-            item for item in stored["dispatches"] if item["dispatch_id"] == review["dispatch_id"]
+            item
+            for item in stored["dispatches"]
+            if item["dispatch_id"] == review["dispatch_id"]
         )
         self.assertEqual(stored["state"], "awaiting-approval")
         self.assertNotIn("decision", entry)
@@ -2935,7 +3004,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             candidate,
             outcome="blocked",
             blockers="fix needed",
-            spec=("blocker", [{"severity": "blocker", "summary": "wrong", "evidence": "x.py:1"}]),
+            spec=(
+                "blocker",
+                [{"severity": "blocker", "summary": "wrong", "evidence": "x.py:1"}],
+            ),
         )
         self._decide(batch["batch_id"], "retry")
         retry = self._dispatch(batch["batch_id"], "developer")["brief"]
@@ -2949,8 +3021,14 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             fixed,
             fixed_files,
             commit_map=[
-                {"commit_sha": fixes[0], "plan_entry_id": retry["commit_plan"][0]["id"]},
-                {"commit_sha": fixes[1], "plan_entry_id": retry["commit_plan"][1]["id"]},
+                {
+                    "commit_sha": fixes[0],
+                    "plan_entry_id": retry["commit_plan"][0]["id"],
+                },
+                {
+                    "commit_sha": fixes[1],
+                    "plan_entry_id": retry["commit_plan"][1]["id"],
+                },
             ],
         )
         self._submit(retry["dispatch_id"], report)
@@ -4593,13 +4671,26 @@ class CoordinatorCliParserTests(unittest.TestCase):
 
         self.assertIs(args.handler, coordinator.dispatch_status)
 
-    def test_dispatch_preflight_exposes_purpose_like_other_dispatch_commands(self) -> None:
+    def test_dispatch_preflight_exposes_purpose_like_other_dispatch_commands(
+        self,
+    ) -> None:
         parse = coordinator.parser().parse_args
-        default = parse(["dispatch", "preflight", "--batch", "batch-1", "--role", "architect"])
+        default = parse(
+            ["dispatch", "preflight", "--batch", "batch-1", "--role", "architect"]
+        )
         self.assertIs(default.handler, coordinator.preflight_dispatch)
         self.assertEqual(default.purpose, "work")
         publish = parse(
-            ["dispatch", "preflight", "--batch", "batch-1", "--role", "developer", "--purpose", "publish"]
+            [
+                "dispatch",
+                "preflight",
+                "--batch",
+                "batch-1",
+                "--role",
+                "developer",
+                "--purpose",
+                "publish",
+            ]
         )
         self.assertEqual(publish.purpose, "publish")
 
@@ -4762,14 +4853,18 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.tmp = Path(self._tmp.name)
         self.repo = _init_repo(self.tmp)
-        (self.repo / ".git" / "info" / "exclude").write_text(".harness/\n", encoding="utf-8")
+        (self.repo / ".git" / "info" / "exclude").write_text(
+            ".harness/\n", encoding="utf-8"
+        )
         installed = self.repo / ".harness"
         ignore = shutil.ignore_patterns("state", "__pycache__", "*.pyc")
         for item in ORCHESTRATION_ROOT.parent.iterdir():
             if item.is_file() and item.suffix == ".py":
                 shutil.copy2(item, installed / item.name)
             elif item.is_dir() and (item / "__init__.py").is_file():
-                shutil.copytree(item, installed / item.name, ignore=ignore, dirs_exist_ok=True)
+                shutil.copytree(
+                    item, installed / item.name, ignore=ignore, dirs_exist_ok=True
+                )
         # A short state root keeps ledger temp files under Windows MAX_PATH in deep test roots.
         self.state_dir = self.tmp / "s"
         self.runtimes = self.state_dir / workspace.RUNTIMES_DIR
@@ -4804,18 +4899,39 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
         worktree = self.tmp / slug
         _git(self.repo, "worktree", "add", "-b", branch, str(worktree), "master")
         batch = self._ok(
-            "batch", "create", "--ticket", "#369", "--branch", branch,
-            "--worktree", str(worktree), "--integration-ref", "master",
-            "--definition-of-done", "do the thing", "--prohibited-change", "secrets",
-            "--expected-file", "services/x.py", "--expected-service", "core",
-            "--expected-changed-lines", "10",
+            "batch",
+            "create",
+            "--ticket",
+            "#369",
+            "--branch",
+            branch,
+            "--worktree",
+            str(worktree),
+            "--integration-ref",
+            "master",
+            "--definition-of-done",
+            "do the thing",
+            "--prohibited-change",
+            "secrets",
+            "--expected-file",
+            "services/x.py",
+            "--expected-service",
+            "core",
+            "--expected-changed-lines",
+            "10",
         )
         return cast(str, batch["batch_id"])
 
     def _approve(self, batch_id: str) -> subprocess.CompletedProcess[str]:
         return self._coordinator(
-            "batch", "approve", "--batch", batch_id, "--approved-by", "Malove",
-            "--approved-at", datetime.now(UTC).isoformat(),
+            "batch",
+            "approve",
+            "--batch",
+            batch_id,
+            "--approved-by",
+            "Malove",
+            "--approved-at",
+            datetime.now(UTC).isoformat(),
         )
 
     def _reinstall_runtime(self) -> None:
@@ -4844,14 +4960,28 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
 
     def _architect_dispatch(self, batch_id: str) -> JsonObject:
         shape = (
-            "--batch", batch_id, "--role", "architect", "--runtime", "claude",
-            "--model", "sonnet", "--effort", "high",
+            "--batch",
+            batch_id,
+            "--role",
+            "architect",
+            "--runtime",
+            "claude",
+            "--model",
+            "sonnet",
+            "--effort",
+            "high",
         )
         proposal = self._ok("dispatch", "propose", *shape)
         return self._ok(
-            "dispatch", "create", *shape,
-            "--transition-digest", cast(str, proposal["transition_digest"]),
-            "--approved-by", "Malove", "--approved-at", datetime.now(UTC).isoformat(),
+            "dispatch",
+            "create",
+            *shape,
+            "--transition-digest",
+            cast(str, proposal["transition_digest"]),
+            "--approved-by",
+            "Malove",
+            "--approved-at",
+            datetime.now(UTC).isoformat(),
         )
 
     def test_runtime_hash_check_passes_inside_the_pinned_snapshot(self) -> None:
@@ -4860,7 +4990,9 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
         dispatch = self._architect_dispatch(batch_id)
         self._reinstall_runtime()
 
-        sent = self._coordinator("dispatch", "send", "--dispatch", cast(str, dispatch["dispatch_id"]))
+        sent = self._coordinator(
+            "dispatch", "send", "--dispatch", cast(str, dispatch["dispatch_id"])
+        )
 
         self.assertEqual(sent.returncode, 0, sent.stderr or sent.stdout)
 
@@ -4872,7 +5004,9 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
         dispatch_id = cast(str, brief["dispatch_id"])
         self._reinstall_runtime()
         self._ok("dispatch", "send", "--dispatch", dispatch_id)
-        self._ok("dispatch", "self-report", "--dispatch", dispatch_id, "--model", "sonnet")
+        self._ok(
+            "dispatch", "self-report", "--dispatch", dispatch_id, "--model", "sonnet"
+        )
         report = workspace._prepare_agent_inbox(self.repo) / f"{dispatch_id}.json"
         report.write_text(
             json.dumps(
@@ -4923,11 +5057,17 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
         self._reinstall_runtime()
 
         mismatch = self._coordinator(
-            "batch", "restore-runtime", "--batch", batch_id,
-            "--from", str(self.repo / ".harness"),
+            "batch",
+            "restore-runtime",
+            "--batch",
+            batch_id,
+            "--from",
+            str(self.repo / ".harness"),
         )
         self.assertNotEqual(mismatch.returncode, 0)
-        self.assertIn("does not match the pinned hash", mismatch.stdout + mismatch.stderr)
+        self.assertIn(
+            "does not match the pinned hash", mismatch.stdout + mismatch.stderr
+        )
 
         self._ok("batch", "restore-runtime", "--batch", batch_id, "--from", str(pinned))
         approved = self._approve(batch_id)

@@ -20,12 +20,19 @@ MAX_SIZE_ITERATIONS = 8
 
 def encode(payload: Mapping[str, object]) -> str:
     """Сериализовать карту в канонический JSON: сортировка ключей, без пробелов, перевод строки в конце."""
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    return (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    )
 
 
 def _item_bytes(item: object) -> int:
     """Длина канонического JSON одного элемента списка в байтах UTF-8."""
-    return len(json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    return len(
+        json.dumps(
+            item, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    )
 
 
 def converged_estimate(byte_count_without_estimate: int) -> int:
@@ -36,7 +43,9 @@ def converged_estimate(byte_count_without_estimate: int) -> int:
     """
     size = 0
     for _ in range(MAX_SIZE_ITERATIONS):
-        next_size = estimate_tokens_for_bytes(byte_count_without_estimate + len(str(size)))
+        next_size = estimate_tokens_for_bytes(
+            byte_count_without_estimate + len(str(size))
+        )
         if next_size == size:
             return size
         size = next_size
@@ -94,7 +103,9 @@ def select_within_budget(
             incident[edge["target"]].append(index)
     diagnostic_bytes: dict[str, list[int]] = {}
     for diagnostic in diagnostics:
-        diagnostic_bytes.setdefault(diagnostic["path"], []).append(_item_bytes(diagnostic))
+        diagnostic_bytes.setdefault(diagnostic["path"], []).append(
+            _item_bytes(diagnostic)
+        )
     lists = {"files": _ListBytes(), "edges": _ListBytes(), "diagnostics": _ListBytes()}
     selected: set[str] = set()
     for path in ordered:
@@ -112,7 +123,8 @@ def select_within_budget(
             ),
         }
         candidate_bytes = base_bytes + sum(
-            lists[name].extra_with(count, size) for name, (count, size) in additions.items()
+            lists[name].extra_with(count, size)
+            for name, (count, size) in additions.items()
         )
         if converged_estimate(candidate_bytes) <= max_tokens:
             selected.add(path)
@@ -120,7 +132,9 @@ def select_within_budget(
                 lists[name].add(count, size)
     payload["files"] = [files[path] for path in ordered if path in selected]
     payload["edges"] = [
-        edge for edge in edges if edge["source"] in selected and edge["target"] in selected
+        edge
+        for edge in edges
+        if edge["source"] in selected and edge["target"] in selected
     ]
     payload["diagnostics"] = [
         diagnostic for diagnostic in diagnostics if diagnostic["path"] in selected

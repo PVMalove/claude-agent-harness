@@ -13,7 +13,7 @@ PACKAGE = {
         "package pkg\n\n"
         "// Render formats a value; this comment must not be serialized.\n"
         "func Render(value int, label string) (string, error) {\n"
-        "\tbodySecret := \"function bodies are never serialized\"\n"
+        '\tbodySecret := "function bodies are never serialized"\n'
         "\t_ = bodySecret\n"
         "\treturn label, nil\n"
         "}\n\n"
@@ -22,14 +22,16 @@ PACKAGE = {
     "pkg/consumer.go": (
         "package pkg\n\n"
         "func consumer() {\n"
-        "\tRender(1, \"x\")\n"
+        '\tRender(1, "x")\n'
         "\tonlyHere()\n"
         "}\n"
     ),
 }
 
 
-def test_go_signatures_and_relations_come_from_tree_sitter(tmp_path: Path, bundle_dir: Path) -> None:
+def test_go_signatures_and_relations_come_from_tree_sitter(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
     raw, result = build_map(tmp_path, bundle_dir, PACKAGE)
 
     assert result["tier"] == "full"
@@ -62,7 +64,9 @@ def test_go_signatures_and_relations_come_from_tree_sitter(tmp_path: Path, bundl
     assert b"must not be serialized" not in raw
 
 
-def test_go_syntax_error_keeps_intact_definitions(tmp_path: Path, bundle_dir: Path) -> None:
+def test_go_syntax_error_keeps_intact_definitions(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
     _, result = build_map(
         tmp_path,
         bundle_dir,
@@ -82,7 +86,9 @@ def test_go_syntax_error_keeps_intact_definitions(tmp_path: Path, bundle_dir: Pa
     assert result["diagnostics"] == [{"code": "syntax_error", "path": "broken.go"}]
 
 
-def test_go_symbol_redaction_applies_to_tree_sitter_facts(tmp_path: Path, bundle_dir: Path) -> None:
+def test_go_symbol_redaction_applies_to_tree_sitter_facts(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
     raw, result = build_map(
         tmp_path,
         bundle_dir,
@@ -97,6 +103,8 @@ def test_go_symbol_redaction_applies_to_tree_sitter_facts(tmp_path: Path, bundle
         },
         redact_symbols=["hidden*"],
     )
-    assert file_record(result, "main.go")["signatures"] == ["func Visible(value int) int"]
+    assert file_record(result, "main.go")["signatures"] == [
+        "func Visible(value int) int"
+    ]
     assert result["edges"] == []
     assert b"hiddenHelper" not in raw

@@ -24,13 +24,26 @@ from harness.orchestration.core.constants import (
 )
 
 
-def test_nested_directory_does_not_inherit_parent_repository_cache(tmp_path: Path) -> None:
+def test_nested_directory_does_not_inherit_parent_repository_cache(
+    tmp_path: Path,
+) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     nested = tmp_path / "nested"
     nested.mkdir()
 
     assert storage_root(tmp_path) == tmp_path / ".harness"
     assert storage_root(nested) == nested / ".harness"
+
+
+def test_storage_root_without_runnable_git_uses_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def missing_git(*_args: object, **_kwargs: object) -> None:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(subprocess, "run", missing_git)
+
+    assert storage_root(tmp_path) == tmp_path.resolve() / ".harness"
 
 
 def test_sandboxes_root_and_categories(tmp_path: Path) -> None:
@@ -44,19 +57,30 @@ def test_sandboxes_root_in_linked_worktree(tmp_path: Path) -> None:
     repo = tmp_path / "main_repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test User"], check=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test User"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True
+    )
     readme = repo / "README.md"
     readme.write_text("main", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "initial commit"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "initial commit"], check=True
+    )
 
     worktree = tmp_path / "worktree"
-    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", str(worktree)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-q", str(worktree)], check=True
+    )
 
     assert storage_root(worktree) == repo / ".harness"
     assert sandboxes_root(worktree) == repo / ".harness" / ".sandboxes"
-    assert storage_path(worktree, "runs", "test-1") == repo / ".harness" / ".sandboxes" / "runs" / "test-1"
+    assert (
+        storage_path(worktree, "runs", "test-1")
+        == repo / ".harness" / ".sandboxes" / "runs" / "test-1"
+    )
 
 
 def test_storage_path_categories_and_boundary(tmp_path: Path) -> None:
@@ -95,7 +119,9 @@ def test_storage_path_escape_and_invalid_components(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("linked_part", [".harness", ".sandboxes"])
-def test_storage_and_cleanup_reject_linked_roots(tmp_path: Path, linked_part: str) -> None:
+def test_storage_and_cleanup_reject_linked_roots(
+    tmp_path: Path, linked_part: str
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     outside = tmp_path / "outside"
@@ -145,12 +171,17 @@ def test_sandboxes_health_warns_on_legacy_directories(tmp_path: Path) -> None:
 
     diagnostics = sandboxes_health(repo)
     assert len(diagnostics) == 2
-    assert diagnostics[0].startswith("ПРЕДУПРЕЖДЕНИЕ: обнаружены устаревшие директории вне .sandboxes:")
+    assert diagnostics[0].startswith(
+        "ПРЕДУПРЕЖДЕНИЕ: обнаружены устаревшие директории вне .sandboxes:"
+    )
     assert ".cache" in diagnostics[0]
     assert "test-logs" in diagnostics[0]
     assert "tmp" in diagnostics[0]
     assert "reports" in diagnostics[0]
-    assert diagnostics[1] == "КАК ИСПРАВИТЬ: выполните harness cleanup для очистки устаревших данных"
+    assert (
+        diagnostics[1]
+        == "КАК ИСПРАВИТЬ: выполните harness cleanup для очистки устаревших данных"
+    )
 
 
 def test_sandboxes_health_warns_on_invalid_sandboxes(tmp_path: Path) -> None:
@@ -161,7 +192,9 @@ def test_sandboxes_health_warns_on_invalid_sandboxes(tmp_path: Path) -> None:
     (harness_dir / ".sandboxes").write_text("not a directory", encoding="utf-8")
 
     diagnostics = sandboxes_health(repo)
-    assert any("ПРЕДУПРЕЖДЕНИЕ" in d and "не является директорией" in d for d in diagnostics)
+    assert any(
+        "ПРЕДУПРЕЖДЕНИЕ" in d and "не является директорией" in d for d in diagnostics
+    )
     assert any("КАК ИСПРАВИТЬ" in d and "удалите" in d for d in diagnostics)
 
     problems: list[str] = []
@@ -174,14 +207,20 @@ def test_sandboxes_health_in_worktree(tmp_path: Path) -> None:
     repo = tmp_path / "main_repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test User"], check=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test User"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True
+    )
     (repo / "README.md").write_text("main", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
 
     worktree = tmp_path / "wt"
-    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", str(worktree)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-q", str(worktree)], check=True
+    )
 
     harness_dir = repo / ".harness"
     harness_dir.mkdir(exist_ok=True)
@@ -192,4 +231,3 @@ def test_sandboxes_health_in_worktree(tmp_path: Path) -> None:
     (harness_dir / "tmp").mkdir()
     diagnostics = sandboxes_health(worktree)
     assert any("обнаружены устаревшие директории" in d for d in diagnostics)
-

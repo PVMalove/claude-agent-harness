@@ -66,13 +66,17 @@ def isolated_temp_env(base: Mapping[str, str], run_tmp: Path) -> dict[str, str]:
         PYTHONDONTWRITEBYTECODE="1",
         MYPY_CACHE_DIR=str(run_tmp / "mypy"),
         GIT_CEILING_DIRECTORIES=os.pathsep.join(
-            part for part in (base.get("GIT_CEILING_DIRECTORIES", ""), str(run_tmp)) if part
+            part
+            for part in (base.get("GIT_CEILING_DIRECTORIES", ""), str(run_tmp))
+            if part
         ),
     )
     return env
 
 
-def _clear_read_only(func: Callable[[str], object], path: str, _exc: BaseException) -> None:
+def _clear_read_only(
+    func: Callable[[str], object], path: str, _exc: BaseException
+) -> None:
     """Снять атрибут «только чтение» и повторить удаление: git оставляет такие объекты на Windows."""
     os.chmod(path, stat.S_IWRITE)
     func(path)

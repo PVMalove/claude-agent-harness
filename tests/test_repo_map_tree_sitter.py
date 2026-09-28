@@ -65,7 +65,9 @@ def test_python_signatures_and_edges_come_from_tree_sitter(
         "class Client(Base)",
         "def Client.send(self, payload: dict[str, int]=...) -> None",
     ]
-    assert _file(result, "pkg/helper.py")["signatures"] == ["def render(value: int) -> str"]
+    assert _file(result, "pkg/helper.py")["signatures"] == [
+        "def render(value: int) -> str"
+    ]
     assert {
         "source": "pkg/consumer.py",
         "target": "pkg/helper.py",
@@ -83,7 +85,9 @@ def test_python_signatures_and_edges_come_from_tree_sitter(
     assert b"never serialized" not in raw
 
 
-def test_python_syntax_error_keeps_intact_definitions(tmp_path: Path, bundle_dir: Path) -> None:
+def test_python_syntax_error_keeps_intact_definitions(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
     _, result = _map(
         tmp_path,
         bundle_dir,
@@ -110,7 +114,9 @@ def test_python_syntax_error_keeps_intact_definitions(tmp_path: Path, bundle_dir
     } in _records(result, "edges")
 
 
-def test_python_invalid_encoding_is_a_diagnostic(tmp_path: Path, bundle_dir: Path) -> None:
+def test_python_invalid_encoding_is_a_diagnostic(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
     repo = tmp_path / "project"
     repo.mkdir()
     _git(repo, "init", "-q")
@@ -156,11 +162,15 @@ def test_python_symbol_redaction_applies_to_tree_sitter_facts(
     assert b"hidden_type" not in raw
 
 
-def test_wrong_bundle_hash_degrades_to_minimal(tmp_path: Path, bundle_dir: Path) -> None:
+def test_wrong_bundle_hash_degrades_to_minimal(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
     tampered = tmp_path / "tampered-bundle"
     shutil.copytree(bundle_dir, tampered)
     worker = tampered / "tree_sitter_worker.py"
-    worker.write_text(worker.read_text(encoding="utf-8") + "\n# tampered\n", encoding="utf-8")
+    worker.write_text(
+        worker.read_text(encoding="utf-8") + "\n# tampered\n", encoding="utf-8"
+    )
 
     _, result = _map(tmp_path, tampered, PACKAGE)
 
@@ -181,17 +191,17 @@ def test_typescript_javascript_signatures_edges_and_provenance(
             "src/consumer.ts": (
                 'import { render } from "./helper";\n'
                 'import remote from "remote-package";\n'
-                'export function use(value: number = 7): string { return render(value) }\n'
-                'export class Box extends Base { send(message: string): void { render(1) } }\n'
-                'export const callback = (value: string): string => value;\n'
+                "export function use(value: number = 7): string { return render(value) }\n"
+                "export class Box extends Base { send(message: string): void { render(1) } }\n"
+                "export const callback = (value: string): string => value;\n"
             ),
             "src/component.tsx": (
                 'import { render } from "./helper";\n'
-                'export function App(props: Props) { return <div>{render(1)}</div> }\n'
+                "export function App(props: Props) { return <div>{render(1)}</div> }\n"
             ),
             "src/ui.jsx": (
                 'import { view } from "./view";\n'
-                'export function Widget(props) { return <div>{view(props)}</div> }\n'
+                "export function Widget(props) { return <div>{view(props)}</div> }\n"
             ),
             "src/view.js": "export function view(value) { return value }\n",
             "src/remote-package.ts": "export function remote() {}\n",
@@ -207,7 +217,13 @@ def test_typescript_javascript_signatures_edges_and_provenance(
     # Provenance lists every grammar the bundle carries (ADR 0024), not only the ones this map's
     # files used -- Go/Java/C# joined the same bundle in #279.
     assert {grammar["name"] for grammar in grammars} == {
-        "python", "typescript", "tsx", "javascript", "go", "java", "csharp"
+        "python",
+        "typescript",
+        "tsx",
+        "javascript",
+        "go",
+        "java",
+        "csharp",
     }
     for grammar in grammars:
         assert len(grammar["sha256"]) == 64
@@ -222,52 +238,103 @@ def test_typescript_javascript_signatures_edges_and_provenance(
         "method Box.send(message: string): void",
         "const callback(value: string): string",
     ]
-    assert _file(result, "src/component.tsx")["signatures"] == ["function App(props: Props)"]
+    assert _file(result, "src/component.tsx")["signatures"] == [
+        "function App(props: Props)"
+    ]
     assert _file(result, "src/ui.jsx")["signatures"] == ["function Widget(props)"]
     edges = _records(result, "edges")
-    assert {"source": "src/consumer.ts", "target": "src/helper.ts", "kind": "import", "confidence": "high"} in edges
-    assert {"source": "src/ui.jsx", "target": "src/view.js", "kind": "import", "confidence": "high"} in edges
-    assert not any(edge["source"] == "src/consumer.ts" and edge["target"] == "src/remote-package.ts" for edge in edges)
-    assert not any(edge["source"] == "src/consumer.ts" and edge["target"] == "src/python.py" for edge in edges)
+    assert {
+        "source": "src/consumer.ts",
+        "target": "src/helper.ts",
+        "kind": "import",
+        "confidence": "high",
+    } in edges
+    assert {
+        "source": "src/ui.jsx",
+        "target": "src/view.js",
+        "kind": "import",
+        "confidence": "high",
+    } in edges
+    assert not any(
+        edge["source"] == "src/consumer.ts"
+        and edge["target"] == "src/remote-package.ts"
+        for edge in edges
+    )
+    assert not any(
+        edge["source"] == "src/consumer.ts" and edge["target"] == "src/python.py"
+        for edge in edges
+    )
     assert b"return render(value)" not in raw
 
 
-def test_javascript_name_references_and_syntax_errors(tmp_path: Path, bundle_dir: Path) -> None:
-    _, result = _map(tmp_path, bundle_dir, {
-        "a.js": "export function shared() {}\n",
-        "b.js": "export function shared() {}\n",
-        "unique.js": "export function onlyHere() {}\n",
-        "consumer.js": "onlyHere(); shared();\n",
-        "broken.ts": "export function intact(value: number) { return value }\nexport function broken( {\n",
-    })
+def test_javascript_name_references_and_syntax_errors(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
+    _, result = _map(
+        tmp_path,
+        bundle_dir,
+        {
+            "a.js": "export function shared() {}\n",
+            "b.js": "export function shared() {}\n",
+            "unique.js": "export function onlyHere() {}\n",
+            "consumer.js": "onlyHere(); shared();\n",
+            "broken.ts": "export function intact(value: number) { return value }\nexport function broken( {\n",
+        },
+    )
     edges = _records(result, "edges")
-    assert {"source": "consumer.js", "target": "unique.js", "kind": "unique-name-ref", "confidence": "medium"} in edges
-    assert {"source": "consumer.js", "target": "a.js", "kind": "ambiguous-name-ref", "confidence": "low"} in edges
-    assert {"source": "consumer.js", "target": "b.js", "kind": "ambiguous-name-ref", "confidence": "low"} in edges
+    assert {
+        "source": "consumer.js",
+        "target": "unique.js",
+        "kind": "unique-name-ref",
+        "confidence": "medium",
+    } in edges
+    assert {
+        "source": "consumer.js",
+        "target": "a.js",
+        "kind": "ambiguous-name-ref",
+        "confidence": "low",
+    } in edges
+    assert {
+        "source": "consumer.js",
+        "target": "b.js",
+        "kind": "ambiguous-name-ref",
+        "confidence": "low",
+    } in edges
     assert _file(result, "broken.ts")["parser_status"] == "syntax_error"
-    assert _file(result, "broken.ts")["signatures"] == ["function intact(value: number)"]
+    assert _file(result, "broken.ts")["signatures"] == [
+        "function intact(value: number)"
+    ]
 
 
-def test_typescript_redaction_filters_signatures_and_imports(tmp_path: Path, bundle_dir: Path) -> None:
-    raw, result = _map(tmp_path, bundle_dir, {
-        "main.ts": (
-            'import { hiddenHelper } from "./hidden_service";\n'
-            'export function visible(input: number) { return input }\n'
-            'export function leak(input: hiddenType) { return hiddenHelper(input) }\n'
-        ),
-        "hidden_service.ts": "export function hiddenHelper() {}\n",
-    }, redact_symbols=["hidden*"])
+def test_typescript_redaction_filters_signatures_and_imports(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
+    raw, result = _map(
+        tmp_path,
+        bundle_dir,
+        {
+            "main.ts": (
+                'import { hiddenHelper } from "./hidden_service";\n'
+                "export function visible(input: number) { return input }\n"
+                "export function leak(input: hiddenType) { return hiddenHelper(input) }\n"
+            ),
+            "hidden_service.ts": "export function hiddenHelper() {}\n",
+        },
+        redact_symbols=["hidden*"],
+    )
     assert _file(result, "main.ts")["signatures"] == ["function visible(input: number)"]
     assert result["edges"] == []
     assert b"hiddenType" not in raw
 
 
-def test_ts_js_output_is_byte_identical_across_cold_runs(tmp_path: Path, bundle_dir: Path) -> None:
+def test_ts_js_output_is_byte_identical_across_cold_runs(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
     files = {
         "src/base.ts": "export function shared(value: number): number { return value }\n",
         "src/index.tsx": (
             'import { shared } from "./base";\n'
-            'export function App(props: Props) { return <div>{shared(props.value)}</div> }\n'
+            "export function App(props: Props) { return <div>{shared(props.value)}</div> }\n"
         ),
         "src/view.jsx": "export function View(props) { return <div>{props.label}</div> }\n",
     }
@@ -276,7 +343,11 @@ def test_ts_js_output_is_byte_identical_across_cold_runs(tmp_path: Path, bundle_
     policy = repo_map.load_policy(tmp_path / "orchestration.json", explicit=True)
     commit = result["commit"]
     assert isinstance(commit, str)
-    first = repo_map.build_map(repo, commit, 8000, ["src/index.tsx"], policy, cache_dir=tmp_path / "cold-a")
-    second = repo_map.build_map(repo, commit, 8000, ["src/index.tsx"], policy, cache_dir=tmp_path / "cold-b")
+    first = repo_map.build_map(
+        repo, commit, 8000, ["src/index.tsx"], policy, cache_dir=tmp_path / "cold-a"
+    )
+    second = repo_map.build_map(
+        repo, commit, 8000, ["src/index.tsx"], policy, cache_dir=tmp_path / "cold-b"
+    )
     assert first.encode("utf-8") == second.encode("utf-8")
     assert json.loads(first)["tier"] == "full"

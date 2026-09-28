@@ -182,8 +182,29 @@ class GateResult:
         return all(check["result"] == "pass" for check in self.checks)
 
 
-def _clean_room_python(checkout: Path) -> Path:
-    """Choose a deterministic interpreter without consulting PATH."""
+_LOG_COMMAND = re.compile(r"^\$ (.*)$")
+_LOG_EXIT = re.compile(r"^exit_code=(-?\d+)$")
+
+
+def format_command_log(command: str, returncode: int, output: str) -> str:
+    """One command's block in a QA artifact log: `$ <command>`, `exit_code=<n>`, then its output."""
+    return f"$ {command}\nexit_code={returncode}\n{output}\n"
+
+
+def parse_command_log(lines: list[str]) -> list[tuple[str, int]]:
+    """(command, exit code) of every block `format_command_log` wrote, in order."""
+    commands: list[tuple[str, int]] = []
+    for index, line in enumerate(lines[:-1]):
+        command = _LOG_COMMAND.match(line)
+        exit_code = _LOG_EXIT.match(lines[index + 1]) if command else None
+        if command is not None and exit_code is not None:
+            commands.append((command.group(1), int(exit_code.group(1))))
+    return commands
+
+
+def project_python(checkout: Path) -> Path:
+    """Choose a deterministic interpreter without consulting PATH: the checkout's `.harness/.venv`
+    (the dev environment `make bootstrap` creates), else the running interpreter."""
     venv_python = (
         checkout / ".harness" / ".venv" / "Scripts" / "python.exe"
         if sys.platform == "win32"
@@ -198,6 +219,9 @@ def _clean_room_python(checkout: Path) -> Path:
         "clean-room QA has no usable explicit Python interpreter",
         remedy="create the project's .harness/.venv before QA or run the coordinator with a valid Python interpreter",
     )
+
+
+_clean_room_python = project_python
 
 
 def _prepared_command(
@@ -253,7 +277,9 @@ def run_gate(
                 else subprocess.list2cmdline(prepared)
             )
             approved_text = (
-                command if isinstance(command, str) else subprocess.list2cmdline(command)
+                command
+                if isinstance(command, str)
+                else subprocess.list2cmdline(command)
             )
             result: subprocess.CompletedProcess[str] = subprocess.run(
                 prepared,
@@ -270,9 +296,7 @@ def run_gate(
                 + ("\n" if result.stdout and result.stderr else "")
                 + (result.stderr or "")
             )
-            outputs.append(
-                f"$ {sanitise(command_text)}\nexit_code={result.returncode}\n{combined}\n"
-            )
+            outputs.append(format_command_log(sanitise(command_text), result.returncode, combined))
             checks.append(
                 {
                     "command": approved_text,

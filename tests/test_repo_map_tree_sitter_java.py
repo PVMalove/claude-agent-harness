@@ -13,7 +13,7 @@ PACKAGE = {
         "public class Helper {\n"
         "    // this comment must not be serialized\n"
         "    public static String render(String value) {\n"
-        "        String bodySecret = \"function bodies are never serialized\";\n"
+        '        String bodySecret = "function bodies are never serialized";\n'
         "        return bodySecret + value;\n"
         "    }\n\n"
         "    public static void onlyHere() {}\n"
@@ -22,7 +22,7 @@ PACKAGE = {
     "Consumer.java": (
         "public class Consumer {\n"
         "    public void use() {\n"
-        "        Helper.render(\"x\");\n"
+        '        Helper.render("x");\n'
         "        Helper.onlyHere();\n"
         "    }\n"
         "}\n"
@@ -30,7 +30,9 @@ PACKAGE = {
 }
 
 
-def test_java_signatures_and_relations_come_from_tree_sitter(tmp_path: Path, bundle_dir: Path) -> None:
+def test_java_signatures_and_relations_come_from_tree_sitter(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
     raw, result = build_map(tmp_path, bundle_dir, PACKAGE)
 
     assert result["tier"] == "full"
@@ -64,7 +66,9 @@ def test_java_signatures_and_relations_come_from_tree_sitter(tmp_path: Path, bun
     assert b"must not be serialized" not in raw
 
 
-def test_java_syntax_error_keeps_intact_definitions(tmp_path: Path, bundle_dir: Path) -> None:
+def test_java_syntax_error_keeps_intact_definitions(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
     _, result = build_map(
         tmp_path,
         bundle_dir,
@@ -88,7 +92,9 @@ def test_java_syntax_error_keeps_intact_definitions(tmp_path: Path, bundle_dir: 
     assert result["diagnostics"] == [{"code": "syntax_error", "path": "Broken.java"}]
 
 
-def test_java_symbol_redaction_applies_to_tree_sitter_facts(tmp_path: Path, bundle_dir: Path) -> None:
+def test_java_symbol_redaction_applies_to_tree_sitter_facts(
+    tmp_path: Path, bundle_dir: Path
+) -> None:
     raw, result = build_map(
         tmp_path,
         bundle_dir,
