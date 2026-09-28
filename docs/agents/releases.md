@@ -8,7 +8,7 @@
 
 GitHub workflow [release.yml](../../.github/workflows/release.yml) запускается при push тега
 строго вида `vMAJOR.MINOR.PATCH`. Сначала job `preflight` за секунды проверяет равенство тега и
-`harness/VERSION`, наличие секции и трёх категорий в `CHANGELOG.md`
+`harness/VERSION`, наличие секции и её категорий в `CHANGELOG.md`
 (`python scripts/build_release.py --tag vX.Y.Z --check` — ту же проверку можно выполнить локально до
 тега). Затем вызываются все проверки [verify.yml](../../.github/workflows/verify.yml), и только после
 них собирается архив. При любой ошибке Release не создаётся. Успешный запуск создаёт GitHub Release с двумя Assets:
@@ -21,7 +21,9 @@ GitHub workflow [release.yml](../../.github/workflows/release.yml) запуск�
 ## Выпуск
 
 1. В issue-ветке измените `harness/VERSION` и `pyproject.toml` на одну версию. Добавьте в
-   `CHANGELOG.md` секцию `[X.Y.Z]` с `Added`, `Fixed` и `Breaking Changes`. Выполните проверки и
+   `CHANGELOG.md` секцию `[X.Y.Z]` только с теми категориями Keep a Changelog, в которых есть записи
+   (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`, `Breaking Changes`); пустые
+   категории и заглушки не пишутся, а `build_release.py` отклоняет категорию без записей. Выполните проверки и
    обычный процесс PR; merge делает разработчик.
 2. После попадания проверенного коммита в `master` разработчик создаёт на нём тег и публикует его:
 

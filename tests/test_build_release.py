@@ -55,6 +55,20 @@ def test_release_notes_require_version_section() -> None:
         release_notes("## [0.9.0]\n\n### Added\n", "1.0.0")
 
 
+def test_release_notes_list_only_the_categories_a_release_has() -> None:
+    """Keep a Changelog: no placeholder categories; a present category needs an entry."""
+    notes = release_notes("## [1.0.0]\n\n### Added\n\n- First.\n", "1.0.0")
+    assert notes == "### Added\n\n- First.\n"
+    for changelog, message in (
+        ("## [1.0.0]\n\n### Added\n\n- First.\n\n### Fixed\n", "empty Fixed"),
+        ("## [1.0.0]\n\n### Misc\n\n- Something.\n", "unknown category: Misc"),
+        ("## [1.0.0]\n\n- Loose entry.\n", "no ### category"),
+        ("## [1.0.0]\n", "no release notes"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            release_notes(changelog, "1.0.0")
+
+
 def test_check_release_validates_without_building(tmp_path: Path) -> None:
     """The release workflow's preflight: a wrong tag, version or CHANGELOG fails before verify."""
     repo = tmp_path / "repo"

@@ -19,6 +19,9 @@ ARCHIVE_ROOTS = (
     "third_party/",
 )
 VERSION_HEADING = re.compile(r"^## \[([^]]+)\](?: - [0-9]{4}-[0-9]{2}-[0-9]{2})?\s*$")
+CHANGELOG_CATEGORIES = frozenset(
+    {"Added", "Changed", "Deprecated", "Removed", "Fixed", "Security", "Breaking Changes"}
+)
 TAG_PATTERN = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 
 
@@ -30,11 +33,24 @@ def release_notes(changelog: str, version: str) -> str:
     start = matches[0] + 1
     end = next((index for index in range(start, len(lines)) if lines[index].startswith("## ")), len(lines))
     body = "\n".join(lines[start:end]).strip()
-    for heading in ("### Added", "### Fixed", "### Breaking Changes"):
-        if heading not in body.splitlines():
-            raise ValueError(f"CHANGELOG.md [{version}] is missing {heading}")
     if not body:
         raise ValueError(f"CHANGELOG.md [{version}] has no release notes")
+    # Keep a Changelog: a release lists only the categories it has, each with at least one entry.
+    sections: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    for line in body.splitlines():
+        if line.startswith("### "):
+            category = line[4:].strip()
+            if category not in CHANGELOG_CATEGORIES:
+                raise ValueError(f"CHANGELOG.md [{version}] has an unknown category: {category}")
+            current = sections.setdefault(category, [])
+        elif current is not None and line.startswith("- "):
+            current.append(line)
+    if not sections:
+        raise ValueError(f"CHANGELOG.md [{version}] has no ### category")
+    for category, entries in sections.items():
+        if not entries:
+            raise ValueError(f"CHANGELOG.md [{version}] has an empty {category} category")
     return body + "\n"
 
 
