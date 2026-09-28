@@ -134,6 +134,13 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         f"{_HARNESS_CLI}:cmd_update",
     ),
     CatalogEntry(
+        "update-force-managed",
+        "Обновить харнесс с перезаписью управляемых файлов",
+        ("harness", "update", "{repo}", "--force-managed-files"),
+        Reversibility.OVERWRITES_MANAGED_FILES,
+        f"{_HARNESS_CLI}:cmd_update",
+    ),
+    CatalogEntry(
         "update-force-seed",
         "Обновить харнесс с перезаписью seed-файлов",
         ("harness", "update", "{repo}", "--force-seed-files"),

@@ -15,7 +15,7 @@ HELP_MARKDOWN = """\
 | Раздел | Что внутри |
 | --- | --- |
 | Diagnostics | Полный отчёт `harness health`, онлайн-проверки, `--fix` и экспорт в Markdown. |
-| Harness | Состояние установки и использование пайплайна; команды CLI: init, update (в том числе `--force-seed-files`), diff, adopt, очистка soft/hard (план и применение), registry, list, health, Repo Map, ledger. |
+| Harness | Состояние установки и использование пайплайна; команды CLI: init, update (в том числе `--force-managed-files` и `--force-seed-files`), diff, adopt, очистка soft/hard (план и применение), registry, list, health, Repo Map, ledger. |
 | Orchestration | Статистика пайплайна, история batch по состояниям (Enter открывает хронологию) и команды coordinator. |
 | Reports | Отчёты ролей из леджера с фильтрами, хронология batch и QA-логи. |
 | Repo Map | Карта репозитория для HEAD: сводка, дерево файлов, символы, связи и хабы. |

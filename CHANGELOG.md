@@ -6,7 +6,7 @@
 
 ### Added
 
-- `harness console`, раздел Harness: команда `update --force-seed-files` и предпросмотр hard-очистки; команды очистки soft/hard (план и применение) сгруппированы после команд установки.
+- `harness console`, раздел Harness: команды `update --force-managed-files` и `update --force-seed-files`, предпросмотр hard-очистки; команды очистки soft/hard (план и применение) сгруппированы после команд установки.
 
 ### Changed
 
