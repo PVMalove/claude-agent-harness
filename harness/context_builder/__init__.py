@@ -1,1 +1,1 @@
-"""Deterministic, LLM-free Context Package builder."""
+"""Детерминированный построитель контекстного пакета (Context Package) без LLM."""

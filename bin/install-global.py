@@ -9,7 +9,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-MIN_PYTHON = (3, 12)  # same floor as pyproject.toml, harness/bin/harness.py, scripts/test_clean_room
+MIN_PYTHON = (
+    3,
+    12,
+)  # same floor as pyproject.toml, harness/bin/harness.py, scripts/test_clean_room
 if sys.version_info < MIN_PYTHON:
     sys.stderr.write(
         "[ERROR] install-global.py requires Python %s+ (found %s).\n"
@@ -43,9 +46,15 @@ def backup_target(target: Path, target_home: Path):
     print(f"  {C_YELLOW}[BACKUP]{C_RESET} Moved existing to {backup_dest}")
 
 
-def install_file(source: Path, target: Path, check: bool, replace: bool, target_home: Path) -> bool:
+def install_file(
+    source: Path, target: Path, check: bool, replace: bool, target_home: Path
+) -> bool:
     if target.exists() or target.is_symlink():
-        if target.is_file() and not target.is_symlink() and filecmp.cmp(source, target, shallow=False):
+        if (
+            target.is_file()
+            and not target.is_symlink()
+            and filecmp.cmp(source, target, shallow=False)
+        ):
             print(f"  {C_GREEN}[OK]{C_RESET} Profile already matches: {target}")
             return True
         if check or not replace:
@@ -66,7 +75,9 @@ def install_file(source: Path, target: Path, check: bool, replace: bool, target_
     return True
 
 
-def install_link(source: Path, target: Path, check: bool, replace: bool, target_home: Path) -> bool:
+def install_link(
+    source: Path, target: Path, check: bool, replace: bool, target_home: Path
+) -> bool:
     if target.is_symlink():
         try:
             if target.resolve() == source.resolve():
@@ -97,19 +108,27 @@ def install_link(source: Path, target: Path, check: bool, replace: bool, target_
         hint = (
             "\n      On Windows this needs either Developer Mode enabled, or this terminal\n"
             "      launched as Administrator (right-click Terminal/PowerShell/cmd -> "
-            "\"Run as administrator\") - then re-run this command."
+            '"Run as administrator") - then re-run this command.'
             if sys.platform == "win32"
             else ""
         )
-        print(f"  {C_RED}[ERROR]{C_RESET} Failed to create symlink: {e}{hint}", file=sys.stderr)
+        print(
+            f"  {C_RED}[ERROR]{C_RESET} Failed to create symlink: {e}{hint}",
+            file=sys.stderr,
+        )
         return False
 
 
-def install_entries(destination: Path, kit_root: Path, check: bool, replace: bool, target_home: Path) -> bool:
+def install_entries(
+    destination: Path, kit_root: Path, check: bool, replace: bool, target_home: Path
+) -> bool:
     for name in ENTRY_SKILLS:
         source = kit_root / "global-skills" / name
         if not (source / "SKILL.md").is_file():
-            print(f"  {C_RED}[ERROR]{C_RESET} Missing entry skill source: {source}", file=sys.stderr)
+            print(
+                f"  {C_RED}[ERROR]{C_RESET} Missing entry skill source: {source}",
+                file=sys.stderr,
+            )
             return False
         if not install_link(source, destination / name, check, replace, target_home):
             return False
@@ -124,19 +143,28 @@ def retire_entries(destination: Path, kit_root: Path, check: bool) -> bool:
 
         expected = kit_root / "global-skills" / name
         if not target.is_symlink():
-            print(f"  {C_RED}[CONFLICT]{C_RESET} Retired managed entry is not a symlink: {target}", file=sys.stderr)
+            print(
+                f"  {C_RED}[CONFLICT]{C_RESET} Retired managed entry is not a symlink: {target}",
+                file=sys.stderr,
+            )
             return False
 
         try:
             current = target.resolve()
             if current != expected.resolve():
-                print(f"  {C_RED}[CONFLICT]{C_RESET} Retired entry has a foreign target: {target} -> {current}", file=sys.stderr)
+                print(
+                    f"  {C_RED}[CONFLICT]{C_RESET} Retired entry has a foreign target: {target} -> {current}",
+                    file=sys.stderr,
+                )
                 return False
         except OSError:
             pass  # Broken link - still safe to remove below.
 
         if check:
-            print(f"  {C_RED}[ERROR]{C_RESET} Retired entry still installed: {target}", file=sys.stderr)
+            print(
+                f"  {C_RED}[ERROR]{C_RESET} Retired entry still installed: {target}",
+                file=sys.stderr,
+            )
             return False
 
         target.unlink()
@@ -149,7 +177,9 @@ def main():
         description="Installs a minimal instruction profile plus start-project. "
         "It never installs MCP, models, plugins, credentials, or permissions."
     )
-    parser.add_argument("--target-home", required=True, type=Path, help="Target home directory")
+    parser.add_argument(
+        "--target-home", required=True, type=Path, help="Target home directory"
+    )
     parser.add_argument(
         "--runtime",
         action="append",
@@ -157,15 +187,26 @@ def main():
         choices=["codex", "claude", "kimi", "opencode", "hermes"],
         help="Target runtime(s)",
     )
-    parser.add_argument("--check", action="store_true", help="Dry run, only check status")
-    parser.add_argument("--replace-conflicts", action="store_true", help="Replace conflicting files and back them up")
-    parser.add_argument("--skills-only", action="store_true", help="Only install skills, not profiles")
+    parser.add_argument(
+        "--check", action="store_true", help="Dry run, only check status"
+    )
+    parser.add_argument(
+        "--replace-conflicts",
+        action="store_true",
+        help="Replace conflicting files and back them up",
+    )
+    parser.add_argument(
+        "--skills-only", action="store_true", help="Only install skills, not profiles"
+    )
 
     args = parser.parse_args()
 
     target_home = args.target_home.resolve()
     if not target_home.is_dir():
-        print(f"{C_RED}[ERROR] Target home must already exist: {target_home}{C_RESET}", file=sys.stderr)
+        print(
+            f"{C_RED}[ERROR] Target home must already exist: {target_home}{C_RESET}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # Script lives in bin/, one level below the kit root.
@@ -199,21 +240,33 @@ def main():
 
         if profile_dest_rel and not args.skills_only:
             profile_dest = target_home / profile_dest_rel
-            if not install_file(profile_path, profile_dest, args.check, args.replace_conflicts, target_home):
+            if not install_file(
+                profile_path,
+                profile_dest,
+                args.check,
+                args.replace_conflicts,
+                target_home,
+            ):
                 status = 1
         elif runtime == "hermes":
-            print(f"  {C_BLUE}[INFO]{C_RESET} Skipping profile for Hermes (reads project AGENTS.md)")
+            print(
+                f"  {C_BLUE}[INFO]{C_RESET} Skipping profile for Hermes (reads project AGENTS.md)"
+            )
 
         if not retire_entries(skills_dest, kit_root, args.check):
             status = 1
-        if not install_entries(skills_dest, kit_root, args.check, args.replace_conflicts, target_home):
+        if not install_entries(
+            skills_dest, kit_root, args.check, args.replace_conflicts, target_home
+        ):
             status = 1
 
     print(f"\n{C_BLUE}======================================================{C_RESET}")
     if status == 0:
         print(f"{C_GREEN}[OK] Installation completed successfully!{C_RESET}")
     else:
-        print(f"{C_RED}[FAIL] Installation finished with errors (see conflicts above).{C_RESET}")
+        print(
+            f"{C_RED}[FAIL] Installation finished with errors (see conflicts above).{C_RESET}"
+        )
     if BACKUP_ROOT:
         print(f"Files backed up to: {C_YELLOW}{BACKUP_ROOT}{C_RESET}")
     print(f"{C_BLUE}======================================================{C_RESET}")

@@ -1,5 +1,4 @@
-"""Grouped, Russian text rendering of a Report, with an ASCII fallback for stdout that cannot
-encode the (OK)/(WARN)/(FAIL) markers (ticket #342)."""
+"""Сгруппированный вывод отчёта Report на русском языке с ASCII-fallback для терминалов без поддержки эмодзи (задача #342)."""
 
 from __future__ import annotations
 
@@ -10,10 +9,12 @@ from .model import Report, Status
 
 
 class _EncodingAware(Protocol):
-    """The only thing `supports_markers`/`render_text` need from a stream: its text encoding."""
+    """Протокол потока вывода, предоставляющий кодировку текста для `supports_markers` и `render_text`."""
 
     @property
-    def encoding(self) -> str | None: ...
+    def encoding(self) -> str | None:
+        """Текстовая кодировка потока вывода."""
+        ...
 
 
 _MARKERS: dict[Status, str] = {"ok": "✅", "warn": "⚠️", "fail": "❌"}
@@ -36,7 +37,7 @@ _ACTIVATION_FOOTER = "activation: verify advertised and invoked skills/integrati
 
 
 def supports_markers(stream: _EncodingAware) -> bool:
-    """Whether `stream` can encode the emoji status markers used by the default text format."""
+    """Проверить, поддерживает ли поток вывод эмодзи-маркеров статусов по умолчанию."""
     encoding = getattr(stream, "encoding", None) or "utf-8"
     try:
         "".join(_MARKERS.values()).encode(encoding)
@@ -46,13 +47,14 @@ def supports_markers(stream: _EncodingAware) -> bool:
 
 
 def _marker(status: Status, *, ascii_fallback: bool) -> str:
+    """Получить строковый маркер статуса проверки (эмодзи, ASCII-вариант или прочерк для skipped)."""
     if status == "skipped":
         return _SKIPPED_MARKER
     return (_ASCII_MARKERS if ascii_fallback else _MARKERS)[status]
 
 
 def _group_order(report: Report) -> list[str]:
-    """Groups in the order they first appear in REGISTRY, not alphabetical."""
+    """Получить список групп в порядке их первого появления в отчёте."""
     seen: list[str] = []
     for check in report.checks:
         if check.group not in seen:
@@ -61,11 +63,13 @@ def _group_order(report: Report) -> list[str]:
 
 
 def render_text(report: Report, *, stream: _EncodingAware | None = None) -> str:
-    """Render `report` grouped by group, in Russian, with a "-> Как исправить: " line under any
-    check that has a fix. Returns the rendered text; the caller writes it to `stream`.
+    """Сформировать текстовое представление `report`, сгруппированное по категориям на русском языке.
 
-    `stream` defaults to `sys.stdout` at call time (not at import time) so it reflects any
-    encoding reconfiguration the CLI entry point does before calling this.
+    Для проверок с предложенным исправлением добавляется строка "-> Как исправить: ".
+    Возвращает сформированный текст для последующей записи вызывающей стороной в `stream`.
+
+    Если `stream` не передан, используется `sys.stdout` на момент вызова, что учитывает
+    возможную перенастройку кодировки точкой входа CLI.
     """
     ascii_fallback = not supports_markers(stream if stream is not None else sys.stdout)
     lines: list[str] = []

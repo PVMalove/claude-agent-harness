@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Runtime-neutral coordinator for the backend-orchestration capability: the CLI entry point.
+"""Координатор возможностей бэкенд-оркестрации, нейтральный к рантайму: точка входа CLI.
 
-The coordinator owns batch, approval, dispatch and completion-report state.  A runtime adapter
-is an explicitly selected transport: it receives a dispatch only after this CLI has persisted the
-approved immutable brief.
+Координатор управляет состоянием пакетов (batch), подтверждений (approval), диспетчеризации (dispatch)
+и отчётов о завершении. Адаптер рантайма представляет собой явно выбранный транспорт: он получает
+задание только после того, как CLI сохранит утверждённое неизменяемое задание (brief).
 
-This module is the facade over that lifecycle, and holds no logic of its own: it parses arguments,
-routes `args.action` to a handler in `workflow/`, turns a `HarnessError` into an exit code, and
-prints the result as JSON.  The lifecycle itself lives in `core/` (constants, configuration, git,
-the workspace), `ledger/` (persistence) and `workflow/` (one module per stage).
+Этот модуль является фасадом над жизненным циклом и не содержит собственной логики: он разбирает
+аргументы командной строки, маршрутизирует args.action к обработчику в workflow/, преобразует
+HarnessError в код возврата и выводит результат в формате JSON. Сам жизненный цикл реализован в
+core/ (константы, конфигурация, git, рабочее пространство), ledger/ (сохраняемость) и workflow/
+(по одному модулю на каждый этап).
 """
 
 from __future__ import annotations
@@ -230,12 +231,14 @@ from harness.orchestration.workflow.runtime_pin import (
 
 
 def parser() -> argparse.ArgumentParser:
+    """Сконструировать парсер аргументов командной строки для CLI координатора."""
     # The CLI's two module arguments are the two halves this facade routes between: the command
     # handlers it exposes, and the fixed default vocabulary they validate against.
     return build_parser(sys.modules[__name__], constants)
 
 
 def main() -> int:
+    """Основная точка входа CLI координатора."""
     # Git Bash on Windows can inherit a legacy Windows code page while displaying UTF-8.  Emit
     # UTF-8 independently of that inherited setting so JSON evidence is never merely *shown* as
     # corrupted and mistaken for a damaged state record.

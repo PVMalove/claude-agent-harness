@@ -73,6 +73,7 @@ def run(ctx: SimpleNamespace) -> None:
     )
 
     def checkpoint_report(role_name, dispatch_id, approved_action, extra):
+        """Сформировать и отправить отчёт роли с данными чекпоинта."""
         payload = {
             "dispatch_id": dispatch_id,
             "ticket": "#139",

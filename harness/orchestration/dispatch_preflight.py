@@ -1,8 +1,9 @@
-"""Deterministic, side-effect-free preparation for a coordinator handoff.
+"""Детерминированная подготовка передачи задач координатора без побочных эффектов.
 
-The coordinator calls this module before it writes an immutable brief.  It deliberately performs
-no ledger mutation and starts no transport, so an approval always applies to the same resolved
-runtime, worktree and snapshot that the resulting dispatch will use.
+Координатор вызывает этот модуль перед записью неизменяемого задания. Модуль намеренно
+не модифицирует реестр жизненного цикла и не запускает транспорт, благодаря чему утверждение
+всегда распространяется на те же разрешённые рантайм, рабочее дерево (worktree) и снимок,
+которые будут использоваться итоговой диспетчеризацией.
 """
 
 from __future__ import annotations
@@ -18,11 +19,13 @@ from .ledger import JsonObject, JsonValue
 
 
 class PreflightError(HarnessError):
-    """A dispatch cannot safely be prepared from the supplied project state."""
+    """Диспетчеризация не может быть безопасно подготовлена на основе переданного состояния проекта."""
 
 
 @dataclass(frozen=True)
 class PreparedDispatch:
+    """Структурированные неизменяемые данные подготовленной к диспетчеризации задачи."""
+
     ticket: str
     role: str
     integration_ref: str
@@ -38,10 +41,12 @@ class PreparedDispatch:
     decision_packet: JsonObject
 
     def to_dict(self) -> JsonObject:
+        """Преобразовать подготовленные данные диспетчеризации в словарь."""
         return asdict(self)
 
 
 def _text(value: object, label: str) -> str:
+    """Проверить и вернуть непустую строку из состояния проекта."""
     if not isinstance(value, str) or not value.strip():
         raise PreflightError(
             f"project_state requires a non-empty {label}",
@@ -51,6 +56,7 @@ def _text(value: object, label: str) -> str:
 
 
 def _git(path: Path, *args: str) -> str:
+    """Выполнить команду Git в указанном каталоге и вернуть stdout либо возбудить PreflightError."""
     result = subprocess.run(
         ["git", "-C", str(path), *args],
         capture_output=True,
@@ -68,6 +74,7 @@ def _git(path: Path, *args: str) -> str:
 
 
 def _worktree_paths(repo: Path) -> set[Path]:
+    """Получить множество зарегистрированных путей рабочих деревьев Git."""
     output = _git(repo, "worktree", "list", "--porcelain")
     paths: set[Path] = set()
     for line in output.splitlines():
@@ -79,7 +86,7 @@ def _worktree_paths(repo: Path) -> set[Path]:
 def _role_context(
     role: str, state: Mapping[str, JsonValue], snapshot: str
 ) -> JsonObject:
-    """Compact, role-specific context pointer metadata; package contents remain ledger-owned."""
+    """Компактные метаданные контекстных указателей роли; содержимое пакетов остаётся под управлением реестра."""
     keys = {
         "architect": ("contracts", "neighbour_tickets", "starting_files"),
         "developer": (
@@ -106,11 +113,11 @@ def _role_context(
 def prepare(
     ticket: str, role: str, project_state: Mapping[str, JsonValue]
 ) -> PreparedDispatch:
-    """Resolve and validate one potential dispatch without creating it.
+    """Разрешить и валидировать потенциальную диспетчеризацию без её фактического создания.
 
-    ``project_state`` is intentionally plain data so a CLI, adapter, or test can call the same
-    deterministic function. Required fields are ``repo``, ``config``, ``branch``, ``worktree``,
-    ``zone`` and ``base_sha``; ``candidate_sha`` is required only when the caller pins a candidate.
+    ``project_state`` намеренно представляет собой простые данные, чтобы CLI, адаптер или тесты могли
+    вызывать одну и ту же детерминированную функцию. Обязательные поля: ``repo``, ``config``, ``branch``,
+    ``worktree``, ``zone`` и ``base_sha``; ``candidate_sha`` требуется только при явной фиксации кандидата.
     """
     ticket = _text(ticket, "ticket")
     role = _text(role, "role")

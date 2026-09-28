@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep QA evidence in the checkout whose branch is tested or published."""
+"""Сохранение свидетельств QA в том checkout, чья ветка тестируется или публикуется."""
 
 import json
 import os
@@ -12,6 +12,7 @@ from typing import cast
 
 
 def git(checkout: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
+    """Выполнить команду Git в указанном checkout и вернуть stdout в виде байтов."""
     return subprocess.run(
         ["git", "-C", str(checkout), *args],
         input=input_bytes,
@@ -21,6 +22,7 @@ def git(checkout: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
 
 
 def worktrees(project: Path) -> list[tuple[Path, str]]:
+    """Получить список всех привязанных worktree репозитория и их веток."""
     entries: list[tuple[Path, str]] = []
     path: Path | None = None
     branch = ""
@@ -39,6 +41,7 @@ def worktrees(project: Path) -> list[tuple[Path, str]]:
 
 
 def payload() -> dict[str, object]:
+    """Прочитать и распарсить входную JSON-полезную нагрузку хука из sys.stdin."""
     raw = sys.stdin.read()
     if not raw.strip():
         return {}
@@ -49,6 +52,7 @@ def payload() -> dict[str, object]:
 
 
 def command_of(data: dict[str, object]) -> str:
+    """Извлечь выполняемую команду из полезной нагрузки вызова инструмента."""
     tool_input = data.get("tool_input")
     if not isinstance(tool_input, dict):
         return ""
@@ -57,6 +61,7 @@ def command_of(data: dict[str, object]) -> str:
 
 
 def head_of(command: str) -> str | None:
+    """Извлечь имя целевой ветки из флага --head переданной команды."""
     try:
         words = shlex.split(command)
     except ValueError:
@@ -70,6 +75,7 @@ def head_of(command: str) -> str | None:
 
 
 def checkout_for(project: Path, data: dict[str, object], command: str) -> Path:
+    """Определить подходящий checkout проекта на основе переданной команды и контекста."""
     available = worktrees(project)
     head = head_of(command)
     if "--head" in command and not head:
@@ -98,6 +104,7 @@ def checkout_for(project: Path, data: dict[str, object], command: str) -> Path:
 
 
 def state(checkout: Path) -> str:
+    """Вычислить текущий хэш состояния checkout (HEAD и незакоммиченный diff)."""
     head = git(checkout, "rev-parse", "HEAD").decode().strip()
     diff = git(checkout, "diff", "HEAD")
     digest = git(checkout, "hash-object", "--stdin", input_bytes=diff).decode().strip()
@@ -105,6 +112,7 @@ def state(checkout: Path) -> str:
 
 
 def main() -> int:
+    """Точка входа хука проверки и фиксации состояния QA-gate."""
     mode = sys.argv[1]
     project = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
     data = {} if mode == "record" else payload()

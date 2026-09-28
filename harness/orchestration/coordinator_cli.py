@@ -1,7 +1,8 @@
-"""Command-line wiring for the orchestration coordinator.
+"""Маршрутизация аргументов командной строки для координатора оркестрации.
 
-This module deliberately knows command names and argument shapes only.  Domain handlers remain
-injected by :mod:`coordinator`, keeping parser changes from coupling to ledger transitions.
+Этот модуль намеренно знает только имена команд и структуру аргументов. Доменные
+обработчики внедряются через :mod:`coordinator`, что предотвращает связывание изменений
+парсера с переходами состояний реестра жизненного цикла.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import types
 
 
 def _common(parser: argparse.ArgumentParser) -> None:
+    """Добавить общие аргументы командной строки (--repo, --state-dir) к парсеру."""
     parser.add_argument("--repo", default=argparse.SUPPRESS, help="target project root")
     parser.add_argument(
         "--state-dir", default=argparse.SUPPRESS, help="coordinator state directory"
@@ -20,7 +22,7 @@ def _common(parser: argparse.ArgumentParser) -> None:
 def build_parser(
     handlers: types.ModuleType, defaults: types.ModuleType
 ) -> argparse.ArgumentParser:
-    """Build the stable public CLI using an injected coordinator handler facade."""
+    """Собрать стабильный публичный CLI с использованием переданного фасада обработчиков координатора."""
     root = argparse.ArgumentParser(
         description="Coordinate approved backend role dispatches."
     )

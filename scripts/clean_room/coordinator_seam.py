@@ -79,6 +79,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
     )
 
     def coordinator_run(*arguments, env=None):
+        """Выполнить команду координатора с автоматическим вычислением transition digest при необходимости."""
         coordinator_env = dict(os.environ, FAKE_ADAPTER_LOG=str(fake_adapter_log))
         if env:
             coordinator_env.update(env)
@@ -103,6 +104,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             )
 
         def run_once(command_arguments):
+            """Выполнить один запуск CLI координатора с переданными аргументами."""
             return subprocess.run(
                 [
                     sys.executable,
@@ -147,9 +149,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         return run_once(arguments)
 
     def sync_origin_base(ref: str = "main") -> None:
-        """Push local HEAD to origin's tracked ref so `batch create`'s mandatory fetch sees a
-        current, matching tip - mirroring a freshly forked issue branch in real usage. `-f` because
-        the dedicated stale-base scenario deliberately diverges origin from this checkout's history."""
+        """Отправить HEAD в origin для синхронизации базовой ветки."""
         subprocess.run(
             ["git", "push", "-q", "-f", "origin", f"HEAD:refs/heads/{ref}"],
             cwd=orchestration_project,
@@ -157,7 +157,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         )
 
     def lifecycle_records(state: Path) -> Path:
-        """Resolve the public ledger selector instead of reaching into a layout generation."""
+        """Разрешить актуальный путь к каталогу записей леджера через ledger.json."""
         pointer = state / "ledger.json"
         if not pointer.is_file():
             return state

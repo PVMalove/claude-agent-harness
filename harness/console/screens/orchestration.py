@@ -1,12 +1,9 @@
-"""Orchestration section: every operator-facing coordinator command from
-harness.console.coordinator_catalog.COORDINATOR_COMMANDS, grouped by `group` (batch, decide,
-packet, dispatch, qa, risk, context-package, ledger). Every command first opens
-`CoordinatorCommandFormScreen`, which asks for its arguments, states why an irreversible class
-needs confirmation, and validates required fields (and choice-restricted fields) before it lets
-the command run. Cancelling it runs nothing - the console never reimplements the coordinator's own
-validation or invariants, it only runs the same `python .harness/orchestration/coordinator.py
---repo {repo} <subcommand path> ...` CLI `harness/console/screens/harness.py` already uses for the
-`ledger-*` entries."""
+"""Раздел Orchestration: команды координатора из `harness.console.coordinator_catalog.COORDINATOR_COMMANDS`,
+сгруппированные по группам `group` (batch, decide, packet, dispatch, qa, risk, context-package, ledger).
+Каждая команда открывает модальный экран `CoordinatorCommandFormScreen`, запрашивающий аргументы,
+поясняющий причины подтверждения для терминальных действий и валидирующий обязательные поля
+(и ограничения choices=) перед выполнением. Отмена формы ничего не выполняет.
+"""
 
 from __future__ import annotations
 
@@ -23,23 +20,30 @@ from .commands import CommandForm, CommandMenuScreen
 
 
 class CoordinatorCommandFormScreen(CommandForm):
-    """A repeatable field gets a multi-line `TextArea`, one value per line, and a value-less flag
-    such as `--open` a `Checkbox`."""
+    """Модальная форма параметров для подкоманд координатора с поддержкой списков и флагов."""
 
     def __init__(self, entry: CoordinatorCommand, repo: Path) -> None:
+        """Инициализирует форму параметров команды координатора для репозитория."""
         super().__init__()
         self.entry = entry
         self.repo = repo
 
     def compose(self) -> ComposeResult:
+        """Формирует структуру полей ввода формы на основе метаданных команды координатора."""
         entry = self.entry
         with Vertical(id="command-form"):
-            yield from self.form_header(entry.title, entry.cli_line(self.repo), entry.reversibility)
+            yield from self.form_header(
+                entry.title, entry.cli_line(self.repo), entry.reversibility
+            )
             for field in entry.fields:
                 if not field.takes_value:
                     yield Checkbox(field.flag, id=f"input-{field.dest}")
                     continue
-                label = field.flag if not field.choices else f"{field.flag} ({'/'.join(field.choices)})"
+                label = (
+                    field.flag
+                    if not field.choices
+                    else f"{field.flag} ({'/'.join(field.choices)})"
+                )
                 yield Static(label, classes="field-label")
                 if field.repeatable:
                     yield TextArea(id=f"input-{field.dest}")
@@ -48,6 +52,7 @@ class CoordinatorCommandFormScreen(CommandForm):
             yield from self.form_buttons(entry.reversibility)
 
     def _submit(self) -> None:
+        """Считывает значения полей формы, проверяет обязательные поля и допустимость значений."""
         values: dict[str, str] = {}
         missing: list[str] = []
         invalid: list[str] = []
@@ -77,7 +82,7 @@ class CoordinatorCommandFormScreen(CommandForm):
 
 
 class OrchestrationScreen(CommandMenuScreen):
-    """Orchestration section: coordinator commands grouped as `[group] title`."""
+    """Экран раздела Orchestration со списком команд координатора, сгруппированных по категориям."""
 
     def __init__(
         self,
@@ -86,27 +91,38 @@ class OrchestrationScreen(CommandMenuScreen):
         command_runner: CommandRunner = capturing_runner,
         catalog: Sequence[CoordinatorCommand] = COORDINATOR_COMMANDS,
     ) -> None:
+        """Инициализирует экран раздела Orchestration со списком доступных команд координатора."""
         super().__init__(repo, command_runner=command_runner)
         self._entries = {entry.key: entry for entry in catalog}
 
     def menu_items(self) -> Sequence[tuple[str, str]]:
+        """Возвращает список элементов меню команд координатора с группой, названием и строкой CLI."""
         return [
-            (entry.key, f"[{entry.group}] {entry.title}\n  $ {entry.cli_line(self.repo)}")
+            (
+                entry.key,
+                f"[{entry.group}] {entry.title}\n  $ {entry.cli_line(self.repo)}",
+            )
             for entry in self._entries.values()
         ]
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Обрабатывает выбор команды координатора из списка и открывает форму её параметров."""
         if event.item.name is None:
             return
         entry = self._entries[event.item.name]
 
         def on_form_closed(values: "dict[str, str] | None") -> None:
+            """Коллбэк закрытия модальной формы параметров с запуском команды при подтверждении."""
             if values is not None:
                 self._run(entry, values)
 
-        self.app.push_screen(CoordinatorCommandFormScreen(entry, self.repo), on_form_closed)
+        self.app.push_screen(
+            CoordinatorCommandFormScreen(entry, self.repo), on_form_closed
+        )
 
     def _run(self, entry: CoordinatorCommand, values: Mapping[str, str]) -> None:
+        """Формирует аргументы и запускает команду координатора через runner."""
         self.run_process(
-            entry.cli_line(self.repo, values), process_argv(entry.cli_argv(self.repo, values))
+            entry.cli_line(self.repo, values),
+            process_argv(entry.cli_argv(self.repo, values)),
         )

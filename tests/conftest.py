@@ -18,11 +18,13 @@ BUNDLE_ENV = "HARNESS_PARSER_BUNDLE_DIR"
 
 
 def _git(repo: Path, *args: str) -> str:
+    """Выполнить команду git в указанном репозитории и вернуть вывод."""
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
 
 
 @pytest.fixture
 def bundle_dir() -> Path:
+    """Фикстура для получения пути к каталогу с бандлом парсеров из переменной окружения."""
     configured = os.environ.get(BUNDLE_ENV)
     if not configured:
         pytest.skip(f"{BUNDLE_ENV} is not set; the bundle CI job runs these tests")
@@ -35,6 +37,7 @@ def bundle_dir() -> Path:
 def build_map(
     tmp_path: Path, bundle: Path, files: dict[str, str], **policy: object
 ) -> tuple[bytes, dict[str, object]]:
+    """Собрать карту репозитория для заданного набора файлов и вернуть закодированное и декодированное представления."""
     repo = tmp_path / "project"
     repo.mkdir()
     _git(repo, "init", "-q")
@@ -67,10 +70,12 @@ def build_map(
 
 
 def records(result: dict[str, object], key: str) -> list[dict[str, object]]:
+    """Извлечь список записей по ключу из результата построения карты."""
     values = result[key]
     assert isinstance(values, list)
     return values
 
 
 def file_record(result: dict[str, object], path: str) -> dict[str, object]:
+    """Найти запись для указанного файла в результатах построения карты."""
     return next(item for item in records(result, "files") if item["path"] == path)

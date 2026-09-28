@@ -1,15 +1,16 @@
-"""Pluggable operational interfaces of the orchestration coordinator (issue #250).
+"""Подключаемые операционные интерфейсы координатора оркестрации (issue #250).
 
-The coordinator core keeps only lifecycle transitions, the ledger, routing, approval validation and
-its candidate/base/Context Package invariants.  Everything that observes the outside world -- how
-healthy the transport or the verification environment is, how a stopped role should be classified,
-how much context a worker has consumed, and how a human is told -- sits behind one small interface
-here.  Every interface defaults to an inert built-in named ``none``.
+Ядро координатора сохраняет только переходы жизненного цикла, реестр, маршрутизацию, валидацию
+подтверждений и инварианты candidate/base/Context Package. Всё, что наблюдает внешний мир —
+работоспособность транспорта или среды верификации, классификация причин остановки роли,
+объём потреблённого контекста и информирование человека — вынесено за небольшие интерфейсы здесь.
+Каждый интерфейс по умолчанию использует неактивную встроенную реализацию «none».
 
-A project selects an implementation by name under ``extensions`` in ``.harness/orchestration.json``.
-A name is either a built-in, an implementation a host process registered with :func:`register`, or
-``module:attribute`` naming a zero-argument factory in an importable module.  The selected names are
-frozen into every immutable brief; none of these interfaces adds a model tool or changes a prompt.
+Проект выбирает реализацию по имени в секции extensions файла .harness/orchestration.json.
+Имя может быть встроенным, именем зарегистрированной через register реализации или формата
+«module:attribute», указывающего на функцию-фабрику без аргументов в импортируемом модуле.
+Выбранные имена замораживаются в каждом неизменяемом задании; ни один из этих интерфейсов
+не добавляет инструментов модели и не изменяет системные промпты.
 """
 
 from __future__ import annotations
@@ -41,12 +42,12 @@ _METHOD = {
 
 
 class ExtensionError(HarnessError):
-    """A selected extension does not exist or is not usable."""
+    """Выбранное расширение не существует или непригодно для использования."""
 
 
 @dataclass(frozen=True)
 class HealthObservation:
-    """A structured health fact from the runtime; ``request_id`` correlates it with the transport."""
+    """Структурированный факт о здоровье от рантайма; request_id сопоставляет его с транспортом."""
 
     healthy: bool
     detail: str
@@ -55,7 +56,7 @@ class HealthObservation:
 
 @dataclass(frozen=True)
 class ClassificationFacts:
-    """Structured facts about a stopped role; never the free text of its report."""
+    """Структурированные факты об остановившейся роли; никогда не свободный текст её отчёта."""
 
     stage: str
     outcome: str
@@ -65,8 +66,7 @@ class ClassificationFacts:
 
 @dataclass(frozen=True)
 class ReasonHint:
-    """A classifier's proposed retry reason category.  The coordinator still applies its own routing
-    guards to it, exactly as it does to a category an approver names."""
+    """Предлагаемая классификатором категория причины повтора. Координатор применяет к ней свои защитные правила маршрутизации."""
 
     category: str
     basis: str
@@ -74,7 +74,7 @@ class ReasonHint:
 
 @dataclass(frozen=True)
 class ContextObservation:
-    """A token count observed by the provider or runtime, never reported by the model itself."""
+    """Количество токенов, зафиксированное провайдером или рантаймом, но никогда не самой моделью."""
 
     observed_tokens: int
     source: str
@@ -82,6 +82,8 @@ class ContextObservation:
 
 @dataclass(frozen=True)
 class AttentionEvent:
+    """Событие привлечения внимания оператора при возникновении блокера или нештатной ситуации."""
+
     batch_id: str
     reason: str
     since: str
@@ -90,38 +92,62 @@ class AttentionEvent:
 
 
 class TransportHealth(Protocol):
-    def probe(self, dispatch_id: str) -> HealthObservation | None: ...
+    """Интерфейс зондирования работоспособности транспорта диспетчеризации."""
+
+    def probe(self, dispatch_id: str) -> HealthObservation | None:
+        """Проверить работоспособность транспорта для указанного dispatch_id."""
+        ...
 
 
 class VerificationEnvironmentHealth(Protocol):
-    def probe(self, dispatch_id: str) -> HealthObservation | None: ...
+    """Интерфейс зондирования среды выполнения проверок."""
+
+    def probe(self, dispatch_id: str) -> HealthObservation | None:
+        """Проверить работоспособность среды проверок для указанного dispatch_id."""
+        ...
 
 
 class RetryReasonClassifier(Protocol):
-    def classify(self, facts: ClassificationFacts) -> ReasonHint | None: ...
+    """Интерфейс классификации причины остановки роли для принятия решения о повторе."""
+
+    def classify(self, facts: ClassificationFacts) -> ReasonHint | None:
+        """Классифицировать причину завершения роли на основе структурированных фактов."""
+        ...
 
 
 class ContextTelemetryProvider(Protocol):
-    def observe(self, dispatch_id: str) -> ContextObservation | None: ...
+    """Интерфейс получения наблюдаемой телеметрии контекста токенов."""
+
+    def observe(self, dispatch_id: str) -> ContextObservation | None:
+        """Получить фактические данные об использовании токенов для указанного dispatch_id."""
+        ...
 
 
 class HumanNotifier(Protocol):
-    def notify(self, event: AttentionEvent) -> None: ...
+    """Интерфейс оповещения оператора-человека."""
+
+    def notify(self, event: AttentionEvent) -> None:
+        """Отправить оповещение о событии внимания человека."""
+        ...
 
 
 class _Inert:
-    """The ``none`` built-in of every interface: observes nothing, says nothing."""
+    """Встроенная заглушка «none» для всех интерфейсов: ничего не наблюдает и не отправляет."""
 
     def probe(self, dispatch_id: str) -> HealthObservation | None:
+        """Вернуть отсутствие наблюдений о здоровье."""
         return None
 
     def classify(self, facts: ClassificationFacts) -> ReasonHint | None:
+        """Вернуть отсутствие подсказки классификации."""
         return None
 
     def observe(self, dispatch_id: str) -> ContextObservation | None:
+        """Вернуть отсутствие телеметрии контекста."""
         return None
 
     def notify(self, event: AttentionEvent) -> None:
+        """Игнорировать событие внимания оператора."""
         return None
 
 
@@ -131,6 +157,7 @@ _REGISTRY: dict[str, dict[str, object]] = {
 
 
 def _known_kind(kind: str) -> None:
+    """Проверить, что переданный вид расширения зарегистрирован."""
     if kind not in _REGISTRY:
         raise ExtensionError(
             f"unknown extension kind {kind!r}",
@@ -139,7 +166,7 @@ def _known_kind(kind: str) -> None:
 
 
 def register(kind: str, name: str, implementation: object) -> None:
-    """Make ``implementation`` selectable by ``name`` for one interface."""
+    """Зарегистрировать реализацию под указанным именем для заданного вида интерфейса."""
     _known_kind(kind)
     if name == DEFAULT_EXTENSION or EXTENSION_NAME.fullmatch(name) is None:
         raise ExtensionError(
@@ -151,11 +178,13 @@ def register(kind: str, name: str, implementation: object) -> None:
 
 
 def unregister(kind: str, name: str) -> None:
+    """Удалить регистрацию расширения по имени."""
     if name != DEFAULT_EXTENSION and kind in _REGISTRY:
         _REGISTRY[kind].pop(name, None)
 
 
 def _require_method(kind: str, name: str, implementation: object) -> None:
+    """Проверить наличие требуемого вызываемого метода у реализации расширения."""
     if not callable(getattr(implementation, _METHOD[kind], None)):
         raise ExtensionError(
             f"extension {name!r} for {kind} has no {_METHOD[kind]}() method",
@@ -164,6 +193,7 @@ def _require_method(kind: str, name: str, implementation: object) -> None:
 
 
 def _resolve(kind: str, name: str) -> object:
+    """Разрешить и загрузить реализацию расширения по имени."""
     _known_kind(kind)
     registered = _REGISTRY[kind].get(name)
     if registered is not None:
@@ -190,7 +220,7 @@ def _resolve(kind: str, name: str) -> object:
 
 
 def selected(config: Mapping[str, object]) -> dict[str, str]:
-    """The extension names a project selects, every unselected interface being ``none``."""
+    """Словарь имён расширений, выбранных проектом, где каждое неуказанное расширение равно «none»."""
     configured = config.get("extensions")
     names = {kind: DEFAULT_EXTENSION for kind in EXTENSION_KINDS}
     if configured is None:
@@ -214,22 +244,27 @@ def selected(config: Mapping[str, object]) -> dict[str, str]:
 
 
 def transport_health(name: str) -> TransportHealth:
+    """Получить реализацию проверки работоспособности транспорта по имени."""
     return cast(TransportHealth, _resolve("transport_health", name))
 
 
 def verification_environment_health(name: str) -> VerificationEnvironmentHealth:
+    """Получить реализацию проверки среды проверок по имени."""
     return cast(
         VerificationEnvironmentHealth, _resolve("verification_environment_health", name)
     )
 
 
 def retry_reason_classifier(name: str) -> RetryReasonClassifier:
+    """Получить реализацию классификатора причин повтора по имени."""
     return cast(RetryReasonClassifier, _resolve("retry_reason_classifier", name))
 
 
 def context_telemetry_provider(name: str) -> ContextTelemetryProvider:
+    """Получить реализацию провайдера телеметрии контекста по имени."""
     return cast(ContextTelemetryProvider, _resolve("context_telemetry_provider", name))
 
 
 def human_notifier(name: str) -> HumanNotifier:
+    """Получить реализацию оповещения человека по имени."""
     return cast(HumanNotifier, _resolve("human_notifier", name))

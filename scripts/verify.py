@@ -107,7 +107,7 @@ def _compiled_sources() -> list[str]:
 
 
 def _check_python_syntax() -> None:
-    """Compile entry points without writing .pyc files under a long worktree path."""
+    """Скомпилировать точки входа без записи файлов .pyc при длинных путях worktree."""
     for source in _compiled_sources():
         compile(Path(source).read_bytes(), source, "exec")
 

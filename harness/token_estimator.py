@@ -1,17 +1,17 @@
-"""Shared conservative payload size contract for portable resources."""
+"""Общий консервативный контракт оценки размера полезной нагрузки для переносимых ресурсов."""
 
 TOKEN_ESTIMATOR_VERSION = "utf8-bytes-per-2-v1"
 
 
 def estimate_tokens(text: str) -> int:
-    """Return a deterministic conservative estimate without a provider tokenizer.
+    """Вернуть детерминированную консервативную оценку токенов без токенизатора провайдера.
 
-    Two UTF-8 bytes per token leaves room for code, identifiers and non-ASCII text. It is a
-    payload budget bound, not a provider billing estimate.
+    Два байта UTF-8 на токен оставляют запас для кода, идентификаторов и символов non-ASCII.
+    Это ограничение бюджета полезной нагрузки, а не оценка биллинга провайдера.
     """
     return estimate_tokens_for_bytes(len(text.encode("utf-8")))
 
 
 def estimate_tokens_for_bytes(byte_count: int) -> int:
-    """Return the same estimate as `estimate_tokens` for a UTF-8 payload of `byte_count` bytes."""
+    """Вернуть ту же оценку, что и `estimate_tokens`, для полезной нагрузки размером `byte_count` байт в UTF-8."""
     return (byte_count + 1) // 2

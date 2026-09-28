@@ -1,1 +1,1 @@
-"""Quality-gate execution policies (local checkout, clean-room worktree)."""
+"""Политики выполнения проверок качества (локальный checkout, изолированное clean-room worktree)."""

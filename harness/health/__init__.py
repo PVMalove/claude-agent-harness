@@ -1,13 +1,14 @@
-"""harness/health: a stdlib-only registry of `harness health` checks (see model.py for the result
-shape and registry.py for how checks are wired in).
+"""harness/health: реестр проверок `harness health` только на стандартной библиотеке.
 
-`harness/bin/harness.py` already puts the canonical repository root on `sys.path` before importing
-this package, so `import harness.health` works today without the block below. That block only
-matters once this package is copied byte-for-byte into an installed project's `.harness/health/`
-(the way CAPABILITIES.json resources already copy `harness/repo_map/repo_map.py`) and later
-launched there without the canonical `harness/` package alongside it on `sys.path` - the harness
-console (#348) is the first consumer of that path. It mirrors the bootstrap alias
-`harness/repo_map/repo_map.py` uses today; see docs/adr/0001.
+Форма результатов описана в `model.py`, а подключение проверок — в `registry.py`.
+
+`harness/bin/harness.py` уже добавляет канонический корень репозитория в `sys.path` перед
+импортом этого пакета, поэтому `import harness.health` работает и без блока ниже. Этот блок
+имеет значение только при побайтовом копировании пакета в `.harness/health/` целевого проекта
+(аналогично тому, как ресурсы `CAPABILITIES.json` копируют `harness/repo_map/repo_map.py`) и
+последующем запуске без канонического пакета `harness/` рядом в `sys.path` — консоль харнесса
+(#348) выступает первым потребителем этого пути. Это повторяет псевдоним начальной загрузки
+(bootstrap alias), используемый в `harness/repo_map/repo_map.py`; см. docs/adr/0001.
 """
 
 from __future__ import annotations

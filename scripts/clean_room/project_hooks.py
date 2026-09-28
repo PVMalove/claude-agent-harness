@@ -246,14 +246,20 @@ def run(ctx: SimpleNamespace) -> None:
             "block-scratch-outside-docs-tasks.sh allowed a PR body in .harness/.sandboxes/scratch/tmp/"
         )
     sandboxes_pr_body = storage_path(pv_project, "pr_body", "pr-body-1-test.md")
-    for name in ("pr-body-1-test.md", "pr-comment-1-test.md", "issue-comment-1-test.md"):
+    for name in (
+        "pr-body-1-test.md",
+        "pr-comment-1-test.md",
+        "issue-comment-1-test.md",
+    ):
         publication_file = sandboxes_pr_body.parent / name
         if (
             run_hook(
                 scratch_hook,
                 pv_project,
                 "",
-                raw_payload=json.dumps({"tool_input": {"file_path": str(publication_file)}}),
+                raw_payload=json.dumps(
+                    {"tool_input": {"file_path": str(publication_file)}}
+                ),
             ).returncode
             != 0
         ):

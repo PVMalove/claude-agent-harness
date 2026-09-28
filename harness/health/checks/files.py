@@ -40,7 +40,6 @@ _REPO_MAP_POLICY_FIX = Fix(
 )
 
 
-
 def _registry_fix(context: HealthContext) -> Fix:
     return Fix(
         text="пересоберите реестр скиллов (или запустите harness health --fix)",
@@ -102,7 +101,9 @@ def check_agents_md(context: HealthContext) -> CheckResult:
             group="files",
             status="fail",
             message="в AGENTS.md остались нерешённые плейсхолдеры шаблона",
-            fix=Fix(text="замените плейсхолдеры вида {{...}} в AGENTS.md значениями проекта"),
+            fix=Fix(
+                text="замените плейсхолдеры вида {{...}} в AGENTS.md значениями проекта"
+            ),
         )
     return CheckResult(
         id="files.agents_md",
@@ -358,7 +359,10 @@ def fix_skill_registry(context: HealthContext, result: CheckResult) -> str | Non
     except ValueError:
         return None
     registry_path = context.repo / REGISTRY_REL
-    if registry_path.is_file() and registry_path.read_text(encoding="utf-8") == expected_registry:
+    if (
+        registry_path.is_file()
+        and registry_path.read_text(encoding="utf-8") == expected_registry
+    ):
         return None
     registry_path.parent.mkdir(parents=True, exist_ok=True)
     registry_path.write_text(expected_registry, encoding="utf-8", newline="\n")
@@ -390,7 +394,9 @@ def check_overlay_locks(context: HealthContext) -> CheckResult:
                 text="исправьте overlay-локи в .harness/overlays (schema 1, overlay_id, source с "
                 "remote и revision без учётных данных); локи скиллов проекта пересоздаёт "
                 "harness lock-project-skills",
-                command=context.harness_command("lock-project-skills", str(context.repo)),
+                command=context.harness_command(
+                    "lock-project-skills", str(context.repo)
+                ),
             ),
         )
     return CheckResult(

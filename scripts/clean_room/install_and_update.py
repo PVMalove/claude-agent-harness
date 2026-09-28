@@ -187,7 +187,9 @@ def run(ctx: SimpleNamespace) -> None:
     # templates, so comparing bytes against root docs/ would reject a valid install.
     root_docs = (ROOT / "docs").resolve()
     selected = ["pvmalove-suite"]
-    sources = harness_cli.selected_skills(selected) + harness_cli.selected_resources(selected)
+    sources = harness_cli.selected_skills(selected) + harness_cli.selected_resources(
+        selected
+    )
     if any(source.resolve().is_relative_to(root_docs) for source in sources):
         sys.exit("package_files selected a source from repository docs/")
     payload = harness_cli.package_files(selected)

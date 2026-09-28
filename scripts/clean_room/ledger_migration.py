@@ -103,6 +103,7 @@ def run(ctx: SimpleNamespace) -> None:
     # stale, migration source -- readable only by an explicit `ledger migrate`, never implicitly
     # upgraded.
     def write_audit_record(generation_dir, audit_id, action, details):
+        """Записать каноническую аудит-запись леджера с вычислением record_sha256."""
         record = {
             "audit_id": audit_id,
             "at": "2026-09-09T15:24:00+00:00",

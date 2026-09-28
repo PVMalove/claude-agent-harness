@@ -15,6 +15,7 @@ _CHECK_ID = "files.orchestration_config"
 
 
 def _expect_fail_message(orchestration_project, needle: str, complaint: str) -> None:
+    """Проверить, что диагностика health завершается ошибкой с ожидаемым фрагментом сообщения."""
     report = fail_json(HARNESS + ["health", str(orchestration_project), "--json"])
     check = find_check(report, _CHECK_ID)
     if check["status"] != "fail" or needle not in check["message"]:

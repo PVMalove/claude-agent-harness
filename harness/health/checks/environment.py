@@ -1,10 +1,11 @@
-"""Group 'environment': cross-platform checks of the tools and settings around the repository
-(ticket #343) - git and its identity, line endings, Python, uv, this repository's dev environment,
-and the output encoding.
+"""Группа 'environment': кроссплатформенные проверки утилит и настроек репозитория (задача #343).
 
-Every external tool is resolved with `shutil.which` and invoked by that full path, so a `.cmd`
-shim on Windows PATH is found the same way the shell would find it. A missing tool or a tool that
-cannot run is a result (`fail`/`skipped`), never an exception: health must report every check.
+Включает проверку Git и автора коммитов, переводов строк, Python, uv, dev-окружения
+канонического репозитория и кодировки вывода.
+
+Каждая внешняя утилита разрешается через `shutil.which` и вызывается по полному пути,
+благодаря чему shim-файлы `.cmd` в Windows PATH находятся так же, как в шелле. Отсутствующая
+или неработающая утилита возвращает статус `fail`/`skipped`, никогда не вызывая исключений.
 """
 
 from __future__ import annotations
@@ -42,14 +43,14 @@ _UV_INSTALL_FIX = Fix(
 def _run(
     argv: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str] | None:
-    """Run a local tool with this group's timeout; None when it cannot start or finish."""
+    """Запустить локальную утилиту с таймаутом группы environment; None при ошибке запуска или таймауте."""
     return run_tool(argv, timeout=_TOOL_TIMEOUT_SECONDS, cwd=cwd, env=env)
 
 
 def _git(
     context: HealthContext, *arguments: str
 ) -> subprocess.CompletedProcess[str] | None:
-    """Invoke git against the explicit repository only (same trust rule as project_files.git_command)."""
+    """Вызвать команду git исключительно для явного репозитория."""
     executable = shutil.which("git")
     if executable is None:
         return None
@@ -67,15 +68,17 @@ def _git(
 
 
 def _first_line(text: str) -> str:
+    """Получить первую непустую строку переданного текста."""
     return text.strip().splitlines()[0] if text.strip() else ""
 
 
 def _last_line(text: str) -> str:
+    """Получить последнюю непустую строку переданного текста."""
     return text.strip().splitlines()[-1] if text.strip() else ""
 
 
 def _tool_version(name: str) -> str | None:
-    """`<name> --version`'s first line, or None when the tool is absent or broken."""
+    """Получить первую строку вывода `<name> --version` или None при отсутствии/сбое утилиты."""
     executable = shutil.which(name)
     if executable is None:
         return None
@@ -86,6 +89,7 @@ def _tool_version(name: str) -> str | None:
 
 
 def _is_git_worktree(context: HealthContext) -> bool:
+    """Проверить, находится ли путь внутри рабочего дерева Git."""
     result = _git(context, "rev-parse", "--is-inside-work-tree")
     return (
         result is not None
@@ -98,16 +102,19 @@ def _is_git_worktree(context: HealthContext) -> bool:
 
 
 def check_os(_context: HealthContext) -> CheckResult:
-    """Informational: the OS and its version, so a report shows which platform rules applied."""
+    """Информационная проверка: операционная система и её версия для контекста применимости правил."""
     release = platform.release()
     version = platform.version()
     details = " ".join(part for part in (platform.system() or os.name, release) if part)
     if version and version != release:
         details = f"{details} ({version})"
-    return CheckResult(id="environment.os", group=GROUP, status="ok", message=f"ОС: {details}")
+    return CheckResult(
+        id="environment.os", group=GROUP, status="ok", message=f"ОС: {details}"
+    )
 
 
 def check_git(_context: HealthContext) -> CheckResult:
+    """Проверить наличие и версию утилиты git."""
     version = _tool_version("git")
     if version is None:
         return CheckResult(
@@ -121,6 +128,7 @@ def check_git(_context: HealthContext) -> CheckResult:
 
 
 def _git_config(context: HealthContext, key: str) -> str | None:
+    """Получить значение конфигурационного параметра git по ключу или None."""
     result = _git(context, "config", "--get", key)
     if result is None or result.returncode != 0:
         return None
@@ -128,6 +136,7 @@ def _git_config(context: HealthContext, key: str) -> str | None:
 
 
 def check_git_identity(context: HealthContext) -> CheckResult:
+    """Проверить настройку параметров автора коммитов user.name и user.email в git."""
     if shutil.which("git") is None:
         return CheckResult(
             id="environment.git_identity",
@@ -162,6 +171,7 @@ def check_git_identity(context: HealthContext) -> CheckResult:
 
 
 def check_gitattributes(context: HealthContext) -> CheckResult:
+    """Проверить наличие файла .gitattributes для нормализации переводов строк."""
     if (context.repo / ".gitattributes").is_file():
         return CheckResult(
             id="environment.gitattributes",
@@ -182,12 +192,11 @@ def check_gitattributes(context: HealthContext) -> CheckResult:
 
 
 def eol_mismatch(index_eol: str, worktree_eol: str, attributes: str) -> bool:
-    """Whether one `git ls-files --eol` entry diverges from what its attributes declare.
+    """Проверить, расходится ли запись `git ls-files --eol` с объявленными gitattributes.
 
-    Only files git treats as text by attribute are judged; without a text/eol attribute the line
-    ending legitimately depends on core.autocrlf, which health reports as information only.
-    Divergence is: mixed line endings, CRLF committed to the index of a normalized text file, or a
-    worktree ending that differs from an explicit `eol=`.
+    Оцениваются только файлы, которые git по атрибутам считает текстовыми. Расхождением считаются:
+    смешанные переводы строк, CRLF в индексе нормализованного текстового файла либо перевод строк
+    в рабочем дереве, отличающийся от явного `eol=`.
     """
     tokens = attributes.split()
     if not tokens or "-text" in tokens or "binary" in tokens:
@@ -213,7 +222,7 @@ def eol_mismatch(index_eol: str, worktree_eol: str, attributes: str) -> bool:
 
 
 def parse_ls_files_eol(output: str) -> list[tuple[str, str, str, str]]:
-    """Parse `git ls-files --eol -z` into (index_eol, worktree_eol, attributes, path) tuples."""
+    """Разобрать вывод команды `git ls-files --eol -z` на кортежи (index_eol, worktree_eol, attributes, path)."""
     entries: list[tuple[str, str, str, str]] = []
     for record in output.split("\0"):
         if "\t" not in record:
@@ -233,6 +242,7 @@ def parse_ls_files_eol(output: str) -> list[tuple[str, str, str, str]]:
 
 
 def check_line_endings(context: HealthContext) -> CheckResult:
+    """Проверить соответствие переводов строк в репозитории заданным gitattributes."""
     if shutil.which("git") is None:
         return CheckResult(
             id="environment.line_endings",
@@ -294,10 +304,12 @@ def check_line_endings(context: HealthContext) -> CheckResult:
 
 
 def _python_version() -> tuple[int, int, int]:
+    """Получить кортеж версии текущего интерпретатора Python (major, minor, micro)."""
     return (sys.version_info.major, sys.version_info.minor, sys.version_info.micro)
 
 
 def check_python(_context: HealthContext) -> CheckResult:
+    """Проверить версию интерпретатора Python на соответствие минимально требуемой."""
     version = _python_version()
     shown = ".".join(str(part) for part in version)
     required = ".".join(str(part) for part in MIN_PYTHON)
@@ -320,6 +332,7 @@ def check_python(_context: HealthContext) -> CheckResult:
 
 
 def check_uv(_context: HealthContext) -> CheckResult:
+    """Проверить наличие и версию утилиты uv."""
     version = _tool_version("uv")
     if version is None:
         return CheckResult(
@@ -333,7 +346,7 @@ def check_uv(_context: HealthContext) -> CheckResult:
 
 
 def is_harness_source_repo(repo: Path) -> bool:
-    """Whether `repo` is the canonical harness repository itself (pyproject name plus uv.lock)."""
+    """Проверить, является ли репозиторий каноническим репозиторием харнесса (по pyproject.toml и uv.lock)."""
     pyproject = repo / "pyproject.toml"
     if not pyproject.is_file() or not (repo / "uv.lock").is_file():
         return False
@@ -348,12 +361,14 @@ def is_harness_source_repo(repo: Path) -> bool:
 
 
 def _dev_sync_command() -> str:
+    """Сформировать команду синхронизации dev-окружения для текущей платформы."""
     if os.name == "nt":
         return "$env:UV_PROJECT_ENVIRONMENT='.harness\\.venv'; uv sync --locked"
     return "UV_PROJECT_ENVIRONMENT=.harness/.venv uv sync --locked"
 
 
 def check_dev_environment(context: HealthContext) -> CheckResult:
+    """Проверить синхронизацию локального dev-окружения .harness/.venv с файлом uv.lock."""
     if not is_harness_source_repo(context.repo):
         return CheckResult(
             id="environment.dev_env",
@@ -403,6 +418,7 @@ def check_dev_environment(context: HealthContext) -> CheckResult:
 
 
 def _is_utf8(encoding: str | None) -> bool:
+    """Проверить, нормализуется ли имя кодировки в каноническое utf-8."""
     if not encoding:
         return False
     try:
@@ -412,8 +428,11 @@ def _is_utf8(encoding: str | None) -> bool:
 
 
 def check_output_encoding(context: HealthContext) -> CheckResult:
-    """The stream encoding the caller saw before any in-process reconfiguration (see
-    HealthContext.output_encoding) and the locale encoding child processes inherit."""
+    """Проверить кодировку потока вывода и локали на совместимость с UTF-8.
+
+    Учитывает кодировку потока, зафиксированную вызывающей стороной до внутренней перенастройки
+    (см. HealthContext.output_encoding), и кодировку локали, наследуемую дочерними процессами.
+    """
     stream = context.output_encoding
     if stream is None:
         stream = getattr(sys.stdout, "encoding", None)

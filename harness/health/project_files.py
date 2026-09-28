@@ -1,11 +1,9 @@
-"""The harness-owned files of a project - paths, hashing, the skill inventory and registry, and the
-validators of harness.lock, overlay locks, integrations, project.json and orchestration config.
+"""Файлы проекта, управляемые харнессом: пути, хеширование, реестр и инвентарь навыков, а также валидаторы harness.lock, overlay-локов, интеграций, project.json и конфигурации оркестрации.
 
-One definition shared by the packager (`harness/bin/harness.py` imports everything it needs from
-here) and the `files` health checks (checks/files.py), so this package works standalone once
-copied into an installed project's `.harness/health/` (see docs/adr/0001 for the same
-bootstrap-alias approach `harness/repo_map/repo_map.py` uses). Nothing here builds a CheckResult:
-validators append human-readable problems, and checks/files.py turns them into results.
+Единое определение, используемое как сборщиком (`harness/bin/harness.py` импортирует отсюда всё необходимое),
+так и проверками файлов (checks/files.py), что позволяет пакету работать автономно после копирования
+в `.harness/health/` проекта (см. docs/adr/0001). Ни одна функция здесь не формирует `CheckResult`:
+валидаторы добавляют понятные человеку описания проблем, а checks/files.py преобразует их в результаты.
 """
 
 from __future__ import annotations
@@ -59,18 +57,22 @@ STORY_POINTS_ALLOWED_FIELDS = frozenset(STORY_POINTS_REQUIRED_FIELDS)
 
 
 def native_link_target(target: str) -> str:
-    """DISCOVERY_LINKS targets use '/' for portability. Windows symlink reparse
-    points resolve relative targets with '\\'; a '/'-separated target creates a
-    reparse point that looks fine (dir listing shows SYMLINKD) but never
-    resolves, silently hiding every skill under it."""
+    """Преобразовать целевой путь ссылки в разделители текущей ОС.
+
+    Цели `DISCOVERY_LINKS` используют '/' для переносимости. Точки соединения (symlink reparse points)
+    в Windows разрешают относительные цели через '\\'; использование слэша '/' создаёт точку соединения,
+    которая отображается корректно (в листинге виден `SYMLINKD`), но не разрешается, скрывая все навыки.
+    """
     return target.replace("/", os.sep)
 
 
 def digest(data: bytes) -> str:
+    """Вычислить SHA-256 хеш байтовых данных в виде шестнадцатеричной строки."""
     return hashlib.sha256(data).hexdigest()
 
 
 def file_digest(path: Path) -> str | None:
+    """Вычислить SHA-256 хеш файла или вернуть None, если файл не найден."""
     try:
         return digest(path.read_bytes())
     except FileNotFoundError:
@@ -78,6 +80,7 @@ def file_digest(path: Path) -> str | None:
 
 
 def relative_path(value: object, *, label: str) -> Path:
+    """Проверить и преобразовать значение в относительный путь внутри проекта."""
     if not isinstance(value, str) or not value:
         raise ValueError(f"{label} must be a non-empty relative path")
     path = Path(value)
@@ -87,6 +90,7 @@ def relative_path(value: object, *, label: str) -> Path:
 
 
 def frontmatter_metadata(path: Path) -> tuple[str, str]:
+    """Извлечь имя и описание навыка из YAML-заголовка файла SKILL.md."""
     text = path.read_text(encoding="utf-8")
     if not text.startswith("---\n"):
         raise ValueError(f"missing YAML frontmatter: {path}")
@@ -125,6 +129,7 @@ def frontmatter_metadata(path: Path) -> tuple[str, str]:
 
 
 def skill_inventory(repo: Path) -> list[tuple[str, Path, str]]:
+    """Собрать инвентарь навыков проекта: список кортежей (имя, путь к каталогу, описание)."""
     root = repo / ".harness/skills"
     if not root.is_dir():
         raise ValueError(f"missing skill root: {root}")
@@ -147,6 +152,7 @@ def skill_inventory(repo: Path) -> list[tuple[str, Path, str]]:
 
 
 def project_registry(repo: Path) -> str:
+    """Сформировать markdown-содержимое реестра навыков проекта REGISTRY.md."""
     lines = [
         "# Project Skill Registry",
         "",
@@ -166,6 +172,7 @@ def project_registry(repo: Path) -> str:
 def validate_hash(
     repo: Path, relative: Path, expected: object, problems: list[str], label: str
 ) -> None:
+    """Проверить соответствие SHA-256 хеша файла ожидаемому значению и зафиксировать проблемы при расхождении."""
     if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
         problems.append(f"{label} has invalid sha256: {relative.as_posix()}")
         return
@@ -177,6 +184,7 @@ def validate_hash(
 
 
 def public_skill_names(lock: JsonObject) -> set[str]:
+    """Извлечь имена публичных навыков из секции files объекта harness.lock."""
     names: set[str] = set()
     for value in lock.get("files") or {}:
         parts = Path(value).parts
@@ -186,22 +194,27 @@ def public_skill_names(lock: JsonObject) -> set[str]:
 
 
 def fail(message: str) -> NoReturn:
-    """Print to stderr and exit the process - the packager's error exit, shared with
-    harness/bin/harness.py. A health run survives it: registry.run isolates SystemExit per check."""
+    """Вывести сообщение об ошибке в stderr и завершить процесс с кодом 1.
+
+    Ошибка сборщика, разделяемая с `harness/bin/harness.py`. Запуск проверок здоровья изолирует
+    SystemExit для каждой проверки в `registry.run`, предотвращая аварийную остановку всего отчёта.
+    """
     print(f"harness: {message}", file=sys.stderr)
     raise SystemExit(1)
 
 
 def git_command(repo: Path, *arguments: str) -> list[str]:
-    """Trust only the checkout explicitly supplied to this operation."""
+    """Сформировать аргументы команды git с безопасной привязкой к переданному каталогу репозитория."""
     checkout = repo.resolve()
     return ["git", "-c", f"safe.directory={checkout}", "-C", str(checkout), *arguments]
 
 
 def project_skill_files(repo: Path, directory: Path) -> list[Path]:
-    """Enumerate through Git rather than a raw filesystem walk, so gitignored
-    runtime artifacts (node_modules, build caches) never enter a project-local
-    hash lock and never cause false health drift when they change."""
+    """Перечислить файлы навыка через Git, исключая артефакты из .gitignore.
+
+    Использует Git вместо прямого обхода файловой системы, чтобы игнорируемые артефакты
+    (node_modules, кэши сборки) не попадали в lock-файл локальных хешей и не вызывали ложный дрейф.
+    """
     try:
         relative = directory.relative_to(repo)
     except ValueError:
@@ -231,6 +244,7 @@ def project_skill_files(repo: Path, directory: Path) -> list[Path]:
 
 
 def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) -> None:
+    """Проверить корректность всех overlay-локов в каталоге .harness/overlays и их соответствие файлам."""
     overlay_root = repo / ".harness/overlays"
     lock_paths = (
         []
@@ -388,6 +402,7 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
 
 
 def validate_integrations(repo: Path, problems: list[str]) -> int:
+    """Проверить файл каталога интеграций .harness/integrations.json и наличие неучтённых файлов конфигураций."""
     known_paths = [
         Path(".mcp.json"),
         Path(".codex/hooks.json"),
@@ -472,10 +487,11 @@ def validate_integrations(repo: Path, problems: list[str]) -> int:
 
 
 def validate_project_json(repo: Path, problems: list[str]) -> None:
-    """.harness/project.json is optional - only pvmalove-suite writes it - so a missing file is
-    not itself a problem; only validate its shape when it's actually there. Mirrors
-    harness/project/project.schema.json by hand: that schema is editor-facing only, this repo
-    has no jsonschema dependency to enforce it at runtime, so keep both in sync by eye."""
+    """.harness/project.json не является обязательным (создаётся только pvmalove-suite), поэтому его
+    отсутствие не считается ошибкой; проверяется только при его наличии.
+    Структура вручную синхронизируется с `harness/project/project.schema.json`: эта схема предназначена
+    только для редактора, в рантайме нет зависимости `jsonschema`, поэтому соответствие поддерживается синхронно.
+    """
     path = repo / ".harness/project.json"
     if not path.is_file():
         return
@@ -558,13 +574,13 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
 
 
 def validate_orchestration_config(repo: Path, problems: list[str]) -> None:
-    """Adapt portable orchestration policy into accumulated health diagnostics.
+    """Проверить конфигурацию оркестрации .harness/orchestration.json через контракт backend-orchestration.
 
-    `health_problems` lives in harness.orchestration.contract, which only ships to a project that
-    selected the backend-orchestration capability; callers only reach this function when that
-    capability is present (see check_orchestration_config), so the import stays local to this
-    function rather than at module level - a module-level import would make every `harness health`
-    run require harness.orchestration.contract, even for projects without backend-orchestration.
+    Функция `health_problems` находится в `harness.orchestration.contract`, который поставляется
+    только в проекты с выбранной возможностью backend-orchestration; вызовы достигают этой функции
+    только при наличии данной возможности (см. check_orchestration_config), поэтому импорт
+    выполняется локально внутри функции, а не на уровне модуля — импорт на уровне модуля потребовал
+    бы наличия `harness.orchestration.contract` при каждом запуске `harness health`.
     """
     from harness.orchestration.contract import health_problems
 

@@ -1,4 +1,4 @@
-"""Build the versioned installation archive and release notes from tracked sources."""
+"""Сборка версионированного установочного архива и заметок о релизе из отслеживаемых файлов git."""
 
 from __future__ import annotations
 
@@ -20,18 +20,34 @@ ARCHIVE_ROOTS = (
 )
 VERSION_HEADING = re.compile(r"^## \[([^]]+)\](?: - [0-9]{4}-[0-9]{2}-[0-9]{2})?\s*$")
 CHANGELOG_CATEGORIES = frozenset(
-    {"Added", "Changed", "Deprecated", "Removed", "Fixed", "Security", "Breaking Changes"}
+    {
+        "Added",
+        "Changed",
+        "Deprecated",
+        "Removed",
+        "Fixed",
+        "Security",
+        "Breaking Changes",
+    }
 )
 TAG_PATTERN = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 
 
 def release_notes(changelog: str, version: str) -> str:
+    """Извлечь и проверить заметки о релизе из CHANGELOG.md для указанной версии."""
     lines = changelog.splitlines()
-    matches = [index for index, line in enumerate(lines) if (match := VERSION_HEADING.fullmatch(line)) and match.group(1) == version]
+    matches = [
+        index
+        for index, line in enumerate(lines)
+        if (match := VERSION_HEADING.fullmatch(line)) and match.group(1) == version
+    ]
     if len(matches) != 1:
         raise ValueError(f"CHANGELOG.md must contain exactly one [{version}] section")
     start = matches[0] + 1
-    end = next((index for index in range(start, len(lines)) if lines[index].startswith("## ")), len(lines))
+    end = next(
+        (index for index in range(start, len(lines)) if lines[index].startswith("## ")),
+        len(lines),
+    )
     body = "\n".join(lines[start:end]).strip()
     if not body:
         raise ValueError(f"CHANGELOG.md [{version}] has no release notes")
@@ -42,7 +58,9 @@ def release_notes(changelog: str, version: str) -> str:
         if line.startswith("### "):
             category = line[4:].strip()
             if category not in CHANGELOG_CATEGORIES:
-                raise ValueError(f"CHANGELOG.md [{version}] has an unknown category: {category}")
+                raise ValueError(
+                    f"CHANGELOG.md [{version}] has an unknown category: {category}"
+                )
             current = sections.setdefault(category, [])
         elif current is not None and line.startswith("- "):
             current.append(line)
@@ -50,17 +68,21 @@ def release_notes(changelog: str, version: str) -> str:
         raise ValueError(f"CHANGELOG.md [{version}] has no ### category")
     for category, entries in sections.items():
         if not entries:
-            raise ValueError(f"CHANGELOG.md [{version}] has an empty {category} category")
+            raise ValueError(
+                f"CHANGELOG.md [{version}] has an empty {category} category"
+            )
     return body + "\n"
 
 
 def tracked_installation_files(repo: Path) -> list[str]:
+    """Получить список отслеживаемых git файлов, входящих в установочный архив релиза."""
     result = subprocess.run(
         ["git", "ls-files", "-z"], cwd=repo, check=True, capture_output=True
     )
     tracked = [path.decode("utf-8") for path in result.stdout.split(b"\0") if path]
     included = [
-        path for path in tracked
+        path
+        for path in tracked
         if path.startswith(ARCHIVE_ROOTS)
         or path == "README.md"
         or path in {"LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING", "NOTICE"}
@@ -69,8 +91,7 @@ def tracked_installation_files(repo: Path) -> list[str]:
 
 
 def check_release(repo: Path, tag: str) -> tuple[str, list[str]]:
-    """Validate a release without building it: the tag, harness/VERSION, the CHANGELOG section,
-    and the tracked payload. Returns the release notes and the payload paths."""
+    """Проверить релиз без сборки: тег, harness/VERSION, раздел CHANGELOG и отслеживаемые файлы."""
     if not TAG_PATTERN.fullmatch(tag):
         raise ValueError(f"release tag must be a SemVer vMAJOR.MINOR.PATCH: {tag}")
     version = tag[1:]
@@ -78,12 +99,17 @@ def check_release(repo: Path, tag: str) -> tuple[str, list[str]]:
         raise ValueError(f"{tag} does not match harness/VERSION")
     notes = release_notes((repo / "CHANGELOG.md").read_text(encoding="utf-8"), version)
     files = tracked_installation_files(repo)
-    if not files or "README.md" not in files or not any(path.startswith("harness/") for path in files):
+    if (
+        not files
+        or "README.md" not in files
+        or not any(path.startswith("harness/") for path in files)
+    ):
         raise ValueError("tracked installation payload is incomplete")
     return notes, files
 
 
 def build_release(repo: Path, tag: str, output: Path) -> tuple[Path, Path, Path]:
+    """Собрать установочный архив релиза, вычислить его sha256 и записать release notes."""
     notes, files = check_release(repo, tag)
     output.mkdir(parents=True, exist_ok=True)
     archive = output / f"claude-agent-harness-{tag}.tar.gz"
@@ -91,13 +117,17 @@ def build_release(repo: Path, tag: str, output: Path) -> tuple[Path, Path, Path]
         for path in files:
             bundle.add(repo / path, arcname=path, recursive=False)
     checksum = output / f"{archive.name}.sha256"
-    checksum.write_text(f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n", encoding="utf-8")
+    checksum.write_text(
+        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n",
+        encoding="utf-8",
+    )
     notes_file = output / f"{tag}-release-notes.md"
     notes_file.write_text(notes, encoding="utf-8")
     return archive, checksum, notes_file
 
 
 def main() -> int:
+    """Точка входа CLI: сборка или валидация релиза по переданным параметрам."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--output", type=Path)

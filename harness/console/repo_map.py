@@ -1,14 +1,13 @@
-"""Stdlib-only facts for the console's Repo Map section: the map for HEAD from the Repo Map result
-cache, or one built on request by the Repo Map CLI, and everything the screen derives from it -
-summary, file tree with signatures, a file's relations, hubs, diagnostics and the Markdown/JSON
-export.
+"""Факты раздела Repo Map консоли средствами только стандартной библиотеки: карта для HEAD из кэша
+результатов Repo Map либо построенная по запросу через Repo Map CLI, а также всё, что вычисляет
+экран — сводка, дерево файлов с сигнатурами, связи файлов, хабы, диагностики и экспорт в Markdown/JSON.
 
-Only schema v1 fields (harness/repo_map/repo_map.schema.json, .harness/repo_map/README.md) are
-read, and a payload is accepted only after `harness.repo_map.contract.validation_error` passes. The
-cache is read through `harness.repo_map.cache.read_cache`, which re-checks each entry's key, SHA-256,
-commit and schema; opening the section never runs the CLI. Building does: the full tier may install
-the offline parser bundle, so the screen asks first (`BUILD_WARNING`) and runs the CLI through the
-injected CommandRunner, exactly like context_builder: `python -B <repo_map.py> --repo --commit`.
+Считываются только поля схемы v1 (harness/repo_map/repo_map.schema.json, .harness/repo_map/README.md),
+а данные принимаются только после успешной проверки `harness.repo_map.contract.validation_error`.
+Кэш читается через `harness.repo_map.cache.read_cache`, который перепроверяет ключ записи, SHA-256,
+коммит и схему; открытие раздела никогда не запускает CLI. Построение карты запускает CLI через
+переданный CommandRunner (`python -B <repo_map.py> --repo --commit`), при этом экран предварительно
+запрашивает подтверждение (`BUILD_WARNING`), так как уровень full может устанавливать оффлайн parser bundle.
 """
 
 from __future__ import annotations
@@ -20,11 +19,11 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from .json_fields import strings, text
 from ..repo_map.cache import read_cache
 from ..repo_map.contract import validation_error
 from ..storage import storage_path
 from .export import MarkdownDocument, MarkdownSection
+from .json_fields import strings, text
 from .runner import CommandRunner
 
 REPO_MAP_SCRIPT_REL = Path(".harness") / "repo_map" / "repo_map.py"
@@ -46,6 +45,8 @@ CONFIDENCES = ("high", "medium", "low")
 
 @dataclass(frozen=True)
 class MapFile:
+    """Файл в карте репозитория с сигнатурами и статусом парсера."""
+
     path: str
     signatures: tuple[str, ...]
     parser_status: str | None  # absent in tier=minimal
@@ -53,6 +54,8 @@ class MapFile:
 
 @dataclass(frozen=True)
 class MapEdge:
+    """Направленное ребро графа карты репозитория между исходным и целевым файлами."""
+
     source: str
     target: str
     kind: str
@@ -61,12 +64,16 @@ class MapEdge:
 
 @dataclass(frozen=True)
 class MapDiagnostic:
+    """Диагностическое сообщение парсера для файла репозитория."""
+
     code: str
     path: str
 
 
 @dataclass(frozen=True)
 class RepoMapView:
+    """Представление данных карты репозитория схемы v1 для отображения в интерфейсе консоли."""
+
     payload: dict[str, object]
     origin: str  # "кэш" or "построена"
     commit: str
@@ -82,6 +89,8 @@ class RepoMapView:
 
 @dataclass(frozen=True)
 class Relation:
+    """Группа связей файла с одинаковым направлением, типом и уровнем достоверности."""
+
     direction: str  # "исходящие" or "входящие"
     kind: str
     confidence: str
@@ -89,6 +98,7 @@ class Relation:
 
 
 def _dicts(value: object) -> list[dict[str, object]]:
+    """Извлекает список словарей из переданного значения."""
     return (
         [item for item in value if isinstance(item, dict)]
         if isinstance(value, list)
@@ -97,7 +107,7 @@ def _dicts(value: object) -> list[dict[str, object]]:
 
 
 def parse_map(payload: object, *, origin: str) -> RepoMapView | str:
-    """A view of a schema v1 payload, or the contract violation that rejects it."""
+    """Преобразует JSON-данные схемы v1 в RepoMapView либо возвращает ошибку валидации контракта."""
     problem = validation_error(payload)
     if problem is not None:
         return f"карта не соответствует схеме v1: {problem}"
@@ -141,6 +151,7 @@ def parse_map(payload: object, *, origin: str) -> RepoMapView | str:
 
 
 def head_commit(repo: Path, *, timeout: float = 30.0) -> str | None:
+    """Определяет хэш коммита HEAD в репозитории через git rev-parse."""
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD^{commit}"],
@@ -155,7 +166,7 @@ def head_commit(repo: Path, *, timeout: float = 30.0) -> str | None:
 
 
 def cache_directory(repo: Path) -> Path | None:
-    """The Repo Map CLI's own result cache (`storage_path`, shared by linked worktrees)."""
+    """Возвращает путь к директории кэша результатов Repo Map."""
     try:
         return storage_path(repo, "cache", "repo_map", "results")
     except ValueError:
@@ -163,10 +174,7 @@ def cache_directory(repo: Path) -> Path | None:
 
 
 def cached_map(repo: Path, commit: str) -> RepoMapView | None:
-    """The best verified cache entry for `commit`: tier=full before minimal, then the newest.
-
-    Entries are keyed by every build input (seeds, budget, policy, parser identity), so a commit can
-    have several; each is accepted only if `read_cache` verifies it for this exact commit."""
+    """Возвращает наиболее актуальную проверенную запись кэша карты для указанного коммита (tier=full в приоритете)."""
     directory = cache_directory(repo)
     if directory is None or not directory.is_dir():
         return None
@@ -189,12 +197,13 @@ def cached_map(repo: Path, commit: str) -> RepoMapView | None:
 
 
 def repo_map_script(repo: Path) -> Path:
-    """The project's installed Repo Map CLI, or this harness's own copy when it is not installed."""
+    """Возвращает путь к скрипту repo_map.py проекта или к копии из пакета харнесса."""
     installed = repo / REPO_MAP_SCRIPT_REL
     return installed if installed.is_file() else _PACKAGE_SCRIPT
 
 
 def build_argv(repo: Path, commit: str) -> list[str]:
+    """Формирует список аргументов запуска CLI построения карты для указанного коммита."""
     # -B: no __pycache__ inside the target repository, as context_builder runs the same CLI.
     return [
         sys.executable,
@@ -208,7 +217,7 @@ def build_argv(repo: Path, commit: str) -> list[str]:
 
 
 def build_map(repo: Path, commit: str, runner: CommandRunner) -> RepoMapView | str:
-    """Run the Repo Map CLI for `commit`; the view, or why there is none."""
+    """Запускает CLI построения карты для коммита через runner и возвращает результат или сообщение об ошибке."""
     try:
         result = runner(build_argv(repo, commit), cwd=repo)
     except OSError as exc:
@@ -226,6 +235,7 @@ def build_map(repo: Path, commit: str, runner: CommandRunner) -> RepoMapView | s
 
 
 def summary_lines(view: RepoMapView) -> list[str]:
+    """Формирует строки краткой сводки по карте репозитория (tier, коммит, число файлов и рёбер)."""
     return [
         f"tier: {view.tier} (parser: {view.parser})",
         f"причина деградации: {view.degradation_reason}",
@@ -238,6 +248,7 @@ def summary_lines(view: RepoMapView) -> list[str]:
 
 
 def provenance_lines(view: RepoMapView) -> list[str]:
+    """Формирует строки сведений о происхождении парсера и используемых грамматиках."""
     lines: list[str] = []
     for key, value in view.provenance.items():
         if key == "grammars":
@@ -253,7 +264,7 @@ def provenance_lines(view: RepoMapView) -> list[str]:
 
 
 def search_files(view: RepoMapView, query: str) -> list[MapFile]:
-    """Files with a signature containing `query` (case-insensitive); every file for an empty one."""
+    """Фильтрует файлы карты по наличию подстроки запроса в сигнатурах без учёта регистра."""
     needle = query.strip().casefold()
     if not needle:
         return list(view.files)
@@ -265,11 +276,12 @@ def search_files(view: RepoMapView, query: str) -> list[MapFile]:
 
 
 def _order(value: str, known: tuple[str, ...]) -> int:
+    """Определяет порядковый номер значения в кортеже известных элементов для детерминированной сортировки."""
     return known.index(value) if value in known else len(known)
 
 
 def relations(view: RepoMapView, path: str) -> list[Relation]:
-    """The file's outgoing, then incoming, edges grouped by kind and confidence."""
+    """Возвращает список связей файла (исходящие, затем входящие), сгруппированных по типу и достоверности."""
     groups: dict[tuple[str, str, str], set[str]] = {}
     for edge in view.edges:
         if edge.source == path:
@@ -294,6 +306,7 @@ def relations(view: RepoMapView, path: str) -> list[Relation]:
 
 
 def relations_text(view: RepoMapView, path: str) -> str:
+    """Формирует текстовое описание связей файла для отображения на экране."""
     groups = relations(view, path)
     if not groups:
         return f"{path}\nсвязей нет"
@@ -306,7 +319,7 @@ def relations_text(view: RepoMapView, path: str) -> str:
 
 
 def hubs(view: RepoMapView, limit: int = HUBS_LIMIT) -> list[tuple[str, int]]:
-    """The files with the most distinct incoming neighbours, ties broken by path."""
+    """Находит файлы с наибольшим количеством уникальных входящих рёбер (топ хабов)."""
     incoming = Counter(
         target for _, target in {(e.source, e.target) for e in view.edges}
     )
@@ -314,6 +327,7 @@ def hubs(view: RepoMapView, limit: int = HUBS_LIMIT) -> list[tuple[str, int]]:
 
 
 def hubs_text(view: RepoMapView) -> str:
+    """Формирует текстовое представление списка хабов с указанием входящей степени."""
     top = hubs(view)
     if not top:
         return "рёбер нет — хабов нет"
@@ -321,17 +335,20 @@ def hubs_text(view: RepoMapView) -> str:
 
 
 def diagnostics_text(view: RepoMapView) -> str:
+    """Формирует текстовое описание диагностических сообщений карты репозитория."""
     if not view.diagnostics:
         return "диагностик нет"
     return "\n".join(f"{item.code}: {item.path}" for item in view.diagnostics)
 
 
 def file_label(item: MapFile) -> str:
+    """Формирует текстовую метку файла для дерева с указанием статуса парсера при наличии."""
     name = item.path.rsplit("/", 1)[-1]
     return f"{name} [{item.parser_status}]" if item.parser_status else name
 
 
 def _files_text(view: RepoMapView) -> str:
+    """Формирует подробный текстовый список файлов и их сигнатур."""
     lines: list[str] = []
     for item in view.files:
         status = f" [{item.parser_status}]" if item.parser_status else ""
@@ -341,6 +358,7 @@ def _files_text(view: RepoMapView) -> str:
 
 
 def _edges_text(view: RepoMapView) -> str:
+    """Формирует текстовый список всех направленных рёбер карты."""
     return (
         "\n".join(
             f"{edge.source} -> {edge.target} ({edge.kind}, {edge.confidence})"
@@ -351,15 +369,17 @@ def _edges_text(view: RepoMapView) -> str:
 
 
 def map_json(view: RepoMapView) -> str:
-    """The payload as the CLI emitted it (schema v1), pretty-printed."""
+    """Возвращает форматированный JSON-текст исходных данных карты репозитория."""
     return json.dumps(view.payload, ensure_ascii=False, indent=2) + "\n"
 
 
 def export_slug(view: RepoMapView) -> str:
+    """Формирует слаг имени файла для экспорта карты репозитория."""
     return f"repo-map-{view.commit[:12]}"
 
 
 def map_document(view: RepoMapView) -> MarkdownDocument:
+    """Формирует структурированный MarkdownDocument для экспорта карты репозитория."""
     return MarkdownDocument(
         title=f"Repo Map {view.commit[:12]}",
         slug=export_slug(view),

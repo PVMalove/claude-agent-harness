@@ -103,13 +103,23 @@ def _offline_or_local(
     stop; the caller proceeds only when the third element is None."""
     subject = _SUBJECTS.get(check_id, check_id)
     if not context.online:
-        return "local", None, _skip(
-            check_id, f"{subject}: не проверено (офлайн — без --online проверки трекера не выполняются)"
+        return (
+            "local",
+            None,
+            _skip(
+                check_id,
+                f"{subject}: не проверено (офлайн — без --online проверки трекера не выполняются)",
+            ),
         )
     tracker, slug = detect_tracker(context)
     if tracker == "local":
-        return tracker, slug, _skip(
-            check_id, f"{subject}: не проверено (локальный трекер задач — онлайн-проверки не применимы)"
+        return (
+            tracker,
+            slug,
+            _skip(
+                check_id,
+                f"{subject}: не проверено (локальный трекер задач — онлайн-проверки не применимы)",
+            ),
         )
     return tracker, slug, None
 
@@ -208,9 +218,7 @@ def _github_permissions(
 ) -> tuple[bool, bool] | None:
     """(push, triage-or-above) from `gh api repos/{owner}/{repo}`'s `.permissions`, or None on
     any failure to run/parse it. Only these two booleans ever leave this function."""
-    result = _run(
-        [executable, "api", f"repos/{slug}", "--jq", ".permissions"], cwd=cwd
-    )
+    result = _run([executable, "api", f"repos/{slug}", "--jq", ".permissions"], cwd=cwd)
     if result is None or result.returncode != 0:
         return None
     try:
@@ -220,8 +228,11 @@ def _github_permissions(
     if not isinstance(permissions, dict):
         return None
     push = bool(permissions.get("push"))
-    triage = push or bool(permissions.get("triage")) or bool(permissions.get("maintain")) or bool(
-        permissions.get("admin")
+    triage = (
+        push
+        or bool(permissions.get("triage"))
+        or bool(permissions.get("maintain"))
+        or bool(permissions.get("admin"))
     )
     return push, triage
 
@@ -300,7 +311,9 @@ def check_permissions(context: HealthContext) -> CheckResult:
         "PR и комментарии доступны" if push else "недостаточно прав для PR/комментариев"
     )
     parts.append("метки доступны" if triage else "недостаточно прав для меток")
-    return CheckResult(id=check_id, group=GROUP, status="warn", message="; ".join(parts))
+    return CheckResult(
+        id=check_id, group=GROUP, status="warn", message="; ".join(parts)
+    )
 
 
 # --- tracker.labels --------------------------------------------------------------------------------
@@ -376,7 +389,9 @@ def _label_diff(
         return None
     existing_by_name = {name.lower(): color for name, color in existing}
     missing = [
-        (name, color) for name, color in canonical if name.lower() not in existing_by_name
+        (name, color)
+        for name, color in canonical
+        if name.lower() not in existing_by_name
     ]
     mismatched = [
         name
@@ -441,7 +456,9 @@ def check_labels(context: HealthContext) -> CheckResult:
     fix = (
         Fix(
             text="создайте отсутствующие метки с каноническими цветами",
-            command=context.harness_command("health", str(context.repo), "--online", "--fix"),
+            command=context.harness_command(
+                "health", str(context.repo), "--online", "--fix"
+            ),
         )
         if missing
         else None

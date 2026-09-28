@@ -1,4 +1,4 @@
-"""Shared, once-per-run context passed to every health check function."""
+"""Общий контекст одного запуска, передаваемый в каждую функцию проверки здоровья."""
 
 from __future__ import annotations
 
@@ -16,21 +16,21 @@ _BROKEN_LOCK_MESSAGE = "не проверено: .harness/harness.lock повр�
 
 
 def shell_join(argv: list[str]) -> str:
-    """One copy-pasteable command line for this platform's shell."""
+    """Сформировать командную строку для копирования и вставки в шелл текущей платформы."""
     return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
 
 
 @dataclass(frozen=True)
 class HealthContext:
-    """Built once per `harness health` run so individual checks do not each re-read
-    .harness/harness.lock.
+    """Контекст запуска `harness health`, исключающий повторное чтение .harness/harness.lock каждой проверкой.
 
-    `snapshot_diff` is optional and defaults to None: it is the one detection function that cannot
-    move into this stdlib-only package (it re-derives expected package content from
-    CAPABILITIES.json and the harness/ source tree, neither of which ships to an installed
-    project). Only the canonical `harness health` CLI (harness/bin/harness.py's cmd_health) supplies
-    its own already-loaded snapshot_diff here; a shipped, standalone harness/health/ leaves it None
-    and files.check_skill_snapshot reports 'skipped' instead of failing to import it.
+    Параметр `snapshot_diff` необязателен и по умолчанию равен None: это единственная функция
+    обнаружения, которая не может быть перенесена в данный stdlib-пакет (она заново вычисляет
+    ожидаемое содержимое пакетов из `CAPABILITIES.json` и дерева исходников `harness/`, которые
+    не поставляются в установленный проект). Только канонический CLI `harness health`
+    (cmd_health в `harness/bin/harness.py`) передаёт сюда уже загруженную функцию `snapshot_diff`;
+    автономный установленный пакет `harness/health/` оставляет её равной None, и проверка
+    `files.check_skill_snapshot` возвращает статус 'skipped' вместо ошибки импорта.
     """
 
     repo: Path
@@ -50,20 +50,22 @@ class HealthContext:
     harness_cli: tuple[str, ...] = ("harness",)
 
     def no_lock_message(self) -> str:
-        """Why a lock-dependent check is skipped: no lock, or a lock files.check_lock reports broken."""
+        """Причина пропуска проверки, зависящей от lock-файла: lock отсутствует либо повреждён."""
         return _BROKEN_LOCK_MESSAGE if self.lock_error else "нет .harness/harness.lock"
 
     def no_orchestration_message(self) -> str:
-        """Why a backend-orchestration check is skipped - never "not selected" for a broken lock."""
+        """Причина пропуска проверки backend-orchestration (при повреждённом lock возвращает ошибку lock-файла)."""
         if self.lock_error:
             return _BROKEN_LOCK_MESSAGE
         return "backend-orchestration capability не выбрана"
 
     def harness_command(self, *args: str) -> str:
-        """A remedy command for the harness CLI, with this repository's path filled in."""
+        """Сформировать команду исправления через CLI харнесса с переданными аргументами."""
         return shell_join([*self.harness_cli, *args])
 
     def coordinator_command(self, *args: str) -> str:
-        """A remedy command for this repository's coordinator, runnable from any directory."""
+        """Сформировать команду исправления через координатор репозитория, запускаемую из любого каталога."""
         script = self.repo / ".harness" / "orchestration" / "coordinator.py"
-        return shell_join([sys.executable, str(script), "--repo", str(self.repo), *args])
+        return shell_join(
+            [sys.executable, str(script), "--repo", str(self.repo), *args]
+        )

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute quality checks through a policy-selected checkout with safe evidence."""
+"""Выполнение проверок качества через выбранный политикой checkout с безопасными свидетельствами."""
 
 from __future__ import annotations
 
@@ -36,35 +36,39 @@ SENSITIVE_OUTPUT: tuple[
 
 
 class GateRunnerError(HarnessError):
-    """A policy could not prepare the requested checkout safely."""
+    """Политика не смогла безопасно подготовить запрошенный checkout."""
 
 
 class ExecutionPolicy(Protocol):
-    """Select the checkout and isolation boundary for one gate execution."""
+    """Выбор checkout и границы изоляции для одного выполнения проверок качества."""
 
-    def checkout(self) -> AbstractContextManager[Path]: ...
+    def checkout(self) -> AbstractContextManager[Path]:
+        """Предоставить контекстный менеджер с рабочим каталогом checkout."""
+        ...
 
 
 @dataclass(frozen=True)
 class LocalPolicy:
-    """Run the gate in the caller's existing checkout."""
+    """Запуск проверок качества в существующем checkout вызывающей стороны."""
 
     root: Path
 
     @contextmanager
     def checkout(self) -> Iterator[Path]:
+        """Предоставить контекстный менеджер для локального checkout."""
         yield self.root.resolve()
 
 
 @dataclass(frozen=True)
 class CleanRoomPolicy:
-    """Run the gate in a disposable worktree pinned to one candidate commit."""
+    """Запуск проверок качества в изолированном worktree, привязанном к коммиту-кандидату."""
 
     repository: Path
     candidate_commit: str
 
     @contextmanager
     def checkout(self) -> Iterator[Path]:
+        """Создать временное изолированное worktree для коммита-кандидата и удалить его при выходе."""
         if (
             not isinstance(self.candidate_commit, str)
             or re.fullmatch(r"[0-9a-fA-F]{7,64}", self.candidate_commit.strip()) is None
@@ -171,7 +175,7 @@ class CleanRoomPolicy:
 
 @dataclass(frozen=True)
 class GateResult:
-    """Common QA evidence for local and clean-room policies."""
+    """Общие свидетельства QA для локальной и чистой (clean-room) политик."""
 
     checks: list[dict[str, str]]
     artifact: str
@@ -179,6 +183,7 @@ class GateResult:
 
     @property
     def passed(self) -> bool:
+        """Проверить, завершились ли все проверки успешно."""
         return all(check["result"] == "pass" for check in self.checks)
 
 
@@ -187,12 +192,12 @@ _LOG_EXIT = re.compile(r"^exit_code=(-?\d+)$")
 
 
 def format_command_log(command: str, returncode: int, output: str) -> str:
-    """One command's block in a QA artifact log: `$ <command>`, `exit_code=<n>`, then its output."""
+    """Сформировать блок команды в артефакте QA: $ <команда>, exit_code=<код> и вывод."""
     return f"$ {command}\nexit_code={returncode}\n{output}\n"
 
 
 def parse_command_log(lines: list[str]) -> list[tuple[str, int]]:
-    """(command, exit code) of every block `format_command_log` wrote, in order."""
+    """Извлечь пары (команда, код возврата) для каждого блока из лога в порядке записи."""
     commands: list[tuple[str, int]] = []
     for index, line in enumerate(lines[:-1]):
         command = _LOG_COMMAND.match(line)
@@ -203,8 +208,10 @@ def parse_command_log(lines: list[str]) -> list[tuple[str, int]]:
 
 
 def project_python(checkout: Path) -> Path:
-    """Choose a deterministic interpreter without consulting PATH: the checkout's `.harness/.venv`
-    (the dev environment `make bootstrap` creates), else the running interpreter."""
+    """Выбрать детерминированный интерпретатор Python без обращения к PATH.
+
+    Использует `.harness/.venv` в checkout (созданный через `make bootstrap`), иначе текущий интерпретатор.
+    """
     venv_python = (
         checkout / ".harness" / ".venv" / "Scripts" / "python.exe"
         if sys.platform == "win32"
@@ -227,7 +234,7 @@ _clean_room_python = project_python
 def _prepared_command(
     command: str | list[str], checkout: Path
 ) -> tuple[str | list[str], bool]:
-    """Replace a bare Python launcher before invoking a clean-room command."""
+    """Заменить системный вызов Python детерминированным перед выполнением команды."""
     original = command
     if isinstance(command, str):
         try:
@@ -246,13 +253,14 @@ def _prepared_command(
 
 
 def sanitise(text: str) -> str:
-    """Redact secret-shaped values before they enter an evidence artifact."""
+    """Скрыть значения, похожие на секреты или токены, перед сохранением в артефакт."""
     for pattern, replacement in SENSITIVE_OUTPUT:
         text = pattern.sub(replacement, text)
     return text
 
 
 def concise_evidence(text: str) -> str:
+    """Сформировать краткую строку свидетельств из вывода команды."""
     lines: list[str] = [
         line.strip() for line in sanitise(text).splitlines() if line.strip()
     ]
@@ -262,7 +270,7 @@ def concise_evidence(text: str) -> str:
 def run_gate(
     commands: list[str | list[str]], policy: ExecutionPolicy, *, stop_on_failure: bool
 ) -> GateResult:
-    """Run configured commands and return one sanitised, policy-independent result shape."""
+    """Выполнить набор команд и вернуть единый очищенный результат, независимый от политики."""
     checks: list[dict[str, str]] = []
     outputs: list[str] = []
     started: float = time.monotonic()
@@ -296,7 +304,9 @@ def run_gate(
                 + ("\n" if result.stdout and result.stderr else "")
                 + (result.stderr or "")
             )
-            outputs.append(format_command_log(sanitise(command_text), result.returncode, combined))
+            outputs.append(
+                format_command_log(sanitise(command_text), result.returncode, combined)
+            )
             checks.append(
                 {
                     "command": approved_text,

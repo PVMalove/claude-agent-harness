@@ -14,7 +14,7 @@ package = false
 python_version = "3.12"
 strict = true
 disallow_any_explicit = true
-mypy_path = ".:tests"
+mypy_path = "."
 explicit_package_bases = true
 files = [
     "harness",
@@ -43,12 +43,12 @@ testpaths = ["tests"]
 "scripts/check_upstream_drift.py" = ["E402"]
 "scripts/test_clean_room.py" = ["E402"]
 "scripts/verify.py" = ["E402"]
-"tests/test_advisory.py" = ["E402"]
-"tests/test_console_app.py" = ["E402"]
-"tests/test_console_harness.py" = ["E402"]
-"tests/test_console_orchestration.py" = ["E402"]
-"tests/test_console_repo_map_app.py" = ["E402"]
-"tests/test_console_reports_app.py" = ["E402"]
+"tests/orchestration/test_advisory.py" = ["E402"]
+"tests/console/test_console_app.py" = ["E402"]
+"tests/console/test_console_harness.py" = ["E402"]
+"tests/console/test_console_orchestration.py" = ["E402"]
+"tests/console/test_console_repo_map_app.py" = ["E402"]
+"tests/console/test_console_reports_app.py" = ["E402"]
 
 [dependency-groups]
 dev = [

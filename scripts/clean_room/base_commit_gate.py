@@ -91,6 +91,7 @@ def run(ctx: SimpleNamespace) -> None:
     )
 
     def stale_role(role_name, model, approved_at, payload_extra):
+        """Создать и отправить диспатч роли для проверки устаревшего базового коммита."""
         created = coordinator_run(
             "--state-dir",
             str(stale_state),

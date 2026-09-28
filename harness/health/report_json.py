@@ -1,5 +1,4 @@
-"""The `--json` contract (schema_version 1, ticket #342): a stable, machine-readable shape for a
-Report, independent of the Russian text rendering in render.py."""
+"""Контракт `--json` (schema_version 1, задача #342): стабильная машиночитаемая форма отчёта Report, не зависящая от вывода на русском языке в render.py."""
 
 from __future__ import annotations
 
@@ -7,10 +6,10 @@ from .model import JsonObject, Report
 
 
 def to_json(report: Report) -> JsonObject:
-    """Render `report` as the schema_version-1 --json contract.
+    """Преобразовать отчёт `report` в JSON-объект по контракту `--json` версии схемы 1.
 
-    `checks[].id` is stable and dot-separated - clean-room scenarios and unit tests key off it
-    (and `status`) instead of message text.
+    Идентификатор `checks[].id` стабилен и разделен точками — тесты и сценарии чистой комнаты
+    опираются на него (и на `status`), а не на текст сообщения.
     """
     return {
         "schema_version": report.schema_version,

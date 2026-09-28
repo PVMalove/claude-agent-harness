@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Diff-coverage gate: unittest coverage of exactly the Python lines changed since the base
-branch (never a repo-wide gate -- see docs/adr/0007-python-quality.md
-and ticket #219, which introduced this alongside HarnessError so a partially-migrated legacy
-module never blocks an unrelated change)."""
+"""Гейт diff-coverage: покрытие тестами изменённых строк Python относительно базовой ветки."""
 
 from __future__ import annotations
 
@@ -32,6 +29,7 @@ EXCLUDED_PREFIXES = ("scripts/clean_room/",)
 
 
 def _base_branch() -> str:
+    """Определить базовую ветку проекта из .harness/project.json или вернуть master по умолчанию."""
     project_json = ROOT / ".harness" / "project.json"
     if project_json.is_file():
         try:
@@ -45,9 +43,7 @@ def _base_branch() -> str:
 
 
 def _merge_base() -> str:
-    """Resolve the base commit to diff against: an explicit override, else the merge-base with
-    the project's configured base_branch (falling back to a local branch of that name if there
-    is no 'origin' remote, as in a fresh clone-less worktree)."""
+    """Вычислить коммит merge-base относительно базовой ветки проекта или переменной окружения."""
     override = os.environ.get("DIFF_COVERAGE_BASE")
     if override:
         return override
@@ -71,10 +67,7 @@ _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 def _changed_lines(base: str) -> dict[str, set[int]]:
-    """Return {repo-relative posix path: {added line numbers}} for *.py files changed since base.
-
-    The diff is not narrowed by a ``*.py`` pathspec: that would hide the old name of a file renamed
-    to ``.py`` and turn the whole file into added lines instead of only its real changes."""
+    """Вернуть словарь {относительный_путь: {номера_добавленных_строк}} для изменившихся файлов *.py."""
     diff = subprocess.run(
         [
             "git",
@@ -124,25 +117,21 @@ def _changed_lines(base: str) -> dict[str, set[int]]:
 
 
 def _repo_relative(path: str) -> str:
-    """Normalize a coverage.json file key to a repo-relative forward-slash path: keys are OS-native
-    (backslashes on Windows) and absolute when coverage ran with --source directories."""
+    """Привести путь из отчёта покрытия к относительному пути репозитория с прямыми слешами."""
     normalized = path.replace("\\", "/")
     root_prefix = ROOT.as_posix().rstrip("/") + "/"
     return normalized.removeprefix(root_prefix)
 
 
 def source_dirs(changed: Mapping[str, set[int]]) -> list[str]:
-    """Directories of the changed files, passed to ``coverage run --source`` so a changed file no test
-    imports still appears in the report (with every statement missing) instead of being skipped."""
+    """Каталоги изменившихся файлов для передачи в coverage run --source."""
     return sorted({str(ROOT / Path(rel_path).parent) for rel_path in changed})
 
 
 def summarize_coverage(
     changed: Mapping[str, set[int]], files: Mapping[str, Mapping[str, Sequence[int]]]
 ) -> tuple[int, int, list[str]]:
-    """Count covered/total changed *statements*; blank, comment and continuation lines are never
-    coverable, so they stay out of the denominator. A changed file missing from the report has no
-    statement data, so every one of its changed lines counts as uncovered."""
+    """Подсчитать число покрытых и непокрытых строк-инструкций среди изменений."""
     total = 0
     covered = 0
     uncovered: list[str] = []
@@ -164,18 +153,14 @@ def summarize_coverage(
 
 
 def meets_threshold(covered: int, total: int) -> bool:
+    """Проверить, достигает ли процент покрытия установленного порога."""
     return covered * 100 >= total * THRESHOLD_PERCENT
 
 
 def compact_uncovered(
     uncovered: Sequence[str], *, max_lines: int = MAX_UNCOVERED_LINES
 ) -> tuple[list[str], int]:
-    """Render a bounded coverage failure summary grouped by path and line ranges.
-
-    ``uncovered`` is already sorted by ``summarize_coverage`` and consists of the stable
-    ``path:line`` form it emits. Keep the full set for the threshold calculation, but show only
-    enough locations to make the failed gate actionable instead of flooding CI with its log.
-    """
+    """Сформировать компактную сводку непокрытых строк с группировкой по диапазонам."""
     selected = uncovered[:max_lines]
     by_path: dict[str, list[int]] = {}
     for entry in selected:
@@ -200,6 +185,7 @@ def compact_uncovered(
 
 
 def main() -> int:
+    """Точка входа CLI: запуск coverage, анализ диффа и проверка порога покрытия."""
     os.environ["PYTHONPATH"] = str(ROOT)
     base = _merge_base()
     changed = _changed_lines(base)

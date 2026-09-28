@@ -1,1 +1,1 @@
-"""Coordinator, ledger, contract, and dispatch modules for backend-orchestration."""
+"""Модули координатора, реестра жизненного цикла, контрактов и диспетчеризации для оркестрации бэкенда."""

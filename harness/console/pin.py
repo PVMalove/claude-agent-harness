@@ -1,5 +1,5 @@
-"""Single source of truth for the textual version `harness console` requests from `uv run
---with` (ADR 0009). `pyproject.toml`'s `[dependency-groups].dev` pins the same version so local
-TUI tests run against it without a relaunch; tests/test_console_pin.py keeps the two equal."""
+"""Единый источник истины для версии textual, запрашиваемой `harness console` через `uv run
+--with` (ADR 0009). Секция `[dependency-groups].dev` в `pyproject.toml` фиксирует ту же версию,
+чтобы локальные TUI-тесты выполнялись с ней без перезапуска; tests/test_console_pin.py проверяет их равенство."""
 
 TEXTUAL_PIN = "6.5.0"

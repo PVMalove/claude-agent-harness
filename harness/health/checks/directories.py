@@ -1,12 +1,12 @@
-"""Group 'directories': the `.harness` directories harness commands create lazily (ticket #345).
+"""Группа 'directories': каталоги `.harness`, создаваемые командами харнесса лениво (задача #345).
 
-A missing directory is not a problem as long as it can be created: it is `ok` with "будет создан".
-An existing directory the current user cannot write to, a file in its place, or a missing
-directory whose nearest existing ancestor is not writable is `fail` - a worker session would crash
-on its first write there.
+Отсутствующий каталог не является проблемой, если его можно создать: статус `ok` с сообщением "будет создан".
+Существующий каталог без прав на запись у текущего пользователя, файл на его месте или отсутствующий
+каталог, чей ближайший существующий предок недоступен для записи, возвращают статус `fail` — сессия
+рабочего процесса упала бы при первой попытке записи.
 
-`fix_directory` is the only fix action here: `harness health --fix` creates a missing directory
-whose check reported `ok`. It never changes permissions and never deletes anything.
+`fix_directory` — единственное действие по исправлению: `harness health --fix` создаёт отсутствующий каталог,
+для которого проверка вернула `ok`. Права доступа никогда не меняются, и ничего не удаляется.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ ORCHESTRATION_STATE_REL = Path(".harness/orchestration/state")
 
 
 def _display(repo: Path, path: Path) -> str:
+    """Получить строковое представление пути относительно репозитория или абсолютный путь."""
     try:
         return path.relative_to(repo).as_posix()
     except ValueError:
@@ -47,18 +48,22 @@ def _display(repo: Path, path: Path) -> str:
 
 
 def _writable(path: Path) -> bool:
+    """Проверить доступность пути на запись и выполнение/вход в каталог."""
     return os.access(path, os.W_OK | os.X_OK)
 
 
 def _nearest_existing_ancestor(path: Path) -> Path:
+    """Найти ближайший существующий родительский каталог для указанного пути."""
     current = path.parent
-    while not current.exists() and not current.is_symlink() and current != current.parent:
+    while (
+        not current.exists() and not current.is_symlink() and current != current.parent
+    ):
         current = current.parent
     return current
 
 
 def directory_result(check_id: str, repo: Path, path: Path) -> CheckResult:
-    """Classify one lazily created harness directory; never creates or changes anything."""
+    """Классифицировать состояние лениво создаваемого каталога харнесса (ничего не создаёт и не изменяет)."""
     shown = _display(repo, path)
     if path.is_symlink():
         return CheckResult(
@@ -85,7 +90,9 @@ def directory_result(check_id: str, repo: Path, path: Path) -> CheckResult:
                 group=_GROUP,
                 status="fail",
                 message=f"нет прав на запись в каталог {shown}",
-                fix=Fix(text=f"выдайте текущему пользователю права на запись в {shown}"),
+                fix=Fix(
+                    text=f"выдайте текущему пользователю права на запись в {shown}"
+                ),
             )
         return CheckResult(
             id=check_id,
@@ -107,12 +114,14 @@ def directory_result(check_id: str, repo: Path, path: Path) -> CheckResult:
         group=_GROUP,
         status="fail",
         message=f"невозможно создать {shown}: нет прав на запись в {shown_ancestor}",
-        fix=Fix(text=f"выдайте текущему пользователю права на запись в {shown_ancestor}"),
+        fix=Fix(
+            text=f"выдайте текущему пользователю права на запись в {shown_ancestor}"
+        ),
     )
 
 
 def fix_directory(repo: Path, path: Path, result: CheckResult) -> str | None:
-    """Create `path` when its check said it is missing but creatable; return what was done."""
+    """Создать каталог, если проверка показала, что он отсутствует, но может быть создан."""
     if result.status != "ok" or path.exists() or path.is_symlink():
         return None
     path.mkdir(parents=True, exist_ok=True)
@@ -123,21 +132,27 @@ def fix_directory(repo: Path, path: Path, result: CheckResult) -> str | None:
 
 
 def harness_path(context: HealthContext) -> Path:
+    """Получить путь к корню хранилища харнесса .harness."""
     return storage_root(context.repo)
 
 
 def sandboxes_path(context: HealthContext) -> Path:
+    """Получить путь к корню песочниц .harness/sandboxes."""
     return sandboxes_root(context.repo)
 
 
 def _category_path(category: str) -> Callable[[HealthContext], Path]:
+    """Сформировать функцию получения пути к категории песочницы."""
+
     def resolve(context: HealthContext) -> Path:
+        """Вычислить путь к подкаталогу категории песочницы."""
         return sandboxes_root(context.repo) / category
 
     return resolve
 
 
 def orchestration_state_path(context: HealthContext) -> Path:
+    """Получить путь к состоянию оркестрации .harness/orchestration/state."""
     return context.repo / ORCHESTRATION_STATE_REL
 
 
@@ -155,6 +170,7 @@ DIRECTORY_PATHS: dict[str, Callable[[HealthContext], Path]] = {
 
 
 def _orchestration_enabled(context: HealthContext) -> bool:
+    """Проверить, включена ли возможность backend-orchestration в lock-файле."""
     lock = context.lock
     return lock is not None and BACKEND_ORCHESTRATION_CAPABILITY in (
         lock.get("capabilities") or []
@@ -162,10 +178,14 @@ def _orchestration_enabled(context: HealthContext) -> bool:
 
 
 def make_check(check_id: str) -> Callable[[HealthContext], CheckResult]:
+    """Создать функцию проверки здоровья для указанного идентификатора каталога."""
     resolve = DIRECTORY_PATHS[check_id]
 
     def check(context: HealthContext) -> CheckResult:
-        if check_id == "directories.orchestration_state" and not _orchestration_enabled(context):
+        """Выполнить проверку доступности и прав каталога харнесса."""
+        if check_id == "directories.orchestration_state" and not _orchestration_enabled(
+            context
+        ):
             return CheckResult(
                 id=check_id,
                 group=_GROUP,
@@ -179,9 +199,11 @@ def make_check(check_id: str) -> Callable[[HealthContext], CheckResult]:
 
 
 def make_fix(check_id: str) -> Callable[[HealthContext, CheckResult], str | None]:
+    """Создать функцию исправления (создания) каталога по идентификатору проверки."""
     resolve = DIRECTORY_PATHS[check_id]
 
     def fix(context: HealthContext, result: CheckResult) -> str | None:
+        """Выполнить создание отсутствующего каталога харнесса."""
         return fix_directory(context.repo, resolve(context), result)
 
     return fix

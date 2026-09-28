@@ -1,13 +1,13 @@
-"""Stdlib-only Markdown export shared by every console screen that exports what it shows (Reports:
-a completion report or a batch chronology; Repo Map: the whole map, also as JSON).
+"""Экспорт в Markdown средствами только стандартной библиотеки, общий для всех экранов консоли,
+экспортирующих отображаемые данные (Reports: отчёт о завершении или хронология батча; Repo Map:
+вся карта репозитория, в том числе в формате JSON).
 
-A screen describes its content as a `MarkdownDocument`; `export_markdown` renders it and writes a
-new dated file (`export_text` writes any other rendered text, such as Repo Map's JSON, the same
-way) under the target repository's `docs/tasks/` (see docs/agents/artifacts.md): the
-ticket's own folder `docs/tasks/issue-<N>-*/artifacts/`, the epic folder that holds the ticket under
-`tickets/`, or a new `docs/tasks/issue-<N>-console-export/artifacts/` (artifacts.md: a folder name
-carries the issue ID and a descriptive name); without a ticket number, the common
-`docs/tasks/console-exports/` folder epic #341 specifies. An existing file is never overwritten.
+Экран описывает своё содержимое как `MarkdownDocument`; функция `export_markdown` выполняет рендеринг
+и записывает новый датированный файл (`export_text` аналогично записывает любой другой готовый текст,
+например JSON карты репозитория) в каталог `docs/tasks/` целевого репозитория (см. docs/agents/artifacts.md):
+собственную папку тикета `docs/tasks/issue-<N>-*/artifacts/`, папку эпика, содержащую тикет в `tickets/`,
+или новую папку `docs/tasks/issue-<N>-console-export/artifacts/`; при отсутствии номера тикета используется
+общая папка `docs/tasks/console-exports/`. Существующий файл никогда не перезаписывается.
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ _BACKTICKS = re.compile(r"`+")
 
 @dataclass(frozen=True)
 class MarkdownSection:
+    """Секция Markdown-документа с заголовком, телом и признаком предварительного форматирования."""
+
     heading: str
     body: str
     # Logs and other verbatim text: fenced so Markdown never reinterprets them.
@@ -34,6 +36,8 @@ class MarkdownSection:
 
 @dataclass(frozen=True)
 class MarkdownDocument:
+    """Структурированный Markdown-документ для экспорта артефактов консоли."""
+
     title: str
     slug: str
     sections: list[MarkdownSection]
@@ -42,12 +46,14 @@ class MarkdownDocument:
 
 
 def _fenced(body: str) -> str:
+    """Оборачивает текст в блок кода с ограждением, избегая конфликтов с обратными кавычками."""
     longest = max((len(run) for run in _BACKTICKS.findall(body)), default=0)
     fence = "`" * max(3, longest + 1)
     return f"{fence}text\n{body.rstrip(chr(10))}\n{fence}"
 
 
 def render_markdown(document: MarkdownDocument) -> str:
+    """Формирует итоговый текст Markdown из структуры MarkdownDocument."""
     parts = [f"# {document.title}"]
     if document.meta:
         parts.append("\n".join(f"- **{key}:** {value}" for key, value in document.meta))
@@ -60,11 +66,13 @@ def render_markdown(document: MarkdownDocument) -> str:
 
 
 def _ticket_number(ticket: str | None) -> str | None:
+    """Извлекает числовой номер тикета из строки идентификатора задачи."""
     match = _TICKET_NUMBER.search(ticket or "")
     return match.group(1) if match else None
 
 
 def export_directory(repo: Path, ticket: str | None) -> Path:
+    """Определяет директорию артефактов в docs/tasks/ для сохранения экспорта тикета или консоли."""
     tasks = repo / TASKS_REL
     number = _ticket_number(ticket)
     if number is None:
@@ -91,6 +99,7 @@ def export_directory(repo: Path, ticket: str | None) -> Path:
 
 
 def _safe_slug(slug: str) -> str:
+    """Преобразует строку в безопасный фрагмент имени файла (slug), содержащий только латиницу и цифры."""
     return re.sub(r"[^a-z0-9]+", "-", slug.lower()).strip("-") or "export"
 
 
@@ -103,6 +112,7 @@ def export_text(
     ticket: str | None = None,
     now: datetime | None = None,
 ) -> Path:
+    """Записывает текстовые данные в новый датированный файл с уникальным именем, исключая перезапись."""
     directory = export_directory(repo, ticket)
     directory.mkdir(parents=True, exist_ok=True)
     stem = f"{(now or datetime.now(UTC)):%Y-%m-%d-%H%M%S}-{_safe_slug(slug)}"
@@ -123,6 +133,7 @@ def export_text(
 def export_markdown(
     repo: Path, document: MarkdownDocument, *, now: datetime | None = None
 ) -> Path:
+    """Рендерит и экспортирует Markdown-документ в файл каталога артефактов задачи."""
     return export_text(
         repo,
         render_markdown(document),

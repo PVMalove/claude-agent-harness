@@ -51,11 +51,7 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_project = test_root / "o"
 
     def staged_payload(name: str) -> Path:
-        """Role-authored payloads live inside the project, at the brief's staging path.
-
-        The coordinator refuses a report or checkpoint written outside the repository and its
-        worktrees, which is what stops evidence from landing in a guessed home-directory folder.
-        """
+        """Сформировать путь к промежуточному файлу роли внутри scratch/inbox проекта."""
         path = storage_path(orchestration_project, "scratch", "inbox", name)
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
@@ -239,9 +235,7 @@ def run(ctx: SimpleNamespace) -> None:
         orchestration_project / ".harness" / "docs" / "backend-orchestration.md"
     ).read_text(encoding="utf-8")
     if installed_orchestration_guide != source_orchestration_guide:
-        sys.exit(
-            "installed backend-orchestration guidance differs from its source"
-        )
+        sys.exit("installed backend-orchestration guidance differs from its source")
     expected_role_files = {
         "architect.md",
         "code-review.md",
@@ -403,6 +397,7 @@ def run(ctx: SimpleNamespace) -> None:
         )
 
     def frontmatter_list(field):
+        """Извлечь список строковых значений поля из YAML frontmatter роли."""
         lines = role_frontmatter.splitlines()
         try:
             start = lines.index(f"{field}:") + 1

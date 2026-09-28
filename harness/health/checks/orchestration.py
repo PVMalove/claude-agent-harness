@@ -193,7 +193,9 @@ def check_unfinished_batches(context: HealthContext) -> CheckResult:
     from harness.orchestration.core.constants import TERMINAL_BATCH_STATES
 
     unfinished = [
-        batch for batch in state.batches if batch.get("state") not in TERMINAL_BATCH_STATES
+        batch
+        for batch in state.batches
+        if batch.get("state") not in TERMINAL_BATCH_STATES
     ]
     if not unfinished:
         return CheckResult(
@@ -206,7 +208,9 @@ def check_unfinished_batches(context: HealthContext) -> CheckResult:
         f"{batch.get('batch_id', '?')} [{batch.get('state', '?')}] "
         f"ticket={batch.get('ticket') or '?'} branch={batch.get('branch') or '?'} "
         f"worktree={batch.get('worktree') or '?'} возраст={_age(batch.get('created_at'))}"
-        for batch in sorted(unfinished, key=lambda batch: str(batch.get("created_at", "")))
+        for batch in sorted(
+            unfinished, key=lambda batch: str(batch.get("created_at", ""))
+        )
     ]
     return CheckResult(
         id=check_id,

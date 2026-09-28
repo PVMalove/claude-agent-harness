@@ -1,4 +1,4 @@
-"""The one way a health check runs an external tool (git, uv, gh/glab, ...)."""
+"""Единственный способ запуска внешних инструментов (git, uv, gh/glab и т. д.) в проверках здоровья."""
 
 from __future__ import annotations
 
@@ -14,11 +14,13 @@ def run_tool(
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str] | None:
-    """Run a tool non-interactively; None when it cannot be started or does not finish in time.
+    """Запустить утилиту в неинтерактивном режиме; возвращает None при ошибке запуска или таймауте.
 
-    Never raises: a missing tool or a stalled call becomes a `warn`/`fail` CheckResult, not an
-    exception. stdin is closed and git never prompts for credentials, so a check can only time
-    out, never wait on the keyboard."""
+    Никогда не вызывает исключений: отсутствие инструмента или зависший вызов преобразуются
+    в `CheckResult` со статусом `warn`/`fail`, а не в аварийное завершение. Поток stdin закрыт,
+    а Git никогда не запрашивает учетные данные, поэтому проверка может завершиться только
+    по таймауту, никогда не блокируясь в ожидании ввода с клавиатуры.
+    """
     child_env = dict(os.environ if env is None else env)
     child_env.setdefault("GIT_TERMINAL_PROMPT", "0")
     try:

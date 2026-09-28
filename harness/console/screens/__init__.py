@@ -1,3 +1,3 @@
-"""textual screens for the harness console. Every module here imports `textual` at module load
-time - only harness.console.app imports this package, and only from the already-relaunched
-`uv run --with textual==<pin>` subprocess (see harness.console.launcher.run_console)."""
+"""Экраны Textual для консоли harness. Каждый модуль здесь импортирует `textual` при загрузке —
+только harness.console.app импортирует этот пакет и только из уже перезапущенного подпроцесса
+`uv run --with textual==<pin>` (см. harness.console.launcher.run_console)."""
