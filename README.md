@@ -1,8 +1,16 @@
-# Agent Harness
+<p align="center">
+  <img src="./docs/assets/harness-banner.svg" alt="Agent Harness — for coding agents" width="800">
+</p>
 
-[![CI](https://github.com/PVMalove/claude-agent-harness/actions/workflows/verify.yml/badge.svg)](https://github.com/PVMalove/claude-agent-harness/actions/workflows/verify.yml)
-[![Release](https://img.shields.io/github/v/release/PVMalove/claude-agent-harness)](https://github.com/PVMalove/claude-agent-harness/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+<p align="center">
+  <a href="https://github.com/PVMalove/claude-agent-harness/releases"><img src="https://img.shields.io/github/v/release/PVMalove/claude-agent-harness?label=Version&labelColor=34312E&color=D97757" alt="Version"></a>
+  <img src="https://img.shields.io/badge/Runtime-Claude%20Code%20%7C%20Codex-E5A04B?labelColor=34312E" alt="Runtime: Claude Code | Codex">
+  <img src="https://img.shields.io/badge/Python-3.12%2B-8FB573?labelColor=34312E" alt="Python 3.12+">
+  <a href="https://github.com/PVMalove/claude-agent-harness/actions/workflows/verify.yml"><img src="https://github.com/PVMalove/claude-agent-harness/actions/workflows/verify.yml/badge.svg" alt="CI"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-9C958C?labelColor=34312E" alt="License: MIT"></a>
+</p>
+
+# Agent Harness
 
 ## Портативный фреймворк для оркестрации ИИ-агентов (Claude Code, Codex).
 
