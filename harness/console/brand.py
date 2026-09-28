@@ -32,11 +32,11 @@ PALETTE = {
 
 # The harness mark: an "H" in a ring - the harness holding the parts together.
 LOGO = (
-    "   ▄▄▀▀▄▄   ",
-    " ▄▀ █  █ ▀▄ ",
-    " █  █▀▀█  █ ",
-    " ▀▄ █  █ ▄▀ ",
-    "   ▀▀▄▄▀▀   ",
+    "   ╭─━━━━─╮   ",
+    " ╭─╯ ┃  ┃ ╰─╮ ",
+    " │   ┣━━┫   │ ",
+    " ╰─╮ ┃  ┃ ╭─╯ ",
+    "   ╰─━━━━─╯   ",
 )
 
 PRODUCT = "Agent Harness console"
