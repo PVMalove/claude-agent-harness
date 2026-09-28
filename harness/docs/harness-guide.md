@@ -197,7 +197,7 @@ python3 harness/bin/harness.py console /path/to/repository
 checks — `--online --fix`; требует повторного нажатия-подтверждения); у обоих действий показан
 CLI-эквивалент, health выполняется в фоновом потоке, а отчёт экспортируется в Markdown (`e`) в
 `docs/tasks/console-exports/`. Команды из «Как исправить» пульт только показывает и никогда не
-выполняет. `Harness` — команды из
+выполняет. `Harness` открывается панелью «Состояние»: установленная версия (и версия пакета, если они расходятся), capability, число скилов и управляемых файлов, время обновления lock, подключена ли оркестрация и сводка использования пайплайна из леджера (`harness/console/stats.py`). Ниже — команды из
 каталога `harness/console/catalog.py`: init, update, diff, adopt, registry, lock-project-skills,
 list, health, cleanup, построение Repo Map, сборка parser bundle, verify, ledger
 migrate/clean/reset и удаление worktree (`git worktree remove`, с подтверждением). Команда, чей
@@ -236,7 +236,7 @@ qa-lane (`qa-lane/attempts/`). Отчёт или хронологию можно
 уверенности, топ-10 «хабов» по входящей степени, диагностики. Карта экспортируется в Markdown (`e`)
 и в JSON (`j`, payload схемы v1 как есть) — в `docs/tasks/console-exports/`. Раздел читает только
 поля схемы v1 и принимает карту только после `harness.repo_map.contract.validation_error`.
-`Orchestration` — команды coordinator для оператора из `harness/console/coordinator_catalog.py`:
+`Orchestration` открывается статистикой пайплайна (запуски batch и тикеты, распределение по состояниям, диспатчи по ролям, итоги отчётов, QA-прогоны и неудачные попытки qa-lane, период) и историей: слева все состояния lifecycle batch (`planned`, `awaiting-approval`, `active`, `blocked`, `completed`, `failed`, `not-required`, `abandoned`) с числом batch, справа batch выбранного состояния; Enter на batch открывает ту же хронологию, что и в `Reports`. Без леджера раздел пишет, что он не найден, и оставляет только команды. Ниже — команды coordinator для оператора из `harness/console/coordinator_catalog.py`:
 batch list/create/approve/abandon/resume/attention check/attention resolve/decide/decision-packet,
 dispatch status/create/cancel/send, qa status, risk assess, context-package register, ledger
 status (команды воркеров — heartbeat, self-report, report submit и т. п. — в пульт не входят). Каждая запись — тоже stdlib-данные, но не написана руками: поля (флаг,
@@ -250,7 +250,7 @@ approve/abandon/decide`, `batch attention resolve`, `dispatch create/cancel`) и
 (`dispatch send`) требуют подтверждения, отмена ничего не запускает; остальные команды обратимы, но
 форма всё равно проверяет обязательные поля.
 Код разложен по шву
-stdlib/textual: `harness/console/{pin,runner,launcher,data,catalog,coordinator_catalog,reports,export,repo_map,json_fields,brand,help_text}.py`
+stdlib/textual: `harness/console/{pin,runner,launcher,data,catalog,coordinator_catalog,reports,export,repo_map,json_fields,brand,help_text,stats}.py`
 не импортируют `textual` и тестируются без него; только `harness/console/app.py` и
 `harness/console/screens/*.py` его импортируют, и только внутри уже релончнутого процесса —
 Pilot-тесты (`tests/console/test_console_app.py`, `tests/console/test_console_harness.py`,

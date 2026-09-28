@@ -207,3 +207,20 @@ def test_commands_whose_script_is_absent_are_not_offered(tmp_path: Path) -> None
     offered = asyncio.run(scenario())
     assert "verify" not in offered and "parser-bundle" not in offered
     assert "diff" in offered and "worktree-remove" in offered
+
+
+def test_harness_section_shows_installation_state_and_pipeline_usage(
+    tmp_path: Path,
+) -> None:
+    from tests.console._console_ledger_fixture import build_reports_fixture
+
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> str:
+        app = _HostApp(HarnessScreen(tmp_path, command_runner=_RecordingRunner()))
+        async with app.run_test(size=(120, 40)):
+            return str(app.screen.query_one("#harness-state", Static).content)
+
+    text = asyncio.run(scenario())
+    assert "Харнесс не установлен" in text
+    assert "Использование пайплайна: запусков 2, тикетов 2" in text

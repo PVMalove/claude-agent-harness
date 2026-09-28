@@ -80,6 +80,15 @@ class CommandMenuScreen(Screen[None]):
     """Базовый экран меню команд со списком `#command-menu` и областью вывода `#command-output`."""
 
     BINDINGS = [Binding("escape", "app.pop_screen", "Назад")]
+    # The command menu owns the keyboard on arrival even when a section adds an overview above it.
+    AUTO_FOCUS = "#command-menu"
+    DEFAULT_CSS = """
+    CommandMenuScreen .overview {
+        height: auto; margin: 0 1; padding: 0 1;
+        border: round $primary 50%; border-title-color: $primary;
+    }
+    CommandMenuScreen #command-menu { height: auto; max-height: 40%; border-title-color: $primary; }
+    """
 
     def __init__(self, repo: Path, *, command_runner: CommandRunner) -> None:
         """Инициализирует экран меню команд для указанного репозитория и исполнителя команд."""
@@ -91,16 +100,23 @@ class CommandMenuScreen(Screen[None]):
         """Возвращает последовательность кортежей (ключ, метка) для элементов меню команд."""
         raise NotImplementedError
 
+    def overview(self) -> ComposeResult:
+        """Виджеты над меню команд: текущее состояние и статистика раздела (по умолчанию нет)."""
+        yield from ()
+
     def compose(self) -> ComposeResult:
         """Формирует структуру виджетов экрана меню команд."""
         yield Header()
-        yield ListView(
+        yield from self.overview()
+        menu = ListView(
             *(
                 ListItem(Static(label, markup=False), name=key)
                 for key, label in self.menu_items()
             ),
             id="command-menu",
         )
+        menu.border_title = "Команды"
+        yield menu
         yield VerticalScroll(Static("", id="command-output", markup=False))
         yield Footer()
 

@@ -8,12 +8,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
-from textual.widgets import Input, ListView
+from textual.widgets import Input, ListView, Static
 
+from .. import data as console_data
+from .. import reports as console_reports
+from .. import stats as console_stats
 from ..catalog import HARNESS_COMMANDS, CatalogEntry, process_argv
 from ..runner import CommandRunner, capturing_runner
 from .commands import CommandForm, CommandMenuScreen
@@ -72,12 +75,25 @@ class HarnessScreen(CommandMenuScreen):
         *,
         command_runner: CommandRunner = capturing_runner,
         catalog: Sequence[CatalogEntry] = HARNESS_COMMANDS,
+        load_view: Callable[
+            [Path], console_reports.LedgerView
+        ] = console_reports.load_ledger_view,
     ) -> None:
         """Инициализирует экран раздела Harness со списком доступных команд."""
         super().__init__(repo, command_runner=command_runner)
+        self._load_view = load_view
         # A command whose script is absent here (e.g. verify outside the harness repository)
         # would only ever fail with "can't open file", so it is not offered.
         self._entries = {entry.key: entry for entry in catalog if entry.available(repo)}
+
+    def overview(self) -> ComposeResult:
+        """Текущее состояние установки и сводка использования пайплайна."""
+        state = console_stats.harness_state(self.repo)
+        text = console_stats.harness_state_text(state, console_data.harness_version())
+        text += "\n" + console_stats.usage_text(self._load_view(self.repo))
+        panel = Static(text, id="harness-state", classes="overview", markup=False)
+        panel.border_title = "Состояние"
+        yield panel
 
     def menu_items(self) -> Sequence[tuple[str, str]]:
         """Возвращает список элементов меню команд харнесса с описанием и строкой CLI."""

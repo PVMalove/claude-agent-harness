@@ -333,3 +333,55 @@ def test_batch_list_open_checkbox_passes_the_flag_alone(tmp_path: Path) -> None:
     expected = _entry("batch-list").cli_argv(tmp_path, {"open": "1"})
     assert expected[-1] == "--open"
     assert runner.calls == [process_argv(expected)]
+
+
+def test_pipeline_stats_and_history_filter_by_state_and_open_a_timeline(
+    tmp_path: Path,
+) -> None:
+    """The section opens with the pipeline statistics; choosing a state lists its batches and
+    choosing a batch opens its chronology."""
+    from tests.console._console_ledger_fixture import build_reports_fixture
+
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[str, list[str | None], list[str | None], str]:
+        from harness.console.screens.reports import BatchTimelineScreen
+
+        app = _HostApp(OrchestrationScreen(tmp_path, command_runner=_RecordingRunner()))
+        async with app.run_test(size=(120, 60)) as pilot:
+            await pilot.pause()
+            stats_text = str(app.screen.query_one("#pipeline-stats", Static).content)
+            history = app.screen.query_one("#batch-history", ListView)
+            everything = [item.name for item in history.children]
+            states = app.screen.query_one("#state-filter", ListView)
+            states.focus()
+            states.index = [item.name for item in states.children].index("blocked")
+            await pilot.press("enter")
+            await pilot.pause()
+            blocked = [item.name for item in history.children]
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, BatchTimelineScreen)
+            timeline = str(app.screen.query_one("#batch-timeline", Static).content)
+        return stats_text, everything, blocked, timeline
+
+    stats_text, everything, blocked, timeline = asyncio.run(scenario())
+    assert "Запусков (batch): 2" in stats_text
+    assert everything == ["batch-stuck", "batch-flow"]
+    assert blocked == ["batch-stuck"]
+    assert "[decision] решение coordinator: block" in timeline
+
+
+def test_without_a_ledger_the_section_says_so_and_keeps_its_commands(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> tuple[str, int]:
+        app = _HostApp(OrchestrationScreen(tmp_path, command_runner=_RecordingRunner()))
+        async with app.run_test(size=(120, 60)):
+            text = str(app.screen.query_one("#pipeline-stats", Static).content)
+            history = len(app.screen.query("#batch-history"))
+        return text, history
+
+    text, history = asyncio.run(scenario())
+    assert "не найден или не инициализирован" in text
+    assert history == 0

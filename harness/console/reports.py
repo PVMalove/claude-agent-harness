@@ -112,6 +112,10 @@ class LedgerView:
     _risks: dict[str, JsonObject] = field(default_factory=dict)
     _audit: dict[str, list[JsonObject]] = field(default_factory=dict)
 
+    def dispatch_records(self) -> list[JsonObject]:
+        """Все записи диспатчей леджера (для статистики по ролям)."""
+        return list(self._dispatches.values())
+
     def timeline(self, batch_id: str) -> BatchTimeline | None:
         """Строит хронологию для указанного батча либо возвращает None, если батч не найден."""
         batch = self._batch_records.get(batch_id)

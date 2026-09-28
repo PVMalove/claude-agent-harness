@@ -15,8 +15,8 @@ HELP_MARKDOWN = """\
 | Раздел | Что внутри |
 | --- | --- |
 | Diagnostics | Полный отчёт `harness health`, онлайн-проверки, `--fix` и экспорт в Markdown. |
-| Harness | Команды CLI: init, update, diff, adopt, registry, list, health, cleanup, Repo Map, ledger. |
-| Orchestration | Команды coordinator: batch, dispatch, qa status, risk assess, context-package, ledger status. |
+| Harness | Состояние установки и использование пайплайна; команды CLI: init, update, diff, adopt, registry, list, health, cleanup, Repo Map, ledger. |
+| Orchestration | Статистика пайплайна, история batch по состояниям (Enter открывает хронологию) и команды coordinator. |
 | Reports | Отчёты ролей из леджера с фильтрами, хронология batch и QA-логи. |
 | Repo Map | Карта репозитория для HEAD: сводка, дерево файлов, символы, связи и хабы. |
 | Help | Эта справка. |

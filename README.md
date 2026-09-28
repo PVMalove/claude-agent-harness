@@ -217,8 +217,8 @@ capability, путь репозитория и ветка. Ниже — дашб
 | Раздел | Что внутри |
 |---|---|
 | `Diagnostics` | Полный отчёт `health`, «online checks» и «apply fixes» (`health --fix`, требует повторного нажатия). |
-| `Harness` | Команды CLI: init, update, diff, adopt, registry, lock-project-skills, list, health, cleanup, Repo Map, ledger и удаление worktree. |
-| `Orchestration` | Команды coordinator для оператора: batch, dispatch, qa status, risk assess, context-package, ledger status. |
+| `Harness` | Состояние установки (версия, capability, скилы, управляемые файлы, дата lock) и сводка использования пайплайна; команды CLI: init, update, diff, adopt, registry, lock-project-skills, list, health, cleanup, Repo Map, ledger и удаление worktree. |
+| `Orchestration` | Статистика пайплайна (запуски, тикеты, состояния, диспатчи по ролям, итоги отчётов, QA), история batch с фильтром по состоянию — выбранный batch открывает хронологию; команды coordinator: batch, dispatch, qa status, risk assess, context-package, ledger status. |
 | `Reports` | Отчёты ролей из леджера с фильтрами по тикету, роли, outcome и дате, хронология batch и QA-логи. |
 | `Repo Map` | Карта репозитория для HEAD: сводка, дерево файлов с сигнатурами, поиск символов, связи, хабы. |
 | `Help` | Справка по разделам, клавишам и правилам безопасности пульта. |
