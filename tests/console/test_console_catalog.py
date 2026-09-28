@@ -41,6 +41,8 @@ def test_catalog_covers_every_harness_and_ledger_command() -> None:
         "cleanup-hard",
         "cleanup-apply",
         "cleanup-hard-apply",
+        "uninstall",
+        "uninstall-apply",
         "repo-map",
         "parser-bundle",
         "verify",
@@ -68,6 +70,7 @@ def test_irreversible_commands_carry_their_confirmation_class() -> None:
         "health-online-fix": Reversibility.EXTERNAL_CHANGE,
         "cleanup-apply": Reversibility.DELETES_LOCAL_DATA,
         "cleanup-hard-apply": Reversibility.DELETES_LOCAL_DATA,
+        "uninstall-apply": Reversibility.DELETES_LOCAL_DATA,
         "ledger-clean": Reversibility.DELETES_LOCAL_DATA,
         "ledger-reset": Reversibility.DELETES_LOCAL_DATA,
         "worktree-remove": Reversibility.DELETES_LOCAL_DATA,
@@ -83,6 +86,9 @@ def test_typed_confirmations_match_the_cli_safeguard_words() -> None:
     assert ENTRIES["update-force-managed"].argv[-1] == "--force-managed-files"
     assert ENTRIES["update-force-seed"].argv[-1] == "--force-seed-files"
     assert ENTRIES["cleanup-hard"].argv[-2:] == ("--mode", "hard")
+    uninstall = ENTRIES["uninstall-apply"]
+    assert uninstall.typed_confirmation == "UNINSTALL"
+    assert uninstall.argv[-2:] == ("--confirm", "UNINSTALL")
     hard = ENTRIES["cleanup-hard-apply"]
     assert hard.typed_confirmation == "HARD"
     assert hard.argv[-2:] == ("--confirm", "HARD")

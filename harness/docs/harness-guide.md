@@ -66,7 +66,7 @@ cd claude-agent-harness
 ### Шаг 2 — команды CLI
 
 Все команды имеют вид `harness/bin/harness.py <command> <repo> [флаги]`, где `<repo>` — путь к
-целевому проекту (не обязательно текущая директория). CLI умеет десять подкоманд:
+целевому проекту (не обязательно текущая директория). CLI умеет одиннадцать подкоманд:
 
 | Команда | Что делает | Пишет на диск |
 |---|---|---|
@@ -79,6 +79,7 @@ cd claude-agent-harness
 | `health` | Диагностика установки и окружения | только с `--fix` |
 | `list` | Список установленных скиллов | нет |
 | `cleanup` | Предпросмотр и удаление одноразовых данных `.harness` | только с `--apply` |
+| `uninstall` | Предпросмотр и полное удаление харнесса из проекта | только с `--apply` |
 | `console` | Интерактивный TUI-пульт | через выбранные команды |
 
 #### Какую команду выбрать
@@ -349,6 +350,24 @@ python3 harness/bin/harness.py cleanup /path/to/repository --mode hard --apply -
 (по умолчанию 24) задаёт минимальный возраст удаляемых данных, а hard-очистка требует
 `--confirm HARD`.
 
+#### `uninstall` — полное удаление харнесса
+
+```bash
+python3 harness/bin/harness.py uninstall /path/to/repository                            # план в JSON
+python3 harness/bin/harness.py uninstall /path/to/repository --apply --confirm UNINSTALL
+```
+
+Удаляется всё, что устанавливают `init` и `adopt`: каталог `.harness/`, discovery-ссылки
+`.agents/skills` и `.claude/skills`, seed-файлы (`docs/agents/*`, `.claude/hooks/*`,
+`.claude/rules/*`, `.claude/agents/*`, `.claude/settings.local.json`, `AGENTS.md`, `CLAUDE.md`) и строки
+харнесса в корневом `.gitignore`; опустевшие каталоги убираются. Seed-файлы, отличающиеся от
+шаблона, и проектные данные внутри `.harness/` (`project.json`, `orchestration.json`,
+`integrations.json`, собственные скиллы, состояние ledger) перед удалением копируются в
+`.harness-uninstall-backup/<время>/`. Каталог или посторонняя ссылка на месте discovery-пути
+остаётся без изменений и попадает в `skipped`. При активных batch оркестрации
+удаление отклоняется; после удаления выполняется `git worktree prune`. Применение сверяет свежий
+план с показанным и при расхождении требует повторного предпросмотра.
+
 #### `console` — интерактивный пульт
 
 ```bash
@@ -372,7 +391,7 @@ checks» пересчитывает счётчики с `--online` и показ
 | Раздел | Что внутри |
 |---|---|
 | `Diagnostics` | Полный отчёт `health`, «online checks» и «apply fixes» (`health --fix`, после online checks — `--online --fix`; требует повторного нажатия). Health работает в фоновом потоке, отчёт экспортируется в Markdown |
-| `Harness` | Панель «Состояние»: установленная версия (и версия пакета, если они расходятся), capability, число скиллов и управляемых файлов, время обновления lock, подключена ли оркестрация и сводка использования пайплайна (`harness/console/stats.py`). Ниже — команды из `harness/console/catalog.py`: init, update (в том числе `--force-managed-files` и `--force-seed-files`), diff, adopt, очистка soft/hard (план и применение), registry, lock-project-skills, list, health, Repo Map, parser bundle, verify, ledger migrate/clean/reset, удаление worktree |
+| `Harness` | Панель «Состояние»: установленная версия (и версия пакета, если они расходятся), capability, число скиллов и управляемых файлов, время обновления lock, подключена ли оркестрация и сводка использования пайплайна (`harness/console/stats.py`). Ниже — команды из `harness/console/catalog.py`: init, update (в том числе `--force-managed-files` и `--force-seed-files`), diff, adopt, очистка soft/hard (план и применение), удаление харнесса (план и применение), registry, lock-project-skills, list, health, Repo Map, parser bundle, verify, ledger migrate/clean/reset, удаление worktree |
 | `Orchestration` | Статистика пайплайна (запуски и тикеты, состояния, диспатчи по ролям, итоги отчётов, QA, период) и история: слева все состояния batch с числом, справа batch выбранного состояния, Enter открывает хронологию. Ниже — команды coordinator из `harness/console/coordinator_catalog.py` |
 | `Reports` | Completion reports из леджера с фильтрами по тикету, роли, outcome и дате; хронология batch; QA-логи |
 | `Repo Map` | Карта для HEAD из кэша или построение: сводка, дерево файлов с сигнатурами, поиск символа, связи, топ-10 хабов, диагностика |
@@ -397,7 +416,7 @@ checks» пересчитывает счётчики с `--online` и показ
 - Обратимые команды выполняются сразу. Перед необратимыми — удаление данных, терминальные решения
   coordinator (`batch approve/abandon/decide`, `batch attention resolve`, `dispatch create/cancel`),
   внешние изменения (`dispatch send`), перезапись управляемых файлов — пульт запрашивает подтверждение;
-  при отмене команда не выполняется. `ledger reset` и hard cleanup требуют ввести `RESET` / `HARD`.
+  при отмене команда не выполняется. `ledger reset`, hard cleanup и удаление харнесса требуют ввести `RESET` / `HARD` / `UNINSTALL`.
 - Поля форм Orchestration получены обходом реального `coordinator.parser()`, поэтому новый
   обязательный аргумент или `choices` отражается без ручной правки каталога (дрейф-тест).
 - Команда, чей скрипт в проекте отсутствует (verify и сборка parser bundle есть только в

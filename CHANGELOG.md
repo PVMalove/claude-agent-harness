@@ -2,6 +2,13 @@
 
 Изменения выпусков записываются в формате [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/) и версионируются по SemVer.
 
+## [1.1.0] - 2026-09-28
+
+### Added
+
+- `harness uninstall <repo>`: полное удаление харнесса из проекта — `.harness/`, discovery-ссылок, seed-файлов, `AGENTS.md`, `CLAUDE.md` и строк харнесса в `.gitignore`. Без `--apply` выводится план; `--apply --confirm UNINSTALL` применяет его, предварительно копируя изменённые проектом файлы и проектные данные `.harness/` в `.harness-uninstall-backup/<время>/`. При активных batch оркестрации удаление отклоняется.
+- `harness console`, раздел Harness: план и применение удаления харнесса (ввод `UNINSTALL`).
+
 ## [1.0.1] - 2026-09-28
 
 ### Added

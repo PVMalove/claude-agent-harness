@@ -200,6 +200,21 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         typed_confirmation="HARD",
     ),
     CatalogEntry(
+        "uninstall",
+        "Удаление харнесса из проекта: план",
+        ("harness", "uninstall", "{repo}"),
+        Reversibility.REVERSIBLE,
+        f"{_HARNESS_CLI}:cmd_uninstall",
+    ),
+    CatalogEntry(
+        "uninstall-apply",
+        "Удалить харнесс из проекта (с резервной копией изменённых файлов)",
+        ("harness", "uninstall", "{repo}", "--apply", "--confirm", "UNINSTALL"),
+        Reversibility.DELETES_LOCAL_DATA,
+        f"{_HARNESS_CLI}:cmd_uninstall",
+        typed_confirmation="UNINSTALL",
+    ),
+    CatalogEntry(
         "registry",
         "Пересобрать реестр скиллов",
         ("harness", "registry", "{repo}"),
