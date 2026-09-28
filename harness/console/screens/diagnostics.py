@@ -27,7 +27,7 @@ from .export import EXPORT_BINDING_KEY, export_document
 
 _STATUS_MARKERS = {"ok": "[OK]", "warn": "[WARN]", "fail": "[FAIL]", "skipped": "-"}
 _APPLY_LABEL = "Apply fixes"
-_CONFIRM_LABEL = "Подтвердить применение фиксов"
+_CONFIRM_LABEL = "Подтвердить фиксы"
 _MANUAL_NOTE = "Команды «Как исправить» пульт не выполняет — запустите их вручную."
 _RUNNING = "health выполняется…"
 
@@ -118,6 +118,7 @@ class DiagnosticsScreen(Screen[None]):
     DiagnosticsScreen #diagnostics-scroll { height: 1fr; }
     DiagnosticsScreen #diagnostics-actions { height: auto; }
     DiagnosticsScreen .action-row { height: auto; }
+    DiagnosticsScreen .action-row Button { width: 21; }
     DiagnosticsScreen .action-cli { width: 1fr; padding: 1 0 0 2; color: $text-muted; }
     """
 

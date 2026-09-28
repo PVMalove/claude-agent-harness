@@ -93,7 +93,7 @@ class DashboardScreen(Screen[None]):
         height: auto; max-height: 40%; margin: 1 2 0 2; border: round $primary 50%;
     }
     DashboardScreen #dashboard-actions { height: auto; margin: 1 2 0 2; }
-    DashboardScreen #dashboard-actions Button { margin-right: 1; }
+    DashboardScreen #dashboard-actions Button { width: 21; margin-right: 1; }
     DashboardScreen #dashboard-cli { height: auto; width: 1fr; padding: 0 0 0 1; }
     DashboardScreen .action-cli { color: $text-muted; height: auto; }
     DashboardScreen #section-menu { height: auto; margin: 1 2; border-title-color: $primary; }
