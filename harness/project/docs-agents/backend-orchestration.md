@@ -100,7 +100,8 @@ python3 harness/bin/harness.py health /path/to/repository
 сессии (`dispatch create --model <model> --effort <effort>`). Транспорт в этом режиме всегда
 `in-process`: provider profile нет, значит и внешний worker запускать нечем. `harness health` такой
 проект принимает. Конфиг нужен, когда проекту нужны настоящие зоны, разные модели по ролям,
-внешний транспорт или бюджет параллелизма больше единицы.
+внешний транспорт или бюджет параллелизма больше единицы. Справочник всех полей с дефолтами —
+[`.harness/orchestration/README.md`](../../.harness/orchestration/README.md).
 
 Запускайте coordinator-сессию с `medium` effort по умолчанию. Для architect в assignment plan также
 выбирайте `medium`; более высокий effort требует явного решения разработчика для названного
@@ -221,8 +222,9 @@ python .harness/orchestration/coordinator.py --repo . batch preflight \
   --expected-service payments --expected-changed-lines 120
 ```
 
-Template ограничивает DoD (5), dependencies (3), файлы (12), сервисы (1), diff (800 строк) и
-ожидаемый context (80k tokens). Проект может ужесточить эти значения через `preflight_policy`.
+Без `preflight_policy` coordinator ограничивает DoD (5), dependencies (3), файлы (12), сервисы (1),
+diff (800 строк) и ожидаемый context (80k tokens); пример `orchestration.example.json` задаёт
+8/5/25/2/2000/150k. Проект настраивает эти значения через `preflight_policy`.
 `context_package_policy` использует консервативную token estimate и резервирует место для системных
 инструкций; байтовый предел остаётся только диагностической совместимостью. `symbol_graph_depth`
 (по умолчанию 2) в этой политике управляет глубиной import-графа для *каждого* автоматического
@@ -293,8 +295,8 @@ manifests), а значением — непустой список уникал
   `context-pressure`) допустимо на один candidate (`0` — ни одного) и после какого молчания живой
   dispatch считается stale.
 - `approval_ttl_seconds` — срок жизни явного `--approved-at`. Более старое (или датированное в
-  будущем) approval отклоняется и не используется повторно. Без поля approval не истекает; шаблон
-  `harness init` задаёт `3600`.
+  будущем) approval отклоняется и не используется повторно. Без поля approval не истекает; пример
+  `orchestration.example.json`, из которого `harness init` создаёт конфиг, задаёт `14400`.
 - `extensions` — подключаемые интерфейсы вне ядра coordinator: `transport_health`,
   `verification_environment_health`, `retry_reason_classifier`, `context_telemetry_provider`,
   `human_notifier`. Значение — `none` (инертный дефолт), имя, зарегистрированное хост-процессом, или
