@@ -80,6 +80,7 @@
     "extends": "pvmalove-suite",
     "resources": [
       "orchestration",
+      "orchestration.example.json",
       "context_builder"
     ]
   }

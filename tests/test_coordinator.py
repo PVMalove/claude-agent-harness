@@ -1373,11 +1373,13 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
     def test_the_seeded_project_template_is_healthy_and_selects_only_inert_extensions(
         self,
     ) -> None:
-        template = json.loads(
-            (
-                ORCHESTRATION_ROOT.parent / "project" / "orchestration.json.tmpl"
-            ).read_text(encoding="utf-8")
+        example = ORCHESTRATION_ROOT.parent / "orchestration.example.json"
+        # The whole example `harness init` seeds .harness/orchestration.json from is valid
+        # against the shipped schema and role manifests, assignment plans included.
+        self.assertEqual(
+            contract.health_problems(example, ORCHESTRATION_ROOT / "roles"), []
         )
+        template = json.loads(example.read_text(encoding="utf-8"))
         template.pop("$schema", None)
         self.assertEqual(
             self._operational_health(
@@ -1389,6 +1391,8 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
                         "provider_profiles",
                         "assignment_plans",
                         "backend_zones",
+                        # names backend_zones, which this operational subset leaves out
+                        "low_risk_zones",
                         "concurrency_budget",
                         "verification_commands",
                     }

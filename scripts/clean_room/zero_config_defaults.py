@@ -29,19 +29,16 @@ def run(ctx: SimpleNamespace) -> None:
     # invoking session supplies the role runtime, so an in-process pipeline needs no assignment plan.
     zero_config_state = test_root / "zero-config-state"
     saved_config = orchestration_config.read_text(encoding="utf-8")
-    # `harness init` seeds an intentionally empty template. A present-but-empty file states nothing,
-    # so it has to mean the same as no file: otherwise a freshly initialised project takes the
-    # configured path, finds no zone and no assignment, and cannot start a batch at all — while
-    # deleting the seeded file would fix it.
+    # A config that declares no zones and no assignments states nothing, so it has to mean the same
+    # as no file: otherwise a project whose config was emptied takes the configured path, finds no
+    # zone and no assignment, and cannot start a batch at all — while deleting the file would fix
+    # it. `harness init` seeds the full example, so the empty variant is derived from it here.
     empty_seed = json.loads(
-        (ROOT / "harness" / "project" / "orchestration.json.tmpl").read_text(
-            encoding="utf-8"
-        )
+        (ROOT / "harness" / "orchestration.example.json").read_text(encoding="utf-8")
     )
-    if empty_seed.get("backend_zones") or empty_seed.get("assignment_plans"):
-        sys.exit(
-            "the orchestration seed is no longer empty; this scenario needs rewriting"
-        )
+    for key in ("provider_profiles", "assignment_plans", "backend_zones"):
+        empty_seed[key] = {}
+    empty_seed["low_risk_zones"] = []
     orchestration_config.write_text(
         json.dumps(empty_seed, indent=2) + "\n", encoding="utf-8"
     )

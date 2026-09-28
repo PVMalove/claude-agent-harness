@@ -669,8 +669,11 @@ def scaffold_pvmalove_extras(
         written.append(schema_result)
 
     if orchestration_enabled:
+        # The project's own config starts as a copy of the managed example
+        # (.harness/orchestration.example.json, refreshed by every init/adopt/update) and is
+        # never overwritten afterwards unless --force-seed-files is given.
         orchestration_result = _copy_if_absent(
-            PROJECT_TEMPLATE_DIR / "orchestration.json.tmpl",
+            PACKAGE / "orchestration.example.json",
             repo / ".harness/orchestration.json",
             force=force_seed,
             differing=differing,

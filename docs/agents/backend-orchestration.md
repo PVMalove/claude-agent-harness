@@ -106,8 +106,16 @@ python3 harness/bin/harness.py health /path/to/repository
 выбирайте `medium`; более высокий effort требует явного решения разработчика для названного
 труднообратимого вопроса, а не является дефолтом каждого ticket.
 
-Начальный шаблон намеренно пуст. Заполните provider profile, одну или несколько backend-зон,
-назначение для **каждой** используемой роли и реальные project checks. `code-review` следует
+`init` создаёт конфиг как копию управляемого примера `.harness/orchestration.example.json`:
+provider profiles `claude-profile` и `codex-profile`, назначения architect/developer/code-review/qa на
+двух runtime, зона `repository` на весь репозиторий и `approval_policy: low_risk`. Модели и effort в
+примере — ориентир, замените их на свои. Списки проверок в примере пустые: впишите реальные project
+checks в `verification_commands` (и при желании в `developer_verification_commands` и
+`review_verification_commands`). У ролей два runtime без `default_runtime`, поэтому
+`dispatch create` требует `--runtime`, пока вы не зададите `default_runtime`. Пример обновляется
+при каждом `update`/`adopt`, а ваш `.harness/orchestration.json` — никогда: новые поля и значения
+переносите из примера вручную. Правьте provider profiles, backend-зоны, назначение для **каждой**
+используемой роли и project checks под свой проект. `code-review` следует
 назначить всегда: validator требует его, когда в конфиге есть назначения, поскольку это
 обязательный gate для high-risk работы.
 
@@ -119,7 +127,7 @@ runtime-наборы (`codex`, `claude` и т.п.); в каждом обязат
 Если у роли несколько runtime, задайте `default_runtime` в её assignment plan; иначе каждый
 `dispatch create` обязан явно передать `--runtime`. Скрытого fallback на Codex нет. Для review,
 который проект всегда хочет запускать через Claude, это выглядит как
-`"default_runtime": "claude"` рядом с `runtimes`. Новый template также включает
+`"default_runtime": "claude"` рядом с `runtimes`. Пример также включает
 `"worker_attestation_required": true`: worker до любой работы подтверждает свой фактический Git
 worktree, branch и SHA; legacy projects могут включить это поле постепенно.
 
