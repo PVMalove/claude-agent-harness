@@ -1,6 +1,6 @@
 # Диаграммы харнесса
 
-Двадцать две автономные интерактивные HTML-диаграммы. Рядом с каждой лежит редактируемая спецификация
+Двадцать три автономные интерактивные HTML-диаграммы. Рядом с каждой лежит редактируемая спецификация
 Archify (`*.json`), а в `previews/` — статичное PNG той же диаграммы для Markdown, который не умеет
 рендерить HTML (например, README на GitHub).
 
@@ -28,23 +28,29 @@ Archify (`*.json`), а в `previews/` — статичное PNG той же д�
 | [Метки `status::*`](./triage-labels.lifecycle.html) | **Lifecycle:** путь тикета по меткам триажа и кто их ставит. |
 | [Пример: эпик через `/implement`](./example-epic-afk.workflow.html) | CSV-экспорт: `/grill-with-docs` → `/to-spec` → `/to-tickets` → `/implement` → `/to-pull-requests`, разблокировка второго тикета. |
 | [Пример: `/wayfinder`](./example-wayfinder-oauth.workflow.html) | Переход на внешний OAuth: карта #200, research- и grilling-тикеты, сессии по тикетам, передача на `/to-spec`. |
+| [Вертикальные слайсы](./vertical-slices.workflow.html) | Почему `/to-tickets` режет работу на проверяемые слайсы, а не на горизонтальные слои. |
 
 ## Как обновлять
 
-Диаграммы собраны скиллом [archify](https://github.com/tt-a1i/archify). Правится только `*.json`,
-после чего диаграмма перегенерируется и проверяется:
+Диаграммы собраны скиллом [archify](https://github.com/tt-a1i/archify) 2.17. Правится только
+`*.json` (в `meta.output` — `docs/diagrams/<spec>.html`), после чего диаграмма перегенерируется и
+проверяется одной командой из корня репозитория:
 
 ```bash
-node bin/archify.mjs validate <type> <spec>.json --quality showcase --json
-node bin/archify.mjs deliver  <type> <spec>.json <output>.html --quality showcase --json
-node bin/archify.mjs visual-check <output>.html --json
+ARCHIFY_CHROME=<путь к Chrome/Chromium> \
+  node <archify>/bin/archify.mjs finalize <type> docs/diagrams/<spec>.json docs/diagrams/<spec>.html \
+  --repo-root . --quality showcase --json
 ```
 
 `<type>` — `workflow`, `architecture`, `sequence`, `dataflow` или `lifecycle`, в зависимости от
-смысла схемы. `deliver` обязан
-завершиться нулевым кодом, `visual-check` — дать `containment: pass`. PNG в `previews/` — это светлый
-снимок `visual-check` при 1440×900; после перегенерации HTML его нужно обновить, иначе README покажет
-устаревшую картинку.
+смысла схемы. `finalize` проходит `validate`, `deliver`, `check` и `browser-check` и обязан завершиться
+`status: pass`. Квитанции (`*.finalize*.json`, `*.delivery.json`, `*.browser-check.json`) в
+репозиторий не коммитятся.
+
+PNG в `previews/` — светлый снимок HTML при 1440×900; после перегенерации HTML его нужно обновить,
+иначе README покажет устаревшую картинку. Превью, которые показывает справочник
+`harness/docs/harness-guide.md`, лежат копиями в `harness/docs/diagrams/`: справочник ставится в
+целевой проект без корневого `docs/`. `scripts/verify.py` сверяет эти копии с `previews/`.
 
 Содержимое диаграмм ведётся на русском. Интерфейс самого просмотрщика (`Light`/`Dark`, `Present`,
 `Export`, `Legend`) и подписи легенды в lifecycle остаются английскими: это фиксированный UI

@@ -28,6 +28,7 @@ from harness.storage import storage_path
 from scripts.verification.docs_sync import (
     check_docs_agents_enumeration,
     check_docs_agents_mirror,
+    check_guide_diagram_previews,
     check_no_retired_path_inventory_term,
     check_pvmalove_additions_docs_sync,
     check_pvmalove_override_docs_sync,
@@ -132,6 +133,7 @@ def _check_global_skills() -> None:
 def _check_documentation() -> None:
     """Проверить согласованность документации, шаблонов и постоянных инструкций."""
     check_docs_agents_mirror()
+    check_guide_diagram_previews()
     check_no_retired_path_inventory_term()
     grep_contains(
         ROOT / "skills" / "first-party" / "pvmalove" / "to-tickets" / "SKILL.md",

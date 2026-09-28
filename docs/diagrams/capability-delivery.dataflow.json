@@ -2,8 +2,9 @@
   "schema_version": 1,
   "diagram_type": "dataflow",
   "meta": {
+    "viewBox": [1240, 800],
+    "output": "docs/diagrams/capability-delivery.dataflow.html",
     "title": "Поток capability от каталога к runtime",
-    "viewBox": [1440, 900],
     "quality_profile": "showcase"
   },
   "stages": [

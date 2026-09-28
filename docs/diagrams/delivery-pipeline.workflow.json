@@ -2,6 +2,7 @@
   "schema_version": 2,
   "diagram_type": "workflow",
   "meta": {
+    "output": "docs/diagrams/delivery-pipeline.workflow.html",
     "title": "Пайплайн доставки: от идеи до merge",
     "quality_profile": "showcase",
     "legend": {

@@ -12,7 +12,7 @@ Agent Harness — переносимый набор скиллов, правил
 > backend-оркестрации, lifecycle coordinator, ролей, clean-room QA и локального state — в
 > [backend-orchestration.md](./backend-orchestration.md).
 
-![Навигация по Agent Harness: установка, работа, проверка](https://raw.githubusercontent.com/PVMalove/claude-agent-harness/master/docs/diagrams/previews/harness-guide-navigation.workflow.png)
+![Навигация по Agent Harness: установка, работа, проверка](./diagrams/harness-guide-navigation.workflow.png)
 
 Редактируемая спецификация и интерактивная версия схемы:
 [Archify JSON](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/harness-guide-navigation.workflow.json)
@@ -83,7 +83,7 @@ cd claude-agent-harness
 
 #### Какую команду выбрать
 
-[![Какую команду установки выбрать](https://raw.githubusercontent.com/PVMalove/claude-agent-harness/master/docs/diagrams/previews/harness-install-choice.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/harness-install-choice.workflow.html)
+[![Какую команду установки выбрать](./diagrams/harness-install-choice.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/harness-install-choice.workflow.html)
 
 | | `init` | `adopt` |
 |---|---|---|
@@ -502,7 +502,7 @@ MCP/plugin/hook/runtime-конфигов) — в
 
 ## Общая схема пайплайна
 
-[![Пайплайн доставки от идеи до merge](https://raw.githubusercontent.com/PVMalove/claude-agent-harness/master/docs/diagrams/previews/delivery-pipeline.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/delivery-pipeline.workflow.html)
+[![Пайплайн доставки от идеи до merge](./diagrams/delivery-pipeline.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/delivery-pipeline.workflow.html)
 
 Схема показывает путь целиком, для точки входа 3 (самый большой случай). С других точек входа часть
 шагов пропускается совсем, а не проходится «без действия».
@@ -510,7 +510,7 @@ MCP/plugin/hook/runtime-конфигов) — в
 Шаг 5 в `/implement` — конвейер из пяти ролевых гейтов, а не одна сессия
 ([раздел 4](#implement-ссылка_или_номер_тикета)):
 
-[![Gated dispatch /implement](https://raw.githubusercontent.com/PVMalove/claude-agent-harness/master/docs/diagrams/previews/implement-dispatch.sequence.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/implement-dispatch.sequence.html)
+[![Gated dispatch /implement](./diagrams/implement-dispatch.sequence.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/implement-dispatch.sequence.html)
 
 Поперёк всех гейтов работают две проверки живости: каждый dispatch первым делом подтверждает
 фактически активную модель (model self-report), а coordinator-сессия следит за heartbeat и выносит
@@ -600,7 +600,7 @@ on-ramps (`/triage` для входящих багов и фича-реквес�
 больше нечего. Тяга «просто сделать» — сигнал передавать эстафету. Переопределяется явно в `## Notes`
 карты.
 
-[![Карта решений /wayfinder](https://raw.githubusercontent.com/PVMalove/claude-agent-harness/master/docs/diagrams/previews/wayfinder-map.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/wayfinder-map.workflow.html)
+[![Карта решений /wayfinder](./diagrams/wayfinder-map.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/wayfinder-map.workflow.html)
 
 **Устройство карты:**
 
@@ -644,7 +644,7 @@ on-ramps (`/triage` для входящих багов и фича-реквес�
 Это **не интервью** — переспрашивать запрещено; не хватает данных — значит, грилинг был неполным, и
 агент синтезирует по известным фактам с явными допущениями. Вызывается только вручную.
 
-[![/to-spec: от обсуждения к эпику](https://raw.githubusercontent.com/PVMalove/claude-agent-harness/master/docs/diagrams/previews/to-spec-flow.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/to-spec-flow.workflow.html)
+[![/to-spec: от обсуждения к эпику](./diagrams/to-spec-flow.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/to-spec-flow.workflow.html)
 
 1. **Исследование и seam'ы.** Изучить словарь домена (`CONTEXT.md`) и ADR затрагиваемой области,
    наметить **seam'ы** — точки, где фича будет тестироваться: существующие лучше новых, уровень —
@@ -718,16 +718,7 @@ native GitHub sub-issues.
 
 **Вертикальный слайс, а не слой:**
 
-```text
-Горизонтально (плохо)            Вертикально (хорошо)
-┌──────────────────────┐          ┌──────┐ ┌──────┐
-│ Все миграции БД       │          │ БД   │ │ БД   │
-├──────────────────────┤          │ API  │ │ API  │
-│ Все API-эндпоинты    │          │ UI   │ │ UI   │
-├──────────────────────┤          │ тест │ │ тест │
-│ Весь UI               │          └──────┘ └──────┘
-└──────────────────────┘          слайс #1  слайс #2
-```
+[![Вертикальные слайсы вместо слоёв](./diagrams/vertical-slices.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/vertical-slices.workflow.html)
 
 1. **Черновик и ревью.** Собрать контекст (разговор или ссылка на спеку/issue), при желании поискать
    префакторинг («Make the change easy, then make the easy change»). Нарезать вертикальные слайсы —
@@ -809,7 +800,7 @@ coordinator и architect с `medium` effort; повышение — только
 
 **Жизненный цикл batch:**
 
-[![Жизненный цикл batch](https://raw.githubusercontent.com/PVMalove/claude-agent-harness/master/docs/diagrams/previews/backend-batch.lifecycle.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/backend-batch.lifecycle.html)
+[![Жизненный цикл batch](./diagrams/backend-batch.lifecycle.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/backend-batch.lifecycle.html)
 
 Какая команда переводит batch в какое состояние:
 
@@ -900,7 +891,7 @@ python .harness/orchestration/coordinator.py --repo . dispatch status --batch <b
 **В этом репозитории** first-party override ([раздел 7](#7-локальные-кастомизации-10-изменённых-скиллов))
 добавляет три фазы. Ту же Phase 1 выполняет и `/implement` перед `batch create`.
 
-[![/fast-implement: одна сессия от тикета до push](https://raw.githubusercontent.com/PVMalove/claude-agent-harness/master/docs/diagrams/previews/fast-implement.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/fast-implement.workflow.html)
+[![/fast-implement: одна сессия от тикета до push](./diagrams/fast-implement.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/fast-implement.workflow.html)
 
 **Phase 1 — Pre-flight:**
 
@@ -950,7 +941,7 @@ push — разработчику.
 
 ### `/tdd` (TDD Loop)
 
-[![Цикл /tdd](https://raw.githubusercontent.com/PVMalove/claude-agent-harness/master/docs/diagrams/previews/tdd-loop.lifecycle.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/tdd-loop.lifecycle.html)
+[![Цикл /tdd](./diagrams/tdd-loop.lifecycle.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/tdd-loop.lifecycle.html)
 
 Цикл идёт на заранее согласованных швах; рефакторинг делается на шаге Refactor, а не внутри
 red → green.
@@ -1167,7 +1158,7 @@ status::ready») — тогда грилинг пропускается. Каж�
 | `task-report::required` | — | `/to-spec`, `/to-tickets` по умолчанию: при закрытии обязателен отчёт о завершении |
 | `out-of-scope` | — | `/triage`: замена апстримного `wontfix` |
 
-[![Метки status::* по пути тикета](https://raw.githubusercontent.com/PVMalove/claude-agent-harness/master/docs/diagrams/previews/triage-labels.lifecycle.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/triage-labels.lifecycle.html)
+[![Метки status::* по пути тикета](./diagrams/triage-labels.lifecycle.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/triage-labels.lifecycle.html)
 
 Дочерний тикет связывается с эпиком как native GitHub sub-issue
 (`docs/agents/issue-tracker.md#wayfinding-operations`); тот же механизм `wayfinder` использует для
@@ -1362,7 +1353,7 @@ git commit -F "$MSG_FILE"                                           # забло
 
 Фича помещается в одну сессию грилинга, но нужна декомпозиция — без Wayfinder.
 
-[![Пример: эпик CSV-экспорта через /implement](https://raw.githubusercontent.com/PVMalove/claude-agent-harness/master/docs/diagrams/previews/example-epic-afk.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/example-epic-afk.workflow.html)
+[![Пример: эпик CSV-экспорта через /implement](./diagrams/example-epic-afk.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/example-epic-afk.workflow.html)
 
 1. **`/grill-with-docs`** — «Хочу экспорт отчётов в CSV». Раунды: какие отчёты (только текущий вид
    таблицы), кто инициирует (кнопка на странице, не API), формат чисел (locale проекта). В
@@ -1410,7 +1401,7 @@ git commit -F "$MSG_FILE"                                           # забло
 Идея: «Перевести авторизацию на внешнего OAuth-провайдера вместо своих паролей — но неясно, какие
 модули это затронет и что решать первым».
 
-[![Пример: переход на внешний OAuth через /wayfinder](https://raw.githubusercontent.com/PVMalove/claude-agent-harness/master/docs/diagrams/previews/example-wayfinder-oauth.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/example-wayfinder-oauth.workflow.html)
+[![Пример: переход на внешний OAuth через /wayfinder](./diagrams/example-wayfinder-oauth.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/example-wayfinder-oauth.workflow.html)
 
 **Chart the map** (одна сессия, ничего не разрешает):
 

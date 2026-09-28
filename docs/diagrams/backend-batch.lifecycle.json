@@ -2,6 +2,7 @@
   "schema_version": 1,
   "diagram_type": "lifecycle",
   "meta": {
+    "output": "docs/diagrams/backend-batch.lifecycle.html",
     "title": "Backend-оркестрация: жизненный цикл batch",
     "quality_profile": "showcase",
     "viewBox": [

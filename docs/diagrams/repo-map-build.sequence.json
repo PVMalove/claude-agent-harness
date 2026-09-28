@@ -2,8 +2,9 @@
   "schema_version": 1,
   "diagram_type": "sequence",
   "meta": {
+    "viewBox": [1440, 915],
+    "output": "docs/diagrams/repo-map-build.sequence.html",
     "title": "Построение Repo Map на закреплённом коммите",
-    "viewBox": [1440, 900],
     "column_fit": "spread",
     "quality_profile": "showcase"
   },
