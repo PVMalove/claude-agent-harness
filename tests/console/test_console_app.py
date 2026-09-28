@@ -521,3 +521,74 @@ def test_diagnostics_shows_cli_equivalents_and_exports_the_report(
     text = exported[0].read_text(encoding="utf-8")
     assert text.startswith("# Health-отчёт")
     assert "environment.uv" in text
+
+
+def test_offline_checks_buttons_rerun_health_offline(tmp_path: Path) -> None:
+    """Проверить, что кнопки Offline checks дашборда и диагностики перезапускают проверки офлайн."""
+
+    async def scenario() -> tuple[list[bool], list[bool], str]:
+        """Сценарий нажатия Offline checks на обоих экранах."""
+        from textual.app import App
+        from textual.widgets import Static
+
+        dashboard_online: list[bool] = []
+        diagnostics_online: list[bool] = []
+
+        def fake_dashboard(_repo: Path, *, online: bool = False) -> DashboardData:
+            """Зафиксировать флаг online для дашборда."""
+            dashboard_online.append(online)
+            return _fake_dashboard_data()
+
+        def fake_diagnostics(repo: Path, *, online: bool = False) -> Report:
+            """Зафиксировать флаг online для диагностики."""
+            diagnostics_online.append(online)
+            return _fake_report(online=online)
+
+        screens = [
+            DashboardScreen(tmp_path, collect_dashboard=fake_dashboard),
+            DiagnosticsScreen(tmp_path, collect_diagnostics=fake_diagnostics),
+        ]
+
+        class _HostApp(App[None]):
+            """Тестовое приложение-хост для обоих экранов."""
+
+            def on_mount(self) -> None:
+                """Смонтировать экран дашборда."""
+                self.push_screen(screens[0])
+
+        app = _HostApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.click("#dashboard-offline")
+            await _settle(pilot)
+            cli = str(app.screen.query_one("#dashboard-offline-cli", Static).content)
+            app.push_screen(screens[1])
+            await _settle(pilot)
+            await pilot.click("#offline-checks")
+            await _settle(pilot)
+        return dashboard_online, diagnostics_online, cli
+
+    dashboard_online, diagnostics_online, cli = asyncio.run(scenario())
+    assert dashboard_online == [False, False]
+    assert diagnostics_online == [False, False]
+    assert cli.endswith(f"health {tmp_path}")
+
+
+def test_dashboard_summary_lists_problems_and_splits_repo_map_facts() -> None:
+    """Проверить, что сводка перечисляет ошибки и предупреждения и разбивает строку Repo Map."""
+    from dataclasses import replace
+
+    from harness.console.screens.dashboard import _render_summary
+
+    data = replace(
+        _fake_dashboard_data(),
+        repo_map_tier="tier=minimal; policy: enforced",
+        problems=(
+            ("fail", "env.git", "git [bold] missing"),
+            ("warn", "repo_map.tier", "minimal"),
+        ),
+    )
+    text = _render_summary(data)
+    assert "repo map: tier=minimal\n  policy: enforced" in text
+    assert "ошибки и предупреждения:" in text
+    assert "env.git — git \\[bold] missing" in text
+    assert text.index("env.git") < text.index("repo_map.tier —")

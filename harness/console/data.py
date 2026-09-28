@@ -46,6 +46,8 @@ class DashboardData:
     active_batches: (
         int | None
     )  # None: backend-orchestration is not connected in this project
+    # (status, check id, message) of every failed and then every warning check.
+    problems: tuple[tuple[str, str, str], ...] = ()
 
 
 def harness_version() -> str:
@@ -143,6 +145,12 @@ def collect_dashboard(repo: Path, *, online: bool = False) -> DashboardData:
         harness_version=harness_version(),
         drift_state=drift_state(repo),
         active_batches=active_batches(repo),
+        problems=tuple(
+            (check.status, check.id, check.message)
+            for status in ("fail", "warn")
+            for check in report.checks
+            if check.status == status
+        ),
     )
 
 

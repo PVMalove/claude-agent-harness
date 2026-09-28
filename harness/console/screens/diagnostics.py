@@ -15,7 +15,7 @@ from typing import Callable, Protocol
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Static
 
@@ -27,7 +27,7 @@ from .export import EXPORT_BINDING_KEY, export_document
 
 _STATUS_MARKERS = {"ok": "[OK]", "warn": "[WARN]", "fail": "[FAIL]", "skipped": "-"}
 _APPLY_LABEL = "Apply fixes"
-_CONFIRM_LABEL = "Подтвердить применение фиксов"
+_CONFIRM_LABEL = "Подтвердить фиксы"
 _MANUAL_NOTE = "Команды «Как исправить» пульт не выполняет — запустите их вручную."
 _RUNNING = "health выполняется…"
 
@@ -114,6 +114,14 @@ class _ApplyLocalFixes(Protocol):
 class DiagnosticsScreen(Screen[None]):
     """Экран диагностики состояния репозитория с возможностью запуска онлайн-проверок и применения исправлений."""
 
+    DEFAULT_CSS = """
+    DiagnosticsScreen #diagnostics-scroll { height: 1fr; }
+    DiagnosticsScreen #diagnostics-actions { height: auto; }
+    DiagnosticsScreen .action-row { height: auto; }
+    DiagnosticsScreen .action-row Button { width: 21; }
+    DiagnosticsScreen .action-cli { width: 1fr; padding: 1 0 0 2; color: $text-muted; }
+    """
+
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Назад"),
         Binding(EXPORT_BINDING_KEY, "export", "Экспорт в Markdown"),
@@ -135,22 +143,39 @@ class DiagnosticsScreen(Screen[None]):
         self._confirming_apply = False
 
     def compose(self) -> ComposeResult:
-        """Формирует структуру виджетов экрана диагностики."""
-        yield Header()
-        yield VerticalScroll(Static(_RUNNING, id="diagnostics-report", markup=False))
-        yield Button("Online checks", id="online-checks")
-        yield Static(
-            f"$ {console_data.health_cli_line(self.repo, '--online')}",
-            id="online-checks-cli",
-            markup=False,
-        )
-        yield Button(_APPLY_LABEL, id="apply-fixes")
-        yield Static(
-            f"$ {console_data.health_cli_line(self.repo, '--fix')}",
-            id="apply-fixes-cli",
-            markup=False,
-        )
-        yield Button("Export", id="export")
+        """Формирует структуру виджетов экрана диагностики: отчёт и действия в рамках."""
+        yield Header(icon=brand.MENU_ICON)
+        with VerticalScroll(id="diagnostics-scroll", classes="frame") as report:
+            report.border_title = "Health-отчёт"
+            yield Static(_RUNNING, id="diagnostics-report", markup=False)
+        with Vertical(id="diagnostics-actions", classes="frame") as actions:
+            actions.border_title = "Действия"
+            with Horizontal(classes="action-row"):
+                yield Button("Offline checks", id="offline-checks")
+                yield Static(
+                    f"$ {console_data.health_cli_line(self.repo)}",
+                    id="offline-checks-cli",
+                    classes="action-cli",
+                    markup=False,
+                )
+            with Horizontal(classes="action-row"):
+                yield Button("Online checks", id="online-checks")
+                yield Static(
+                    f"$ {console_data.health_cli_line(self.repo, '--online')}",
+                    id="online-checks-cli",
+                    classes="action-cli",
+                    markup=False,
+                )
+            with Horizontal(classes="action-row"):
+                yield Button(_APPLY_LABEL, id="apply-fixes")
+                yield Static(
+                    f"$ {console_data.health_cli_line(self.repo, '--fix')}",
+                    id="apply-fixes-cli",
+                    classes="action-cli",
+                    markup=False,
+                )
+            with Horizontal(classes="action-row"):
+                yield Button("Export", id="export")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -159,7 +184,10 @@ class DiagnosticsScreen(Screen[None]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Обрабатывает нажатия кнопок экрана (онлайн-проверки, применение фиксов, экспорт)."""
-        if event.button.id == "online-checks":
+        if event.button.id == "offline-checks":
+            self._reset_apply()
+            self._run_health(lambda: self._collect_diagnostics(self.repo))
+        elif event.button.id == "online-checks":
             self._reset_apply()
             self._run_health(lambda: self._collect_diagnostics(self.repo, online=True))
         elif event.button.id == "apply-fixes":

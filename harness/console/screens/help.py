@@ -9,17 +9,18 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, Markdown
 
 from ..help_text import HELP_MARKDOWN
+from .. import brand
 
 
 class HelpScreen(Screen[None]):
     BINDINGS = [Binding("escape", "app.pop_screen", "Назад")]
     DEFAULT_CSS = """
-    HelpScreen #help-scroll { padding: 0 2; }
-    HelpScreen Markdown { background: $background; }
+    HelpScreen #help-scroll { height: 1fr; }
     """
 
     def compose(self) -> ComposeResult:
-        yield Header()
-        with VerticalScroll(id="help-scroll"):
+        yield Header(icon=brand.MENU_ICON)
+        with VerticalScroll(id="help-scroll", classes="frame") as scroll:
+            scroll.border_title = "Справка"
             yield Markdown(HELP_MARKDOWN, id="help-text")
         yield Footer()

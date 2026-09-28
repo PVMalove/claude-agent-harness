@@ -31,6 +31,7 @@ from textual.widgets.tree import TreeNode
 from .. import repo_map as console_repo_map
 from ..repo_map import RepoMapView
 from ..runner import CommandRunner, capturing_runner
+from .. import brand
 from .export import (
     EXPORT_BINDING_KEY,
     EXPORT_JSON_BINDING_KEY,
@@ -39,6 +40,13 @@ from .export import (
 )
 
 _NO_MAP = "карты нет"
+
+
+def _panel(title: str, content: Static, *, id: str | None = None) -> VerticalScroll:
+    """A scrolling panel in a titled frame, like the frames of the other sections."""
+    panel = VerticalScroll(content, id=id, classes="map-panel")
+    panel.border_title = title
+    return panel
 
 
 class BuildConfirmScreen(ModalScreen[bool]):
@@ -83,9 +91,21 @@ class RepoMapScreen(Screen[None]):
         Binding(EXPORT_JSON_BINDING_KEY, "export_json", "Экспорт в JSON"),
     ]
     DEFAULT_CSS = """
-    RepoMapScreen #repo-map-actions { height: auto; }
+    RepoMapScreen #repo-map-status {
+        height: auto; margin: 0 1; padding: 0 1;
+        border: round $primary 50%; border-title-color: $primary;
+    }
+    RepoMapScreen #repo-map-actions { height: auto; margin: 0 1; }
+    RepoMapScreen #repo-map-tabs { height: 1fr; margin: 0 1; }
+    RepoMapScreen .map-panel {
+        height: 1fr; padding: 0 1;
+        border: round $panel-lighten-2; border-title-color: $primary;
+    }
+    RepoMapScreen .map-panel:focus, RepoMapScreen .map-panel:focus-within { border: round $primary; }
+    RepoMapScreen #file-browser { height: 1fr; }
     RepoMapScreen #file-tree { width: 1fr; }
     RepoMapScreen #file-relations-scroll { width: 1fr; }
+    RepoMapScreen #search-status { height: auto; padding: 0 1; color: $text-muted; }
     RepoMapScreen #build-confirm { height: auto; }
     """
 
@@ -119,30 +139,37 @@ class RepoMapScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         """Формирует структуру виджетов и вкладок экрана Repo Map."""
-        yield Header()
-        yield Static(self._status_text, id="repo-map-status", markup=False)
+        yield Header(icon=brand.MENU_ICON)
+        status = Static(self._status_text, id="repo-map-status", markup=False)
+        status.border_title = "Состояние"
+        yield status
         with Horizontal(id="repo-map-actions"):
             yield Button("Построить карту", id="build-map", disabled=self.head is None)
             yield Button("Экспорт в Markdown", id="export-markdown")
             yield Button("Экспорт в JSON", id="export-json")
         with TabbedContent(id="repo-map-tabs"):
             with TabPane("Сводка", id="tab-summary"):
-                yield VerticalScroll(Static("", id="map-summary", markup=False))
+                yield _panel("Сводка", Static("", id="map-summary", markup=False))
             with TabPane("Файлы", id="tab-files"):
                 yield Input(
                     placeholder="поиск символа в сигнатурах", id="symbol-search"
                 )
                 yield Static("", id="search-status", markup=False)
-                with Horizontal():
-                    yield Tree("карта", id="file-tree")
-                    yield VerticalScroll(
+                with Horizontal(id="file-browser"):
+                    tree: Tree[str] = Tree("карта", id="file-tree", classes="map-panel")
+                    tree.border_title = "Файлы"
+                    yield tree
+                    yield _panel(
+                        "Связи",
                         Static("выберите файл", id="file-relations", markup=False),
                         id="file-relations-scroll",
                     )
             with TabPane("Хабы", id="tab-hubs"):
-                yield VerticalScroll(Static("", id="map-hubs", markup=False))
+                yield _panel("Хабы", Static("", id="map-hubs", markup=False))
             with TabPane("Диагностики", id="tab-diagnostics"):
-                yield VerticalScroll(Static("", id="map-diagnostics", markup=False))
+                yield _panel(
+                    "Диагностики", Static("", id="map-diagnostics", markup=False)
+                )
         yield Footer()
 
     def on_mount(self) -> None:

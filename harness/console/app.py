@@ -43,20 +43,41 @@ class HarnessConsoleApp(App[None]):
 
     TITLE = "harness console"
     BINDINGS = [Binding("f1", "open_help", "Справка")]
-    # Thin rounded frames and warm accents shared by every screen; the palette itself is the
-    # registered theme, so widgets keep textual's own focus and hover states.
+    # Thin rounded frames and warm accents shared by every screen. Only the screen itself is
+    # filled: every widget is transparent and set apart by its frame; a selected item or a hovered
+    # button is marked by colour, never by a fill. Modal dialogs keep the screen colour so the
+    # screen behind them does not show through.
     CSS = """
     Screen { background: $background; }
-    Header { background: $panel; color: $primary; text-style: bold; }
-    Footer { background: $panel; }
-    ListView { background: $background; border: round $panel-lighten-2; }
+    Screen * { background: transparent; }
+    ModalScreen > * { background: $background; }
+    .frame {
+        margin: 0 1; padding: 0 1;
+        border: round $panel-lighten-2; border-title-color: $primary;
+    }
+    .frame:focus, .frame:focus-within { border: round $primary; }
+    Header {
+        height: 3; margin: 0 1; color: $primary; text-style: bold;
+        border: round $primary 60%;
+    }
+    FooterKey .footer-key--key, FooterKey .footer-key--description { background: transparent; }
+    ListView { border: round $panel-lighten-2; border-title-color: $primary; }
     ListView:focus { border: round $primary; }
     ListView > ListItem { padding: 0 1; }
+    ListView > ListItem.-highlight, ListView:focus > ListItem.-highlight,
+    ListView > ListItem:hover {
+        background: transparent; color: $primary; text-style: bold;
+    }
+    Tree > .tree--cursor, Tree:focus > .tree--cursor, Tree > .tree--highlight,
+    Tree > .tree--highlight-line {
+        background: transparent; color: $primary; text-style: bold;
+    }
+    Tab.-active, Tab:hover { background: transparent; color: $primary; text-style: bold; }
     Input, TextArea { border: round $panel-lighten-2; }
     Input:focus, TextArea:focus { border: round $primary; }
-    Button { border: round $primary 60%; background: $background; color: $primary; min-width: 16; }
-    Button:hover { background: $primary 20%; }
-    Button:focus { text-style: bold; border: round $primary; }
+    Button { border: round $primary 60%; color: $primary; min-width: 16; }
+    Button:hover { background: transparent; border: round $primary; text-style: bold; }
+    Button:focus { background: transparent; text-style: bold; border: round $primary; }
     """
 
     def __init__(
