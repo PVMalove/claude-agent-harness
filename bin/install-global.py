@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""Installs a minimal instruction profile plus start-project. It never installs MCP,
+models, plugins, credentials, or permissions."""
+
+import argparse
+import filecmp
+import shutil
+import sys
+from datetime import datetime
+from pathlib import Path
+
+MIN_PYTHON = (
+    3,
+    12,
+)  # same floor as pyproject.toml, harness/bin/harness.py, scripts/test_clean_room
+if sys.version_info < MIN_PYTHON:
+    sys.stderr.write(
+        "[ERROR] install-global.py requires Python %s+ (found %s).\n"
+        % (".".join(map(str, MIN_PYTHON)), sys.version.split()[0])
+    )
+    sys.exit(1)
+
+C_BLUE = "\033[1;34m"
+C_GREEN = "\033[1;32m"
+C_YELLOW = "\033[1;33m"
+C_RED = "\033[1;31m"
+C_CYAN = "\033[1;36m"
+C_RESET = "\033[0m"
+
+ENTRY_SKILLS = ["start-project", "integrate-project"]
+RETIRED_ENTRY_SKILLS = ["project-harness-bootstrap", "skill-library"]
+BACKUP_ROOT = None
+
+
+def backup_target(target: Path, target_home: Path):
+    global BACKUP_ROOT
+    if not BACKUP_ROOT:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        BACKUP_ROOT = target_home / ".agent-harness-backups" / timestamp
+
+    relative = target.relative_to(target_home)
+    backup_dest = BACKUP_ROOT / relative
+    backup_dest.parent.mkdir(parents=True, exist_ok=True)
+
+    shutil.move(str(target), str(backup_dest))
+    print(f"  {C_YELLOW}[BACKUP]{C_RESET} Moved existing to {backup_dest}")
+
+
+def install_file(
+    source: Path, target: Path, check: bool, replace: bool, target_home: Path
+) -> bool:
+    if target.exists() or target.is_symlink():
+        if (
+            target.is_file()
+            and not target.is_symlink()
+            and filecmp.cmp(source, target, shallow=False)
+        ):
+            print(f"  {C_GREEN}[OK]{C_RESET} Profile already matches: {target}")
+            return True
+        if check or not replace:
+            print(
+                f"  {C_RED}[CONFLICT]{C_RESET} File differs: {target} "
+                "(re-run with --replace-conflicts to back it up and replace it)",
+                file=sys.stderr,
+            )
+            return False
+        backup_target(target, target_home)
+    elif check:
+        print(f"  {C_RED}[MISSING]{C_RESET} {target}", file=sys.stderr)
+        return False
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    print(f"  {C_GREEN}[WRITE]{C_RESET} Copied profile to: {target}")
+    return True
+
+
+def install_link(
+    source: Path, target: Path, check: bool, replace: bool, target_home: Path
+) -> bool:
+    if target.is_symlink():
+        try:
+            if target.resolve() == source.resolve():
+                print(f"  {C_GREEN}[OK]{C_RESET} Skill linked correctly: {target}")
+                return True
+        except OSError:
+            pass  # Broken link, fall through and treat as a conflict/replace below.
+
+    if target.exists() or target.is_symlink():
+        if check or not replace:
+            print(
+                f"  {C_RED}[CONFLICT]{C_RESET} Target exists but is not correct link: {target} "
+                "(re-run with --replace-conflicts to back it up and replace it)",
+                file=sys.stderr,
+            )
+            return False
+        backup_target(target, target_home)
+    elif check:
+        print(f"  {C_RED}[MISSING]{C_RESET} Link {target}", file=sys.stderr)
+        return False
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        target.symlink_to(source, target_is_directory=source.is_dir())
+        print(f"  {C_GREEN}[LINK]{C_RESET} Created link: {target} -> {source}")
+        return True
+    except OSError as e:
+        hint = (
+            "\n      On Windows this needs either Developer Mode enabled, or this terminal\n"
+            "      launched as Administrator (right-click Terminal/PowerShell/cmd -> "
+            '"Run as administrator") - then re-run this command.'
+            if sys.platform == "win32"
+            else ""
+        )
+        print(
+            f"  {C_RED}[ERROR]{C_RESET} Failed to create symlink: {e}{hint}",
+            file=sys.stderr,
+        )
+        return False
+
+
+def install_entries(
+    destination: Path, kit_root: Path, check: bool, replace: bool, target_home: Path
+) -> bool:
+    for name in ENTRY_SKILLS:
+        source = kit_root / "global-skills" / name
+        if not (source / "SKILL.md").is_file():
+            print(
+                f"  {C_RED}[ERROR]{C_RESET} Missing entry skill source: {source}",
+                file=sys.stderr,
+            )
+            return False
+        if not install_link(source, destination / name, check, replace, target_home):
+            return False
+    return True
+
+
+def retire_entries(destination: Path, kit_root: Path, check: bool) -> bool:
+    for name in RETIRED_ENTRY_SKILLS:
+        target = destination / name
+        if not target.exists() and not target.is_symlink():
+            continue
+
+        expected = kit_root / "global-skills" / name
+        if not target.is_symlink():
+            print(
+                f"  {C_RED}[CONFLICT]{C_RESET} Retired managed entry is not a symlink: {target}",
+                file=sys.stderr,
+            )
+            return False
+
+        try:
+            current = target.resolve()
+            if current != expected.resolve():
+                print(
+                    f"  {C_RED}[CONFLICT]{C_RESET} Retired entry has a foreign target: {target} -> {current}",
+                    file=sys.stderr,
+                )
+                return False
+        except OSError:
+            pass  # Broken link - still safe to remove below.
+
+        if check:
+            print(
+                f"  {C_RED}[ERROR]{C_RESET} Retired entry still installed: {target}",
+                file=sys.stderr,
+            )
+            return False
+
+        target.unlink()
+        print(f"  {C_YELLOW}[RETIRE]{C_RESET} Removed legacy skill: {target}")
+    return True
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Installs a minimal instruction profile plus start-project. "
+        "It never installs MCP, models, plugins, credentials, or permissions."
+    )
+    parser.add_argument(
+        "--target-home", required=True, type=Path, help="Target home directory"
+    )
+    parser.add_argument(
+        "--runtime",
+        action="append",
+        required=True,
+        choices=["codex", "claude", "kimi", "opencode", "hermes"],
+        help="Target runtime(s)",
+    )
+    parser.add_argument(
+        "--check", action="store_true", help="Dry run, only check status"
+    )
+    parser.add_argument(
+        "--replace-conflicts",
+        action="store_true",
+        help="Replace conflicting files and back them up",
+    )
+    parser.add_argument(
+        "--skills-only", action="store_true", help="Only install skills, not profiles"
+    )
+
+    args = parser.parse_args()
+
+    target_home = args.target_home.resolve()
+    if not target_home.is_dir():
+        print(
+            f"{C_RED}[ERROR] Target home must already exist: {target_home}{C_RESET}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Script lives in bin/, one level below the kit root.
+    script_dir = Path(__file__).resolve().parent
+    kit_root = script_dir.parent
+    profile_path = kit_root / "global" / "AGENTS.md"
+
+    print(f"{C_BLUE}======================================================{C_RESET}")
+    print(f"{C_CYAN} Starting Agent Global Setup{C_RESET}")
+    print(f"{C_BLUE}======================================================{C_RESET}")
+    print(f"Target Home Directory: {C_GREEN}{target_home}{C_RESET}")
+    print(f"Source Kit Root:       {C_GREEN}{kit_root}{C_RESET}")
+    if args.check:
+        print(f"{C_YELLOW}Mode: CHECK (Dry Run){C_RESET}")
+
+    status = 0
+
+    configs = {
+        "codex": (".codex/AGENTS.md", ".agents/skills"),
+        "claude": (".claude/CLAUDE.md", ".claude/skills"),
+        "kimi": (".kimi-code/AGENTS.md", ".agents/skills"),
+        "opencode": (".config/opencode/AGENTS.md", ".agents/skills"),
+        "hermes": (None, ".hermes/skills"),  # Hermes reads the project's own AGENTS.md.
+    }
+
+    for runtime in args.runtime:
+        print(f"\n{C_CYAN}>>> Configuring Runtime: {C_GREEN}{runtime}{C_RESET}")
+
+        profile_dest_rel, skills_dest_rel = configs[runtime]
+        skills_dest = target_home / skills_dest_rel
+
+        if profile_dest_rel and not args.skills_only:
+            profile_dest = target_home / profile_dest_rel
+            if not install_file(
+                profile_path,
+                profile_dest,
+                args.check,
+                args.replace_conflicts,
+                target_home,
+            ):
+                status = 1
+        elif runtime == "hermes":
+            print(
+                f"  {C_BLUE}[INFO]{C_RESET} Skipping profile for Hermes (reads project AGENTS.md)"
+            )
+
+        if not retire_entries(skills_dest, kit_root, args.check):
+            status = 1
+        if not install_entries(
+            skills_dest, kit_root, args.check, args.replace_conflicts, target_home
+        ):
+            status = 1
+
+    print(f"\n{C_BLUE}======================================================{C_RESET}")
+    if status == 0:
+        print(f"{C_GREEN}[OK] Installation completed successfully!{C_RESET}")
+    else:
+        print(
+            f"{C_RED}[FAIL] Installation finished with errors (see conflicts above).{C_RESET}"
+        )
+    if BACKUP_ROOT:
+        print(f"Files backed up to: {C_YELLOW}{BACKUP_ROOT}{C_RESET}")
+    print(f"{C_BLUE}======================================================{C_RESET}")
+
+    sys.exit(status)
+
+
+if __name__ == "__main__":
+    main()

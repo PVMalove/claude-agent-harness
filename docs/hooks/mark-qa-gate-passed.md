@@ -18,3 +18,7 @@
 - **Выход (Output/Report):** В случае успешной проверки создается или обновляется файл-маркер `.claude/.qa-gate/passed`, содержащий строку с текущим состоянием репозитория в формате `<HEAD_hash>:<diff_hash>`. Код возврата 0.
 ## 4. Архитектурная схема
 ![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[mark-qa-gate-passed.sh](../../harness/project/hooks/mark-qa-gate-passed.sh)

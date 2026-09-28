@@ -1,0 +1,175 @@
+{
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Пример: переход на внешний OAuth через /wayfinder",
+    "legend": {
+      "entries": {
+        "backend": {
+          "label": "Шаг сессии"
+        },
+        "database": {
+          "label": "Карта"
+        },
+        "messagebus": {
+          "label": "Тикет карты"
+        },
+        "external": {
+          "label": "Передача дальше"
+        }
+      }
+    },
+    "output": "docs/diagrams/example-wayfinder-oauth.workflow.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "chart",
+      "label": "Chart the map"
+    },
+    {
+      "id": "map",
+      "label": "Карта #200"
+    },
+    {
+      "id": "work",
+      "label": "Сессии по тикетам"
+    }
+  ],
+  "mainPath": [
+    "dest",
+    "frontier",
+    "map200",
+    "t201",
+    "sa",
+    "t202",
+    "sb",
+    "tospec"
+  ],
+  "nodes": [
+    {
+      "id": "dest",
+      "lane": "chart",
+      "col": 0,
+      "type": "backend",
+      "label": "Destination",
+      "sublabel": "вход через внешний IdP",
+      "width": 170
+    },
+    {
+      "id": "frontier",
+      "lane": "chart",
+      "col": 1,
+      "type": "backend",
+      "label": "Фронтир",
+      "sublabel": "3 неясных пункта",
+      "width": 140
+    },
+    {
+      "id": "map200",
+      "lane": "map",
+      "col": 1,
+      "type": "database",
+      "label": "Карта #200",
+      "sublabel": "wayfinder:map",
+      "width": 140
+    },
+    {
+      "id": "t201",
+      "lane": "map",
+      "col": 2,
+      "type": "messagebus",
+      "label": "#201 выбрать IdP",
+      "sublabel": "research · afk",
+      "width": 160
+    },
+    {
+      "id": "t202",
+      "lane": "map",
+      "col": 3,
+      "type": "messagebus",
+      "label": "#202 миграция",
+      "sublabel": "grilling · hitl",
+      "width": 150
+    },
+    {
+      "id": "sa",
+      "lane": "work",
+      "col": 2,
+      "type": "backend",
+      "label": "Сессия A",
+      "sublabel": "/research → Keycloak",
+      "width": 160
+    },
+    {
+      "id": "sb",
+      "lane": "work",
+      "col": 3,
+      "type": "backend",
+      "label": "Сессия B",
+      "sublabel": "принудительный сброс при входе",
+      "width": 170
+    },
+    {
+      "id": "tospec",
+      "lane": "chart",
+      "col": 4,
+      "type": "external",
+      "label": "/to-spec",
+      "sublabel": "как точка входа 2",
+      "width": 150
+    }
+  ],
+  "edges": [
+    {
+      "from": "dest",
+      "to": "frontier"
+    },
+    {
+      "from": "frontier",
+      "to": "map200"
+    },
+    {
+      "from": "map200",
+      "to": "t201"
+    },
+    {
+      "from": "t201",
+      "to": "t202",
+      "label": "блокирует",
+      "variant": "dashed"
+    },
+    {
+      "from": "t201",
+      "to": "sa",
+      "label": "claim"
+    },
+    {
+      "from": "sa",
+      "to": "t202",
+      "label": "#201 закрыт",
+      "variant": "emphasis"
+    },
+    {
+      "from": "t202",
+      "to": "sb",
+      "label": "claim"
+    },
+    {
+      "from": "sb",
+      "to": "tospec",
+      "label": "фронтир пуст",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Сессии",
+      "items": [
+        "На шаге Chart the map решения не принимаются",
+        "В сессии обрабатывается один тикет, кроме research"
+      ]
+    }
+  ],
+  "schema_version": 2
+}

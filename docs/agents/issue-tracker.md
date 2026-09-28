@@ -1,7 +1,7 @@
 # Issue tracker
 
 The system-wide workflow and the boundary between interactive delivery and backend orchestration are
-described in [current-state.md](./current-state.md). This guide defines tracker-specific operations.
+described in [harness-guide.md](../../.harness/docs/harness-guide.md). This guide defines tracker-specific operations.
 
 Detect which section below applies from `git remote -v` (the same check `check-branch-name.sh` uses): a `github.com` remote → GitHub; a `gitlab.`-hosted remote → GitLab; anything else, including no remote at all, → Local markdown. For a different tracker entirely (Jira, Linear, ...), replace this file's content with a description of that workflow instead — see `/setup-matt-pocock-skills`.
 

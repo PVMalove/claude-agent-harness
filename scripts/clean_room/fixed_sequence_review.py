@@ -67,6 +67,7 @@ def run(ctx: SimpleNamespace) -> None:
     )
 
     def low_risk_role(role_name, model, approved_at, payload_extra):
+        """Создать и отправить диспатч роли для проверки последовательности с низким риском."""
         created = coordinator_run(
             "--state-dir",
             str(low_risk_state),

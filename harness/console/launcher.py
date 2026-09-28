@@ -1,12 +1,11 @@
-"""Relaunch `harness console` under a one-off `uv run --with textual==<pin>` environment
-(ADR 0025) without ever touching the target project's own dependencies: `dependencies` in
-`pyproject.toml` stays `[]`, and `--no-project` keeps `uv run` from installing anything from a
-`pyproject.toml`/`uv.lock` it happens to run inside.
+"""Перезапуск `harness console` в одноразовом окружении `uv run --with textual==<pin>` (ADR 0009)
+без изменения собственных зависимостей целевого проекта: список `dependencies` в `pyproject.toml`
+остаётся `[]`, а флаг `--no-project` предотвращает установку пакетов из окружающих `pyproject.toml`/`uv.lock`.
 
-This module and its `run_console` entry point stay importable with no `textual` installed: the
-relaunch itself only ever constructs a subprocess argv and runs it via an injected
-`CommandRunner`. `harness.console.app` (the actual `textual` UI) is imported lazily, only once
-`run_console` has confirmed the process is already inside the relaunched subprocess.
+Этот модуль и его точка входа `run_console` могут импортироваться без установленного пакета `textual`:
+сам перезапуск только формирует список аргументов подпроцесса и запускает его через переданный
+`CommandRunner`. Модуль `harness.console.app` (собственно UI на `textual`) импортируется отложенно,
+только когда `run_console` подтверждает, что процесс уже выполняется внутри перезапущенного подпроцесса.
 """
 
 from __future__ import annotations
@@ -31,17 +30,17 @@ BIN_HARNESS_PATH = Path(__file__).resolve().parent.parent / "bin" / "harness.py"
 
 
 def find_uv() -> str | None:
-    """Resolve `uv` the same way harness.health.checks.environment.check_uv does: `shutil.which`,
-    never a hardcoded path."""
+    """Находит исполняемый файл `uv` через `shutil.which`, не используя жёстко закодированные пути."""
     return shutil.which("uv")
 
 
-def build_relaunch_argv(uv: str, repo: Path, extra_argv: Sequence[str] = ()) -> list[str]:
-    """The exact relaunch command: `--no-project` so `uv run` never installs the surrounding
-    project's own dependencies or touches its lock file, `--with textual==<pin>` so the one-off
-    environment carries only the pinned TUI dependency, and `--python <this interpreter>` so the
-    one-off environment reuses the interpreter that already passed the harness's Python >= 3.12
-    check instead of whichever one uv would discover first."""
+def build_relaunch_argv(
+    uv: str, repo: Path, extra_argv: Sequence[str] = ()
+) -> list[str]:
+    """Формирует точную команду перезапуска: флаг `--no-project` исключает установку зависимостей
+    окружающего проекта или изменение lock-файла, `--with textual==<pin>` изолирует зависимость TUI
+    в одноразовом окружении, а `--python <текущий интерпретатор>` повторно использует интерпретатор,
+    уже прошедший проверку Python >= 3.12."""
     return [
         uv,
         "run",
@@ -59,6 +58,7 @@ def build_relaunch_argv(uv: str, repo: Path, extra_argv: Sequence[str] = ()) -> 
 
 
 def _default_app_runner(repo: Path) -> int:
+    """Запускает приложение Textual по умолчанию для указанного репозитория."""
     from . import app as console_app
 
     return console_app.run(repo)
@@ -71,15 +71,14 @@ def run_console(
     runner: CommandRunner = default_runner,
     app_runner: Callable[[Path], int] = _default_app_runner,
 ) -> int:
-    """Entry point `cmd_console` calls. Three paths:
+    """Точка входа, вызываемая `cmd_console`. Реализует три сценария:
 
-    1. Already relaunched (`RELAUNCH_ENV` set by our own subprocess call below): run the (real,
-       by default) textual App in-process via `app_runner` - the only path that ever imports
-       `textual`, and the only parameter a test overrides to avoid that import.
-    2. `uv` not on PATH: print why and fall back to the stdlib `harness health` report.
-    3. `uv` found: relaunch via `runner`; a non-zero exit before the TUI started (offline,
-       resolution failure, ...) falls back the same way as (2). Diagnostics never depends on
-       textual being installed. A non-zero exit after the TUI started only reports the exit code.
+    1. Процесс уже перезапущен (установлена переменная окружения `RELAUNCH_ENV`): запускает реальное
+       Textual-приложение внутри процесса через `app_runner`. Это единственный путь, импортирующий
+       `textual`.
+    2. Утилита `uv` не найдена в PATH: выводит причину и переключается на отчёт `harness health`.
+    3. `uv` найден: перезапускает процесс через `runner`. Ненулевой код завершения до старта TUI
+       приводит к выводу отчёта health. Ненулевой код после старта TUI возвращает код завершения.
     """
     if os.environ.get(RELAUNCH_ENV) == "1":
         started = os.environ.get(STARTED_ENV)
@@ -120,9 +119,7 @@ def run_console(
 
 
 def _print_fallback(repo: Path, reason: str) -> None:
-    """Print the reason, then the same text report `harness health` prints - the console's
-    `run_health` (the CLI's own run, skill-snapshot drift included) rendered by
-    harness.health.render.render_text, never a reimplementation of check logic."""
+    """Выводит причину сбоя и текстовый отчёт, аналогичный выводу `harness health`."""
     print(reason)
     from ..health import render as health_render
     from .data import run_health

@@ -71,6 +71,7 @@ def run(ctx: SimpleNamespace) -> None:
     )
 
     def ctxpkg_role(role_name, model, approved_at, payload_extra):
+        """Создать и отправить диспатч роли для проверки context package."""
         created = coordinator_run(
             "--state-dir",
             str(ctxpkg_state),

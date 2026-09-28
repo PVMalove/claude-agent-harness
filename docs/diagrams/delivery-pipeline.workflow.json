@@ -2,6 +2,7 @@
   "schema_version": 2,
   "diagram_type": "workflow",
   "meta": {
+    "output": "docs/diagrams/delivery-pipeline.workflow.html",
     "title": "Пайплайн доставки: от идеи до merge",
     "quality_profile": "showcase",
     "legend": {
@@ -39,17 +40,17 @@
     {"id": "pr", "lane": "ship", "col": 5, "type": "security", "label": "/to-pull-requests", "sublabel": "PR по шаблону", "tag": "человек", "width": 136}
   ],
   "edges": [
-    {"from": "idea", "to": "grill", "label": "серые зоны"},
-    {"from": "grill", "to": "spec", "label": "устоялось", "variant": "emphasis"},
+    {"from": "idea", "to": "grill", "label": "неясности"},
+    {"from": "grill", "to": "spec", "label": "решено", "variant": "emphasis"},
     {"from": "spec", "to": "tickets", "label": "декомпозиция"},
     {"from": "tickets", "to": "implement", "label": "тикет afk", "variant": "emphasis"},
     {"from": "implement", "to": "pr", "label": "принятый SHA", "variant": "emphasis"},
-    {"from": "implement", "to": "fast", "label": "мелкий тикет", "variant": "dashed", "role": "branch"},
+    {"from": "implement", "to": "fast", "label": "небольшой тикет", "variant": "dashed", "role": "branch"},
     {"from": "tickets", "to": "guide", "label": "тикет hitl", "variant": "security", "role": "branch"}
   ],
   "cards": [
-    {"dot": "cyan", "title": "Каждый шаг вызывает человек", "items": ["Ни один скилл не запускает следующий сам", "Между шагами сессия начинается с чистого листа", "Issue First: без тикета работа не стартует"]},
-    {"dot": "violet", "title": "Развилка на выходе тикетов", "items": ["afk — код пишет агент через /implement", "hitl — /to-guide готовит промпты человеку", "Мелкий afk-тикет может пойти в /fast-implement"]},
-    {"dot": "rose", "title": "Финал всегда ручной", "items": ["PR открывается только по явному подтверждению", "Merge выполняет разработчик, hooks блокируют авто-мердж", "Тикет закрывается после подтверждённого merge"]}
+    {"dot": "cyan", "title": "Шаги запускает разработчик", "items": ["Следующий скилл запускается вручную", "Для следующего шага открывается новая сессия", "Issue First: работа начинается с тикета"]},
+    {"dot": "violet", "title": "Маршруты после декомпозиции", "items": ["afk — реализацию выполняет агент через /implement", "hitl — /to-guide готовит промпты для разработчика", "Небольшой afk-тикет можно передать в /fast-implement"]},
+    {"dot": "rose", "title": "Завершение выполняется вручную", "items": ["PR открывается после явного подтверждения", "Merge выполняет разработчик; hooks блокируют автоматический merge", "Тикет закрывается после подтверждённого merge"]}
   ]
 }

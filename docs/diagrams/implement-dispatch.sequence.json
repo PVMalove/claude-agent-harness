@@ -2,8 +2,9 @@
   "schema_version": 1,
   "diagram_type": "sequence",
   "meta": {
+    "viewBox": [1440, 920],
+    "output": "docs/diagrams/implement-dispatch.sequence.html",
     "title": "Последовательность gated dispatch в /implement",
-    "viewBox": [1440, 900],
     "column_fit": "spread",
     "quality_profile": "showcase"
   },
@@ -40,8 +41,8 @@
     { "from": "session", "to": "human", "y": 780, "label": "final report → /to-pull-requests", "variant": "return" }
   ],
   "cards": [
-    { "dot": "cyan", "title": "Неподвижный brief", "items": ["Каждая роль получает отдельный dispatch", "Package переиспользуется внутри batch; scope — новый dispatch"] },
-    { "dot": "amber", "title": "Человеческие gates", "items": ["Approve перед планом", "Approve перед расходом QA"] },
+    { "dot": "cyan", "title": "Неизменяемый brief", "items": ["Роли получают отдельные dispatch", "Package переиспользуется в пределах batch; новый scope — новый dispatch"] },
+    { "dot": "amber", "title": "Gates с участием человека", "items": ["Approve перед планом", "Approve перед расходом QA"] },
     { "dot": "emerald", "title": "Pinned evidence", "items": ["Review и QA работают с candidate SHA", "Base gate перед review/publish; публикуется принятый SHA"] }
   ]
 }

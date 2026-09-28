@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the compact on-demand skill registry from canonical SKILL.md files."""
+"""Сборка компактного реестра скиллов по требованию из канонических файлов SKILL.md."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ OUTPUT = SKILLS / "REGISTRY.md"
 
 
 def metadata(path: Path) -> tuple[str, str]:
+    """Извлечь имя и описание скилла из YAML frontmatter файла SKILL.md."""
     text = path.read_text(encoding="utf-8")
     if not text.startswith("---\n"):
         raise SystemExit(f"missing frontmatter: {path}")

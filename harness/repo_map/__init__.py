@@ -1,1 +1,1 @@
-"""Deterministic, offline Repo Map CLI resource."""
+"""Детерминированный автономный ресурс CLI Repo Map."""

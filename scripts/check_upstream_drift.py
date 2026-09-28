@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Report whether the vendored mattpocock/skills snapshot (skills/vendor/mattpocock/, pinned by
-third_party/mattpocock-skills/UPSTREAM.lock) has fallen behind the actual upstream repository.
-
-Informational, not a resync: never writes to skills/vendor/ or UPSTREAM.lock. Exits 1 when
-upstream has moved so a periodic CI run surfaces it as a failed run; exits 0 when in sync."""
+"""Проверка отставания закреплённого вендорного snapshot mattpocock/skills от апстрим-репозитория."""
 
 import json
 import re
@@ -35,6 +31,7 @@ TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
 
 def parse_lock(path: Path) -> dict[str, str]:
+    """Разобрать файл блокировки UPSTREAM.lock на пары ключ-значение."""
     fields = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         if ":" not in line:
@@ -45,8 +42,7 @@ def parse_lock(path: Path) -> dict[str, str]:
 
 
 def latest_upstream_tag(repo_url: str) -> tuple[str, str] | None:
-    """Query refs without cloning. Returns (tag_name, commit_sha) for the highest vX.Y.Z tag,
-    or None if the remote has no such tag."""
+    """Запросить ссылки тегов git ls-remote без клонирования и вернуть (имя_тега, sha) максимального тега vX.Y.Z."""
     result = subprocess.run(
         ["git", "ls-remote", "--tags", repo_url],
         capture_output=True,
@@ -73,6 +69,7 @@ def latest_upstream_tag(repo_url: str) -> tuple[str, str] | None:
 
 
 def diff_skill_names(new_snapshot: Path, skills: list[str]) -> list[str]:
+    """Сравнить каталоги скиллов между старым и новым snapshot и вернуть имена изменившихся скиллов."""
     changed = []
     for entry in skills:
         relative = entry.removeprefix("./skills/")
@@ -91,6 +88,7 @@ def diff_skill_names(new_snapshot: Path, skills: list[str]) -> list[str]:
 
 
 def main() -> int:
+    """Точка входа CLI: проверка расхождений с апстримом и вывод отчёта о дрейфе."""
     if not LOCK_FILE.is_file():
         sys.exit(f"missing {LOCK_FILE}")
     lock = parse_lock(LOCK_FILE)
@@ -157,7 +155,7 @@ def main() -> int:
             if needs_review:
                 print(
                     f"\nNeeds manual review before resync (pvmalove-suite overrides these by name, "
-                    f"docs/adr/0002 - compare against the new upstream version before deciding whether "
+                    f"docs/adr/0001 - compare against the new upstream version before deciding whether "
                     f"the first-party fork needs rebasing): {', '.join(needs_review)}"
                 )
 

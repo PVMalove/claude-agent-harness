@@ -1,9 +1,9 @@
-"""Harness console: an interactive TUI over the same public facts `harness health` and the
-backend-orchestration ledger already expose.
+"""Консоль harness: интерактивный TUI над теми же публичными фактами, которые предоставляют
+`harness health` и журнал оркестрации бэкенда.
 
-Everything up to and including `data.py` and `runner.py` is stdlib-only and importable even when
-`textual` is not installed - the offline/no-`uv` fallback path (see `launcher.py`) never imports
-`textual`. Only `app.py` and `screens/*.py` import it, and only after `launcher.run_console` has
-already decided the process is running inside the relaunched `uv run --with textual==<pin>`
-subprocess. See docs/adr/0025-harness-console-textual-via-uv-with-stdlib-fallback.md.
+Все модули вплоть до `data.py` и `runner.py` включительно используют только стандартную библиотеку
+и могут быть импортированы, даже если пакет `textual` не установлен — резервный путь в режиме офлайн/без `uv`
+(см. `launcher.py`) никогда не импортирует `textual`. Только `app.py` и `screens/*.py` импортируют его,
+и только после того, как `launcher.run_console` определит, что процесс выполняется внутри перезапущенного
+подпроцесса `uv run --with textual==<pin>`. См. docs/adr/0009-harness-console.md.
 """

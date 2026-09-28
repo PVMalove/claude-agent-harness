@@ -1,12 +1,13 @@
 # Диаграммы харнесса
 
-Тринадцать автономных интерактивных HTML-диаграмм. Рядом с каждой лежит редактируемая спецификация
+Двадцать три автономные интерактивные HTML-диаграммы. Рядом с каждой лежит редактируемая спецификация
 Archify (`*.json`), а в `previews/` — статичное PNG той же диаграммы для Markdown, который не умеет
 рендерить HTML (например, README на GitHub).
 
 | Диаграмма | О чём |
 |---|---|
 | [Пайплайн доставки](./delivery-pipeline.workflow.html) | Полный маршрут от идеи до merge: `/grill-with-docs` → `/to-spec` → `/to-tickets` → `/implement` → `/to-pull-requests`, с ветками `hitl` (`/to-guide`) и коротким `/fast-implement`. |
+| [Навигация по справочнику](./harness-guide-navigation.workflow.html) | Установка, выбор capability, работа над задачей и команды проверки. |
 | [Discovery Pipeline](./discovery-pipeline.workflow.html) | Explicit opt-in `Live Artifact` → `Relevant Files` → ticket-specific Path inventory → один cheap advisory → LLM-free Context Package. |
 | [Конвейер `/implement`](./implement-pipeline.workflow.html) | Пять гейтов одного тикета: архитектор → approve → разработчик → code review → approve → QA (с циклом на исправления) → итоговый отчёт → публикация. |
 | [Резолв runtime и dispatch](./backend-runtime.workflow.html) | Как назначение роли превращается в immutable brief, как выбирается транспорт (`external` или `in-process`) и как dispatch подтверждает свою модель и живость. |
@@ -18,23 +19,39 @@ Archify (`*.json`), а в `previews/` — статичное PNG той же д�
 | [Поток capability](./capability-delivery.dataflow.html) | **Data Flow:** происхождение capability и skills от каталога/vendor/overrides до snapshot и runtime consumers. |
 | [Построение Repo Map](./repo-map-build.sequence.html) | **Sequence:** вход, кэш, проверка и offline-установка parser bundle, разбор в изолированном worker, граф и бюджет. |
 | [Компоненты Repo Map](./repo-map-components.architecture.html) | **Architecture:** `repo_map.py`, контракт, `parser_bundle.py`, tree-sitter worker, registry, кэш и потребители (Context Builder, Coordinator). |
+| [Изоляция процессов и файлов](./process-isolation.architecture.html) | **Architecture:** backend batches в worktrees, отдельный tree-sitter worker и sandbox для временных файлов. |
+| [Выбор команды установки](./harness-install-choice.workflow.html) | `init`, `adopt`, `diff` или `update` в зависимости от `harness.lock` и занятых имён скиллов; итог — `harness health`. |
+| [`/to-spec`](./to-spec-flow.workflow.html) | Две фазы: seam'ы и integration-ветка на подтверждение, затем черновик в `docs/tasks/`, эпик в трекере и ветка. |
+| [Карта `/wayfinder`](./wayfinder-map.workflow.html) | Chart the map и Work through the map: destination, фронтир, туман, тикеты-вопросы, `Decisions so far` → `/to-spec`. |
+| [`/fast-implement`](./fast-implement.workflow.html) | Pre-flight, Coding с вопросами о ревью и push, передача на `/to-pull-requests`; остановки `hitl` и блокеров. |
+| [Цикл `/tdd`](./tdd-loop.lifecycle.html) | **Lifecycle:** Red → Green → Refactor и выход, когда требования слайса покрыты. |
+| [Метки `status::*`](./triage-labels.lifecycle.html) | **Lifecycle:** путь тикета по меткам триажа и кто их ставит. |
+| [Пример: эпик через `/implement`](./example-epic-afk.workflow.html) | CSV-экспорт: `/grill-with-docs` → `/to-spec` → `/to-tickets` → `/implement` → `/to-pull-requests`, разблокировка второго тикета. |
+| [Пример: `/wayfinder`](./example-wayfinder-oauth.workflow.html) | Переход на внешний OAuth: карта #200, research- и grilling-тикеты, сессии по тикетам, передача на `/to-spec`. |
+| [Вертикальные слайсы](./vertical-slices.workflow.html) | Почему `/to-tickets` режет работу на проверяемые слайсы, а не на горизонтальные слои. |
 
 ## Как обновлять
 
-Диаграммы собраны скиллом [archify](https://github.com/tt-a1i/archify). Правится только `*.json`,
-после чего диаграмма перегенерируется и проверяется:
+Диаграммы собраны скиллом [archify](https://github.com/tt-a1i/archify) 2.17. Правится только
+`*.json` (в `meta.output` — `docs/diagrams/<spec>.html`), после чего диаграмма перегенерируется и
+проверяется одной командой из корня репозитория:
 
 ```bash
-node bin/archify.mjs validate <type> <spec>.json --quality showcase --json
-node bin/archify.mjs deliver  <type> <spec>.json <output>.html --quality showcase --json
-node bin/archify.mjs visual-check <output>.html --json
+ARCHIFY_CHROME=<путь к Chrome/Chromium> \
+  node <archify>/bin/archify.mjs finalize <type> docs/diagrams/<spec>.json docs/diagrams/<spec>.html \
+  --repo-root . --quality showcase --json
 ```
 
 `<type>` — `workflow`, `architecture`, `sequence`, `dataflow` или `lifecycle`, в зависимости от
-смысла схемы. `deliver` обязан
-завершиться нулевым кодом, `visual-check` — дать `containment: pass`. PNG в `previews/` — это светлый
-снимок `visual-check` при 1440×900; после перегенерации HTML его нужно обновить, иначе README покажет
-устаревшую картинку.
+смысла схемы. `finalize` проходит `validate`, `deliver`, `check` и `browser-check` и обязан завершиться
+`status: pass`. Квитанции (`*.finalize*.json`, `*.delivery.json`, `*.browser-check.json`) в
+репозиторий не коммитятся.
+
+PNG в `previews/` — светлый снимок HTML шириной 1440 px: диаграмма вместе с блоками пояснений под
+ней (высота — до нижнего края блоков; окно расширяется до этой высоты перед снимком). После перегенерации HTML снимок нужно
+обновить, иначе README покажет устаревшую картинку. Превью, которые показывает справочник
+`harness/docs/harness-guide.md`, лежат копиями в `harness/docs/diagrams/`: справочник ставится в
+целевой проект без корневого `docs/`. `scripts/verify.py` сверяет эти копии с `previews/`.
 
 Содержимое диаграмм ведётся на русском. Интерфейс самого просмотрщика (`Light`/`Dark`, `Present`,
 `Export`, `Legend`) и подписи легенды в lifecycle остаются английскими: это фиксированный UI

@@ -71,6 +71,7 @@ def run(ctx: SimpleNamespace) -> None:
     )
 
     def delta_role(role_name, model, approved_at, payload_extra):
+        """Создать и отправить диспатч роли в рамках сценария дельта-ревью."""
         created = coordinator_run(
             "--state-dir",
             str(delta_state),

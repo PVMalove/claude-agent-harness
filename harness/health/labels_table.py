@@ -1,10 +1,10 @@
-"""Pure stdlib parser for the canonical label tables in a target project's
-`docs/agents/triage-labels.md` (ticket #346's tracker.labels check reads them at run time - this
-module never ships fixed label data of its own).
+"""Парсер на стандартной библиотеке для канонических таблиц меток целевого проекта
+из `docs/agents/triage-labels.md` (проверка tracker.labels из задачи #346 читает их во время выполнения;
+этот модуль не содержит собственных фиксированных данных о метках).
 
-Only a GFM table whose header row has both a `Label` and a `Color` column is read: the type
-axis (`type::*`) and the purely informational `priority::*`/`severity::*`/`env::*` axes have no
-Color column and are intentionally skipped, exactly as `/setup-labels`'s own first step does.
+Считываются только таблицы GFM, строка заголовка которых содержит обе колонки — `Label` и `Color`:
+ось типов (`type::*`) и чисто информационные оси `priority::*`/`severity::*`/`env::*` не имеют
+колонки Color и намеренно пропускаются, в точности как на первом шаге команды `/setup-labels`.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ _SEPARATOR_CELL = re.compile(r":?-+:?")
 
 
 def _cells(line: str) -> list[str]:
+    """Разбить строку markdown-таблицы на отдельные ячейки, очистив внешние пробелы."""
     stripped = line.strip()
     if stripped.startswith("|"):
         stripped = stripped[1:]
@@ -26,29 +27,32 @@ def _cells(line: str) -> list[str]:
 
 
 def _is_separator_row(cells: list[str]) -> bool:
+    """Проверить, является ли строка ячеек разделителем заголовка таблицы (тире и двоеточия)."""
     return bool(cells) and all(
         cell == "" or _SEPARATOR_CELL.fullmatch(cell) for cell in cells
     )
 
 
 def _clean_label(cell: str) -> str | None:
+    """Извлечь имя метки из ячейки, удаляя обратные кавычки Markdown при их наличии."""
     match = _CODE_SPAN.search(cell)
     name = (match.group(1) if match else cell).strip()
     return name or None
 
 
 def _clean_color(cell: str) -> str | None:
+    """Извлечь шестнадцатеричный код цвета `#rrggbb` в нижнем регистре из текста ячейки."""
     match = _HEX_COLOR.search(cell)
     return match.group(0).lower() if match else None
 
 
 def parse_canonical_labels(text: str) -> list[tuple[str, str]]:
-    """Parse every GFM table in `text` whose header has both a `Label` and a `Color` column.
+    """Разобрать все GFM-таблицы в тексте, содержащие в заголовке колонки `Label` и `Color`.
 
-    Returns `(name, "#rrggbb")` pairs in document order. A duplicate label name (the same label
-    could in principle appear in two tables) keeps only its first occurrence. Markdown code spans
-    around a label name (`` `hitl` ``) are unwrapped; a color cell's surrounding prose (e.g.
-    "yellow `#fbca04`") is ignored and only the hex code is kept.
+    Возвращает пары `(name, "#rrggbb")` в порядке следования в документе. Дублирующиеся
+    имена меток сохраняют только первое вхождение. Обрамляющие обратные кавычки кода
+    (например, `` `hitl` ``) снимаются; окружающий текст ячейки с цветом (например, "yellow `#fbca04`")
+    игнорируется, сохраняется только шестнадцатеричный код.
     """
     lines = text.splitlines()
     labels: list[tuple[str, str]] = []

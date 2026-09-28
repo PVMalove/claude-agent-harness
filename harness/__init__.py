@@ -1,5 +1,5 @@
-"""Agent Harness: packager CLI, capability catalog, and backend-orchestration Python modules.
+"""Agent Harness: CLI пакетирования, каталог возможностей и Python-модули оркестрации бэкенда.
 
-Not pip-installable; entrypoints and tests put the repository root on `sys.path` so this resolves
-as an ordinary package. See docs/adr/0018-harness-as-importable-package-without-pip-install.md.
+Не устанавливается через pip; точки входа и тесты добавляют корень репозитория в sys.path,
+поэтому он разрешается как обычный пакет. См. docs/adr/0001-portable-capability-delivery.md.
 """

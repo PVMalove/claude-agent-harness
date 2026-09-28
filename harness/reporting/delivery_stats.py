@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Delivery statistics for one finished epic and every ticket under it.
+"""Статистика поставки для завершённого эпика и связанных с ним тикетов.
 
-Reads only local evidence: coding-agent session transcripts, this repository's git history, and the
-issue tracker CLI.  Nothing is sent anywhere.  Every number the tool cannot source is reported as
-missing rather than as zero, and figures that can only be attributed approximately say so.
+Читает только локальные данные: транскрипты сессий агентов, историю git данного репозитория и
+CLI трекера задач. Никакие данные никуда не отправляются. Любое число, которое инструмент не может
+получить из источников, помечается как отсутствующее, а не заменяется нулём, а приблизительные
+оценки сопровождаются соответствующей пометкой.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ if sys.version_info < MIN_PYTHON:
 # `harness/bin/harness.py`'s package_files() copies this file verbatim into target projects as
 # `.harness/reporting/delivery_stats.py` -- a different directory name than the source tree's
 # `harness/`. Alias `harness` to whichever of the two this file actually lives under so
-# `from harness...` resolves the same way in both places. See docs/adr/0018.
+# `from harness...` resolves the same way in both places. See docs/adr/0001.
 _HARNESS_ROOT = Path(__file__).resolve().parents[1]
 _REPO_ROOT = _HARNESS_ROOT.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -73,16 +74,27 @@ from harness.reporting.terminal import render_terminal as render_terminal  # noq
 
 
 class _LedgerInstance(Protocol):
-    def records_root_lenient(self) -> Path | None: ...
+    """Интерфейс экземпляра журнала LifecycleLedger."""
+
+    def records_root_lenient(self) -> Path | None:
+        """Получить путь к корню записей журнала в мягком режиме (без строгой валидации)."""
+        ...
 
 
 class LedgerClass(Protocol):
-    """The slice of LifecycleLedger this module uses. The class itself is loaded by file path from
-    the analysed repo (see _load_ledger_class), so it cannot be imported and named statically."""
+    """Интерфейс фабрики/класса LifecycleLedger, загружаемого динамически.
 
-    def __call__(self, root: Path) -> _LedgerInstance: ...
+    Класс загружается по пути к файлу из анализируемого репозитория (см. _load_ledger_class),
+    поэтому не может быть статически импортирован.
+    """
 
-    def read_record_lenient(self, path: Path) -> JsonObject | None: ...
+    def __call__(self, root: Path) -> _LedgerInstance:
+        """Создать экземпляр журнала по пути к корню состояния."""
+        ...
+
+    def read_record_lenient(self, path: Path) -> JsonObject | None:
+        """Прочитать запись журнала в мягком режиме (без строгой валидации)."""
+        ...
 
 
 # Pseudo-models the runtime writes for locally generated messages; never billed.
@@ -95,6 +107,7 @@ CONTINUATION_DECISIONS = {"continue", "continue-automatic"}
 
 
 def _run(command: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
+    """Выполнить внешнюю команду в подпроцессе и вернуть код завершения, stdout и stderr."""
     try:
         result = subprocess.run(
             command,
@@ -110,6 +123,7 @@ def _run(command: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
 
 
 def _git(repo: Path, *arguments: str) -> str:
+    """Выполнить команду git в репозитории и вернуть stdout либо возбудить StatsError."""
     code, out, err = _run(["git", "-C", str(repo), *arguments])
     if code != 0:
         raise StatsError(
@@ -120,7 +134,7 @@ def _git(repo: Path, *arguments: str) -> str:
 
 
 def _read_jsonl(path: Path) -> Iterator[JsonObject]:
-    """Yield the JSON objects of a transcript, skipping records the writer left truncated."""
+    """Прочитать JSON-объекты из файла JSONL, пропуская повреждённые строки."""
     try:
         with path.open(encoding="utf-8", errors="replace") as stream:
             for line in stream:
@@ -138,6 +152,7 @@ def _read_jsonl(path: Path) -> Iterator[JsonObject]:
 
 
 def _moment(value: object) -> datetime | None:
+    """Распарсить метку времени ISO в объект datetime с зоной UTC."""
     if not isinstance(value, str) or not value:
         return None
     text = value.replace("Z", "+00:00")
@@ -151,11 +166,11 @@ def _moment(value: object) -> datetime | None:
 def _same_path(
     recorded: object, repo: Path, _cache: dict[tuple[str, str], bool] | None = None
 ) -> bool:
-    """Whether a recorded working directory is this repository.
+    """Проверить, совпадает ли записанная рабочая директория с путём к репозиторию.
 
-    A string comparison is not enough: Windows records an 8.3 short path ("RUNNER~1") for the same
-    directory the caller resolved, and case differs freely. Resolution is cached because the same
-    handful of directories repeat across every record of a session.
+    Обычного сравнения строк недостаточно: Windows может сохранять короткий путь 8.3 ("RUNNER~1"),
+    а регистр символов может различаться. Результат кэшируется, так как в рамках одной сессии
+    повторяется один и тот же набор директорий.
     """
     if _cache is None:
         _cache = {}
@@ -171,7 +186,7 @@ def _same_path(
                 hit = Path(recorded).resolve() == repo
             except OSError:
                 hit = False
-        _cache[key] = hit
+            _cache[key] = hit
     return hit
 
 
@@ -179,6 +194,7 @@ def _same_path(
 
 
 def _project_config(repo: Path) -> JsonObject:
+    """Загрузить конфигурацию проекта из .harness/project.json."""
     path = repo / ".harness/project.json"
     if not path.is_file():
         return {}
@@ -193,6 +209,7 @@ def _project_config(repo: Path) -> JsonObject:
 
 
 def _gh(repo: Path, *arguments: str) -> JsonObject | list[JsonObject] | None:
+    """Выполнить команду GitHub CLI (gh) и распарсить её JSON-вывод."""
     code, out, err = _run(["gh", *arguments], cwd=repo)
     if code == 127:
         raise StatsError(
@@ -217,6 +234,7 @@ ISSUE_BRANCH = re.compile(r"^[a-z]+/issue-(\d+)-")
 
 
 def ticket_of_branch(branch: object) -> int | None:
+    """Извлечь номер тикета из имени ветки вида issue-<number>-..."""
     if not isinstance(branch, str):
         return None
     match = ISSUE_BRANCH.match(branch)
@@ -224,12 +242,11 @@ def ticket_of_branch(branch: object) -> int | None:
 
 
 def resolve_scope(repo: Path, epic: int) -> JsonObject:
-    """Epic plus every ticket linked under it.
+    """Определить область охвата: эпик и все связанные с ним дочерние тикеты через GitHub CLI.
 
-    Scope is a set of ticket numbers, not a set of live branches: an epic is usually measured after
-    its work merged, and merged issue branches are normally deleted. Everything downstream matches on
-    the ticket number encoded in a branch name, which survives that deletion in pull requests and in
-    session transcripts alike.
+    Область охвата представляет собой набор номеров тикетов, а не живых веток: обычно эпик
+    анализируется после слияния, когда ветки задач уже удалены. Все последующие шаги сопоставляют
+    данные по номеру тикета, закодированному в имени ветки, который сохраняется в pull request и в транскриптах.
     """
     parent = cast(
         JsonObject,
@@ -278,10 +295,10 @@ def resolve_scope(repo: Path, epic: int) -> JsonObject:
 
 
 def offline_scope(epic: int, tickets: str) -> JsonObject:
-    """Scope stated by the caller instead of read from the tracker.
+    """Сформировать область охвата из переданного списка тикетов без обращения к трекеру.
 
-    This is the offline mode: no tracker CLI is contacted, so ticket titles and states are unknown
-    and reported as such rather than guessed. Code volume then comes from local refs only.
+    В этом режиме CLI трекера не опрашивается, поэтому заголовки и статусы тикетов считаются неизвестными
+    и отображаются как отсутствующие. Объём кода в этом случае берётся только из локальных git-ссылок.
     """
     numbers = []
     for chunk in tickets.replace(",", " ").split():
@@ -317,10 +334,10 @@ def offline_scope(epic: int, tickets: str) -> JsonObject:
 
 
 def pull_requests(repo: Path, numbers: set[int]) -> list[JsonObject]:
-    """Pull requests whose head branch belongs to a ticket in scope.
+    """Получить pull request, исходные ветки которых относятся к тикетам из области охвата.
 
-    GitHub keeps a merged pull request's diffstat after its branch is deleted, so this is the
-    durable source for code volume; local refs are only a fallback for work with no pull request.
+    GitHub сохраняет статистику изменений (diffstat) объединённого pull request даже после удаления ветки,
+    поэтому PR является надёжным источником объёма кода; локальные ссылки служат лишь резервом.
     """
     listed = cast(
         list[JsonObject],
@@ -351,7 +368,7 @@ def pull_requests(repo: Path, numbers: set[int]) -> list[JsonObject]:
 def git_volume(
     repo: Path, prs: list[JsonObject], extra_branches: set[str], base: str
 ) -> JsonObject:
-    """Code volume per ticket, from pull requests first and local refs only where none exists."""
+    """Подсчитать объём изменений кода по тикетам (сначала из pull request, затем из локальных ссылок)."""
     entries = []
     totals = {
         "commits": 0,
@@ -465,6 +482,7 @@ def git_volume(
 
 
 def _is_adr(path: str) -> bool:
+    """Проверить, является ли путь архитектурным решением (ADR в docs/adr/)."""
     return (
         path.startswith("docs/adr/")
         and path.endswith(".md")
@@ -473,12 +491,10 @@ def _is_adr(path: str) -> bool:
 
 
 def _added_by(repo: Path, path: str) -> str | None:
-    """The commit that first added a path.
+    """Определить хеш коммита, впервые создавшего файл в репозитории.
 
-    A pull request that only edits an existing decision record must not be counted as adding one, so
-    membership in the pull request's own commits is what decides it. This undercounts a squash-merged
-    pull request, whose original commit IDs no longer exist — an undercount being the honest failure
-    here, never an invented record.
+    Pull request, который лишь редактирует существующую запись решения, не должен учитываться как
+    добавивший её. Поэтому решающим является вхождение коммита в список собственных коммитов PR.
     """
     # --all: the adding commit may live on a branch that is not the current HEAD, which is the
     # normal case when the epic is measured from a different worktree or before its merge.
@@ -501,6 +517,7 @@ def _added_by(repo: Path, path: str) -> str | None:
 
 
 def _added_adr(repo: Path, base: str, ref: str) -> list[str]:
+    """Найти пути всех файлов ADR, добавленных в ветке ref относительно base."""
     try:
         merge_base = _git(repo, "merge-base", base, ref)
         names = _git(repo, "diff", "--name-only", "--diff-filter=A", merge_base, ref)
@@ -510,6 +527,7 @@ def _added_adr(repo: Path, base: str, ref: str) -> list[str]:
 
 
 def _local_issue_branches(repo: Path) -> set[str]:
+    """Собрать имена локальных и отслеживаемых удалённых веток тикетов в репозитории."""
     names: set[str] = set()
     for scope in ("refs/heads", "refs/remotes/origin"):
         code, out, _ = _run(
@@ -525,6 +543,7 @@ def _local_issue_branches(repo: Path) -> set[str]:
 
 
 def _ref_exists(repo: Path, ref: str) -> bool:
+    """Проверить существование git-ссылки (коммита) в репозитории."""
     code, _, _ = _run(
         [
             "git",
@@ -547,12 +566,7 @@ CWD_PROBE_RECORDS = 200
 
 
 def _slug_variants(repo: Path) -> list[str]:
-    """Directory names the runtime may have used for one project path.
-
-    The naming scheme is not a published contract and has changed: it used to replace only path
-    separators, and now also folds characters such as "_" into "-". A project renamed by that change
-    keeps its old directory, so both spellings have to be considered.
-    """
+    """Сформировать возможные варианты имени директории проекта в хранилище транскриптов."""
     text = str(repo)
     variants = [re.sub(r"[\\/:]", "-", text), re.sub(r"[^A-Za-z0-9-]", "-", text)]
     seen = []
@@ -563,7 +577,7 @@ def _slug_variants(repo: Path) -> list[str]:
 
 
 def _has_transcripts(directory: Path) -> bool:
-    """Whether a directory holds session data, rather than only leftovers such as memory/."""
+    """Проверить, содержит ли директория непустые файлы транскриптов (*.jsonl)."""
     try:
         return any(
             path.is_file() and path.stat().st_size > 0
@@ -574,11 +588,7 @@ def _has_transcripts(directory: Path) -> bool:
 
 
 def _records_repo(directory: Path, repo: Path) -> bool:
-    """Whether this directory's transcripts were recorded in this repository.
-
-    Probes several transcripts, newest first, and several records of each: the working directory is
-    not on every record, so inspecting only the first one misses it almost always.
-    """
+    """Проверить по записям рабочих директорий в транскриптах, относятся ли они к репозиторию."""
     try:
         transcripts = sorted(
             directory.glob("*.jsonl"),
@@ -597,13 +607,7 @@ def _records_repo(directory: Path, repo: Path) -> bool:
 
 
 def claude_project_dirs(home: Path, repo: Path) -> list[Path]:
-    """Every transcript directory belonging to this repository.
-
-    A directory qualifies only when it actually contains transcripts: an empty directory left behind
-    by a renaming, whose name still matches the expected slug, must not shadow the real one. More
-    than one directory can qualify at once, and all of them count — otherwise an epic that spans a
-    rename silently loses the half recorded under the older name.
-    """
+    """Найти все директории с транскриптами Claude Code, принадлежащие этому репозиторию."""
     root = home / ".claude/projects"
     if not root.is_dir():
         return []
@@ -622,20 +626,14 @@ def claude_project_dirs(home: Path, repo: Path) -> list[Path]:
 
 
 def _claude_transcripts(directory: Path) -> list[tuple[Path, bool]]:
-    """Every transcript belonging to one project directory: top-level session logs, then -- nested
-    one level deeper under each session's own directory -- its subagent transcripts at
-    <session-uuid>/subagents/*.jsonl. Each entry is (path, is_subagent): a subagent transcript's own
-    "sessionId" field replays its *parent's* session id (confirmed against real Claude Code output
-    on disk), so it must never be used as that transcript's own grouping key -- the transcript's own
-    filename (path.stem) is, and is_subagent tells the caller which key to use.
-    """
+    """Получить список всех транскриптов проекта: основных сессий и вложенных сессий подагентов."""
     main = [(path, False) for path in sorted(directory.glob("*.jsonl"))]
     sub = [(path, True) for path in sorted(directory.glob("*/subagents/*.jsonl"))]
     return main + sub
 
 
 def _is_billable_turn(record: JsonObject) -> bool:
-    """Whether a record is an API turn with a priceable model, not a locally generated notice."""
+    """Проверить, является ли запись тарифицируемым ходом API с реальной моделью."""
     message = record.get("message")
     return (
         record.get("type") == "assistant"
@@ -646,7 +644,7 @@ def _is_billable_turn(record: JsonObject) -> bool:
 
 
 def _usage_complete(usage: object) -> bool:
-    """Whether a turn's usage dict has every Claude field, each a real (non-bool) int."""
+    """Проверить, содержит ли словарь использования токенов все обязательные числовые поля Claude."""
     return isinstance(usage, dict) and not any(
         not isinstance(usage.get(field), int) or isinstance(usage.get(field), bool)
         for field in CLAUDE_FIELDS
@@ -654,11 +652,12 @@ def _usage_complete(usage: object) -> bool:
 
 
 def _turn_input(usage: JsonObject) -> int:
+    """Вычислить общий входной объём токенов за ход (включая создание и чтение кэша)."""
     return sum(_int(usage.get(f)) for f in CLAUDE_FIELDS[:3])
 
 
 def claude_usage(project_dirs: list[Path], numbers: set[int]) -> JsonObject:
-    """Token usage of every Claude Code turn recorded on a branch belonging to a ticket in scope."""
+    """Собрать статистику расхода токенов Claude Code по веткам тикетов из области охвата."""
     if not project_dirs:
         return {
             "status": MISSING,
@@ -784,10 +783,11 @@ def claude_usage(project_dirs: list[Path], numbers: set[int]) -> JsonObject:
 
 
 def live_probe(project_dirs: list[Path], branch: str) -> JsonObject:
-    """Live, branch-scoped snapshot of every session/subagent transcript recorded so far -- turn
-    count, the largest single-turn input this identity has sent, and the input size of its most
-    recent turn. Deliberately NOT epic-scoped and not a replacement for claude_usage(): this answers
-    "what is active on this branch right now", not "what did a finished epic cost".
+    """Собрать оперативный снимок активных сессий и подагентов Claude Code на указанной ветке.
+
+    Снимок включает количество ходов, наибольший контекст входа за один ход и размер входа
+    последнего хода. Предназначен для наблюдения за происходящим прямо сейчас на ветке,
+    а не для итоговой оценки завершённого эпика.
     """
     if not project_dirs:
         return {
@@ -840,10 +840,11 @@ def codex_usage(
     repo: Path,
     window: tuple[datetime | None, datetime | None],
 ) -> JsonObject:
-    """Codex records no branch, only a working directory and a timestamp.
+    """Оценить расход токенов Codex по логам сессий в заданном временном окне репозитория.
 
-    Work is therefore attributed to the epic by repository plus the activity window of its issue
-    branches.  That is an estimate and the report must present it as one.
+    Codex не фиксирует имя ветки, сохраняя лишь рабочую директорию и метку времени.
+    Поэтому работа относится к эпику по репозиторию и временному окну активности его веток.
+    Это является оценкой, и отчёт отображает её именно как оценку.
     """
     if sessions_root is None or not sessions_root.is_dir():
         return {"status": MISSING, "reason": "на этой машине нет сессий Codex"}
@@ -948,26 +949,12 @@ def codex_usage(
 
 
 def _load_ledger_class(repo: Path) -> LedgerClass | None:
-    """Import LifecycleLedger from the analyzed repo's own .harness/orchestration/ledger/lifecycle.py
-    (or the pre-package .harness/orchestration/ledger.py), when present there.
+    """Динамически загрузить класс LifecycleLedger из .harness анализируемого репозитория.
 
-    backend-orchestration is an optional capability, independent of this reporting module (which
-    ships in the always-installed base suite): the repository this delivery_stats.py copy is
-    itself deployed in may never have installed it, while --repo (the project being analyzed) can
-    be a different, unrelated project that has -- so ledger.py cannot be imported as a sibling of
-    this file (--repo is a separate checkout, outside this harness installation's own package tree).
-    Loaded by file path under a private name and never registered in sys.modules, so this never
-    collides with, or is shadowed by, an already-imported "ledger" module belonging to a different
-    repository's copy within the same process. Returns None when that module is not present or
-    fails to import -- a caller then falls back to ``_fallback_records_root``/``_fallback_read_record``
-    below, which implement the identical tolerant algorithm inline for a repo whose ledger state
-    was written directly (e.g. by a test fixture, or a harness install that never carried the
-    optional backend-orchestration Python source alongside its data).
-
-    The loaded module is registered in ``sys.modules`` under its private name for the duration of
-    ``exec_module``: ledger.py declares several ``@dataclass`` records, and the dataclass machinery
-    looks its own module up via ``sys.modules[cls.__module__]`` while processing the class body, so
-    an unregistered module fails with an unrelated-looking AttributeError."""
+    Оркестрация бэкенда является опциональной функциональностью, независимой от данного модуля отчётности.
+    Класс загружается по пути к файлу под приватным именем, не оставаясь в sys.modules после импорта.
+    Возвращает None, если модуль отсутствует или произошла ошибка импорта.
+    """
     orchestration = repo / ".harness" / "orchestration"
     # ledger.py became the ledger/ package's lifecycle.py; a project installed from an older
     # harness still carries the flat module, so accept either layout.
@@ -1000,11 +987,7 @@ def _load_ledger_class(repo: Path) -> LedgerClass | None:
 
 
 def _fallback_records_root(root: Path) -> Path | None:
-    """LifecycleLedger.records_root_lenient()'s own tolerant pointer-resolution algorithm,
-    inlined for the rare case ``_load_ledger_class`` finds no ledger.py module at all. Kept in
-    lockstep with the real method (never checks the pointer schema or version, never runs
-    per-record validation) by tests/test_ledger.py's coverage of that method and
-    tests/test_delivery_stats.py's coverage of this fallback against the same fixtures."""
+    """Резервный алгоритм разрешения корня записей журнала поколений (ledger.json)."""
     pointer_path = root / "ledger.json"
     if not pointer_path.is_file():
         return root if root.is_dir() else None
@@ -1020,7 +1003,7 @@ def _fallback_records_root(root: Path) -> Path | None:
 
 
 def _fallback_read_record(path: Path) -> JsonObject | None:
-    """LifecycleLedger.read_record_lenient()'s own algorithm, inlined for the same fallback."""
+    """Резервный алгоритм чтения JSON-записи журнала."""
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -1029,6 +1012,7 @@ def _fallback_read_record(path: Path) -> JsonObject | None:
 
 
 def _lenient_records_root(root: Path, ledger_cls: LedgerClass | None) -> Path | None:
+    """Получить корень записей журнала через LifecycleLedger или резервный алгоритм."""
     if ledger_cls is None:
         return _fallback_records_root(root)
     try:
@@ -1043,6 +1027,7 @@ def _lenient_records_root(root: Path, ledger_cls: LedgerClass | None) -> Path | 
 def _lenient_read_record(
     path: Path, ledger_cls: LedgerClass | None
 ) -> JsonObject | None:
+    """Прочитать JSON-запись журнала через LifecycleLedger или резервный алгоритм."""
     if ledger_cls is None:
         return _fallback_read_record(path)
     try:
@@ -1055,6 +1040,7 @@ def _lenient_read_record(
 def _dispatch_record(
     root: Path, dispatch_id: object, ledger_cls: LedgerClass | None
 ) -> JsonObject | None:
+    """Загрузить JSON-запись диспетчеризации (dispatch) по её идентификатору."""
     if not isinstance(dispatch_id, str):
         return None
     return _lenient_read_record(root / "dispatches" / f"{dispatch_id}.json", ledger_cls)
@@ -1063,8 +1049,7 @@ def _dispatch_record(
 def _developer_write_paths(
     root: Path, batch: JsonObject, ledger_cls: LedgerClass | None
 ) -> list[str] | None:
-    """The declared zone a code-review diff is checked against: the most recent developer
-    dispatch's own recorded write_paths (retries share the same zone, so the latest is enough)."""
+    """Определить объявленную зону путей записи разработчика (write_paths) для пакета задач."""
     for entry in reversed(batch.get("dispatches", [])):
         if not isinstance(entry, dict) or entry.get("role") != "developer":
             continue
@@ -1076,6 +1061,7 @@ def _developer_write_paths(
 
 
 def _empty_ticket_orchestration() -> JsonObject:
+    """Создать пустую структуру метрик оркестрации для тикета."""
     return {
         "batches": [],
         "worker_sessions": [],
@@ -1088,6 +1074,7 @@ def _empty_ticket_orchestration() -> JsonObject:
 def _accumulate_batch_orchestration(
     root: Path, batch: JsonObject, bucket: JsonObject, ledger_cls: LedgerClass | None
 ) -> None:
+    """Накопить метрики оркестрации из одного пакета (batch) в структуру тикета."""
     bucket["batches"].append(batch.get("batch_id"))
     restarts_by_dispatch: dict[str, list[JsonObject]] = {}
     for decision in batch.get("coordinator_decisions", []):
@@ -1150,6 +1137,7 @@ def _accumulate_batch_orchestration(
 
 
 def _finalize_ticket_orchestration(bucket: JsonObject) -> JsonObject:
+    """Вычислить итоговые доли ошибок QA и превышения зоны ревью для тикета."""
     bucket["qa_failure_rate"] = (
         round(bucket["qa_failed"] / bucket["qa_decided"], 4)
         if bucket["qa_decided"]
@@ -1163,11 +1151,12 @@ def _finalize_ticket_orchestration(bucket: JsonObject) -> JsonObject:
 def orchestration_metrics(
     repo: Path, numbers: set[int], state_dir: Path | None = None
 ) -> JsonObject:
-    """Structural metrics from the backend-orchestration ledger, per ticket in scope: worker
-    sessions a dispatch spanned with each session's coordinator-recorded compaction/restart reason,
-    the share of a code-review diff outside the developer's declared write-path zone, and QA failure
-    rate. Every figure here comes from the coordinator's own hash-linked records, never a role's
-    free-text self-report; an absent or unreadable ledger reports the whole metric as missing."""
+    """Собрать структурные метрики оркестрации бэкенда по тикетам из журнала состояний.
+
+    Метрики включают количество сессий воркеров и причины перезапуска/сжатия контекста,
+    долю диффа код-ревью за пределами объявленной зоны записи разработчика и процент ошибок QA.
+    Все числа берутся из записей координатора; при недоступности журнала метрика помечается как отсутствующая.
+    """
     ledger_cls = _load_ledger_class(repo)
     root_dir = state_dir if state_dir is not None else repo / ORCHESTRATION_STATE_REL
     root = _lenient_records_root(root_dir, ledger_cls)
@@ -1207,6 +1196,7 @@ def orchestration_metrics(
 
 
 def cache_split(claude: JsonObject) -> str | JsonObject:
+    """Рассчитать процентное распределение входных токенов Claude (чтение кэша, запись кэша, свежий ввод)."""
     if claude.get("status") != "ok":
         return MISSING
     fresh = sum(bucket["input_tokens"] for bucket in claude["models"].values())
@@ -1231,6 +1221,7 @@ def cache_split(claude: JsonObject) -> str | JsonObject:
 
 
 def build_report(args: argparse.Namespace) -> JsonObject:
+    """Собрать полный отчёт о статистике поставки по переданным параметрам запуска CLI."""
     repo = Path(args.repo).resolve()
     if not (repo / ".git").exists():
         raise StatsError(
@@ -1315,6 +1306,7 @@ def build_report(args: argparse.Namespace) -> JsonObject:
 
 
 def main_live_probe(argv: list[str]) -> int:
+    """Точка входа подкоманды live-probe для оперативного мониторинга сессий на ветке."""
     parser = argparse.ArgumentParser(
         prog="delivery_stats.py live-probe",
         description="Live snapshot of active Claude Code sessions/subagents on one branch.",
@@ -1347,6 +1339,7 @@ def main_live_probe(argv: list[str]) -> int:
 
 
 def main() -> int:
+    """Главная точка входа CLI delivery_stats: парсинг аргументов и формирование отчёта."""
     for stream in (sys.stdout, sys.stderr):
         # The report is authored in Russian; a legacy console code page would mangle it.
         reconfigure = getattr(stream, "reconfigure", None)

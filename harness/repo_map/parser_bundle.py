@@ -6,7 +6,7 @@
 Формат lock описан в `bundle_lock`, протокол worker — в `bundle_worker`; их публичные имена
 реэкспортируются здесь, поэтому потребители импортируют только этот модуль. Пакет не импортирует
 `tree_sitter*` и проверяется основным `mypy --strict`; сам worker — tree_sitter_worker.py, а
-scripts/build_parser_bundle.py собирает bundle из закреплённых wheels (ADR 0024).
+scripts/build_parser_bundle.py собирает bundle из закреплённых wheels (ADR 0008).
 
 Все точки входа вызываются только при `repo_map_policy.tier`, равном `full` (по умолчанию). Для
 отсутствующего, несовпадающего или сбойного bundle они не бросают исключений, а возвращают строку
@@ -199,7 +199,7 @@ def python_platform_tags(
     """Вернуть пару (python_tag, platform_tag) интерпретатора, который будет запускать worker.
 
     Теги берутся коротким subprocess `-c` этого интерпретатора, а не из текущего процесса: загрузчик и
-    worker не обязаны работать в одном интерпретаторе (ADR 0024).
+    worker не обязаны работать в одном интерпретаторе (ADR 0008).
     """
     script = (
         "import sys, sysconfig, json;"

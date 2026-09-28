@@ -1,4 +1,4 @@
-"""Shared report contracts used by collection, calculation, and presentation."""
+"""Общие контракты отчётов, используемые при сборе данных, вычислениях и отображении."""
 
 from __future__ import annotations
 
@@ -26,9 +26,9 @@ CODEX_FIELDS = (
 
 
 class StatsError(HarnessError):
-    """A request that cannot be answered from local evidence."""
+    """Ошибка запроса, на который невозможно ответить на основе локальных данных."""
 
 
 def _int(value: object) -> int:
-    """Convert a complete integer telemetry field, treating other values as absent."""
+    """Преобразовать целочисленное поле телеметрии, интерпретируя остальные значения как отсутствующие."""
     return value if isinstance(value, int) and not isinstance(value, bool) else 0

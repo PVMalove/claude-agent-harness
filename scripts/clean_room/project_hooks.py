@@ -228,7 +228,7 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit(
             "block-scratch-outside-docs-tasks.sh allowed a PR body in the retired .harness/scratch/tmp/ path"
         )
-    sandboxes_scratch_pr_body = (
+    old_sandboxes_pr_body = (
         pv_project / ".harness" / ".sandboxes" / "scratch" / "tmp" / "pr-body-1-test.md"
     )
     if (
@@ -237,15 +237,34 @@ def run(ctx: SimpleNamespace) -> None:
             pv_project,
             "",
             raw_payload=json.dumps(
-                {"tool_input": {"file_path": str(sandboxes_scratch_pr_body)}}
+                {"tool_input": {"file_path": str(old_sandboxes_pr_body)}}
             ),
         ).returncode
-        != 0
+        == 0
     ):
         sys.exit(
-            "block-scratch-outside-docs-tasks.sh rejected a PR body in .harness/.sandboxes/scratch/tmp/"
+            "block-scratch-outside-docs-tasks.sh allowed a PR body in .harness/.sandboxes/scratch/tmp/"
         )
-    nested_non_body = sandboxes_scratch_pr_body.parent / "pr-body-dir" / "notes.md"
+    sandboxes_pr_body = storage_path(pv_project, "pr_body", "pr-body-1-test.md")
+    for name in (
+        "pr-body-1-test.md",
+        "pr-comment-1-test.md",
+        "issue-comment-1-test.md",
+    ):
+        publication_file = sandboxes_pr_body.parent / name
+        if (
+            run_hook(
+                scratch_hook,
+                pv_project,
+                "",
+                raw_payload=json.dumps(
+                    {"tool_input": {"file_path": str(publication_file)}}
+                ),
+            ).returncode
+            != 0
+        ):
+            sys.exit(f"block-scratch-outside-docs-tasks.sh rejected {name} in pr_body/")
+    nested_non_body = sandboxes_pr_body.parent / "pr-body-dir" / "notes.md"
     if (
         run_hook(
             scratch_hook,
@@ -263,8 +282,7 @@ def run(ctx: SimpleNamespace) -> None:
         / "outside"
         / ".harness"
         / ".sandboxes"
-        / "scratch"
-        / "tmp"
+        / "pr_body"
         / "pr-body-1.md"
     )
     if (
@@ -302,9 +320,7 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit(
             "block-scratch-outside-docs-tasks.sh rejected a cache path in .harness/.sandboxes/cache/"
         )
-    sandboxes_invalid_scratch = (
-        pv_project / ".harness" / ".sandboxes" / "scratch" / "tmp" / "notes.md"
-    )
+    sandboxes_invalid_scratch = sandboxes_pr_body.parent / "notes.md"
     if (
         run_hook(
             scratch_hook,
@@ -317,7 +333,7 @@ def run(ctx: SimpleNamespace) -> None:
         == 0
     ):
         sys.exit(
-            "block-scratch-outside-docs-tasks.sh allowed a non-PR file in .harness/.sandboxes/scratch/tmp/"
+            "block-scratch-outside-docs-tasks.sh allowed a non-PR file in .harness/.sandboxes/pr_body/"
         )
     docs_pr_body = pv_project / "docs" / "tasks" / "pr-body-1-test.md"
     if (

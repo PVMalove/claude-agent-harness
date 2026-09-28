@@ -1,0 +1,147 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "output": "docs/diagrams/vertical-slices.workflow.html",
+    "title": "/to-tickets: вертикальные слайсы вместо слоёв",
+    "quality_profile": "showcase",
+    "legend": {
+      "entries": {
+        "backend": {
+          "label": "Проверяемый слайс"
+        },
+        "external": {
+          "label": "Горизонтальный слой"
+        },
+        "security": {
+          "label": "Проверка"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "layers",
+      "label": "Декомпозиция по слоям",
+      "variant": "exception"
+    },
+    {
+      "id": "slices",
+      "label": "Декомпозиция по слайсам"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "db",
+      "lane": "layers",
+      "col": 0,
+      "type": "external",
+      "label": "Миграции БД",
+      "sublabel": "результат не виден",
+      "width": 150
+    },
+    {
+      "id": "api",
+      "lane": "layers",
+      "col": 1,
+      "type": "external",
+      "label": "Слой API",
+      "sublabel": "проверка недоступна",
+      "width": 150
+    },
+    {
+      "id": "ui",
+      "lane": "layers",
+      "col": 2,
+      "type": "external",
+      "label": "Слой UI",
+      "sublabel": "интеграция в конце",
+      "width": 150
+    },
+    {
+      "id": "late",
+      "lane": "layers",
+      "col": 3,
+      "type": "security",
+      "label": "Проверка в конце",
+      "sublabel": "риски выявляются поздно",
+      "width": 160
+    },
+    {
+      "id": "s1",
+      "lane": "slices",
+      "col": 0,
+      "type": "backend",
+      "label": "Слайс #1",
+      "sublabel": "БД · API · UI · тест",
+      "width": 150
+    },
+    {
+      "id": "c1",
+      "lane": "slices",
+      "col": 1,
+      "type": "security",
+      "label": "Проверен",
+      "sublabel": "демо + тест",
+      "width": 150
+    },
+    {
+      "id": "s2",
+      "lane": "slices",
+      "col": 2,
+      "type": "backend",
+      "label": "Слайс #2",
+      "sublabel": "БД · API · UI · тест",
+      "width": 150
+    },
+    {
+      "id": "c2",
+      "lane": "slices",
+      "col": 3,
+      "type": "security",
+      "label": "Проверен",
+      "sublabel": "демо + тест",
+      "width": 160
+    }
+  ],
+  "edges": [
+    {
+      "from": "db",
+      "to": "api"
+    },
+    {
+      "from": "api",
+      "to": "ui"
+    },
+    {
+      "from": "ui",
+      "to": "late",
+      "variant": "dashed"
+    },
+    {
+      "from": "s1",
+      "to": "c1",
+      "variant": "emphasis"
+    },
+    {
+      "from": "c1",
+      "to": "s2",
+      "label": "следующий"
+    },
+    {
+      "from": "s2",
+      "to": "c2",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Размер слайса",
+      "items": [
+        "Слайс помещается в одно новое контекстное окно",
+        "При оценке в неделях слайс разбивается дальше"
+      ]
+    }
+  ]
+}

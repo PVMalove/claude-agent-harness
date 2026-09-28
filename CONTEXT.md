@@ -19,24 +19,23 @@ _Avoid_: инсталляция, харнесс без уточнения «пр
 **Python-пакет `harness`** (import-неймспейс):
 Каталог `harness/` как обычный импортируемый Python-пакет (`__init__.py` + относительные импорты
 в `harness.orchestration`, `harness.context_builder`, `harness.gate_runner`, `harness.reporting`),
-не pip-устанавливаемый — см. [ADR 0018](docs/adr/0018-harness-as-importable-package-without-pip-install.md).
+не pip-устанавливаемый — см. [ADR 0001](docs/adr/0001-portable-capability-delivery.md).
 Не путать с «Харнесс проекта» ниже: это разные понятия под одним словом — одно про Python-импорты
 в этом репозитории, другое — про артефакт, который харнесс устанавливает в целевой репозиторий.
 _Avoid_: харнесс без уточнения «Python-пакет» или «проекта».
 
 **Песочницы харнесса** (`.harness/.sandboxes/`):
 Единая структурированная директория для всех временных данных и кэшей харнесса: `cache/` (кэши repo_map
-и parser_bundle), `logs/` (логи тестов и выполнения), `scratch/` (инбокс и транзитные PR/issue-комментарии),
+и parser_bundle), `logs/` (логи тестов и выполнения), `scratch/` (инбокс ролей),
+`pr_body/` (тела PR и комментариев),
 `runs/` (временные тестовые и QA окружения), `reports/` (генерируемые отчёты) и `worktrees/` (управляемые
 Git worktree). Очищается через `harness cleanup` (в режимах `soft` и `hard`), предотвращая засорение корня `.harness`.
-_Avoid_: `.harness/.cache/`, `.harness/test-logs/`, `.harness/tmp/`, `.harness/reports/`, `.harness/scratch/` — упразднённые разбросанные директории.
 
-**Харнесс-скретч** (`.harness/.sandboxes/scratch/tmp/`):
+**Публикационные файлы** (`.harness/.sandboxes/pr_body/`):
 Единый, runtime-независимый корень внутри `.harness/.sandboxes/` для одноразового тела PR/комментария (`pr-body-<issue>-<slug>.md`),
-удаляемого сразу после успешной публикации и сохраняемого при сбое для повторной попытки (ранее `.harness/scratch/tmp/`). Не
+удаляемого сразу после успешной публикации и сохраняемого при сбое для повторной попытки. Не
 хранит черновики спек/тикетов (см. `docs/tasks/`), QA/orchestration evidence и не смешивается с
-durable-записью локального трекера (см. [ADR 0017](docs/adr/0017-unified-harness-scratch-for-ephemeral-artifacts.md)).
-_Avoid_: `.claude/tmp/`, `.agents/tmp/`, `.scratch/tmp/`, `.harness/scratch/tmp/` — упразднённые per-runtime и legacy пути.
+durable-записью локального трекера (см. [ADR 0006](docs/adr/0006-scratch-artifacts.md)).
 
 **Постоянный локальный архив задач** (`docs/tasks/issue-<N-или-slug>-<slug>/`):
 Не эфемерный черновик под удаление, а gitignored (не коммитится, но и не удаляется инструментами)
@@ -247,7 +246,7 @@ _Avoid_: специализация каждой сервисной правки
 Необязательная capability `backend-orchestration`, расширяющая `pvmalove-suite` и доставляющая
 role manifests, config contract, lifecycle, handoff и optional runtime adapter без изменения
 существующих проектов. Практический порядок включения и запуска —
-`docs/agents/backend-orchestration.md`.
+`harness/docs/backend-orchestration.md`.
 _Avoid_: неявное включение orchestration, изменение базовой capability.
 
 **Batch lifecycle**:
@@ -369,8 +368,8 @@ write-zone, отменить proof или снять risk-gate переноси�
 _Avoid_: project override правил роли, runtime policy вместо manifest.
 
 **Skill discovery roots**:
-`.agents/skills` и `.claude/skills` — runtime-ссылки на `.harness/skills`; для Hermes Agent fallback
-маршрутом служат `AGENTS.md` и `.harness/skills/REGISTRY.md`.
+`.agents/skills` для Codex и `.claude/skills` для Claude Code — ссылки на один установленный
+snapshot `.harness/skills`. `REGISTRY.md` индексирует этот набор для проверки и навигации.
 
 **Implement (default pipeline)**:
 `/implement` по умолчанию — не одна сессия, а coordinator-driven конвейер: `architect` →

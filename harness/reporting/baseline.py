@@ -1,4 +1,4 @@
-"""Versioned delivery baseline snapshots and source-backed comparison."""
+"""Версионированные снимки базовых показателей поставки (baseline) и сравнение на основе исходных данных."""
 
 from __future__ import annotations
 
@@ -18,8 +18,7 @@ from harness.reporting.common import (
 def _cache_tokens(
     models: JsonObject, write_field: str, read_field: str
 ) -> JsonObject | None:
-    """Cache write/read tokens by the same rule as the input total: only when every model bucket
-    carries both fields, never a partial sum presented as complete."""
+    """Подсчитать токены записи/чтения кэша по правилу общего ввода: только если у всех моделей есть оба поля."""
     if not models or any(
         not isinstance(bucket, dict)
         or any(
@@ -46,7 +45,7 @@ def _provider_snapshot(
     *,
     cache_fields: tuple[str, str] | None = None,
 ) -> JsonObject:
-    """The comparable provider telemetry from one report, without filling absent data with zero."""
+    """Сформировать сопоставимый снимок телеметрии провайдера из отчёта, не заполняя отсутствующие данные нулями."""
     if usage.get("status") != "ok":
         return {"status": MISSING, "reason": usage.get("reason", MISSING)}
     models = usage.get("models")
@@ -85,7 +84,7 @@ def _provider_snapshot(
 
 
 def baseline_snapshot(report: JsonObject) -> JsonObject:
-    """Make the small, versioned baseline contract that later reports can compare."""
+    """Создать компактный версионированный контракт baseline для последующего сравнения отчётов."""
     epic = report["epic"]
     return {
         "schema_version": BASELINE_SCHEMA_VERSION,
@@ -108,6 +107,7 @@ def baseline_snapshot(report: JsonObject) -> JsonObject:
 
 
 def load_baseline(path: Path) -> JsonObject:
+    """Загрузить и провалидировать снимок baseline из JSON-файла."""
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -155,6 +155,7 @@ def load_baseline(path: Path) -> JsonObject:
 
 
 def save_baseline(snapshot: JsonObject, path: Path) -> None:
+    """Сохранить снимок baseline в формате JSON по указанному пути."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -170,8 +171,7 @@ def save_baseline(snapshot: JsonObject, path: Path) -> None:
 def _cache_delta_field(
     baseline: JsonObject, current: JsonObject, field: str
 ) -> str | int:
-    """A cache-token delta only when both sides actually carry that field -- one or both of them
-    may predate this metric or come from a provider report with incomplete cache telemetry."""
+    """Вычислить разницу токенов кэша только если оба снимка содержат это поле."""
     before, after = baseline.get(field), current.get(field)
     if (
         not isinstance(before, int)
@@ -184,6 +184,7 @@ def _cache_delta_field(
 
 
 def _provider_delta(baseline: object, current: object) -> str | JsonObject:
+    """Вычислить разницу показателей телеметрии провайдера между baseline и текущим отчётом."""
     if not isinstance(baseline, dict) or not isinstance(current, dict):
         return MISSING
     if baseline.get("status") != "ok" or current.get("status") != "ok":
@@ -198,7 +199,7 @@ def _provider_delta(baseline: object, current: object) -> str | JsonObject:
 
 
 def compare_baseline(baseline: JsonObject, current: JsonObject) -> JsonObject:
-    """Compare only source-backed telemetry and preserve each side's attribution evidence."""
+    """Сравнить подтверждённую телеметрию снимков, сохранив атрибуцию данных каждой из сторон."""
     providers = ("claude", "codex")
     return {
         "baseline": baseline,

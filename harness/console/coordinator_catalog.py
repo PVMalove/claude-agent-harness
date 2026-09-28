@@ -1,19 +1,17 @@
-"""The Orchestration section's command catalog: plain stdlib data introspected from the live
-coordinator argument parser (`harness.orchestration.coordinator.parser()`), covering the
-operator-facing coordinator subcommands listed in `_TARGETS` (batch, decide, decision packet,
-dispatch, qa status, risk, context-package, ledger status).
+"""Каталог команд раздела Orchestration: декларативные структуры данных стандартной библиотеки,
+полученные интроспекцией активного парсера аргументов координатора (`harness.orchestration.coordinator.parser()`)
+и охватывающие доступные оператору подкоманды координатора, перечисленные в `_TARGETS` (batch, decide,
+decision packet, dispatch, qa status, risk, context-package, ledger status).
 
-Unlike `harness/console/catalog.py`, whose `CatalogEntry.argv` is hand-written, every
-`CoordinatorCommand.fields` tuple here is built by walking the real `argparse.ArgumentParser` the
-coordinator CLI itself builds, so a required argument, a `choices=` restriction, an `append` action
-or a value-less flag added to the coordinator's parser is reflected here without hand-editing this
-module.
-`tests/test_console_coordinator_catalog.py` proves this stays in sync (a drift test). The console
-never reimplements coordinator logic: it runs the same `python .harness/orchestration/coordinator.py
---repo {repo} <subcommand path> ...` CLI as a process (see `process_argv`), exactly the convention
-`harness/console/catalog.py` already uses for the `ledger-*` entries.
-
-`Reversibility` and `CONFIRMATION_REASONS` are reused from `.catalog`, not copied."""
+В отличие от `harness/console/catalog.py`, где `CatalogEntry.argv` задан вручную, каждый кортеж
+`CoordinatorCommand.fields` строится обходом реального дерева `argparse.ArgumentParser` CLI координатора.
+Поэтому обязательные аргументы, ограничения `choices=`, действие `append` или флаги без значений
+подхватываются автоматически без ручного редактирования данного модуля.
+Тест `tests/console/test_console_coordinator_catalog.py` проверяет синхронизацию с CLI (тест на дрейф). Консоль
+не дублирует логику координатора: она запускает тот же процесс
+`python .harness/orchestration/coordinator.py --repo {repo} <путь подкоманды> ...` (см. `process_argv`).
+Класс `Reversibility` и причины `CONFIRMATION_REASONS` переиспользуются из `.catalog`.
+"""
 
 from __future__ import annotations
 
@@ -35,11 +33,10 @@ _COORDINATOR_SCRIPT = ".harness/orchestration/coordinator.py"
 # console never asks for these, so they are never turned into a `CoordinatorField`.
 _SKIPPED_DESTS = frozenset({"help", "repo", "state_dir"})
 
+
 @dataclass(frozen=True)
 class _Target:
-    """One in-scope coordinator subcommand: its CLI path, menu title, menu group and confirmation
-    class. The primary name is used where the parser also registers an alias (`batch create`/
-    `plan`, `dispatch create`/`approve`): `argparse` shares one subparser instance across aliases."""
+    """Целевая подкоманда координатора: путь CLI, заголовок, группа меню и класс обратимости."""
 
     key: str
     path: tuple[str, ...]
@@ -58,9 +55,15 @@ _TERMINAL = Reversibility.TERMINAL_COORDINATOR_ACTION
 _TARGETS: tuple[_Target, ...] = (
     _Target("batch-list", ("batch", "list"), "Список batch", "batch", _REVERSIBLE),
     _Target("batch-create", ("batch", "create"), "Создать batch", "batch", _REVERSIBLE),
-    _Target("batch-approve", ("batch", "approve"), "Утвердить batch", "batch", _TERMINAL),
-    _Target("batch-abandon", ("batch", "abandon"), "Отказаться от batch", "batch", _TERMINAL),
-    _Target("batch-resume", ("batch", "resume"), "Возобновить batch", "batch", _REVERSIBLE),
+    _Target(
+        "batch-approve", ("batch", "approve"), "Утвердить batch", "batch", _TERMINAL
+    ),
+    _Target(
+        "batch-abandon", ("batch", "abandon"), "Отказаться от batch", "batch", _TERMINAL
+    ),
+    _Target(
+        "batch-resume", ("batch", "resume"), "Возобновить batch", "batch", _REVERSIBLE
+    ),
     _Target(
         "batch-attention-check",
         ("batch", "attention", "check"),
@@ -75,7 +78,9 @@ _TARGETS: tuple[_Target, ...] = (
         "batch",
         _TERMINAL,
     ),
-    _Target("batch-decide", ("batch", "decide"), "Решение по batch", "decide", _TERMINAL),
+    _Target(
+        "batch-decide", ("batch", "decide"), "Решение по batch", "decide", _TERMINAL
+    ),
     _Target(
         "batch-decision-packet",
         ("batch", "decision-packet"),
@@ -83,9 +88,27 @@ _TARGETS: tuple[_Target, ...] = (
         "packet",
         _REVERSIBLE,
     ),
-    _Target("dispatch-status", ("dispatch", "status"), "Статус dispatch", "dispatch", _REVERSIBLE),
-    _Target("dispatch-create", ("dispatch", "create"), "Создать dispatch", "dispatch", _TERMINAL),
-    _Target("dispatch-cancel", ("dispatch", "cancel"), "Отменить dispatch", "dispatch", _TERMINAL),
+    _Target(
+        "dispatch-status",
+        ("dispatch", "status"),
+        "Статус dispatch",
+        "dispatch",
+        _REVERSIBLE,
+    ),
+    _Target(
+        "dispatch-create",
+        ("dispatch", "create"),
+        "Создать dispatch",
+        "dispatch",
+        _TERMINAL,
+    ),
+    _Target(
+        "dispatch-cancel",
+        ("dispatch", "cancel"),
+        "Отменить dispatch",
+        "dispatch",
+        _TERMINAL,
+    ),
     _Target(
         "dispatch-send",
         ("dispatch", "send"),
@@ -102,13 +125,15 @@ _TARGETS: tuple[_Target, ...] = (
         "context-package",
         _REVERSIBLE,
     ),
-    _Target("ledger-status", ("ledger", "status"), "Состояние ledger", "ledger", _REVERSIBLE),
+    _Target(
+        "ledger-status", ("ledger", "status"), "Состояние ledger", "ledger", _REVERSIBLE
+    ),
 )
 
 
 @dataclass(frozen=True)
 class CoordinatorField:
-    """One argument of a coordinator subcommand, as `argparse` declared it."""
+    """Аргумент подкоманды координатора, объявленный в argparse."""
 
     dest: str
     flag: str
@@ -123,9 +148,7 @@ class CoordinatorField:
 
 @dataclass(frozen=True)
 class CoordinatorCommand:
-    """A coordinator subcommand the console's Orchestration section can run. `path` is the
-    subcommand path passed to the coordinator CLI, e.g. `("batch", "decide")` or
-    `("batch", "attention", "check")`."""
+    """Подкоманда координатора, доступная для запуска из раздела Orchestration консоли."""
 
     key: str
     title: str
@@ -136,12 +159,13 @@ class CoordinatorCommand:
 
     @property
     def needs_confirmation(self) -> bool:
+        """Определяет, требует ли команда координатора подтверждения перед выполнением."""
         return self.reversibility is not Reversibility.REVERSIBLE
 
-    def cli_argv(self, repo: Path, values: Mapping[str, str] | None = None) -> list[str]:
-        """The CLI equivalent for this command with `values` (keyed by field `dest`) filled in.
-        A repeatable field's value is a multi-line string; each non-empty stripped line becomes
-        its own `--flag value` pair. A field left out, or blank, contributes nothing."""
+    def cli_argv(
+        self, repo: Path, values: Mapping[str, str] | None = None
+    ) -> list[str]:
+        """Формирует список аргументов CLI команды с подстановкой переданных значений полей."""
         filled = values or {}
         argv = ["python", _COORDINATOR_SCRIPT, "--repo", str(repo), *self.path]
         for field in self.fields:
@@ -161,15 +185,21 @@ class CoordinatorCommand:
         return argv
 
     def cli_line(self, repo: Path, values: Mapping[str, str] | None = None) -> str:
+        """Возвращает экранированную строковую команду CLI для отображения в интерфейсе."""
         return shlex.join(self.cli_argv(repo, values))
 
 
-def subparser(root: argparse.ArgumentParser, path: tuple[str, ...]) -> argparse.ArgumentParser:
-    """The parser of the coordinator subcommand at `path`, walking argparse's own tree."""
+def subparser(
+    root: argparse.ArgumentParser, path: tuple[str, ...]
+) -> argparse.ArgumentParser:
+    """Находит вложенный парсер аргументов координатора по цепочке имён подкоманд в дереве argparse."""
     parser = root
     for name in path:
         for action in parser._actions:  # noqa: SLF001 - introspecting argparse's own tree by design
-            if isinstance(action, argparse._SubParsersAction) and name in action.choices:
+            if (
+                isinstance(action, argparse._SubParsersAction)
+                and name in action.choices
+            ):
                 parser = cast(argparse.ArgumentParser, action.choices[name])
                 break
         else:
@@ -178,6 +208,7 @@ def subparser(root: argparse.ArgumentParser, path: tuple[str, ...]) -> argparse.
 
 
 def _fields(sub_parser: argparse.ArgumentParser) -> tuple[CoordinatorField, ...]:
+    """Извлекает список полей параметров из парсера подкоманды argparse."""
     fields: list[CoordinatorField] = []
     for action in sub_parser._actions:  # noqa: SLF001
         if isinstance(action, (argparse._HelpAction, argparse._SubParsersAction)):
@@ -187,9 +218,15 @@ def _fields(sub_parser: argparse.ArgumentParser) -> tuple[CoordinatorField, ...]
         flag = action.option_strings[-1] if action.option_strings else action.dest
         takes_value = action.nargs != 0
         default = None
-        if takes_value and action.default is not None and action.default is not argparse.SUPPRESS:
+        if (
+            takes_value
+            and action.default is not None
+            and action.default is not argparse.SUPPRESS
+        ):
             default = str(action.default)
-        choices = tuple(str(choice) for choice in action.choices) if action.choices else None
+        choices = (
+            tuple(str(choice) for choice in action.choices) if action.choices else None
+        )
         fields.append(
             CoordinatorField(
                 dest=action.dest,
@@ -206,6 +243,7 @@ def _fields(sub_parser: argparse.ArgumentParser) -> tuple[CoordinatorField, ...]
 
 
 def _build_commands() -> tuple[CoordinatorCommand, ...]:
+    """Строит полный кортеж доступных команд координатора на основе дерева аргументов."""
     root = coordinator.parser()
     commands: list[CoordinatorCommand] = []
     for target in _TARGETS:

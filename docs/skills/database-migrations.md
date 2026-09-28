@@ -23,3 +23,7 @@ Database Migrations — write-роль только для schema и data bounda
 ## 4. Архитектурная схема
 
 ![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[database-migrations.md](../../harness/orchestration/roles/database-migrations.md)

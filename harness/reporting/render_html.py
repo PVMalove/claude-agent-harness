@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Render a delivery-stats report as one standalone HTML dashboard.
+"""Формирование отчёта о статистике поставки в виде автономного HTML-дашборда.
 
-The page embeds everything it needs: no scripts, no fonts, no network requests. A figure the report
-marked as missing or estimated is rendered as such — the dashboard never fills a gap with zero.
+Страница содержит всё необходимое: без скриптов, шрифтов и внешних сетевых запросов.
+Показатель, отмеченный в отчёте как отсутствующий или приблизительный, отображается именно так —
+дашборд никогда не заменяет пропуски нулями.
 """
 
 from __future__ import annotations
@@ -76,23 +77,26 @@ footer{color:var(--dim);font-size:12px;margin-top:32px;border-top:1px solid var(
 
 
 def _esc(value: object) -> str:
+    """Экранировать специальные символы HTML в строке."""
     return html.escape(str(value), quote=True)
 
 
 def _thousands(value: object) -> str:
+    """Форматировать целое число с разделением тысяч неразрывными пробелами."""
     if not isinstance(value, int):
         return _esc(value)
     return f"{value:,}".replace(",", " ")
 
 
 def _decimal(value: object, places: int = 2) -> str:
-    """Russian copy uses a comma for the decimal separator and a space for thousands."""
+    """Форматировать число с русской десятичной запятой и неразрывными пробелами в тысячах."""
     if not isinstance(value, (int, float)):
         return _esc(value)
     return f"{value:,.{places}f}".replace(",", " ").replace(".", ",")
 
 
 def _compact(value: object) -> str:
+    """Форматировать число в компактном виде с русскими суффиксами и неразрывными пробелами."""
     if not isinstance(value, int):
         return _esc(value)
     for limit, suffix in ((1_000_000_000, "млрд"), (1_000_000, "млн"), (1_000, "тыс")):
@@ -105,7 +109,7 @@ def _compact(value: object) -> str:
 
 
 def _bars(rows: Sequence[tuple[str, float, str]], css: str = "") -> str:
-    """Rows are (label, numeric value, display value); the widest row sets the scale."""
+    """Построить горизонтальные столбчатые диаграммы с нормализацией по максимальному значению."""
     if not rows:
         return '<p class="missing">нет данных</p>'
     top = max((value for _, value, _ in rows), default=0) or 1
@@ -121,10 +125,12 @@ def _bars(rows: Sequence[tuple[str, float, str]], css: str = "") -> str:
 
 
 def _panel(title: str, body: str) -> str:
+    """Обернуть содержимое секции в панель с заголовком."""
     return f'<section class="panel"><h2>{_esc(title)}</h2>{body}</section>'
 
 
 def _stat(label: str, value: str, note: str = "") -> str:
+    """Сформировать блок ключевой метрики со значением и подписью."""
     note_html = f'<div class="stat-note">{_esc(note)}</div>' if note else ""
     return (
         f'<section class="panel"><div class="stat-label">{_esc(label)}</div>'
@@ -133,10 +139,12 @@ def _stat(label: str, value: str, note: str = "") -> str:
 
 
 def _claude_input(bucket: JsonObject) -> int:
+    """Вычислить суммарные входные токены Claude (включая создание и чтение кэша)."""
     return sum(int(bucket.get(field, 0)) for field in CLAUDE_INPUT_FIELDS)
 
 
 def _hero(report: JsonObject) -> str:
+    """Сформировать главный баннер (hero) отчёта с ключевыми показателями эпика."""
     claude, codex = report["claude"], report["codex"]
     total = 0
     parts = []
@@ -177,6 +185,7 @@ def _hero(report: JsonObject) -> str:
 def _models_panel(
     title: str, usage: JsonObject, input_of: Callable[[JsonObject], int], css: str
 ) -> str:
+    """Сформировать панель распределения токенов по моделям провайдера."""
     if usage.get("status") != "ok":
         return _panel(
             title, f'<p class="missing">{_esc(usage.get("reason", MISSING))}</p>'
@@ -213,6 +222,7 @@ def _models_panel(
 
 
 def _comparison_panel(comparison: object) -> str:
+    """Сформировать панель сравнения текущего отчёта с базовым снимком (baseline)."""
     if not isinstance(comparison, dict):
         return ""
     baseline = comparison.get("baseline")
@@ -231,6 +241,7 @@ def _comparison_panel(comparison: object) -> str:
         delta = deltas.get(provider, MISSING)
 
         def shown(value: object) -> str:
+            """Отформатировать отображаемое значение телеметрии и метки атрибуции."""
             if not isinstance(value, dict) or value.get("status") != "ok":
                 reason = (
                     value.get("reason", MISSING) if isinstance(value, dict) else MISSING
@@ -254,6 +265,7 @@ def _comparison_panel(comparison: object) -> str:
         )
 
         def cache_delta_text(value: object) -> str:
+            """Отформатировать разницу показателей кэша со знаком."""
             if not isinstance(value, int):
                 return f'<span class="missing">{_esc(MISSING)}</span>'
             return f"{value:+,}".replace(",", " ")
@@ -279,6 +291,7 @@ def _comparison_panel(comparison: object) -> str:
 
 
 def _cache_panel(cache: object) -> str:
+    """Сформировать панель структуры входного контекста Claude (кэш и свежий ввод)."""
     if not isinstance(cache, dict):
         return _panel(
             "Из чего состоял вход Claude", f'<p class="missing">{_esc(MISSING)}</p>'
@@ -313,6 +326,7 @@ def _cache_panel(cache: object) -> str:
 
 
 def _cost_panel(cost: JsonObject) -> str:
+    """Сформировать панель финансовых затрат и экономии от кэширования."""
     if cost.get("status") != "ok":
         return _panel(
             "Деньги", f'<p class="missing">{_esc(cost.get("reason", MISSING))}</p>'
@@ -350,6 +364,7 @@ def _cost_panel(cost: JsonObject) -> str:
 
 
 def _window_panel(report: JsonObject) -> str:
+    """Сформировать панель расхода окон подписки и лимитов."""
     rows = []
     quota = (
         report["claude"].get("quota") if isinstance(report["claude"], dict) else None
@@ -383,6 +398,7 @@ def _window_panel(report: JsonObject) -> str:
 
 
 def _tickets_panel(report: JsonObject) -> str:
+    """Сформировать таблицу тикетов эпика со статусами и объёмом изменений."""
     rows = []
     by_ticket: JsonObject = {}
     for entry in report["volume"]["entries"]:
@@ -420,6 +436,7 @@ def _tickets_panel(report: JsonObject) -> str:
 
 
 def _session_stats_panel(claude: JsonObject) -> str:
+    """Сформировать панель самых затратных сессий Claude по объёму контекста."""
     if claude.get("status") != "ok" or not claude.get("session_stats"):
         return ""
     stats = claude["session_stats"]
@@ -438,6 +455,7 @@ def _session_stats_panel(claude: JsonObject) -> str:
 
 
 def _orchestration_panel(orchestration: object) -> str:
+    """Сформировать панель метрик оркестрации бэкенда и перезапусков сессий."""
     if not isinstance(orchestration, dict) or orchestration.get("status") != "ok":
         reason = (
             orchestration.get("reason", MISSING)
@@ -481,6 +499,7 @@ def _orchestration_panel(orchestration: object) -> str:
 
 
 def build_html(report: JsonObject) -> str:
+    """Собрать полный автономный HTML-документ дашборда статистики поставки."""
     totals = report["volume"]["totals"]
     claude, codex = report["claude"], report["codex"]
     comparison_panel = _comparison_panel(report.get("comparison"))
@@ -559,6 +578,7 @@ def build_html(report: JsonObject) -> str:
 
 
 def write_dashboard(report: JsonObject, destination: Path) -> Path:
+    """Записать сформированный HTML-дашборд в файл на диске."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(build_html(report), encoding="utf-8", newline="\n")
     return destination

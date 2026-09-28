@@ -1,251 +1,293 @@
-# claude-agent-harness
+<p align="center">
+  <img src="./docs/assets/harness-banner.svg" alt="Agent Harness — for coding agents" width="800">
+</p>
 
-Портативный харнесс для coding agents (Claude Code, Codex, Kimi Code, OpenCode и Hermes Agent) — набор скиллов, правил, хуков и документов, который одной командой разворачивается в любой проект и живёт там независимо от этого репозитория.
+<p align="center">
+  <a href="https://github.com/PVMalove/claude-agent-harness/releases"><img src="https://img.shields.io/github/v/release/PVMalove/claude-agent-harness?label=Version&labelColor=34312E&color=D97757" alt="Version"></a>
+  <img src="https://img.shields.io/badge/Runtime-Claude%20Code%20%7C%20Codex-E5A04B?labelColor=34312E" alt="Runtime: Claude Code | Codex">
+  <img src="https://img.shields.io/badge/Python-3.12%2B-8FB573?labelColor=34312E" alt="Python 3.12+">
+  <a href="https://github.com/PVMalove/claude-agent-harness/actions/workflows/verify.yml"><img src="https://github.com/PVMalove/claude-agent-harness/actions/workflows/verify.yml/badge.svg" alt="CI"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-9C958C?labelColor=34312E" alt="License: MIT"></a>
+</p>
 
-По умолчанию устанавливается лёгкая доменно-нейтральная capability **project-foundation** из 5 скиллов. Полная upstream-сборка — **mattpocock-suite**, 25 скиллов Matt Pocock (aihero.dev), закреплённых на конкретном коммите. **pvmalove-suite** добавляет управляемый инженерный workflow: native связи эпиков и тикетов, namespaced triage-таксономию, двухосевое review, ручной `/to-pull-requests`, настраиваемый язык вывода и конфигурируемый `qa-gate`.
+# Agent Harness
 
-Термины ниже (капабилити, vendor/first-party-скилл, переопределение, дрейф, проектный конфиг) разобраны в [CONTEXT.md](./CONTEXT.md); действующие архитектурные контракты — в [docs/adr/](./docs/adr/); целостный обзор текущей системы — в [docs/agents/current-state.md](./docs/agents/current-state.md); пошаговое использование — в [docs/agents/harness-guide.md](./docs/agents/harness-guide.md); как скиллы находят Codex, Kimi Code, OpenCode и Hermes Agent (не только Claude Code) — в [docs/runtime-discovery.md](./docs/runtime-discovery.md).
+## Портативный фреймворк для оркестрации ИИ-агентов (Claude Code, Codex).
 
-## Пайплайн одним взглядом
+Harness - это единый набор скиллов, системных правил, хуков и контекстных документов, который разворачивается в любой целевой проект одной командой. Он устанавливает проверяемый, независимый снапшот (capability), который работает через нативные механизмы агентов и живет в проекте автономно, без привязки к исходному репозиторию.
 
-[![Пайплайн доставки: от идеи до merge](./docs/diagrams/previews/delivery-pipeline.workflow.png)](./docs/diagrams/delivery-pipeline.workflow.html)
+Совместимость и стабильность полностью проверены для `Claude Code` и `Codex`.
 
-Полный маршрут: `/grill-with-docs` снимает неопределённость → `/to-spec` публикует эпик → `/to-tickets`
-режет его на слайсы и помечает каждый `afk` или `hitl` → `afk` идёт в `/implement`, `hitl` — в
-`/to-guide` → PR открывает разработчик через `/to-pull-requests`. Ни один шаг не запускает следующий
-сам. Картинка кликабельна: за ней интерактивная версия с поиском, фокусом и экспортом.
+### Доступные сборки (Capabilities)
+При инициализации вы можете выбрать один из готовых профилей поведения агента:
 
-[![Discovery Pipeline: от решения к Context Package](./docs/diagrams/previews/discovery-pipeline.workflow.png)](./docs/diagrams/discovery-pipeline.workflow.html)
+ - project-foundation (По умолчанию) — лёгкая доменно-нейтральная база из 5 ключевых скиллов для старта.
+ - mattpocock-suite — полная upstream-сборка (25 скиллов от Matt Pocock / aihero.dev), жестко привязанная к проверенному коммиту.
+ - pvmalove-suite — продвинутый инженерный workflow. Добавляет нативную привязку эпиков и тикетов, изолированную (namespaced) таксономию для триажа задач, двухосевое ревью, генерацию PR через /to-pull-requests, настраиваемый язык вывода и строгий контроль качества через qa-gate.
+ - backend-orchestration — специализированная сборка для распределенных систем. Работает через систему специализированных ролей (Архитектор, Разработчик, QA и др.), которые оркестрируются для совместного проектирования микросервисов, DDD, CQRS и сложных паттернов взаимодействия (Sagas через MassTransit, Outbox/Inbox).
 
-Discovery Pipeline сохраняет согласованный контекст между сессиями: `/grilling` ведёт `Live Artifact`
-только после explicit opt-in пользователя → `/to-spec` переносит пути в `Relevant Files` →
-`/to-tickets` назначает их тикетам и проверяет Path inventory одним cheap advisory-вызовом →
-`context_builder.py` собирает deterministic Context Package. Advisory может только добавить exact
-dependencies и не имеет полномочий изменять scope или запускать dispatch.
+Архитектурные термины определены в CONTEXT.md, а полное руководство по интеграции доступно в docs/.
 
-[![Архитектура переносимого Agent Harness](./docs/diagrams/previews/harness-topology.architecture.png)](./docs/diagrams/harness-topology.architecture.html)
+## Архитектура
 
-Architecture-схема показывает границу между исходным harness и целевым проектом: capability
-разрешается CLI из `CAPABILITIES.json` и пакетов skills, материализуется в единый
-`.harness/skills` snapshot, затем становится доступной через нативные skill-roots либо fallback
-`AGENTS.md` + `REGISTRY.md` для Hermes Agent.
+`harness/CAPABILITIES.json` задаёт capability `project-foundation`, `mattpocock-suite`,
+`pvmalove-suite` и опциональную `backend-orchestration`. `harness init` разрешает выбранные skills
+из закреплённых каталогов `skills/vendor/` и `skills/first-party/`, копирует их вместе с ресурсами в
+`.harness/` проекта и записывает lock. Корневой `docs/` и внутренние документы относятся к исходному
+репозиторию и установщиком не переносятся. Проектные руководства, hooks, агенты и конфигурация
+устанавливаются из отдельных шаблонов `harness/project/`.
 
-## Быстрый старт
+В `pvmalove-suite` переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`.
 
-Предполагаемый интерфейс работает ещё до того, как есть репозиторий, стек или харнесс. После разовой установки глобального слоя (`bin/install-global`, раздел «Установка» ниже) — в любой новой сессии просто скажите агенту:
+[![Граница исходного харнесса и целевого проекта](./docs/diagrams/previews/harness-topology.architecture.png)](./docs/diagrams/harness-topology.architecture.html)
 
-> Используй `start-project`, чтобы помочь мне сформировать и начать этот проект.
+`/implement` проводит один тикет через этапы architect, developer, независимое review, clean-room QA
+и publish. Coordinator фиксирует Context Package и candidate SHA, проверяет актуальность базы и
+привязывает approval к digest конкретного перехода. PR требует отдельного подтверждения; merge
+выполняет разработчик. После проверки `/to-pull-requests` готовит отдельный PR по правилам целевого
+проекта.
 
-Скилл сам классифицирует работу (software, content, research, operations, personal или другой явный домен), держит раннюю идею в диалоге, пока она не готова стать чем-то постоянным, и по готовности первого durable-факта предлагает ровно один следующий артефакт: продолжить разговор, завести docs-only seed-репозиторий, или сразу собрать харнесс — вызывая `harness/bin/harness.py init` (раздел «Установка» ниже) от вашего имени. Имя capability и пути каталога знать не нужно — `start-project` выбирает их сам (по умолчанию `project-foundation` для доменно-нейтральных проектов; `mattpocock-suite`/`pvmalove-suite` — для инженерных). Если установлена опциональная личная/организационная надстройка, тот же запрос авторизует только выбор пакетов по каталогу — приватные знания остаются закрытыми.
+[![Конвейер implement](./docs/diagrams/previews/implement-pipeline.workflow.png)](./docs/diagrams/implement-pipeline.workflow.html)
 
-Для репозитория, где уже есть настоящий код и свои конвенции (а харнесса ещё нет) — тот же принцип, но `integrate-project`, устанавливается и триггерится так же:
+Backend batches выполняются в отдельных worktrees; роли обмениваются неизменяемыми briefs и
+reports. Tree-sitter parser запускается в отдельном worker-процессе, временные файлы размещаются в
+`.harness/.sandboxes/`: inbox ролей — в `scratch/`, тела PR и комментарии — в `pr_body/`.
 
-> Используй `integrate-project`, чтобы интегрировать харнесс в этот существующий проект.
+[![Изоляция процессов и временных файлов](./docs/diagrams/previews/process-isolation.architecture.png)](./docs/diagrams/process-isolation.architecture.html)
 
-Вместо того чтобы формировать идею с нуля, скилл сначала аудирует репозиторий как есть — стек и команды из реальных манифестов (`package.json`/`pyproject.toml`/`go.mod` и т.п., а не из README), конвенции веток и CI из фактических workflow-файлов, уже существующие `AGENTS.md`/`CLAUDE.md`/`.cursor/rules`/`.claude/` от других инструментов (не перезаписывает их молча — расхождения с этим харнессом идут пользователю на подтверждение), — и только потом предлагает capability и устанавливает харнесс тем же путём, что и `start-project`.
+Действующие контракты описаны в [ADR](./docs/adr/), операционные процедуры — в
+[справочнике](./harness/docs/harness-guide.md) и [правилах Git](./docs/agents/git-workflow.md).
 
-Всё, что ниже — что происходит под капотом, и как пользоваться харнессом напрямую через CLI, если нужно.
+## Скиллы
 
-## Текущее состояние системы
+Скиллы вызываются в сессии агента командой `/имя` (Claude Code) или по имени (Codex). Состав
+определяется capability:
 
-Харнесс работает как переносимый снимок выбранной capability: runtime предоставляет модель и
-инструменты, глобальный профиль — межпроектный entry contract, а проектный слой — skills,
-инструкции, hooks и проверяемые lock-файлы. `project-foundation` даёт доменно-нейтральную основу,
-`mattpocock-suite` — закреплённый upstream-набор, `pvmalove-suite` — инженерный workflow, а
-`backend-orchestration` — его явную opt-in надстройку для координированной backend-работы.
+- `project-foundation` — базовые `grilling`, `handoff`, `writing-for-agents`, `research`,
+  `domain-modeling`;
+- `mattpocock-suite` — полный закреплённый upstream-набор;
+- `pvmalove-suite` — upstream-набор с переопределениями и дополнениями, перечисленными ниже;
+- `backend-orchestration` — `pvmalove-suite`, дополненный coordinator и ролями.
 
-`pvmalove-suite` наследует 15 skills без изменений; 10 переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`. `backend-orchestration` выбирается отдельно и разрешает эту зависимость автоматически.
+Подробные описания на русском языке приведены в [docs/skills/](./docs/skills/README.md).
 
-Проектный `.harness/project.json` определяет ветки, язык и QA. Работа начинается с тикета,
-проходит в issue-ветке и требует явного подтверждения разработчика перед PR; merge всегда ручной.
-При выбранной `backend-orchestration` coordinator ведёт утверждённые batch и immutable dispatch;
-человек явно утверждает каждый dispatch. Context Package строится без LLM из pinned commits,
-проверяется на freshness в shadow-режиме и переиспользуется ролями одного batch; write-роли могут
-продолжить тот же dispatch из checkpoint, а read-only роли — нет. Base-commit gate сверяет
-`origin/<integration_ref>` перед review/publish, delta-review ограничен test-only diff. Coordinator
-применяет независимый review и clean-room QA к candidate SHA. Runtime adapter доставляет только
-одобренную работу, а публикация SHA и PR остаются за разработчиком.
+### Собственные скиллы `pvmalove-suite`
 
-Полный текущий контракт, роли, lifecycle, FIFO QA lane и локальное state-хранилище описаны в
-[Текущем состоянии Agent Harness](./docs/agents/current-state.md). Пошаговая настройка и
-операционные команды находятся в [руководстве по backend-оркестрации](./docs/agents/backend-orchestration.md)
-и [справочнике харнесса](./docs/agents/harness-guide.md).
+| Скилл | Назначение |
+|---|---|
+| [`ask-matt`](./docs/skills/ask-matt.md) | Определяет скилл или сценарий, соответствующий ситуации; маршрутизатор по установленным скиллам. |
+| [`grilling`](./docs/skills/grilling.md) | Базовый механизм интервью: последовательно уточняет план, решение или идею до выявления пробелов. |
+| [`grill-me`](./docs/skills/grill-me.md) | Интервью для уточнения плана или дизайна. |
+| [`grill-with-docs`](./docs/skills/grill-with-docs.md) | Интервью с ведением ADR и глоссария по ходу обсуждения. |
+| [`wayfinder`](./docs/skills/wayfinder.md) | Планирует работу, превышающую объём одной сессии, в виде карты тикетов-решений в трекере и обрабатывает их по одному. |
+| [`triage`](./docs/skills/triage.md) | Проводит issues и внешние PR по машине состояний триажа: классификация, проверка, подготовка брифов для агентов. |
+| [`to-spec`](./docs/skills/to-spec.md) | Формирует спецификацию по итогам обсуждения и публикует её в трекер без повторного интервью. |
+| [`to-tickets`](./docs/skills/to-tickets.md) | Декомпозирует план или спецификацию на вертикальные тикеты с блокирующими связями и публикует их. |
+| [`to-guide`](./docs/skills/to-guide.md) | Готовит по `hitl`-тикету пошаговое руководство с промптами для AI IDE, если реализацию выполняет разработчик. |
+| [`implement`](./docs/skills/implement.md) | Проводит тикет через этапы architect, developer, review, clean-room QA и publish с подтверждениями разработчика. |
+| [`fast-implement`](./docs/skills/fast-implement.md) | Выполняет реализацию в одной сессии, без гейтов подтверждения конвейера coordinator. |
+| [`code-review`](./docs/skills/code-review.md) | Проверяет изменения от фиксированной точки по двум осям: стандарты репозитория и соответствие спецификации. |
+| [`qa-gate`](./docs/skills/qa-gate.md) | Запускает полный локальный гейт качества из `.harness/project.json` и сообщает результат pass/fail. |
+| [`to-pull-requests`](./docs/skills/to-pull-requests.md) | Готовит и открывает PR для опубликованной issue-ветки по правилам проекта. |
+| [`setup-labels`](./docs/skills/setup-labels.md) | Создаёт или обновляет метки репозитория по `docs/agents/triage-labels.md`; выполняется однократно. |
+| [`delivery-stats`](./docs/skills/delivery-stats.md) | Собирает статистику завершённого эпика: токены по моделям, использование кэша, стоимость, окно подписки, объём кода. |
 
-### Конвейер `/implement`
+### Закреплённые upstream-скиллы `mattpocock-suite`
 
-`/implement <id>` — не одна сессия, а конвейер из пяти ролевых гейтов, которым сессия управляет как
-coordinator: архитектор разбирает текущую архитектуру и предлагает план → **человек утверждает
-план** → разработчик реализует в своей issue-ветке, тестирует, коммитит и пушит → code review
-проверяет кандидатный SHA → **человек утверждает переход к QA** → независимый QA в clean-room
-worktree; найденные дефекты возвращают работу разработчику и QA повторяется → зелёный QA даёт
-итоговый отчёт и публикацию точного принятого SHA → **PR разработчик открывает сам** через
-`/to-pull-requests`. Короткий однопроходный путь без гейтов остался в `/fast-implement`.
+Скиллы, отмеченные знаком *, в `pvmalove-suite` заменены собственными версиями из таблицы выше.
 
-[![Конвейер /implement с гейтами](./docs/diagrams/previews/implement-pipeline.workflow.png)](./docs/diagrams/implement-pipeline.workflow.html)
+| Скилл | Назначение |
+|---|---|
+| [`ask-matt`](./docs/skills/vendor/ask-matt.md)* | Маршрутизатор: определяет скилл или сценарий, соответствующий ситуации. |
+| [`code-review`](./docs/skills/vendor/code-review.md)* | Двухосевая проверка изменений: стандарты и соответствие спецификации. |
+| [`codebase-design`](./docs/skills/vendor/codebase-design.md) | Общий словарь для проектирования «глубоких» модулей, швов и тестируемых интерфейсов. |
+| [`diagnosing-bugs`](./docs/skills/vendor/diagnosing-bugs.md) | Цикл диагностики сложных дефектов и регрессий производительности. |
+| [`domain-modeling`](./docs/skills/vendor/domain-modeling.md) | Формирует и уточняет доменную модель: терминологию и архитектурные решения. |
+| [`grill-me`](./docs/skills/vendor/grill-me.md)* | Интервью для уточнения плана или дизайна. |
+| [`grill-with-docs`](./docs/skills/vendor/grill-with-docs.md)* | Интервью с параллельным ведением ADR и глоссария. |
+| [`grilling`](./docs/skills/vendor/grilling.md)* | Последовательное уточнение плана, решения или идеи. |
+| [`handoff`](./docs/skills/vendor/handoff.md) | Сводит текущее обсуждение в документ передачи для другого агента. |
+| [`implement`](./docs/skills/vendor/implement.md)* | Выполняет реализацию по спецификации или набору тикетов. |
+| [`improve-codebase-architecture`](./docs/skills/vendor/improve-codebase-architecture.md) | Выявляет возможности углубления модулей, формирует HTML-отчёт и прорабатывает выбранный вариант. |
+| [`prototype`](./docs/skills/vendor/prototype.md) | Создаёт временный прототип для ответа на вопрос дизайна: модель состояний, логика, UI. |
+| [`research`](./docs/skills/vendor/research.md) | Исследует вопрос по первоисточникам и сохраняет выводы Markdown-файлом в репозитории. |
+| [`resolving-merge-conflicts`](./docs/skills/vendor/resolving-merge-conflicts.md) | Разрешает конфликты незавершённого merge или rebase. |
+| [`setup-matt-pocock-skills`](./docs/skills/vendor/setup-matt-pocock-skills.md) | Однократно настраивает репозиторий для инженерных скиллов: трекер, метки, структуру доменных документов. |
+| [`tdd`](./docs/skills/vendor/tdd.md) | Разработка через тестирование: red-green-refactor и интеграционные тесты. |
+| [`teach`](./docs/skills/vendor/teach.md) | Объясняет пользователю новый навык или понятие в рамках рабочего пространства. |
+| [`to-questionnaire`](./docs/skills/vendor/to-questionnaire.md) | Преобразует вопрос, требующий внешнего ответа, в опросник для другого участника. |
+| [`to-spec`](./docs/skills/vendor/to-spec.md)* | Формирует спецификацию по итогам обсуждения и публикует её в трекер. |
+| [`to-tickets`](./docs/skills/vendor/to-tickets.md)* | Декомпозирует план на тикеты с блокирующими связями. |
+| [`triage`](./docs/skills/vendor/triage.md)* | Машина состояний триажа issues и внешних PR. |
+| [`wait-what`](./docs/skills/vendor/wait-what.md) | Повторно излагает последний ответ агента в другой формулировке. |
+| [`wayfinder`](./docs/skills/vendor/wayfinder.md)* | Карта тикетов-решений для работы, превышающей объём одной сессии. |
+| [`wizard`](./docs/skills/vendor/wizard.md) | Генерирует интерактивный bash-мастер для шагов, которые выполняет только человек. |
+| [`writing-for-agents`](./docs/skills/vendor/writing-for-agents.md) | Правила подготовки документов для агентов: скиллов, `AGENTS.md`, `CLAUDE.md`. |
 
-[![Последовательность gated dispatch в /implement](./docs/diagrams/previews/implement-dispatch.sequence.png)](./docs/diagrams/implement-dispatch.sequence.html)
+### Глобальные скиллы
 
-Sequence-схема дополняет workflow: она фиксирует участников, два человеческих approval-gate,
-передачу Context Package и immutable brief, candidate SHA, base-commit gate, независимые отчёты
-review/QA и публикацию только принятого SHA.
+Устанавливаются однократно для машины командой `bin/install-global.py` (см. ниже).
 
-[![Поток capability от каталога к runtime](./docs/diagrams/previews/capability-delivery.dataflow.png)](./docs/diagrams/capability-delivery.dataflow.html)
+| Скилл | Назначение |
+|---|---|
+| [`start-project`](./docs/skills/start-project.md) | Формирует проект на основе идеи, определяет необходимость репозитория, создаёт, проверяет или обновляет его харнесс. |
+| [`integrate-project`](./docs/skills/integrate-project.md) | Проводит аудит существующей кодовой базы и встраивает в неё харнесс с сохранением действующих соглашений и CI. |
 
-Data Flow показывает происхождение и потребителей данных: каталог capability, vendor snapshot и
-first-party overrides → `harness init/update` → `.harness/skills` → native runtime discovery или
-Hermes fallback. Схема не содержит секретов и не описывает их значения.
+## Быстрый старт и установка
 
-Остальные визуальные карты — [резолв runtime и dispatch](./docs/diagrams/backend-runtime.workflow.html)
-(транспорт `external` или `in-process`, self-report модели, heartbeat),
-[жизненный цикл batch](./docs/diagrams/backend-batch.lifecycle.html) и
-[QA/создание PR](./docs/diagrams/qa-call-path.workflow.html), [полный harness workflow](./docs/diagrams/harness-guide-navigation.workflow.html),
-[контракт скила](./docs/diagrams/skill-contract-fill.workflow.html) и [поток capability](./docs/diagrams/capability-delivery.dataflow.html).
-Все 11 диаграмм, их исходники и
-порядок обновления — в [docs/diagrams/](./docs/diagrams/README.md).
-
-При выборе `pvmalove-suite` `harness init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект:
-
-- `docs/agents/{artifacts,backend-orchestration,current-state,git-workflow,harness-guide,issue-tracker,triage-labels,worktrees}.md`
-- `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json`
-- hook для блокировки автоматической атрибуции в commit/PR metadata; CI повторяет эту проверку
-- `.claude/rules/karpathy-guidelines.md`
-- `.claude/agents/pr-composer.md` (Claude Code subagent — вне системы skills/capability, отдельный механизм обнаружения)
-- `.harness/project.json` — язык вывода, паттерн имени ветки, базовая ветка для PR, команды `qa-gate` (спрашивается интерактивно, либо флагами)
-
-## Установка
-
-## Разработка этого репозитория
-
-Окружение ставится только через [uv](https://docs.astral.sh/uv/), pip не используется. Пакеты для
-проверки и разработки перечислены в группе `dev` файла [`pyproject.toml`](./pyproject.toml);
-зафиксированный граф их транзитивных зависимостей хранится в `uv.lock`. Рабочее окружение харнесса
-находится в `.harness/.venv`, поэтому не пересекается с окружением самого проекта:
+Требуются Python 3.12 или новее и Git. Глобальный слой устанавливается однократно для выбранных
+runtime; параметр `--runtime` допускает повторение:
 
 ```bash
-make bootstrap
-make verify
+python3 bin/install-global.py --target-home "$HOME" --runtime codex --runtime claude
 ```
 
-`make bootstrap` выполняет `uv sync --locked` с `UV_PROJECT_ENVIRONMENT=.harness/.venv`. Без `make`:
+В PowerShell:
 
-```bash
-UV_PROJECT_ENVIRONMENT=.harness/.venv uv sync --locked
-```
-
-В PowerShell переменную задают отдельно: `$env:UV_PROJECT_ENVIRONMENT = ".harness/.venv"`.
-
-Пакеты добавляют и обновляют командой `uv add --dev <пакет>==<версия>` (удаляют — `uv remove --dev`):
-она сама правит `pyproject.toml` и `uv.lock`.
-
-Глобальный слой — `bin/install-global`, не персонализирован, ставится отдельно и один раз на машину (на пользователя `~`, не на конкретный проект). Поддерживает пять рантаймов, `--runtime` повторяем:
-
-```bash
-python3 bin/install-global --target-home "$HOME" --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
-```
-
-Windows (PowerShell):
 ```powershell
-python bin\install-global --target-home $HOME --runtime codex --runtime claude --runtime kimi --runtime opencode --runtime hermes
+python bin\install-global.py --target-home $HOME --runtime codex --runtime claude
 ```
 
-`bin/install-global` — Python-скрипт (`#!/usr/bin/env python3`, standalone floor — 3.9+), запускается одинаково на Linux/macOS/Windows — так же, как `harness/bin/harness.py` ниже; отдельного `.sh`/`.ps1` не нужно. Метаданные проекта в `pyproject.toml` отдельно объявляют `requires-python >=3.14`. На Windows для создания настоящих символьных ссылок на директории нужен включённый Developer Mode либо запуск терминала от имени администратора — без этого команда явно падает с подсказкой.
+Далее `start-project` используется для создания нового проекта, а `integrate-project` — для
+подключения харнесса к существующему. Прямая установка в Git-репозиторий:
 
-`bin/install-global` устанавливает только глобальный профиль и entry skills; MCP, plugins и project integrations он не устанавливает. Флаги `--check` (ничего не пишет, только сверяет), `--replace-conflicts` (перемещает конфликтующие файлы в backup) и `--skills-only` (без профиля) — полный разбор, что именно ставится каждому из пяти рантаймов и куда, в [docs/agents/harness-guide.md](./docs/agents/harness-guide.md), раздел 0.
-
-Харнесс проекта — личная сборка:
 ```bash
-python3 harness/bin/harness.py init /path/to/repository \
-  --project-type software \
-  --stack python \
-  --capability pvmalove-suite \
-  --base-branch main \
-  --language ru \
-  --qa-gate-command "make check" \
+python3 harness/bin/harness.py init /path/to/repository --capability pvmalove-suite \
+  --project-type software --stack python --base-branch main --language ru \
   --qa-gate-command "make test"
-```
-
-Windows (PowerShell):
-```powershell
-python harness\bin\harness.py init C:\path\to\repository `
-  --project-type software `
-  --stack python `
-  --capability pvmalove-suite `
-  --base-branch main `
-  --language ru `
-  --qa-gate-command "make check" `
-  --qa-gate-command "make test"
-```
-
-(флаги `--language`/`--pr-base-branch`/`--branch-pattern`/`--qa-gate-command` можно опустить — `harness init` спросит их интерактивно)
-
-Если PowerShell отвечает `python: The term 'python' is not recognized...` — сначала проверьте `[Environment]::GetEnvironmentVariable('Path','User')`: если Python там уже есть, но `Get-Command python,py` всё равно ничего не находит — откройте новое окно терминала (переменные окружения читаются один раз при старте процесса, старое окно их не подхватит само). Если Python в PATH действительно нет — установите его, либо вызывайте по полному пути, например `& "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" harness\bin\harness.py init ...`.
-
-Чистый апстрим без личных доработок — то же самое с `--capability mattpocock-suite`. Без `--capability` вообще — по умолчанию `project-foundation`, 5 лёгких скиллов на любой тип проекта, не только software.
-
-Проект, где под именами выбранной capability уже лежат свои (не харнесс-управляемые) скиллы — `adopt` вместо `init`: сохраняет всё остальное, конфликтующие имена без `--replace-conflicts` просто перечисляет и падает.
-
-```bash
-python3 harness/bin/harness.py adopt /path/to/repository --capability pvmalove-suite --replace-conflicts
-```
-
-Обновление и диагностика:
-
-```bash
-python3 harness/bin/harness.py diff /path/to/repository
-python3 harness/bin/harness.py diff /path/to/repository --json
-python3 harness/bin/harness.py update /path/to/repository --capability pvmalove-suite
-python3 harness/bin/harness.py registry /path/to/repository
-python3 harness/bin/harness.py lock-project-skills /path/to/repository
 python3 harness/bin/harness.py health /path/to/repository
-python3 harness/bin/harness.py list /path/to/repository
 ```
 
-Windows (PowerShell):
+В PowerShell путь и команды задаются аналогично:
+
 ```powershell
-python harness\bin\harness.py diff C:\path\to\repository
-python harness\bin\harness.py diff C:\path\to\repository --json
-python harness\bin\harness.py update C:\path\to\repository --capability pvmalove-suite
-python harness\bin\harness.py registry C:\path\to\repository
-python harness\bin\harness.py lock-project-skills C:\path\to\repository
+python harness\bin\harness.py init C:\path\to\repository --capability pvmalove-suite `
+  --project-type software --stack python --base-branch main --language ru `
+  --qa-gate-command "python -m pytest"
 python harness\bin\harness.py health C:\path\to\repository
-python harness\bin\harness.py list C:\path\to\repository
 ```
 
-`harness init`/`adopt`/`update` всегда пишут в проект компактный `.harness/skills/REGISTRY.md` —
-это фоллбек-обнаружение для рантаймов без нативного project-скилл-рута (сейчас — Hermes Agent).
-`harness registry` перегенерирует его вручную. Скиллы, которые лежат в `.harness/skills` у самого
-проекта и не пришли ни из одной выбранной capability, `harness health` требует подтвердить через
-`harness lock-project-skills` — команда фиксирует их sha256 в `.harness/overlays/project-local.lock`
-(хэширует только git-видимые файлы, gitignore'нутые рантайм-артефакты вроде `node_modules` в лок не
-попадают). Нативные MCP/plugin/hook/runtime-конфиги (`.mcp.json`, `.claude/settings.json` и т.п.)
-таким же образом инвентаризируются в `.harness/integrations.json` — путь, sha256, целевые рантаймы,
-текстовое verify-действие и имена секретных env-переменных, но никогда сами секреты.
+Без `--capability` устанавливается доменно-нейтральная `project-foundation`. Полный закреплённый
+upstream-набор предоставляет `mattpocock-suite`; `backend-orchestration` добавляет coordinator и
+роли поверх `pvmalove-suite`. `harness diff` показывает изменения управляемого снимка,
+`harness update` обновляет его с сохранением локальных правок. Команды и параметры описаны в
+[справочнике](./harness/docs/harness-guide.md).
 
-`skills/REGISTRY.md` — отдельный сгенерированный каталог исходников этого репозитория,
-обновляемый через `scripts/build_registry.py`; его не следует путать с runtime-реестром
-`.harness/skills/REGISTRY.md` в целевом проекте.
+В целевой проект переносятся только выбранные ресурсы `harness/`, skills и шаблоны
+`harness/project/`; корневой `docs/` содержит документацию исходного репозитория.
+Шаблоны проектных руководств при `pvmalove-suite` и `backend-orchestration` разворачиваются
+из `harness/project/docs-agents/` как `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`.
+Справочник харнесса и руководство по backend-оркестрации входят в управляемый снимок: `harness/docs/`
+устанавливается в `.harness/docs/{harness-guide,backend-orchestration}.md` и обновляется командой
+`harness update`.
 
-## Политика репозитория
+## Проверка состояния проекта: `harness health`
 
-- Файлы под `skills/vendor/` никогда не редактируются вручную — только полная замена закреплённого снимка.
-- Личные скиллы и надстройки живут в `skills/first-party/pvmalove/` и `harness/project/`, не смешиваются с vendor-деревом.
-- `/to-spec` выбирает для эпика `integration/<service-or-team>` и создаёт её от проектной `base_branch`, если такой ветки ещё нет; `/to-tickets` переносит её в дочерние тикеты, а issue-ветки и PR используют её как базу.
-- Апстримные ревизии закреплены, provenance (`third_party/mattpocock-skills/`) сохраняется.
-- ADR (`docs/adr/`) фиксирует только действующее труднообратимое решение и создаётся по
-  [`docs/adr/template.md`](./docs/adr/template.md). Номер всегда следующий после наибольшего в
-  каталоге; язык совпадает с языком репозитория.
-- `third_party/mattpocock-skills/UPSTREAM.lock` может отстать от реального апстрима незаметно —
-  `scripts/check_upstream_drift.py` (сеть, читает только) сверяет пин с последним тегом на
-  `mattpocock/skills` и раскладывает реальные изменения на «можно тянуть не глядя» (скиллы вне
-  `pvmalove-suite.overrides`) и «сверить руками перед ресинком» (см. [ADR 0001](./docs/adr/0001-portable-capability-snapshots.md)). Гоняется вручную или
-  еженедельно через `.github/workflows/upstream-drift.yml` (`workflow_dispatch` — можно и по
-  требованию); падает (exit 1) только когда апстрим реально ушёл вперёд, не блокирует обычные PR.
-- `docs/agents/*.md` и `harness/project/docs-agents/*.md` — одно и то же по смыслу в двух местах
-  (вторая копия — то, что `pvmalove-suite` реально разворачивает в целевые проекты); `scripts/verify.py`
-  сверяет обе копии по содержимому (без учёта BOM/CRLF) и не даст молча разойтись.
-- CI запускает `scripts/diff_coverage.py`: он читает машиночитаемый JSON отчёт coverage, проверяет
-  только изменённые исполняемые Python-строки и при провале выводит компактный список путей и
-  диапазонов, а не полный перечень непокрытых строк.
-- `harness update` по умолчанию не перезаписывает изменённые managed files и seed-файлы.
-  `--force-managed-files` обновляет только managed snapshot, `--force-seed-files` — только seed,
-  а `--force` объединяет оба действия и может перезаписать project-owned конфигурацию.
+`health` проверяет установку харнесса в репозитории и без флагов не вносит изменений. Команду
+рекомендуется выполнять после `init`/`update`, после клонирования проекта, а также в случаях, когда
+агент не обнаруживает скиллы.
+
+```bash
+python3 harness/bin/harness.py health /path/to/repository            # локальные проверки
+python3 harness/bin/harness.py health /path/to/repository --fix      # восстановление заготовок .harness
+python3 harness/bin/harness.py health /path/to/repository --online   # дополнительно проверки трекера
+python3 harness/bin/harness.py health /path/to/repository --json     # машиночитаемый отчёт
+```
+
+Отчёт сгруппирован; каждая строка имеет маркер `✅` ok, `⚠️` warn, `❌` fail или `-` skipped:
+
+| Группа | Проверяемые объекты |
+|---|---|
+| `files` | `harness.lock`, `AGENTS.md`, discovery-ссылки `.agents/skills` и `.claude/skills`, `.harness/project.json`, overlay-локи, интеграции, конфигурация оркестрации. |
+| `directories` | Каталоги `.harness/` и `.harness/.sandboxes/*`; отсутствующий каталог, который может быть создан, считается `ok`. |
+| `repo_map` | Уровень Repo Map (`full` или `minimal`) и причина снижения уровня. |
+| `environment` | ОС, Git и `user.name`/`user.email`, `.gitattributes` и переводы строк, Python ≥ 3.12, `uv`, кодировка вывода; на Windows — длинные пути, symlink и `bash` для hooks. |
+| `orchestration` | Только при `backend-orchestration`: леджер, незавершённые и заблокированные batch, dispatch без активности, неучтённые worktree, объём временных данных. |
+| `tracker` | Только с `--online`: авторизация `gh`/`glab`, доступность origin, права и метки. |
+
+Интерпретация результата:
+
+- Код выхода `1` означает наличие хотя бы одной проверки со статусом `fail`; `warn` и `skipped` на
+  код выхода не влияют.
+- Под строкой с проблемой выводится `-> Как исправить:` и, при наличии, команда с абсолютными путями;
+  её можно выполнить из любого каталога.
+- `--fix` создаёт недостающие каталоги `.harness` и пересобирает `.harness/skills/REGISTRY.md`.
+  Системные настройки, git config, права доступа и worktree этим флагом не изменяются — для них в
+  отчёте приводится команда.
+- `--online --fix` дополнительно создаёт отсутствующие метки трекера; цвет существующих меток не
+  изменяется.
+- `--json` возвращает контракт `schema_version: 1` со стабильными `checks[].id` (например,
+  `files.lock`).
+
+Полное описание проверок приведено в [справочнике](./harness/docs/harness-guide.md#шаг-2--команды-cli).
+
+## Пульт управления: `harness console`
+
+`console` — интерактивный терминальный пульт (TUI) для диагностики, команд харнесса, оркестрации,
+отчётов и Repo Map.
+
+```bash
+python3 harness/bin/harness.py console /path/to/repository
+```
+
+Требуется [`uv`](https://docs.astral.sh/uv/) в `PATH`: пульт запускается через
+`uv run --no-project --with textual==<pin>` и не изменяет зависимости целевого проекта. При первом
+запуске загружается `textual`, поэтому требуется доступ к сети. При отсутствии `uv` или сети пульт
+выводит причину и текстовый отчёт `harness health`.
+
+Оформление пульта: терракотовые и янтарные акценты на графитовом фоне, тонкие скруглённые рамки.
+Главный экран содержит знак харнесса и сведения об установке: версию, capability, путь репозитория и
+ветку. Ниже расположен дашборд: счётчики проверок, число открытых batch оркестрации, уровень
+Repo Map, версия харнесса и состояние дрейфа снимка. Действие «Online checks» пересчитывает счётчики
+с `--online`. Разделы меню:
+
+| Раздел | Содержание |
+|---|---|
+| `Diagnostics` | Полный отчёт `health`, действия «online checks» и «apply fixes» (`health --fix`, требует повторного нажатия). |
+| `Harness` | Состояние установки (версия, capability, скиллы, управляемые файлы, дата lock) и сводка использования пайплайна; команды CLI: init, update, diff, adopt, registry, lock-project-skills, list, health, cleanup, Repo Map, ledger и удаление worktree. |
+| `Orchestration` | Статистика пайплайна (запуски, тикеты, состояния, диспатчи по ролям, итоги отчётов, QA) и история batch с фильтром по состоянию — выбор batch открывает хронологию; команды coordinator: batch, dispatch, qa status, risk assess, context-package, ledger status. |
+| `Reports` | Отчёты ролей из леджера с фильтрами по тикету, роли, outcome и дате, хронология batch и QA-логи. |
+| `Repo Map` | Карта репозитория для HEAD: сводка, дерево файлов с сигнатурами, поиск символов, связи, хабы. |
+| `Help` | Справка по разделам, клавишам и правилам безопасности пульта. |
+
+Клавиши: `Esc` — возврат или отмена, `e` — экспорт в Markdown, `j` — экспорт Repo Map в JSON,
+`b` — хронология batch в отчёте или построение карты в `Repo Map`, `F3` — QA-логи в `Reports`,
+`F1` — справка с любого экрана, `Ctrl+P` — палитра команд, `Ctrl+Q` — выход.
+
+Для каждой команды пульт отображает CLI-эквивалент и запускает тот же CLI-процесс. Команды из
+«Как исправить» отображаются, но не выполняются. Перед необратимыми действиями пульт запрашивает
+подтверждение; для `ledger reset` и hard cleanup требуется ввод `RESET` или `HARD`. Экспорты
+сохраняются в `docs/tasks/<папка тикета>/artifacts/` или `docs/tasks/console-exports/`; существующие
+файлы не перезаписываются.
+
+## Релизная политика
+
+Версии соответствуют SemVer. После изменения `harness/VERSION`, `pyproject.toml` и секции
+`CHANGELOG.md` разработчик публикует тег `vMAJOR.MINOR.PATCH` на проверенном коммите.
+[GitHub CD](./.github/workflows/release.yml) выполняет проверки `verify.yml`, сверяет тег с
+версией, создаёт архив установки и SHA-256, затем публикует GitHub Release. Release Notes
+формируются из секции версии в [CHANGELOG.md](./CHANGELOG.md); при отсутствии секции выпуск
+прерывается. Архив и контрольная сумма доступны в
+[GitHub Releases](https://github.com/PVMalove/claude-agent-harness/releases). Проверка после
+загрузки: `sha256sum --check claude-agent-harness-vX.Y.Z.tar.gz.sha256`.
+
+Дополнительный parser bundle прикладывается к Release того же коммита вручную запускаемым workflow
+[`release-parser-bundle.yml`](./.github/workflows/release-parser-bundle.yml). Полная процедура
+описана в [releases.md](./docs/agents/releases.md). В целевых проектах GitLab поддерживается через
+`glab` в процессах работы с тикетами и merge requests; релизный CD этого репозитория работает на
+GitHub.
+
+## Структура проекта
+
+| Путь | Назначение |
+|---|---|
+| `harness/` | CLI, каталог capability, runtime-модули и шаблоны целевого проекта |
+| `skills/` | Закреплённый vendor-снимок и собственные skills |
+| `global/`, `global-skills/`, `bin/` | Глобальный профиль, стартовые skills и установщик |
+| `scripts/` | Сборка, проверка и clean-room сценарии исходного репозитория |
+| `docs/` | ADR, руководства, описания на русском языке и диаграммы Archify исходного репозитория |
+| `third_party/` | Provenance, lock и лицензии upstream |
+| `.github/` | CI, CD и проверки upstream |
+
+Проект распространяется по лицензии [MIT](./LICENSE). Лицензия закреплённого upstream-снимка
+находится в [`third_party/mattpocock-skills/LICENSE`](./third_party/mattpocock-skills/LICENSE).

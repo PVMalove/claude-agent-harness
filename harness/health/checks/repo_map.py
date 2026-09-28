@@ -88,7 +88,8 @@ def repo_map_health(repo: Path) -> list[str]:
             degradation_reason = "parser bundle has no supported grammars"
             remedy = (
                 "КАК ИСПРАВИТЬ: registry содержит bundle без поддерживаемых грамматик "
-                "(вероятно, тестовый stub); замените его bundle из scripts/build_parser_bundle.py "
+                "(вероятно, тестовый stub); замените его bundle из Release asset workflow "
+                "release-parser-bundle (в репозитории харнесса — scripts/build_parser_bundle.py) "
                 "и повторите harness health"
             )
     if degradation_reason is not None:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject automated-agent attribution in commit messages and pull-request bodies."""
+"""Запрет атрибуции автоматических AI-агентов в сообщениях коммитов и описаниях PR."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ FORBIDDEN = re.compile(
 
 
 def git_messages(commit_range: str) -> list[tuple[str, str]]:
+    """Получить список пар (хеш коммита, текст сообщения) для заданного диапазона коммитов git."""
     result = subprocess.run(
         ["git", "log", "--format=%H%x00%B%x00", "--no-merges", commit_range],
         capture_output=True,
@@ -28,6 +29,7 @@ def git_messages(commit_range: str) -> list[tuple[str, str]]:
 
 
 def main() -> int:
+    """Точка входа CLI: проверка сообщений коммитов и тела PR на запрещённые упоминания AI-агентов."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--commit-range")
     parser.add_argument("--pr-body-file", type=Path)

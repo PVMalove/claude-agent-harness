@@ -1,26 +1,10 @@
-"""Deterministic, LLM-free Context Package builder for a base/candidate commit pair.
+"""Детерминированный построитель контекстного пакета (Context Package) без LLM для пары коммитов base/candidate.
 
-Sibling module to gate_runner.py: it reads a repository at two pinned commits (via git plumbing,
-never the working tree) and returns one immutable, reproducible record — the exact diff, a bounded
-set of starting files with a stated reason for each, a dependency/reference graph and per-file
-signatures obtained from the Repo Map CLI, related tests, short ADR/precedent cards, and a hash of
-every included file. It makes no model call, chooses no candidate, and writes no ledger or
-coordinator state; the caller decides how (or whether) to persist the result.
-
-The import/reference graph and per-file signatures are not computed here: they are obtained from
-the Repo Map CLI (`harness/repo_map/repo_map.py`), invoked as a `sys.executable` subprocess so its
-tree-sitter machinery never crosses the process boundary; only its validated, typed JSON contract
-(see `harness/repo_map/repo_map.schema.json`) is consumed for the graph and signatures.
-
-`allow_paths`/`deny_paths`/`redact_paths` are whole-path decisions Repo Map already bakes into that
-JSON's `files` list (a denied or redacted path simply never appears there), so every other raw read
-this module does directly via `git diff`/`git show` -- the diff, dependency fallback excerpts, and
-starting/related file content -- is restricted to that same `files` slice instead of the full
-changed-file set. `redact_symbols` is a finer-grained, per-identifier decision that Repo Map's JSON
-contract has no channel to express over arbitrary raw text, so that raw text is additionally passed
-through Repo Map's own policy loader and matcher (`load_policy`/`_matches`, plain Python, no
-tree-sitter, no subprocess, no network) imported in-process here -- reused, not reimplemented --
-before it can enter the package.
+Родственный модуль для gate_runner.py: считывает состояние репозитория на двух зафиксированных коммитах
+(через git plumbing, никогда не обращаясь к рабочему дереву) и возвращает единую неизменяемую,
+воспроизводимую структуру: точный diff, ограниченный набор начальных файлов с обоснованием выбора,
+граф зависимостей и ссылок, сигнатуры файлов из Repo Map CLI, связанные тесты, краткие карточки
+прецедентов ADR и хэш каждого включённого файла.
 """
 
 from __future__ import annotations
@@ -42,7 +26,7 @@ from ..token_estimator import estimate_tokens as estimate_tokens
 
 
 class ContextPackageError(HarnessError):
-    """The package could not be built, or would exceed its configured size limit."""
+    """Не удалось собрать контекстный пакет или превышен настроенный лимит размера."""
 
 
 _ADR_HEADING_RE: re.Pattern[str] = re.compile(r"^#\s+(.+)$", re.MULTILINE)
@@ -60,6 +44,8 @@ _REPO_MAP_CONTRACT_REMEDY = "inspect harness/repo_map/repo_map.schema.json and t
 
 @dataclass(frozen=True)
 class SectionPointer:
+    """Указатель на заголовок и диапазон строк раздела Markdown-документа."""
+
     heading: str
     level: int
     start_line: int
@@ -68,6 +54,8 @@ class SectionPointer:
 
 @dataclass(frozen=True)
 class StartingFile:
+    """Начальный файл для исследования контекста задачи с обоснованием выбора."""
+
     path: str
     reason: str
     # Non-empty only for a large Markdown file seeded as an index: the role reads only the line
@@ -77,6 +65,8 @@ class StartingFile:
 
 @dataclass(frozen=True)
 class PrecedentCard:
+    """Карточка архитектурного решения (ADR) или прецедента."""
+
     id: str
     title: str
     summary: str
@@ -84,6 +74,8 @@ class PrecedentCard:
 
 @dataclass(frozen=True)
 class ContextPackage:
+    """Неизменяемый контекстный пакет задачи, включающий diff, файлы и граф связей."""
+
     base_commit: str
     candidate_commit: str
     diff: str
@@ -99,6 +91,7 @@ class ContextPackage:
     parser_provenance: dict[str, object] | None = None
 
     def to_json(self) -> str:
+        """Сериализовать контекстный пакет в форматированную строку JSON."""
         return (
             json.dumps(asdict(self), ensure_ascii=False, indent=2, sort_keys=True)
             + "\n"
@@ -106,6 +99,7 @@ class ContextPackage:
 
 
 def _run_git(repository: Path, *args: str) -> str:
+    """Выполнить команду Git в репозитории и вернуть stdout."""
     result: subprocess.CompletedProcess[str] = subprocess.run(
         ["git", "-C", str(repository), *args],
         capture_output=True,
@@ -124,6 +118,7 @@ def _run_git(repository: Path, *args: str) -> str:
 
 
 def _read_file(repository: Path, commit: str, path: str) -> str:
+    """Прочитать содержимое файла на указанном коммите через git show."""
     return _run_git(repository, "show", f"{commit}:{path}")
 
 
@@ -132,13 +127,7 @@ _REDACTED_SYMBOL_MARKER = "[REDACTED-SYMBOL]"
 
 
 def _redact_symbol_patterns(repository: Path) -> tuple[str, ...]:
-    """Load `repo_map_policy.redact_symbols` the same way Repo Map itself does.
-
-    `_run_repo_map` already invoked the Repo Map CLI against this exact `.harness/orchestration.json`
-    before this is called, so a malformed policy file would already have failed loudly there; reading
-    it again here with the identical, reused loader cannot disagree with what that subprocess run
-    enforced.
-    """
+    """Загрузить шаблоны скрываемых символов из `repo_map_policy.redact_symbols` тем же способом, что и Repo Map."""
     policy: RepoMapPolicy = load_policy(
         repository / ".harness" / "orchestration.json", explicit=False
     )
@@ -146,14 +135,7 @@ def _redact_symbol_patterns(repository: Path) -> tuple[str, ...]:
 
 
 def _redact_symbols(text: str, patterns: tuple[str, ...]) -> str:
-    """Replace every identifier matching a `redact_symbols` glob with a fixed marker.
-
-    Repo Map's JSON contract only ever redacts symbols from its own derived `signatures`/`edges`
-    output; it has no channel to express per-occurrence redaction over arbitrary raw text such as a
-    diff hunk or a `git show` read. This reuses Repo Map's own matcher (`_matches`) rather than a
-    second implementation of glob matching, applied here to that raw text before it can enter the
-    package.
-    """
+    """Заменить каждый идентификатор, соответствующий шаблонам `redact_symbols`, на фиксированный маркер."""
     if not patterns or not text:
         return text
     return _IDENTIFIER_RE.sub(
@@ -169,6 +151,7 @@ def _redact_symbols(text: str, patterns: tuple[str, ...]) -> str:
 def _changed_files(
     repository: Path, base_commit: str, candidate_commit: str
 ) -> list[tuple[str, str]]:
+    """Получить список изменённых файлов и их статусов между base_commit и candidate_commit."""
     output: str = _run_git(
         repository, "diff", "--name-status", base_commit, candidate_commit
     )
@@ -187,7 +170,7 @@ def _changed_files(
 
 
 def _repo_map_error_from_stderr(stderr: str) -> ContextPackageError:
-    """Parse the Repo Map CLI's `ERROR: <message>\\nREMEDY: <remedy>` stderr contract."""
+    r"""Распарсить ошибку и рекомендацию из контракта `ERROR: <msg>\nREMEDY: <action>` в stderr Repo Map CLI."""
     text: str = (stderr or "").strip()
     match: re.Match[str] | None = re.match(
         r"ERROR:\s*(.+?)\s*\nREMEDY:\s*(.+)", text, re.DOTALL
@@ -204,12 +187,7 @@ def _repo_map_error_from_stderr(stderr: str) -> ContextPackageError:
 
 
 def _run_repo_map(repository: Path, commit: str, seeds: list[str]) -> dict[str, object]:
-    """Invoke the Repo Map CLI as a `sys.executable` subprocess and validate its JSON contract.
-
-    Only JSON crosses the process boundary: the CLI resolves `<repo>/.harness/orchestration.json`
-    itself and applies `repo_map_policy` (allow/deny/redact); this function never duplicates that
-    policy logic and never imports the CLI's tree-sitter machinery in-process.
-    """
+    """Вызвать Repo Map CLI в подпроцессе Python и проверить соответствие JSON-контракту."""
     args: list[str] = [
         sys.executable,
         # -B: never write .pyc bytecode caches. Repo Map's own imports otherwise land
@@ -267,6 +245,7 @@ def _run_repo_map(repository: Path, commit: str, seeds: list[str]) -> dict[str, 
 def _parse_repo_map_files(
     payload: dict[str, object],
 ) -> tuple[list[str], dict[str, list[str]]]:
+    """Извлечь отсортированный список путей файлов и их сигнатуры из ответа Repo Map."""
     entries: object = payload.get("files")
     if not isinstance(entries, list):
         raise ContextPackageError(
@@ -292,12 +271,7 @@ def _parse_repo_map_files(
 def _import_and_reference_graphs(
     payload: dict[str, object], files: list[str]
 ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """Split Repo Map edges into an import graph and an additive name-reference graph.
-
-    `imports`/`imported_by` come only from edges with `kind == "import"`; `unique-name-ref` and
-    `ambiguous-name-ref` edges populate the separate, additive reference graph (empty at Repo Map's
-    minimal tier, where `edges` is `[]`).
-    """
+    """Разделить рёбра Repo Map на граф импортов и аддитивный граф ссылок по именам."""
     entries: object = payload.get("edges")
     if not isinstance(entries, list):
         raise ContextPackageError(
@@ -322,6 +296,7 @@ def _import_and_reference_graphs(
 
 
 def _parser_provenance_from_repo_map(payload: dict[str, object]) -> dict[str, object]:
+    """Извлечь метаданные парсера и происхождения анализа из ответа Repo Map."""
     tier: object = payload.get("tier")
     parser: object = payload.get("parser")
     degradation_reason: object = payload.get("degradation_reason")
@@ -349,7 +324,7 @@ def _parser_provenance_from_repo_map(payload: dict[str, object]) -> dict[str, ob
 
 
 def _fallback_excerpt(text: str) -> list[str]:
-    """Return the deterministic bounded context for a file without Repo Map signatures."""
+    """Сформировать детерминированную выдержку строк для файла без сигнатур Repo Map."""
     return text.splitlines()[:30]
 
 
@@ -359,7 +334,7 @@ def _dependency_context(
     files: dict[str, str],
     signatures_by_path: dict[str, list[str]],
 ) -> dict[str, list[str]]:
-    """Build context for direct local dependencies only; never traverse a dependency's imports."""
+    """Собрать контекст только для прямых локальных зависимостей начальных файлов."""
     seed_paths: set[str] = set(seeds)
     direct_dependencies: list[str] = sorted(
         {
@@ -387,7 +362,10 @@ def _bounded_symbol_graph(
     seeds: list[str],
     depth: int,
 ) -> dict[str, dict[str, list[str]]]:
+    """Построить ограниченный по глубине граф связей символов от начальных вершин."""
+
     def neighbours(node: str) -> set[str]:
+        """Получить множество смежных вершин в графе (импорты, обратные импорты и ссылки)."""
         return (
             import_graph.get(node, set())
             | imported_by.get(node, set())
@@ -427,6 +405,7 @@ def _select_starting_files(
     min_files: int,
     max_files: int,
 ) -> list[StartingFile]:
+    """Выбрать начальные файлы для исследования контекста из изменённых и их соседей по графу."""
     reasons: dict[str, str] = {
         path: f"changed in diff ({status})" for path, status in changed
     }
@@ -476,6 +455,7 @@ def _related_tests(
     files: list[str],
     starting_paths: set[str],
 ) -> list[str]:
+    """Найти связанные тест-файлы, импортирующие хотя бы один из начальных файлов."""
     related = []
     for path in files:
         name: str = path.rsplit("/", 1)[-1]
@@ -492,6 +472,7 @@ def _related_tests(
 def _precedent_cards(
     repository: Path, commit: str, files: list[str], keywords: set[str]
 ) -> list[PrecedentCard]:
+    """Сформировать карточки релевантных прецедентов ADR на основе ключевых слов."""
     adr_files: list[str] = sorted(
         path for path in files if path.startswith("docs/adr/") and path.endswith(".md")
     )
@@ -521,7 +502,7 @@ def _precedent_cards(
 
 
 def _markdown_sections(text: str) -> list[SectionPointer]:
-    """Level 1-3 ATX headings outside fenced code, each spanning to the next such heading."""
+    """Извлечь заголовки ATX уровней 1-3 вне блоков кода с диапазонами строк."""
     lines: list[str] = text.split("\n")
     starts: list[tuple[int, int, str]] = []
     in_fence: bool = False
@@ -540,6 +521,7 @@ def _markdown_sections(text: str) -> list[SectionPointer]:
 
 
 def _keywords_for(paths: list[str]) -> set[str]:
+    """Сформировать множество ключевых слов из путей файлов для ранжирования прецедентов."""
     keywords: set[str] = set()
     for path in paths:
         stem: str = path.rsplit("/", 1)[-1].split(".")[0]
@@ -561,22 +543,12 @@ def build_context_package(
     seed_paths: list[str] | None = None,
     section_index_min_tokens: int | None = None,
 ) -> ContextPackage:
-    """Build one immutable Context Package for `base_commit`..`candidate_commit`.
+    """Собрать неизменяемый Context Package для пары коммитов `base_commit`..`candidate_commit`.
 
-    A Markdown starting file whose content estimate reaches `section_index_min_tokens` (`None`
-    disables this) is seeded as a section index: its `sections` list headings with line ranges and
-    the estimate charges that index instead of the whole file.
-
-    Reads only pinned git history (`git show`/`git diff`/`git ls-tree`), never the working tree, so
-    the same inputs always produce the same output regardless of local checkout state. The
-    dependency/reference graph and per-file signatures come from the Repo Map CLI's validated JSON
-    contract, so only the policy-approved slice of the repository (per `repo_map_policy`) ever
-    enters the package. Raises `ContextPackageError` instead of silently truncating when the
-    assembled package would exceed `max_package_size_bytes` (pass `None` to disable the legacy
-    diagnostic limit), the token-aware `max_package_tokens` limit, or -- when `max_related_tests` is
-    set -- an import-graph fan-out that pulls in more related tests than a misscoped batch should.
-    The token/byte limits are the admission control used by the coordinator; bytes are retained only
-    for explicit backwards-compatible callers.
+    Считывает состояние репозитория только через историю Git (`git show`/`git diff`/`git ls-tree`),
+    гарантируя воспроизводимость независимо от локального рабочего дерева. Граф зависимостей и сигнатуры
+    файлов берутся из валидированного JSON Repo Map CLI. При превышении лимитов размера или токенов
+    возбуждает `ContextPackageError`.
     """
     if min_starting_files < 1 or max_starting_files < min_starting_files:
         raise ContextPackageError(

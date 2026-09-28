@@ -1,7 +1,7 @@
-"""Project-local paths for disposable harness data.
+"""Локальные пути проекта для временных данных harness.
 
-Linked Git worktrees share their main checkout's `.harness` storage. The caller
-decides whether to create a directory; path resolution itself is read-only.
+Связанные Git worktree используют общее хранилище `.harness` основного checkout.
+Вызывающая сторона решает, создавать ли директорию; само разрешение путей доступно только для чтения.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pathlib import Path
 
 SANDBOXES_DIR = ".sandboxes"
 SANDBOX_CATEGORIES = frozenset(
-    {"cache", "logs", "scratch", "runs", "reports", "worktrees"}
+    {"cache", "logs", "scratch", "pr_body", "runs", "reports", "worktrees"}
 )
 LEGACY_STORAGE_DIRS = (".cache", "test-logs", "tmp", "reports", "scratch")
 

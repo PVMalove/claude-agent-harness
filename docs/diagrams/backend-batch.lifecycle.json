@@ -2,6 +2,7 @@
   "schema_version": 1,
   "diagram_type": "lifecycle",
   "meta": {
+    "output": "docs/diagrams/backend-batch.lifecycle.html",
     "title": "Backend-оркестрация: жизненный цикл batch",
     "quality_profile": "showcase",
     "viewBox": [
@@ -37,7 +38,7 @@
       "id": "awaiting",
       "type": "waiting",
       "label": "Awaiting approval",
-      "sublabel": "ждём approve",
+      "sublabel": "ожидает approve",
       "lane": "main",
       "col": 1,
       "step": "02"
@@ -46,7 +47,7 @@
       "id": "active",
       "type": "active",
       "label": "Active",
-      "sublabel": "dispatch идёт",
+      "sublabel": "dispatch выполняется",
       "lane": "main",
       "col": 2,
       "step": "03"
@@ -55,7 +56,7 @@
       "id": "reported",
       "type": "decision",
       "label": "Report received",
-      "sublabel": "есть evidence",
+      "sublabel": "evidence получено",
       "lane": "main",
       "col": 3,
       "step": "04"
@@ -73,7 +74,7 @@
       "id": "blocked",
       "type": "waiting",
       "label": "Blocked",
-      "sublabel": "конфликт или модель",
+      "sublabel": "конфликт или сбой модели",
       "lane": "waiting",
       "col": 1,
       "tag": "новое решение"
@@ -82,7 +83,7 @@
       "id": "failed",
       "type": "failure",
       "label": "Failed",
-      "sublabel": "нужен новый brief",
+      "sublabel": "требуется новый brief",
       "lane": "exceptions",
       "col": 0,
       "yOffset": 78,
@@ -136,18 +137,18 @@
       "dot": "amber",
       "title": "Граница approve",
       "items": [
-        "Ни одна роль не стартует без явного approve",
-        "Каждому следующему dispatch нужно новое решение",
-        "Один тикет проходит цикл целиком до следующего"
+        "Роль запускается после явного approve",
+        "Следующий dispatch требует отдельного решения",
+        "Тикет проходит цикл полностью до начала следующего"
       ]
     },
     {
       "dot": "emerald",
       "title": "Граница evidence",
       "items": [
-        "Каждый dispatch оставляет immutable evidence",
+        "По итогам dispatch сохраняется immutable evidence",
         "Blocked или failed batch требует нового решения",
-        "Расхождение модели блокирует dispatch сразу"
+        "При расхождении модели dispatch блокируется"
       ]
     }
   ]

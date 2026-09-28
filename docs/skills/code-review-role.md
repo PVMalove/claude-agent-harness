@@ -23,3 +23,7 @@ Code Review — независимая read-only роль, обязательн�
 ## 4. Архитектурная схема
 
 ![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[code-review.md](../../harness/orchestration/roles/code-review.md)

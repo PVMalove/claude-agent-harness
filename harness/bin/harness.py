@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build-time project harness packager. It never participates in agent sessions."""
+"""CLI пакетирования harness проекта во время сборки. Не участвует в сессиях агента."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-MIN_PYTHON = (3, 12)  # same floor as bin/install-global and scripts/test_clean_room
+MIN_PYTHON = (3, 12)  # same floor as bin/install-global.py and scripts/test_clean_room
 if sys.version_info < MIN_PYTHON:
     sys.stderr.write(
         "[ERROR] harness requires Python %s+ (found %s).\n"
@@ -71,6 +71,7 @@ DEFAULT_CAPABILITY = "project-foundation"
 
 
 def write_registry(repo: Path) -> None:
+    """Записать актуальный реестр скиллов в файл REGISTRY.md проекта."""
     path = repo / REGISTRY_REL
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -81,6 +82,7 @@ def write_registry(repo: Path) -> None:
 
 
 def skill_file_hashes(repo: Path, directory: Path) -> dict[str, str]:
+    """Вычислить хэши sha256 всех файлов скилла относительно его директории."""
     return {
         path.relative_to(directory).as_posix(): digest(path.read_bytes())
         for path in project_skill_files(repo, directory)
@@ -88,10 +90,12 @@ def skill_file_hashes(repo: Path, directory: Path) -> dict[str, str]:
 
 
 def version() -> str:
+    """Получить текущую версию пакета harness из файла VERSION."""
     return VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
 def source_revision() -> str:
+    """Получить ревизию Git исходного репозитория harness."""
     result = subprocess.run(
         git_command(ROOT, "rev-parse", "HEAD"),
         capture_output=True,
@@ -104,6 +108,7 @@ def source_revision() -> str:
 
 
 def capabilities() -> dict[str, JsonObject]:
+    """Загрузить и распарсить каталог возможностей из CAPABILITIES.json."""
     try:
         data: object = json.loads(CAPABILITIES_FILE.read_text(encoding="utf-8"))
     except Exception as exc:
@@ -114,6 +119,7 @@ def capabilities() -> dict[str, JsonObject]:
 
 
 def selected_capabilities(names: list[str] | None) -> list[str]:
+    """Нормализовать и проверить переданный список возможностей."""
     selected = names or [DEFAULT_CAPABILITY]
     catalog = capabilities()
     unknown = [name for name in selected if name not in catalog]
@@ -123,6 +129,7 @@ def selected_capabilities(names: list[str] | None) -> list[str]:
 
 
 def _resolve_skill_source(entry: str) -> Path:
+    """Найти исходный каталог скилла в репозитории harness."""
     source = ROOT / "skills" / entry
     if not (source / "SKILL.md").is_file():
         fail(f"missing skill: skills/{entry}/SKILL.md")
@@ -130,18 +137,20 @@ def _resolve_skill_source(entry: str) -> Path:
 
 
 def _resolve_resource_source(entry: str) -> Path:
+    """Найти исходный путь ресурса возможности в репозитории harness."""
     source = PACKAGE / entry
     if not source.is_dir() and not source.is_file():
         fail(f"missing capability resource: harness/{entry}")
     return source
 
 
-def resolve_capability_skills(name: str, catalog: dict[str, JsonObject], _stack: tuple[str, ...] = ()) -> dict[str, Path]:
-    """Resolve one capability to {skill_name: source_path}, following `extends`
-    (inherit another capability's resolved set), `overrides` (swap an inherited
-    skill's source by name, e.g. vendor -> first-party) and `additions` (new
-    skills with no equivalent in the base capability). See CONTEXT.md /
-    docs/adr/0001 for why this exists instead of a duplicated flat skill list."""
+def resolve_capability_skills(
+    name: str, catalog: dict[str, JsonObject], _stack: tuple[str, ...] = ()
+) -> dict[str, Path]:
+    """Разрешить возможность в словарь {имя_скилла: путь_к_источнику}.
+
+    Обрабатывает наследование `extends`, переопределения `overrides` и дополнения `additions`.
+    """
     if name in _stack:
         fail(f"capability cycle: {' -> '.join(_stack + (name,))}")
     definition = catalog[name]
@@ -159,25 +168,28 @@ def resolve_capability_skills(name: str, catalog: dict[str, JsonObject], _stack:
 
     for skill_name, entry in (definition.get("overrides") or {}).items():
         if skill_name not in resolved:
-            fail(f"capability {name!r} overrides unknown skill {skill_name!r} (not in {extends!r})")
+            fail(
+                f"capability {name!r} overrides unknown skill {skill_name!r} (not in {extends!r})"
+            )
         resolved[skill_name] = _resolve_skill_source(entry)
 
     for entry in definition.get("additions") or []:
         source = _resolve_skill_source(entry)
         if source.name in resolved:
-            fail(f"capability {name!r} addition {source.name!r} collides with an inherited skill")
+            fail(
+                f"capability {name!r} addition {source.name!r} collides with an inherited skill"
+            )
         resolved[source.name] = source
 
     return resolved
 
 
-def resolve_capability_resources(name: str, catalog: dict[str, JsonObject], _stack: tuple[str, ...] = ()) -> dict[str, Path]:
-    """Resolve managed non-skill resources for one capability and its parents.
+def resolve_capability_resources(
+    name: str, catalog: dict[str, JsonObject], _stack: tuple[str, ...] = ()
+) -> dict[str, Path]:
+    """Разрешить управляемые не-скилловые ресурсы для возможности и её родителей.
 
-    Resources retain their path below ``harness/`` when materialized below a
-    project's ``.harness/`` directory. This keeps capability-owned contracts
-    out of the project seed-file namespace while allowing update and drift
-    detection to manage them through the ordinary snapshot lock.
+    Ресурсы сохраняют свой относительный путь при развёртывании в проектной директории `.harness/`.
     """
     if name in _stack:
         fail(f"capability cycle: {' -> '.join(_stack + (name,))}")
@@ -188,7 +200,9 @@ def resolve_capability_resources(name: str, catalog: dict[str, JsonObject], _sta
     if extends:
         if extends not in catalog:
             fail(f"capability {name!r} extends unknown capability {extends!r}")
-        resolved.update(resolve_capability_resources(extends, catalog, _stack + (name,)))
+        resolved.update(
+            resolve_capability_resources(extends, catalog, _stack + (name,))
+        )
 
     for entry in definition.get("resources") or []:
         resolved[entry] = _resolve_resource_source(entry)
@@ -197,13 +211,18 @@ def resolve_capability_resources(name: str, catalog: dict[str, JsonObject], _sta
 
 
 def selected_skills(names: list[str]) -> list[Path]:
+    """Получить список путей ко всем скиллам, входящим в выбранные возможности."""
     catalog = capabilities()
     paths: list[Path] = []
     seen_names: dict[str, Path] = {}
     for capability in names:
-        for skill_name, source in resolve_capability_skills(capability, catalog).items():
+        for skill_name, source in resolve_capability_skills(
+            capability, catalog
+        ).items():
             if skill_name in seen_names and seen_names[skill_name] != source:
-                fail(f"duplicate skill name {skill_name!r}: {seen_names[skill_name]} and {source}")
+                fail(
+                    f"duplicate skill name {skill_name!r}: {seen_names[skill_name]} and {source}"
+                )
             if skill_name not in seen_names:
                 seen_names[skill_name] = source
                 paths.append(source)
@@ -211,13 +230,17 @@ def selected_skills(names: list[str]) -> list[Path]:
 
 
 def selected_resources(names: list[str]) -> list[Path]:
+    """Получить список путей ко всем ресурсам, входящим в выбранные возможности."""
     catalog = capabilities()
     paths: list[Path] = []
     seen_destinations: dict[Path, Path] = {}
     for capability in names:
         for source in resolve_capability_resources(capability, catalog).values():
             destination = source.relative_to(PACKAGE)
-            if destination in seen_destinations and seen_destinations[destination] != source:
+            if (
+                destination in seen_destinations
+                and seen_destinations[destination] != source
+            ):
                 fail(
                     f"duplicate capability resource {destination}: "
                     f"{seen_destinations[destination]} and {source}"
@@ -229,12 +252,12 @@ def selected_resources(names: list[str]) -> list[Path]:
 
 
 def _packageable(path: Path) -> bool:
-    """Skip local build artifacts. Running a packaged script from this source tree leaves bytecode
-    beside it; shipping that into a target project makes every later run report snapshot drift."""
+    """Пропустить локальные артефакты сборки, байт-код и кэши при пакетировании."""
     return path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
 
 
 def package_files(names: list[str]) -> dict[str, bytes]:
+    """Сформировать словарь относительных целевых путей и байтового содержимого файлов пакета."""
     result: dict[str, bytes] = {}
     for source in selected_skills(names):
         for path in sorted(source.rglob("*")):
@@ -259,12 +282,14 @@ def package_files(names: list[str]) -> dict[str, bytes]:
 
 
 def render(template: str, values: dict[str, str]) -> str:
+    """Подставить значения плейсхолдеров {{KEY}} в шаблонную строку."""
     for key, value in values.items():
         template = template.replace("{{" + key + "}}", value)
     return template
 
 
 def load_lock(repo: Path) -> JsonObject | None:
+    """Загрузить и распарсить файл блокировки .harness/harness.lock репозитория."""
     path = repo / LOCK_REL
     if not path.is_file():
         return None
@@ -278,6 +303,7 @@ def load_lock(repo: Path) -> JsonObject | None:
 
 
 def ensure_git_repo(repo: Path) -> None:
+    """Убедиться, что целевая директория является репозиторием Git."""
     result = subprocess.run(
         git_command(repo, "rev-parse", "--show-toplevel"),
         capture_output=True,
@@ -291,8 +317,12 @@ def ensure_git_repo(repo: Path) -> None:
 
 
 def ensure_links(
-    repo: Path, *, replace: bool = False, fix_hint: str = "remove or rename it, then retry"
+    repo: Path,
+    *,
+    replace: bool = False,
+    fix_hint: str = "remove or rename it, then retry",
 ) -> list[str]:
+    """Создать или обновить символические ссылки обнаружения скиллов для сред выполнения."""
     changed: list[str] = []
     for relative, target in DISCOVERY_LINKS.items():
         native_target = native_link_target(target)
@@ -305,7 +335,9 @@ def ensure_links(
             continue
         if path.exists() or path.is_symlink():
             if not replace:
-                fail(f"discovery path already exists and is not managed: {path} ({fix_hint})")
+                fail(
+                    f"discovery path already exists and is not managed: {path} ({fix_hint})"
+                )
             if path.is_dir() and not path.is_symlink():
                 fail(f"refusing to replace directory: {path}")
             try:
@@ -321,13 +353,14 @@ def ensure_links(
 
 
 def write_snapshot(repo: Path, selected: list[str], *, force: bool) -> list[str]:
+    """Записать снимок файлов возможностей, сформировать harness.lock и обновить реестр."""
     files = package_files(selected)
     skills_root = repo / ".harness/skills"
     skills_root.mkdir(parents=True, exist_ok=True)
 
     if force:
         lock = load_lock(repo) or {}
-        for relative in (lock.get("files") or {}):
+        for relative in lock.get("files") or {}:
             path = repo / relative
             if path.is_file():
                 path.unlink()
@@ -350,7 +383,11 @@ def write_snapshot(repo: Path, selected: list[str], *, force: bool) -> list[str]
     }
     lock_path = repo / LOCK_REL
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.write_text(json.dumps(lock, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+    lock_path.write_text(
+        json.dumps(lock, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     prune_empty_skill_directories(repo)
     write_registry(repo)
     written.append(LOCK_REL.as_posix())
@@ -359,14 +396,7 @@ def write_snapshot(repo: Path, selected: list[str], *, force: bool) -> list[str]
 
 
 def prune_empty_skill_directories(repo: Path) -> None:
-    """Remove only empty top-level skill directories left by retired managed skills.
-
-    A previous update may have removed a retired skill's files before regenerating the
-    registry, but left its now-empty directory behind. The registry rightfully rejects
-    such a directory because it has no SKILL.md. Do not recursively remove anything:
-    a directory containing project-owned files remains untouched for the developer to
-    resolve explicitly.
-    """
+    """Удалить пустые директории скиллов верхнего уровня, оставшиеся после удаления управляемых скиллов."""
     root = repo / ".harness/skills"
     if not root.is_dir():
         return
@@ -378,14 +408,18 @@ def prune_empty_skill_directories(repo: Path) -> None:
                 pass
 
 
-REPO_MAP_REGISTRY_REL = Path(".harness/.sandboxes/cache/repo_map/parser_bundle/registry")
+REPO_MAP_REGISTRY_REL = Path(
+    ".harness/.sandboxes/cache/repo_map/parser_bundle/registry"
+)
 
 
 def _non_empty_string(value: object) -> bool:
+    """Проверить, является ли значение непустой строкой."""
     return isinstance(value, str) and bool(value)
 
 
 def _string_list(value: object) -> bool:
+    """Проверить, является ли значение списком непустых строк."""
     return isinstance(value, list) and all(_non_empty_string(item) for item in value)
 
 
@@ -399,36 +433,39 @@ def record_integration(
     secret_refs: list[str],
     verify: str,
 ) -> None:
-    """Upsert one entry into .harness/integrations.json by id, hashing the file as it
-    is on disk right now. Used by scaffolders that both write a native integration
-    file and know enough about it to inventory it themselves, instead of leaving that
-    step for the project owner to remember."""
+    """Зарегистрировать или обновить запись интеграции в .harness/integrations.json."""
     path = repo / INTEGRATIONS_REL
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
     except Exception:
         data = {}
     entries = [
-        entry for entry in (data.get("integrations") or []) if entry.get("id") != identifier
+        entry
+        for entry in (data.get("integrations") or [])
+        if entry.get("id") != identifier
     ]
-    entries.append({
-        "id": identifier,
-        "kind": kind,
-        "runtimes": runtimes,
-        "config": config.as_posix(),
-        "sha256": digest((repo / config).read_bytes()),
-        "secret_refs": secret_refs,
-        "verify": verify,
-    })
+    entries.append(
+        {
+            "id": identifier,
+            "kind": kind,
+            "runtimes": runtimes,
+            "config": config.as_posix(),
+            "sha256": digest((repo / config).read_bytes()),
+            "secret_refs": secret_refs,
+            "verify": verify,
+        }
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"schema": 1, "integrations": entries}, indent=2, ensure_ascii=False) + "\n",
+        json.dumps({"schema": 1, "integrations": entries}, indent=2, ensure_ascii=False)
+        + "\n",
         encoding="utf-8",
         newline="\n",
     )
 
 
 def snapshot_diff(repo: Path, override: list[str] | None = None) -> JsonObject:
+    """Сравнить установленный снимок файлов с эталонным пакетом возможностей."""
     lock = load_lock(repo)
     if lock is None:
         return {"state": "missing", "detail": "no .harness/harness.lock"}
@@ -489,10 +526,18 @@ def snapshot_diff(repo: Path, override: list[str] | None = None) -> JsonObject:
 
 
 def print_diff(result: JsonObject) -> None:
+    """Вывести текстовый отчёт о различиях снимка файлов в консоль."""
     print(f"state: {result['state']}")
     if "capabilities" in result:
         print(f"capabilities: {', '.join(result['capabilities'])}")
-    for key in ("added", "missing", "package_changed", "local_changed", "conflict", "retired"):
+    for key in (
+        "added",
+        "missing",
+        "package_changed",
+        "local_changed",
+        "conflict",
+        "retired",
+    ):
         for path in result.get(key, []):
             print(f"  {key}: {path}")
 
@@ -510,15 +555,19 @@ RUNTIME_GITIGNORE_LINES = (
 
 
 def missing_runtime_gitignore_lines(content: str) -> list[str]:
+    """Определить строки игнорирования рантайма, отсутствующие в файле .gitignore."""
     existing = set(content.splitlines())
     harness_ignored = ".harness/" in existing or "/.harness/" in existing
     return [
-        line for line in RUNTIME_GITIGNORE_LINES
-        if line not in existing and not (harness_ignored and line.startswith("/.harness/"))
+        line
+        for line in RUNTIME_GITIGNORE_LINES
+        if line not in existing
+        and not (harness_ignored and line.startswith("/.harness/"))
     ]
 
 
 def _prompt(label: str, default: str) -> str:
+    """Запросить строковое значение у пользователя с дефолтным вариантом."""
     if not sys.stdin.isatty():
         return default
     try:
@@ -528,7 +577,15 @@ def _prompt(label: str, default: str) -> str:
     return answer or default
 
 
-def _copy_if_absent(source: Path, target: Path, *, executable: bool = False, force: bool = False, differing: list[Path] | None = None) -> str | None:
+def _copy_if_absent(
+    source: Path,
+    target: Path,
+    *,
+    executable: bool = False,
+    force: bool = False,
+    differing: list[Path] | None = None,
+) -> str | None:
+    """Скопировать файл, если целевой путь отсутствует, или принудительно при force=True."""
     if target.exists():
         if not force:
             if differing is not None and target.read_bytes() != source.read_bytes():
@@ -544,41 +601,50 @@ def _copy_if_absent(source: Path, target: Path, *, executable: bool = False, for
 def scaffold_pvmalove_extras(
     repo: Path, args: argparse.Namespace, *, orchestration_enabled: bool = False
 ) -> list[str]:
-    """Non-skill project files pvmalove-suite ships alongside the managed skill
-    snapshot: docs, hooks, Claude Code subagents, a rule, .harness/project.json,
-    and two idempotent .gitignore protections (a nested .harness/.sandboxes/scratch/.gitignore
-    and a /docs/tasks/ line in the target project's root .gitignore).
-    Written once if absent, like AGENTS.md/CLAUDE.md above - not tracked in
-    harness.lock, never touched by update. See CONTEXT.md and docs/adr/0003.
-
-    Called from init, adopt and update alike (whichever command first turns
-    pvmalove-suite on for a repo) - the prompt/CLI-flag fields it reads
-    (language, pr_base_branch, branch_pattern, qa_gate_command, base_branch)
-    may not exist on every subcommand's argparse.Namespace, so every read goes
-    through getattr with a fallback rather than assuming they're present."""
+    """Развернуть дополнительные файлы и настройки для набора возможностей pvmalove-suite."""
     written: list[str] = []
     differing: list[Path] = []
-    force_seed = getattr(args, "force_seed_files", False) or getattr(args, "force", False)
+    force_seed = getattr(args, "force_seed_files", False) or getattr(
+        args, "force", False
+    )
 
     for doc in sorted((PROJECT_TEMPLATE_DIR / "docs-agents").glob("*.md")):
-        result = _copy_if_absent(doc, repo / "docs/agents" / doc.name, force=force_seed, differing=differing)
+        result = _copy_if_absent(
+            doc, repo / "docs/agents" / doc.name, force=force_seed, differing=differing
+        )
         if result:
             written.append(result)
 
     for hook in sorted((PROJECT_TEMPLATE_DIR / "hooks").iterdir()):
         if not hook.is_file() or hook.suffix not in {".sh", ".py"}:
             continue
-        result = _copy_if_absent(hook, repo / ".claude/hooks" / hook.name, executable=True, force=force_seed, differing=differing)
+        result = _copy_if_absent(
+            hook,
+            repo / ".claude/hooks" / hook.name,
+            executable=True,
+            force=force_seed,
+            differing=differing,
+        )
         if result:
             written.append(result)
 
     for rule in sorted((PROJECT_TEMPLATE_DIR / "rules").glob("*.md")):
-        result = _copy_if_absent(rule, repo / ".claude/rules" / rule.name, force=force_seed, differing=differing)
+        result = _copy_if_absent(
+            rule,
+            repo / ".claude/rules" / rule.name,
+            force=force_seed,
+            differing=differing,
+        )
         if result:
             written.append(result)
 
     for agent in sorted((PROJECT_TEMPLATE_DIR / "agents").glob("*.md")):
-        result = _copy_if_absent(agent, repo / ".claude/agents" / agent.name, force=force_seed, differing=differing)
+        result = _copy_if_absent(
+            agent,
+            repo / ".claude/agents" / agent.name,
+            force=force_seed,
+            differing=differing,
+        )
         if result:
             written.append(result)
 
@@ -594,11 +660,15 @@ def scaffold_pvmalove_extras(
     harness_gitignore = repo / ".harness/.gitignore"
     if not harness_gitignore.exists() or force_seed:
         harness_gitignore.parent.mkdir(parents=True, exist_ok=True)
-        harness_gitignore.write_text(HARNESS_RUNTIME_GITIGNORE, encoding="utf-8", newline="\n")
+        harness_gitignore.write_text(
+            HARNESS_RUNTIME_GITIGNORE, encoding="utf-8", newline="\n"
+        )
         written.append(str(harness_gitignore))
 
     root_gitignore = repo / ".gitignore"
-    root_gitignore_text = root_gitignore.read_text(encoding="utf-8") if root_gitignore.exists() else ""
+    root_gitignore_text = (
+        root_gitignore.read_text(encoding="utf-8") if root_gitignore.exists() else ""
+    )
     missing_ignore_lines = missing_runtime_gitignore_lines(root_gitignore_text)
     if missing_ignore_lines:
         if root_gitignore_text and not root_gitignore_text.endswith("\n"):
@@ -608,7 +678,9 @@ def scaffold_pvmalove_extras(
         written.append(str(root_gitignore))
 
     settings = repo / ".claude/settings.local.json"
-    template_text = (PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl").read_text(encoding="utf-8")
+    template_text = (PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl").read_text(
+        encoding="utf-8"
+    )
     if settings.exists() and not force_seed:
         if settings.read_text(encoding="utf-8") != template_text:
             differing.append(settings)
@@ -616,7 +688,7 @@ def scaffold_pvmalove_extras(
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(template_text, encoding="utf-8", newline="\n")
         written.append(str(settings))
-        
+
     record_integration(
         repo,
         identifier="pvmalove-suite-hooks",
@@ -642,13 +714,17 @@ def scaffold_pvmalove_extras(
         )
         commands = list(getattr(args, "qa_gate_command", None) or [])
         if not commands and sys.stdin.isatty():
-            print("qa_gate_commands (по одной команде на строку, пустая строка — конец):")
+            print(
+                "qa_gate_commands (по одной команде на строку, пустая строка — конец):"
+            )
             while True:
                 line = _prompt("  command", "")
                 if not line:
                     break
                 commands.append(line)
-        template = (PROJECT_TEMPLATE_DIR / "project.json.tmpl").read_text(encoding="utf-8")
+        template = (PROJECT_TEMPLATE_DIR / "project.json.tmpl").read_text(
+            encoding="utf-8"
+        )
         rendered = render(
             template,
             {
@@ -663,31 +739,40 @@ def scaffold_pvmalove_extras(
         written.append(str(project_json))
 
     schema_result = _copy_if_absent(
-        PROJECT_TEMPLATE_DIR / "project.schema.json", repo / ".harness/project.schema.json", force=force_seed, differing=differing
+        PROJECT_TEMPLATE_DIR / "project.schema.json",
+        repo / ".harness/project.schema.json",
+        force=force_seed,
+        differing=differing,
     )
     if schema_result:
         written.append(schema_result)
 
     if orchestration_enabled:
+        # The project's own config starts as a copy of the managed example
+        # (.harness/orchestration.example.json, refreshed by every init/adopt/update) and is
+        # never overwritten afterwards unless --force-seed-files is given.
         orchestration_result = _copy_if_absent(
-            PROJECT_TEMPLATE_DIR / "orchestration.json.tmpl",
+            PACKAGE / "orchestration.example.json",
             repo / ".harness/orchestration.json",
             force=force_seed,
             differing=differing,
         )
         if orchestration_result:
             written.append(orchestration_result)
-        
+
     if differing:
         print("\n[WARNING] Следующие сидируемые файлы отличаются от шаблонов upstream:")
         for path in differing:
             print(f"  - {path.relative_to(repo)}")
-        print("Используйте --force-seed-files, чтобы перезаписать их (внимание: локальные изменения будут потеряны).\n")
+        print(
+            "Используйте --force-seed-files, чтобы перезаписать их (внимание: локальные изменения будут потеряны).\n"
+        )
 
     return written
 
 
 def cmd_init(args: argparse.Namespace) -> int:
+    """Инициализировать harness в новом проекте."""
     repo = Path(args.repo).expanduser().resolve()
     ensure_git_repo(repo)
     if load_lock(repo) is not None:
@@ -724,7 +809,9 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     claude = repo / "CLAUDE.md"
     if not claude.exists():
-        claude.write_text("# Claude Code\n\n@AGENTS.md\n", encoding="utf-8", newline="\n")
+        claude.write_text(
+            "# Claude Code\n\n@AGENTS.md\n", encoding="utf-8", newline="\n"
+        )
 
     written = write_snapshot(repo, selected, force=False)
     written.extend(
@@ -737,7 +824,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     if PVMALOVE_CAPABILITY in selected or BACKEND_ORCHESTRATION_CAPABILITY in selected:
         written.extend(
             scaffold_pvmalove_extras(
-                repo, args, orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected
+                repo,
+                args,
+                orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected,
             )
         )
     print(f"installed agent-harness {version()} in {repo}")
@@ -747,6 +836,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def cmd_diff(args: argparse.Namespace) -> int:
+    """Сравнить текущее состояние проекта с эталонным снимком и вывести различия."""
     repo = Path(args.repo).expanduser().resolve()
     result = snapshot_diff(repo, args.capability)
     if args.json:
@@ -757,7 +847,7 @@ def cmd_diff(args: argparse.Namespace) -> int:
 
 
 def cmd_adopt(args: argparse.Namespace) -> int:
-    """Replace selected same-name skills while preserving every other project-owned skill."""
+    """Внедрить harness в существующий проект с сохранением собственных скиллов."""
     repo = Path(args.repo).expanduser().resolve()
     ensure_git_repo(repo)
     selected = selected_capabilities(args.capability)
@@ -767,7 +857,9 @@ def cmd_adopt(args: argparse.Namespace) -> int:
     if occupied and not args.replace_conflicts:
         for path in occupied:
             print(f"conflict: {path}", file=sys.stderr)
-        fail("selected skill names already exist; inspect them or use --replace-conflicts")
+        fail(
+            "selected skill names already exist; inspect them or use --replace-conflicts"
+        )
     for path in occupied:
         if path.is_symlink() or path.is_file():
             path.unlink()
@@ -775,11 +867,15 @@ def cmd_adopt(args: argparse.Namespace) -> int:
             shutil.rmtree(path)
 
     written = write_snapshot(repo, selected, force=False)
-    ensure_links(repo, replace=args.replace_conflicts, fix_hint="re-run with --replace-conflicts")
+    ensure_links(
+        repo, replace=args.replace_conflicts, fix_hint="re-run with --replace-conflicts"
+    )
     if PVMALOVE_CAPABILITY in selected or BACKEND_ORCHESTRATION_CAPABILITY in selected:
         written.extend(
             scaffold_pvmalove_extras(
-                repo, args, orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected
+                repo,
+                args,
+                orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected,
             )
         )
     print(f"adopted agent-harness {version()} in {repo}")
@@ -789,6 +885,7 @@ def cmd_adopt(args: argparse.Namespace) -> int:
 
 
 def cmd_update(args: argparse.Namespace) -> int:
+    """Обновить управляемые файлы harness в целевом проекте."""
     repo = Path(args.repo).expanduser().resolve()
     ensure_git_repo(repo)
     lock = load_lock(repo)
@@ -821,11 +918,17 @@ def cmd_update(args: argparse.Namespace) -> int:
             path.unlink()
 
     written = write_snapshot(repo, selected, force=force_managed)
-    ensure_links(repo, replace=force_managed, fix_hint="re-run with --force or --force-managed-files")
+    ensure_links(
+        repo,
+        replace=force_managed,
+        fix_hint="re-run with --force or --force-managed-files",
+    )
     if PVMALOVE_CAPABILITY in selected or BACKEND_ORCHESTRATION_CAPABILITY in selected:
         written.extend(
             scaffold_pvmalove_extras(
-                repo, args, orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected
+                repo,
+                args,
+                orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected,
             )
         )
     print(f"updated agent-harness to {version()} in {repo}")
@@ -834,6 +937,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 
 
 def cmd_registry(args: argparse.Namespace) -> int:
+    """Перегенерировать файл REGISTRY.md для целевого репозитория."""
     repo = Path(args.repo).expanduser().resolve()
     ensure_git_repo(repo)
     write_registry(repo)
@@ -842,11 +946,7 @@ def cmd_registry(args: argparse.Namespace) -> int:
 
 
 def cmd_lock_project_skills(args: argparse.Namespace) -> int:
-    """Hash-lock every skill under .harness/skills that the loaded harness.lock does
-    not already cover - i.e. skills the target project owns directly rather than
-    skills resolved through a selected capability. Closes the gap where
-    start-project/SKILL.md tells agents to record project-owned provenance in a
-    versioned overlay lock but no command previously wrote one."""
+    """Зафиксировать хэши файлов локальных проектных скиллов в overlay-lock файле."""
     repo = Path(args.repo).expanduser().resolve()
     ensure_git_repo(repo)
     lock = load_lock(repo)
@@ -871,11 +971,13 @@ def cmd_lock_project_skills(args: argparse.Namespace) -> int:
     for name, directory, _ in skill_inventory(repo):
         if name in public_skill_names(lock) or name in claimed:
             continue
-        selected.append({
-            "name": name,
-            "source": f".harness/skills/{name}",
-            "files": skill_file_hashes(repo, directory),
-        })
+        selected.append(
+            {
+                "name": name,
+                "source": f".harness/skills/{name}",
+                "files": skill_file_hashes(repo, directory),
+            }
+        )
     payload = {
         "schema": 1,
         "overlay_id": "project-local",
@@ -885,18 +987,18 @@ def cmd_lock_project_skills(args: argparse.Namespace) -> int:
     }
     target = overlay_root / "project-local.lock"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+    target.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     write_registry(repo)
     print(f"locked {len(selected)} project-local skills in {target.relative_to(repo)}")
     return 0
 
 
 def cmd_health(args: argparse.Namespace) -> int:
-    """Run every registered harness.health check and report; see harness/health/registry.py.
-
-    Every check runs - there is no early exit. The command's own exit code is 1 only when at
-    least one check's status is 'fail'; 'warn' and 'skipped' do not affect it.
-    """
+    """Выполнить все зарегистрированные проверки harness health и вывести отчёт."""
     repo = Path(args.repo).expanduser().resolve()
     report = health_registry.run(
         repo,
@@ -914,10 +1016,7 @@ def cmd_health(args: argparse.Namespace) -> int:
 
 
 def cmd_console(args: argparse.Namespace) -> int:
-    """Launch the interactive TUI console; see harness/console/launcher.py. Imports
-    harness.console.launcher lazily (a normal stdlib-only import - the module itself never
-    imports textual outside the already-relaunched path) so every other subcommand stays free of
-    the console package."""
+    """Запустить интерактивную консоль TUI для диагностики harness."""
     from harness.console.launcher import run_console
 
     repo = Path(args.repo).expanduser().resolve()
@@ -925,32 +1024,47 @@ def cmd_console(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
+    """Вывести отсортированный список имён всех доступных в проекте скиллов."""
     repo = Path(args.repo).expanduser().resolve()
-    for name in sorted(path.parent.name for path in (repo / ".harness/skills").rglob("SKILL.md")):
+    for name in sorted(
+        path.parent.name for path in (repo / ".harness/skills").rglob("SKILL.md")
+    ):
         print(name)
     return 0
 
 
 def _add_pvmalove_args(sub: argparse.ArgumentParser) -> None:
-    """Flags scaffold_pvmalove_extras() reads - shared by init/adopt/update since
-    any of the three can be the command that first turns pvmalove-suite on."""
+    """Добавить аргументы командной строки, специфичные для набора возможностей pvmalove-suite."""
     sub.add_argument(
-        "--language", choices=["ru", "en"], default=None, help="pvmalove-suite: .harness/project.json language"
+        "--language",
+        choices=["ru", "en"],
+        default=None,
+        help="pvmalove-suite: .harness/project.json language",
     )
     sub.add_argument(
-        "--pr-base-branch", default=None, help="pvmalove-suite: release/base branch for epic integration branches (default: --base-branch)"
+        "--pr-base-branch",
+        default=None,
+        help="pvmalove-suite: release/base branch for epic integration branches (default: --base-branch)",
     )
-    sub.add_argument("--branch-pattern", default=None, help="pvmalove-suite: branch name regex")
     sub.add_argument(
-        "--qa-gate-command", action="append", default=None, help="pvmalove-suite: repeatable, in run order"
+        "--branch-pattern", default=None, help="pvmalove-suite: branch name regex"
+    )
+    sub.add_argument(
+        "--qa-gate-command",
+        action="append",
+        default=None,
+        help="pvmalove-suite: repeatable, in run order",
     )
 
 
 def cmd_cleanup(args: argparse.Namespace) -> int:
+    """Выполнить предварительный просмотр или удаление временных данных harness."""
     if args.apply and args.mode == "hard" and args.confirm != "HARD":
         fail("hard cleanup requires --confirm HARD")
     try:
-        plan = plan_cleanup(Path(args.repo), args.mode, min_age_hours=args.min_age_hours)
+        plan = plan_cleanup(
+            Path(args.repo), args.mode, min_age_hours=args.min_age_hours
+        )
         print(json.dumps({"plan": plan}, ensure_ascii=False, indent=2))
         if args.apply:
             result = apply_cleanup(Path(args.repo), plan, confirm=args.confirm)
@@ -962,20 +1076,27 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
+    """Сконфигурировать парсер аргументов командной строки CLI harness."""
     root = argparse.ArgumentParser(prog="harness")
     commands = root.add_subparsers(dest="command", required=True)
 
-    cleanup = commands.add_parser("cleanup", help="preview or remove disposable .harness data")
+    cleanup = commands.add_parser(
+        "cleanup", help="preview or remove disposable .harness data"
+    )
     cleanup.add_argument("repo")
     cleanup.add_argument("--mode", choices=("soft", "hard"), default="soft")
     cleanup.add_argument("--min-age-hours", type=float, default=24)
-    cleanup.add_argument("--apply", action="store_true", help="apply the printed cleanup plan")
+    cleanup.add_argument(
+        "--apply", action="store_true", help="apply the printed cleanup plan"
+    )
     cleanup.add_argument("--confirm", help="pass HARD when applying hard cleanup")
     cleanup.set_defaults(func=cmd_cleanup)
 
     init = commands.add_parser("init")
     init.add_argument("repo")
-    init.add_argument("--project-type", default="unspecified", help="informational project domain")
+    init.add_argument(
+        "--project-type", default="unspecified", help="informational project domain"
+    )
     init.add_argument("--stack", action="append", help="informational project stack")
     init.add_argument("--capability", action="append")
     init.add_argument("--base-branch", default="main")
@@ -1004,7 +1125,11 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="overwrite only managed snapshot files; preserve project-owned seed files",
     )
-    update.add_argument("--force-seed-files", action="store_true", help="overwrite seed files even if present")
+    update.add_argument(
+        "--force-seed-files",
+        action="store_true",
+        help="overwrite seed files even if present",
+    )
     _add_pvmalove_args(update)
     update.set_defaults(func=cmd_update)
 
@@ -1018,7 +1143,9 @@ def parser() -> argparse.ArgumentParser:
 
     health = commands.add_parser("health")
     health.add_argument("repo")
-    health.add_argument("--json", action="store_true", help="print the schema_version-1 --json report")
+    health.add_argument(
+        "--json", action="store_true", help="print the schema_version-1 --json report"
+    )
     health.add_argument(
         "--fix",
         action="store_true",
@@ -1038,13 +1165,17 @@ def parser() -> argparse.ArgumentParser:
     list_cmd.add_argument("repo")
     list_cmd.set_defaults(func=cmd_list)
 
-    console = commands.add_parser("console", help="interactive TUI diagnostics console (needs uv + network for textual)")
+    console = commands.add_parser(
+        "console",
+        help="interactive TUI diagnostics console (needs uv + network for textual)",
+    )
     console.add_argument("repo")
     console.set_defaults(func=cmd_console)
     return root
 
 
 def main() -> int:
+    """Основная точка входа CLI harness."""
     args = parser().parse_args()
     try:
         exit_code: int = args.func(args)

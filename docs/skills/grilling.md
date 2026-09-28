@@ -76,3 +76,7 @@ advisory модели.
 ## 4. Архитектурная схема
 
 ![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[SKILL.md](../../skills/first-party/pvmalove/grilling/SKILL.md)

@@ -77,6 +77,7 @@ def run(ctx: SimpleNamespace) -> None:
     claude_dir.mkdir(parents=True)
 
     def turn(model, fresh, write, read, out, when):
+        """Сформировать запись JSON turn для лога сессии Claude."""
         return json.dumps(
             {
                 "type": "assistant",
@@ -219,6 +220,7 @@ def run(ctx: SimpleNamespace) -> None:
     )
 
     def stats_run(*arguments, claude_projects=claude_dir):
+        """Выполнить CLI delivery_stats с переданными аргументами."""
         return subprocess.run(
             [
                 sys.executable,

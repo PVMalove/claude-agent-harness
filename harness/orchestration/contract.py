@@ -1,8 +1,9 @@
-"""Portable policy for backend-orchestration manifests, assignments and dispatch briefs.
+"""Переносимая политика манифестов, назначений и заданий диспетчеризации для бэкенд-оркестрации.
 
-Runtime entry points deliberately adapt this module instead of restating role authority.  The
-module has no dependency on a coordinator state store or a particular runtime, so health checks,
-in-process handoffs receive the same policy outcome for the same project inputs.
+Точки входа рантайма намеренно адаптируют этот модуль вместо повторного определения ролевых полномочий.
+Модуль не зависит от хранилища состояния координатора или конкретного рантайма, благодаря чему проверки
+состояния (health checks) и внутрипроцессные передачи получают одинаковый результат применения политик
+для одних и тех же входных данных проекта.
 """
 
 from __future__ import annotations
@@ -88,7 +89,7 @@ CODE_REVIEW_REQUIRED_RISK_TRIGGERS = frozenset(
 
 
 class ContractError(HarnessError):
-    """A manifest, assignment or immutable brief violates portable role policy."""
+    """Манифест, назначение или неизменяемое задание нарушают переносимую ролевую политику."""
 
 
 # Role manifests and resolved assignments are dynamic, JSON-shaped documents that the coordinator and
@@ -97,18 +98,22 @@ JsonObject = dict[str, Any]  # type: ignore[explicit-any]
 
 
 def non_empty(value: object) -> TypeGuard[str]:
+    """Проверить, что значение является непустой строкой без пробельных символов по краям."""
     return isinstance(value, str) and bool(value.strip())
 
 
 def string_list(value: object) -> TypeGuard[list[str]]:
+    """Проверить, что значение является списком непустых строк."""
     return isinstance(value, list) and all(non_empty(item) for item in value)
 
 
 def _is_int(value: object) -> TypeGuard[int]:
+    """Проверить, что значение является целым числом и не является булевым флагом."""
     return isinstance(value, int) and not isinstance(value, bool)
 
 
 def reject_sensitive(value: object, location: str) -> None:
+    """Рекурсивно отклонить структуры данных, содержащие имена полей, похожие на секреты или токены доступа."""
     if isinstance(value, dict):
         for key, child in value.items():
             if not isinstance(key, str):
@@ -128,7 +133,7 @@ def reject_sensitive(value: object, location: str) -> None:
 
 
 def load_role_manifest(path: Path) -> JsonObject:
-    """Parse the deliberately small role frontmatter without a YAML dependency."""
+    """Разобрать компактный frontmatter манифеста роли без зависимости от сторонних YAML-библиотек."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -169,11 +174,13 @@ def load_role_manifest(path: Path) -> JsonObject:
 
 
 def _inside(path: str, boundary: str) -> bool:
+    """Проверить, находится ли путь внутри границы (с учётом подстановок **)."""
     prefix = boundary.removesuffix("**")
     return path == boundary or path.startswith(prefix)
 
 
 def _valid_model(value: object) -> str:
+    """Проверить и вернуть корректный идентификатор модели CLI без пробелов."""
     if not non_empty(value) or MODEL_ID.fullmatch(value.strip()) is None:
         raise ContractError(
             "assignment model must be a CLI model ID or alias without spaces",
@@ -183,6 +190,7 @@ def _valid_model(value: object) -> str:
 
 
 def _valid_effort(value: object) -> str:
+    """Проверить и вернуть допустимый уровень рассуждений (effort)."""
     if not non_empty(value) or value.strip() not in EFFORT_LEVELS:
         raise ContractError(
             "assignment effort must be one of: " + ", ".join(sorted(EFFORT_LEVELS)),
@@ -193,11 +201,12 @@ def _valid_effort(value: object) -> str:
 
 
 def resolve_runtime_name(plan: Mapping[str, object], requested: object) -> str:
-    """Resolve a role runtime without a global, hidden provider default.
+    """Разрешить имя рантайма роли без неявного глобального значения по умолчанию провайдера.
 
-    A one-runtime plan is unambiguous. A multi-runtime plan must either name its project-owned
-    ``default_runtime`` or receive an explicit CLI selection. Keeping this decision in the
-    portable contract lets preflight, the coordinator and adapters agree before a brief exists.
+    План с одним рантаймом однозначен. План с несколькими рантаймами должен либо указывать
+    собственный default_runtime проекта, либо получать явный выбор из CLI. Сохранение этого
+    решения в переносимом контракте позволяет preflight, координатору и адаптерам согласовывать
+    рантайм до формирования задания.
     """
     runtimes = plan.get("runtimes")
     if not isinstance(runtimes, dict) or not runtimes:
@@ -231,7 +240,7 @@ def resolve_assignment(
     zone_name: object,
     runtime_name: object,
 ) -> JsonObject:
-    """Resolve one configured role assignment while preserving manifest authority."""
+    """Разрешить сконфигурированное назначение роли с сохранением авторитета манифеста."""
     assignments = config.get("assignment_plans")
     zones = config.get("backend_zones")
     profiles = config.get("provider_profiles")
@@ -355,7 +364,7 @@ def validate_brief_policy(
     *,
     expected_transport: str | None = None,
 ) -> tuple[JsonObject, JsonObject]:
-    """Validate the policy-owned portion of an approved immutable handoff brief."""
+    """Валидировать относящуюся к политикам часть утверждённого неизменяемого задания диспетчеризации."""
     reject_sensitive(brief, "dispatch brief")
     approval = brief.get("coordinator_approval")
     # `transition_digest` binds the approval to the exact transition it was given for; a brief
@@ -519,7 +528,7 @@ def _policy_problem(
     booleans: set[str] | None = None,
     minimum: int = 1,
 ) -> list[str]:
-    """Validate small numeric policy maps without a JSON-schema runtime dependency."""
+    """Валидировать небольшие числовые карты политик без зависимости от JSON-schema в рантайме."""
     value = config.get(key)
     if value is None:
         return []
@@ -590,7 +599,7 @@ def accepted_verification_commands(
 
 
 def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
-    """Validate the Repo Map policy without importing its base-capability resource."""
+    """Валидировать политику Repo Map без импорта её базовых ресурсов возможностей."""
     value = config.get("repo_map_policy")
     if value is None:
         return []
@@ -672,12 +681,11 @@ def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
 def resolve_min_repo_map_tier(
     config: Mapping[str, object], role_name: str
 ) -> str | None:
-    """Minimum Repo Map tier a role's Context Package must meet at dispatch admission.
+    """Минимальный уровень Repo Map, которому должен соответствовать Context Package роли при допуске к диспетчеризации.
 
-    Resolution order: the role's entry in `repo_map_policy.min_tier_by_role`, else the
-    repository-wide `repo_map_policy.min_tier`, else `None` (no gate). Without a
-    `repo_map_policy`, or without either field, this always returns `None`, so a project that
-    never opts in is never blocked by Repo Map degradation.
+    Порядок разрешения: запись роли в repo_map_policy.min_tier_by_role, затем общерепозиторный
+    repo_map_policy.min_tier, иначе None (без ограничений). Без repo_map_policy или без обоих
+    полей всегда возвращает None, поэтому проект без этой настройки никогда не блокируется деградацией Repo Map.
     """
     policy = config.get("repo_map_policy")
     if not isinstance(policy, dict):
@@ -696,9 +704,7 @@ def resolve_min_repo_map_tier(
 def resolve_allowed_tools(
     config: Mapping[str, object], role_name: str, mode: str
 ) -> list[str]:
-    """Tools a dispatch brief records for a role: the project's per-role entry, else its per-mode
-    entry, else the built-in default for the role's manifest mode. `harness health` has already
-    validated the shape of `tool_policy` for a configured project."""
+    """Инструменты, фиксируемые в brief роли: запись роли в проекте, иначе запись для режима, иначе встроенный дефолт режима манифеста."""
     policy = config.get("tool_policy")
     if isinstance(policy, dict):
         for section, key in (("roles", role_name), ("modes", mode)):
@@ -709,12 +715,14 @@ def resolve_allowed_tools(
 
 
 def valid_tool_list(value: object) -> TypeGuard[list[str]]:
+    """Проверить, что значение является непустым списком уникальных имён инструментов."""
     return string_list(value) and bool(value) and len(set(value)) == len(value)
 
 
 def _tool_policy_problems(
     config: Mapping[str, object], role_names: set[str]
 ) -> list[str]:
+    """Валидировать структуру и допустимые значения конфигурации tool_policy."""
     if "tool_policy" not in config:
         return []
     policy = config["tool_policy"]
@@ -754,7 +762,7 @@ ATTENTION_POLICY_FIELDS = {
 
 
 def _operational_policy_problems(config: Mapping[str, object]) -> list[str]:
-    """`attention_policy`, `approval_ttl_seconds` and `extensions`: the operational-loop policy of issue #250."""
+    """Валидировать параметры операционного цикла: attention_policy, approval_ttl_seconds и extensions."""
     problems: list[str] = []
     attention = config.get("attention_policy")
     if attention is not None:
@@ -811,7 +819,7 @@ def _operational_policy_problems(config: Mapping[str, object]) -> list[str]:
 
 
 def health_problems(config_path: Path, roles_root: Path) -> list[str]:
-    """Return health diagnostics without changing project state."""
+    """Вернуть диагностические замечания к здоровью конфигурации без изменения состояния проекта."""
     problems: list[str] = []
     if not config_path.is_file():
         return problems

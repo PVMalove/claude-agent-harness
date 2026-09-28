@@ -1,13 +1,15 @@
-"""Stdlib-only fact collection for the console's Dashboard and Diagnostics screens. Every function
-here is importable and runnable with no `textual` installed - screens/*.py only ever render what
-these functions return, never touch health-check logic or the packaging catalog directly.
+"""Сбор фактов средствами только стандартной библиотеки для экранов Dashboard и Diagnostics консоли.
+Каждая функция здесь может импортироваться и выполняться без установленного пакета `textual` — экраны
+`screens/*.py` только отрисовывают возвращаемые данные и не содержат собственной логики проверок health
+или каталога сборщика.
 
-`harness.health.registry.run` is called in-process through `run_health`, with the same
-`snapshot_diff` and CLI invocation `harness/bin/harness.py`'s `cmd_health` passes, so the console's
-report is the CLI's report (skill-snapshot drift included), not a reduced copy. Drift status and active batch count are read
-through the packager's and coordinator's own `--json` CLIs by subprocess, rather than duplicating
-their capability-resolution/ledger logic inside the console (both stay optional facts: a project
-with no `.harness/harness.lock`, or no backend-orchestration, renders "не подключено").
+Функция `harness.health.registry.run` вызывается внутри процесса через `run_health` с теми же
+параметрами `snapshot_diff` и вызовом CLI, что и команда `cmd_health` в `harness/bin/harness.py`,
+поэтому отчёт консоли в точности совпадает с отчётом CLI (включая дрейф снепшота скиллов). Статус дрейфа
+и количество активных батчей считываются через CLI сборщика и координатора с флагом `--json` в
+подпроцессе, что исключает дублирование логики разрешения возможностей и журнала в консоли (оба факта
+остаются опциональными: для проекта без `.harness/harness.lock` или без бэкенд-оркестрации отображается
+«не подключено»).
 """
 
 from __future__ import annotations
@@ -32,8 +34,7 @@ BIN_HARNESS_PATH = _PACKAGE_ROOT / "bin" / "harness.py"
 
 @dataclass(frozen=True)
 class DashboardData:
-    """Everything the Dashboard screen shows; see DoD: "offline health ok/warn/fail counters,
-    active batches, Repo Map tier, harness version and drift"."""
+    """Факты для отображения на экране Dashboard: счётчики проверок health, активные батчи, уровень Repo Map, версия харнесса и статус дрейфа."""
 
     ok: int
     warn: int
@@ -42,14 +43,18 @@ class DashboardData:
     repo_map_tier: str
     harness_version: str
     drift_state: str
-    active_batches: int | None  # None: backend-orchestration is not connected in this project
+    active_batches: (
+        int | None
+    )  # None: backend-orchestration is not connected in this project
 
 
 def harness_version() -> str:
+    """Считывает текущую версию харнесса из файла VERSION пакета."""
     return VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
 def _repo_map_tier(report: Report) -> str:
+    """Извлекает уровень готовности Repo Map (tier) из проверок отчёта health."""
     for check in report.checks:
         if check.id == "repo_map.tier":
             return check.message
@@ -57,8 +62,7 @@ def _repo_map_tier(report: Report) -> str:
 
 
 def drift_state(repo: Path, *, timeout: float = 30.0) -> str:
-    """Shells out to `harness diff --json`, the packager's own public CLI contract, instead of
-    reimplementing capability-resolution/snapshot-hashing inside the console."""
+    """Вызывает `harness diff --json` в подпроцессе для определения состояния дрейфа управляемых файлов."""
     try:
         result = subprocess.run(
             [sys.executable, str(BIN_HARNESS_PATH), "diff", str(repo), "--json"],
@@ -77,15 +81,21 @@ def drift_state(repo: Path, *, timeout: float = 30.0) -> str:
 
 
 def active_batches(repo: Path, *, timeout: float = 30.0) -> int | None:
-    """None means backend-orchestration is not connected in this project (no
-    `.harness/orchestration/coordinator.py`) - the dashboard then renders "не подключено", the
-    same fallback pattern `repo_map.tier` already uses for "not installed"."""
+    """Возвращает количество открытых батчей через `coordinator.py batch list --open`, либо None, если оркестрация не подключена."""
     coordinator = repo / ".harness" / "orchestration" / "coordinator.py"
     if not coordinator.is_file():
         return None
     try:
         result = subprocess.run(
-            [sys.executable, str(coordinator), "--repo", str(repo), "batch", "list", "--open"],
+            [
+                sys.executable,
+                str(coordinator),
+                "--repo",
+                str(repo),
+                "batch",
+                "list",
+                "--open",
+            ],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -104,13 +114,12 @@ def active_batches(repo: Path, *, timeout: float = 30.0) -> int | None:
 
 @functools.cache
 def _packager() -> dict[str, object]:
-    """The packager CLI's module namespace, loaded once: it owns `snapshot_diff`, which re-derives
-    the expected skill snapshot from CAPABILITIES.json and cannot live in the health package."""
+    """Кэширует пространство имён CLI сборщика харнесса для доступа к snapshot_diff и вызовам CLI."""
     return runpy.run_path(str(BIN_HARNESS_PATH))
 
 
 def run_health(repo: Path, *, online: bool = False, fix: bool = False) -> Report:
-    """The same health run `harness health [--online] [--fix]` makes."""
+    """Выполняет проверку состояния репозитория, аналогично вызову `harness health [--online] [--fix]`."""
     packager = _packager()
     return health_registry.run(
         repo,
@@ -122,8 +131,7 @@ def run_health(repo: Path, *, online: bool = False, fix: bool = False) -> Report
 
 
 def collect_dashboard(repo: Path, *, online: bool = False) -> DashboardData:
-    """`online=True` is the dashboard's "online checks" action; by default the summary stays
-    offline so opening the console never waits on the network."""
+    """Собирает сводные данные для экрана Dashboard. По умолчанию работает в режиме офлайн без ожидания сети."""
     report = run_health(repo, online=online)
     summary = report.summary()
     return DashboardData(
@@ -139,19 +147,15 @@ def collect_dashboard(repo: Path, *, online: bool = False) -> DashboardData:
 
 
 def collect_diagnostics(repo: Path, *, online: bool = False) -> Report:
-    """The full report the Diagnostics screen renders; `online=True` is its "online checks"
-    action - the same run `harness health --online` makes, no new check logic."""
+    """Формирует полный отчёт health для экрана Diagnostics, аналогичный запуску команды `harness health`."""
     return run_health(repo, online=online)
 
 
 def apply_local_fixes(repo: Path, *, online: bool = False) -> Report:
-    """The in-process half of `harness health --fix` (#399): applies every check's `FIXERS`
-    entry (creating missing `.harness` directories, regenerating the skill registry) and re-runs
-    every check, the same run `harness health --fix` makes. A check's `fix.command` is never run: it
-    is a remedy the developer runs by hand."""
+    """Применяет локальные исправления проверок (создание директорий, обновление реестра) и повторно выполняет проверки."""
     return run_health(repo, online=online, fix=True)
 
 
 def health_cli_line(repo: Path, *flags: str) -> str:
-    """The CLI equivalent a console health action shows, e.g. `harness health <repo> --online`."""
+    """Формирует эквивалентную строковую команду CLI для запуска проверки health, например `harness health <repo> --online`."""
     return shell_join(["harness", "health", str(repo), *flags])

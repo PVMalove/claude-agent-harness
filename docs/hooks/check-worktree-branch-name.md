@@ -20,3 +20,7 @@
 - **Выход (Output/Report):** В случае успеха или отсутствия имени возвращается код возврата `0`. В случае нарушения конвенции именования или отсутствия issue в трекере возвращается код `2`, а в `stderr` выводится поясняющее сообщение об ошибке.
 ## 4. Архитектурная схема
 ![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[check-worktree-branch-name.sh](../../harness/project/hooks/check-worktree-branch-name.sh)

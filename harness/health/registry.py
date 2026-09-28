@@ -1,16 +1,18 @@
-"""The flat, explicit registry of health checks that `harness health` runs.
+"""Плоский явный реестр проверок здоровья, запускаемых командой `harness health`.
 
-No plugin auto-discovery: checks are wired in by explicit import, one entry per check function, so
-the registry stays auditable. Future check groups (#343-#347) add entries here without touching how
-already-registered checks run.
+Автоматическое обнаружение плагинов не используется: проверки подключаются явным импортом,
+по одной записи на функцию проверки, благодаря чему реестр остаётся легко проверяемым.
+Новые группы проверок добавляются сюда без изменения логики запуска уже зарегистрированных.
 
-Each entry declares the check's stable id up front, so a check that crashes is still reported under
-that id (as `fail`) instead of aborting the rest of the report.
+Каждая запись объявляет стабильный идентификатор проверки заранее, поэтому даже при падении
+проверки отчёт содержит результат под этим id (со статусом `fail`), не прерывая выполнение
+остальных проверок.
 
-FIXERS maps a check id to its fix action, run only under `harness health --fix` (ticket #345). A fix
-action is limited to local `.harness` scaffolding - creating a directory, regenerating the skill
-registry. System settings (Windows registry, Developer Mode, global git config) and worktrees are
-never touched: those checks only carry a `Fix` with the command to run by hand.
+Словарь `FIXERS` связывает идентификатор проверки с действием по исправлению, запускаемым только
+при флаге `harness health --fix`. Исправления ограничены локальной структурой `.harness` —
+созданием каталогов, перегенерацией реестра навыков. Системные настройки (реестр Windows,
+режим разработчика, глобальный git config) и рабочие деревья не модифицируются: такие проверки
+лишь возвращают объект `Fix` с командой для ручного выполнения.
 """
 
 from __future__ import annotations
@@ -86,10 +88,14 @@ FIXERS: dict[str, FixFn] = {
     "tracker.labels": tracker_checks.fix_labels,
 }
 
+
 def _load_lock(repo: Path) -> tuple[JsonObject | None, str | None]:
-    """Parse .harness/harness.lock once per run as (lock, error). A missing file is (None, None);
-    a lock that cannot be read or is not a JSON object is (None, <reason>) - reported by
-    files.check_lock as `fail` instead of aborting the whole run before any check starts."""
+    """Разобрать .harness/harness.lock один раз за запуск как (lock, error).
+
+    Отсутствующий файл возвращает (None, None); файл, который не удалось прочитать или который
+    не является JSON-объектом, возвращает (None, <причина>) — это фиксируется проверкой `files.check_lock`
+    как `fail` вместо аварийной остановки всего запуска до начала проверок.
+    """
     path = repo / project_files.LOCK_REL
     if not path.is_file():
         return None, None
@@ -111,14 +117,14 @@ def run(
     fix: bool = False,
     harness_cli: tuple[str, ...] = ("harness",),
 ) -> Report:
-    """Build one HealthContext and run every registered check, without early exit.
+    """Создать HealthContext и выполнить все зарегистрированные проверки без преждевременного выхода.
 
-    With `fix`, a check that has an entry in FIXERS gets its fix action applied right after it
-    runs; whatever the action did is appended to `report.fixes_applied` and the check is re-run so
-    the report shows the state after the fix.
+    При `fix=True` для проверок, зарегистрированных в `FIXERS`, применяется действие по исправлению
+    сразу после выполнения; описание выполненного действия добавляется в `report.fixes_applied`,
+    а проверка запускается повторно, чтобы отчёт отражал состояние после исправления.
 
-    `snapshot_diff`, `output_encoding` and `harness_cli` are forwarded to HealthContext unchanged;
-    see its docstring - only harness/bin/harness.py's cmd_health and the console supply them.
+    Параметры `snapshot_diff`, `output_encoding` и `harness_cli` передаются в `HealthContext`
+    без изменений (см. docstring класса — их передают только `cmd_health` в `harness/bin/harness.py` и консоль).
     """
     lock, lock_error = _load_lock(repo)
     context = HealthContext(
@@ -143,20 +149,24 @@ def run(
     return report
 
 
-def _apply_isolated(fixer: FixFn, context: HealthContext, result: CheckResult) -> str | None:
-    """Run one fix action; a crash leaves the check's own result in place instead of ending the run."""
+def _apply_isolated(
+    fixer: FixFn, context: HealthContext, result: CheckResult
+) -> str | None:
+    """Выполнить одно действие исправления; аварийное завершение оставляет результат проверки неизменным."""
     try:
         return fixer(context, result)
     except (Exception, SystemExit):
         return None
 
 
-def _run_isolated(check_id: str, check_fn: CheckFn, context: HealthContext) -> CheckResult:
-    """Run one check; a crash becomes its `fail` result so the remaining checks still run.
+def _run_isolated(
+    check_id: str, check_fn: CheckFn, context: HealthContext
+) -> CheckResult:
+    """Выполнить одну проверку; сбой превращается в результат со статусом `fail`, позволяя продолжить остальные проверки.
 
-    SystemExit is caught too: the helpers health shares with the packager (project_files.fail)
-    exit the process on error, which must not end a health run. KeyboardInterrupt still
-    propagates.
+    Исключение SystemExit также перехватывается: вспомогательные функции, разделяемые со сборщиком
+    (project_files.fail), завершают процесс при ошибке, что не должно обрывать запуск проверок здоровья.
+    KeyboardInterrupt распространяется дальше.
     """
     try:
         return check_fn(context)

@@ -1,4 +1,4 @@
-"""Preview and remove only known disposable data inside project-local `.harness`."""
+"""Предварительный просмотр и удаление только известных временных данных в проектном `.harness`."""
 
 from __future__ import annotations
 
@@ -28,12 +28,16 @@ _INSTALL_DIR_RE = re.compile(
 
 
 class CleanupItem(TypedDict):
+    """Элемент плана очистки (файл, директория или worktree)."""
+
     kind: str
     path: str
     branch: NotRequired[str]
 
 
 class CleanupPlan(TypedDict):
+    """План очистки временных данных с перечнем удаляемых и пропущенных путей."""
+
     mode: str
     root: str
     min_age_hours: float
@@ -42,12 +46,15 @@ class CleanupPlan(TypedDict):
 
 
 class CleanupResult(TypedDict):
+    """Результат выполнения очистки с перечнем удалённых, ошибочных и пропущенных элементов."""
+
     removed: list[str]
     failed: list[dict[str, str]]
     skipped: list[dict[str, str]]
 
 
 def _git(repo: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    """Выполнить команду Git в указанном репозитории без возбуждения исключения при ошибке."""
     checkout = repo.resolve()
     return subprocess.run(
         ["git", "-c", f"safe.directory={checkout}", "-C", str(checkout), *arguments],
@@ -60,6 +67,7 @@ def _git(repo: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
 
 
 def _inside(root: Path, candidate: Path) -> bool:
+    """Проверить, что путь лежит строго внутри корневой директории и не является symlink."""
     if candidate.is_symlink():
         return False
     try:
@@ -72,6 +80,7 @@ def _inside(root: Path, candidate: Path) -> bool:
 
 
 def _old_enough(path: Path, hours: float) -> bool:
+    """Проверить, что файл или директория старше заданного количества часов."""
     try:
         return time.time() - path.stat().st_mtime >= hours * 3600
     except OSError:
@@ -79,6 +88,7 @@ def _old_enough(path: Path, hours: float) -> bool:
 
 
 def _pid_active(pid: int) -> bool:
+    """Проверить активность процесса с указанным PID в операционной системе."""
     if sys.platform == "win32":
         if pid > 0xFFFFFFFF:
             return False
@@ -112,6 +122,7 @@ def _pid_active(pid: int) -> bool:
 
 
 def _run_active(path: Path) -> bool:
+    """Проверить активность запуска по файлу маркера .active.json в директории."""
     marker = path / ".active.json"
     if not marker.is_file():
         return False
@@ -127,6 +138,7 @@ def _run_active(path: Path) -> bool:
 
 
 def _registered_worktrees(repo: Path) -> dict[Path, str | None] | None:
+    """Получить зарегистрированные в Git worktree и связанные с ними ветки."""
     result = _git(repo, "worktree", "list", "--porcelain")
     if result.returncode != 0:
         return None
@@ -145,6 +157,7 @@ def _registered_worktrees(repo: Path) -> dict[Path, str | None] | None:
 
 
 def _active_worktrees(root: Path) -> set[Path] | None:
+    """Получить множество путей worktree, занятых активными батчами оркестрации."""
     state = root / "orchestration" / "state"
     if not state.exists():
         return set()
@@ -177,6 +190,7 @@ def _active_worktrees(root: Path) -> set[Path] | None:
 
 
 def _branch_recoverable(repo: Path, branch: str) -> bool:
+    """Проверить, что локальная ветка полностью сохранена на remote-репозитории origin."""
     upstream = _git(repo, "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}")
     if upstream.returncode != 0 or not upstream.stdout.strip().startswith("origin/"):
         return False
@@ -216,6 +230,7 @@ def _branch_recoverable(repo: Path, branch: str) -> bool:
 
 
 def _branch_allowed(root: Path, branch: str) -> bool:
+    """Проверить, соответствует ли имя ветки разрешённому шаблону проекта."""
     project = root / "project.json"
     try:
         pattern = json.loads(project.read_text(encoding="utf-8"))["branch_pattern"]
@@ -245,7 +260,7 @@ def _stale_bundle_installs(bundle_root: Path, min_age_hours: float) -> list[Path
 
 
 def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> CleanupPlan:
-    """Return exact deletions and skips; never mutate the filesystem."""
+    """Сформировать точный план удаления и пропуска временных данных без изменения файловой системы."""
     if mode not in {"soft", "hard"} or min_age_hours < 0:
         raise ValueError(
             "cleanup mode must be soft or hard and minimum age cannot be negative"
@@ -264,6 +279,7 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
     if runs_dir.is_dir() and not runs_dir.is_symlink():
 
         def _process_run_entry(path: Path, is_qa: bool = False) -> None:
+            """Классифицировать и обработать запись в директории запусков runs."""
             if path.is_symlink() or not _inside(root, path):
                 skipped.append({"path": str(path), "reason": "not a local directory"})
             elif path.is_file():
@@ -309,8 +325,8 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
             else:
                 _process_run_entry(entry, is_qa=False)
 
-    # 2. Scratch & Logs: transit files in .sandboxes/scratch and .sandboxes/logs
-    for category in ("scratch", "logs"):
+    # 2. Transit files in scratch, PR bodies, and logs.
+    for category in ("scratch", "pr_body", "logs"):
         parent = sandboxes / category
         if parent.is_dir() and not parent.is_symlink():
             for path in sorted(parent.rglob("*")):
@@ -441,6 +457,7 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
 def _clear_read_only(
     func: Callable[[str], object], path: str, _exc: BaseException
 ) -> None:
+    """Снять флаг «только для чтения» и повторить операцию удаления файла."""
     os.chmod(path, stat.S_IWRITE)
     func(path)
 
@@ -451,7 +468,7 @@ def apply_cleanup(
     *,
     confirm: str | None = None,
 ) -> CleanupResult:
-    """Apply a fresh plan under the same resolved `.harness` root, failing closed on drift."""
+    """Применить свежий план очистки для того же корня `.harness` с защитой от расхождений."""
     if plan["mode"] == "hard" and confirm != "HARD":
         raise ValueError("hard cleanup requires confirm='HARD'")
     checkout = repo.expanduser().resolve()

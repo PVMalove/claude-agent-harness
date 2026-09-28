@@ -1,8 +1,8 @@
-"""Pure operational guards of the orchestration coordinator (issue #250).
+"""Чистые операционные защитные правила координатора оркестрации (issue #250).
 
-Nothing here touches git, the ledger or the clock.  The coordinator gathers facts and passes them
-in; these functions only canonicalise, hash and classify them, so the same inputs always produce
-the same digest, key, level or finding.
+Ничто здесь не взаимодействует с git, реестром или системными часами. Координатор собирает
+факты и передаёт их сюда; данные функции лишь канонизируют, хешируют и классифицируют их,
+поэтому одинаковые входные данные всегда дают один и тот же дайджест, ключ, уровень или замечание.
 """
 
 from __future__ import annotations
@@ -43,10 +43,11 @@ CONTEXT_PRESSURE_LEVELS = ("ok", "warning", "critical")
 
 
 class GuardError(HarnessError):
-    """A guard input is malformed."""
+    """Входные данные защитного правила некорректны."""
 
 
 def _digest(value: object) -> str:
+    """Вычислить SHA256-хеш канонического представления объекта в формате JSON."""
     canonical = json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
@@ -69,6 +70,7 @@ def build_transition(
     context_package_id: str | None,
     required_gates: Sequence[str],
 ) -> dict[str, object]:
+    """Сконструировать словарь перехода между этапами жизненного цикла."""
     return {
         "batch_id": batch_id,
         "previous_dispatch_id": previous_dispatch_id,
@@ -87,7 +89,7 @@ def build_transition(
 
 
 def transition_digest(transition: Mapping[str, object]) -> str:
-    """The canonical digest an approval is bound to; key order never matters."""
+    """Канонический дайджест, с которым связывается подтверждение; порядок ключей не имеет значения."""
     if set(transition) != set(TRANSITION_FIELDS):
         raise GuardError(
             "a transition must carry exactly the fields an approval binds",
@@ -97,7 +99,7 @@ def transition_digest(transition: Mapping[str, object]) -> str:
 
 
 def keyed_role(role: str, purpose: str) -> str | None:
-    """The role name an idempotency key uses, or ``None`` when the dispatch is not read-only recovery."""
+    """Имя роли для ключа идемпотентности или None, если диспетчеризация не является восстановлением только для чтения."""
     if purpose == "publish":
         return "publish"
     return role if role in KEYED_READ_ONLY_ROLES else None
@@ -112,7 +114,7 @@ def retry_idempotency_key(
     reason_category: str,
     verification_commands: Sequence[str],
 ) -> str:
-    """One key per (role, candidate, base, scope, reason, verification): equal keys are the same request."""
+    """Один ключ на комбинацию (роль, кандидат, база, область, причина, проверки): одинаковые ключи означают один и тот же запрос."""
     return _digest(
         {
             "role": role,
@@ -126,6 +128,7 @@ def retry_idempotency_key(
 
 
 def level_for(observed_tokens: int, context_limit: int, warning_threshold: int) -> str:
+    """Определить уровень давления контекста (ok, warning, critical) по наблюдаемому числу токенов."""
     if observed_tokens >= context_limit:
         return "critical"
     return "warning" if observed_tokens >= warning_threshold else "ok"
@@ -134,7 +137,7 @@ def level_for(observed_tokens: int, context_limit: int, warning_threshold: int) 
 def pressure_level(
     observed_tokens: int, context_limit: int, warning_ratio: float
 ) -> tuple[int, str]:
-    """``(warning_threshold, level)`` for an observed token count."""
+    """Вернуть кортеж (warning_threshold, level) для наблюдаемого количества токенов."""
     warning_threshold = round(context_limit * warning_ratio)
     return warning_threshold, level_for(
         observed_tokens, context_limit, warning_threshold
@@ -148,7 +151,7 @@ def attention_finding(
     last_safe_action: str,
     recommended_human_action: str,
 ) -> dict[str, str]:
-    """One reason a batch needs a human; ``key`` identifies the occurrence so it is acknowledged once."""
+    """Сформировать замечание о необходимости внимания человека; key идентифицирует событие для однократного подтверждения."""
     if reason not in ATTENTION_REASONS:
         raise GuardError(
             f"unknown attention reason {reason!r}",
@@ -163,5 +166,5 @@ def attention_finding(
 
 
 def top_finding(findings: Sequence[dict[str, str]]) -> dict[str, str]:
-    """The most urgent finding: the earliest reason in ``ATTENTION_REASONS``."""
+    """Наиболее приоритетное замечание: причина с наименьшим индексом в ATTENTION_REASONS."""
     return min(findings, key=lambda finding: ATTENTION_REASONS.index(finding["reason"]))

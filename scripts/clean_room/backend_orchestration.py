@@ -51,11 +51,7 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_project = test_root / "o"
 
     def staged_payload(name: str) -> Path:
-        """Role-authored payloads live inside the project, at the brief's staging path.
-
-        The coordinator refuses a report or checkpoint written outside the repository and its
-        worktrees, which is what stops evidence from landing in a guessed home-directory folder.
-        """
+        """Сформировать путь к промежуточному файлу роли внутри scratch/inbox проекта."""
         path = storage_path(orchestration_project, "scratch", "inbox", name)
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
@@ -172,7 +168,7 @@ def run(ctx: SimpleNamespace) -> None:
     public_documentation = {
         ROOT / "README.md": (
             "`backend-orchestration`",
-            "человек явно утверждает каждый dispatch",
+            "PR требует отдельного подтверждения",
             "/to-pull-requests",
         ),
         ROOT / "CONTEXT.md": (
@@ -180,14 +176,7 @@ def run(ctx: SimpleNamespace) -> None:
             "FIFO",
             "санитизирован",
         ),
-        ROOT / "docs" / "agents" / "current-state.md": (
-            "`planned → awaiting-approval ↔ active → completed | blocked | failed`",
-            "immutable brief",
-            "Standards и Spec",
-            "FIFO quality-gate lane",
-            ".harness/orchestration/state/",
-        ),
-        ROOT / "docs" / "agents" / "backend-orchestration.md": (
+        ROOT / "harness" / "docs" / "backend-orchestration.md": (
             "`planned → awaiting-approval ↔ active → completed | blocked | failed`",
             "`reported`",
             "детерминирован",
@@ -198,7 +187,7 @@ def run(ctx: SimpleNamespace) -> None:
             "stale",
             "/to-pull-requests",
         ),
-        ROOT / "docs" / "agents" / "harness-guide.md": (
+        ROOT / "harness" / "docs" / "harness-guide.md": (
             "строго opt-in маршрут",
             "candidate commit",
             "`reported`",
@@ -218,7 +207,13 @@ def run(ctx: SimpleNamespace) -> None:
     for source_path, required_phrases in public_documentation.items():
         if source_path == ROOT / "README.md" or source_path == ROOT / "CONTEXT.md":
             continue
-        installed_path = orchestration_project / "docs" / "agents" / source_path.name
+        # Harness guides are part of the managed snapshot (.harness/docs/); project guides are seeds.
+        installed_dir = (
+            orchestration_project / ".harness" / "docs"
+            if source_path.parent == ROOT / "harness" / "docs"
+            else orchestration_project / "docs" / "agents"
+        )
+        installed_path = installed_dir / source_path.name
         if not installed_path.is_file():
             sys.exit(
                 f"installed project is missing documentation seed: {source_path.name}"
@@ -234,15 +229,13 @@ def run(ctx: SimpleNamespace) -> None:
                 f"installed documentation retains removed /to-pr route: {source_path.name}"
             )
     source_orchestration_guide = (
-        ROOT / "harness" / "project" / "docs-agents" / "backend-orchestration.md"
+        ROOT / "harness" / "docs" / "backend-orchestration.md"
     ).read_text(encoding="utf-8")
     installed_orchestration_guide = (
-        orchestration_project / "docs" / "agents" / "backend-orchestration.md"
+        orchestration_project / ".harness" / "docs" / "backend-orchestration.md"
     ).read_text(encoding="utf-8")
     if installed_orchestration_guide != source_orchestration_guide:
-        sys.exit(
-            "installed backend-orchestration guidance differs from its source template"
-        )
+        sys.exit("installed backend-orchestration guidance differs from its source")
     expected_role_files = {
         "architect.md",
         "code-review.md",
@@ -404,6 +397,7 @@ def run(ctx: SimpleNamespace) -> None:
         )
 
     def frontmatter_list(field):
+        """Извлечь список строковых значений поля из YAML frontmatter роли."""
         lines = role_frontmatter.splitlines()
         try:
             start = lines.index(f"{field}:") + 1

@@ -28,6 +28,7 @@ from harness.storage import storage_path
 from scripts.verification.docs_sync import (
     check_docs_agents_enumeration,
     check_docs_agents_mirror,
+    check_guide_diagram_previews,
     check_no_retired_path_inventory_term,
     check_pvmalove_additions_docs_sync,
     check_pvmalove_override_docs_sync,
@@ -59,7 +60,7 @@ __all__ = [
 # each script module, including the packages the verification and clean-room scripts are split into.
 _COMPILED_SCRIPTS = (
     ROOT / "harness" / "bin" / "harness.py",
-    ROOT / "bin" / "install-global",
+    ROOT / "bin" / "install-global.py",
     ROOT / "scripts" / "build_registry.py",
     ROOT / "scripts" / "verify.py",
     ROOT / "scripts" / "test_clean_room.py",
@@ -107,7 +108,7 @@ def _compiled_sources() -> list[str]:
 
 
 def _check_python_syntax() -> None:
-    """Compile entry points without writing .pyc files under a long worktree path."""
+    """Скомпилировать точки входа без записи файлов .pyc при длинных путях worktree."""
     for source in _compiled_sources():
         compile(Path(source).read_bytes(), source, "exec")
 
@@ -132,6 +133,7 @@ def _check_global_skills() -> None:
 def _check_documentation() -> None:
     """Проверить согласованность документации, шаблонов и постоянных инструкций."""
     check_docs_agents_mirror()
+    check_guide_diagram_previews()
     check_no_retired_path_inventory_term()
     grep_contains(
         ROOT / "skills" / "first-party" / "pvmalove" / "to-tickets" / "SKILL.md",

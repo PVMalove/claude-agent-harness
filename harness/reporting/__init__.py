@@ -1,1 +1,1 @@
-"""Delivery-stats and HTML-report rendering modules."""
+"""Модули сбора статистики поставки и формирования HTML-отчётов."""

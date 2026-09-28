@@ -75,3 +75,7 @@ python .harness/reporting/delivery_stats.py --repo . --epic <current-epic> \\
 ## 4. Архитектурная схема
 
 ![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[SKILL.md](../../skills/first-party/pvmalove/delivery-stats/SKILL.md)

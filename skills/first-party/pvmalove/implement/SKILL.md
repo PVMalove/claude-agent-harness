@@ -93,7 +93,7 @@ This is a short coordinator contract, not a second orchestration manual. Full ru
 - `.harness/orchestration/playbook.md` owns lifecycle, authority, immutable brief, completion
   evidence, parallelism, and metric rules.
 - `.harness/orchestration/roles/` owns each role's boundary, required proof, and specialist trigger.
-- `docs/agents/backend-orchestration.md` owns setup, project configuration, CLI procedure, and
+- `.harness/docs/backend-orchestration.md` owns setup, project configuration, CLI procedure, and
   operational recovery.
 - `docs/agents/git-workflow.md` owns issue-branch, commit, push, and PR boundaries.
 

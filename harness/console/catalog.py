@@ -1,11 +1,11 @@
-"""The console's command catalog: plain stdlib data describing every command a console section
-can run - display title, the CLI argv shown to the user as its equivalent, a reversibility class,
-and the CLI function that argv dispatches to. Listed and tested without textual.
+"""Каталог команд консоли: декларативные структуры данных стандартной библиотеки, описывающие
+каждую команду разделов консоли — отображаемый заголовок, эквивалентные аргументы CLI, класс
+обратимости и функция CLI, в которую диспетчеризуется вызов. Описан и протестирован без зависимости от textual.
 
-The console never reimplements a command: it runs the entry's CLI argv as a process (see
-`process_argv`), so the CLI function named in `function` does the work with every guard it
-already has (ledger locks, `--confirm RESET`, drift refusal). tests/test_console_catalog.py
-proves each argv really dispatches to that function.
+Консоль не реализует логику команд заново: она запускает аргументы CLI записи как подпроцесс (см.
+`process_argv`), благодаря чему функция CLI, указанная в `function`, выполняет работу со всеми
+существующими проверками (блокировки леджера, `--confirm RESET`, отказ при дрейфе файлов).
+Тест tests/console/test_console_catalog.py проверяет, что каждый набор аргументов действительно передаётся в эту функцию.
 """
 
 from __future__ import annotations
@@ -23,6 +23,8 @@ from .launcher import BIN_HARNESS_PATH
 
 
 class Reversibility(Enum):
+    """Классы обратимости команд, определяющие необходимость и причину запроса подтверждения."""
+
     REVERSIBLE = "reversible"
     DELETES_LOCAL_DATA = "deletes-local-data"
     TERMINAL_COORDINATOR_ACTION = "terminal-coordinator-action"
@@ -50,10 +52,7 @@ _REPO = "repo"
 
 @dataclass(frozen=True)
 class CatalogEntry:
-    """`argv` is the CLI equivalent with `{repo}` and `{<input>}` placeholders; every placeholder
-    other than `{repo}` is a value the console asks for before running. `function` is
-    `<module or script path>:<name>` of the CLI function `argv` dispatches to. A
-    `typed_confirmation` word must be typed literally before the command runs."""
+    """Запись команды в каталоге: параметры CLI с плейсхолдерами `{repo}` и `{<входное поле>}`, класс обратимости и целевая функция."""
 
     key: str
     title: str
@@ -67,18 +66,18 @@ class CatalogEntry:
 
     @property
     def needs_confirmation(self) -> bool:
+        """Определяет, требует ли команда подтверждения перед запуском (любой класс, кроме REVERSIBLE)."""
         return self.reversibility is not Reversibility.REVERSIBLE
 
     def available(self, repo: Path) -> bool:
-        """Whether this command can run in `repo`: a `python <script>` entry needs its script
-        (scripts/verify.py and scripts/build_parser_bundle.py exist only in the canonical
-        harness repository, .harness/... scripts only where their capability is installed)."""
+        """Проверяет доступность команды для запуска в репозитории (существование необходимого скрипта)."""
         if self.argv[0] != "python":
             return True
         return (repo / self.argv[1]).is_file()
 
     @property
     def inputs(self) -> tuple[str, ...]:
+        """Возвращает список имён параметров команды, которые требуется запросить у пользователя."""
         names: list[str] = []
         for part in self.argv:
             for name in _PLACEHOLDER.findall(part):
@@ -86,8 +85,10 @@ class CatalogEntry:
                     names.append(name)
         return tuple(names)
 
-    def cli_argv(self, repo: Path, values: Mapping[str, str] | None = None) -> list[str]:
-        """The CLI equivalent with placeholders filled; an input not given stays `<name>`."""
+    def cli_argv(
+        self, repo: Path, values: Mapping[str, str] | None = None
+    ) -> list[str]:
+        """Формирует список аргументов CLI с подстановкой значений параметров вместо плейсхолдеров."""
         known = {_REPO: str(repo), **(values or {})}
         return [
             _PLACEHOLDER.sub(lambda match: known.get(match[1], f"<{match[1]}>"), part)
@@ -95,15 +96,14 @@ class CatalogEntry:
         ]
 
     def cli_line(self, repo: Path, values: Mapping[str, str] | None = None) -> str:
+        """Возвращает экранированную строковую команду CLI для отображения в интерфейсе."""
         return shlex.join(self.cli_argv(repo, values))
 
 
 def process_argv(
     cli_argv: Sequence[str], repo: Path | None = None, *, dev_environment: bool = False
 ) -> list[str]:
-    """The process that runs a CLI equivalent: `harness` is this harness checkout's CLI and
-    `python` is the interpreter the console itself runs under - or, for a `dev_environment` entry,
-    the repository's `.harness/.venv` (the same rule the QA gate runner uses)."""
+    """Преобразует CLI-команду в список аргументов подпроцесса с выбором нужного интерпретатора Python."""
     head, *rest = cli_argv
     if head == "harness":
         return [sys.executable, str(BIN_HARNESS_PATH), *rest]
@@ -206,7 +206,16 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
     CatalogEntry(
         "cleanup-hard-apply",
         "Очистить .harness (hard)",
-        ("harness", "cleanup", "{repo}", "--mode", "hard", "--apply", "--confirm", "HARD"),
+        (
+            "harness",
+            "cleanup",
+            "{repo}",
+            "--mode",
+            "hard",
+            "--apply",
+            "--confirm",
+            "HARD",
+        ),
         Reversibility.DELETES_LOCAL_DATA,
         f"{_HARNESS_CLI}:cmd_cleanup",
         typed_confirmation="HARD",
@@ -214,7 +223,14 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
     CatalogEntry(
         "repo-map",
         "Построить Repo Map для HEAD",
-        ("python", ".harness/repo_map/repo_map.py", "--repo", "{repo}", "--commit", "HEAD"),
+        (
+            "python",
+            ".harness/repo_map/repo_map.py",
+            "--repo",
+            "{repo}",
+            "--commit",
+            "HEAD",
+        ),
         Reversibility.REVERSIBLE,
         "harness/repo_map/repo_map.py:main",
     ),
@@ -264,7 +280,16 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
     CatalogEntry(
         "ledger-reset",
         "Сбросить ledger на пустое поколение",
-        ("python", _COORDINATOR_SCRIPT, "--repo", "{repo}", "ledger", "reset", "--confirm", "RESET"),
+        (
+            "python",
+            _COORDINATOR_SCRIPT,
+            "--repo",
+            "{repo}",
+            "ledger",
+            "reset",
+            "--confirm",
+            "RESET",
+        ),
         Reversibility.DELETES_LOCAL_DATA,
         f"{_COORDINATOR}:reset_ledger",
         typed_confirmation="RESET",

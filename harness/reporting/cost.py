@@ -1,4 +1,4 @@
-"""Rate card validation and source-backed model cost calculations."""
+"""Валидация тарифной сетки и расчёт стоимости моделей по фактическим данным."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from harness.reporting.common import MISSING, JsonObject, StatsError
 
 
 def _rate(card: object, field: str) -> float:
+    """Извлечь числовую ставку из тарифной карточки модели."""
     if not isinstance(card, dict):
         return 0.0
     try:
@@ -18,15 +19,16 @@ def _rate(card: object, field: str) -> float:
 
 
 def _is_priced(card: object) -> bool:
-    """A model is priced only when it carries a rate above zero.
+    """Проверить, задана ли цена для модели (ненулевая ставка на вход или выход).
 
-    The shipped template lists models at 0.0 so the shape is obvious. Treating those zeros as real
-    prices is what turns an unfilled card into a confident '0.00'.
+    Поставляемый шаблон содержит модели со ставкой 0.0 для наглядности структуры.
+    Интерпретация нулевых ставок как реальных цен превратила бы незаполненный тариф в уверенный результат '0.00'.
     """
     return _rate(card, "input") > 0 or _rate(card, "output") > 0
 
 
 def load_rates(path: Path | None) -> JsonObject:
+    """Загрузить и провалидировать тарифную сетку из JSON-файла."""
     if path is None or not path.is_file():
         return {
             "status": MISSING,
@@ -60,7 +62,10 @@ def load_rates(path: Path | None) -> JsonObject:
 def estimate_cost(
     claude: JsonObject, codex: JsonObject, rates: JsonObject
 ) -> JsonObject:
-    """Cost by the supplied rate card only. No prices are built into this tool."""
+    """Оценить стоимость использования моделей только по переданной тарифной сетке.
+
+    В инструмент не встроены предустановленные цены.
+    """
     if rates.get("status") != "ok":
         return {"status": MISSING, "reason": rates.get("reason", "тариф не настроен")}
     table = rates["models"]
@@ -72,6 +77,7 @@ def estimate_cost(
     def price(
         model: str, fresh: int, cache_write: int, cache_read: int, output: int
     ) -> None:
+        """Рассчитать стоимость токенов для конкретной модели с учётом кэша."""
         nonlocal total, uncached_total
         card = table.get(model)
         if not _is_priced(card):

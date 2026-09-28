@@ -1,7 +1,7 @@
 # Triage Labels
 
 The system overview and its interactive workflow are described in
-[current-state.md](./current-state.md). This guide is the authoritative vocabulary for triage labels.
+[harness-guide.md](../../.harness/docs/harness-guide.md). This guide is the authoritative vocabulary for triage labels.
 
 This repo does **not** use the upstream `mattpocock/skills` canonical five-role vocabulary (`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`) as literal labels. `triage/SKILL.md` (`skills/first-party/pvmalove/triage/`) has been customized to speak natively in the namespaced taxonomy below — this file is the reference, not a translation table. Every axis, including `type::*`, uses this repo's own enterprise-style values rather than upstream's.
 
@@ -41,7 +41,7 @@ Every triaged issue or PR carries exactly one label from each of the first three
 
 | Label | Color | Applied by | Meaning |
 | --- | --- | --- | --- |
-| `task-report::required` | gray `#6a737d` | `/to-spec`, `/to-tickets` — acted on by `/implement` | Agent must post a completion report before closing. Applied by default to every ticket unless you say to skip it. Not part of `triage`'s own state machine — see [implement's SKILL.md](../../skills/first-party/pvmalove/implement/SKILL.md). |
+| `task-report::required` | gray `#6a737d` | `/to-spec`, `/to-tickets` — acted on by `/implement` | Agent must post a completion report before closing. Applied by default to every ticket unless you say to skip it. Not part of `triage`'s own state machine — see [implement's SKILL.md](https://github.com/PVMalove/claude-agent-harness/blob/master/skills/first-party/pvmalove/implement/SKILL.md). |
 | `resolution::wontfix` | gray `#c2c2c2` | `/triage` | The request was explicitly rejected. Applied at close time; see `.out-of-scope/` handling in `triage/OUT-OF-SCOPE.md`. |
 
 ### 4. Priority (`priority::*`) — optional, purely informational

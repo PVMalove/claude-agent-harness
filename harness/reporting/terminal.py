@@ -1,4 +1,4 @@
-"""Render delivery statistics for the human terminal interface."""
+"""Форматирование статистики поставки для текстового терминального интерфейса."""
 
 from __future__ import annotations
 
@@ -6,12 +6,14 @@ from harness.reporting.common import CLAUDE_FIELDS, MISSING, JsonObject
 
 
 def _thousands(value: object) -> str:
+    """Форматировать целое число с разделением тысяч пробелами."""
     if not isinstance(value, int):
         return str(value)
     return f"{value:,}".replace(",", " ")
 
 
 def _compact(value: object) -> str:
+    """Форматировать число в компактном виде с русскими суффиксами (тыс, млн, млрд)."""
     if not isinstance(value, int):
         return str(value)
     for limit, suffix in ((1_000_000_000, "млрд"), (1_000_000, "млн"), (1_000, "тыс")):
@@ -24,13 +26,14 @@ def _compact(value: object) -> str:
 
 
 def _ru(value: object, places: int = 2) -> str:
-    """Russian decimal comma for a report the reader sees in Russian."""
+    """Форматировать число с русской десятичной запятой и разделением тысяч пробелами."""
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return str(value)
     return f"{value:,.{places}f}".replace(",", " ").replace(".", ",")
 
 
 def render_terminal(report: JsonObject) -> str:
+    """Сформировать итоговый текстовый отчёт о статистике поставки для вывода в терминал."""
     epic = report["epic"]
     lines = [
         f"Эпик #{epic['number']} — {epic['title']}",

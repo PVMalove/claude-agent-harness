@@ -43,6 +43,7 @@ def run(ctx: SimpleNamespace) -> None:
     orch_claude_dir.mkdir()
 
     def orch_turn(branch):
+        """Сформировать запись turn лога сессии для заданной ветки тикета."""
         return json.dumps(
             {
                 "type": "assistant",

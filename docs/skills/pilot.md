@@ -86,3 +86,7 @@
 ## 4. Архитектурная схема
 
 ![Контракт pilot: вход, наблюдение, базовая линия](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[pilot.md](../../harness/orchestration/pilot.md)

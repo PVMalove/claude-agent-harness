@@ -19,8 +19,8 @@ Agent Harness — переносимый runtime-native snapshot skills, пра�
 ## Сквозная модель поставки
 
 `harness init/adopt/update` разрешает capability из каталога, копирует пакеты и фиксирует lock.
-Рантайм находит один и тот же snapshot через native skill roots; для Hermes Agent используется
-`.harness/skills/REGISTRY.md`. Project-owned overlays и runtime integrations проходят отдельную
+Claude Code и Codex находят один snapshot через свои native skill roots. `REGISTRY.md`
+остаётся индексом установленного набора. Project-owned overlays и runtime integrations проходят отдельную
 проверку provenance и inventory. Секреты не входят ни в lock, ни в brief, ни в reports.
 
 ## Discovery Pipeline
@@ -39,9 +39,9 @@ Agent Harness — переносимый runtime-native snapshot skills, пра�
 5. Coordinator регистрирует package в ledger и перед каждым новым dispatch записывает его freshness
    в shadow-режиме. Stale package surfaced coordinator-у, но пока не блокирует dispatch.
 
-![Discovery Pipeline](./docs/diagrams/previews/discovery-pipeline.workflow.png)
+![Discovery Pipeline](./diagrams/previews/discovery-pipeline.workflow.png)
 
-[Открыть интерактивную Discovery Pipeline-схему](./docs/diagrams/discovery-pipeline.workflow.html)
+[Открыть интерактивную Discovery Pipeline-схему](./diagrams/discovery-pipeline.workflow.html)
 
 ## Backend orchestration
 
@@ -67,20 +67,20 @@ non-terminal checkpoint и продолжить тот же dispatch под но
 после чего candidate заново проходит risk assessment. Delta-review после Warning разрешён только для
 test-only diff и всегда является новым независимым review dispatch.
 
-![Backend batch lifecycle](./docs/diagrams/previews/backend-batch.lifecycle.png)
+![Backend batch lifecycle](./diagrams/previews/backend-batch.lifecycle.png)
 
-[Открыть интерактивную lifecycle-схему](./docs/diagrams/backend-batch.lifecycle.html)
+[Открыть интерактивную lifecycle-схему](./diagrams/backend-batch.lifecycle.html)
 
 ## Диаграммы и проверка
 
-Канонические исходники и интерактивные артефакты находятся в [docs/diagrams/](./docs/diagrams/README.md):
+Канонические исходники и интерактивные артефакты находятся в [docs/diagrams/](./diagrams/README.md):
 
-- [полный pipeline](./docs/diagrams/delivery-pipeline.workflow.html);
-- [Discovery Pipeline](./docs/diagrams/discovery-pipeline.workflow.html);
-- [архитектура harness](./docs/diagrams/harness-topology.architecture.html);
-- [implement с гейтами](./docs/diagrams/implement-pipeline.workflow.html) и [sequence](./docs/diagrams/implement-dispatch.sequence.html);
-- [runtime/dispatch](./docs/diagrams/backend-runtime.workflow.html), [QA/PR](./docs/diagrams/qa-call-path.workflow.html);
-- [capability dataflow](./docs/diagrams/capability-delivery.dataflow.html), [skill contract](./docs/diagrams/skill-contract-fill.workflow.html).
+- [полный pipeline](./diagrams/delivery-pipeline.workflow.html);
+- [Discovery Pipeline](./diagrams/discovery-pipeline.workflow.html);
+- [архитектура harness](./diagrams/harness-topology.architecture.html);
+- [implement с гейтами](./diagrams/implement-pipeline.workflow.html) и [sequence](./diagrams/implement-dispatch.sequence.html);
+- [runtime/dispatch](./diagrams/backend-runtime.workflow.html), [QA/PR](./diagrams/qa-call-path.workflow.html);
+- [capability dataflow](./diagrams/capability-delivery.dataflow.html), [skill contract](./diagrams/skill-contract-fill.workflow.html).
 
 Правится только `*.json`; после изменения запускаются `validate`, `deliver` и `visual-check`. Код
 проверяется `scripts/test_clean_room.py`, unit-тестами и командами из `.harness/project.json`. Для
@@ -88,6 +88,5 @@ telemetry `delivery-stats` сохраняет cache read/write tokens, worker se
 review diff scope excess и QA failure rate только при наличии наблюдаемого источника; отсутствующие
 значения остаются `нет данных`.
 
-Подробные правила находятся в [current-state.md](./docs/agents/current-state.md),
-[backend-orchestration.md](./docs/agents/backend-orchestration.md), [harness-guide.md](./docs/agents/harness-guide.md)
-и [ADR 0016](./docs/adr/0016-context-package-checkpoint-continuation-and-base-commit-gate.md).
+Подробные правила находятся в [backend-orchestration.md](../harness/docs/backend-orchestration.md), [harness-guide.md](../harness/docs/harness-guide.md)
+и [ADR 0005](./adr/0005-implement-pipeline.md).

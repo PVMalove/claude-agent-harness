@@ -1,4 +1,4 @@
-"""Result and fix models the health-check registry works with (see registry.py)."""
+"""Модели результатов и исправлений, используемые реестром проверок здоровья (см. registry.py)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ _STATUSES: tuple[Status, ...] = ("ok", "warn", "fail", "skipped")
 
 @dataclass(frozen=True)
 class Fix:
-    """An actionable remedy attached to a non-ok :class:`CheckResult`."""
+    """Действие по исправлению, прикреплённое к неуспешному результату :class:`CheckResult`."""
 
     text: str
     command: str | None = None
@@ -24,12 +24,13 @@ class Fix:
 
 @dataclass(frozen=True)
 class CheckResult:
-    """One health check's outcome.
+    """Результат выполнения одной проверки здоровья.
 
-    `id` is a stable, dot-separated identifier and part of the `--json` contract. `group` is a
-    machine token; it is grouped and given a human (Russian) label only in render.py, never
-    localized here. `message` is always a human-readable Russian sentence, even for
-    `status == "ok"`.
+    Поле `id` — стабильный точечный идентификатор, входящий в контракт `--json`.
+    Поле `group` — машинный токен группы; человекочитаемое название (на русском языке)
+    присваивается ему только в render.py, здесь локализация не выполняется.
+    Поле `message` — всегда понятное человеку предложение на русском языке,
+    в том числе при `status == "ok"`.
     """
 
     id: str
@@ -41,7 +42,7 @@ class CheckResult:
 
 @dataclass
 class Report:
-    """The full outcome of one `harness health` run."""
+    """Полный результат одного запуска `harness health`."""
 
     schema_version: int
     repo: str
@@ -50,6 +51,7 @@ class Report:
     fixes_applied: list[str] = field(default_factory=list)
 
     def summary(self) -> dict[str, int]:
+        """Подсчитать количество проверок по каждому из возможных статусов."""
         counts: dict[str, int] = {status: 0 for status in _STATUSES}
         for check in self.checks:
             counts[check.status] += 1

@@ -1,10 +1,10 @@
-"""Repo Map section: the map for HEAD, shown at once from the Repo Map result cache or built on
-request - `BuildConfirmScreen` warns that the CLI may install the parser bundle, and cancelling runs
-nothing. Tabs: summary with parser provenance; the file tree with signatures and parser_status, a
-symbol search and the selected file's relations by kind and confidence; hubs by in-degree;
-diagnostics. The map exports to Markdown (`e`) and JSON (`j`) through screens/export.py. All facts
-come from harness.console.repo_map; paths and signatures are repository content, so every widget
-renders them without markup."""
+"""Раздел Repo Map: карта для HEAD, отображаемая сразу из кэша результатов Repo Map либо строящаяся
+по запросу. Модальное окно `BuildConfirmScreen` предупреждает, что CLI может установить parser bundle,
+а отмена ничего не запускает. Вкладки: сводка с информацией о происхождении парсера (provenance);
+дерево файлов с сигнатурами и статусом parser_status, поиск символов и связи выбранного файла
+по типам и достоверности; хабы по входящей степени; диагностики. Экспорт карты в Markdown (`e`)
+и JSON (`j`) выполняется через screens/export.py. Все данные берутся из harness.console.repo_map.
+"""
 
 from __future__ import annotations
 
@@ -42,15 +42,17 @@ _NO_MAP = "карты нет"
 
 
 class BuildConfirmScreen(ModalScreen[bool]):
-    """Dismisses with True to build the map, False when cancelled."""
+    """Модальный экран подтверждения запуска построения карты Repo Map для коммита HEAD."""
 
     BINDINGS = [Binding("escape", "cancel", "Отмена")]
 
     def __init__(self, commit: str) -> None:
+        """Инициализирует экран подтверждения для указанного хэша коммита."""
         super().__init__()
         self.commit = commit
 
     def compose(self) -> ComposeResult:
+        """Формирует структуру виджетов окна подтверждения построения карты."""
         with Vertical(id="build-confirm"):
             yield Static(
                 f"Построить Repo Map для HEAD {self.commit[:12]}?", markup=False
@@ -63,13 +65,17 @@ class BuildConfirmScreen(ModalScreen[bool]):
                 yield Button("Отмена", id="cancel-build")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Обрабатывает нажатие кнопок подтверждения или отмены."""
         self.dismiss(event.button.id == "confirm-build")
 
     def action_cancel(self) -> None:
+        """Обрабатывает отмену диалога по клавише Escape."""
         self.dismiss(False)
 
 
 class RepoMapScreen(Screen[None]):
+    """Экран раздела Repo Map: визуализация дерева файлов, сигнатур, связей, хабов и диагностик."""
+
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Назад"),
         Binding("b", "build", "Построить карту"),
@@ -93,6 +99,7 @@ class RepoMapScreen(Screen[None]):
             [Path, str], RepoMapView | None
         ] = console_repo_map.cached_map,
     ) -> None:
+        """Инициализирует экран Repo Map для указанного репозитория."""
         super().__init__()
         self.repo = repo
         self._command_runner = command_runner
@@ -103,6 +110,7 @@ class RepoMapScreen(Screen[None]):
         self._status_text = self._initial_status()
 
     def _initial_status(self) -> str:
+        """Формирует начальный текст строки статуса при открытии экрана."""
         if self.head is None:
             return "HEAD не найден: это не Git-репозиторий или в нём нет коммитов"
         if self.view is not None:
@@ -110,6 +118,7 @@ class RepoMapScreen(Screen[None]):
         return f"кэша карты для HEAD {self.head[:12]} нет — «Построить карту» (b)"
 
     def compose(self) -> ComposeResult:
+        """Формирует структуру виджетов и вкладок экрана Repo Map."""
         yield Header()
         yield Static(self._status_text, id="repo-map-status", markup=False)
         with Horizontal(id="repo-map-actions"):
@@ -137,6 +146,7 @@ class RepoMapScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        """Отрисовывает карту репозитория при монтировании экрана."""
         self._render_map()
 
     def _render_map(self) -> None:

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Cheap, non-role advisory helpers: file ranking, log summarizing, and rough risk hints.
+"""Легковесные консультативные функции вне ролевой модели: ранжирование файлов, агрегация логов и подсказки по рискам.
 
-This module runs outside the brief/report/self-report/heartbeat dispatch contract. It imports
-nothing from ledger.py, contract.py, or coordinator.py, writes no state, and creates no batch,
-dispatch, or ledger record. Every call recomputes its output from the inputs given; nothing here
-is persisted or reused as evidence for another call. The coordinator/contract validation path
-must never read this module's output as authorization to create a dispatch, lower risk, accept
-QA, or change scope — the ledger-owned `coordinator.py risk assess` command remains the sole
-authority on mandatory review."""
+Этот модуль работает вне контракта диспетчеризации (brief/report/self-report/heartbeat).
+Он ничего не импортирует из ledger.py, contract.py или coordinator.py, не сохраняет состояние
+и не создаёт записей batch, dispatch или ledger. Каждый вызов пересчитывает результат исключительно
+на основе переданных входных данных; ничего из этого модуля не сохраняется и не используется в качестве
+подтверждения для других вызовов. Контур валидации координатора/контракта никогда не должен трактовать
+вывод этого модуля как авторизацию на создание dispatch, снижение риска, приёмку QA или изменение
+области видимости — команда `coordinator.py risk assess` в ledger остаётся единственным авторитетным
+источником для обязательного ревью.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from pathlib import Path
 
 
 def rank_files(paths: list[str], keywords: list[str]) -> list[dict[str, object]]:
-    """Rough relevance ranking by keyword hits in each path. Advisory only."""
+    """Приблизительное ранжирование релевантности по вхождениям ключевых слов в каждый путь. Исключительно консультативно."""
     normalized_keywords = [keyword.casefold() for keyword in keywords if keyword]
     scored = [
         (sum(1 for keyword in normalized_keywords if keyword in path.casefold()), path)
@@ -33,8 +35,8 @@ _LOG_MARKER = re.compile(r"(?i)\b(error|fail(?:ed|ure)?|exception|traceback|warn
 
 
 def summarize_log(text: str, *, max_lines: int = 20) -> dict[str, object]:
-    """Rough, cheap log summary: line count plus the lines most likely to matter. Advisory only —
-    a completion report or QA finding still cites the full sanitized artifact as evidence."""
+    """Приблизительная легковесная сводка лога: число строк и наиболее важные строки. Исключительно консультативно —
+    отчёт о завершении или замечание QA по-прежнему требуют ссылки на полный очищенный артефакт в качестве доказательства."""
     lines = text.splitlines()
     flagged = [line for line in lines if _LOG_MARKER.search(line)]
     return {
@@ -46,8 +48,8 @@ def summarize_log(text: str, *, max_lines: int = 20) -> dict[str, object]:
 
 
 def classify_risk(text: str, known_triggers: list[str]) -> list[str]:
-    """Rough, non-authoritative risk-trigger hint from free text (e.g. DoD plus changed file
-    names). Advisory only — it never writes a risk_assessment record."""
+    """Приблизительная неавторитетная подсказка триггеров риска по произвольному тексту (например, DoD и имена файлов).
+    Исключительно консультативно — никогда не создаёт запись risk_assessment."""
     normalized = text.casefold()
     hits = []
     for trigger in known_triggers:
@@ -60,12 +62,14 @@ def classify_risk(text: str, known_triggers: list[str]) -> list[str]:
 
 
 def _emit(kind: str, output: object) -> None:
+    """Вывести результат консультативного вызова в формате JSON."""
     print(
         json.dumps({"advisory": True, "kind": kind, "output": output}, sort_keys=True)
     )
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Точка входа CLI для вспомогательных консультативных команд."""
     parser = argparse.ArgumentParser(
         description="Ephemeral, non-role advisory helpers. Output is never persisted or accepted "
         "as dispatch authorization."

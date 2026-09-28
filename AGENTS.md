@@ -13,14 +13,16 @@ logs.
 
 ## Project index
 
-- `README.md` — overview and CLI usage; `CONTEXT.md` — project glossary.
+- `README.md` — overview and CLI usage; `CONTEXT.md` — project glossary;
+  `CHANGELOG.md` — release notes and `LICENSE` — project license.
 - `harness/` — packager CLI, capability catalog, version, and target-project templates.
 - `skills/vendor/` — pinned upstream snapshot; `skills/first-party/pvmalove/` — maintained skills.
 - `global/` — seed template for the target project's global agent profile; `global-skills/` and
   `bin/` — global entry skills and installer; `scripts/` — registry, drift, verification, and
   clean-room checks.
-- `docs/agents/` — operational workflow, Git, issues, artifacts, and worktrees; `docs/adr/` —
-  architectural decisions; `docs/runtime-discovery.md` — runtime skill routes.
+- `docs/README.md` — documentation index; `docs/agents/` — operations, releases, and Russian
+  agent descriptions; `docs/adr/` — architectural decisions; `docs/skills/`, `docs/hooks/` —
+  Russian descriptions; `docs/runtime-discovery.md` — runtime skill routes.
 - `third_party/mattpocock-skills/` — upstream manifest, lock, license, and checksums;
   `.github/workflows/` — CI.
 - `harness/CAPABILITIES.json` is the capability source of truth. `.harness/` and root
@@ -50,6 +52,8 @@ When a task matches a skill, open only its relevant `SKILL.md` through `.agents/
   cloud clone that has none and never edits tracked files or an existing project config.
 - Never edit `skills/vendor/` manually. Replace a complete pinned snapshot only; use exact upstream
   revisions and retain license and provenance files.
+- Root `docs/` belongs only to this repository and must never be copied into target projects.
+  Target project guides come from `harness/project/docs-agents/` and other explicit templates.
 - For implementation or delivery, follow `docs/agents/git-workflow.md`: issue first, use the epic's
   recorded `integration/<service-or-team>` branch as the task base, create an isolated issue branch
   matching `.harness/project.json`, test before commits, use CLI-only Git and tracker operations,
