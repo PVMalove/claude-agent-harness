@@ -12,3 +12,12 @@ bin/* text eol=lf
 scripts/* text eol=lf
 harness/bin/harness.py text eol=lf
 harness/project/hooks/*.sh text eol=lf
+
+# Images are binary: a text=auto guess must never normalise their bytes (nine diagram previews
+# were once corrupted by a CRLF -> LF rewrite).
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
