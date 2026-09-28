@@ -1,0 +1,168 @@
+{
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Пример: эпик CSV-экспорта через /implement",
+    "legend": {
+      "entries": {
+        "backend": {
+          "label": "Скилл"
+        },
+        "messagebus": {
+          "label": "Тикет"
+        },
+        "external": {
+          "label": "PR и merge"
+        }
+      }
+    },
+    "output": "docs/diagrams/example-epic-afk.workflow.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "design",
+      "label": "Проектирование"
+    },
+    {
+      "id": "tickets",
+      "label": "Тикеты эпика #101"
+    },
+    {
+      "id": "impl",
+      "label": "Реализация и PR"
+    }
+  ],
+  "mainPath": [
+    "grill",
+    "spec",
+    "split",
+    "t102",
+    "i102",
+    "p102",
+    "t103",
+    "i103"
+  ],
+  "nodes": [
+    {
+      "id": "grill",
+      "lane": "design",
+      "col": 0,
+      "type": "backend",
+      "label": "/grill-with-docs",
+      "sublabel": "CSV-экспорт",
+      "width": 150
+    },
+    {
+      "id": "spec",
+      "lane": "design",
+      "col": 1,
+      "type": "backend",
+      "label": "/to-spec → #101",
+      "sublabel": "integration/reports",
+      "width": 160
+    },
+    {
+      "id": "split",
+      "lane": "design",
+      "col": 2,
+      "type": "backend",
+      "label": "/to-tickets #101",
+      "sublabel": "два слайса",
+      "width": 150
+    },
+    {
+      "id": "t102",
+      "lane": "tickets",
+      "col": 2,
+      "type": "messagebus",
+      "label": "#102 сервис",
+      "sublabel": "ready · afk",
+      "width": 140
+    },
+    {
+      "id": "t103",
+      "lane": "tickets",
+      "col": 4,
+      "type": "messagebus",
+      "label": "#103 кнопка",
+      "sublabel": "blocked → ready",
+      "width": 150
+    },
+    {
+      "id": "i102",
+      "lane": "impl",
+      "col": 3,
+      "type": "backend",
+      "label": "/implement #102",
+      "sublabel": "гейты → SHA a1b2c3d",
+      "width": 170
+    },
+    {
+      "id": "i103",
+      "lane": "impl",
+      "col": 5,
+      "type": "backend",
+      "label": "/implement #101",
+      "sublabel": "клеймит #103 по фронтиру",
+      "width": 180
+    },
+    {
+      "id": "p102",
+      "lane": "impl",
+      "col": 4,
+      "type": "external",
+      "label": "/to-pull-requests",
+      "sublabel": "Related to #102",
+      "width": 160
+    }
+  ],
+  "edges": [
+    {
+      "from": "grill",
+      "to": "spec"
+    },
+    {
+      "from": "spec",
+      "to": "split"
+    },
+    {
+      "from": "split",
+      "to": "t102"
+    },
+    {
+      "from": "split",
+      "to": "t103",
+      "variant": "dashed"
+    },
+    {
+      "from": "t102",
+      "to": "i102"
+    },
+    {
+      "from": "i102",
+      "to": "p102",
+      "label": "green QA"
+    },
+    {
+      "from": "p102",
+      "to": "t103",
+      "label": "merge разблокирует",
+      "variant": "emphasis"
+    },
+    {
+      "from": "t103",
+      "to": "i103"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Итог",
+      "items": [
+        "Оба тикета закрыты после подтверждённого merge",
+        "Эпик #101 остаётся открытым со списком sub-issues"
+      ]
+    }
+  ],
+  "schema_version": 2
+}

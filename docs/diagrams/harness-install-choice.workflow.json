@@ -1,0 +1,185 @@
+{
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Установка харнесса: какую команду выбрать",
+    "legend": {
+      "entries": {
+        "external": {
+          "label": "Проект"
+        },
+        "security": {
+          "label": "Развилка"
+        },
+        "backend": {
+          "label": "Команда, пишет на диск"
+        },
+        "messagebus": {
+          "label": "Команда только читает"
+        }
+      }
+    },
+    "output": "docs/diagrams/harness-install-choice.workflow.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "check",
+      "label": "Вход и итог"
+    },
+    {
+      "id": "fresh",
+      "label": "Первая установка"
+    },
+    {
+      "id": "maintain",
+      "label": "Харнесс уже есть"
+    }
+  ],
+  "mainPath": [
+    "repo",
+    "has_lock",
+    "own_skills",
+    "init",
+    "health"
+  ],
+  "nodes": [
+    {
+      "id": "repo",
+      "lane": "check",
+      "col": 0,
+      "type": "external",
+      "label": "Git-репозиторий",
+      "sublabel": "путь к проекту",
+      "width": 140
+    },
+    {
+      "id": "has_lock",
+      "lane": "check",
+      "col": 1,
+      "type": "security",
+      "label": "harness.lock есть?",
+      "sublabel": ".harness/harness.lock",
+      "width": 140
+    },
+    {
+      "id": "own_skills",
+      "lane": "fresh",
+      "col": 2,
+      "type": "security",
+      "label": "Имена заняты?",
+      "sublabel": "свои скиллы в .harness/skills",
+      "width": 150
+    },
+    {
+      "id": "init",
+      "lane": "fresh",
+      "col": 3,
+      "type": "backend",
+      "label": "harness init",
+      "sublabel": "первая установка",
+      "width": 140
+    },
+    {
+      "id": "adopt",
+      "lane": "fresh",
+      "col": 4,
+      "type": "backend",
+      "label": "harness adopt",
+      "sublabel": "--replace-conflicts",
+      "width": 140
+    },
+    {
+      "id": "diff",
+      "lane": "maintain",
+      "col": 2,
+      "type": "messagebus",
+      "label": "harness diff",
+      "sublabel": "exit 0 чисто, 1 дрейф",
+      "width": 140
+    },
+    {
+      "id": "update",
+      "lane": "maintain",
+      "col": 3,
+      "type": "backend",
+      "label": "harness update",
+      "sublabel": "новая версия capability",
+      "width": 150
+    },
+    {
+      "id": "health",
+      "lane": "check",
+      "col": 5,
+      "type": "messagebus",
+      "label": "harness health",
+      "sublabel": "проверить установку",
+      "width": 140
+    }
+  ],
+  "edges": [
+    {
+      "from": "repo",
+      "to": "has_lock"
+    },
+    {
+      "from": "has_lock",
+      "to": "own_skills",
+      "label": "нет"
+    },
+    {
+      "from": "has_lock",
+      "to": "diff",
+      "label": "да: посмотреть",
+      "variant": "dashed"
+    },
+    {
+      "from": "own_skills",
+      "to": "init",
+      "label": "нет",
+      "variant": "emphasis"
+    },
+    {
+      "from": "own_skills",
+      "to": "adopt",
+      "label": "да"
+    },
+    {
+      "from": "diff",
+      "to": "update",
+      "label": "обновить"
+    },
+    {
+      "from": "init",
+      "to": "health",
+      "variant": "emphasis"
+    },
+    {
+      "from": "adopt",
+      "to": "health"
+    },
+    {
+      "from": "update",
+      "to": "health"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "Флаги update",
+      "items": [
+        "Без флага: отказ при локальных правках managed-файлов",
+        "--force-managed-files: только снимок",
+        "--force-seed-files: только seed, --force: оба"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "После установки",
+      "items": [
+        "health проверяет lock, discovery-ссылки и окружение",
+        "Скиллы видны через .agents/skills и .claude/skills"
+      ]
+    }
+  ],
+  "schema_version": 2
+}

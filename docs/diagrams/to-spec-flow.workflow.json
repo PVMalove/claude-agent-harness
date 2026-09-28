@@ -1,0 +1,170 @@
+{
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "/to-spec: от обсуждения к эпику",
+    "legend": {
+      "entries": {
+        "backend": {
+          "label": "Шаг агента"
+        },
+        "security": {
+          "label": "Решение разработчика"
+        },
+        "cloud": {
+          "label": "Трекер"
+        },
+        "database": {
+          "label": "Git"
+        }
+      }
+    },
+    "output": "docs/diagrams/to-spec-flow.workflow.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "agent",
+      "label": "Агент /to-spec"
+    },
+    {
+      "id": "human",
+      "label": "Разработчик"
+    },
+    {
+      "id": "remote",
+      "label": "Трекер и git"
+    }
+  ],
+  "phases": [
+    {
+      "id": "phase1",
+      "label": "Фаза 1: seam'ы",
+      "fromCol": 0,
+      "toCol": 2
+    },
+    {
+      "id": "phase2",
+      "label": "Фаза 2: публикация",
+      "fromCol": 3,
+      "toCol": 5,
+      "variant": "emphasis"
+    }
+  ],
+  "mainPath": [
+    "research",
+    "seams",
+    "confirm",
+    "draft",
+    "publish",
+    "branch"
+  ],
+  "nodes": [
+    {
+      "id": "research",
+      "lane": "agent",
+      "col": 0,
+      "type": "backend",
+      "label": "Исследовать",
+      "sublabel": "CONTEXT.md, ADR",
+      "width": 140
+    },
+    {
+      "id": "seams",
+      "lane": "agent",
+      "col": 1,
+      "type": "backend",
+      "label": "Seam'ы и ветка",
+      "sublabel": "integration/<service>",
+      "width": 150
+    },
+    {
+      "id": "confirm",
+      "lane": "human",
+      "col": 2,
+      "type": "security",
+      "label": "Подтвердить",
+      "sublabel": "seam'ы и имя ветки",
+      "width": 140
+    },
+    {
+      "id": "draft",
+      "lane": "agent",
+      "col": 3,
+      "type": "backend",
+      "label": "Черновик спеки",
+      "sublabel": "файл в docs/tasks/",
+      "width": 140
+    },
+    {
+      "id": "publish",
+      "lane": "remote",
+      "col": 4,
+      "type": "cloud",
+      "label": "Эпик в трекере",
+      "sublabel": "gh issue create --body-file",
+      "width": 170
+    },
+    {
+      "id": "branch",
+      "lane": "remote",
+      "col": 5,
+      "type": "database",
+      "label": "Integration-ветка",
+      "sublabel": "от base_branch, push",
+      "width": 150
+    }
+  ],
+  "edges": [
+    {
+      "from": "research",
+      "to": "seams"
+    },
+    {
+      "from": "seams",
+      "to": "confirm",
+      "label": "на подтверждение"
+    },
+    {
+      "from": "confirm",
+      "to": "draft",
+      "label": "да",
+      "variant": "emphasis"
+    },
+    {
+      "from": "confirm",
+      "to": "seams",
+      "label": "правки",
+      "variant": "dashed",
+      "role": "return"
+    },
+    {
+      "from": "draft",
+      "to": "publish",
+      "label": "без inline --body"
+    },
+    {
+      "from": "publish",
+      "to": "branch",
+      "label": "после публикации"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Не интервью",
+      "items": [
+        "Синтез уже обсуждённого, без новых вопросов",
+        "Недостающее — явные допущения"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Эпик в этой сборке",
+      "items": [
+        "status::specs + task-report::required",
+        "## Integration Branch и Relevant Files"
+      ]
+    }
+  ],
+  "schema_version": 2
+}

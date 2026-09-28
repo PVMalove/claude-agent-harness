@@ -1,0 +1,223 @@
+{
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "/wayfinder: карта решений",
+    "legend": {
+      "entries": {
+        "backend": {
+          "label": "Шаг сессии"
+        },
+        "security": {
+          "label": "Развилка"
+        },
+        "database": {
+          "label": "Карта и её разделы"
+        },
+        "messagebus": {
+          "label": "Тикеты-вопросы"
+        },
+        "external": {
+          "label": "Передача дальше"
+        }
+      }
+    },
+    "output": "docs/diagrams/wayfinder-map.workflow.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "chart",
+      "label": "Chart the map"
+    },
+    {
+      "id": "map",
+      "label": "Карта в трекере"
+    },
+    {
+      "id": "work",
+      "label": "Work through the map"
+    }
+  ],
+  "mainPath": [
+    "dest",
+    "frontier",
+    "fogcheck",
+    "mapnode",
+    "tickets",
+    "claim",
+    "resolve",
+    "decisions",
+    "tospec"
+  ],
+  "nodes": [
+    {
+      "id": "dest",
+      "lane": "chart",
+      "col": 0,
+      "type": "backend",
+      "label": "Destination",
+      "sublabel": "/grilling + /domain-modeling",
+      "width": 170
+    },
+    {
+      "id": "frontier",
+      "lane": "chart",
+      "col": 1,
+      "type": "backend",
+      "label": "Фронтир",
+      "sublabel": "breadth-first",
+      "width": 130
+    },
+    {
+      "id": "fogcheck",
+      "lane": "chart",
+      "col": 2,
+      "type": "security",
+      "label": "Есть туман?",
+      "sublabel": "не влезает в сессию",
+      "width": 150
+    },
+    {
+      "id": "onesession",
+      "lane": "chart",
+      "col": 3,
+      "type": "external",
+      "label": "Карта не нужна",
+      "sublabel": "сразу /to-spec",
+      "width": 140
+    },
+    {
+      "id": "mapnode",
+      "lane": "map",
+      "col": 2,
+      "type": "database",
+      "label": "Карта",
+      "sublabel": "wayfinder:map",
+      "width": 130
+    },
+    {
+      "id": "fog",
+      "lane": "map",
+      "col": 3,
+      "type": "database",
+      "label": "Not yet specified",
+      "sublabel": "туман",
+      "width": 150
+    },
+    {
+      "id": "decisions",
+      "lane": "map",
+      "col": 5,
+      "type": "database",
+      "label": "Decisions so far",
+      "sublabel": "строка на тикет",
+      "width": 150
+    },
+    {
+      "id": "tickets",
+      "lane": "work",
+      "col": 2,
+      "type": "messagebus",
+      "label": "Тикеты фронтира",
+      "sublabel": "research · prototype · grilling · task",
+      "width": 200
+    },
+    {
+      "id": "claim",
+      "lane": "work",
+      "col": 3,
+      "type": "backend",
+      "label": "Claim",
+      "sublabel": "assignee + in-progress",
+      "width": 150
+    },
+    {
+      "id": "resolve",
+      "lane": "work",
+      "col": 4,
+      "type": "backend",
+      "label": "Разрешить",
+      "sublabel": "один тикет за сессию",
+      "width": 150
+    },
+    {
+      "id": "tospec",
+      "lane": "chart",
+      "col": 5,
+      "type": "external",
+      "label": "/to-spec",
+      "sublabel": "фронтир пуст",
+      "width": 130
+    }
+  ],
+  "edges": [
+    {
+      "from": "dest",
+      "to": "frontier"
+    },
+    {
+      "from": "frontier",
+      "to": "fogcheck"
+    },
+    {
+      "from": "fogcheck",
+      "to": "onesession",
+      "label": "нет"
+    },
+    {
+      "from": "fogcheck",
+      "to": "mapnode",
+      "label": "да",
+      "variant": "emphasis"
+    },
+    {
+      "from": "mapnode",
+      "to": "tickets",
+      "label": "формулируемое"
+    },
+    {
+      "from": "mapnode",
+      "to": "fog",
+      "label": "ещё не вопрос",
+      "variant": "dashed"
+    },
+    {
+      "from": "tickets",
+      "to": "claim"
+    },
+    {
+      "from": "claim",
+      "to": "resolve"
+    },
+    {
+      "from": "resolve",
+      "to": "decisions",
+      "label": "резолюция"
+    },
+    {
+      "from": "decisions",
+      "to": "tospec",
+      "label": "решать нечего",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Plan, don't do",
+      "items": [
+        "Тикет разрешает решение, а не кусок реализации",
+        "Research-тикеты можно распараллелить субагентами"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Туман",
+      "items": [
+        "Тикет — только то, что можно точно спросить",
+        "Разрешённый тикет рассеивает туман впереди"
+      ]
+    }
+  ],
+  "schema_version": 2
+}

@@ -1,0 +1,149 @@
+{
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Метки status::* по пути тикета",
+    "output": "docs/diagrams/triage-labels.lifecycle.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Путь тикета"
+    },
+    {
+      "id": "waiting",
+      "label": "Ожидание"
+    },
+    {
+      "id": "terminal",
+      "label": "Выход"
+    }
+  ],
+  "states": [
+    {
+      "id": "untriaged",
+      "type": "start",
+      "label": "Без status::*",
+      "sublabel": "нужен триаж",
+      "lane": "main",
+      "col": 0,
+      "step": "01"
+    },
+    {
+      "id": "ready",
+      "type": "waiting",
+      "label": "status::ready",
+      "sublabel": "agent-ready бриф",
+      "lane": "main",
+      "col": 1,
+      "step": "02"
+    },
+    {
+      "id": "inprogress",
+      "type": "active",
+      "label": "status::in-progress",
+      "sublabel": "работа идёт",
+      "lane": "main",
+      "col": 2,
+      "step": "03"
+    },
+    {
+      "id": "closed",
+      "type": "success",
+      "label": "Закрыт",
+      "sublabel": "merge подтверждён",
+      "lane": "main",
+      "col": 3,
+      "step": "04"
+    },
+    {
+      "id": "specs",
+      "type": "waiting",
+      "label": "status::specs",
+      "sublabel": "эпик до декомпозиции",
+      "lane": "waiting",
+      "col": 1
+    },
+    {
+      "id": "blocked",
+      "type": "waiting",
+      "label": "status::blocked",
+      "sublabel": "ждёт другой тикет",
+      "lane": "waiting",
+      "col": 2
+    },
+    {
+      "id": "rejected",
+      "type": "failure",
+      "label": "out-of-scope",
+      "sublabel": "отклонено, закрыт",
+      "lane": "terminal",
+      "col": 0
+    }
+  ],
+  "transitions": [
+    {
+      "from": "untriaged",
+      "to": "ready",
+      "label": "/triage"
+    },
+    {
+      "from": "ready",
+      "to": "inprogress",
+      "label": "/implement, /to-guide"
+    },
+    {
+      "from": "inprogress",
+      "to": "closed",
+      "label": "/to-pull-requests"
+    },
+    {
+      "from": "untriaged",
+      "to": "specs",
+      "label": "эпик"
+    },
+    {
+      "from": "specs",
+      "to": "blocked",
+      "label": "/to-tickets"
+    },
+    {
+      "from": "specs",
+      "to": "ready",
+      "label": "/to-tickets",
+      "variant": "dashed"
+    },
+    {
+      "from": "blocked",
+      "to": "ready",
+      "label": "блокеры закрыты",
+      "variant": "emphasis"
+    },
+    {
+      "from": "untriaged",
+      "to": "rejected",
+      "label": "отклонено",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Кто ставит",
+      "items": [
+        "/triage и /to-spec — specs, ready, blocked",
+        "/implement, /fast-implement, /to-guide — in-progress",
+        "/to-pull-requests — blocked → ready у зависимых"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Вторая ось",
+      "items": [
+        "hitl или afk ставится вместе с ready",
+        "Пока specs, режим не ставится"
+      ]
+    }
+  ],
+  "schema_version": 2
+}

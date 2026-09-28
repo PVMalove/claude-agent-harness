@@ -1,0 +1,88 @@
+{
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "/tdd: цикл red → green → refactor",
+    "output": "docs/diagrams/tdd-loop.lifecycle.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Цикл на согласованном шве"
+    },
+    {
+      "id": "terminal",
+      "label": "Выход"
+    }
+  ],
+  "states": [
+    {
+      "id": "red",
+      "type": "start",
+      "label": "Red",
+      "sublabel": "тест падает",
+      "lane": "main",
+      "col": 0,
+      "step": "01"
+    },
+    {
+      "id": "green",
+      "type": "active",
+      "label": "Green",
+      "sublabel": "минимальный код",
+      "lane": "main",
+      "col": 1,
+      "step": "02"
+    },
+    {
+      "id": "refactor",
+      "type": "decision",
+      "label": "Refactor",
+      "sublabel": "очистка без поломки",
+      "lane": "main",
+      "col": 2,
+      "step": "03"
+    },
+    {
+      "id": "done",
+      "type": "success",
+      "label": "Слайс готов",
+      "sublabel": "требования покрыты",
+      "lane": "terminal",
+      "col": 2
+    }
+  ],
+  "transitions": [
+    {
+      "from": "red",
+      "to": "green",
+      "label": "тест зелёный"
+    },
+    {
+      "from": "green",
+      "to": "refactor"
+    },
+    {
+      "from": "refactor",
+      "to": "red",
+      "label": "следующее требование",
+      "variant": "dashed"
+    },
+    {
+      "from": "refactor",
+      "to": "done",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Правило",
+      "items": [
+        "Рефакторинг — только на шаге Refactor",
+        "Падение теста фиксируется до кода"
+      ]
+    }
+  ],
+  "schema_version": 2
+}

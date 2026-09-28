@@ -1,0 +1,235 @@
+{
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "/fast-implement: одна сессия от тикета до push",
+    "legend": {
+      "entries": {
+        "backend": {
+          "label": "Шаг агента"
+        },
+        "security": {
+          "label": "Проверка или вопрос"
+        },
+        "external": {
+          "label": "Остановка или передача"
+        }
+      }
+    },
+    "output": "docs/diagrams/fast-implement.workflow.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "agent",
+      "label": "Агент"
+    },
+    {
+      "id": "human",
+      "label": "Разработчик"
+    },
+    {
+      "id": "stop",
+      "label": "Остановки и передачи",
+      "variant": "exception"
+    }
+  ],
+  "phases": [
+    {
+      "id": "pre",
+      "label": "Phase 1: Pre-flight",
+      "fromCol": 0,
+      "toCol": 2
+    },
+    {
+      "id": "code",
+      "label": "Phase 2: Coding",
+      "fromCol": 3,
+      "toCol": 4,
+      "variant": "emphasis"
+    },
+    {
+      "id": "wrap",
+      "label": "Phase 3: PR",
+      "fromCol": 5,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "resolve",
+    "blockers",
+    "inprog",
+    "tdd",
+    "askreview",
+    "review",
+    "askpush",
+    "pr"
+  ],
+  "nodes": [
+    {
+      "id": "resolve",
+      "lane": "agent",
+      "col": 0,
+      "type": "backend",
+      "label": "Разрешить тикет",
+      "sublabel": "тикет, эпик или Issue First",
+      "width": 170
+    },
+    {
+      "id": "blockers",
+      "lane": "agent",
+      "col": 1,
+      "type": "security",
+      "label": "Блокеры закрыты?",
+      "sublabel": "при любой status::*",
+      "width": 150
+    },
+    {
+      "id": "inprog",
+      "lane": "agent",
+      "col": 2,
+      "type": "backend",
+      "label": "status::in-progress",
+      "sublabel": "до ветки и правок",
+      "width": 160
+    },
+    {
+      "id": "tdd",
+      "lane": "agent",
+      "col": 3,
+      "type": "backend",
+      "label": "/tdd",
+      "sublabel": "тайпчек и тесты",
+      "width": 130
+    },
+    {
+      "id": "askreview",
+      "lane": "human",
+      "col": 3,
+      "type": "security",
+      "label": "Ревью нужно?",
+      "sublabel": "Standards + Spec",
+      "width": 140
+    },
+    {
+      "id": "review",
+      "lane": "agent",
+      "col": 4,
+      "type": "backend",
+      "label": "/code-review",
+      "sublabel": "замечания устранены",
+      "width": 150
+    },
+    {
+      "id": "askpush",
+      "lane": "human",
+      "col": 4,
+      "type": "security",
+      "label": "Commit + push?",
+      "sublabel": "semantic commit",
+      "width": 140
+    },
+    {
+      "id": "pr",
+      "lane": "human",
+      "col": 5,
+      "type": "external",
+      "label": "/to-pull-requests",
+      "sublabel": "вызывает разработчик",
+      "width": 160
+    },
+    {
+      "id": "guide",
+      "lane": "stop",
+      "col": 0,
+      "type": "external",
+      "label": "hitl → /to-guide",
+      "sublabel": "fail fast",
+      "width": 150
+    },
+    {
+      "id": "blocked",
+      "lane": "stop",
+      "col": 1,
+      "type": "external",
+      "label": "Стоп",
+      "sublabel": "status::blocked",
+      "width": 130
+    }
+  ],
+  "edges": [
+    {
+      "from": "resolve",
+      "to": "blockers"
+    },
+    {
+      "from": "resolve",
+      "to": "guide",
+      "label": "hitl",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "from": "blockers",
+      "to": "blocked",
+      "label": "есть открытые",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "from": "blockers",
+      "to": "inprog",
+      "label": "все закрыты",
+      "variant": "emphasis"
+    },
+    {
+      "from": "inprog",
+      "to": "tdd"
+    },
+    {
+      "from": "tdd",
+      "to": "askreview",
+      "label": "готово"
+    },
+    {
+      "from": "askreview",
+      "to": "review",
+      "label": "да"
+    },
+    {
+      "from": "askreview",
+      "to": "askpush",
+      "label": "нет",
+      "variant": "dashed"
+    },
+    {
+      "from": "review",
+      "to": "askpush"
+    },
+    {
+      "from": "askpush",
+      "to": "pr",
+      "label": "после push",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Без гейтов",
+      "items": [
+        "Нет coordinator, architect и независимого QA",
+        "Push — только после явного согласия"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Не делает сам",
+      "items": [
+        "Не открывает PR и не вызывает qa-gate",
+        "Не закрывает тикет"
+      ]
+    }
+  ],
+  "schema_version": 2
+}

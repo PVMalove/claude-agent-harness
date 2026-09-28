@@ -1,6 +1,6 @@
 # Диаграммы харнесса
 
-Четырнадцать автономных интерактивных HTML-диаграмм. Рядом с каждой лежит редактируемая спецификация
+Двадцать две автономные интерактивные HTML-диаграммы. Рядом с каждой лежит редактируемая спецификация
 Archify (`*.json`), а в `previews/` — статичное PNG той же диаграммы для Markdown, который не умеет
 рендерить HTML (например, README на GitHub).
 
@@ -20,6 +20,14 @@ Archify (`*.json`), а в `previews/` — статичное PNG той же д�
 | [Построение Repo Map](./repo-map-build.sequence.html) | **Sequence:** вход, кэш, проверка и offline-установка parser bundle, разбор в изолированном worker, граф и бюджет. |
 | [Компоненты Repo Map](./repo-map-components.architecture.html) | **Architecture:** `repo_map.py`, контракт, `parser_bundle.py`, tree-sitter worker, registry, кэш и потребители (Context Builder, Coordinator). |
 | [Изоляция процессов и файлов](./process-isolation.architecture.html) | **Architecture:** backend batches в worktrees, отдельный tree-sitter worker и sandbox для временных файлов. |
+| [Выбор команды установки](./harness-install-choice.workflow.html) | `init`, `adopt`, `diff` или `update` в зависимости от `harness.lock` и занятых имён скиллов; итог — `harness health`. |
+| [`/to-spec`](./to-spec-flow.workflow.html) | Две фазы: seam'ы и integration-ветка на подтверждение, затем черновик в `docs/tasks/`, эпик в трекере и ветка. |
+| [Карта `/wayfinder`](./wayfinder-map.workflow.html) | Chart the map и Work through the map: destination, фронтир, туман, тикеты-вопросы, `Decisions so far` → `/to-spec`. |
+| [`/fast-implement`](./fast-implement.workflow.html) | Pre-flight, Coding с вопросами о ревью и push, передача на `/to-pull-requests`; остановки `hitl` и блокеров. |
+| [Цикл `/tdd`](./tdd-loop.lifecycle.html) | **Lifecycle:** Red → Green → Refactor и выход, когда требования слайса покрыты. |
+| [Метки `status::*`](./triage-labels.lifecycle.html) | **Lifecycle:** путь тикета по меткам триажа и кто их ставит. |
+| [Пример: эпик через `/implement`](./example-epic-afk.workflow.html) | CSV-экспорт: `/grill-with-docs` → `/to-spec` → `/to-tickets` → `/implement` → `/to-pull-requests`, разблокировка второго тикета. |
+| [Пример: `/wayfinder`](./example-wayfinder-oauth.workflow.html) | Переход на внешний OAuth: карта #200, research- и grilling-тикеты, сессии по тикетам, передача на `/to-spec`. |
 
 ## Как обновлять
 
