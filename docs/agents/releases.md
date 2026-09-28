@@ -6,12 +6,15 @@
 записана в `harness/VERSION`, `pyproject.toml`, заголовке секции `CHANGELOG.md` и имени тега
 `vMAJOR.MINOR.PATCH`. `harness/VERSION` служит проверяемым источником версии для CD.
 
-GitHub workflow [release.yml](../../.github/workflows/release.yml) запускается при push тега
-строго вида `vMAJOR.MINOR.PATCH`. Сначала job `preflight` за секунды проверяет равенство тега и
-`harness/VERSION`, наличие секции и её категорий в `CHANGELOG.md`
-(`python scripts/build_release.py --tag vX.Y.Z --check` — ту же проверку можно выполнить локально до
-тега). Затем вызываются все проверки [verify.yml](../../.github/workflows/verify.yml), и только после
-них собирается архив. При любой ошибке Release не создаётся. Успешный запуск создаёт GitHub Release с двумя Assets:
+GitHub workflow [release.yml](../../.github/workflows/release.yml) запускается при push в `master`
+и при push тега строго вида `vMAJOR.MINOR.PATCH`. Для push в `master` тег выводится из
+`harness/VERSION`; если такой тег уже существует, workflow завершается без публикации. Затем job
+`preflight` за секунды проверяет равенство тега и `harness/VERSION`, наличие секции и её категорий в
+`CHANGELOG.md` (`python scripts/build_release.py --tag vX.Y.Z --check` — ту же проверку можно
+выполнить локально до merge). После этого вызываются все проверки
+[verify.yml](../../.github/workflows/verify.yml), и только затем собирается архив. При ошибке Release
+и тег не создаются. Успешный запуск создаёт тег на проверенном коммите (если его ещё нет) и
+GitHub Release с двумя Assets:
 `claude-agent-harness-vX.Y.Z.tar.gz` и `claude-agent-harness-vX.Y.Z.tar.gz.sha256`.
 Тело Release Notes берётся из секции `[X.Y.Z]` в `CHANGELOG.md`.
 
@@ -25,7 +28,9 @@ GitHub workflow [release.yml](../../.github/workflows/release.yml) запуск�
    (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`, `Breaking Changes`); пустые
    категории и заглушки не пишутся, а `build_release.py` отклоняет категорию без записей. Выполните проверки и
    обычный процесс PR; merge делает разработчик.
-2. После попадания проверенного коммита в `master` разработчик создаёт на нём тег и публикует его:
+2. После merge в `master` workflow `release` публикует версию автоматически: создаёт тег `vX.Y.Z`
+   на merge-коммите и GitHub Release; ручной тег не требуется. Если автоматический выпуск не
+   состоялся, после исправления причины тег можно опубликовать вручную на проверенном коммите:
 
    ```bash
    git switch master

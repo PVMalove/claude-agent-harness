@@ -265,10 +265,12 @@ Repo Map, версия харнесса и состояние дрейфа сн�
 
 ## Релизная политика
 
-Версии соответствуют SemVer. После изменения `harness/VERSION`, `pyproject.toml` и секции
-`CHANGELOG.md` разработчик публикует тег `vMAJOR.MINOR.PATCH` на проверенном коммите.
-[GitHub CD](./.github/workflows/release.yml) выполняет проверки `verify.yml`, сверяет тег с
-версией, создаёт архив установки и SHA-256, затем публикует GitHub Release. Release Notes
+Версии соответствуют SemVer. Новая версия задаётся в `harness/VERSION`, `pyproject.toml` и секции
+`CHANGELOG.md` в обычном PR. После merge в `master` [GitHub CD](./.github/workflows/release.yml)
+проверяет, существует ли тег `vMAJOR.MINOR.PATCH` для этой версии; если тега нет, выполняются проверки
+`verify.yml`, создаются архив установки и SHA-256, затем тег на проверенном коммите и GitHub Release.
+Push в `master` без смены версии Release не создаёт; ручная публикация тега остаётся поддерживаемой.
+Release Notes
 формируются из секции версии в [CHANGELOG.md](./CHANGELOG.md); при отсутствии секции выпуск
 прерывается. Архив и контрольная сумма доступны в
 [GitHub Releases](https://github.com/PVMalove/claude-agent-harness/releases). Проверка после
