@@ -8,7 +8,7 @@ the disposable data volume `harness cleanup` would remove -- all without importi
 Like `files.check_orchestration_config`, every check below first reads `context.lock` and returns
 `skipped` when the `backend-orchestration` capability is absent, before ever importing an
 orchestration module; only then does the import happen, local to the function body. This keeps a
-shipped, standalone `harness/health/` (see tests/test_health_standalone_package.py, which copies
+shipped, standalone `harness/health/` (see tests/health/test_health_standalone_package.py, which copies
 only `health` and `repo_map`) working with no `harness/orchestration/` and no `harness/cleanup.py`
 on disk -- the capability manifest installs both together with `backend-orchestration`, so the
 deferred import only ever fires once they are actually present.

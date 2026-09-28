@@ -35,6 +35,7 @@ BIN_HARNESS_PATH = _PACKAGE_ROOT / "bin" / "harness.py"
 @dataclass(frozen=True)
 class DashboardData:
     """Факты для отображения на экране Dashboard: счётчики проверок health, активные батчи, уровень Repo Map, версия харнесса и статус дрейфа."""
+
     ok: int
     warn: int
     fail: int

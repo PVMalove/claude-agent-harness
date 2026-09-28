@@ -192,7 +192,7 @@ worker с её SHA-256 в lock, поэтому старый bundle продол�
 ```powershell
 $env:HARNESS_PARSER_BUNDLE_DIR = (Resolve-Path .harness/.sandboxes/cache/repo_map/parser_bundle/registry).Path
 $env:PYTHONPATH = "."
-.harness/.venv/Scripts/python.exe -m pytest -q -n 4 --basetemp .harness/.sandboxes/scratch/pt tests/test_repo_map.py tests/test_parser_bundle.py tests/test_repo_map_tree_sitter.py tests/test_repo_map_tree_sitter_go.py tests/test_repo_map_tree_sitter_java.py tests/test_repo_map_tree_sitter_csharp.py tests/test_repo_map_tree_sitter_unsupported.py tests/test_repo_map_tree_sitter_determinism.py
+.harness/.venv/Scripts/python.exe -m pytest -q -n 4 --basetemp .harness/.sandboxes/scratch/pt tests/repo_map/test_repo_map.py tests/repo_map/test_parser_bundle.py tests/repo_map/test_repo_map_tree_sitter.py tests/repo_map/test_repo_map_tree_sitter_go.py tests/repo_map/test_repo_map_tree_sitter_java.py tests/repo_map/test_repo_map_tree_sitter_csharp.py tests/repo_map/test_repo_map_tree_sitter_unsupported.py tests/repo_map/test_repo_map_tree_sitter_determinism.py
 ```
 
 Полный `scripts/verify.py` — это gate QA и CI. Для итераций разработчика он не нужен (см.

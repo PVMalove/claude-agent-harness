@@ -64,7 +64,9 @@ def display_path(repo: Path, home: Path | None = None) -> str:
 def installed_capabilities(repo: Path) -> tuple[str, ...]:
     """The capabilities recorded in `.harness/harness.lock`; empty when there is no readable lock."""
     try:
-        payload = json.loads((repo / ".harness" / "harness.lock").read_text(encoding="utf-8"))
+        payload = json.loads(
+            (repo / ".harness" / "harness.lock").read_text(encoding="utf-8")
+        )
     except (OSError, ValueError):
         return ()
     if not isinstance(payload, dict):
@@ -98,7 +100,9 @@ def collect_banner(repo: Path, version: str) -> BannerInfo:
 
 def banner_lines(info: BannerInfo) -> tuple[str, ...]:
     """The description beside the mark, one line per row of the logo."""
-    capabilities = " · ".join(info.capabilities) if info.capabilities else "харнесс не установлен"
+    capabilities = (
+        " · ".join(info.capabilities) if info.capabilities else "харнесс не установлен"
+    )
     return (
         "",
         f"{PRODUCT} {info.version}",

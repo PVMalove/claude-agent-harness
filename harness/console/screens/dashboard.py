@@ -110,8 +110,12 @@ class DashboardScreen(Screen[None]):
         yield Header()
         with Horizontal(id="brand"):
             yield Static(_render_mark(), id="brand-mark")
-            yield Static(_render_banner(self._collect_banner(self.repo)), id="brand-info")
-        summary = Static(_render_summary(self._collect_dashboard(self.repo)), id="dashboard-summary")
+            yield Static(
+                _render_banner(self._collect_banner(self.repo)), id="brand-info"
+            )
+        summary = Static(
+            _render_summary(self._collect_dashboard(self.repo)), id="dashboard-summary"
+        )
         summary.border_title = "Состояние"
         yield summary
         with Horizontal(id="dashboard-actions"):
@@ -136,7 +140,9 @@ class DashboardScreen(Screen[None]):
         summary.update("онлайн-проверки выполняются…")
 
         def work() -> None:
-            text = _render_summary(self._collect_dashboard(self.repo, online=True), online=True)
+            text = _render_summary(
+                self._collect_dashboard(self.repo, online=True), online=True
+            )
             self.app.call_from_thread(summary.update, text)
 
         self.run_worker(work, thread=True, exclusive=True, group="dashboard-online")

@@ -70,7 +70,7 @@ def _styled_report(report: Report) -> Text:
         marker = next((m for m in _MARKER_COLORS if line.startswith(m + " ")), None)
         if marker is not None:
             styled.append(marker, style=f"bold {_MARKER_COLORS[marker]}")
-            styled.append(line[len(marker):])
+            styled.append(line[len(marker) :])
         elif line.startswith("  -> "):
             styled.append(line, style=brand.PALETTE["secondary"])
         elif line.startswith("     ") or line.startswith("- "):

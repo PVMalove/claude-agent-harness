@@ -253,11 +253,11 @@ approve/abandon/decide`, `batch attention resolve`, `dispatch create/cancel`) и
 stdlib/textual: `harness/console/{pin,runner,launcher,data,catalog,coordinator_catalog,reports,export,repo_map,json_fields,brand,help_text}.py`
 не импортируют `textual` и тестируются без него; только `harness/console/app.py` и
 `harness/console/screens/*.py` его импортируют, и только внутри уже релончнутого процесса —
-Pilot-тесты (`tests/test_console_app.py`, `tests/test_console_harness.py`,
-`tests/test_console_orchestration.py`, `tests/test_console_reports_app.py`,
-`tests/test_console_repo_map_app.py`) пропускаются (`pytest.importorskip`), если textual не
+Pilot-тесты (`tests/console/test_console_app.py`, `tests/console/test_console_harness.py`,
+`tests/console/test_console_orchestration.py`, `tests/console/test_console_reports_app.py`,
+`tests/console/test_console_repo_map_app.py`) пропускаются (`pytest.importorskip`), если textual не
 установлен. `textual` — только в
-`[dependency-groups].dev` `pyproject.toml`, тем же pin'ом, что и в коде (`tests/test_console_pin.py`
+`[dependency-groups].dev` `pyproject.toml`, тем же pin'ом, что и в коде (`tests/console/test_console_pin.py`
 держит их равными).
 
 **Глобальный слой** — отдельная команда, `bin/install-global.py`, не `harness/bin/harness.py`: ставится один раз на машину, на пользователя (`~`), а не на конкретный репозиторий. По собственному описанию скрипта: «устанавливает минимальный instruction-профиль плюс `start-project`. Никогда не устанавливает MCP, модели, плагины, credentials или permissions».

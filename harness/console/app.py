@@ -59,7 +59,9 @@ class HarnessConsoleApp(App[None]):
     Button:focus { text-style: bold; border: round $primary; }
     """
 
-    def __init__(self, repo: Path, *, command_runner: CommandRunner = capturing_runner) -> None:
+    def __init__(
+        self, repo: Path, *, command_runner: CommandRunner = capturing_runner
+    ) -> None:
         super().__init__()
         self.repo = repo
         self.command_runner = command_runner

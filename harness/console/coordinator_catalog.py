@@ -7,7 +7,7 @@ decision packet, dispatch, qa status, risk, context-package, ledger status).
 `CoordinatorCommand.fields` строится обходом реального дерева `argparse.ArgumentParser` CLI координатора.
 Поэтому обязательные аргументы, ограничения `choices=`, действие `append` или флаги без значений
 подхватываются автоматически без ручного редактирования данного модуля.
-Тест `tests/test_console_coordinator_catalog.py` проверяет синхронизацию с CLI (тест на дрейф). Консоль
+Тест `tests/console/test_console_coordinator_catalog.py` проверяет синхронизацию с CLI (тест на дрейф). Консоль
 не дублирует логику координатора: она запускает тот же процесс
 `python .harness/orchestration/coordinator.py --repo {repo} <путь подкоманды> ...` (см. `process_argv`).
 Класс `Reversibility` и причины `CONFIRMATION_REASONS` переиспользуются из `.catalog`.
