@@ -98,7 +98,7 @@ class RepoMapScreen(Screen[None]):
     RepoMapScreen #repo-map-actions { height: auto; margin: 0 1; }
     RepoMapScreen #repo-map-tabs { height: 1fr; margin: 0 1; }
     RepoMapScreen .map-panel {
-        height: 1fr; padding: 0 1; background: $background;
+        height: 1fr; padding: 0 1;
         border: round $panel-lighten-2; border-title-color: $primary;
     }
     RepoMapScreen .map-panel:focus, RepoMapScreen .map-panel:focus-within { border: round $primary; }
@@ -167,7 +167,9 @@ class RepoMapScreen(Screen[None]):
             with TabPane("Хабы", id="tab-hubs"):
                 yield _panel("Хабы", Static("", id="map-hubs", markup=False))
             with TabPane("Диагностики", id="tab-diagnostics"):
-                yield _panel("Диагностики", Static("", id="map-diagnostics", markup=False))
+                yield _panel(
+                    "Диагностики", Static("", id="map-diagnostics", markup=False)
+                )
         yield Footer()
 
     def on_mount(self) -> None:

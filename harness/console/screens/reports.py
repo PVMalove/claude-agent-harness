@@ -47,10 +47,11 @@ class ReportsScreen(Screen[None]):
         Binding("f3", "open_qa_logs", "QA-логи"),
     ]
     DEFAULT_CSS = """
+    ReportsScreen #reports-status { height: auto; }
     ReportsScreen #report-filters { height: auto; }
     ReportsScreen #report-filters Input { width: 1fr; }
-    ReportsScreen ListView { height: auto; max-height: 50%; }
-    ReportsScreen .list-title { margin-top: 1; text-style: bold; }
+    ReportsScreen ListView { height: auto; min-height: 3; max-height: 40%; margin: 0 1; }
+    ReportsScreen #open-qa-logs { margin: 0 1; }
     """
 
     def __init__(
@@ -66,15 +67,20 @@ class ReportsScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield Header(icon=brand.MENU_ICON)
-        yield Static(self._status(), id="reports-status", markup=False)
-        with Horizontal(id="report-filters"):
+        status = Static(
+            self._status(), id="reports-status", classes="frame", markup=False
+        )
+        status.border_title = "Состояние"
+        yield status
+        with Horizontal(id="report-filters", classes="frame") as filters:
+            filters.border_title = "Фильтры"
             for widget_id, placeholder, _ in _FILTERS:
                 yield Input(placeholder=placeholder, id=widget_id)
-        yield Static("Completion reports", classes="list-title")
-        yield ListView(*self._report_items(), id="report-list")
+        reports = ListView(*self._report_items(), id="report-list")
+        reports.border_title = "Completion reports"
+        yield reports
         yield Button("QA-логи", id="open-qa-logs")
-        yield Static("Батчи (хронология)", classes="list-title")
-        yield ListView(
+        batches = ListView(
             *(
                 ListItem(
                     Static(
@@ -87,6 +93,8 @@ class ReportsScreen(Screen[None]):
             ),
             id="batch-list",
         )
+        batches.border_title = "Батчи (хронология)"
+        yield batches
         yield Footer()
 
     def _status(self) -> str:
@@ -140,7 +148,8 @@ class ReportScreen(Screen[None]):
         Binding(EXPORT_BINDING_KEY, "export", "Экспорт в Markdown"),
     ]
     DEFAULT_CSS = """
-    ReportScreen .section-title { margin-top: 1; text-style: bold; }
+    ReportScreen #report-body { height: 1fr; }
+    ReportScreen .section-title { margin-top: 1; text-style: bold; color: $primary; }
     ReportScreen .section-body { padding-left: 2; }
     ReportScreen .actions { height: auto; }
     """
@@ -153,7 +162,8 @@ class ReportScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield Header(icon=brand.MENU_ICON)
-        with VerticalScroll(id="report-body"):
+        with VerticalScroll(id="report-body", classes="frame") as frame:
+            frame.border_title = "Отчёт"
             yield Static(
                 console_reports.report_header(self.entry),
                 id="report-header",
@@ -173,7 +183,8 @@ class ReportScreen(Screen[None]):
                 yield Static(
                     qa_log, id="section-qa-log", classes="section-body", markup=False
                 )
-        with Horizontal(classes="actions"):
+        with Horizontal(classes="actions frame") as actions:
+            actions.border_title = "Действия"
             yield Button("Хронология батча", id="open-timeline")
             yield Button("Экспорт в Markdown", id="export")
         yield Footer()
@@ -223,9 +234,12 @@ class BatchTimelineScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield Header(icon=brand.MENU_ICON)
-        yield VerticalScroll(
-            Static(_render_timeline(self.timeline), id="batch-timeline", markup=False)
+        timeline = VerticalScroll(
+            Static(_render_timeline(self.timeline), id="batch-timeline", markup=False),
+            classes="frame",
         )
+        timeline.border_title = "Хронология batch"
+        yield timeline
         yield Footer()
 
     def action_export(self) -> None:
@@ -255,7 +269,10 @@ class QaLogsScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield Header(icon=brand.MENU_ICON)
-        yield VerticalScroll(
-            Static(_render_qa_logs(self.view), id="qa-logs", markup=False)
+        logs = VerticalScroll(
+            Static(_render_qa_logs(self.view), id="qa-logs", markup=False),
+            classes="frame",
         )
+        logs.border_title = "QA-логи"
+        yield logs
         yield Footer()

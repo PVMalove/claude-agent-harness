@@ -6,9 +6,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Protocol
 
+from rich.markup import escape
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, ListItem, ListView, Static
 
@@ -35,16 +36,29 @@ def _render_summary(data: DashboardData, *, online: bool = False) -> str:
         str(data.active_batches) if data.active_batches is not None else "не подключено"
     )
     mode = "online" if online else "offline"
-    return (
+    # The Repo Map message joins its facts with "; ": one fact per line keeps it readable.
+    first, *rest = escape(data.repo_map_tier).split("; ")
+    repo_map = "\n".join([f"repo map: {first}", *(f"  {part}" for part in rest)])
+    lines = [
         f"health ({mode}): "
         f"{_counter('ok', data.ok, brand.PALETTE['success'])} "
         f"{_counter('warn', data.warn, brand.PALETTE['warning'])} "
         f"{_counter('fail', data.fail, brand.PALETTE['error'])} "
-        f"{_counter('skipped', data.skipped, brand.PALETTE['muted'])}\n"
-        f"active batches: {active_batches}\n"
-        f"repo map: {data.repo_map_tier}\n"
-        f"harness: {data.harness_version} (drift: {data.drift_state})"
-    )
+        f"{_counter('skipped', data.skipped, brand.PALETTE['muted'])}",
+        f"active batches: {active_batches}",
+        repo_map,
+        f"harness: {data.harness_version} (drift: {escape(data.drift_state)})",
+    ]
+    if data.problems:
+        lines.append("")
+        lines.append("ошибки и предупреждения:")
+        colors = {"fail": brand.PALETTE["error"], "warn": brand.PALETTE["warning"]}
+        lines.extend(
+            f"  [{colors.get(status, brand.PALETTE['muted'])}]{status:<4}[/] "
+            f"{escape(check_id)} — {escape(message)}"
+            for status, check_id, message in data.problems
+        )
+    return "\n".join(lines)
 
 
 def _render_mark() -> Text:
@@ -75,12 +89,13 @@ class DashboardScreen(Screen[None]):
     DashboardScreen #brand { height: auto; padding: 1 2 0 2; }
     DashboardScreen #brand-mark { width: auto; }
     DashboardScreen #brand-info { width: 1fr; padding-left: 2; }
-    DashboardScreen #dashboard-summary {
-        height: auto; margin: 1 2 0 2; padding: 0 1;
-        border: round $primary 50%; border-title-color: $primary;
+    DashboardScreen #dashboard-summary-scroll {
+        height: auto; max-height: 40%; margin: 1 2 0 2; border: round $primary 50%;
     }
     DashboardScreen #dashboard-actions { height: auto; margin: 1 2 0 2; }
-    DashboardScreen #dashboard-online-cli { color: $text-muted; padding: 1 0 0 2; width: 1fr; }
+    DashboardScreen #dashboard-actions Button { margin-right: 1; }
+    DashboardScreen #dashboard-cli { height: auto; width: 1fr; padding: 0 0 0 1; }
+    DashboardScreen .action-cli { color: $text-muted; height: auto; }
     DashboardScreen #section-menu { height: auto; margin: 1 2; border-title-color: $primary; }
     """
 
@@ -113,18 +128,29 @@ class DashboardScreen(Screen[None]):
             yield Static(
                 _render_banner(self._collect_banner(self.repo)), id="brand-info"
             )
-        summary = Static(
-            _render_summary(self._collect_dashboard(self.repo)), id="dashboard-summary"
-        )
-        summary.border_title = "Состояние"
-        yield summary
-        with Horizontal(id="dashboard-actions"):
-            yield Button("Online checks", id="dashboard-online")
+        with VerticalScroll(id="dashboard-summary-scroll", classes="frame") as scroll:
+            scroll.border_title = "Состояние"
             yield Static(
-                f"$ {console_data.health_cli_line(self.repo, '--online')}",
-                id="dashboard-online-cli",
-                markup=False,
+                _render_summary(self._collect_dashboard(self.repo)),
+                id="dashboard-summary",
             )
+        with Horizontal(id="dashboard-actions", classes="frame") as actions:
+            actions.border_title = "Проверки"
+            yield Button("Offline checks", id="dashboard-offline")
+            yield Button("Online checks", id="dashboard-online")
+            with Vertical(id="dashboard-cli"):
+                yield Static(
+                    f"$ {console_data.health_cli_line(self.repo)}",
+                    id="dashboard-offline-cli",
+                    classes="action-cli",
+                    markup=False,
+                )
+                yield Static(
+                    f"$ {console_data.health_cli_line(self.repo, '--online')}",
+                    id="dashboard-online-cli",
+                    classes="action-cli",
+                    markup=False,
+                )
         menu = ListView(
             *(ListItem(Static(name), name=name) for name in SECTIONS),
             id="section-menu",
@@ -134,18 +160,21 @@ class DashboardScreen(Screen[None]):
         yield Footer()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id != "dashboard-online":
+        if event.button.id not in ("dashboard-offline", "dashboard-online"):
             return
+        online = event.button.id == "dashboard-online"
         summary = self.query_one("#dashboard-summary", Static)
-        summary.update("онлайн-проверки выполняются…")
+        summary.update(
+            "онлайн-проверки выполняются…" if online else "офлайн-проверки выполняются…"
+        )
 
         def work() -> None:
             text = _render_summary(
-                self._collect_dashboard(self.repo, online=True), online=True
+                self._collect_dashboard(self.repo, online=online), online=online
             )
             self.app.call_from_thread(summary.update, text)
 
-        self.run_worker(work, thread=True, exclusive=True, group="dashboard-online")
+        self.run_worker(work, thread=True, exclusive=True, group="dashboard-health")
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         open_screen = self._sections.get(event.item.name or "")
