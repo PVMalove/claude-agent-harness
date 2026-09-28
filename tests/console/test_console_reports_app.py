@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -45,6 +46,16 @@ def _static_text(app: App[None], selector: str) -> str:
     return str(app.screen.query_one(selector, Static).content)
 
 
+async def _until(pilot: Pilot[None], condition: Callable[[], bool]) -> None:
+    """Pause until `condition` holds: filtering rebuilds the report list asynchronously, and one
+    pause is not always enough on a slow runner."""
+    for _ in range(50):
+        if condition():
+            return
+        await pilot.pause(0.05)
+    assert condition()
+
+
 def test_dashboard_reports_section_opens_the_reports_screen(tmp_path: Path) -> None:
     build_reports_fixture(tmp_path)
 
@@ -82,10 +93,10 @@ def test_report_list_filters_by_ticket_and_role(tmp_path: Path) -> None:
         async with app.run_test() as pilot:
             everything = _report_names(app)
             app.screen.query_one("#filter-ticket", Input).value = "#101"
-            await pilot.pause()
+            await _until(pilot, lambda: len(_report_names(app)) == 3)
             by_ticket = _report_names(app)
             app.screen.query_one("#filter-role", Input).value = "developer"
-            await pilot.pause()
+            await _until(pilot, lambda: len(_report_names(app)) == 1)
             by_ticket_and_role = _report_names(app)
             status = _static_text(app, "#reports-status")
         return everything, by_ticket, by_ticket_and_role, status
@@ -143,12 +154,12 @@ def test_report_text_is_rendered_literally_not_as_markup(tmp_path: Path) -> None
         app = _ReportsHost(tmp_path)
         async with app.run_test() as pilot:
             app.screen.query_one("#filter-role", Input).value = "code-review"
-            await pilot.pause()
+            await _until(pilot, lambda: _report_names(app) == ["dispatch-review"])
             report_list = app.screen.query_one("#report-list", ListView)
             report_list.focus()
             report_list.index = 0
             await pilot.press("enter")
-            await pilot.pause()
+            await _until(pilot, lambda: isinstance(app.screen, ReportScreen))
             return _static_text(app, "#section-output"), _static_text(
                 app, "#section-review"
             )
