@@ -7,7 +7,7 @@
 ### Added
 
 - Первый стабильный выпуск переносимого Agent Harness с capability-снимками, CLI установки, оркестрацией и Repo Map.
-- GitHub Release с архивом установки, SHA-256 и заметками из этого раздела.
+- GitHub Release с архивом установки, SHA-256 и заметками из этого раздела; публикуется автоматически после merge в `master`, если тега версии из `harness/VERSION` ещё нет.
 - Управляемый пример `.harness/orchestration.example.json` для `backend-orchestration`: обновляется при `init`, `adopt` и `update`; `init` один раз создаёт из него `.harness/orchestration.json`.
 - Справочник оркестрации `harness/orchestration/README.md`: устройство coordinator и все поля `orchestration.json` с дефолтами.
 - README: каталог всех скилов с описаниями на русском, инструкции `harness health` и `harness console`.
