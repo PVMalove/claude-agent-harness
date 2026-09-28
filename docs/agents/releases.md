@@ -6,10 +6,12 @@
 записана в `harness/VERSION`, `pyproject.toml`, заголовке секции `CHANGELOG.md` и имени тега
 `vMAJOR.MINOR.PATCH`. `harness/VERSION` служит проверяемым источником версии для CD.
 
-GitHub workflow [release.yml](../../.github/workflows/release.yml) запускается при push тега,
-вызывает все проверки [verify.yml](../../.github/workflows/verify.yml), затем проверяет равенство
-тега и `harness/VERSION`, наличие секции и трёх категорий в `CHANGELOG.md`. При ошибке Release
-не создаётся. Успешный запуск создаёт GitHub Release с двумя Assets:
+GitHub workflow [release.yml](../../.github/workflows/release.yml) запускается при push тега
+строго вида `vMAJOR.MINOR.PATCH`. Сначала job `preflight` за секунды проверяет равенство тега и
+`harness/VERSION`, наличие секции и трёх категорий в `CHANGELOG.md`
+(`python scripts/build_release.py --tag vX.Y.Z --check` — ту же проверку можно выполнить локально до
+тега). Затем вызываются все проверки [verify.yml](../../.github/workflows/verify.yml), и только после
+них собирается архив. При любой ошибке Release не создаётся. Успешный запуск создаёт GitHub Release с двумя Assets:
 `claude-agent-harness-vX.Y.Z.tar.gz` и `claude-agent-harness-vX.Y.Z.tar.gz.sha256`.
 Тело Release Notes берётся из секции `[X.Y.Z]` в `CHANGELOG.md`.
 

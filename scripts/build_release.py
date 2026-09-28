@@ -52,7 +52,9 @@ def tracked_installation_files(repo: Path) -> list[str]:
     return sorted(included)
 
 
-def build_release(repo: Path, tag: str, output: Path) -> tuple[Path, Path, Path]:
+def check_release(repo: Path, tag: str) -> tuple[str, list[str]]:
+    """Validate a release without building it: the tag, harness/VERSION, the CHANGELOG section,
+    and the tracked payload. Returns the release notes and the payload paths."""
     if not TAG_PATTERN.fullmatch(tag):
         raise ValueError(f"release tag must be a SemVer vMAJOR.MINOR.PATCH: {tag}")
     version = tag[1:]
@@ -62,6 +64,11 @@ def build_release(repo: Path, tag: str, output: Path) -> tuple[Path, Path, Path]
     files = tracked_installation_files(repo)
     if not files or "README.md" not in files or not any(path.startswith("harness/") for path in files):
         raise ValueError("tracked installation payload is incomplete")
+    return notes, files
+
+
+def build_release(repo: Path, tag: str, output: Path) -> tuple[Path, Path, Path]:
+    notes, files = check_release(repo, tag)
     output.mkdir(parents=True, exist_ok=True)
     archive = output / f"claude-agent-harness-{tag}.tar.gz"
     with tarfile.open(archive, "w:gz") as bundle:
@@ -77,10 +84,21 @@ def build_release(repo: Path, tag: str, output: Path) -> tuple[Path, Path, Path]
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", required=True)
-    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="only validate the tag, harness/VERSION, CHANGELOG and payload; build nothing",
+    )
     arguments = parser.parse_args()
+    if not arguments.check and arguments.output is None:
+        parser.error("--output is required unless --check is given")
     repo = Path(__file__).resolve().parent.parent
     try:
+        if arguments.check:
+            check_release(repo, arguments.tag)
+            print(f"{arguments.tag}: release checks passed")
+            return 0
         archive, checksum, notes = build_release(repo, arguments.tag, arguments.output)
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         parser.error(str(exc))

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.build_release import build_release, release_notes
+from scripts.build_release import build_release, check_release, release_notes
 
 
 def test_release_archive_excludes_repository_docs_and_checks_version(tmp_path: Path) -> None:
@@ -53,3 +53,28 @@ def test_release_archive_excludes_repository_docs_and_checks_version(tmp_path: P
 def test_release_notes_require_version_section() -> None:
     with pytest.raises(ValueError, match="exactly one"):
         release_notes("## [0.9.0]\n\n### Added\n", "1.0.0")
+
+
+def test_check_release_validates_without_building(tmp_path: Path) -> None:
+    """The release workflow's preflight: a wrong tag, version or CHANGELOG fails before verify."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    for relative, content in {
+        "harness/VERSION": "1.0.0\n",
+        "README.md": "# Agent Harness\n",
+        "CHANGELOG.md": "## [1.0.0]\n\n### Added\n\n- First.\n\n### Fixed\n\n- None.\n\n"
+        "### Breaking Changes\n\n- None.\n",
+    }.items():
+        (repo / relative).parent.mkdir(parents=True, exist_ok=True)
+        (repo / relative).write_text(content, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+
+    notes, files = check_release(repo, "v1.0.0")
+
+    assert "First." in notes
+    assert files == ["README.md", "harness/VERSION"]
+    assert not (repo / "out").exists()
+    for tag, message in (("v1.0", "SemVer"), ("v1.0.0-rc1", "SemVer"), ("v1.0.1", "does not match")):
+        with pytest.raises(ValueError, match=message):
+            check_release(repo, tag)
