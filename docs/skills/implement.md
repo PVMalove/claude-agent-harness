@@ -78,7 +78,7 @@ module-owned guidance:
 - `.harness/orchestration/playbook.md` владеет lifecycle, authority, immutable brief, completion
   evidence, parallelism и metric rules.
 - `.harness/orchestration/roles/` владеет boundary, required proof и specialist trigger каждой роли.
-- `docs/agents/backend-orchestration.md` владеет setup, project configuration, CLI procedure и
+- `harness/docs/backend-orchestration.md` владеет setup, project configuration, CLI procedure и
   operational recovery.
 - `docs/agents/git-workflow.md` владеет issue-branch, commit, push и PR boundaries.
 

@@ -39,7 +39,7 @@ reports. Tree-sitter parser запускается в отдельном worker-
 [![Изоляция процессов и временных файлов](./docs/diagrams/previews/process-isolation.architecture.png)](./docs/diagrams/process-isolation.architecture.html)
 
 Действующие контракты — в [ADR](./docs/adr/), операции — в
-[руководстве](./docs/agents/harness-guide.md) и
+[руководстве](./harness/docs/harness-guide.md) и
 [правилах Git](./docs/agents/git-workflow.md).
 
 ## Скилы
@@ -150,11 +150,13 @@ python harness\bin\harness.py health C:\path\to\repository
 закреплённого upstream-набора выберите `mattpocock-suite`; `backend-orchestration` добавляет
 координатор и роли поверх `pvmalove-suite`. `harness diff` показывает изменения управляемого
 снимка, `harness update` обновляет его с сохранением локальных правок. Команды и варианты
-параметров приведены в [руководстве](./docs/agents/harness-guide.md). В целевой проект
+параметров приведены в [руководстве](./harness/docs/harness-guide.md). В целевой проект
 попадают только выбранные ресурсы `harness/`, skills и шаблоны `harness/project/`;
 корневой `docs/` служит документацией этого репозитория.
 Шаблоны проектных руководств при `pvmalove-suite` и `backend-orchestration` разворачиваются
-из `harness/project/docs-agents/` как `docs/agents/{artifacts,backend-orchestration,git-workflow,harness-guide,issue-tracker,triage-labels,worktrees}.md`.
+из `harness/project/docs-agents/` как `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`.
+Руководства по харнессу и backend-оркестрации входят в управляемый снимок: `harness/docs/` устанавливается
+в `.harness/docs/{harness-guide,backend-orchestration}.md` и обновляется командой `harness update`.
 
 ## Здоровье проекта: `harness health`
 
@@ -190,7 +192,7 @@ python3 harness/bin/harness.py health /path/to/repository --json     # маши�
   перекрашиваются.
 - `--json` выдаёт контракт `schema_version: 1` со стабильными `checks[].id` (например `files.lock`).
 
-Все проверки описаны в [руководстве](./docs/agents/harness-guide.md#шаг-2--команды-cli).
+Все проверки описаны в [руководстве](./harness/docs/harness-guide.md#шаг-2--команды-cli).
 
 ## Пульт: `harness console`
 

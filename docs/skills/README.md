@@ -29,7 +29,7 @@
 - Discovery Context начинается в `/grilling` через opt-in `Live Artifact`, проходит через
   `Relevant Files` и ticket-specific Path inventory, а backend batch использует LLM-free
   `Context Package`, checkpoint/continuation для write-роли и base-commit gate. Операционные
-  правила собраны в [backend-orchestration](../agents/backend-orchestration.md), актуальное
+  правила собраны в [backend-orchestration](../../harness/docs/backend-orchestration.md), актуальное
   устройство — в [ADR 0003](../adr/0003-orchestration-core.md), конвейер записан в
   [ADR 0005](../adr/0005-implement-pipeline.md).
 - Внутренние агенты: [`docs/agents/`](../agents/)

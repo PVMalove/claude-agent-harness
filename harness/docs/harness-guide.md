@@ -106,7 +106,7 @@ python harness\bin\harness.py init C:\path\to\repository `
 - `--base-branch` — базовая ветка репозитория (по умолчанию `main`).
 - `--language`/`--pr-base-branch`/`--branch-pattern`/`--qa-gate-command` — читает только `pvmalove-suite`, пишутся в `.harness/project.json`; можно опустить — `init` спросит их интерактивно. `--qa-gate-command` повторяем, порядок сохраняется (раздел 6).
 
-При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{artifacts,backend-orchestration,git-workflow,harness-guide,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`, см. `lock-project-skills` ниже), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md`, и само `.harness/project.json`. Только `backend-orchestration` дополнительно создаёт `.harness/orchestration/`, управляемый пример `.harness/orchestration.example.json` (он входит в capability-снимок и обновляется при каждом `init`/`adopt`/`update`) и — один раз, если файла ещё нет, — `.harness/orchestration.json` как копию этого примера.
+При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`, см. `lock-project-skills` ниже), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md`, и само `.harness/project.json`. Этот справочник и руководство по backend-оркестрации — не seed-файлы: они входят в управляемый снимок `pvmalove-suite` как `.harness/docs/{harness-guide,backend-orchestration}.md` и обновляются каждым `update`. Только `backend-orchestration` дополнительно создаёт `.harness/orchestration/`, управляемый пример `.harness/orchestration.example.json` (он входит в capability-снимок и обновляется при каждом `init`/`adopt`/`update`) и — один раз, если файла ещё нет, — `.harness/orchestration.json` как копию этого примера.
 
 **`adopt` — установка в проект, где уже есть свои (не харнесс-управляемые) скиллы под теми же именами.** Не требует пустого `.harness/` (в отличие от `init`) — сохраняет все проектные скиллы, которых нет в выбранной capability; если что-то из выбранной capability совпадает по имени с уже существующим — падает со списком конфликтов, если не передан `--replace-conflicts` (тогда конфликтующие заменяются, остальное не тронуто). Те же `--capability`/pvmalove-флаги, что у `init`:
 
@@ -940,6 +940,7 @@ Hook строго разбирает JSON payload и рассматривает 
 <repo>/
 ├── .git/
 ├── .harness/            # Managed project snapshot, lock, registry и optional overlays
+│   ├── docs/            # этот файл и backend-orchestration.md
 │   └── skills/
 ├── .claude/             # Claude rules, agents, hooks и runtime settings
 │   ├── rules/
@@ -947,7 +948,7 @@ Hook строго разбирает JSON payload и рассматривает 
 │   └── hooks/
 ├── docs/
 │   ├── agents/          # git-workflow.md, issue-tracker.md, triage-labels.md,
-│   │                    #   artifacts.md, worktrees.md, этот файл
+│   │                    #   artifacts.md, worktrees.md
 │   ├── adr/             # Architecture Decision Records
 │   └── tasks/           # Спеки и скретчпады задач
 ├── AGENTS.md            # Кросс-рантаймовый контракт проекта

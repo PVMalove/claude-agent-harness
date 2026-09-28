@@ -20,7 +20,7 @@ ledger-referenced worktrees, dirty trees, and branches with commits absent from 
 Remote branches are never deleted.
 
 System-wide architecture and the boundary between source documents and local evidence are described
-in [harness-guide.md](./harness-guide.md). This guide defines only task artifacts and scratchpads.
+in [harness-guide.md](../../.harness/docs/harness-guide.md). This guide defines only task artifacts and scratchpads.
 
 * **Storage Location:** NEVER use system temporary directories (e.g., `AppData/Local/Temp`, `/tmp`) for saving specifications, scratchpads, or intermediate files.
 * **Project Directory:** All intermediate task-related documents MUST be saved locally inside the project repository in the `docs/tasks/` directory (create it if it doesn't exist).

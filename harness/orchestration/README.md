@@ -10,7 +10,7 @@ brief и report, независимым review и clean-room QA. Capability вы
 `approval_policy`. Роли не расширяют свой scope, не выбирают модель и не мержат PR.
 
 Пошаговая процедура настройки и запуска — в
-[руководстве по backend-оркестрации](../../docs/agents/backend-orchestration.md), полный контракт
+[руководстве по backend-оркестрации](../docs/backend-orchestration.md), полный контракт
 lifecycle — в [playbook.md](./playbook.md), границы ролей — в [roles/](./roles/).
 
 ## Состав

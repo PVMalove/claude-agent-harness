@@ -101,7 +101,7 @@ python3 harness/bin/harness.py health /path/to/repository
 `in-process`: provider profile нет, значит и внешний worker запускать нечем. `harness health` такой
 проект принимает. Конфиг нужен, когда проекту нужны настоящие зоны, разные модели по ролям,
 внешний транспорт или бюджет параллелизма больше единицы. Справочник всех полей с дефолтами —
-[`.harness/orchestration/README.md`](../../.harness/orchestration/README.md).
+[`.harness/orchestration/README.md`](../orchestration/README.md).
 
 Запускайте coordinator-сессию с `medium` effort по умолчанию. Для architect в assignment plan также
 выбирайте `medium`; более высокий effort требует явного решения разработчика для названного

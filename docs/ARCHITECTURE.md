@@ -88,5 +88,5 @@ telemetry `delivery-stats` сохраняет cache read/write tokens, worker se
 review diff scope excess и QA failure rate только при наличии наблюдаемого источника; отсутствующие
 значения остаются `нет данных`.
 
-Подробные правила находятся в [backend-orchestration.md](./agents/backend-orchestration.md), [harness-guide.md](./agents/harness-guide.md)
+Подробные правила находятся в [backend-orchestration.md](../harness/docs/backend-orchestration.md), [harness-guide.md](../harness/docs/harness-guide.md)
 и [ADR 0005](./adr/0005-implement-pipeline.md).

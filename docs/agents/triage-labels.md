@@ -1,7 +1,7 @@
 # Triage Labels
 
 The system overview and its interactive workflow are described in
-[harness-guide.md](./harness-guide.md). This guide is the authoritative vocabulary for triage labels.
+[harness-guide.md](../../.harness/docs/harness-guide.md). This guide is the authoritative vocabulary for triage labels.
 
 This repo does **not** use the upstream `mattpocock/skills` canonical five-role vocabulary (`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`) as literal labels. `triage/SKILL.md` (`skills/first-party/pvmalove/triage/`) has been customized to speak natively in the namespaced taxonomy below — this file is the reference, not a translation table. Every axis, including `type::*`, uses this repo's own enterprise-style values rather than upstream's.
 

@@ -1,7 +1,7 @@
 # Git workflow: feature branch + PR
 
 Архитектурный контекст интерактивного workflow и его связь с opt-in backend orchestration приведены
-в [backend-orchestration.md](./backend-orchestration.md). Этот документ определяет только правила Git, тикетов и PR.
+в [backend-orchestration.md](../../.harness/docs/backend-orchestration.md). Этот документ определяет только правила Git, тикетов и PR.
 
 ### 1. Fundamental Constraints & Tooling
 * **Zero Direct Commits:** `base_branch` and every `integration/*` branch are protected targets. Agents commit and push only from an isolated issue branch matching `branch_pattern`.
