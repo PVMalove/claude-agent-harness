@@ -188,10 +188,11 @@ python3 harness/bin/harness.py console /path/to/repository
 не зависит от textual. Одноразовое окружение строится на том же интерпретаторе (`--python`), что
 уже прошёл проверку Python ≥3.12. Если TUI запустился и завершился с ошибкой, пульт сообщает код
 выхода, а не «не удалось запустить textual». Отчёт health в пульте — тот же, что у CLI, включая
-дрейф снэпшота скиллов. Домашний экран — дашборд (offline-счётчики `ok`/`warn`/`fail`/`skipped`,
+дрейф снэпшота скиллов. Оформление — зарегистрированная тема textual `harness-warm` (терракотовые и янтарные акценты на графитовом фоне, тонкие скруглённые рамки; палитра и знак — в stdlib-модуле `harness/console/brand.py`). Домашний экран открывается знаком харнесса и описанием установки (версия, capability из `harness.lock`, путь репозитория, ветка), под ним — дашборд (offline-счётчики `ok`/`warn`/`fail`/`skipped`,
 число открытых backend-orchestration batch или «не подключено», tier Repo Map, версия харнесса и
-статус дрейфа; действие «Online checks» пересчитывает счётчики с `--online` и показывает CLI-эквивалент) с меню из пяти разделов: `Diagnostics`, `Harness`, `Orchestration`, `Reports`,
-`Repo Map`. `Diagnostics` — полный отчёт `harness health`, действие «online checks» (повторный
+статус дрейфа; действие «Online checks» пересчитывает счётчики с `--online` и показывает CLI-эквивалент) с меню из шести разделов: `Diagnostics`, `Harness`, `Orchestration`, `Reports`,
+`Repo Map`, `Help`. `Help` (и `F1` с любого экрана) показывает справку по разделам, клавишам и
+правилам безопасности из `harness/console/help_text.py`. `Diagnostics` — полный отчёт `harness health`, действие «online checks» (повторный
 вызов с проверками из сети) и «apply fixes» (то же, что `harness health --fix`, а после online
 checks — `--online --fix`; требует повторного нажатия-подтверждения); у обоих действий показан
 CLI-эквивалент, health выполняется в фоновом потоке, а отчёт экспортируется в Markdown (`e`) в
@@ -249,7 +250,7 @@ approve/abandon/decide`, `batch attention resolve`, `dispatch create/cancel`) и
 (`dispatch send`) требуют подтверждения, отмена ничего не запускает; остальные команды обратимы, но
 форма всё равно проверяет обязательные поля.
 Код разложен по шву
-stdlib/textual: `harness/console/{pin,runner,launcher,data,catalog,coordinator_catalog,reports,export,repo_map,json_fields}.py`
+stdlib/textual: `harness/console/{pin,runner,launcher,data,catalog,coordinator_catalog,reports,export,repo_map,json_fields,brand,help_text}.py`
 не импортируют `textual` и тестируются без него; только `harness/console/app.py` и
 `harness/console/screens/*.py` его импортируют, и только внутри уже релончнутого процесса —
 Pilot-тесты (`tests/test_console_app.py`, `tests/test_console_harness.py`,

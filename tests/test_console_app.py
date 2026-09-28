@@ -112,6 +112,81 @@ def test_dashboard_screen_renders_injected_data_without_touching_the_repo(
     assert "clean" in rendered
 
 
+def test_dashboard_shows_the_mark_and_the_banner_beside_it(tmp_path: Path) -> None:
+    """The home screen opens with the harness mark and a description of this installation."""
+
+    async def scenario() -> tuple[str, str]:
+        from textual.app import App
+        from textual.widgets import Static
+
+        from harness.console import brand
+
+        banner = brand.BannerInfo(
+            version="9.9.9",
+            capabilities=("pvmalove-suite",),
+            repo="~/work/app",
+            branch="feature/issue-7-x",
+        )
+        screen = DashboardScreen(
+            tmp_path,
+            collect_dashboard=lambda _repo, *, online=False: _fake_dashboard_data(),
+            collect_banner=lambda _repo: banner,
+        )
+
+        class _HostApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen)
+
+        app = _HostApp()
+        async with app.run_test():
+            mark = str(app.screen.query_one("#brand-mark", Static).content)
+            info = str(app.screen.query_one("#brand-info", Static).content)
+        return mark, info
+
+    mark, info = asyncio.run(scenario())
+    from harness.console import brand
+
+    assert mark.splitlines() == list(brand.LOGO)
+    assert f"{brand.PRODUCT} 9.9.9" in info
+    assert "pvmalove-suite" in info
+    assert "~/work/app" in info
+    assert "ветка feature/issue-7-x" in info
+
+
+def test_console_registers_and_selects_the_warm_theme(tmp_path: Path) -> None:
+    async def scenario() -> str:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test():
+            return app.theme
+
+    from harness.console import brand
+
+    assert asyncio.run(scenario()) == brand.THEME_NAME
+
+
+def test_help_opens_from_the_menu_and_from_f1(tmp_path: Path) -> None:
+    async def scenario() -> tuple[bool, bool]:
+        from textual.widgets import ListView
+
+        from harness.console.screens.help import HelpScreen
+
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test() as pilot:
+            menu = app.screen.query_one("#section-menu", ListView)
+            menu.index = SECTIONS.index("Help")
+            await pilot.press("enter")
+            await pilot.pause()
+            from_menu = isinstance(app.screen, HelpScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("f1")
+            await pilot.pause()
+            from_f1 = isinstance(app.screen, HelpScreen)
+        return from_menu, from_f1
+
+    assert asyncio.run(scenario()) == (True, True)
+
+
 async def _settle(pilot: "Pilot[None]", delay: float | None = None) -> None:
     """Let a click land, then wait for the screen's worker thread (health runs off the UI thread)."""
     await pilot.pause(delay)

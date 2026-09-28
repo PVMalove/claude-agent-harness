@@ -14,12 +14,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Protocol
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Static
 
+from .. import brand
 from .. import data as console_data
 from ...health.model import Report
 from ..export import MarkdownDocument, MarkdownSection
@@ -51,6 +53,32 @@ def _render_report(report: Report) -> str:
         lines.append("Применённые фиксы:")
         lines.extend(f"  - {command}" for command in report.fixes_applied)
     return "\n".join(lines)
+
+
+_MARKER_COLORS = {
+    "[OK]": brand.PALETTE["success"],
+    "[WARN]": brand.PALETTE["warning"],
+    "[FAIL]": brand.PALETTE["error"],
+}
+
+
+def _styled_report(report: Report) -> Text:
+    """The same text as `_render_report`, with status markers and remedies coloured on screen."""
+    styled = Text()
+    for index, line in enumerate(_render_report(report).split("\n")):
+        if index:
+            styled.append("\n")
+        marker = next((m for m in _MARKER_COLORS if line.startswith(m + " ")), None)
+        if marker is not None:
+            styled.append(marker, style=f"bold {_MARKER_COLORS[marker]}")
+            styled.append(line[len(marker):])
+        elif line.startswith("  -> "):
+            styled.append(line, style=brand.PALETTE["secondary"])
+        elif line.startswith("     ") or line.startswith("- "):
+            styled.append(line, style=brand.PALETTE["muted"])
+        else:
+            styled.append(line)
+    return styled
 
 
 def health_document(report: Report) -> MarkdownDocument:
@@ -154,7 +182,7 @@ class DiagnosticsScreen(Screen[None]):
 
     def _show(self, report: Report) -> None:
         self._report = report
-        self.query_one("#diagnostics-report", Static).update(_render_report(report))
+        self.query_one("#diagnostics-report", Static).update(_styled_report(report))
         flags = ("--online", "--fix") if report.online else ("--fix",)
         self.query_one("#apply-fixes-cli", Static).update(
             f"$ {console_data.health_cli_line(self.repo, *flags)}"
