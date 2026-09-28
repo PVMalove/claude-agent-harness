@@ -13,7 +13,7 @@ from typing import Literal
 # `harness/bin/harness.py` copies this file verbatim into target projects as
 # `.harness/repo_map/repo_map.py`. Alias `harness` to whichever of the two this
 # file actually lives under so this standalone CLI has the same imports in both
-# source and installed layouts. See docs/adr/0018.
+# source and installed layouts. See docs/adr/0001.
 _HARNESS_ROOT: Path = Path(__file__).resolve().parents[1]
 _REPO_ROOT: Path = _HARNESS_ROOT.parent
 if str(_REPO_ROOT) not in sys.path:

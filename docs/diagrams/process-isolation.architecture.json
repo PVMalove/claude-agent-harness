@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Изоляция процессов и временных файлов",
+    "quality_profile": "showcase",
+    "repository": { "url": "https://github.com/PVMalove/claude-agent-harness.git", "revision": "16f7db381115015312bd301d8ce92c8fe4182991" },
+    "viewBox": [1600, 1000]
+  },
+  "components": [
+    { "id": "coordinator", "type": "backend", "label": "Coordinator", "pos": [70, 410], "size": [210, 80], "sources": [{ "path": "harness/orchestration/coordinator.py" }] },
+    { "id": "batchA", "type": "backend", "label": "Backend batch A", "pos": [380, 180], "size": [220, 80], "sources": [{ "path": "harness/orchestration/workflow/batch.py" }] },
+    { "id": "batchB", "type": "backend", "label": "Backend batch B", "pos": [380, 650], "size": [220, 80], "sources": [{ "path": "harness/orchestration/workflow/batch.py" }] },
+    { "id": "worktreeA", "type": "database", "label": "Worktree A", "pos": [740, 180], "size": [210, 80], "sources": [{ "path": "harness/orchestration/workflow/batch.py" }] },
+    { "id": "worktreeB", "type": "database", "label": "Worktree B", "pos": [740, 650], "size": [210, 80], "sources": [{ "path": "harness/orchestration/workflow/batch.py" }] },
+    { "id": "repoMap", "type": "backend", "label": "Repo Map", "pos": [740, 390], "size": [210, 80], "sources": [{ "path": "harness/repo_map/repo_map.py" }] },
+    { "id": "worker", "type": "backend", "label": "Tree-sitter worker", "pos": [1110, 390], "size": [260, 80], "sources": [{ "path": "harness/repo_map/tree_sitter_worker.py" }] },
+    { "id": "scratch", "type": "database", "label": ".harness/.sandboxes/scratch", "pos": [1110, 650], "size": [310, 80], "sources": [{ "path": "harness/storage.py" }, { "path": "harness/orchestration/core/constants.py" }] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Batch A", "wraps": ["batchA", "worktreeA"], "pad": 34 },
+    { "kind": "region", "label": "Batch B", "wraps": ["batchB", "worktreeB"], "pad": 34 },
+    { "kind": "region", "label": "Отдельный процесс парсера", "wraps": ["worker"], "pad": 30 }
+  ],
+  "connections": [
+    { "from": "coordinator", "to": "batchA", "label": "создаёт batch", "variant": "emphasis" },
+    { "from": "coordinator", "to": "batchB", "label": "создаёт batch", "variant": "emphasis" },
+    { "from": "batchA", "to": "worktreeA", "label": "владеет issue-веткой" },
+    { "from": "batchB", "to": "worktreeB", "label": "владеет issue-веткой" },
+    { "from": "coordinator", "to": "repoMap", "label": "контекст по commit" },
+    { "from": "repoMap", "to": "worker", "label": "типизированный JSON", "variant": "emphasis" },
+    { "from": "worktreeB", "to": "scratch", "label": "одноразовые файлы", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Раздельная запись", "items": ["Каждый batch владеет своей issue-веткой и worktree", "Одновременно активен один writer в batch"] },
+    { "dot": "violet", "title": "Граница парсера", "items": ["Tree-sitter работает в worker-процессе", "В основной процесс возвращается JSON"] },
+    { "dot": "emerald", "title": "Временное хранение", "items": ["Scratch находится в .harness/.sandboxes", "Ledger состояния хранится отдельно"] }
+  ]
+}

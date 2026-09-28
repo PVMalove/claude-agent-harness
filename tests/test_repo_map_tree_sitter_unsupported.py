@@ -1,4 +1,4 @@
-"""An unsupported language stays in the minimal path inventory under tier `full` (ADR 0024, #279).
+"""An unsupported language stays in the minimal path inventory under tier `full` (ADR 0008, #279).
 
 The parser bundle now carries seven grammars (Python, TS, TSX, JS, Go, Java, C#). A file whose
 extension is not one of them must still be listed -- but only with a path and no real signatures,

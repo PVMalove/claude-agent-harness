@@ -3,7 +3,7 @@
 
 The default (offline, bundle-free) test run exercises Repo Map's minimal tier: no tree-sitter
 grammar bundle is configured, so Repo Map returns empty `edges` and no `signatures` for every file
-(ADR 0024/0023 degradation). Graph widening, symbol-graph depth, and dependency-signature behaviour
+(ADR 0008 degradation). Graph widening, symbol-graph depth, and dependency-signature behaviour
 that need real edges are therefore covered separately by the `HARNESS_PARSER_BUNDLE_DIR`-gated tests
 below, following the pattern in tests/test_repo_map_tree_sitter.py: unset, they skip; set with a
 missing bundle, they fail (an unavailable artifact is a failure, not a silent skip).
@@ -930,7 +930,7 @@ class GuardHotPathTests(unittest.TestCase):
 
 # --- Repo Map full (bundle) tier: graph widening, symbol-graph depth, and signature-based
 # dependency context need real edges, which only exist with a verified tree-sitter grammar bundle
-# (ADR 0023/0024). Follows the skip/fail pattern of tests/test_repo_map_tree_sitter.py.
+# (ADR 0008). Follows the skip/fail pattern of tests/test_repo_map_tree_sitter.py.
 
 
 @pytest.fixture

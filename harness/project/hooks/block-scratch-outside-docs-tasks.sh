@@ -1,6 +1,6 @@
 #!/bin/bash
 # PreToolUse(Write|Edit): task artifacts belong in docs/tasks/, while one-shot PR metadata belongs
-# only in the repository scratch directory .harness/.sandboxes/scratch/tmp/ (docs/agents/artifacts.md and git-workflow.md §1).
+# only in .harness/.sandboxes/pr_body/ (docs/agents/artifacts.md and git-workflow.md §1).
 INPUT=$(cat)
 PY="$(command -v python3 || command -v python)"
 if [ -z "$PY" ]; then
@@ -44,19 +44,19 @@ fi
 
 BASE_NAME="${FILE_PATH##*/}"
 if printf '%s' "$BASE_NAME" | grep -qiE 'pr-body|pr-comment|issue-comment'; then
-  if printf '%s' "$FILE_PATH" | grep -qiE '^\.harness/\.sandboxes/scratch/tmp/[^/]+$'; then
+  if printf '%s' "$FILE_PATH" | grep -qiE '^\.harness/\.sandboxes/pr_body/[^/]+$'; then
     exit 0
   fi
-  echo "git-workflow.md §1: тело PR/комментария пишется только в .harness/.sandboxes/scratch/tmp/ (например, .harness/.sandboxes/scratch/tmp/pr-body-<issue>-<slug>.md), не в docs/tasks/; удали его после успешного gh/glab: $FILE_PATH" >&2
+  echo "git-workflow.md §1: тело PR/комментария пишется только в .harness/.sandboxes/pr_body/ (например, .harness/.sandboxes/pr_body/pr-body-<issue>-<slug>.md), не в docs/tasks/; удали его после успешного gh/glab: $FILE_PATH" >&2
   exit 2
 fi
 
-if ! printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/\.sandboxes/scratch(/|$)' && printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/\.sandboxes/(cache|logs|runs|reports|worktrees)(/|$)'; then
+if ! printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/\.sandboxes/(scratch|pr_body)(/|$)' && printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/\.sandboxes/(cache|logs|runs|reports|worktrees)(/|$)'; then
   exit 0
 fi
 
-if printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/\.sandboxes/scratch/tmp/'; then
-  echo "git-workflow.md §1: .harness/.sandboxes/scratch/tmp/ разрешён только для тела PR/issue-комментария — имя файла должно содержать pr-body, pr-comment или issue-comment (например, .harness/.sandboxes/scratch/tmp/issue-comment-<issue>-<slug>.md); любой другой скретч-файл в этой директории отклоняется, даже если директория верная. Для прочих скретч-файлов используй docs/tasks/ или путь вне репозитория: $FILE_PATH" >&2
+if printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/\.sandboxes/pr_body/'; then
+  echo "git-workflow.md §1: .harness/.sandboxes/pr_body/ разрешён только для тела PR/issue-комментария — имя файла должно содержать pr-body, pr-comment или issue-comment (например, .harness/.sandboxes/pr_body/issue-comment-<issue>-<slug>.md); любой другой файл в этой директории отклоняется. Для прочих черновиков используй docs/tasks/: $FILE_PATH" >&2
   exit 2
 fi
 

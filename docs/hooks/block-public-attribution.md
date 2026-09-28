@@ -27,3 +27,7 @@
 ## 4. Архитектурная схема
 
 ![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[block-public-attribution.sh](../../harness/project/hooks/block-public-attribution.sh)

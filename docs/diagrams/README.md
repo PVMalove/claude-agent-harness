@@ -1,12 +1,13 @@
 # Диаграммы харнесса
 
-Тринадцать автономных интерактивных HTML-диаграмм. Рядом с каждой лежит редактируемая спецификация
+Четырнадцать автономных интерактивных HTML-диаграмм. Рядом с каждой лежит редактируемая спецификация
 Archify (`*.json`), а в `previews/` — статичное PNG той же диаграммы для Markdown, который не умеет
 рендерить HTML (например, README на GitHub).
 
 | Диаграмма | О чём |
 |---|---|
 | [Пайплайн доставки](./delivery-pipeline.workflow.html) | Полный маршрут от идеи до merge: `/grill-with-docs` → `/to-spec` → `/to-tickets` → `/implement` → `/to-pull-requests`, с ветками `hitl` (`/to-guide`) и коротким `/fast-implement`. |
+| [Навигация по справочнику](./harness-guide-navigation.workflow.html) | Установка, выбор capability, работа над задачей и команды проверки. |
 | [Discovery Pipeline](./discovery-pipeline.workflow.html) | Explicit opt-in `Live Artifact` → `Relevant Files` → ticket-specific Path inventory → один cheap advisory → LLM-free Context Package. |
 | [Конвейер `/implement`](./implement-pipeline.workflow.html) | Пять гейтов одного тикета: архитектор → approve → разработчик → code review → approve → QA (с циклом на исправления) → итоговый отчёт → публикация. |
 | [Резолв runtime и dispatch](./backend-runtime.workflow.html) | Как назначение роли превращается в immutable brief, как выбирается транспорт (`external` или `in-process`) и как dispatch подтверждает свою модель и живость. |
@@ -18,6 +19,7 @@ Archify (`*.json`), а в `previews/` — статичное PNG той же д�
 | [Поток capability](./capability-delivery.dataflow.html) | **Data Flow:** происхождение capability и skills от каталога/vendor/overrides до snapshot и runtime consumers. |
 | [Построение Repo Map](./repo-map-build.sequence.html) | **Sequence:** вход, кэш, проверка и offline-установка parser bundle, разбор в изолированном worker, граф и бюджет. |
 | [Компоненты Repo Map](./repo-map-components.architecture.html) | **Architecture:** `repo_map.py`, контракт, `parser_bundle.py`, tree-sitter worker, registry, кэш и потребители (Context Builder, Coordinator). |
+| [Изоляция процессов и файлов](./process-isolation.architecture.html) | **Architecture:** backend batches в worktrees, отдельный tree-sitter worker и sandbox для временных файлов. |
 
 ## Как обновлять
 

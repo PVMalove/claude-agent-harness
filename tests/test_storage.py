@@ -48,7 +48,7 @@ def test_storage_root_without_runnable_git_uses_the_checkout(
 
 def test_sandboxes_root_and_categories(tmp_path: Path) -> None:
     assert SANDBOXES_DIR == ".sandboxes"
-    expected_categories = {"cache", "logs", "scratch", "runs", "reports", "worktrees"}
+    expected_categories = {"cache", "logs", "scratch", "pr_body", "runs", "reports", "worktrees"}
     assert set(SANDBOX_CATEGORIES) == expected_categories
     assert sandboxes_root(tmp_path) == tmp_path / ".harness" / ".sandboxes"
 

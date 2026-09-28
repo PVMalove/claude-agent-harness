@@ -1,11 +1,11 @@
 [project]
 name = "claude-agent-harness"
-version = "1.3.6"
+version = "1.0.0"
 requires-python = ">=3.12"
 dependencies = []
 
 [tool.uv]
-# The repository is a toolkit, not an installable distribution (ADR 0018): `uv sync` installs only
+# The repository is a toolkit, not an installable distribution (ADR 0001): `uv sync` installs only
 # the `dev` dependency group into `.harness/.venv`, never the project itself. Manage dev tools with
 # `uv add --dev` / `uv remove --dev`; never pip.
 package = false
@@ -27,7 +27,7 @@ files = [
     "skills/first-party/pvmalove/qa-gate/scripts/test_summary.py",
 ]
 # Imports `tree_sitter*`, which only the parser bundle provides: checked by the separate mypy run in
-# the `repo-map-bundle` CI job with the bundle installed (ADR 0024).
+# the `repo-map-bundle` CI job with the bundle installed (ADR 0008).
 exclude = ["^harness/repo_map/tree_sitter_worker\\.py$"]
 
 [tool.pytest.ini_options]
@@ -59,7 +59,7 @@ dev = [
     "pytest-xdist==3.8.0",
     "ruff==0.8.6",
     # harness console TUI tests (tests/test_console_app.py) - same pin as
-    # harness/console/pin.py (ADR 0025); tests/test_console_pin.py keeps them equal. Dev-only:
+    # harness/console/pin.py (ADR 0009); tests/test_console_pin.py keeps them equal. Dev-only:
     # `harness console` itself gets textual through `uv run --with`, never a project dependency.
     "textual==6.5.0",
 ]

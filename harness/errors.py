@@ -2,7 +2,7 @@
 
 Every harness-specific exception carries a `.message` (what went wrong) and a required, keyword-only
 `.remedy` (a concrete corrective action) instead of a bare human-readable string, so a caller can act
-on a failure without reading the source. See docs/adr/0021-shared-harness-errors-base-class-with-remedy.md.
+on a failure without reading the source. See docs/adr/0007-python-quality.md.
 """
 
 from __future__ import annotations

@@ -21,8 +21,8 @@
     { "id": "snapshot", "type": "database", "label": ".harness/skills", "stage": 2, "row": 2 },
     { "id": "roots", "type": "backend", "label": "Relative roots", "stage": 3, "row": 1 },
     { "id": "registry", "type": "database", "label": "REGISTRY.md", "stage": 3, "row": 3 },
-    { "id": "native", "type": "external", "label": "Native runtimes", "stage": 4, "row": 1, "width": 198 },
-    { "id": "hermes", "type": "external", "label": "Hermes Agent", "stage": 4, "row": 3 }
+    { "id": "native", "type": "external", "label": "Claude Code + Codex", "stage": 4, "row": 1, "width": 198 },
+    { "id": "health", "type": "external", "label": "harness health", "stage": 4, "row": 3 }
   ],
   "flows": [
     { "from": "catalog", "to": "resolver", "label": "capability definition", "classification": "source of truth", "variant": "emphasis" },
@@ -32,11 +32,11 @@
     { "from": "snapshot", "to": "roots", "label": "relative links", "classification": "same snapshot", "variant": "default" },
     { "from": "snapshot", "to": "registry", "label": "compact metadata", "classification": "fallback", "variant": "dashed" },
     { "from": "roots", "to": "native", "label": "select and open skill", "classification": "native discovery", "variant": "emphasis", "labelDy": 53 },
-    { "from": "registry", "to": "hermes", "label": "lookup then open", "classification": "progressive disclosure", "variant": "dashed", "labelDy": 53 }
+    { "from": "registry", "to": "health", "label": "verify inventory", "classification": "snapshot integrity", "variant": "dashed", "labelDy": 53 }
   ],
   "cards": [
     { "dot": "cyan", "title": "Provenance", "items": ["Catalog chooses a coherent capability", "Vendor and first-party packages remain distinct"] },
     { "dot": "emerald", "title": "Один snapshot", "items": ["CLI materializes .harness/skills", "Links avoid copying skill bodies per runtime"] },
-    { "dot": "violet", "title": "Потребление", "items": ["Четыре runtimes discover natively", "Hermes routes through compact registry"] }
+    { "dot": "violet", "title": "Потребление", "items": ["Claude Code и Codex используют links", "health сверяет установленный реестр"] }
   ]
 }

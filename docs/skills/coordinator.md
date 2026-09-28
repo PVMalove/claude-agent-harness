@@ -35,3 +35,7 @@ Coordinator записывает ровно одно текущее состоя
 ## 5. Архитектурная схема
 
 ![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[coordinator.py](../../harness/orchestration/coordinator.py)

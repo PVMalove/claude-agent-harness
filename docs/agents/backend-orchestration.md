@@ -6,7 +6,7 @@
 политике approval. Роли не расширяют свой scope, не выбирают модель и не мержат pull request.
 
 Целостный действующий контракт capability, включая её место в системе, роли, clean-room QA и
-локальное state-хранилище, приведён в [current-state.md](./current-state.md). Этот документ
+локальное state-хранилище, приведён в [backend-orchestration.md](./backend-orchestration.md). Этот документ
 содержит подробную процедуру настройки и запуска.
 
 Используйте её, когда у задачи есть независимые backend-границы или обязательная независимая
@@ -538,7 +538,7 @@ Context Package ID и required gates. `dispatch create` с явным approval �
 (общий минимум для репозитория) и/или `min_tier_by_role` (переопределение по роли, ключи ровно
 `architect`/`developer`/`code-review`), порядок разрешения — override роли, затем `min_tier`, затем
 отсутствие гейта. Если для роли задан минимум и фактический tier закреплённого Context Package хуже
-требуемого (порядок уровней по ADR 0023: `minimal` < `full`), и `dispatch propose`, и `dispatch create`
+требуемого (порядок уровней по ADR 0008: `minimal` < `full`), и `dispatch propose`, и `dispatch create`
 отклоняются с причиной, называющей роль, фактический и требуемый tier, ещё до какого-либо approval —
 эта проверка выполняется в общем пути перед веткой `propose`/`create`, поэтому готовый
 `--transition-digest` её не обходит. Роль, не перечисленная в `min_tier_by_role`, при отсутствии
@@ -763,7 +763,7 @@ provider-поле остаётся `null`, а не оценочным нулём
 `level` — `"ok"` пока `observed` (или его отсутствие) ниже `warn_at`, `"warn"` — в диапазоне
 `[warn_at, context_limit)`, `"over"` — на `context_limit` и выше. Это чистая оценка: она не
 триггерит checkpoint автоматически — решение о checkpoint остаётся за coordinator-ом, как и для
-любого другого сигнала, кроме auto-resume по 429 (см. `current-state.md`). Baseline из
+любого другого сигнала, кроме auto-resume по 429 (см. the continuation section above). Baseline из
 `playbook.md` («Baseline metrics») тем же образом остаётся ориентиром, а не скрытым лимитом.
 
 ### Checkpoint и новая worker session
@@ -927,8 +927,8 @@ post-integration defects, включая источник и отсутству�
 контрактом приоритет у manifest'а, immutable brief и явного approval.
 
 Архитектурный контракт маршрута целиком зафиксирован в
-[ADR 0003](../adr/0003-opt-in-human-governed-orchestration.md): opt-in capability, отдельное
+[ADR 0003](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0003-orchestration-core.md): opt-in capability, отдельное
 approval для dispatch, review и QA для одного SHA, локальное санитизированное evidence и adapter
 только для транспорта. Превращение `/implement` в coordinator-driven конвейер по умолчанию, model
 self-report, dispatch watchdog, per-role transport и zero-config дефолты зафиксированы в
-[ADR 0014](../adr/0014-coordinator-driven-implement-pipeline.md).
+[ADR 0005](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0005-implement-pipeline.md).

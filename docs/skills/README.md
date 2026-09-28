@@ -17,14 +17,21 @@
 - [Messaging Integration](./messaging-integration.md), [Database Migrations](./database-migrations.md)
 - [Playbook](./playbook.md), [Pilot](./pilot.md)
 
+## Закреплённые upstream skills
+
+Русские описания всех 25 skills из `skills/vendor/mattpocock/` находятся в
+[vendor/](./vendor/). Их исходные `SKILL.md` закреплены в upstream snapshot и не правятся
+вручную. Совпадающие имена first-party overrides описаны здесь отдельно по действующей
+версии `pvmalove-suite`.
+
 ## Связанные документы
 
 - Discovery Context начинается в `/grilling` через opt-in `Live Artifact`, проходит через
   `Relevant Files` и ticket-specific Path inventory, а backend batch использует LLM-free
   `Context Package`, checkpoint/continuation для write-роли и base-commit gate. Операционные
   правила собраны в [backend-orchestration](../agents/backend-orchestration.md), актуальное
-  состояние — в [current-state](../agents/current-state.md), решение записано в
-  [ADR 0016](../adr/0016-context-package-checkpoint-continuation-and-base-commit-gate.md).
+  устройство — в [ADR 0003](../adr/0003-orchestration-core.md), конвейер записан в
+  [ADR 0005](../adr/0005-implement-pipeline.md).
 - Внутренние агенты: [`docs/agents/`](../agents/)
 - Политики-хуки: [`docs/hooks/`](../hooks/)
 - Редактируемая Archify-спецификация: [`docs/diagrams/skill-contract-fill.workflow.json`](../diagrams/skill-contract-fill.workflow.json)

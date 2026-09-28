@@ -37,3 +37,7 @@ review dispatch. Advisory tool call остаётся эфемерным non-role
 ## 4. Архитектурная схема
 
 ![Контракт playbook: вход, координация, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[playbook.md](../../harness/orchestration/playbook.md)

@@ -1,4 +1,4 @@
-"""Byte-identical output across cold cache runs for the new #279 languages (ADR 0024).
+"""Byte-identical output across cold cache runs for the new #279 languages (ADR 0008).
 
 Same guarantee as the existing Python/TS/JS determinism test (tests/test_repo_map_tree_sitter.py),
 checked once per new language rather than folded into each language's own signature/relations file.

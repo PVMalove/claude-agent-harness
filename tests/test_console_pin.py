@@ -1,4 +1,4 @@
-"""Keeps two textual pins equal: harness/console/pin.py (what `uv run --with` requests, ADR 0025)
+"""Keeps two textual pins equal: harness/console/pin.py (what `uv run --with` requests, ADR 0009)
 and pyproject.toml's [dependency-groups].dev (what `uv sync` installs for local TUI tests)."""
 
 from __future__ import annotations

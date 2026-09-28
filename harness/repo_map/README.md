@@ -251,7 +251,7 @@ lock, CycloneDX 1.6 SBOM и результат `pip-audit` с пустым кэ�
 существующего GitHub Release, который указывает на коммит запуска. После проверок workflow сохраняет
 artifact запуска и загружает архив bundle как Release asset; существующий asset не перезаписывается.
 Wheels в репозиторий не коммитятся. Контракт поставки описан в
-[ADR 0024](../../docs/adr/0024-repo-map-parser-bundle-composition-and-delivery.md).
+[ADR 0008](../../docs/adr/0008-repo-map.md).
 
 ## Архитектурные решения и SOLID
 

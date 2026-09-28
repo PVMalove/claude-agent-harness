@@ -124,3 +124,7 @@ Issue tracker должен быть предоставлен. Если `docs/age
 ## 4. Архитектурная схема
 
 ![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[SKILL.md](../../skills/first-party/pvmalove/code-review/SKILL.md)

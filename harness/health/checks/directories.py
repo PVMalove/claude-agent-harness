@@ -28,6 +28,7 @@ SANDBOX_CATEGORY_ORDER: tuple[str, ...] = (
     "cache",
     "logs",
     "scratch",
+    "pr_body",
     "runs",
     "reports",
     "worktrees",

@@ -3,7 +3,7 @@ validators of harness.lock, overlay locks, integrations, project.json and orches
 
 One definition shared by the packager (`harness/bin/harness.py` imports everything it needs from
 here) and the `files` health checks (checks/files.py), so this package works standalone once
-copied into an installed project's `.harness/health/` (see docs/adr/0018 for the same
+copied into an installed project's `.harness/health/` (see docs/adr/0001 for the same
 bootstrap-alias approach `harness/repo_map/repo_map.py` uses). Nothing here builds a CheckResult:
 validators append human-readable problems, and checks/files.py turns them into results.
 """

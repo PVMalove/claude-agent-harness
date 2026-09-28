@@ -47,6 +47,7 @@ class CleanupTests(unittest.TestCase):
         old_run = sandboxes / "runs" / "old"
         active_run = sandboxes / "runs" / "active"
         scratch_file = sandboxes / "scratch" / "transit.md"
+        publication_file = sandboxes / "pr_body" / "pr-body-1-test.md"
         log_file = sandboxes / "logs" / "session.log"
         sandboxes_cache = sandboxes / "cache" / "rebuildable.json"
         sandboxes_reports = sandboxes / "reports" / "report.html"
@@ -62,6 +63,7 @@ class CleanupTests(unittest.TestCase):
             old_run,
             active_run,
             scratch_file.parent,
+            publication_file.parent,
             log_file.parent,
             sandboxes_cache.parent,
             sandboxes_reports.parent,
@@ -78,7 +80,8 @@ class CleanupTests(unittest.TestCase):
         (active_run / ".active.json").write_text(
             json.dumps({"pid": os.getpid()}), encoding="utf-8"
         )
-        scratch_file.write_text("transient PR body", encoding="utf-8")
+        scratch_file.write_text("role inbox message", encoding="utf-8")
+        publication_file.write_text("transient PR body", encoding="utf-8")
         log_file.write_text("test logs", encoding="utf-8")
         sandboxes_cache.write_text("rebuildable", encoding="utf-8")
         sandboxes_reports.write_text("report", encoding="utf-8")
@@ -96,6 +99,7 @@ class CleanupTests(unittest.TestCase):
         expected_remove = {
             str(old_run),
             str(scratch_file),
+            str(publication_file),
             str(log_file),
             str(legacy_cache),
             str(legacy_tmp),
@@ -109,6 +113,7 @@ class CleanupTests(unittest.TestCase):
         self.assertFalse(result["failed"])
         self.assertFalse(old_run.exists())
         self.assertFalse(scratch_file.exists())
+        self.assertFalse(publication_file.exists())
         self.assertFalse(log_file.exists())
         self.assertFalse(legacy_cache.exists())
         self.assertFalse(legacy_scratch.exists())

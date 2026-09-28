@@ -12,3 +12,7 @@
 - **Выход (Output/Report):** Возвращает код `0`, если опасных паттернов не найдено. Возвращает код `2` и сообщение в `stderr`, если команда заблокирована.
 ## 4. Архитектурная схема
 ![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[block-dangerous-git.sh](../../harness/project/hooks/block-dangerous-git.sh)

@@ -7,7 +7,7 @@ matters once this package is copied byte-for-byte into an installed project's `.
 (the way CAPABILITIES.json resources already copy `harness/repo_map/repo_map.py`) and later
 launched there without the canonical `harness/` package alongside it on `sys.path` - the harness
 console (#348) is the first consumer of that path. It mirrors the bootstrap alias
-`harness/repo_map/repo_map.py` uses today; see docs/adr/0018.
+`harness/repo_map/repo_map.py` uses today; see docs/adr/0001.
 """
 
 from __future__ import annotations

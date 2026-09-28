@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Diff-coverage gate: unittest coverage of exactly the Python lines changed since the base
-branch (never a repo-wide gate -- see docs/adr/0021-shared-harness-errors-base-class-with-remedy.md
+branch (never a repo-wide gate -- see docs/adr/0007-python-quality.md
 and ticket #219, which introduced this alongside HarnessError so a partially-migrated legacy
 module never blocks an unrelated change)."""
 

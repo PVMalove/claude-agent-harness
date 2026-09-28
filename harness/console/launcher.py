@@ -1,5 +1,5 @@
 """Relaunch `harness console` under a one-off `uv run --with textual==<pin>` environment
-(ADR 0025) without ever touching the target project's own dependencies: `dependencies` in
+(ADR 0009) without ever touching the target project's own dependencies: `dependencies` in
 `pyproject.toml` stays `[]`, and `--no-project` keeps `uv run` from installing anything from a
 `pyproject.toml`/`uv.lock` it happens to run inside.
 

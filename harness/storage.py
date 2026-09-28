@@ -12,7 +12,7 @@ from pathlib import Path
 
 SANDBOXES_DIR = ".sandboxes"
 SANDBOX_CATEGORIES = frozenset(
-    {"cache", "logs", "scratch", "runs", "reports", "worktrees"}
+    {"cache", "logs", "scratch", "pr_body", "runs", "reports", "worktrees"}
 )
 LEGACY_STORAGE_DIRS = (".cache", "test-logs", "tmp", "reports", "scratch")
 

@@ -1,4 +1,4 @@
-"""Repo Map Go support against a real, verified tree-sitter parser bundle (ADR 0024, #279).
+"""Repo Map Go support against a real, verified tree-sitter parser bundle (ADR 0008, #279).
 
 A separate file, never a `pytest -k` filter, so an unavailable bundle or empty collection is a
 hard failure instead of a silent zero-test skip (the CI matrix leg runs only this file).
@@ -58,7 +58,7 @@ def test_go_signatures_and_relations_come_from_tree_sitter(
         "kind": "unique-name-ref",
         "confidence": "medium",
     } in edges
-    # Import edges stay Python/JS-only (ADR 0024): Go gets name-ref relations, never import edges.
+    # Import edges stay Python/JS-only (ADR 0008): Go gets name-ref relations, never import edges.
     assert not any(edge["kind"] == "import" for edge in edges)
     assert b"function bodies are never serialized" not in raw
     assert b"must not be serialized" not in raw

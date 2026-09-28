@@ -309,8 +309,8 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
             else:
                 _process_run_entry(entry, is_qa=False)
 
-    # 2. Scratch & Logs: transit files in .sandboxes/scratch and .sandboxes/logs
-    for category in ("scratch", "logs"):
+    # 2. Transit files in scratch, PR bodies, and logs.
+    for category in ("scratch", "pr_body", "logs"):
         parent = sandboxes / category
         if parent.is_dir() and not parent.is_symlink():
             for path in sorted(parent.rglob("*")):

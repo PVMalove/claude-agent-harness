@@ -3,7 +3,7 @@
 These tests need `HARNESS_PARSER_BUNDLE_DIR` pointing at a directory assembled by
 scripts/build_parser_bundle.py. Without the variable they are skipped, so the main test run stays
 offline and tree-sitter-free; the bundle CI job sets it, and a set variable whose bundle is missing
-fails instead of skipping (ADR 0024: an unavailable artifact is a failure, not a silent skip).
+fails instead of skipping (ADR 0008: an unavailable artifact is a failure, not a silent skip).
 """
 
 import json
@@ -214,7 +214,7 @@ def test_typescript_javascript_signatures_edges_and_provenance(
     assert isinstance(provenance, dict)
     grammars = provenance["grammars"]
     assert isinstance(grammars, list)
-    # Provenance lists every grammar the bundle carries (ADR 0024), not only the ones this map's
+    # Provenance lists every grammar the bundle carries (ADR 0008), not only the ones this map's
     # files used -- Go/Java/C# joined the same bundle in #279.
     assert {grammar["name"] for grammar in grammars} == {
         "python",

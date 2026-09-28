@@ -8,6 +8,8 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+from harness.bin import harness as harness_cli
+
 from scripts.clean_room.support import (
     HARNESS,
     ROOT,
@@ -157,9 +159,8 @@ def run(ctx: SimpleNamespace) -> None:
             "selecting mattpocock-suite and pvmalove-suite together unexpectedly succeeded"
         )
 
-    # pvmalove-suite exercises extends (inherits mattpocock-suite's 25 skills), overrides (10 of
-    # those 25 swapped for a first-party source under the same name) and additions (4 new names
-    # with no mattpocock-suite equivalent) - docs/adr/0001. 25 + 4 = 29 distinct skill names.
+    # pvmalove-suite inherits 25 upstream skills, overrides 10 of them, and adds 6 names;
+    # the clean-room check below expects 31 distinct installed skills (ADR 0001).
     pv_project = test_root / "pv_project"
     pv_project.mkdir(parents=True)
     subprocess.run(["git", "init", "-q"], cwd=pv_project, check=True)
@@ -182,6 +183,28 @@ def run(ctx: SimpleNamespace) -> None:
             "echo test",
         ]
     )
+    # Provenance matters: target docs/agents are intentionally identical to their
+    # templates, so comparing bytes against root docs/ would reject a valid install.
+    root_docs = (ROOT / "docs").resolve()
+    selected = ["pvmalove-suite"]
+    sources = harness_cli.selected_skills(selected) + harness_cli.selected_resources(selected)
+    if any(source.resolve().is_relative_to(root_docs) for source in sources):
+        sys.exit("package_files selected a source from repository docs/")
+    payload = harness_cli.package_files(selected)
+    if any(not path.startswith(".harness/") for path in payload):
+        sys.exit("package_files emitted a path outside .harness/")
+    for destination, expected in payload.items():
+        if (pv_project / destination).read_bytes() != expected:
+            sys.exit(f"installed package differs from selected source: {destination}")
+    templates = harness_cli.PROJECT_TEMPLATE_DIR / "docs-agents"
+    installed_docs = pv_project / "docs" / "agents"
+    if {path.name for path in installed_docs.glob("*.md")} != {
+        path.name for path in templates.glob("*.md")
+    }:
+        sys.exit("target docs/agents did not come only from project templates")
+    for source in templates.glob("*.md"):
+        if (installed_docs / source.name).read_bytes() != source.read_bytes():
+            sys.exit(f"installed guide differs from project template: {source.name}")
     fill_agents(pv_project)
     run_ok(HARNESS + ["health", str(pv_project)])
     repo_map_health = find_check(

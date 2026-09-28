@@ -14,3 +14,7 @@
 - **Выход (Output/Report):** Создание или обновление файла-маркера `.claude/.qa-gate/passed`, содержащего строку вида `<HEAD_hash>:<diff_hash>`.
 ## 4. Архитектурная схема
 ![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[record-qa-gate-pass.sh](../../harness/project/hooks/record-qa-gate-pass.sh)

@@ -23,3 +23,7 @@ Messaging Integration — write-роль для границ outbox, message sch
 ## 4. Архитектурная схема
 
 ![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[messaging-integration.md](../../harness/orchestration/roles/messaging-integration.md)

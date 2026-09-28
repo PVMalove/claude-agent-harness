@@ -1,4 +1,4 @@
-"""Shared fixtures for the per-language real-bundle Repo Map tests (ADR 0024, #279).
+"""Shared fixtures for the per-language real-bundle Repo Map tests (ADR 0008, #279).
 
 `tests/test_repo_map_tree_sitter.py` keeps its own inline helpers (Python/TS/JS, #277); the
 per-language files added by #279 (Go, Java, C#, and the unsupported-language regression) share

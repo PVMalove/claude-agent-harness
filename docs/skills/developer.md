@@ -42,3 +42,7 @@ risk_triggers:
 ## 4. Архитектурная схема
 
 ![Контракт роли: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[developer.md](../../harness/orchestration/roles/developer.md)

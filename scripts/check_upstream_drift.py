@@ -157,7 +157,7 @@ def main() -> int:
             if needs_review:
                 print(
                     f"\nNeeds manual review before resync (pvmalove-suite overrides these by name, "
-                    f"docs/adr/0002 - compare against the new upstream version before deciding whether "
+                    f"docs/adr/0001 - compare against the new upstream version before deciding whether "
                     f"the first-party fork needs rebasing): {', '.join(needs_review)}"
                 )
 

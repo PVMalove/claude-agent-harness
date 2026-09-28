@@ -1,5 +1,5 @@
 """harness/health/ ships into an installed project's `.harness/health/` the same way
-harness/repo_map/repo_map.py ships into `.harness/repo_map/repo_map.py` (ADR 0018's bootstrap
+harness/repo_map/repo_map.py ships into `.harness/repo_map/repo_map.py` (ADR 0001's bootstrap
 alias) - see harness/health/__init__.py's docstring. This proves the shipped copy still runs with
 no `harness/bin/harness.py` and no canonical `harness/` package reachable, the scenario the harness
 console (#348) will run in; it is what would have caught the old harness/health/checks/_cli.py
@@ -135,6 +135,7 @@ def test_registry_runs_without_crashing_even_with_a_lock_file_present(
         "directories.cache",
         "directories.logs",
         "directories.scratch",
+        "directories.pr_body",
         "directories.runs",
         "directories.reports",
         "directories.worktrees",

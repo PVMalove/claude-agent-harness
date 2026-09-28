@@ -24,7 +24,7 @@ from typing import cast
 # `harness/bin/harness.py`'s package_files() copies this file verbatim into target projects as
 # `.harness/orchestration/coordinator.py` -- a different directory name than the source tree's
 # `harness/`. Alias `harness` to whichever of the two this file actually lives under so
-# `from harness...` resolves the same way in both places. See docs/adr/0018.
+# `from harness...` resolves the same way in both places. See docs/adr/0001.
 _HARNESS_ROOT: Path = Path(__file__).resolve().parents[1]
 _REPO_ROOT: Path = _HARNESS_ROOT.parent
 if str(_REPO_ROOT) not in sys.path:

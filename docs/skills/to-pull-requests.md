@@ -32,9 +32,9 @@ disable-model-invocation: true
    отсутствующие, непринятые или не совпадающие с SHA доказательства. Не запускайте `/qa-gate`
    повторно, когда эта проверка успешна. Если проект не является действительным opt-in, запустите
    `/qa-gate`, если этот репозиторий его предоставляет, и остановитесь при ошибке.
-4. Подготовьте тело PR по `docs/agents/git-workflow.md` §3. Храните его только в `.harness/.sandboxes/scratch/tmp/pr-body-<issue>-<slug>.md`, никогда в `docs/tasks/`. Разработчик может вручную запустить `pr-composer` в coding application; иначе заполните шаблон напрямую. Разрешите default branch репозитория и используйте `Closes #<ID>` только для этой цели, иначе `Related to #<ID>`.
+4. Подготовьте тело PR по `docs/agents/git-workflow.md` §3. Храните его только в `.harness/.sandboxes/pr_body/pr-body-<issue>-<slug>.md`, никогда в `docs/tasks/`. Разработчик может вручную запустить `pr-composer` в coding application; иначе заполните шаблон напрямую. Разрешите default branch репозитория и используйте `Closes #<ID>` только для этой цели, иначе `Related to #<ID>`.
 5. Попросите разработчика явно подтвердить, что ветка готова стать PR. Остановитесь для его ответа.
-6. После одобрения откройте PR/MR через CLI tracker-а с `--body-file <path>`. Удаляйте файл тела `.harness/.sandboxes/scratch/tmp/` только после успеха этой команды; при ошибке сохраните его для повторной попытки. Если тикет несёт `task-report::required`, опубликуйте его completion report в тикете, если разработчик не попросил пропустить это.
+6. После одобрения откройте PR/MR через CLI tracker-а с `--body-file <path>`. Удаляйте файл тела `.harness/.sandboxes/pr_body/` только после успеха этой команды; при ошибке сохраните его для повторной попытки. Если тикет несёт `task-report::required`, опубликуйте его completion report в тикете, если разработчик не попросил пропустить это.
 7. Верните ссылку на PR/MR в основной сессии и спросите, хочет ли разработчик его проверить. Никогда не выполняйте merge. После того как разработчик подтвердит merge, явно закройте тикет `Related to #<ID>`; для `Closes #<ID>` убедитесь, что tracker закрыл его.
 8. **Разблокируйте зависимые — обязательно после каждого закрытия, в той же сессии.** Метку `status::in-progress` закрытого тикета не трогайте: закрытое состояние и есть его терминальный `done`. Затем найдите все открытые тикеты, которые он блокировал, и переведите те, у которых теперь закрыты все блокеры:
    - **GitHub:** перечислите открытые issue со `status::blocked` (`gh issue list --state open --label status::blocked --json number`). Для каждого прочитайте нативные блокеры (`gh api repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by --jq '[.[] | select(.state=="open")] | length'`) и строку `Blocked by:` в теле. Если открытых блокеров нет, выполните `gh issue edit <n> --remove-label status::blocked --add-label status::ready`.
@@ -51,3 +51,7 @@ disable-model-invocation: true
 ## 4. Архитектурная схема
 
 ![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+
+## Источник
+
+[SKILL.md](../../skills/first-party/pvmalove/to-pull-requests/SKILL.md)

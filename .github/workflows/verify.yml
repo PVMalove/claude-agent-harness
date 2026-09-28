@@ -1,6 +1,7 @@
 name: verify
 
 on:
+  workflow_call:
   pull_request:
     types: [opened, synchronize, reopened, edited]
   push:
@@ -57,7 +58,7 @@ jobs:
         run: make verify
 
   parser-bundle:
-    # Real tree-sitter bundle path (ADR 0024): pinned wheels -> sha256 check -> offline bundle. It is
+    # Real tree-sitter bundle path (ADR 0008): pinned wheels -> sha256 check -> offline bundle. It is
     # assembled once here and handed to every `repo-map-bundle` leg as one artifact, so all legs test
     # byte-identical wheels and worker. An unavailable or substituted wheel fails this job.
     runs-on: ubuntu-latest

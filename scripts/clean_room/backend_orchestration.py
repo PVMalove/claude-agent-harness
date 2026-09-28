@@ -172,20 +172,13 @@ def run(ctx: SimpleNamespace) -> None:
     public_documentation = {
         ROOT / "README.md": (
             "`backend-orchestration`",
-            "человек явно утверждает каждый dispatch",
+            "PR требует отдельного подтверждения",
             "/to-pull-requests",
         ),
         ROOT / "CONTEXT.md": (
             "`reported`",
             "FIFO",
             "санитизирован",
-        ),
-        ROOT / "docs" / "agents" / "current-state.md": (
-            "`planned → awaiting-approval ↔ active → completed | blocked | failed`",
-            "immutable brief",
-            "Standards и Spec",
-            "FIFO quality-gate lane",
-            ".harness/orchestration/state/",
         ),
         ROOT / "docs" / "agents" / "backend-orchestration.md": (
             "`planned → awaiting-approval ↔ active → completed | blocked | failed`",
