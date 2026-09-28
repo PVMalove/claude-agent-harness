@@ -39,8 +39,8 @@
     { "from": "release", "to": "registry", "label": "архив", "variant": "dashed" }
   ],
   "cards": [
-    { "dot": "cyan", "title": "Зависимость от абстракции", "items": ["repo_map знает только ParserBackend", "Bundle ищется один раз на запуск"] },
-    { "dot": "amber", "title": "Доверие к bundle", "items": ["Lock, wheels и worker сверяются по SHA-256", "Установка только offline через uv"] },
-    { "dot": "emerald", "title": "Изоляция", "items": ["Грамматики грузятся лениво в worker", "Хвост stderr сбоя — в лог кэша"] }
+    { "dot": "cyan", "title": "Зависимость от абстракции", "items": ["repo_map зависит от ParserBackend", "Bundle определяется однократно за запуск"] },
+    { "dot": "amber", "title": "Доверие к bundle", "items": ["Lock, wheels и worker сверяются по SHA-256", "Установка выполняется offline через uv"] },
+    { "dot": "emerald", "title": "Изоляция", "items": ["Грамматики загружаются в worker по требованию", "Конец stderr при сбое записывается в лог кэша"] }
   ]
 }

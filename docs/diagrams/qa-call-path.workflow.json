@@ -4,7 +4,7 @@
   "meta": {
     "output": "docs/diagrams/qa-call-path.workflow.html",
     "title": "QA и создание PR: маршруты вызовов",
-    "subtitle": "test_summary.py вызывается только через /qa-gate",
+    "subtitle": "test_summary.py вызывается через /qa-gate",
     "quality_profile": "showcase",
     "legend": {
       "entries": {
@@ -144,7 +144,7 @@
       "col": 3,
       "type": "security",
       "label": "/qa-gate",
-      "tag": "если evidence нет",
+      "tag": "при отсутствии evidence",
       "width": 140
     },
     {
@@ -199,7 +199,7 @@
     {
       "from": "to_pr",
       "to": "qa_gate",
-      "label": "нет evidence",
+      "label": "evidence отсутствует",
       "role": "branch",
       "variant": "dashed"
     },

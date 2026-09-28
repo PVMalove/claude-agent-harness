@@ -5046,7 +5046,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         <g data-graph-role="automatic-crossover" style="--step:6">
           <path data-graph-role="automatic-crossover-underlay" d="M 950 690 L 1110 690" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="worktreeB" data-edge-to="scratch" data-edge-label="одноразовые файлы" data-edge-key="6" data-composition-points="950,690;1110,690" data-composition-crossover="halo" data-composition-independent="true" d="M 950 690 L 1110 690" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
+          <path data-edge-from="worktreeB" data-edge-to="scratch" data-edge-label="временные файлы" data-edge-key="6" data-composition-points="950,690;1110,690" data-composition-crossover="halo" data-composition-independent="true" d="M 950 690 L 1110 690" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
         </g>
 
         <!-- Components -->
@@ -5158,9 +5158,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="979.4" y="410" width="101.2" height="14" rx="3" class="c-mask"/>
           <text x="1030" y="420" class="t-edge-emphasis" font-size="8" text-anchor="middle">типизированный JSON</text>
         </g>
-        <g data-detail="context" data-edge-from="worktreeB" data-edge-to="scratch" data-edge-label="одноразовые файлы" data-edge-key="6">
-          <rect x="984.2" y="670" width="91.6" height="14" rx="3" class="c-mask"/>
-          <text x="1030" y="680" class="t-edge-dashed" font-size="8" text-anchor="middle">одноразовые файлы</text>
+        <g data-detail="context" data-edge-from="worktreeB" data-edge-to="scratch" data-edge-label="временные файлы" data-edge-key="6">
+          <rect x="989" y="670" width="82" height="14" rx="3" class="c-mask"/>
+          <text x="1030" y="680" class="t-edge-dashed" font-size="8" text-anchor="middle">временные файлы</text>
         </g>
 
         <!-- Boundary labels (foreground masks keep routes out of titles) -->
@@ -5373,7 +5373,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Раздельная запись</h3>
         </div>
         <ul>
-          <li>Каждый batch владеет своей issue-веткой и worktree</li>
+          <li>Batch владеет собственной issue-веткой и worktree</li>
           <li>Одновременно активен один writer в batch</li>
         </ul>
       </div>

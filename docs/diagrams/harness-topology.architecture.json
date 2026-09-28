@@ -33,7 +33,7 @@
     { "from": "snapshot", "to": "codex", "label": ".agents/skills", "variant": "dashed" }
   ],
   "cards": [
-    { "dot": "cyan", "title": "Один источник", "items": ["Capability описывает состав", "Пакеты остаются первоисточником"] },
+    { "dot": "cyan", "title": "Единый источник", "items": ["Capability описывает состав", "Пакеты остаются первоисточником"] },
     { "dot": "emerald", "title": "Один snapshot", "items": ["Проект хранит .harness/skills", "Claude Code и Codex читают те же файлы"] },
     { "dot": "violet", "title": "Discovery", "items": [".claude/skills → Claude Code", ".agents/skills → Codex"] }
   ]

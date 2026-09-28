@@ -5035,11 +5035,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
         <!-- Edge paths -->
         <path data-edge-from="confirm" data-edge-to="draft" data-edge-label="да" data-edge-key="0" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="418,217;418,119;461,119" d="M 418 217 L 418 119 L 461 119" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="confirm" data-edge-to="seams" data-edge-label="правки" data-edge-key="1" data-composition-routing="workflow-v2-auto" data-edge-role="return" data-composition-points="404,217;404,119;366,119" d="M 404 217 L 404 119 L 366 119" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="confirm" data-edge-to="seams" data-edge-label="доработка" data-edge-key="1" data-composition-routing="workflow-v2-auto" data-edge-role="return" data-composition-points="341,243;291,243;291,145" d="M 341 243 L 291 243 L 291 145" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
         <path data-edge-from="draft" data-edge-to="publish" data-edge-label="без inline --body" data-edge-key="2" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="531,145;531,228;651,228;651,341" d="M 531 145 L 531 228 L 651 228 L 651 341" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="publish" data-edge-to="branch" data-edge-label="после публикации" data-edge-key="3" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="736,367;830.8,367" d="M 736 367 L 830.8 367" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="research" data-edge-to="seams" data-edge-key="4" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="188,119;216,119" d="M 188 119 L 216 119" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="seams" data-edge-to="confirm" data-edge-label="на подтверждение" data-edge-key="5" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="291,145;291,166;387,166;387,217" d="M 291 145 L 291 166 L 387 166 L 387 217" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="seams" data-edge-to="confirm" data-edge-label="на подтверждение" data-edge-key="5" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="303,145;303,166;387,166;387,217" d="M 303 145 L 303 166 L 387 166 L 387 217" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
 
         <!-- Nodes -->
         <g id="node-research" data-node-id="research" data-node-label="Исследовать" tabindex="0" role="button" aria-label="Focus Исследовать, CONTEXT.md, ADR, Агент /to-spec › Фаза 1: seam&#39;ы" aria-pressed="false" data-node-kind="backend" data-node-sublabel="CONTEXT.md, ADR" data-node-context="Агент /to-spec › Фаза 1: seam&#39;ы">
@@ -5115,9 +5115,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="424.5" y="99" width="30" height="14" rx="3" class="c-mask"/>
           <text x="439.5" y="109" class="t-edge-emphasis" font-size="8" text-anchor="middle">да</text>
         </g>
-        <g data-detail="context" data-edge-from="confirm" data-edge-to="seams" data-edge-label="правки" data-edge-key="1">
-          <rect x="365.6" y="99" width="38.8" height="14" rx="3" class="c-mask"/>
-          <text x="385" y="109" class="t-edge-dashed" font-size="8" text-anchor="middle">правки</text>
+        <g data-detail="context" data-edge-from="confirm" data-edge-to="seams" data-edge-label="доработка" data-edge-key="1">
+          <rect x="289.4" y="223" width="53.199999999999996" height="14" rx="3" class="c-mask"/>
+          <text x="316" y="233" class="t-edge-dashed" font-size="8" text-anchor="middle">доработка</text>
         </g>
         <g data-detail="context" data-edge-from="draft" data-edge-to="publish" data-edge-label="без inline --body" data-edge-key="2">
           <rect x="545.2" y="208" width="91.6" height="14" rx="3" class="c-mask"/>
@@ -5129,8 +5129,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
 
         <g data-detail="context" data-edge-from="seams" data-edge-to="confirm" data-edge-label="на подтверждение" data-edge-key="5">
-          <rect x="295.6" y="146" width="86.8" height="14" rx="3" class="c-mask"/>
-          <text x="339" y="156" class="t-edge-default" font-size="8" text-anchor="middle">на подтверждение</text>
+          <rect x="301.6" y="146" width="86.8" height="14" rx="3" class="c-mask"/>
+          <text x="345" y="156" class="t-edge-default" font-size="8" text-anchor="middle">на подтверждение</text>
         </g>
 
         <!-- Legend -->
@@ -5332,18 +5332,18 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       <div class="card">
         <div class="card-header">
           <div class="card-dot cyan"></div>
-          <h3>Не интервью</h3>
+          <h3>Синтез, а не интервью</h3>
         </div>
         <ul>
-          <li>Синтез уже обсуждённого, без новых вопросов</li>
-          <li>Недостающее — явные допущения</li>
+          <li>Обобщается обсуждённое, без дополнительных вопросов</li>
+          <li>Недостающие сведения фиксируются как допущения</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
           <div class="card-dot amber"></div>
-          <h3>Эпик в этой сборке</h3>
+          <h3>Эпик в данной сборке</h3>
         </div>
         <ul>
           <li>status::specs + task-report::required</li>

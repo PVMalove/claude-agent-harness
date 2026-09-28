@@ -5056,11 +5056,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         </g>
 
-        <g data-edge-from="backend" data-edge-to="bundle" data-edge-label="locate_bundle() — один раз" data-edge-key="3">
+        <g data-edge-from="backend" data-edge-to="bundle" data-edge-label="locate_bundle() — однократно" data-edge-key="3">
           <path data-composition-edge-from="backend" data-composition-edge-to="bundle" data-composition-points="738,290;1115.3333333333333,290" d="M 738 290 L 1115.3333333333333 290" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <g data-detail="context">
-          <rect x="834.8666666666667" y="270" width="183.6" height="18" rx="3" class="c-mask"/>
-          <text x="926.6666666666666" y="280" class="t-edge-emphasis" font-size="11" text-anchor="middle">locate_bundle() — один раз</text>
+          <rect x="828.2666666666667" y="270" width="196.79999999999998" height="18" rx="3" class="c-mask"/>
+          <text x="926.6666666666666" y="280" class="t-edge-emphasis" font-size="11" text-anchor="middle">locate_bundle() — однократно</text>
         </g>
         </g>
 
@@ -5451,18 +5451,18 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Один bundle на запуск</h3>
         </div>
         <ul>
-          <li>Тот же найденный bundle даёт ключ кэша и разбор</li>
-          <li>Два процесса git на весь коммит</li>
+          <li>Найденный bundle используется для ключа кэша и разбора</li>
+          <li>Для коммита запускаются два процесса git</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
           <div class="card-dot amber"></div>
-          <h3>Деградация без исключений</h3>
+          <h3>Контролируемая деградация</h3>
         </div>
         <ul>
-          <li>Любой сбой bundle → tier minimal</li>
+          <li>При сбое bundle — tier minimal</li>
           <li>Причина пишется в degradation_reason</li>
         </ul>
       </div>
@@ -5473,7 +5473,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Граница процесса</h3>
         </div>
         <ul>
-          <li>Типы tree-sitter не покидают worker</li>
+          <li>Типы tree-sitter остаются в worker</li>
           <li>Политика и граф — в основном процессе</li>
         </ul>
       </div>

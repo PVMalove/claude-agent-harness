@@ -52,7 +52,7 @@
       "col": 0,
       "type": "backend",
       "label": "Destination",
-      "sublabel": "логины через внешний IdP",
+      "sublabel": "вход через внешний IdP",
       "width": 170
     },
     {
@@ -61,7 +61,7 @@
       "col": 1,
       "type": "backend",
       "label": "Фронтир",
-      "sublabel": "3 пункта тумана",
+      "sublabel": "3 неясных пункта",
       "width": 140
     },
     {
@@ -106,7 +106,7 @@
       "col": 3,
       "type": "backend",
       "label": "Сессия B",
-      "sublabel": "force reset при логине",
+      "sublabel": "принудительный сброс при входе",
       "width": 170
     },
     {
@@ -166,8 +166,8 @@
       "dot": "cyan",
       "title": "Сессии",
       "items": [
-        "Chart the map ничего не разрешает сам",
-        "Одна сессия — один тикет, кроме research"
+        "На шаге Chart the map решения не принимаются",
+        "В сессии обрабатывается один тикет, кроме research"
       ]
     }
   ],

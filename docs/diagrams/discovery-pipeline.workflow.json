@@ -95,7 +95,7 @@
       "type": "security",
       "label": "Explicit opt-in",
       "sublabel": "выбор путей",
-      "tag": "нет default-yes",
+      "tag": "без default-yes",
       "width": 148
     },
     {
@@ -140,8 +140,8 @@
       "col": 4,
       "type": "cloud",
       "label": "Cheap advisory",
-      "sublabel": "только добавляет",
-      "tag": "не authority",
+      "sublabel": "режим добавления",
+      "tag": "без полномочий",
       "width": 148
     },
     {
@@ -195,7 +195,7 @@
     {
       "from": "repo_map",
       "to": "advisory",
-      "label": "один дешёвый вызов"
+      "label": "один недорогой вызов"
     },
     {
       "from": "advisory",
@@ -222,9 +222,9 @@
       "dot": "amber",
       "title": "Граница доверия",
       "items": [
-        "Live Artifact меняется только после явного согласия",
-        "Advisory может только добавлять exact Path inventory paths",
-        "Ни advisory, ни роль не авторизуют dispatch"
+        "Live Artifact изменяется после явного согласия",
+        "Advisory ограничен добавлением точных путей из Path inventory",
+        "Авторизация dispatch не входит в полномочия advisory и ролей"
       ]
     },
     {

@@ -5031,7 +5031,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <!-- Edge paths -->
         <path data-edge-from="adopt" data-edge-to="health" data-edge-key="0" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="762.4,217;762.4,112;805.4,112" d="M 762.4 217 L 762.4 112 L 805.4 112" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="diff" data-edge-to="update" data-edge-label="обновить" data-edge-key="1" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="476,367;532.4,367" d="M 476 367 L 532.4 367" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="has_lock" data-edge-to="diff" data-edge-label="да: посмотреть" data-edge-key="2" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="286,145;286,420;406,420;406,393" d="M 286 145 L 286 420 L 406 420 L 406 393" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="has_lock" data-edge-to="diff" data-edge-label="да: просмотр" data-edge-key="2" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="286,145;286,420;406,420;406,393" d="M 286 145 L 286 420 L 406 420 L 406 393" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
         <path data-edge-from="has_lock" data-edge-to="own_skills" data-edge-label="нет" data-edge-key="3" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="298,145;298,243;331,243" d="M 298 145 L 298 243 L 331 243" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="init" data-edge-to="health" data-edge-key="4" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="607.4,269;607.4,296;875.4,296;875.4,145" d="M 607.4 269 L 607.4 296 L 875.4 296 L 875.4 145" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="own_skills" data-edge-to="adopt" data-edge-label="да" data-edge-key="5" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="406,217;406,201;748.4,201;748.4,217" d="M 406 217 L 406 201 L 748.4 201 L 748.4 217" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
@@ -5078,16 +5078,16 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <text data-detail="context" x="875.4" y="131" class="t-muted" font-size="8" text-anchor="middle">проверить установку</text>
         </g>
 
-        <g id="node-own_skills" data-node-id="own_skills" data-node-label="Имена заняты?" tabindex="0" role="button" aria-label="Focus Имена заняты?, свои скиллы в .harness/skills, Первая установка" aria-pressed="false" data-node-kind="security" data-node-sublabel="свои скиллы в .harness/skills" data-node-context="Первая установка">
-          <title>Имена заняты? · свои скиллы в .harness/skills · Первая установка</title>
+        <g id="node-own_skills" data-node-id="own_skills" data-node-label="Конфликт имён?" tabindex="0" role="button" aria-label="Focus Конфликт имён?, собственные скиллы в .harness/skills, Первая установка" aria-pressed="false" data-node-kind="security" data-node-sublabel="собственные скиллы в .harness/skills" data-node-context="Первая установка">
+          <title>Конфликт имён? · собственные скиллы в .harness/skills · Первая установка</title>
           <rect x="331" y="217" width="150" height="52" rx="6" class="c-mask"/>
           <rect x="331" y="217" width="150" height="52" rx="6" class="c-security" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(337 223) scale(0.6875)">
             <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="406" y="238" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Имена заняты?</text>
-          <text data-detail="context" x="406" y="255" class="t-muted" font-size="8" text-anchor="middle">свои скиллы в .harness/skills</text>
+          <text data-node-label="" data-detail-anchor="" x="406" y="238" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Конфликт имён?</text>
+          <text data-detail="context" x="406" y="255" class="t-muted" font-size="6.5" text-anchor="middle">собственные скиллы в .harness/skills</text>
         </g>
 
         <g id="node-init" data-node-id="init" data-node-label="harness init" tabindex="0" role="button" aria-label="Focus harness init, первая установка, Первая установка" aria-pressed="false" data-node-kind="backend" data-node-sublabel="первая установка" data-node-context="Первая установка">
@@ -5112,8 +5112,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <text data-detail="context" x="755.4" y="255" class="t-muted" font-size="8" text-anchor="middle">--replace-conflicts</text>
         </g>
 
-        <g id="node-diff" data-node-id="diff" data-node-label="harness diff" tabindex="0" role="button" aria-label="Focus harness diff, exit 0 чисто, 1 дрейф, Харнесс уже есть" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="exit 0 чисто, 1 дрейф" data-node-context="Харнесс уже есть">
-          <title>harness diff · exit 0 чисто, 1 дрейф · Харнесс уже есть</title>
+        <g id="node-diff" data-node-id="diff" data-node-label="harness diff" tabindex="0" role="button" aria-label="Focus harness diff, exit 0 — без дрейфа, 1 — дрейф, Харнесс уже есть" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="exit 0 — без дрейфа, 1 — дрейф" data-node-context="Харнесс уже есть">
+          <title>harness diff · exit 0 — без дрейфа, 1 — дрейф · Харнесс уже есть</title>
           <rect x="336" y="341" width="140" height="52" rx="6" class="c-mask"/>
           <rect x="336" y="341" width="140" height="52" rx="6" class="c-messagebus" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(342 347) scale(0.6875)">
@@ -5123,7 +5123,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <circle cx="7" cy="11.5" r="1" class="sigil-fill"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="406" y="362" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">harness diff</text>
-          <text data-detail="context" x="406" y="379" class="t-muted" font-size="8" text-anchor="middle">exit 0 чисто, 1 дрейф</text>
+          <text data-detail="context" x="406" y="379" class="t-muted" font-size="7.3" text-anchor="middle">exit 0 — без дрейфа, 1 — дрейф</text>
         </g>
 
         <g id="node-update" data-node-id="update" data-node-label="harness update" tabindex="0" role="button" aria-label="Focus harness update, новая версия capability, Харнесс уже есть" aria-pressed="false" data-node-kind="backend" data-node-sublabel="новая версия capability" data-node-context="Харнесс уже есть">
@@ -5143,9 +5143,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="480" y="347" width="48.4" height="14" rx="3" class="c-mask"/>
           <text x="504.2" y="357" class="t-edge-default" font-size="8" text-anchor="middle">обновить</text>
         </g>
-        <g data-detail="context" data-edge-from="has_lock" data-edge-to="diff" data-edge-label="да: посмотреть" data-edge-key="2">
-          <rect x="307.4" y="400" width="77.2" height="14" rx="3" class="c-mask"/>
-          <text x="346" y="410" class="t-edge-dashed" font-size="8" text-anchor="middle">да: посмотреть</text>
+        <g data-detail="context" data-edge-from="has_lock" data-edge-to="diff" data-edge-label="да: просмотр" data-edge-key="2">
+          <rect x="312.2" y="400" width="67.6" height="14" rx="3" class="c-mask"/>
+          <text x="346" y="410" class="t-edge-dashed" font-size="8" text-anchor="middle">да: просмотр</text>
         </g>
         <g data-detail="context" data-edge-from="has_lock" data-edge-to="own_skills" data-edge-label="нет" data-edge-key="3">
           <rect x="299.5" y="223" width="30" height="14" rx="3" class="c-mask"/>
@@ -5174,13 +5174,13 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <rect x="166" y="440" width="14" height="9" rx="2" class="c-security" stroke-width="1"/>
             <text x="188" y="448" class="t-muted" font-size="7.5" font-weight="500">Развилка</text>
           </g>
-          <g data-legend-semantic-kind="messagebus" data-legend-kind="messagebus" data-legend-label="Команда только читает" data-legend-x="251" data-legend-baseline="448" data-legend-width="135">
+          <g data-legend-semantic-kind="messagebus" data-legend-kind="messagebus" data-legend-label="Команда без записи" data-legend-x="251" data-legend-baseline="448" data-legend-width="122">
             <rect x="251" y="440" width="14" height="9" rx="2" class="c-messagebus" stroke-width="1"/>
-            <text x="273" y="448" class="t-muted" font-size="7.5" font-weight="500">Команда только читает</text>
+            <text x="273" y="448" class="t-muted" font-size="7.5" font-weight="500">Команда без записи</text>
           </g>
-          <g data-legend-semantic-kind="external" data-legend-kind="external" data-legend-label="Проект" data-legend-x="393" data-legend-baseline="448" data-legend-width="70">
-            <rect x="393" y="440" width="14" height="9" rx="2" class="c-external" stroke-width="1"/>
-            <text x="415" y="448" class="t-muted" font-size="7.5" font-weight="500">Проект</text>
+          <g data-legend-semantic-kind="external" data-legend-kind="external" data-legend-label="Проект" data-legend-x="380" data-legend-baseline="448" data-legend-width="70">
+            <rect x="380" y="440" width="14" height="9" rx="2" class="c-external" stroke-width="1"/>
+            <text x="402" y="448" class="t-muted" font-size="7.5" font-weight="500">Проект</text>
           </g>
         </g>
       </svg>
@@ -5365,9 +5365,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Флаги update</h3>
         </div>
         <ul>
-          <li>Без флага: отказ при локальных правках managed-файлов</li>
-          <li>--force-managed-files: только снимок</li>
-          <li>--force-seed-files: только seed, --force: оба</li>
+          <li>Без флага: отказ при локальных изменениях managed-файлов</li>
+          <li>--force-managed-files: файлы снимка</li>
+          <li>--force-seed-files: seed-файлы; --force: оба типа</li>
         </ul>
       </div>
 

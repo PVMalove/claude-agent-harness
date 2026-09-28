@@ -5013,17 +5013,17 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <rect width="100%" height="100%" fill="url(#grid)" />
 
         <!-- Swimlanes -->
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-0" x="40" y="52" width="1148" height="106" rx="10" class="c-lane" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-0" x="40" y="52" width="1038" height="106" rx="10" class="c-lane" stroke-width="1"/>
         <text x="54" y="74" class="t-dim" font-size="10" font-weight="600">01 / Coordinator и approve человека</text>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-1" x="40" y="178" width="1148" height="106" rx="10" class="c-lane" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-1" x="40" y="178" width="1038" height="106" rx="10" class="c-lane" stroke-width="1"/>
         <text x="54" y="200" class="t-dim" font-size="10" font-weight="600">02 / Конфигурация проекта</text>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-2" x="40" y="304" width="1148" height="106" rx="10" class="c-lane" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-2" x="40" y="304" width="1038" height="106" rx="10" class="c-lane" stroke-width="1"/>
         <text x="54" y="326" class="t-dim" font-size="10" font-weight="600">03 / Транспорт и роль</text>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-3" x="40" y="430" width="1148" height="106" rx="10" class="c-lane" stroke-width="1"/>
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="exception-lane" data-composition-frame-id="lane-3-exception" x="46" y="436" width="1136" height="94" rx="8" class="c-security-group" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-3" x="40" y="430" width="1038" height="106" rx="10" class="c-lane" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="exception-lane" data-composition-frame-id="lane-3-exception" x="46" y="436" width="1026" height="94" rx="8" class="c-security-group" stroke-width="1"/>
         <text x="54" y="452" class="t-security" font-size="10" font-weight="600">EX / Evidence и живость</text>
 
         <!-- Phase headers -->
@@ -5033,20 +5033,20 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <line x1="460" y1="35" x2="672" y2="35" class="a-emphasis" stroke-width="1.1"/>
         <rect x="460" y="27" width="212" height="16" rx="4" class="c-mask"/>
         <text x="566" y="39" class="t-backend" font-size="8" font-weight="600" text-anchor="middle">Резолв runtime</text>
-        <line x1="791.5999999999999" y1="35" x2="1157.6" y2="35" class="a-dashed" stroke-width="1.1"/>
-        <rect x="791.5999999999999" y="27" width="365.9999999999999" height="16" rx="4" class="c-mask"/>
-        <text x="974.5999999999999" y="39" class="t-messagebus" font-size="8" font-weight="600" text-anchor="middle">Dispatch и надзор</text>
+        <line x1="791.5999999999999" y1="35" x2="1047.6" y2="35" class="a-dashed" stroke-width="1.1"/>
+        <rect x="791.5999999999999" y="27" width="255.9999999999999" height="16" rx="4" class="c-mask"/>
+        <text x="919.5999999999999" y="39" class="t-messagebus" font-size="8" font-weight="600" text-anchor="middle">Dispatch и надзор</text>
 
         <!-- Workflow groups -->
 
 
         <!-- Edge paths -->
         <path data-edge-from="approval" data-edge-to="assignment" data-edge-label="роль утверждена" data-edge-key="0" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="342,154;342,212" d="M 342 154 L 342 212" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="assignment" data-edge-to="brief" data-edge-label="нет конфига: весь репозиторий" data-edge-key="1" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="342,280;342,300;499,300;499,272" d="M 342 280 L 342 300 L 499 300 L 499 272" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="assignment" data-edge-to="brief" data-edge-label="без конфига: весь репозиторий" data-edge-key="1" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="342,280;342,300;499,300;499,272" d="M 342 280 L 342 300 L 499 300 L 499 272" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="brief" data-edge-to="transport" data-edge-label="утверждённый dispatch" data-edge-key="2" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="530,272;530,294;626,294;626,338" d="M 530 272 L 530 294 L 626 294 L 626 338" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="issue" data-edge-to="approval" data-edge-label="предложен batch" data-edge-key="3" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="184,120;274,120" d="M 184 120 L 274 120" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="report" data-edge-to="approval" data-edge-label="accept, retry или stale" data-edge-key="4" data-composition-routing="workflow-v2-auto" data-edge-role="return" data-composition-points="1111.6,472;1111.6,120;410,120" d="M 1111.6 472 L 1111.6 120 L 410 120" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="selfreport" data-edge-to="report" data-edge-label="совпало, дальше heartbeat" data-edge-key="5" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="905.6,498;1043.6,498" d="M 905.6 498 L 1043.6 498" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="report" data-edge-to="approval" data-edge-label="accept, retry или stale" data-edge-key="4" data-composition-routing="workflow-v2-auto" data-edge-role="return" data-composition-points="1001.6,472;1001.6,120;410,120" d="M 1001.6 472 L 1001.6 120 L 410 120" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="selfreport" data-edge-to="report" data-edge-label="при совпадении — heartbeat" data-edge-key="5" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="837.6,532;837.6,552;1001.6,552;1001.6,524" d="M 837.6 532 L 837.6 552 L 1001.6 552 L 1001.6 524" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="transport" data-edge-to="worker" data-edge-label="тот же brief" data-edge-key="6" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="694,372;769.6,372" d="M 694 372 L 769.6 372" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="worker" data-edge-to="selfreport" data-edge-label="называет модель" data-edge-key="7" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="837.6,398;837.6,464" d="M 837.6 398 L 837.6 464" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
 
@@ -5124,8 +5124,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <text data-detail="context" x="837.6" y="384" class="t-muted" font-size="8" text-anchor="middle">воркер или субагент</text>
         </g>
 
-        <g id="node-selfreport" data-node-id="selfreport" data-node-label="Self-report" tabindex="0" role="button" aria-label="Focus Self-report, до реальной работы, Evidence и живость › Dispatch и надзор" aria-pressed="false" data-node-kind="security" data-node-sublabel="до реальной работы" data-node-tag="блокирует" data-node-context="Evidence и живость › Dispatch и надзор">
-          <title>Self-report · до реальной работы · Evidence и живость › Dispatch и надзор · блокирует</title>
+        <g id="node-selfreport" data-node-id="selfreport" data-node-label="Self-report" tabindex="0" role="button" aria-label="Focus Self-report, до начала работы, Evidence и живость › Dispatch и надзор" aria-pressed="false" data-node-kind="security" data-node-sublabel="до начала работы" data-node-tag="блокирует" data-node-context="Evidence и живость › Dispatch и надзор">
+          <title>Self-report · до начала работы · Evidence и живость › Dispatch и надзор · блокирует</title>
           <rect x="769.6" y="464" width="136" height="68" rx="6" class="c-mask"/>
           <rect x="769.6" y="464" width="136" height="68" rx="6" class="c-security" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(775.6 470) scale(0.6875)">
@@ -5133,22 +5133,22 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="837.6" y="485" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Self-report</text>
-          <text data-detail="context" x="837.6" y="502" class="t-muted" font-size="8" text-anchor="middle">до реальной работы</text>
+          <text data-detail="context" x="837.6" y="502" class="t-muted" font-size="8" text-anchor="middle">до начала работы</text>
         <text data-detail="fine" x="837.6" y="520" class="t-security" font-size="7" text-anchor="middle">блокирует</text>
         </g>
 
         <g id="node-report" data-node-id="report" data-node-label="Отчёт" tabindex="0" role="button" aria-label="Focus Отчёт, одна запись, Evidence и живость › Dispatch и надзор" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="одна запись" data-node-context="Evidence и живость › Dispatch и надзор">
           <title>Отчёт · одна запись · Evidence и живость › Dispatch и надзор</title>
-          <rect x="1043.6" y="472" width="136" height="52" rx="6" class="c-mask"/>
-          <rect x="1043.6" y="472" width="136" height="52" rx="6" class="c-messagebus" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(1049.6 478) scale(0.6875)">
+          <rect x="933.6" y="472" width="136" height="52" rx="6" class="c-mask"/>
+          <rect x="933.6" y="472" width="136" height="52" rx="6" class="c-messagebus" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(939.6 478) scale(0.6875)">
             <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/>
             <circle cx="5" cy="4.5" r="1" class="sigil-fill"/>
             <circle cx="10.5" cy="8" r="1" class="sigil-fill"/>
             <circle cx="7" cy="11.5" r="1" class="sigil-fill"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="1111.6" y="493" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Отчёт</text>
-          <text data-detail="context" x="1111.6" y="510" class="t-muted" font-size="8" text-anchor="middle">одна запись</text>
+          <text data-node-label="" data-detail-anchor="" x="1001.6" y="493" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Отчёт</text>
+          <text data-detail="context" x="1001.6" y="510" class="t-muted" font-size="8" text-anchor="middle">одна запись</text>
         </g>
 
         <!-- Edge labels -->
@@ -5156,9 +5156,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="301" y="173" width="82" height="14" rx="3" class="c-mask"/>
           <text x="342" y="183" class="t-edge-emphasis" font-size="8" text-anchor="middle">роль утверждена</text>
         </g>
-        <g data-detail="context" data-edge-from="assignment" data-edge-to="brief" data-edge-label="нет конфига: весь репозиторий" data-edge-key="1">
+        <g data-detail="context" data-edge-from="assignment" data-edge-to="brief" data-edge-label="без конфига: весь репозиторий" data-edge-key="1">
           <rect x="345.9" y="280" width="149.2" height="14" rx="3" class="c-mask"/>
-          <text x="420.5" y="290" class="t-edge-default" font-size="8" text-anchor="middle">нет конфига: весь репозиторий</text>
+          <text x="420.5" y="290" class="t-edge-default" font-size="8" text-anchor="middle">без конфига: весь репозиторий</text>
         </g>
         <g data-detail="context" data-edge-from="brief" data-edge-to="transport" data-edge-label="утверждённый dispatch" data-edge-key="2">
           <rect x="522.6" y="274" width="110.8" height="14" rx="3" class="c-mask"/>
@@ -5169,12 +5169,12 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <text x="229" y="110" class="t-edge-default" font-size="8" text-anchor="middle">предложен batch</text>
         </g>
         <g data-detail="context" data-edge-from="report" data-edge-to="approval" data-edge-label="accept, retry или stale" data-edge-key="4">
-          <rect x="700.5999999999999" y="100" width="120.39999999999999" height="14" rx="3" class="c-mask"/>
-          <text x="760.8" y="110" class="t-edge-emphasis" font-size="8" text-anchor="middle">accept, retry или stale</text>
+          <rect x="645.5999999999999" y="100" width="120.39999999999999" height="14" rx="3" class="c-mask"/>
+          <text x="705.8" y="110" class="t-edge-emphasis" font-size="8" text-anchor="middle">accept, retry или stale</text>
         </g>
-        <g data-detail="context" data-edge-from="selfreport" data-edge-to="report" data-edge-label="совпало, дальше heartbeat" data-edge-key="5">
-          <rect x="909.5999999999999" y="478" width="130" height="14" rx="3" class="c-mask"/>
-          <text x="974.5999999999999" y="488" class="t-edge-emphasis" font-size="8" text-anchor="middle">совпало, дальше heartbeat</text>
+        <g data-detail="context" data-edge-from="selfreport" data-edge-to="report" data-edge-label="при совпадении — heartbeat" data-edge-key="5">
+          <rect x="852.2" y="532" width="134.8" height="14" rx="3" class="c-mask"/>
+          <text x="919.6" y="542" class="t-edge-emphasis" font-size="8" text-anchor="middle">при совпадении — heartbeat</text>
         </g>
         <g data-detail="context" data-edge-from="transport" data-edge-to="worker" data-edge-label="тот же brief" data-edge-key="6">
           <rect x="698" y="352" width="67.6" height="14" rx="3" class="c-mask"/>
@@ -5392,36 +5392,36 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       <div class="card">
         <div class="card-header">
           <div class="card-dot amber"></div>
-          <h3>Конфиг необязателен</h3>
+          <h3>Конфигурация необязательна</h3>
         </div>
         <ul>
-          <li>Без конфига зона — весь репозиторий</li>
-          <li>Модель и effort даёт вызывающая сессия</li>
-          <li>Такой дефолт всегда идёт in-process</li>
+          <li>Без конфигурации зоной считается весь репозиторий</li>
+          <li>Модель и effort задаёт вызывающая сессия</li>
+          <li>По умолчанию используется транспорт in-process</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
           <div class="card-dot violet"></div>
-          <h3>Транспорт выбирает проект</h3>
+          <h3>Транспорт определяется проектом</h3>
         </div>
         <ul>
-          <li>external запускает проектного воркера</li>
+          <li>external запускает воркер проекта</li>
           <li>in-process — субагент текущей сессии</li>
-          <li>Оба получают один immutable brief</li>
+          <li>Оба варианта получают один immutable brief</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
           <div class="card-dot rose"></div>
-          <h3>Живость не предполагается</h3>
+          <h3>Живость подтверждается явно</h3>
         </div>
         <ul>
-          <li>Расхождение модели сразу блокирует dispatch</li>
-          <li>Без подтверждённой модели отчёт не принимается</li>
-          <li>Молчание дольше порога эскалируется человеку</li>
+          <li>При расхождении модели dispatch блокируется</li>
+          <li>Отчёт принимается после подтверждения модели</li>
+          <li>Отсутствие сигналов дольше порога передаётся человеку</li>
         </ul>
       </div>
     </div>

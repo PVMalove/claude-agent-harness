@@ -29,10 +29,10 @@
     { "from": "batchB", "to": "worktreeB", "label": "владеет issue-веткой" },
     { "from": "coordinator", "to": "repoMap", "label": "контекст по commit" },
     { "from": "repoMap", "to": "worker", "label": "типизированный JSON", "variant": "emphasis" },
-    { "from": "worktreeB", "to": "scratch", "label": "одноразовые файлы", "variant": "dashed" }
+    { "from": "worktreeB", "to": "scratch", "label": "временные файлы", "variant": "dashed" }
   ],
   "cards": [
-    { "dot": "cyan", "title": "Раздельная запись", "items": ["Каждый batch владеет своей issue-веткой и worktree", "Одновременно активен один writer в batch"] },
+    { "dot": "cyan", "title": "Раздельная запись", "items": ["Batch владеет собственной issue-веткой и worktree", "Одновременно активен один writer в batch"] },
     { "dot": "violet", "title": "Граница парсера", "items": ["Tree-sitter работает в worker-процессе", "В основной процесс возвращается JSON"] },
     { "dot": "emerald", "title": "Временное хранение", "items": ["Scratch находится в .harness/.sandboxes", "Ledger состояния хранится отдельно"] }
   ]

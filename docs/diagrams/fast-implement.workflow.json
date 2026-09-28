@@ -81,7 +81,7 @@
       "col": 1,
       "type": "security",
       "label": "Блокеры закрыты?",
-      "sublabel": "при любой status::*",
+      "sublabel": "независимо от status::*",
       "width": 150
     },
     {
@@ -152,7 +152,7 @@
       "lane": "stop",
       "col": 1,
       "type": "external",
-      "label": "Стоп",
+      "label": "Остановка",
       "sublabel": "status::blocked",
       "width": 130
     }
@@ -172,14 +172,14 @@
     {
       "from": "blockers",
       "to": "blocked",
-      "label": "есть открытые",
+      "label": "открытые блокеры",
       "variant": "security",
       "role": "error"
     },
     {
       "from": "blockers",
       "to": "inprog",
-      "label": "все закрыты",
+      "label": "блокеры закрыты",
       "variant": "emphasis"
     },
     {
@@ -216,18 +216,18 @@
   "cards": [
     {
       "dot": "cyan",
-      "title": "Без гейтов",
+      "title": "Без промежуточных гейтов",
       "items": [
-        "Нет coordinator, architect и независимого QA",
-        "Push — только после явного согласия"
+        "Coordinator, architect и независимый QA не используются",
+        "Push выполняется после явного согласия"
       ]
     },
     {
       "dot": "rose",
-      "title": "Не делает сам",
+      "title": "Вне области скилла",
       "items": [
-        "Не открывает PR и не вызывает qa-gate",
-        "Не закрывает тикет"
+        "Открытие PR и вызов qa-gate",
+        "Закрытие тикета"
       ]
     }
   ],

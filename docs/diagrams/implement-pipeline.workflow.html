@@ -5044,17 +5044,17 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <path data-edge-from="architect" data-edge-to="plan_gate" data-edge-label="план на approve" data-edge-key="0" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="116,280;116,300;32,300;32,120;48,120" d="M 116 280 L 116 300 L 32 300 L 32 120 L 48 120" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="developer" data-edge-to="review" data-edge-label="candidate SHA" data-edge-key="1" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="328,246;408.4,246" d="M 328 246 L 408.4 246" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="findings" data-edge-to="developer" data-edge-label="решение retry" data-edge-key="2" data-edge-role="return" data-composition-points="620.4,524;620.4,556;260,556;260,280" d="M 620.4 524 L 620.4 556 L 260 556 L 260 280" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
-        <path data-edge-from="plan_gate" data-edge-to="developer" data-edge-label="курс принят" data-edge-key="3" data-edge-role="" data-composition-points="184,120;260,120;260,212" d="M 184 120 L 260 120 L 260 212" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="plan_gate" data-edge-to="developer" data-edge-label="план утверждён" data-edge-key="3" data-edge-role="" data-composition-points="184,120;260,120;260,212" d="M 184 120 L 260 120 L 260 212" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="publish" data-edge-to="open_pr" data-edge-label="передача человеку" data-edge-key="4" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="952,346;952,154" d="M 952 346 L 952 154" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="qa" data-edge-to="findings" data-edge-label="найдены дефекты" data-edge-key="5" data-composition-routing="workflow-v2-auto" data-edge-role="error" data-composition-points="620.4,280;620.4,357;536.4,357;536.4,498;552.4,498" d="M 620.4 280 L 620.4 357 L 536.4 357 L 536.4 498 L 552.4 498" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
-        <path data-edge-from="qa" data-edge-to="report" data-edge-label="зелёный" data-edge-key="6" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="632.4,280;632.4,372;672.4,372" d="M 632.4 280 L 632.4 372 L 672.4 372" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="qa" data-edge-to="report" data-edge-label="проверки пройдены" data-edge-key="6" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="632.4,280;632.4,426;740.4,426;740.4,398" d="M 632.4 280 L 632.4 426 L 740.4 426 L 740.4 398" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="qa_gate" data-edge-to="qa" data-edge-label="approve на QA" data-edge-key="7" data-edge-role="" data-composition-points="544.4,120;620.4,120;620.4,212" d="M 544.4 120 L 620.4 120 L 620.4 212" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="report" data-edge-to="publish" data-edge-label="принятый SHA" data-edge-key="8" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="808.4,372;884,372" d="M 808.4 372 L 884 372" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="review" data-edge-to="qa_gate" data-edge-label="две оси review" data-edge-key="9" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="476.4,212;476.4,154" d="M 476.4 212 L 476.4 154" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
 
         <!-- Nodes -->
-        <g id="node-plan_gate" data-node-id="plan_gate" data-node-label="Approve плана" tabindex="0" role="button" aria-label="Focus Approve плана, до первой строки, Разработчик: гейты › План и approve" aria-pressed="false" data-node-kind="security" data-node-sublabel="до первой строки" data-node-tag="человек" data-node-context="Разработчик: гейты › План и approve">
-          <title>Approve плана · до первой строки · Разработчик: гейты › План и approve · человек</title>
+        <g id="node-plan_gate" data-node-id="plan_gate" data-node-label="Approve плана" tabindex="0" role="button" aria-label="Focus Approve плана, до реализации, Разработчик: гейты › План и approve" aria-pressed="false" data-node-kind="security" data-node-sublabel="до реализации" data-node-tag="человек" data-node-context="Разработчик: гейты › План и approve">
+          <title>Approve плана · до реализации · Разработчик: гейты › План и approve · человек</title>
           <rect x="48" y="86" width="136" height="68" rx="6" class="c-mask"/>
           <rect x="48" y="86" width="136" height="68" rx="6" class="c-security" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(54 92) scale(0.6875)">
@@ -5062,12 +5062,12 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="116" y="107" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Approve плана</text>
-          <text data-detail="context" x="116" y="124" class="t-muted" font-size="8" text-anchor="middle">до первой строки</text>
+          <text data-detail="context" x="116" y="124" class="t-muted" font-size="8" text-anchor="middle">до реализации</text>
         <text data-detail="fine" x="116" y="142" class="t-security" font-size="7" text-anchor="middle">человек</text>
         </g>
 
-        <g id="node-qa_gate" data-node-id="qa_gate" data-node-label="Approve QA" tabindex="0" role="button" aria-label="Focus Approve QA, видит готовый диф, Разработчик: гейты › Реализация и review" aria-pressed="false" data-node-kind="security" data-node-sublabel="видит готовый диф" data-node-tag="человек" data-node-context="Разработчик: гейты › Реализация и review">
-          <title>Approve QA · видит готовый диф · Разработчик: гейты › Реализация и review · человек</title>
+        <g id="node-qa_gate" data-node-id="qa_gate" data-node-label="Approve QA" tabindex="0" role="button" aria-label="Focus Approve QA, просматривает итоговый diff, Разработчик: гейты › Реализация и review" aria-pressed="false" data-node-kind="security" data-node-sublabel="просматривает итоговый diff" data-node-tag="человек" data-node-context="Разработчик: гейты › Реализация и review">
+          <title>Approve QA · просматривает итоговый diff · Разработчик: гейты › Реализация и review · человек</title>
           <rect x="408.4" y="86" width="136" height="68" rx="6" class="c-mask"/>
           <rect x="408.4" y="86" width="136" height="68" rx="6" class="c-security" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(414.4 92) scale(0.6875)">
@@ -5075,7 +5075,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="476.4" y="107" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Approve QA</text>
-          <text data-detail="context" x="476.4" y="124" class="t-muted" font-size="8" text-anchor="middle">видит готовый диф</text>
+          <text data-detail="context" x="476.4" y="124" class="t-muted" font-size="7.9" text-anchor="middle">просматривает итоговый diff</text>
         <text data-detail="fine" x="476.4" y="142" class="t-security" font-size="7" text-anchor="middle">человек</text>
         </g>
 
@@ -5116,8 +5116,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <text data-detail="fine" x="260" y="268" class="t-backend" font-size="7" text-anchor="middle">write</text>
         </g>
 
-        <g id="node-review" data-node-id="review" data-node-label="Code review" tabindex="0" role="button" aria-label="Focus Code review, base freshness + 2 оси, Роли в dispatch › Реализация и review" aria-pressed="false" data-node-kind="security" data-node-sublabel="base freshness + 2 оси" data-node-tag="каждый SHA" data-node-context="Роли в dispatch › Реализация и review">
-          <title>Code review · base freshness + 2 оси · Роли в dispatch › Реализация и review · каждый SHA</title>
+        <g id="node-review" data-node-id="review" data-node-label="Code review" tabindex="0" role="button" aria-label="Focus Code review, base freshness + 2 оси, Роли в dispatch › Реализация и review" aria-pressed="false" data-node-kind="security" data-node-sublabel="base freshness + 2 оси" data-node-tag="на каждом SHA" data-node-context="Роли в dispatch › Реализация и review">
+          <title>Code review · base freshness + 2 оси · Роли в dispatch › Реализация и review · на каждом SHA</title>
           <rect x="408.4" y="212" width="136" height="68" rx="6" class="c-mask"/>
           <rect x="408.4" y="212" width="136" height="68" rx="6" class="c-security" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(414.4 218) scale(0.6875)">
@@ -5126,7 +5126,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           </g>
           <text data-node-label="" data-detail-anchor="" x="476.4" y="233" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Code review</text>
           <text data-detail="context" x="476.4" y="250" class="t-muted" font-size="8" text-anchor="middle">base freshness + 2 оси</text>
-        <text data-detail="fine" x="476.4" y="268" class="t-security" font-size="7" text-anchor="middle">каждый SHA</text>
+        <text data-detail="fine" x="476.4" y="268" class="t-security" font-size="7" text-anchor="middle">на каждом SHA</text>
         </g>
 
         <g id="node-qa" data-node-id="qa" data-node-label="QA в clean-room" tabindex="0" role="button" aria-label="Focus QA в clean-room, закреплённый SHA, Роли в dispatch › Проверка и публикация" aria-pressed="false" data-node-kind="backend" data-node-sublabel="закреплённый SHA" data-node-tag="независимо" data-node-context="Роли в dispatch › Проверка и публикация">
@@ -5155,15 +5155,15 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <text data-detail="context" x="740.4" y="384" class="t-muted" font-size="8" text-anchor="middle">evidence и риски</text>
         </g>
 
-        <g id="node-publish" data-node-id="publish" data-node-label="Публикация" tabindex="0" role="button" aria-label="Focus Публикация, пушит принятый SHA, Сессия coordinator › Проверка и публикация" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="пушит принятый SHA" data-node-context="Сессия coordinator › Проверка и публикация">
-          <title>Публикация · пушит принятый SHA · Сессия coordinator › Проверка и публикация</title>
+        <g id="node-publish" data-node-id="publish" data-node-label="Публикация" tabindex="0" role="button" aria-label="Focus Публикация, отправляет принятый SHA, Сессия coordinator › Проверка и публикация" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="отправляет принятый SHA" data-node-context="Сессия coordinator › Проверка и публикация">
+          <title>Публикация · отправляет принятый SHA · Сессия coordinator › Проверка и публикация</title>
           <rect x="884" y="346" width="136" height="52" rx="6" class="c-mask"/>
           <rect x="884" y="346" width="136" height="52" rx="6" class="c-cloud" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-cloud" transform="translate(890 352) scale(0.6875)">
             <path d="M4.3 12.5h7.3a2.4 2.4 0 0 0 .2-4.8 4 4 0 0 0-7.5-1.3A3.1 3.1 0 0 0 4.3 12.5Z"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="952" y="367" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Публикация</text>
-          <text data-detail="context" x="952" y="384" class="t-muted" font-size="8" text-anchor="middle">пушит принятый SHA</text>
+          <text data-detail="context" x="952" y="384" class="t-muted" font-size="8" text-anchor="middle">отправляет принятый SHA</text>
         </g>
 
         <g id="node-findings" data-node-id="findings" data-node-label="Находки QA" tabindex="0" role="button" aria-label="Focus Находки QA, гейт не пройден, Находки QA › Проверка и публикация" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="гейт не пройден" data-node-context="Находки QA › Проверка и публикация">
@@ -5193,9 +5193,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="404" y="536" width="72.4" height="14" rx="3" class="c-mask"/>
           <text x="440.2" y="546" class="t-edge-dashed" font-size="8" text-anchor="middle">решение retry</text>
         </g>
-        <g data-detail="context" data-edge-from="plan_gate" data-edge-to="developer" data-edge-label="курс принят" data-edge-key="3">
-          <rect x="190.6" y="100" width="62.8" height="14" rx="3" class="c-mask"/>
-          <text x="222" y="110" class="t-edge-emphasis" font-size="8" text-anchor="middle">курс принят</text>
+        <g data-detail="context" data-edge-from="plan_gate" data-edge-to="developer" data-edge-label="план утверждён" data-edge-key="3">
+          <rect x="183.4" y="100" width="77.2" height="14" rx="3" class="c-mask"/>
+          <text x="222" y="110" class="t-edge-emphasis" font-size="8" text-anchor="middle">план утверждён</text>
         </g>
         <g data-detail="context" data-edge-from="publish" data-edge-to="open_pr" data-edge-label="передача человеку" data-edge-key="4">
           <rect x="906.2" y="240" width="91.6" height="14" rx="3" class="c-mask"/>
@@ -5205,9 +5205,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="537.4" y="337" width="82" height="14" rx="3" class="c-mask"/>
           <text x="578.4" y="347" class="t-edge-security" font-size="8" text-anchor="middle">найдены дефекты</text>
         </g>
-        <g data-detail="context" data-edge-from="qa" data-edge-to="report" data-edge-label="зелёный" data-edge-key="6">
-          <rect x="630.6" y="352" width="43.6" height="14" rx="3" class="c-mask"/>
-          <text x="652.4" y="362" class="t-edge-default" font-size="8" text-anchor="middle">зелёный</text>
+        <g data-detail="context" data-edge-from="qa" data-edge-to="report" data-edge-label="проверки пройдены" data-edge-key="6">
+          <rect x="640.6" y="406" width="91.6" height="14" rx="3" class="c-mask"/>
+          <text x="686.4" y="416" class="t-edge-default" font-size="8" text-anchor="middle">проверки пройдены</text>
         </g>
         <g data-detail="context" data-edge-from="qa_gate" data-edge-to="qa" data-edge-label="approve на QA" data-edge-key="7">
           <rect x="546.1999999999999" y="100" width="72.4" height="14" rx="3" class="c-mask"/>
@@ -5428,21 +5428,21 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Гейты человека</h3>
         </div>
         <ul>
-          <li>План архитектора утверждается до первой строки кода</li>
+          <li>План архитектора утверждается до начала реализации</li>
           <li>Переход от review к QA — отдельный approve</li>
-          <li>Публикация никогда не открывает pull request</li>
+          <li>Публикация не включает открытие pull request</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
           <div class="card-dot emerald"></div>
-          <h3>Жёсткий порядок</h3>
+          <h3>Порядок выполнения</h3>
         </div>
         <ul>
-          <li>Нет developer без принятого отчёта архитектора</li>
-          <li>Review проходит каждый кандидат, не только high-risk</li>
-          <li>QA идёт по закреплённому SHA, не по проверкам разработчика</li>
+          <li>Developer запускается после принятия отчёта архитектора</li>
+          <li>Review выполняется для кандидата независимо от уровня риска</li>
+          <li>QA выполняется по закреплённому SHA независимо от проверок разработчика</li>
         </ul>
       </div>
 
@@ -5452,7 +5452,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Живость и контекст</h3>
         </div>
         <ul>
-          <li>Каждый dispatch сперва подтверждает активную модель</li>
+          <li>Dispatch начинается с подтверждения активной модели</li>
           <li>Context Package переиспользуется внутри batch</li>
           <li>Write-role продолжает checkpoint; read-only роли завершаются</li>
         </ul>

@@ -36,22 +36,22 @@
     {"id": "brief", "lane": "config", "col": 2, "type": "database", "label": "Immutable brief", "sublabel": "модель и effort", "width": 136},
     {"id": "transport", "lane": "runtime", "col": 3, "type": "backend", "label": "Транспорт", "sublabel": "external или in-process", "tag": "по роли", "width": 136},
     {"id": "worker", "lane": "runtime", "col": 4, "type": "cloud", "label": "Роль", "sublabel": "воркер или субагент", "width": 136},
-    {"id": "selfreport", "lane": "evidence", "col": 4, "type": "security", "label": "Self-report", "sublabel": "до реальной работы", "tag": "блокирует", "width": 136},
+    {"id": "selfreport", "lane": "evidence", "col": 4, "type": "security", "label": "Self-report", "sublabel": "до начала работы", "tag": "блокирует", "width": 136},
     {"id": "report", "lane": "evidence", "col": 5, "type": "messagebus", "label": "Отчёт", "sublabel": "одна запись", "width": 136}
   ],
   "edges": [
     {"from": "issue", "to": "approval", "label": "предложен batch"},
     {"from": "approval", "to": "assignment", "label": "роль утверждена", "variant": "emphasis"},
-    {"from": "assignment", "to": "brief", "label": "нет конфига: весь репозиторий"},
+    {"from": "assignment", "to": "brief", "label": "без конфига: весь репозиторий"},
     {"from": "brief", "to": "transport", "label": "утверждённый dispatch", "variant": "emphasis"},
     {"from": "transport", "to": "worker", "label": "тот же brief"},
     {"from": "worker", "to": "selfreport", "label": "называет модель", "variant": "security"},
-    {"from": "selfreport", "to": "report", "label": "совпало, дальше heartbeat", "variant": "emphasis"},
+    {"from": "selfreport", "to": "report", "label": "при совпадении — heartbeat", "variant": "emphasis"},
     {"from": "report", "to": "approval", "label": "accept, retry или stale", "role": "return", "variant": "emphasis"}
   ],
   "cards": [
-    {"dot": "amber", "title": "Конфиг необязателен", "items": ["Без конфига зона — весь репозиторий", "Модель и effort даёт вызывающая сессия", "Такой дефолт всегда идёт in-process"]},
-    {"dot": "violet", "title": "Транспорт выбирает проект", "items": ["external запускает проектного воркера", "in-process — субагент текущей сессии", "Оба получают один immutable brief"]},
-    {"dot": "rose", "title": "Живость не предполагается", "items": ["Расхождение модели сразу блокирует dispatch", "Без подтверждённой модели отчёт не принимается", "Молчание дольше порога эскалируется человеку"]}
+    {"dot": "amber", "title": "Конфигурация необязательна", "items": ["Без конфигурации зоной считается весь репозиторий", "Модель и effort задаёт вызывающая сессия", "По умолчанию используется транспорт in-process"]},
+    {"dot": "violet", "title": "Транспорт определяется проектом", "items": ["external запускает воркер проекта", "in-process — субагент текущей сессии", "Оба варианта получают один immutable brief"]},
+    {"dot": "rose", "title": "Живость подтверждается явно", "items": ["При расхождении модели dispatch блокируется", "Отчёт принимается после подтверждения модели", "Отсутствие сигналов дольше порога передаётся человеку"]}
   ]
 }

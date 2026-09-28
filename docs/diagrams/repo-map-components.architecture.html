@@ -5448,8 +5448,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Зависимость от абстракции</h3>
         </div>
         <ul>
-          <li>repo_map знает только ParserBackend</li>
-          <li>Bundle ищется один раз на запуск</li>
+          <li>repo_map зависит от ParserBackend</li>
+          <li>Bundle определяется однократно за запуск</li>
         </ul>
       </div>
 
@@ -5460,7 +5460,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>Lock, wheels и worker сверяются по SHA-256</li>
-          <li>Установка только offline через uv</li>
+          <li>Установка выполняется offline через uv</li>
         </ul>
       </div>
 
@@ -5470,8 +5470,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Изоляция</h3>
         </div>
         <ul>
-          <li>Грамматики грузятся лениво в worker</li>
-          <li>Хвост stderr сбоя — в лог кэша</li>
+          <li>Грамматики загружаются в worker по требованию</li>
+          <li>Конец stderr при сбое записывается в лог кэша</li>
         </ul>
       </div>
     </div>

@@ -4980,7 +4980,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <div class="pulse-dot"></div>
         <h1>QA и создание PR: маршруты вызовов</h1>
       </div>
-      <p class="subtitle">test_summary.py вызывается только через /qa-gate</p>
+      <p class="subtitle">test_summary.py вызывается через /qa-gate</p>
     </div>
 
 
@@ -4990,7 +4990,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
          data-preset-badge-editorial-plate="ARCHIFY / PLATE 04">
       <svg viewBox="0 0 1237 660" data-layout-contract="readable-v2" role="img" lang="en" aria-labelledby="archify-diagram-title archify-diagram-description" data-preset="classic" data-quality-profile="showcase">
         <title id="archify-diagram-title">QA и создание PR: маршруты вызовов</title>
-        <desc id="archify-diagram-description">test_summary.py вызывается только через /qa-gate</desc>
+        <desc id="archify-diagram-description">test_summary.py вызывается через /qa-gate</desc>
         <!-- Definitions -->
         <defs>
           <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
@@ -5050,7 +5050,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <path data-edge-from="review" data-edge-to="cleanroom_qa" data-edge-label="после review" data-edge-key="5" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="554.6,154;554.6,212" d="M 554.6 154 L 554.6 212" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="test_summary" data-edge-to="create_pr" data-edge-label="PASS" data-edge-key="6" data-composition-routing="workflow-v2-auto" data-edge-role="return" data-composition-points="1025.6,464;1025.6,406" d="M 1025.6 464 L 1025.6 406" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="to_pr" data-edge-to="create_pr" data-edge-label="evidence принято" data-edge-key="7" data-composition-routing="workflow-v2-auto" data-edge-role="main" data-composition-points="825.8,372;920.5999999999999,372" d="M 825.8 372 L 920.5999999999999 372" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="to_pr" data-edge-to="qa_gate" data-edge-label="нет evidence" data-edge-key="8" data-composition-routing="workflow-v2-auto" data-edge-role="branch" data-composition-points="755.8,406;755.8,464" d="M 755.8 406 L 755.8 464" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="to_pr" data-edge-to="qa_gate" data-edge-label="evidence отсутствует" data-edge-key="8" data-composition-routing="workflow-v2-auto" data-edge-role="branch" data-composition-points="755.8,406;755.8,464" d="M 755.8 406 L 755.8 464" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
 
         <!-- Nodes -->
         <g id="node-developer" data-node-id="developer" data-node-label="Developer" tabindex="0" role="button" aria-label="Focus Developer, Developer → clean-room QA › Реализация и review" aria-pressed="false" data-node-kind="backend" data-node-tag="issue branch" data-node-context="Developer → clean-room QA › Реализация и review">
@@ -5137,8 +5137,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <text data-detail="fine" x="1025.6" y="394" class="t-external" font-size="7" text-anchor="middle">no auto-merge</text>
         </g>
 
-        <g id="node-qa_gate" data-node-id="qa_gate" data-node-label="/qa-gate" tabindex="0" role="button" aria-label="Focus /qa-gate, Fallback: /qa-gate › Независимая QA" aria-pressed="false" data-node-kind="security" data-node-tag="если evidence нет" data-node-context="Fallback: /qa-gate › Независимая QA">
-          <title>/qa-gate · Fallback: /qa-gate › Независимая QA · если evidence нет</title>
+        <g id="node-qa_gate" data-node-id="qa_gate" data-node-label="/qa-gate" tabindex="0" role="button" aria-label="Focus /qa-gate, Fallback: /qa-gate › Независимая QA" aria-pressed="false" data-node-kind="security" data-node-tag="при отсутствии evidence" data-node-context="Fallback: /qa-gate › Независимая QA">
+          <title>/qa-gate · Fallback: /qa-gate › Независимая QA · при отсутствии evidence</title>
           <rect x="685.8" y="464" width="140" height="68" rx="6" class="c-mask"/>
           <rect x="685.8" y="464" width="140" height="68" rx="6" class="c-security" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(691.8 470) scale(0.6875)">
@@ -5146,7 +5146,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
           <text data-node-label="" x="755.8" y="485" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">/qa-gate</text>
-        <text data-detail="fine" x="755.8" y="520" class="t-security" font-size="7" text-anchor="middle">если evidence нет</text>
+        <text data-detail="fine" x="755.8" y="520" class="t-security" font-size="7" text-anchor="middle">при отсутствии evidence</text>
         </g>
 
         <g id="node-test_summary" data-node-id="test_summary" data-node-label="test_summary.py" tabindex="0" role="button" aria-label="Focus test_summary.py, Fallback: /qa-gate › Ручное открытие PR" aria-pressed="false" data-node-kind="backend" data-node-tag="qa_gate_commands → summary" data-node-context="Fallback: /qa-gate › Ручное открытие PR">
@@ -5193,9 +5193,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="829.8" y="352" width="86.8" height="14" rx="3" class="c-mask"/>
           <text x="873.1999999999999" y="362" class="t-edge-emphasis" font-size="8" text-anchor="middle">evidence принято</text>
         </g>
-        <g data-detail="context" data-edge-from="to_pr" data-edge-to="qa_gate" data-edge-label="нет evidence" data-edge-key="8">
-          <rect x="722" y="425" width="67.6" height="14" rx="3" class="c-mask"/>
-          <text x="755.8" y="435" class="t-edge-dashed" font-size="8" text-anchor="middle">нет evidence</text>
+        <g data-detail="context" data-edge-from="to_pr" data-edge-to="qa_gate" data-edge-label="evidence отсутствует" data-edge-key="8">
+          <rect x="702.8" y="425" width="106" height="14" rx="3" class="c-mask"/>
+          <text x="755.8" y="435" class="t-edge-dashed" font-size="8" text-anchor="middle">evidence отсутствует</text>
         </g>
 
         <!-- Legend -->

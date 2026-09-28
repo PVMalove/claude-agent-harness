@@ -24,7 +24,7 @@
       "id": "untriaged",
       "type": "start",
       "label": "Без status::*",
-      "sublabel": "нужен триаж",
+      "sublabel": "требуется триаж",
       "lane": "main",
       "col": 0,
       "step": "01"
@@ -42,7 +42,7 @@
       "id": "inprogress",
       "type": "active",
       "label": "status::in-progress",
-      "sublabel": "работа идёт",
+      "sublabel": "работа выполняется",
       "lane": "main",
       "col": 2,
       "step": "03"
@@ -68,7 +68,7 @@
       "id": "blocked",
       "type": "waiting",
       "label": "status::blocked",
-      "sublabel": "ждёт другой тикет",
+      "sublabel": "ожидает другой тикет",
       "lane": "waiting",
       "col": 2
     },
@@ -129,7 +129,7 @@
   "cards": [
     {
       "dot": "cyan",
-      "title": "Кто ставит",
+      "title": "Источники меток",
       "items": [
         "/triage и /to-spec — specs, ready, blocked",
         "/implement, /fast-implement, /to-guide — in-progress",
@@ -140,8 +140,8 @@
       "dot": "amber",
       "title": "Вторая ось",
       "items": [
-        "hitl или afk ставится вместе с ready",
-        "Пока specs, режим не ставится"
+        "hitl или afk назначается вместе с ready",
+        "В состоянии specs режим не назначается"
       ]
     }
   ],

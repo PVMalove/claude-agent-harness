@@ -14,7 +14,7 @@
           "label": "Команда, пишет на диск"
         },
         "messagebus": {
-          "label": "Команда только читает"
+          "label": "Команда без записи"
         }
       }
     },
@@ -66,8 +66,8 @@
       "lane": "fresh",
       "col": 2,
       "type": "security",
-      "label": "Имена заняты?",
-      "sublabel": "свои скиллы в .harness/skills",
+      "label": "Конфликт имён?",
+      "sublabel": "собственные скиллы в .harness/skills",
       "width": 150
     },
     {
@@ -94,7 +94,7 @@
       "col": 2,
       "type": "messagebus",
       "label": "harness diff",
-      "sublabel": "exit 0 чисто, 1 дрейф",
+      "sublabel": "exit 0 — без дрейфа, 1 — дрейф",
       "width": 140
     },
     {
@@ -129,7 +129,7 @@
     {
       "from": "has_lock",
       "to": "diff",
-      "label": "да: посмотреть",
+      "label": "да: просмотр",
       "variant": "dashed"
     },
     {
@@ -167,9 +167,9 @@
       "dot": "amber",
       "title": "Флаги update",
       "items": [
-        "Без флага: отказ при локальных правках managed-файлов",
-        "--force-managed-files: только снимок",
-        "--force-seed-files: только seed, --force: оба"
+        "Без флага: отказ при локальных изменениях managed-файлов",
+        "--force-managed-files: файлы снимка",
+        "--force-seed-files: seed-файлы; --force: оба типа"
       ]
     },
     {
