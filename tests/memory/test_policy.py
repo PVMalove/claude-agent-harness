@@ -64,6 +64,7 @@ def test_legacy_and_explicit_memory_config_are_valid(tmp_path: Path) -> None:
         ("min_similarity", True),
         ("min_similarity", -0.1),
         ("min_similarity", 1.1),
+        ("min_similarity", 10**999),
         ("top_k", True),
         ("top_k", 0),
         ("top_k", 1.5),

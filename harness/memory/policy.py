@@ -98,8 +98,8 @@ def parse_policy(config: dict[str, object]) -> Policy:
     if (
         isinstance(threshold, bool)
         or not isinstance(threshold, (int, float))
-        or not math.isfinite(threshold)
         or not 0 <= threshold <= 1
+        or not math.isfinite(threshold)
     ):
         raise ValueError("memory_policy.min_similarity must be a finite number in 0..1")
     limits: dict[str, int] = {}

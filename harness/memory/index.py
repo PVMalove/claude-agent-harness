@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from contextlib import contextmanager
+from collections.abc import Iterator
 import sqlite3
 from pathlib import Path
 
@@ -100,20 +104,48 @@ def replace_documents(
     )
 
 
+@contextmanager
+def writer_lock(path: Path) -> Iterator[None]:
+    """Serialize build/rebuild publication with a bounded SQLite lock, released on process exit."""
+    lock = sqlite3.connect(path.parent / "writer.sqlite3", timeout=LOCK_TIMEOUT)
+    try:
+        try:
+            lock.execute("BEGIN IMMEDIATE")
+        except sqlite3.Error:
+            raise ValueError(
+                "memory writer busy or lock unavailable; retry after the active writer finishes"
+            ) from None
+        yield
+    finally:
+        lock.rollback()
+        lock.close()
+
+
+def write_index(path: Path, documents: list[Source], policy: Policy) -> None:
+    """Commit sanitized documents and verify the complete database before publication."""
+    connection = sqlite3.connect(path, timeout=LOCK_TIMEOUT)
+    try:
+        connection.execute("PRAGMA journal_mode=DELETE")
+        with connection:
+            initialize(connection)
+            replace_documents(connection, documents, policy)
+            connection.execute(
+                "INSERT INTO search_text(search_text) VALUES ('integrity-check')"
+            )
+        if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+            raise ValueError("memory index integrity check failed")
+    finally:
+        connection.close()
+
+
 def build(repo: Path) -> dict[str, object]:
     """Explicitly refresh a rebuildable local cache; never ingest from a linked worktree."""
     canonical, path, policy = context(repo, writer=True)
-    documents = collect_sources(canonical, policy)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        connection = sqlite3.connect(path, timeout=LOCK_TIMEOUT)
-        try:
-            connection.execute("PRAGMA journal_mode=DELETE")
-            with connection:
-                initialize(connection)
-                replace_documents(connection, documents, policy)
-        finally:
-            connection.close()
+        with writer_lock(path):
+            documents = collect_sources(canonical, policy)
+            write_index(path, documents, policy)
     except sqlite3.Error:
         raise ValueError(
             "memory index unavailable or corrupt; check FTS5 support or run harness memory rebuild"
@@ -122,7 +154,24 @@ def build(repo: Path) -> dict[str, object]:
 
 
 def rebuild(repo: Path) -> dict[str, object]:
-    """Full-rebuild entrypoint; atomic corrupt-cache recovery is the next slice."""
-    result = build(repo)
-    result["status"] = "rebuilt"
-    return result
+    """Build a fresh adjacent SQLite cache and atomically publish only after full verification."""
+    canonical, path, policy = context(repo, writer=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with writer_lock(path):
+            documents = collect_sources(canonical, policy)
+            with tempfile.NamedTemporaryFile(
+                dir=path.parent, prefix=".index-", suffix=".sqlite3", delete=False
+            ) as stream:
+                temporary = Path(stream.name)
+            write_index(temporary, documents, policy)
+            os.replace(temporary, path)
+    except (sqlite3.Error, OSError):
+        raise ValueError(
+            "memory rebuild failed; previous index retained; check FTS5 support, permissions and active readers"
+        ) from None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return {"status": "rebuilt", "indexed": len(documents)}

@@ -66,12 +66,13 @@ def read_source(repo: Path, relative: str, policy: Policy) -> Source | None:
     )
     if not status_match:
         status_match = re.search(r"(?im)^##\s+(?:status|статус)\s*\n\s*([^\n]+)", text)
-    status = status_match.group(1).strip(" *\"'").lower() if status_match else "unknown"
-    if status in {"superseded", "заменён", "заменен"}:
+    status = status_match.group(1).strip(" *\"'") if status_match else "unknown"
+    if status.lower() in {"superseded", "заменён", "заменен"}:
         return None
     for rule in policy.redact_rules:
         text = re.sub(rule, "[REDACTED]", text)
         status = re.sub(rule, "[REDACTED]", status)
+    status = status.lower().replace("[redacted]", "[REDACTED]")
     title_match = re.search(r"(?m)^#\s+(.+?)\s*$", text)
     title = title_match.group(1) if title_match else "untitled"
     return Source(
