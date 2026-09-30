@@ -49,7 +49,7 @@ from harness.uninstall import (
 )
 from harness.memory import (
     build as memory_build,
-    search as memory_search,
+    search_with_refresh as memory_search,
     rebuild as memory_rebuild,
 )
 from harness.storage import storage_path

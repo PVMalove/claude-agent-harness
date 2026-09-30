@@ -174,12 +174,7 @@ def allowed_paths(repo: Path, policy: Policy) -> list[str]:
         if len(visited) > MAX_ENTRIES:
             raise ValueError("memory traversal exceeds 10000 entries")
         if path.is_symlink():
-            if (
-                matches(relative, policy.allow_paths)
-                and classify(relative) in policy.source_types
-            ):
-                raise ValueError("memory source must not be a symlink")
-            return
+            raise ValueError("memory source must not be a symlink")
         if path.is_dir():
             if path.name in EXCLUDED:
                 return

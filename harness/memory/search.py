@@ -9,7 +9,7 @@ from pathlib import Path
 
 from harness.token_estimator import estimate_tokens
 
-from .index import SCHEMA_VERSION, LOCK_TIMEOUT, context
+from .index import SCHEMA_VERSION, LOCK_TIMEOUT, context, refresh
 from .sources import allowed_paths, read_source
 
 
@@ -102,3 +102,19 @@ def search(repo: Path, query: str) -> dict[str, object]:
             "changed, removed or revoked sources omitted; run harness memory build from main checkout"
         )
     return result
+
+
+def search_with_refresh(repo: Path, query: str) -> dict[str, object]:
+    """Main checkout refreshes derived history; linked checkout remains read-only."""
+    try:
+        canonical, _, policy = context(repo)
+    except ValueError:
+        return degraded("invalid_policy", "cannot read valid memory policy")
+    if not policy.active or not re.findall(r"\w+", query, flags=re.UNICODE):
+        return search(repo, query)
+    if canonical == repo.resolve():
+        try:
+            refresh(repo)
+        except (ValueError, OSError):
+            return degraded("refresh_failed", "memory refresh failed; previous cache retained; retry or explicitly rebuild from main checkout")
+    return search(repo, query)
