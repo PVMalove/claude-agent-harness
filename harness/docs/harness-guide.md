@@ -66,7 +66,7 @@ cd claude-agent-harness
 ### Шаг 2 — команды CLI
 
 Все команды имеют вид `harness/bin/harness.py <command> <repo> [флаги]`, где `<repo>` — путь к
-целевому проекту (не обязательно текущая директория). CLI умеет одиннадцать подкоманд:
+целевому проекту (не обязательно текущая директория). CLI поддерживает следующие подкоманды:
 
 | Команда | Что делает | Пишет на диск |
 |---|---|---|
@@ -76,6 +76,7 @@ cd claude-agent-harness
 | `update` | Подтягивает новую версию capability | да |
 | `registry` | Пересобирает `.harness/skills/REGISTRY.md` | да |
 | `lock-project-skills` | Фиксирует хэши скиллов, которыми владеет сам проект | да |
+| `memory build/search/rebuild` | Локальный FTS5-кэш и указатели на разрешённые источники | build/rebuild — да; search — нет |
 | `health` | Диагностика установки и окружения | только с `--fix` |
 | `list` | Список установленных скиллов | нет |
 | `cleanup` | Предпросмотр и удаление одноразовых данных `.harness` | только с `--apply` |
@@ -131,6 +132,46 @@ PR.
 | Когда | Апстримный pipeline устраивает без изменений | Нужны свои правки: лейблы, язык, доп. скиллы |
 | Механизм | `--capability mattpocock-suite` | `extends`/`overrides`/`additions` в `harness/CAPABILITIES.json`, полные first-party файлы и проверяемый snapshot ([ADR 0001](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0001-portable-capability-delivery.md)) |
 | Обновление апстрима | `harness update` устанавливает изменения без правок | Унаследованное обновляет тот же `update`; за переопределёнными скиллами следите через `scripts/check_upstream_drift` в репозитории харнесса |
+
+#### Политика памяти проекта
+
+Память включается только через `memory: {"enabled": true}` в `.harness/project.json`.
+Отдельный `memory_policy` содержит все шесть полей: `source_types` (список `adr`/`glossary`),
+`allow_paths` (явные относительные POSIX glob-пути), `redact_rules` (regex),
+`min_similarity` (конечное число 0..1), `top_k` и `max_tokens` (целые >=1).
+Отсутствующая политика и пустой любой allowlist не разрешают ни одного источника;
+старые конфиги без памяти остаются валидными. Шаблон выключает память и задаёт пустые списки.
+Неизвестные поля, абсолютные/Windows-пути, `..`, неверные regex и bool вместо числа отклоняются.
+Regex имеют длину 1..512 символов; используйте простые шаблоны: ограничение длины и размера
+источника снижает риск, но не ограничивает время исполнения произвольного project-owned regex.
+Совпадения заменяются `[REDACTED]` до сохранения заголовка, статуса и текста.
+`min_similarity` сохраняется, но пока не фильтрует FTS5: cosine-порог включит следующий
+векторный срез ADR 0010. `top_k` и `max_tokens` ограничивают окончательный список указателей;
+токены оцениваются консервативно по UTF-8, без привязки к tokenizer модели.
+
+Корпус ограничен обычными UTF-8 Markdown-файлами до 1 MiB, максимум 1000 файлов.
+ADR распознаётся по каталогу `adr` или префиксу имени `adr`; остальные явно разрешённые
+Markdown-файлы относятся к `glossary`. Заголовок — первый H1, без H1 — `untitled`.
+Статус берётся только из `Status:`/`Статус:` (допустим bold) или первой строки под
+`## Status`/`## Статус`; без метаданных — `unknown`. `superseded`, `заменён`, `заменен`
+исключают документ. Symlink-компоненты и выход за корень запрещены.
+Общий SQLite-кэш находится в `.harness/.sandboxes/cache/memory/index.sqlite3` главного checkout.
+Build использует его конфиг и источники, инкрементально обновляя hash и удаляя отозванные файлы.
+Linked worktree вправе только читать общий кэш; writer-команды выполняются из главного checkout.
+
+Команды: `harness memory build <repo>`, `harness memory search <repo> "запрос"`,
+`harness memory rebuild <repo>` (через `python harness/bin/harness.py`, как остальные команды).
+Search открывает существующий индекс read-only, ранжирует BM25 с tie-break по path и возвращает
+JSON `status`/`pointers`: только `title`, `status`, `path`, `source_hash`, без текста/snippet.
+Перед выдачей проверяются allowlists и hash источника. Смена политики требует build/rebuild;
+удалённые и изменённые источники пропускаются. Disabled, пустой запрос, отсутствующий или
+повреждённый индекс дают пустые указатели и явную диагностическую причину; search ничего не
+создаёт и не ремонтирует. Вход запроса преобразуется в литеральные Unicode-слова: операторы FTS
+не исполняются. SQLite должна поддерживать FTS5; доступность зависит от сборки Python/SQLite.
+Rebuild строит соседнюю базу, проверяет её и атомарно заменяет индекс; ошибка сохраняет прежнюю
+базу. Missing/corrupt cache восстанавливается без миграции. Build/rebuild сериализуются локальным
+SQLite writer-lock с таймаутом 2 секунды; после завершения активного writer команду можно повторить.
+Индекс использует обычный rollback journal, без WAL.
 
 #### `init` — первая установка
 
@@ -513,7 +554,7 @@ MCP/plugin/hook/runtime-конфигов) — в
 | `selected skill names already exist; inspect them or use --replace-conflicts` | `adopt` — под именами capability уже лежат свои скиллы | Проверить конфликты; если замена ожидаема — повторить с `--replace-conflicts` (без backup) |
 | `local skill changes would be overwritten; review them or use --force` | `update` — на диске локальные правки managed-файлов | Изучить diff; для snapshot — `--force-managed-files`, для snapshot и seed — `--force` |
 | `discovery path already exists and is not managed: <path> (...)` | На месте `.agents/skills`/`.claude/skills` что-то постороннее | `init` — убрать вручную или использовать `adopt`; `adopt` — `--replace-conflicts`; `update` — `--force` |
-| `.harness/project.json has unknown field(s): <name>` | Поле вне строгого контракта | Удалить поле либо реализовать его сразу в `project.schema.json`, шаблоне, валидаторе и потребителе; допустимы `language`, `base_branch`, `branch_pattern`, `qa_gate_commands`, `$schema`, `story_points`, `shell` |
+| `.harness/project.json has unknown field(s): <name>` | Поле вне строгого контракта | Удалить поле либо реализовать его сразу в `project.schema.json`, шаблоне, валидаторе и потребителе; допустимы `language`, `base_branch`, `branch_pattern`, `qa_gate_commands`, `$schema`, `story_points`, `shell`, `memory`, `memory_policy` |
 | `install-global.py`: `[CONFLICT] ... (re-run with --replace-conflicts ...)` | Место профиля или симлинка занято | Повторить с `--replace-conflicts` — сначала будет backup |
 | `install-global.py`: `[ERROR] Failed to create symlink: ...` (только Windows) | Нет прав на symlink каталога | Включить Developer Mode (Settings → For developers) или запустить терминал от имени администратора |
 

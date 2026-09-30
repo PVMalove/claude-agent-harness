@@ -43,6 +43,8 @@ PROJECT_JSON_ALLOWED_FIELDS = frozenset(PROJECT_JSON_REQUIRED_FIELDS) | {
     "$schema",
     "story_points",
     "shell",
+    "memory",
+    "memory_policy",
 }
 STORY_POINTS_REQUIRED_FIELDS = (
     "scale",
@@ -503,6 +505,14 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
     if not isinstance(data, dict):
         problems.append(".harness/project.json must contain a JSON object")
         return
+
+    if "memory" in data or "memory_policy" in data:
+        from harness.memory.policy import parse_policy
+
+        try:
+            parse_policy(data)
+        except ValueError as exc:
+            problems.append(f".harness/project.json {exc}")
 
     missing = [field for field in PROJECT_JSON_REQUIRED_FIELDS if field not in data]
     if missing:

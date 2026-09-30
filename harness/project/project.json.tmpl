@@ -4,6 +4,15 @@
   "base_branch": "{{PR_BASE_BRANCH}}",
   "branch_pattern": "{{BRANCH_PATTERN}}",
   "qa_gate_commands": {{QA_GATE_COMMANDS}},
+  "memory": {"enabled": false},
+  "memory_policy": {
+    "source_types": [],
+    "allow_paths": [],
+    "redact_rules": [],
+    "min_similarity": 0,
+    "top_k": 5,
+    "max_tokens": 1000
+  },
   "story_points": {
     "scale": [1, 2, 3, 5, 8, 13, 21],
     "fast_threshold": 3,
