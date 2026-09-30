@@ -116,5 +116,8 @@ def search_with_refresh(repo: Path, query: str) -> dict[str, object]:
         try:
             refresh(repo)
         except (ValueError, OSError):
-            return degraded("refresh_failed", "memory refresh failed; previous cache retained; retry or explicitly rebuild from main checkout")
+            return degraded(
+                "refresh_failed",
+                "memory refresh failed; previous cache retained; retry or explicitly rebuild from main checkout",
+            )
     return search(repo, query)

@@ -160,7 +160,7 @@ def allowed_paths(repo: Path, policy: Policy) -> list[str]:
         return []
     generation = (
         selected_generation(repo)
-        if {"ledger", "qa_finding"} & set(policy.source_types)
+        if policy.active and {"ledger", "qa_finding"} & set(policy.source_types)
         else ""
     )
     paths: set[str] = set()
@@ -202,6 +202,11 @@ def allowed_paths(repo: Path, policy: Policy) -> list[str]:
                 generation + "/"
             ):
                 return
+            sanitized = baseline(relative)
+            for rule in policy.redact_rules:
+                sanitized = re.sub(rule, "[REDACTED]", sanitized)
+            if sanitized != relative:
+                raise ValueError("memory source path cannot be safely retained")
             paths.add(relative)
             if len(paths) > MAX_SOURCES:
                 raise ValueError("memory source count exceeds 1000")
@@ -226,7 +231,7 @@ def collect_sources(repo: Path, policy: Policy) -> list[Source]:
     documents = []
     generation = (
         selected_generation(repo)
-        if {"ledger", "qa_finding"} & set(policy.source_types)
+        if policy.active and {"ledger", "qa_finding"} & set(policy.source_types)
         else ""
     )
     for relative in allowed_paths(repo, policy):

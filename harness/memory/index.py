@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -15,6 +16,7 @@ from harness.storage import storage_path, storage_root
 from .policy import Policy, parse_policy
 from .sources import Source, collect_sources
 from . import sources
+from .adapters import selected_generation
 
 SCHEMA_VERSION = "2"
 LOCK_TIMEOUT = 2.0
@@ -71,6 +73,7 @@ def replace_documents(
     if manifest.get("policy_fingerprint") != policy.fingerprint:
         connection.execute("DELETE FROM documents")
         connection.execute("DELETE FROM search_text")
+        connection.execute("DELETE FROM source_hashes")
     current = {
         row[1]: (row[0], row[2])
         for row in connection.execute("SELECT id, path, source_hash FROM documents")
@@ -199,7 +202,7 @@ def refresh(repo: Path) -> dict[str, object]:
                     else {}
                 )
                 generation = (
-                    sources.selected_generation(canonical)
+                    selected_generation(canonical)
                     if {"ledger", "qa_finding"} & set(policy.source_types)
                     and policy.active
                     else ""
@@ -214,7 +217,7 @@ def refresh(repo: Path) -> dict[str, object]:
                     except FileNotFoundError:
                         retained.discard(relative)
                         continue
-                    digest = sources.hashlib.sha256(raw).hexdigest()
+                    digest = hashlib.sha256(raw).hexdigest()
                     hashes[relative] = digest
                     if known.get(relative) == digest:
                         continue
@@ -223,7 +226,7 @@ def refresh(repo: Path) -> dict[str, object]:
                         retained.discard(relative)
                     else:
                         documents.append(document)
-                if generation and sources.selected_generation(canonical) != generation:
+                if generation and selected_generation(canonical) != generation:
                     raise ValueError(
                         "memory ledger generation changed during ingestion; retry"
                     )

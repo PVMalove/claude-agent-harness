@@ -50,8 +50,12 @@ def checkouts(tmp_path: Path, request: pytest.FixtureRequest) -> tuple[Path, Pat
     git(main, "commit", "-qm", "fixture")
     linked = tmp_path / "linked checkout"
     git(main, "worktree", "add", "-qb", "fixture-linked", str(linked))
-    configure(main, allow_paths=["CONTEXT.md", "docs/tasks/**/*.md"])
-    source(main, "docs/tasks/issue-1/archive.md", "# Archived decision\ntransaction")
+    configure(
+        main,
+        source_types=["glossary", "task_archive"],
+        allow_paths=["CONTEXT.md", "docs/tasks/**/*.md"],
+    )
+    source(main, "docs/tasks/issue-1/issue-1-archive.md", "# Archived decision\ntransaction")
     configure(linked, allow_paths=[])
     source(linked, "CONTEXT.md", "# Branch glossary\nunrelated")
     return main, linked
@@ -72,7 +76,7 @@ def test_worktree_cli_search_uses_main_index_and_gitignored_corpus(
     assert isinstance(pointers, list)
     assert {p["path"] for p in pointers} == {
         "CONTEXT.md",
-        "docs/tasks/issue-1/archive.md",
+        "docs/tasks/issue-1/issue-1-archive.md",
     }
     assert run_memory(linked, "search", "transaction") == expected
     assert not (linked / "docs/tasks").exists()
@@ -117,13 +121,16 @@ def test_parallel_cli_writers_publish_a_complete_searchable_corpus(
     main, linked = checkouts
     configure(
         main,
+        source_types=["glossary", "task_archive"],
         allow_paths=["CONTEXT.md", "docs/tasks/**/*.md"],
         top_k=128,
         max_tokens=50000,
     )
     for number in range(126):
         source(
-            main, f"docs/tasks/archive/{number}.md", f"# Decision {number}\ntransaction"
+            main,
+            f"docs/tasks/issue-1/tickets/{number}.md",
+            f"# Decision {number}\ntransaction",
         )
     with (
         subprocess.Popen(
