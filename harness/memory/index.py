@@ -119,3 +119,10 @@ def build(repo: Path) -> dict[str, object]:
             "memory index unavailable or corrupt; check FTS5 support or run harness memory rebuild"
         ) from None
     return {"status": "built", "indexed": len(documents)}
+
+
+def rebuild(repo: Path) -> dict[str, object]:
+    """Full-rebuild entrypoint; atomic corrupt-cache recovery is the next slice."""
+    result = build(repo)
+    result["status"] = "rebuilt"
+    return result

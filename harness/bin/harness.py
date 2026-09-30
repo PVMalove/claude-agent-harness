@@ -47,6 +47,11 @@ from harness.uninstall import (
     apply_uninstall,
     plan_uninstall,
 )
+from harness.memory import (
+    build as memory_build,
+    search as memory_search,
+    rebuild as memory_rebuild,
+)
 from harness.storage import storage_path
 from harness.health import registry as health_registry
 from harness.health import render as health_render
@@ -1097,6 +1102,22 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     return 1 if result["failed"] else 0
 
 
+def cmd_memory(args: argparse.Namespace) -> int:
+    """Run explicit offline writers or read-only pointer search and print JSON."""
+    repo = Path(args.repo).expanduser().resolve()
+    try:
+        if args.memory_operation == "search":
+            result = memory_search(repo, args.query)
+        elif args.memory_operation == "rebuild":
+            result = memory_rebuild(repo)
+        else:
+            result = memory_build(repo)
+    except (ValueError, OSError) as exc:
+        fail(str(exc))
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     """Сконфигурировать парсер аргументов командной строки CLI harness."""
     root = argparse.ArgumentParser(prog="harness")
@@ -1174,6 +1195,15 @@ def parser() -> argparse.ArgumentParser:
     lock_project = commands.add_parser("lock-project-skills")
     lock_project.add_argument("repo")
     lock_project.set_defaults(func=cmd_lock_project_skills)
+
+    memory = commands.add_parser("memory", help="explicit offline project-memory cache")
+    memory_commands = memory.add_subparsers(dest="memory_operation", required=True)
+    for operation in ("build", "search", "rebuild"):
+        memory_command = memory_commands.add_parser(operation)
+        memory_command.add_argument("repo")
+        if operation == "search":
+            memory_command.add_argument("query")
+        memory_command.set_defaults(func=cmd_memory)
 
     health = commands.add_parser("health")
     health.add_argument("repo")

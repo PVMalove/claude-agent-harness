@@ -84,7 +84,7 @@ def read_source(repo: Path, relative: str, policy: Policy) -> Source | None:
     )
 
 
-def collect_sources(repo: Path, policy: Policy) -> list[Source]:
+def allowed_paths(repo: Path, policy: Policy) -> list[str]:
     """Expand only explicit allow_paths; sorted deduplicated paths have stable identities."""
     if not policy.active:
         return []
@@ -100,8 +100,13 @@ def collect_sources(repo: Path, policy: Policy) -> list[Source]:
             paths.add(relative)
             if len(paths) > MAX_SOURCES:
                 raise ValueError("memory source count exceeds 1000")
+    return sorted(paths)
+
+
+def collect_sources(repo: Path, policy: Policy) -> list[Source]:
+    """Read only the bounded, explicitly allowed corpus."""
     documents: list[Source] = []
-    for relative in sorted(paths):
+    for relative in allowed_paths(repo, policy):
         document = read_source(repo, relative, policy)
         if document is not None:
             documents.append(document)
