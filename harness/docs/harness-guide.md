@@ -132,6 +132,22 @@ PR.
 | Механизм | `--capability mattpocock-suite` | `extends`/`overrides`/`additions` в `harness/CAPABILITIES.json`, полные first-party файлы и проверяемый snapshot ([ADR 0001](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0001-portable-capability-delivery.md)) |
 | Обновление апстрима | `harness update` устанавливает изменения без правок | Унаследованное обновляет тот же `update`; за переопределёнными скиллами следите через `scripts/check_upstream_drift` в репозитории харнесса |
 
+#### Политика памяти проекта
+
+Память включается только через `memory: {"enabled": true}` в `.harness/project.json`.
+Отдельный `memory_policy` содержит все шесть полей: `source_types` (список `adr`/`glossary`),
+`allow_paths` (явные относительные POSIX glob-пути), `redact_rules` (regex),
+`min_similarity` (конечное число 0..1), `top_k` и `max_tokens` (целые >=1).
+Отсутствующая политика и пустой любой allowlist не разрешают ни одного источника;
+старые конфиги без памяти остаются валидными. Шаблон выключает память и задаёт пустые списки.
+Неизвестные поля, абсолютные/Windows-пути, `..`, неверные regex и bool вместо числа отклоняются.
+Regex имеют длину 1..512 символов; используйте простые шаблоны: ограничение длины и размера
+источника снижает риск, но не ограничивает время исполнения произвольного project-owned regex.
+Совпадения заменяются `[REDACTED]` до сохранения заголовка, статуса и текста.
+`min_similarity` сохраняется, но пока не фильтрует FTS5: cosine-порог включит следующий
+векторный срез ADR 0010. `top_k` и `max_tokens` ограничивают окончательный список указателей;
+токены оцениваются консервативно по UTF-8, без привязки к tokenizer модели.
+
 #### `init` — первая установка
 
 Требует, чтобы `<repo>` уже был git-репозиторием; завершается ошибкой «already exists; use update», если
@@ -513,7 +529,7 @@ MCP/plugin/hook/runtime-конфигов) — в
 | `selected skill names already exist; inspect them or use --replace-conflicts` | `adopt` — под именами capability уже лежат свои скиллы | Проверить конфликты; если замена ожидаема — повторить с `--replace-conflicts` (без backup) |
 | `local skill changes would be overwritten; review them or use --force` | `update` — на диске локальные правки managed-файлов | Изучить diff; для snapshot — `--force-managed-files`, для snapshot и seed — `--force` |
 | `discovery path already exists and is not managed: <path> (...)` | На месте `.agents/skills`/`.claude/skills` что-то постороннее | `init` — убрать вручную или использовать `adopt`; `adopt` — `--replace-conflicts`; `update` — `--force` |
-| `.harness/project.json has unknown field(s): <name>` | Поле вне строгого контракта | Удалить поле либо реализовать его сразу в `project.schema.json`, шаблоне, валидаторе и потребителе; допустимы `language`, `base_branch`, `branch_pattern`, `qa_gate_commands`, `$schema`, `story_points`, `shell` |
+| `.harness/project.json has unknown field(s): <name>` | Поле вне строгого контракта | Удалить поле либо реализовать его сразу в `project.schema.json`, шаблоне, валидаторе и потребителе; допустимы `language`, `base_branch`, `branch_pattern`, `qa_gate_commands`, `$schema`, `story_points`, `shell`, `memory`, `memory_policy` |
 | `install-global.py`: `[CONFLICT] ... (re-run with --replace-conflicts ...)` | Место профиля или симлинка занято | Повторить с `--replace-conflicts` — сначала будет backup |
 | `install-global.py`: `[ERROR] Failed to create symlink: ...` (только Windows) | Нет прав на symlink каталога | Включить Developer Mode (Settings → For developers) или запустить терминал от имени администратора |
 
