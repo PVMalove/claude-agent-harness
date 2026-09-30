@@ -23,7 +23,15 @@ def test_search_returns_unicode_pointers_without_source_text(tmp_path: Path) -> 
     assert result["status"] == "ok"
     pointers = result["pointers"]
     assert isinstance(pointers, list) and len(pointers) == 1
-    assert set(pointers[0]) == {"title", "status", "date", "superseded_by", "path", "source_hash", "history_to_verify"}
+    assert set(pointers[0]) == {
+        "title",
+        "status",
+        "date",
+        "superseded_by",
+        "path",
+        "source_hash",
+        "history_to_verify",
+    }
     assert pointers[0]["title"] == "Глоссарий"
     assert pointers[0]["status"] == "unknown"
     assert "Транзакция" not in json.dumps(pointers, ensure_ascii=False)
@@ -173,11 +181,17 @@ def test_worktree_search_reads_authoritative_main_sources(tmp_path: Path) -> Non
     assert search(linked, "transaction") == search(main, "transaction")
 
 
-def test_metadata_is_explicit_sanitized_history_and_superseded_is_never_returned(tmp_path: Path) -> None:
+def test_metadata_is_explicit_sanitized_history_and_superseded_is_never_returned(
+    tmp_path: Path,
+) -> None:
     """Pointers retain declared metadata without claiming current truth."""
     configure(tmp_path)
     source(tmp_path, "docs/adr/old.md", "# Old\nStatus: superseded\ntransaction")
-    source(tmp_path, "docs/adr/current.md", "---\nstatus: accepted\ndate: 2026-09-30\nsuperseded-by: secret=replacement\n---\n# Current\ntransaction mentions superseded")
+    source(
+        tmp_path,
+        "docs/adr/current.md",
+        "---\nstatus: accepted\ndate: 2026-09-30\nsuperseded-by: secret=replacement\n---\n# Current\ntransaction mentions superseded",
+    )
     build(tmp_path)
     pointers = search(tmp_path, "transaction")["pointers"]
     assert isinstance(pointers, list) and len(pointers) == 1

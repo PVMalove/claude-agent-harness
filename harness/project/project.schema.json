@@ -113,7 +113,10 @@
             "type": "string",
             "enum": [
               "adr",
-              "glossary"
+              "glossary",
+              "task_archive",
+              "qa_finding",
+              "ledger"
             ]
           }
         },

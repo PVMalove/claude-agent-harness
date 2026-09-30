@@ -55,7 +55,15 @@ def search(repo: Path, query: str) -> dict[str, object]:
                 "SELECT d.source_type,d.title,d.status,d.date,d.superseded_by,d.path,d.source_hash FROM search_text JOIN documents d ON d.id=search_text.rowid WHERE search_text MATCH ? ORDER BY bm25(search_text),d.path",
                 (literal,),
             )
-            for source_type, title, status, date, superseded_by, relative, source_hash in rows:
+            for (
+                source_type,
+                title,
+                status,
+                date,
+                superseded_by,
+                relative,
+                source_hash,
+            ) in rows:
                 if relative not in permitted or source_type not in policy.source_types:
                     stale = True
                     continue
