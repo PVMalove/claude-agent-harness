@@ -33,7 +33,7 @@ def search(repo: Path, query: str) -> dict[str, object]:
         return degraded("index_missing", "run harness memory build from main checkout")
     # Operators, quotes and punctuation are interpreted as literal words, never FTS syntax.
     literal = " OR ".join('"' + term + '"' for term in terms)
-    pointers: list[dict[str, str]] = []
+    pointers: list[dict[str, object]] = []
     stale = False
     try:
         permitted = set(allowed_paths(canonical, policy))
@@ -52,10 +52,10 @@ def search(repo: Path, query: str) -> dict[str, object]:
                     "policy or schema changed; run harness memory build or rebuild from main checkout",
                 )
             rows = connection.execute(
-                "SELECT d.source_type,d.title,d.status,d.path,d.source_hash FROM search_text JOIN documents d ON d.id=search_text.rowid WHERE search_text MATCH ? ORDER BY bm25(search_text),d.path",
+                "SELECT d.source_type,d.title,d.status,d.date,d.superseded_by,d.path,d.source_hash FROM search_text JOIN documents d ON d.id=search_text.rowid WHERE search_text MATCH ? ORDER BY bm25(search_text),d.path",
                 (literal,),
             )
-            for source_type, title, status, relative, source_hash in rows:
+            for source_type, title, status, date, superseded_by, relative, source_hash in rows:
                 if relative not in permitted or source_type not in policy.source_types:
                     stale = True
                     continue
@@ -69,6 +69,9 @@ def search(repo: Path, query: str) -> dict[str, object]:
                 pointer = {
                     "title": title,
                     "status": status,
+                    "date": date,
+                    "superseded_by": superseded_by,
+                    "history_to_verify": True,
                     "path": relative,
                     "source_hash": source_hash,
                 }

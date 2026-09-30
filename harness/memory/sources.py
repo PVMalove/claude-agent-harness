@@ -20,6 +20,8 @@ class Source:
     source_type: str
     title: str
     status: str
+    date: str
+    superseded_by: str
     path: str
     source_hash: str
     body: str
@@ -61,17 +63,26 @@ def read_source(repo: Path, relative: str, policy: Policy) -> Source | None:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         raise ValueError(f"memory source must be UTF-8: {relative}") from None
-    status_match = re.search(
-        r"(?im)^\s*(?:\*\*)?(?:status|статус)(?:\*\*)?\s*:\s*(.+?)\s*$", text
-    )
-    if not status_match:
-        status_match = re.search(r"(?im)^##\s+(?:status|статус)\s*\n\s*([^\n]+)", text)
-    status = status_match.group(1).strip(" *\"'") if status_match else "unknown"
+    def metadata(names: str, default: str) -> str:
+        match = re.search(
+            rf"(?im)^\s*(?:\*\*)?(?:{names})(?:\*\*)?\s*:\s*([^\n]+?)\s*$", text
+        )
+        if not match:
+            match = re.search(rf"(?im)^##\s+(?:{names})\s*\n\s*([^\n]+)", text)
+        return match.group(1).strip(" *\"'") if match else default
+
+    status = metadata("status|статус", "unknown")
+    date = metadata("date|дата", "unknown")
+    superseded_by = metadata("superseded[-_]by|заменён на|заменен на", "")
     if status.lower() in {"superseded", "заменён", "заменен"}:
         return None
     for rule in policy.redact_rules:
+        if re.search(rule, relative):
+            raise ValueError("memory source path cannot be safely retained")
         text = re.sub(rule, "[REDACTED]", text)
         status = re.sub(rule, "[REDACTED]", status)
+        date = re.sub(rule, "[REDACTED]", date)
+        superseded_by = re.sub(rule, "[REDACTED]", superseded_by)
     status = status.lower().replace("[redacted]", "[REDACTED]")
     title_match = re.search(r"(?m)^#\s+(.+?)\s*$", text)
     title = title_match.group(1) if title_match else "untitled"
@@ -79,6 +90,8 @@ def read_source(repo: Path, relative: str, policy: Policy) -> Source | None:
         source_type(relative),
         title,
         status,
+        date,
+        superseded_by,
         relative,
         hashlib.sha256(raw).hexdigest(),
         text,

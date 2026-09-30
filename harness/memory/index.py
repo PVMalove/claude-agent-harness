@@ -15,7 +15,7 @@ from harness.storage import storage_path, storage_root
 from .policy import Policy, parse_policy
 from .sources import Source, collect_sources
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 LOCK_TIMEOUT = 2.0
 
 
@@ -47,7 +47,7 @@ def initialize(connection: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS manifest (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
     )
     connection.execute(
-        "CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, source_type TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL, path TEXT UNIQUE NOT NULL, source_hash TEXT NOT NULL)"
+        "CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, source_type TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL, date TEXT NOT NULL, superseded_by TEXT NOT NULL, path TEXT UNIQUE NOT NULL, source_hash TEXT NOT NULL)"
     )
     connection.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS search_text USING fts5(title, body)"
@@ -81,11 +81,13 @@ def replace_documents(
             connection.execute("DELETE FROM search_text WHERE rowid=?", (existing[0],))
             connection.execute("DELETE FROM documents WHERE id=?", (existing[0],))
         cursor = connection.execute(
-            "INSERT INTO documents(source_type,title,status,path,source_hash) VALUES (?,?,?,?,?)",
+            "INSERT INTO documents(source_type,title,status,date,superseded_by,path,source_hash) VALUES (?,?,?,?,?,?,?)",
             (
                 document.source_type,
                 document.title,
                 document.status,
+                document.date,
+                document.superseded_by,
                 document.path,
                 document.source_hash,
             ),
