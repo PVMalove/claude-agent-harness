@@ -21,7 +21,7 @@ LOCK_TIMEOUT = 2.0
 
 def context(repo: Path, *, writer: bool = False) -> tuple[Path, Path, Policy]:
     """Resolve canonical sources, shared cache and main-checkout configuration."""
-    canonical = storage_root(repo).parent
+    canonical = storage_root(repo, require_main_checkout=True).parent
     if writer and canonical != repo.resolve():
         raise ValueError(f"memory writers require main checkout: {canonical}")
     try:
@@ -36,7 +36,7 @@ def context(repo: Path, *, writer: bool = False) -> tuple[Path, Path, Policy]:
         raise ValueError("memory project configuration must be an object")
     return (
         canonical,
-        storage_path(repo, "cache", "memory", "index.sqlite3"),
+        storage_path(canonical, "cache", "memory", "index.sqlite3"),
         parse_policy(config),
     )
 
