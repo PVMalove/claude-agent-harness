@@ -73,7 +73,8 @@
       "token_estimator.py",
       "errors.py",
       "__init__.py",
-      "health"
+      "health",
+      "memory"
     ]
   },
   "backend-orchestration": {
