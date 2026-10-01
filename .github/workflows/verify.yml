@@ -57,6 +57,34 @@ jobs:
       - name: Verify harness and clean-room install
         run: make verify
 
+  private-terms:
+    # Maintainer-only check (#438): every commit of the PR (message and added lines), the head branch,
+    # the title and the body against the term list in the HARNESS_PRIVATE_TERMS repository secret.
+    # Forks and Dependabot get an empty secret, so the check skips with a notice. The secret reaches
+    # only this step's env; the output names locations and term numbers, never a term.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Check private terms
+        env:
+          HARNESS_PRIVATE_TERMS: ${{ secrets.HARNESS_PRIVATE_TERMS }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_REF: ${{ github.head_ref }}
+          COMMIT_RANGE: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+        run: |
+          printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/pr-title.txt"
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+          python scripts/check_private_terms.py --commits "$COMMIT_RANGE" --branch "$HEAD_REF" \
+            --body-file "$RUNNER_TEMP/pr-title.txt" --body-file "$RUNNER_TEMP/pr-body.md"
+
   parser-bundle:
     # Real tree-sitter bundle path (ADR 0008): pinned wheels -> sha256 check -> offline bundle. It is
     # assembled once here and handed to every `repo-map-bundle` leg as one artifact, so all legs test
