@@ -15,6 +15,25 @@ SEPARATORS = "();<>|&\n"
 SHELLS = frozenset({"bash", "dash", "ksh", "sh", "zsh"})
 # Any word after one of these may be a command string it runs (`bash -c`, `eval`, `ssh host`).
 EVALUATORS = SHELLS | {"eval", "runuser", "script", "ssh", "su", "watch"}
+# Their arguments are text they print or read, never a program they start.
+PRINTERS = frozenset(
+    {
+        "cat",
+        "diff",
+        "echo",
+        "egrep",
+        "fgrep",
+        "grep",
+        "head",
+        "jq",
+        "ls",
+        "printf",
+        "rg",
+        "sed",
+        "tail",
+        "wc",
+    }
+)
 INTERPRETER = re.compile(r"python[0-9.]*|perl|ruby|node|php")
 # The word after one of these interpreter options is program text (`python -c`, `perl -le`).
 CODE_OPTION = re.compile(r"-[A-Za-z]*[ceEpr]|--eval|--print")
@@ -23,6 +42,7 @@ KEYWORDS = frozenset(
 )
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.S)
 HEREDOC = re.compile(r"(?<!<)<<(-?)[ \t]*(\\?)([\x27\"]?)([A-Za-z_][A-Za-z0-9_.-]*)\3")
+WORD_BREAK = re.compile(r"[\s;&|()<>]+")
 MERGE_TEXT = re.compile(r"\bgh\s+pr\s+merge\b|\bglab\s+mr\s+(?:merge|accept)\b")
 MAX_DEPTH = 8
 
@@ -48,10 +68,10 @@ def program(word: str) -> str:
 def positions(argv: list[str]) -> range:
     """Индексы argv, с которых может стартовать программа.
 
-    Каждый суффикс argv может оказаться запускаемой командой (`sudo`, `timeout`, `xargs`,
-    `uv run`, `find -exec`).
+    Аргументы печатающих команд — только текст. У любой другой программы каждый суффикс argv
+    может оказаться запускаемой командой (`sudo`, `timeout`, `xargs`, `uv run`, `find -exec`).
     """
-    return range(len(argv))
+    return range(1) if program(argv[0]) in PRINTERS else range(len(argv))
 
 
 def parse(command: str) -> Parsed:
@@ -66,18 +86,28 @@ def _parse(text: str, out: Parsed, depth: int) -> None:
     if depth > MAX_DEPTH:
         out.opaque.append(text)
         return
-    source, scripts = _split_heredocs(text.replace("\\\n", ""))
+    joined = text.replace("\\\n", "")
+    source, scripts, expanded, broken = _split_heredocs(joined)
+    if broken:
+        # Heredoc bodies cannot be told from commands: the whole text decides, towards a block.
+        out.opaque.append(joined)
     for script in scripts:
         _parse(script, out, depth + 1)
-    substitutions, broken = _scan(source)
+    for body in expanded:
+        _, substitutions, broken = _scan(body, quoting=False)
+        if broken:
+            out.opaque.append(body)
+        for inner in substitutions:
+            _parse(inner, out, depth + 1)
+    text, substitutions, broken = _scan(source, quoting=True)
     if broken:
         out.opaque.append(source)
     for inner in substitutions:
         _parse(inner, out, depth + 1)
-    lexer = shlex.shlex(source, posix=True, punctuation_chars=SEPARATORS)
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=SEPARATORS)
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
-    # `#` stays an ordinary character (fail closed): shlex would end a word at any `#`.
+    # _scan already dropped comments: shlex would also end a word at a `#` inside it.
     lexer.commenters = ""
     try:
         tokens = list(lexer)
@@ -93,35 +123,156 @@ def _parse(text: str, out: Parsed, depth: int) -> None:
             words.append(token)
 
 
-def _split_heredocs(text: str) -> tuple[str, list[str]]:
-    """Текст без тел heredoc и сами тела: каждое разбирается как команды (fail closed)."""
+# Contexts of the heredoc scanner, named by what opened them. Commands run at the top level (""),
+# in `$(…)`/`(…)` (both "$(") and in backquotes: only there `<<` is an operator and `#` starts a
+# comment. In arithmetic (`((`, `$((`, `$[`, a subscript `[`, and "a(" for a group inside them)
+# `<<` is a shift, which the scanner cannot tell from an operator.
+COMMAND_CONTEXTS = frozenset({"", "$(", "`"})
+ARITHMETIC_CONTEXTS = frozenset({"((", "[", "a("})
+CLOSERS = {
+    "'": "'",
+    "$'": "'",
+    '"': '"',
+    "${": "}",
+    "$(": ")",
+    "`": "`",
+    "((": ")",
+    "[": "]",
+    "a(": ")",
+}
+# A word starts after one of these; a heredoc delimiter word ends at one or at the end of text.
+WORD_EDGE = " \t\r\n;&|()<>"
+
+
+def _split_heredocs(text: str) -> tuple[str, list[str], list[str], bool]:
+    """Текст без операторов и тел heredoc, тела-скрипты, тела с подстановками и признак сбоя.
+
+    Один проход со стеком контекстов: `<<` — оператор только вне кавычек, `${…}`, арифметики
+    и комментариев, то есть на верхнем уровне и внутри `$(…)`, `(…)`, `` `…` ``; `<<<` —
+    here-string. Тела читаются со строки после перевода строки вне кавычек и вместе с текстом
+    оператора удаляются из текста. Тело с кавычками в разделителе (`<<'EOF'`, `<<"EOF"`,
+    `<<\\EOF`) — литерал: оно отбрасывается, если строка не передаёт его оболочке.
+    Признак сбоя — оператор, который не разобрать (разделитель, сдвиг в арифметике, `case`
+    в подстановке, перевод строки или конец подстановки до тела), или незакрытая конструкция;
+    тогда возвращается исходный текст, и решает вызывающий код, только в сторону блокировки.
+    """
     kept: list[str] = []
     scripts: list[str] = []
-    # (strip leading tabs, delimiter)
-    pending: list[tuple[bool, str]] = []
-    body: list[str] = []
-    for line in text.split("\n"):
-        if pending:
-            strip_tabs, delimiter = pending[0]
-            if (line.lstrip("\t") if strip_tabs else line) != delimiter:
-                body.append(line)
-                continue
-            pending.pop(0)
-            scripts.append("\n".join(body))
-            body = []
+    expanded: list[str] = []
+    stack: list[str] = []
+    # (strip leading tabs, delimiter, literal body, stack depth at the operator)
+    pending: list[tuple[bool, str, bool, int]] = []
+    broken: tuple[str, list[str], list[str], bool] = (text, [], [], True)
+    index = line_start = 0
+    while index < len(text):
+        top = stack[-1] if stack else ""
+        char = text[index]
+        word_start = index == 0 or text[index - 1] in WORD_EDGE
+        step = 1
+        if char == "\n" and pending:
+            if top not in COMMAND_CONTEXTS or {op[3] for op in pending} != {len(stack)}:
+                return broken
+            line = text[line_start:index]
+            to_shell = bool(SHELLS & {program(word) for word in WORD_BREAK.split(line)})
+            kept.append(char)
+            lines = text[index + 1 :].split("\n")
+            used = 0
+            for strip_tabs, delimiter, literal, _ in pending:
+                start = used
+                while used < len(lines):
+                    row = lines[used].lstrip("\t") if strip_tabs else lines[used]
+                    if row == delimiter:
+                        break
+                    used += 1
+                body = "\n".join(lines[start:used])
+                if used == len(lines):
+                    # bash reads an unterminated heredoc to the end of input: the rest is commands.
+                    scripts.append(body)
+                    return "".join(kept), scripts, expanded, False
+                used += 1
+                target = scripts if to_shell else None if literal else expanded
+                if target is not None:
+                    target.append(body)
+            pending = []
+            index = line_start = index + 1 + sum(len(row) + 1 for row in lines[:used])
             continue
-        kept.append(line)
-        pending.extend(
-            (match.group(1) == "-", match.group(4)) for match in HEREDOC.finditer(line)
-        )
-    if pending:
-        # bash reads an unterminated heredoc to the end of input: treat the rest as commands.
-        scripts.append("\n".join(body))
-    return "\n".join(kept), scripts
+        if top in ("'", "$'"):
+            if char == "'":
+                stack.pop()
+            elif char == "\\" and top == "$'":
+                step = 2
+        elif char == "\\":
+            step = 2
+        elif top and char == CLOSERS[top]:
+            if top == "((" and text[index + 1 : index + 2] != ")":
+                return broken
+            step = 2 if top == "((" else 1
+            stack.pop()
+            if any(op[3] > len(stack) for op in pending):
+                return broken
+        elif top in ARITHMETIC_CONTEXTS and text.startswith("<<", index):
+            return broken
+        elif top in COMMAND_CONTEXTS and text.startswith("<<<", index):
+            step = 3
+        elif top in COMMAND_CONTEXTS and text.startswith("<<", index):
+            match = HEREDOC.match(text, index)
+            # A delimiter that runs on into quotes or `$` is not decided ("" is in WORD_EDGE).
+            if match is None or text[match.end() : match.end() + 1] not in WORD_EDGE:
+                return broken
+            literal = bool(match.group(2) or match.group(3))
+            pending.append((match.group(1) == "-", match.group(4), literal, len(stack)))
+            kept.append(" ")
+            index = match.end()
+            continue
+        elif top in COMMAND_CONTEXTS and char == "#" and word_start:
+            # A comment ends at the newline, inside backquotes also at the closing backquote.
+            ends = [text.find(stop, index) for stop in ("\n`" if top == "`" else "\n")]
+            step = min([end for end in ends if end >= 0], default=len(text)) - index
+        elif (
+            top == "$("
+            and word_start
+            and text.startswith("case", index)
+            and text[index + 4 : index + 5] in WORD_EDGE
+        ):
+            # A `case` pattern's `)` would end the substitution early in this scan.
+            return broken
+        else:
+            if char == "\n" and top in COMMAND_CONTEXTS:
+                line_start = index + 1
+            context, step = _heredoc_context(text, index, top)
+            if context:
+                stack.append(context)
+        kept.append(text[index : index + step])
+        index += step
+    return ("".join(kept), scripts, expanded, False) if not stack else broken
 
 
-def _scan(text: str) -> tuple[list[str], bool]:
-    """Тела `$(…)`, `` `…` ``, `<(…)`, `>(…)` вне одинарных кавычек и признак незакрытой конструкции."""
+def _heredoc_context(text: str, index: int, top: str) -> tuple[str, int]:
+    """Контекст heredoc-сканера, открытый в `index` внутри `top`, и длина открывающего текста.
+
+    `("", 1)` — в этой позиции ничего не открывается.
+    """
+    if text[index] not in "$`'\"([":
+        return "", 1
+    openers = [("$((", "(("), ("$(", "$("), ("${", "${"), ("$[", "["), ("`", "`")]
+    if top != '"':
+        openers += [("$'", "$'"), ("'", "'"), ('"', '"')]
+    if top in COMMAND_CONTEXTS:
+        openers += [("((", "(("), ("(", "$("), ("[", "[")]
+    elif top in ARITHMETIC_CONTEXTS:
+        openers += [("(", "a("), ("[", "[")]
+    for opener, context in openers:
+        if text.startswith(opener, index):
+            return context, len(opener)
+    return "", 1
+
+
+def _scan(text: str, quoting: bool) -> tuple[str, list[str], bool]:
+    """Текст без комментариев, тела `$(…)`, `` `…` ``, `<(…)`, `>(…)` и признак незакрытой конструкции.
+
+    `quoting=False` — тело heredoc: кавычки и `#` в нём не особые, подстановки bash выполняет.
+    """
+    kept: list[str] = []
     bodies: list[str] = []
     quote = ""
     index = 0
@@ -131,24 +282,39 @@ def _scan(text: str) -> tuple[list[str], bool]:
         if quote == "'":
             quote = "" if char == "'" else quote
         elif char == "\\":
+            kept.append(pair)
             index += 2
             continue
-        elif char == "`" or pair == "$(" or (not quote and pair in ("<(", ">(")):
+        elif (
+            char == "`"
+            or pair == "$("
+            or (quoting and not quote and pair in ("<(", ">("))
+        ):
             start = index + (1 if char == "`" else 2)
             end = (
                 _backquote_end(text, start) if char == "`" else _paren_end(text, start)
             )
             if end < 0:
-                return bodies, True
+                return "".join(kept) + text[index:], bodies, True
             bodies.append(text[start:end])
+            kept.append(text[index : end + 1])
             index = end + 1
             continue
+        elif not quoting:
+            pass
         elif char == '"':
             quote = "" if quote else '"'
-        elif not quote and char == "'":
+        elif quote:
+            pass
+        elif char == "'":
             quote = "'"
+        elif char == "#" and (index == 0 or text[index - 1] in " \t\r\n;&|()<>"):
+            end = text.find("\n", index)
+            index = len(text) if end < 0 else end
+            continue
+        kept.append(char)
         index += 1
-    return bodies, bool(quote)
+    return "".join(kept), bodies, bool(quote)
 
 
 def _backquote_end(text: str, start: int) -> int:
@@ -200,6 +366,8 @@ def _add_command(words: list[str], source: str, out: Parsed, depth: int) -> None
     if not argv:
         return
     out.commands.append(argv)
+    if program(argv[0]) in PRINTERS:
+        return
     names = [program(word) for word in argv]
     evaluator = next((i for i, name in enumerate(names) if name in EVALUATORS), None)
     if evaluator is not None:

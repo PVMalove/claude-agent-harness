@@ -1,8 +1,8 @@
 #!/bin/bash
 # PreToolUse(Bash): "Zero Auto-Merge" from docs/agents/git-workflow.md, enforced deterministically.
 # pr_commands.py decides on the tokens of tool_input.command: `gh pr merge` and `glab mr merge`/
-# `accept` are blocked wherever bash would run them; a mention inside one quoted argument is
-# not. Any failure to decide blocks (fail closed).
+# `accept` are blocked wherever bash would run them; a mention in quotes, in a quoted heredoc or
+# in an echo/cat argument is not. Any failure to decide blocks (fail closed).
 INPUT=$(cat)
 
 # Fast path without Python: a payload that never mentions merge/accept cannot request one.
