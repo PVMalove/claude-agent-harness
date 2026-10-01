@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import cast
 
 from ..errors import HarnessError
+from ..memory.search import select_pointers
 from ..repo_map.contract import validation_error as repo_map_validation_error
 from ..repo_map.policy import RepoMapPolicy, load_policy
 from ..repo_map.policy import matches as _repo_map_matches
@@ -548,6 +549,8 @@ def build_context_package(
     goal: str = "",
     definition_of_done: list[str] | None = None,
     memory: dict[str, object] | None = None,
+    memory_top_k: int = 5,
+    memory_max_tokens: int = 1000,
 ) -> ContextPackage:
     """Собрать неизменяемый Context Package для пары коммитов `base_commit`..`candidate_commit`.
 
@@ -754,36 +757,69 @@ def build_context_package(
     # without adding information (unlike a modified file, where the diff is only hunks and
     # `contents[path]` genuinely adds the rest of the file).
     added_paths: set[str] = {path for path, status in changed if status == "added"}
-    payload_text: str = "\n".join(
-        [
+    core_parts = [
+        diff,
+        json.dumps(symbol_graph, ensure_ascii=False, sort_keys=True),
+        json.dumps(
+            [asdict(card) for card in precedent_cards],
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        *[
             json.dumps(
-                {
-                    "goal": goal,
-                    "definition_of_done": definition_of_done or [],
-                    "memory": memory or {},
-                },
+                [asdict(section) for section in sections_by_path[path]],
                 ensure_ascii=False,
-                sort_keys=True,
-            ),
-            diff,
-            json.dumps(symbol_graph, ensure_ascii=False, sort_keys=True),
-            json.dumps(
-                [asdict(card) for card in precedent_cards],
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
-            *[
+            )
+            if path in sections_by_path
+            else contents[path]
+            for path in sorted(contents)
+            if path not in added_paths and path not in mirror_of
+        ],
+    ]
+
+    def render_payload(section: dict[str, object]) -> str:
+        return "\n".join(
+            [
                 json.dumps(
-                    [asdict(section) for section in sections_by_path[path]],
+                    {
+                        "goal": goal,
+                        "definition_of_done": definition_of_done or [],
+                        "memory": section,
+                    },
                     ensure_ascii=False,
-                )
-                if path in sections_by_path
-                else contents[path]
-                for path in sorted(contents)
-                if path not in added_paths and path not in mirror_of
-            ],
-        ]
-    )
+                    sort_keys=True,
+                ),
+                *core_parts,
+            ]
+        )
+
+    # Code navigation is mandatory; memory can only use the budget it leaves available.
+    frozen_memory = {**memory, "pointers": []} if memory else {}
+    if memory:
+
+        def memory_fits(pointers: list[dict[str, object]]) -> bool:
+            section = {**frozen_memory, "pointers": pointers}
+            if (
+                estimate_tokens(json.dumps(section, ensure_ascii=False, sort_keys=True))
+                > memory_max_tokens
+            ):
+                return False
+            payload = render_payload(section)
+            return (
+                max_package_tokens is None
+                or estimate_tokens(payload) <= max_package_tokens
+            ) and (
+                max_package_size_bytes is None
+                or len(payload.encode("utf-8")) <= max_package_size_bytes
+            )
+
+        frozen_memory["pointers"] = select_pointers(
+            cast(list[dict[str, object]], memory.get("pointers", [])),
+            top_k=memory_top_k,
+            per_type_quota=min(memory_top_k, 2),
+            fits=memory_fits,
+        )
+    payload_text = render_payload(frozen_memory)
     size_bytes: int = len(payload_text.encode("utf-8"))
     estimated_tokens: int = estimate_tokens(payload_text)
     if max_package_size_bytes is not None and size_bytes > max_package_size_bytes:
@@ -811,7 +847,7 @@ def build_context_package(
         schema_version=3,
         goal=goal,
         definition_of_done=list(definition_of_done or []),
-        memory=memory or {},
+        memory=frozen_memory,
         parser=parser,
         parser_provenance=parser_provenance,
     )

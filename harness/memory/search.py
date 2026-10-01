@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -106,6 +107,29 @@ def search_candidates(repo: Path, query: str) -> dict[str, object]:
     return result
 
 
+def select_pointers(
+    candidates: list[dict[str, object]],
+    *,
+    top_k: int,
+    fits: Callable[[list[dict[str, object]]], bool],
+    per_type_quota: int | None = None,
+) -> list[dict[str, object]]:
+    """Keep ranked whole pointers; rejected candidates never consume a slot."""
+    selected: list[dict[str, object]] = []
+    counts: dict[str, int] = {}
+    for candidate in candidates:
+        source_type = str(candidate.get("source_type", ""))
+        if per_type_quota is not None and counts.get(source_type, 0) >= per_type_quota:
+            continue
+        if not fits([*selected, candidate]):
+            continue
+        selected.append(candidate)
+        counts[source_type] = counts.get(source_type, 0) + 1
+        if len(selected) >= top_k:
+            break
+    return selected
+
+
 def search(repo: Path, query: str) -> dict[str, object]:
     """Return bounded pointers from the existing read-only cache."""
     result = search_candidates(repo, query)
@@ -113,20 +137,20 @@ def search(repo: Path, query: str) -> dict[str, object]:
         _, _, policy = context(repo)
     except ValueError:
         return result
-    selected: list[dict[str, object]] = []
-    for candidate in cast(list[dict[str, object]], result["pointers"]):
-        pointer = {
+    candidates = [
+        {
             key: value
             for key, value in candidate.items()
             if key not in {"source_type", "inclusion_reason"}
         }
-        if (
-            estimate_tokens(json.dumps([*selected, pointer], ensure_ascii=False))
-            <= policy.max_tokens
-        ):
-            selected.append(pointer)
-        if len(selected) >= policy.top_k:
-            break
+        for candidate in cast(list[dict[str, object]], result["pointers"])
+    ]
+    selected = select_pointers(
+        candidates,
+        top_k=policy.top_k,
+        fits=lambda pointers: estimate_tokens(json.dumps(pointers, ensure_ascii=False))
+        <= policy.max_tokens,
+    )
     return {**result, "pointers": selected}
 
 

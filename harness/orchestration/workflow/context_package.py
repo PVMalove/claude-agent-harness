@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
-from typing import cast
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -22,7 +20,6 @@ from harness.context_builder.context_builder import (
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.memory.index import context as memory_context
 from harness.memory.search import search_candidates, degraded
-from harness.token_estimator import estimate_tokens
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
@@ -130,26 +127,19 @@ def _persist_context_package(
         if max_related_tests is not None
         else policy["max_related_tests"]
     )
-    memory = (
-        search_candidates(repo, query)
-        if mode == "enabled"
-        else degraded("bypass", "memory bypassed by --no-memory")
-        if mode == "bypass"
-        else degraded("disabled", "memory disabled or source allowlist empty")
-    )
-    pointers: list[dict[str, object]] = []
-    if memory_policy is not None:
-        for pointer in cast(list[dict[str, object]], memory["pointers"]):
-            if (
-                estimate_tokens(json.dumps([*pointers, pointer], ensure_ascii=False))
-                <= memory_policy.max_tokens
-            ):
-                pointers.append(pointer)
-            if len(pointers) >= memory_policy.top_k:
-                break
+    if mode == "bypass":
+        memory = degraded("bypass", "memory bypassed by --no-memory")
+    elif mode == "disabled":
+        memory = degraded("disabled", "memory disabled or source allowlist empty")
+    elif memory_policy is not None and memory_policy.min_similarity > 0:
+        memory = degraded(
+            "vector_threshold_unavailable",
+            "cosine threshold requires a vector backend; use min_similarity=0 for BM25",
+        )
+    else:
+        memory = search_candidates(repo, query)
     memory = {
         **memory,
-        "pointers": pointers,
         "diagnostic": memory.get("diagnostic", ""),
         "identity": identity,
     }
@@ -179,6 +169,10 @@ def _persist_context_package(
             goal=goal,
             definition_of_done=dod,
             memory=memory,
+            memory_top_k=memory_policy.top_k if memory_policy is not None else 5,
+            memory_max_tokens=memory_policy.max_tokens
+            if memory_policy is not None
+            else 1000,
         )
     except ContextPackageError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc

@@ -1191,3 +1191,155 @@ class MemoryPackageTests(ContextBuilderFixture):
             inclusion_reason="test",
         )
         self.assertNotEqual(first["context_package_id"], third["context_package_id"])
+
+    def test_memory_ceiling_counts_envelope_and_skips_large_pointer_without_slot(
+        self,
+    ) -> None:
+        memory: dict[str, object] = {
+            "status": "ok",
+            "diagnostic": "d" * 240,
+            "identity": {
+                "mode": "enabled",
+                "query_input_hash": "a" * 64,
+                "selection_policy": "fts-type-quota-v1",
+            },
+            "pointers": [
+                {
+                    "title": "Too large",
+                    "status": "accepted",
+                    "source_type": "adr",
+                    "path": "docs/adr/" + "long" * 220 + ".md",
+                    "source_hash": "b" * 64,
+                    "inclusion_reason": "literal relevance; historical source requires verification",
+                },
+                {
+                    "title": "Later small",
+                    "status": "accepted",
+                    "source_type": "adr",
+                    "path": "docs/adr/small.md",
+                    "source_hash": "c" * 64,
+                    "inclusion_reason": "literal relevance; historical source requires verification",
+                },
+                {
+                    "title": "Another small",
+                    "status": "accepted",
+                    "source_type": "adr",
+                    "path": "docs/adr/another.md",
+                    "source_hash": "d" * 64,
+                    "inclusion_reason": "literal relevance; historical source requires verification",
+                },
+            ],
+        }
+        package = build_context_package(
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            memory=memory,
+            memory_top_k=1,
+            memory_max_tokens=440,
+        )
+        self.assertEqual(
+            [p["title"] for p in json.loads(package.to_json())["memory"]["pointers"]],
+            ["Later small"],
+        )
+        self.assertLessEqual(
+            estimate_tokens(json.dumps(package.memory, ensure_ascii=False)), 440
+        )
+        tight = build_context_package(
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            memory=memory,
+            memory_top_k=2,
+            memory_max_tokens=260,
+        )
+        self.assertEqual(tight.memory["pointers"], [])
+
+    def test_memory_uses_remaining_package_token_and_byte_budgets(self) -> None:
+        memory: dict[str, object] = {
+            "status": "ok",
+            "diagnostic": "",
+            "identity": {
+                "mode": "enabled",
+                "query_input_hash": "a" * 64,
+                "selection_policy": "fts-type-quota-v1",
+            },
+            "pointers": [
+                {
+                    "title": "Too large",
+                    "status": "accepted",
+                    "source_type": "adr",
+                    "path": "docs/adr/" + "long" * 220 + ".md",
+                    "source_hash": "b" * 64,
+                    "inclusion_reason": "literal relevance; historical source requires verification",
+                },
+                {
+                    "title": "Later small",
+                    "status": "accepted",
+                    "source_type": "adr",
+                    "path": "docs/adr/small.md",
+                    "source_hash": "c" * 64,
+                    "inclusion_reason": "literal relevance; historical source requires verification",
+                },
+            ],
+        }
+        empty: dict[str, object] = {**memory, "pointers": []}
+        baseline = build_context_package(
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            memory=empty,
+        )
+        for limit in ("tokens", "bytes"):
+            with self.subTest(limit=limit):
+                package = build_context_package(
+                    self.repo,
+                    self.base_commit,
+                    self.candidate_commit,
+                    min_starting_files=1,
+                    memory=memory,
+                    memory_top_k=1,
+                    memory_max_tokens=10000,
+                    max_package_tokens=baseline.estimated_tokens + 180
+                    if limit == "tokens"
+                    else 80000,
+                    max_package_size_bytes=baseline.size_bytes + 360
+                    if limit == "bytes"
+                    else None,
+                )
+                self.assertEqual(
+                    [
+                        p["title"]
+                        for p in json.loads(package.to_json())["memory"]["pointers"]
+                    ],
+                    ["Later small"],
+                )
+                self.assertEqual(package.diff, baseline.diff)
+                self.assertEqual(package.starting_files, baseline.starting_files)
+                self.assertEqual(package.file_hashes, baseline.file_hashes)
+                self.assertEqual(package.precedent_cards, baseline.precedent_cards)
+                self.assertLessEqual(package.size_bytes, baseline.size_bytes + 360)
+                self.assertLessEqual(
+                    package.estimated_tokens, baseline.estimated_tokens + 180
+                )
+        empty_only = build_context_package(
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            memory=memory,
+            max_package_tokens=baseline.estimated_tokens,
+        )
+        self.assertEqual(empty_only.memory["pointers"], [])
+        with self.assertRaises(ContextPackageError):
+            build_context_package(
+                self.repo,
+                self.base_commit,
+                self.candidate_commit,
+                min_starting_files=1,
+                memory=memory,
+                max_package_size_bytes=baseline.size_bytes - 1,
+            )
