@@ -73,16 +73,22 @@ jobs:
         with:
           python-version: "3.12"
       - name: Check private terms
+        # The runner prints a step's env into the log and masks the secret only in its exact case,
+        # so the title, body, head ref and range are read from the event file, never from env.
         env:
           HARNESS_PRIVATE_TERMS: ${{ secrets.HARNESS_PRIVATE_TERMS }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-          HEAD_REF: ${{ github.head_ref }}
-          COMMIT_RANGE: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
         run: |
-          printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/pr-title.txt"
-          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
-          python scripts/check_private_terms.py --commits "$COMMIT_RANGE" --branch "$HEAD_REF" \
+          python - "$GITHUB_EVENT_PATH" "$RUNNER_TEMP" <<'EOF'
+          import json, pathlib, sys
+          pr = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["pull_request"]
+          out = pathlib.Path(sys.argv[2])
+          (out / "pr-title.txt").write_text(pr["title"] + "\n", encoding="utf-8")
+          (out / "pr-body.md").write_text(pr["body"] or "", encoding="utf-8")
+          (out / "head-ref.txt").write_text(pr["head"]["ref"], encoding="utf-8")
+          (out / "range.txt").write_text(f'{pr["base"]["sha"]}..{pr["head"]["sha"]}', encoding="utf-8")
+          EOF
+          python scripts/check_private_terms.py --commits "$(cat "$RUNNER_TEMP/range.txt")" \
+            --branch "$(cat "$RUNNER_TEMP/head-ref.txt")" \
             --body-file "$RUNNER_TEMP/pr-title.txt" --body-file "$RUNNER_TEMP/pr-body.md"
 
   parser-bundle:
