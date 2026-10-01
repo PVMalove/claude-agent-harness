@@ -103,6 +103,13 @@ def run(ctx: SimpleNamespace) -> None:
         f"glab mr create -s{linked_branch}",
         f"glab mr create --source-branch {linked_branch} --fill",
         f"glab mr create --source-branch={linked_branch}",
+        # The `new` aliases and the gh -H shorthand of --head publish the same branch.
+        f"glab mr new -s {linked_branch}",
+        f"gh pr new --head {linked_branch}",
+        f"gh pr create -H {linked_branch}",
+        f"gh pr create -H{linked_branch}",
+        f"gh pr create -dH {linked_branch}",
+        f"gh pr create -H=origin:{linked_branch}",
     ]
     for command in linked_creates:
         if gate_code(command, pv_project) != 2:
@@ -1173,6 +1180,8 @@ def run(ctx: SimpleNamespace) -> None:
     # PR/MR creation is still detected by text: a quoted mention needs QA evidence too.
     for command in (
         "glab mr create --fill",
+        "gh pr new --fill",
+        "glab mr new --fill",
         'git commit -m "docs: run qa-gate before gh pr create"',
         'python tool.py --note "glab mr create needs qa-gate"',
     ):

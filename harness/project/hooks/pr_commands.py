@@ -45,10 +45,12 @@ ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.S)
 HEREDOC = re.compile(r"(?<!<)<<(-?)[ \t]*(\\?)([\x27\"]?)([A-Za-z_][A-Za-z0-9_.-]*)\3")
 WORD_BREAK = re.compile(r"[\s;&|()<>]+")
 MERGE_TEXT = re.compile(r"\bgh\s+pr\s+merge\b|\bglab\s+mr\s+(?:merge|accept)\b")
-CREATE_TEXT = re.compile(r"\bgh\s+pr\s+create\b|\bglab\s+mr\s+create\b")
+CREATE_TEXT = re.compile(r"\bgh\s+pr\s+(?:create|new)\b|\bglab\s+mr\s+(?:create|new)\b")
 # A create fragment that tokens cannot decide may name its branch with one of these flags.
 HEAD_OPTION_TEXT = re.compile(r"--head|--source-branch|(?<![^\s'\"])-[A-Za-z]*[sH]")
-# `glab mr create` shorthands that take a value; in a pflag cluster such a flag ends it.
+# `gh pr create` and `glab mr create` shorthands that take a value; in a pflag cluster such
+# a flag ends it.
+GH_VALUE_SHORTS = frozenset("aBbFHlmprRtT")
 GLAB_VALUE_SHORTS = frozenset("abdHilmRst")
 MAX_DEPTH = 8
 
@@ -461,9 +463,10 @@ def _option(
 def create_heads(command: str) -> set[str | None]:
     """Ветки PR/MR, которые создаёт команда: None — ветка checkout, "" — ветку не определить.
 
-    Ветка берётся из argv самой create-команды: у gh — `--head` (без префикса `owner:`), у
-    glab — `-s`/`--source-branch`; glab `-H`/`--head` задаёт репозиторий, а не ветку.
-    Create-текст в непрозрачном фрагменте даёт "", если во фрагменте есть флаг ветки, иначе None.
+    Ветка берётся из argv самой create-команды (или её алиаса `new`): у gh — `-H`/`--head`
+    (без префикса `owner:`), у glab — `-s`/`--source-branch`; glab `-H`/`--head` задаёт
+    репозиторий, а не ветку. Create-текст в непрозрачном фрагменте даёт "", если во фрагменте
+    есть флаг ветки, иначе None.
     """
     parsed = parse(command)
     heads: set[str | None] = set()
@@ -471,10 +474,10 @@ def create_heads(command: str) -> set[str | None]:
         for start in positions(argv):
             name = program(argv[start])
             action = argv[start + 1 : start + 3]
-            if name == "gh" and action == ["pr", "create"]:
-                head = _option(argv[start + 3 :], "--head", "", frozenset())
+            if name == "gh" and action in (["pr", "create"], ["pr", "new"]):
+                head = _option(argv[start + 3 :], "--head", "H", GH_VALUE_SHORTS)
                 heads.add(None if head is None else head.rsplit(":", 1)[-1])
-            elif name == "glab" and action == ["mr", "create"]:
+            elif name == "glab" and action in (["mr", "create"], ["mr", "new"]):
                 args = argv[start + 3 :]
                 heads.add(_option(args, "--source-branch", "s", GLAB_VALUE_SHORTS))
     heads.update(
