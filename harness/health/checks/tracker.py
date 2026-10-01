@@ -1,8 +1,13 @@
-"""Group 'tracker': online checks of the tracker (GitHub/GitLab) this repository is hosted on
-(ticket #346) - authentication, effective permissions, network reachability, and repository labels
-against the canonical taxonomy in a target project's docs/agents/triage-labels.md.
+"""Group 'tracker': the resolved project tracker (`tracker.project`, local-only) and online checks
+of the tracker (GitHub/GitLab) this repository is hosted on (ticket #346) - authentication,
+effective permissions, network reachability, and repository labels against the canonical taxonomy
+in a target project's docs/agents/triage-labels.md.
 
-Every check here is a no-op without `harness health --online`: it reports `skipped` with reason
+`tracker.project` reads only `git remote -v` and .harness/project.json, never the network, so it
+runs without `--online` and is never skipped: it reports the tracker triple and its source, warns
+with a ready-to-paste `tracker` snippet when the field is absent, and warns when the field and
+origin disagree (the field wins). Every other check here is a no-op without
+`harness health --online`: it reports `skipped` with reason
 "offline" instead of making any network call, so a plain `harness health` stays local-only. A
 local (non-GitHub/GitLab) tracker is `skipped` the same way once detected, even online. Every
 external call gets a 10 second timeout (`_ONLINE_TIMEOUT_SECONDS`), separate from the 60 second
@@ -28,7 +33,11 @@ from ..context import HealthContext
 from ..labels_table import parse_canonical_labels
 from ..model import CheckResult, Fix
 from ..process import run_tool
-from ..project_tracker import TrackerType, resolve_project_tracker
+from ..project_tracker import (
+    ProjectTracker,
+    TrackerType,
+    resolve_project_tracker,
+)
 
 GROUP = "tracker"
 
@@ -106,6 +115,83 @@ def _offline_or_local(
             ),
         )
     return tracker, slug, None
+
+
+# --- tracker.project ------------------------------------------------------------------------------
+
+_SOURCE_LABELS = {"config": "поле tracker", "origin": "origin", "default": "нет origin"}
+_MISMATCH_LABELS = {"type": "тип", "host": "хост", "project": "проект"}
+
+
+def _describe(tracker: ProjectTracker) -> str:
+    if tracker.host is None:
+        return tracker.type
+    return f"{tracker.type}, хост {tracker.host}, проект {tracker.project or 'не определён'}"
+
+
+def check_project(context: HealthContext) -> CheckResult:
+    """The resolved project tracker and its source, offline. Warns when .harness/project.json has no
+    tracker field (with a ready-to-paste snippet), when the field is not applied because it is
+    invalid, and when the field and origin disagree - the field wins."""
+    check_id = "tracker.project"
+    resolution = resolve_project_tracker(context.repo)
+    effective = resolution.effective
+    summary = (
+        f"трекер проекта: {_describe(effective)} "
+        f"(источник: {_SOURCE_LABELS[effective.source]})"
+    )
+    if resolution.project_json == "absent":
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="ok",
+            message=f"{summary}; .harness/project.json отсутствует",
+        )
+    if resolution.project_json == "invalid":
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message="поле tracker не применено: .harness/project.json или поле tracker "
+            f"некорректны (см. files.project_json); {summary}",
+        )
+    if resolution.project_json == "no_field":
+        hint = f"добавьте в .harness/project.json: {effective.snippet()}"
+        if effective.type == "local" and effective.host is not None:
+            hint += '; если это self-hosted GitLab, замените "local" на "gitlab"'
+        if effective.type != "local" and effective.project is None:
+            hint += "; путь проекта по origin не определён — допишите project"
+        origin = resolution.origin
+        if (
+            origin is not None
+            and not origin.web_port_known
+            and effective.type != "github"
+        ):
+            hint += (
+                "; origin задан по SSH — допишите в host порт веб-интерфейса, "
+                "если он нестандартный"
+            )
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message=f"нет поля tracker в .harness/project.json; {summary}",
+            fix=Fix(text=hint),
+        )
+    if resolution.declared is not None and resolution.mismatches:
+        differing = ", ".join(_MISMATCH_LABELS[name] for name in resolution.mismatches)
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message=f"поле tracker расходится с origin ({differing}): используется поле — "
+            f"{_describe(resolution.declared)}; origin — {_describe(resolution.from_origin)}",
+            fix=Fix(
+                text="приведите поле tracker в .harness/project.json и remote origin "
+                "к одному проекту"
+            ),
+        )
+    return CheckResult(id=check_id, group=GROUP, status="ok", message=summary)
 
 
 @dataclass(frozen=True)
