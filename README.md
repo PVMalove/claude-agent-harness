@@ -37,7 +37,7 @@ Harness - это единый набор скиллов, системных пр
 репозиторию и установщиком не переносятся. Проектные руководства, hooks, агенты и конфигурация
 устанавливаются из отдельных шаблонов `harness/project/`.
 
-В `pvmalove-suite` переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`.
+В `pvmalove-suite` переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`, `diagnosing-bugs`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`, `architect`.
 
 [![Граница исходного харнесса и целевого проекта](./docs/diagrams/previews/harness-topology.architecture.png)](./docs/diagrams/harness-topology.architecture.html)
 
@@ -76,6 +76,8 @@ reports. Tree-sitter parser запускается в отдельном worker-
 | Скилл | Назначение |
 |---|---|
 | [`ask-matt`](./docs/skills/ask-matt.md) | Определяет скилл или сценарий, соответствующий ситуации; маршрутизатор по установленным скиллам. |
+| [`architect`](./docs/skills/architect.md#интерактивный-скилл-architect) | Вручную сравнивает архитектурные варианты и прецеденты, возвращает brief решения; при включённой памяти использует read-only поиск. |
+| [`diagnosing-bugs`](./docs/skills/diagnosing-bugs.md) | Диагностирует сложные дефекты и регрессии; при включённой памяти ищет прошлые фиксы перед проверкой гипотез. |
 | [`grilling`](./docs/skills/grilling.md) | Базовый механизм интервью: последовательно уточняет план, решение или идею до выявления пробелов. |
 | [`grill-me`](./docs/skills/grill-me.md) | Интервью для уточнения плана или дизайна. |
 | [`grill-with-docs`](./docs/skills/grill-with-docs.md) | Интервью с ведением ADR и глоссария по ходу обсуждения. |
@@ -101,7 +103,7 @@ reports. Tree-sitter parser запускается в отдельном worker-
 | [`ask-matt`](./docs/skills/vendor/ask-matt.md)* | Маршрутизатор: определяет скилл или сценарий, соответствующий ситуации. |
 | [`code-review`](./docs/skills/vendor/code-review.md)* | Двухосевая проверка изменений: стандарты и соответствие спецификации. |
 | [`codebase-design`](./docs/skills/vendor/codebase-design.md) | Общий словарь для проектирования «глубоких» модулей, швов и тестируемых интерфейсов. |
-| [`diagnosing-bugs`](./docs/skills/vendor/diagnosing-bugs.md) | Цикл диагностики сложных дефектов и регрессий производительности. |
+| [`diagnosing-bugs`](./docs/skills/vendor/diagnosing-bugs.md)* | Цикл диагностики сложных дефектов и регрессий производительности. |
 | [`domain-modeling`](./docs/skills/vendor/domain-modeling.md) | Формирует и уточняет доменную модель: терминологию и архитектурные решения. |
 | [`grill-me`](./docs/skills/vendor/grill-me.md)* | Интервью для уточнения плана или дизайна. |
 | [`grill-with-docs`](./docs/skills/vendor/grill-with-docs.md)* | Интервью с параллельным ведением ADR и глоссария. |
@@ -180,8 +182,9 @@ discovery-ссылки, seed-файлы и строки харнесса в `.gi
 `harness/project/`; корневой `docs/` содержит документацию исходного репозитория.
 Шаблоны проектных руководств при `pvmalove-suite` и `backend-orchestration` разворачиваются
 из `harness/project/docs-agents/` как `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`.
-Справочник харнесса и руководство по backend-оркестрации входят в управляемый снимок: `harness/docs/`
-устанавливается в `.harness/docs/{harness-guide,backend-orchestration}.md` и обновляется командой
+Справочник харнесса, руководство по backend-оркестрации и контракт интерактивного поиска памяти
+входят в управляемый снимок: `harness/docs/` устанавливается в
+`.harness/docs/{harness-guide,backend-orchestration,project-memory}.md` и обновляется командой
 `harness update`.
 
 ## Проверка состояния проекта: `harness health`

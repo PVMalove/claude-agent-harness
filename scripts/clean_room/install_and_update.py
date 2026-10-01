@@ -159,8 +159,8 @@ def run(ctx: SimpleNamespace) -> None:
             "selecting mattpocock-suite and pvmalove-suite together unexpectedly succeeded"
         )
 
-    # pvmalove-suite inherits 25 upstream skills, overrides 10 of them, and adds 6 names;
-    # the clean-room check below expects 31 distinct installed skills (ADR 0001).
+    # pvmalove-suite inherits 25 upstream skills, overrides 11 of them, and adds 7 names;
+    # the clean-room check below expects 32 distinct installed skills (ADR 0001).
     pv_project = test_root / "pv_project"
     pv_project.mkdir(parents=True)
     subprocess.run(["git", "init", "-q"], cwd=pv_project, check=True)
@@ -295,9 +295,9 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("installed Repo Map did not read the pinned commit")
 
     pv_skill_count = count_skill_files(pv_project / ".harness" / "skills")
-    if pv_skill_count != 31:
+    if pv_skill_count != 32:
         sys.exit(
-            f"expected 31 skills in a pvmalove-suite project (25 inherited + 6 additions), found {pv_skill_count}"
+            f"expected 32 skills in a pvmalove-suite project (25 inherited + 7 additions), found {pv_skill_count}"
         )
 
     # A failed older update could remove a retired managed skill's SKILL.md but leave
@@ -331,7 +331,7 @@ def run(ctx: SimpleNamespace) -> None:
     ):
         if required_text not in to_tickets_text:
             sys.exit(f"to-tickets discovery contract is missing: {required_text}")
-    for name in ("grill-me", "grill-with-docs"):
+    for name in ("grill-me", "grill-with-docs", "diagnosing-bugs", "architect"):
         if not filecmp.cmp(
             ROOT / "skills" / "first-party" / "pvmalove" / name / "SKILL.md",
             pv_project / ".harness" / "skills" / name / "SKILL.md",
@@ -344,14 +344,20 @@ def run(ctx: SimpleNamespace) -> None:
         / "vendor"
         / "mattpocock"
         / "engineering"
-        / "diagnosing-bugs"
+        / "research"
         / "SKILL.md",
-        pv_project / ".harness" / "skills" / "diagnosing-bugs" / "SKILL.md",
+        pv_project / ".harness" / "skills" / "research" / "SKILL.md",
         shallow=False,
     ):
         sys.exit(
             "pvmalove-suite unexpectedly changed a skill it neither overrides nor adds"
         )
+    if not filecmp.cmp(
+        ROOT / "harness" / "docs" / "project-memory.md",
+        pv_project / ".harness" / "docs" / "project-memory.md",
+        shallow=False,
+    ):
+        sys.exit("pvmalove-suite did not install the interactive memory contract")
     qa_gate_skill = pv_project / ".harness" / "skills" / "qa-gate" / "SKILL.md"
     if not qa_gate_skill.is_file():
         sys.exit("pvmalove-suite addition qa-gate missing")

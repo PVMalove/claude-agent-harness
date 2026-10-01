@@ -5,6 +5,8 @@
 ## Командные навыки
 
 - [ask-matt](./ask-matt.md), [wayfinder](./wayfinder.md), [triage](./triage.md)
+- [diagnosing-bugs](./diagnosing-bugs.md)
+- [architect](./architect.md#интерактивный-скилл-architect) — ручное сравнение архитектурных вариантов
 - [grill-me](./grill-me.md), [grilling](./grilling.md), [grill-with-docs](./grill-with-docs.md)
 - [to-spec](./to-spec.md), [to-tickets](./to-tickets.md), [to-guide](./to-guide.md)
 - [implement](./implement.md), [fast-implement](./fast-implement.md), [code-review](./code-review.md), [qa-gate](./qa-gate.md), [to-pull-requests](./to-pull-requests.md)

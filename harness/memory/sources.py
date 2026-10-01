@@ -109,7 +109,10 @@ def read_source(
         superseded = metadata(text, "superseded[-_]by|заменён на|заменен на", "")
         match = re.search(r"(?m)^#\s+(.+?)\s*$", text)
         title = match.group(1) if match else "untitled"
-    if status.lower() in {"superseded", "заменён", "заменен"}:
+    if (
+        status.lower() in {"superseded", "заменён", "заменен"}
+        or re.match(r"superseded\s+by\s+\S+", status, flags=re.IGNORECASE)
+    ):
         return None
 
     def sanitize(value: str) -> str:
