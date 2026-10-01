@@ -9,6 +9,7 @@ import contextlib
 import importlib.machinery
 import importlib.util
 import io
+import json
 import os
 import subprocess
 import sys
@@ -18,8 +19,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from scripts import verify
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "check_private_terms.py"
+WRAPPER = ROOT / "scripts" / "hooks" / "check-private-terms.sh"
 
 # Term numbers are physical line numbers: line 1 is a comment, so the terms are #2..#5.
 TERMS = (
@@ -62,12 +66,12 @@ check = _load()
 
 
 def _run(
-    argv: list[str], environ: dict[str, str] | None = None
+    argv: list[str], environ: dict[str, str] | None = None, stdin: str = ""
 ) -> tuple[int, str, str]:
     environ = ENV if environ is None else environ
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        code = check.main(argv, environ=environ)
+        code = check.main(argv, stdin=io.StringIO(stdin), environ=environ)
     _assert_no_leak(out.getvalue() + err.getvalue(), environ)
     return code, out.getvalue(), err.getvalue()
 
@@ -81,6 +85,13 @@ def _assert_no_leak(output: str, environ: dict[str, str]) -> None:
         if check.fold(term) in folded:
             # Never put the term itself into a failure message: it would reach the CI log.
             raise AssertionError(f"the output contains term {number} of the test lists")
+
+
+def _hook(
+    command: str, cwd: Path, environ: dict[str, str] | None = None
+) -> tuple[int, str, str]:
+    payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}
+    return _run(["--hook"], environ, json.dumps(payload))
 
 
 def _matches(stderr: str) -> list[str]:
@@ -592,13 +603,307 @@ class NoLeakTests(unittest.TestCase):
         _assert_no_leak(result.stderr.decode("cp1252"), ENV)
 
 
+class AnalyseCommandTests(unittest.TestCase):
+    CWD = Path("/work")
+
+    def _steps(self, command: str) -> list[tuple[object, ...]]:
+        return [tuple(step) for step in check.analyse_command(command, self.CWD)]
+
+    def test_publication_commands_are_steps(self) -> None:
+        cases = {
+            "cd /repo && git commit -m x": [("commit", Path("/repo"), (), False)],
+            "git -C sub commit -aF msg.md": [
+                ("commit", Path("/work/sub"), ("msg.md",), True)
+            ],
+            "git commit --file=a.md && git commit --file b.md": [
+                ("commit", self.CWD, ("a.md",), False),
+                ("commit", self.CWD, ("b.md",), False),
+            ],
+            "NAME=1 git push": [("push", self.CWD, (), False)],
+            "/usr/bin/git commit": [("commit", self.CWD, (), False)],
+            "gh issue comment 5 --body-file b.md": [("gh", self.CWD, ("b.md",), False)],
+            "gh pr edit 3 -F b.md": [("gh", self.CWD, ("b.md",), False)],
+            "gh pr create --title t --body-file=b.md": [
+                ("gh", self.CWD, ("b.md",), False)
+            ],
+            "gh pr create --title t --body b": [("gh", self.CWD, (), False)],
+            "gh pr create \\\n  --title t \\\n  --body-file b.md": [
+                ("gh", self.CWD, ("b.md",), False)
+            ],
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(self._steps(command), expected)
+
+    def test_mentions_and_other_commands_are_not_steps(self) -> None:
+        for command in (
+            "echo 'git commit'",
+            "rg 'gh pr create' docs/",
+            "cat <<'EOF' > notes.txt\ngit push\nEOF\necho done",
+            "git status && git log --oneline",
+            "gh pr view 3 && gh issue list",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self._steps(command), [])
+
+    def test_an_option_value_is_never_read_as_a_file(self) -> None:
+        self.assertEqual(
+            self._steps("git commit -m '-Fancy'"), [("commit", self.CWD, (), False)]
+        )
+
+    def test_a_directory_the_shell_text_does_not_determine_is_unknown(self) -> None:
+        for command in (
+            "cd $WT && git commit",
+            'git -C "$WT" commit',
+            "cd - && git push",
+            "git --git-dir=/other/.git commit",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self._steps(command)[0][1])
+
+    def test_an_unclosed_quote_is_a_parse_error(self) -> None:
+        with self.assertRaises(ValueError):
+            check.analyse_command("git commit -m 'oops", self.CWD)
+
+
+class HookTests(unittest.TestCase):
+    def test_a_term_in_the_command_text_blocks_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            _commit(repo, "base")
+
+            code, _, err = _hook("git commit -m 'fix Zorblax'", repo)
+
+        self.assertEqual(code, 2)
+        self.assertEqual(_matches(err), ["command:1: term #2"])
+
+    def test_a_term_in_a_message_file_blocks_the_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            _commit(repo, "base")
+            (repo / "msg.md").write_text("Zorblax\n", encoding="utf-8")
+
+            code, _, err = _hook("git commit -F msg.md", repo)
+
+        self.assertEqual(code, 2)
+        self.assertEqual(_matches(err), ["msg.md:1: term #2"])
+
+    def test_a_heredoc_message_is_checked_as_command_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            _commit(repo, "base")
+            command = "git commit -F - <<'EOF'\nsubject\nZorblax body\nEOF"
+
+            code, _, err = _hook(command, repo)
+
+        self.assertEqual(code, 2)
+        self.assertEqual(_matches(err), ["command:3: term #2"])
+
+    def test_a_commit_checks_the_staged_diff_and_the_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            _commit(repo, "base")
+            _git(repo, "checkout", "-q", "-b", "topic/qx-7741")
+            (repo / "notes.md").write_text("Zorblax\n", encoding="utf-8")
+            _git(repo, "add", "notes.md")
+
+            code, _, err = _hook("git commit -m ok", repo)
+
+        self.assertEqual(code, 2)
+        self.assertEqual(_matches(err), ["notes.md:1: term #2", "branch:1: term #5"])
+
+    def test_commit_all_checks_tracked_changes_that_are_not_staged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            (repo / "notes.md").write_text("one\n", encoding="utf-8")
+            _commit(repo, "base")
+            (repo / "notes.md").write_text("Zorblax\n", encoding="utf-8")
+
+            staged_only = _hook("git commit -m ok", repo)
+            code, _, err = _hook("git commit -am ok", repo)
+
+        self.assertEqual(staged_only[0], 0)
+        self.assertEqual(code, 2)
+        self.assertEqual(_matches(err), ["notes.md:1: term #2"])
+
+    def test_a_push_checks_unpublished_commits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            head = _commit(repo, "add Zorblax")
+
+            code, _, err = _hook(f"cd '{repo.as_posix()}' && git push", Path(tmp))
+
+        self.assertEqual(code, 2)
+        self.assertEqual(_matches(err), [f"commit {head[:12]}:1: term #2"])
+
+    def test_a_gh_body_file_blocks_the_comment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            (repo / "body.md").write_text("ok\nКвазиПлюх\n", encoding="utf-8")
+
+            code, _, err = _hook("gh issue comment 5 --body-file body.md", repo)
+
+        self.assertEqual(code, 2)
+        self.assertEqual(_matches(err), ["body.md:2: term #3"])
+
+    def test_a_clean_publication_command_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            _commit(repo, "base")
+
+            code, out, err = _hook("git commit -m ok && git push", repo)
+
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("private-terms: no matches", out)
+
+    def test_other_commands_never_run_git(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(check.subprocess, "run") as run:
+                plain = _hook("echo Zorblax && git status", Path(tmp))
+                unparsable = _hook("echo 'Zorblax", Path(tmp))
+
+        self.assertEqual((plain, unparsable), ((0, "", ""), (0, "", "")))
+        run.assert_not_called()
+
+    def test_without_a_list_a_publication_command_is_allowed_with_a_notice(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+
+            code, out, err = _hook("git commit -m 'Zorblax'", repo, {})
+
+        self.assertEqual((code, out, err), (0, "", SKIPPED))
+
+    def test_an_unreadable_body_file_blocks_the_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+
+            missing = _hook("gh issue create --body-file missing.md", repo)
+            dynamic = _hook("gh pr edit 3 -F $BODY", repo)
+
+        hint = "; pass a readable literal path\n"
+        self.assertEqual(
+            missing, (2, "", f"private-terms: cannot read body file missing.md{hint}")
+        )
+        self.assertEqual(
+            dynamic, (2, "", f"private-terms: cannot read body file $BODY{hint}")
+        )
+
+    def test_an_unknown_directory_blocks_when_a_list_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+
+            blocked = _hook("cd $WT && git commit -m ok", repo)
+            skipped = _hook("cd $WT && git commit -m ok", repo, {})
+
+        self.assertEqual(
+            blocked,
+            (
+                2,
+                "",
+                "private-terms: cannot resolve the repository of this command; "
+                "use a literal path\n",
+            ),
+        )
+        self.assertEqual(skipped, (0, "", SKIPPED))
+
+    def test_an_unparsable_publication_command_blocks_when_a_list_exists(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+
+            blocked = _hook("git commit -m 'oops", repo)
+            skipped = _hook("git commit -m 'oops", repo, {})
+
+        self.assertEqual(
+            blocked,
+            (
+                2,
+                "",
+                "private-terms: cannot parse this command; split it or pass the "
+                "text through a readable body file\n",
+            ),
+        )
+        self.assertEqual(skipped, (0, "", SKIPPED))
+
+    def test_a_malformed_payload_blocks(self) -> None:
+        for stdin in ("not json", json.dumps({"tool_input": {"command": 5}})):
+            with self.subTest(stdin=stdin):
+                result = _run(["--hook"], ENV, stdin)
+
+                self.assertEqual(
+                    result,
+                    (2, "", "private-terms: hook payload has no tool_input.command\n"),
+                )
+
+
+class WiringTests(unittest.TestCase):
+    def test_the_project_settings_run_the_hook_before_bash(self) -> None:
+        settings = json.loads(
+            (ROOT / ".claude" / "settings.json").read_text(encoding="utf-8")
+        )
+        commands = [
+            hook["command"]
+            for entry in settings["hooks"]["PreToolUse"]
+            if entry["matcher"] == "Bash"
+            for hook in entry["hooks"]
+        ]
+
+        self.assertIn(
+            'bash "${CLAUDE_PROJECT_DIR}/scripts/hooks/check-private-terms.sh"',
+            commands,
+        )
+
+    @unittest.skipIf(os.name == "nt", "the wrapper is exercised under a POSIX shell")
+    def test_the_wrapper_blocks_a_publication_command_with_a_term(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            command = "git commit -m 'Zorblax'"
+            payload = {"tool_input": {"command": command}, "cwd": str(repo)}
+
+            result = subprocess.run(
+                ["bash", str(WRAPPER)],
+                input=json.dumps(payload).encode("utf-8"),
+                capture_output=True,
+                env=dict(os.environ, **ENV),
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"  command:1: term #2\n", result.stderr)
+        _assert_no_leak(result.stderr.decode("utf-8"), ENV)
+
+    def test_verify_checks_staged_changes_unpublished_commits_and_the_branch(
+        self,
+    ) -> None:
+        with mock.patch.object(verify, "run_ok") as run_ok:
+            verify._check_private_terms({"KEEP": "1"})
+
+        run_ok.assert_called_once_with(
+            [
+                sys.executable,
+                str(verify.ROOT / "scripts" / "check_private_terms.py"),
+                "--repo",
+                str(verify.ROOT),
+                "--staged",
+                "--commits",
+                "--branch",
+            ],
+            env={"KEEP": "1"},
+        )
+
+
 class CommandLineTests(unittest.TestCase):
     def test_a_run_without_a_source_is_a_usage_error(self) -> None:
-        with contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit) as raised:
-                check.main([], environ=ENV)
+        for argv in ([], ["--hook", "--staged"]):
+            with self.subTest(argv=argv):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as raised:
+                        check.main(argv, environ=ENV)
 
-        self.assertEqual(raised.exception.code, 2)
+                self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == "__main__":
