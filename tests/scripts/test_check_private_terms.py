@@ -335,6 +335,65 @@ class BodyFileTests(unittest.TestCase):
         )
 
 
+class FoldingTests(unittest.TestCase):
+    def test_latin_and_cyrillic_match_regardless_of_case_and_form(self) -> None:
+        lines = [
+            "ZORBLAX",
+            "zorblaxClient",
+            "my_zorblax_db",
+            "кВАЗИплюх",
+            "КВАЗИПЛЮХ",
+            "ЕЛКИН-ХОСТ.example.invalid",  # е written for ё
+            "ёлкин-хост.example.invalid",  # decomposed ё
+            "ＱＸ-７７４１",  # fullwidth forms
+            "qx-774 and Zorbla",  # prefixes of terms are not terms
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp) / "body.md"
+            body.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            code, _, err = _run(["--body-file", str(body)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            _matches(err),
+            [
+                f"{body}:1: term #2",
+                f"{body}:2: term #2",
+                f"{body}:3: term #2",
+                f"{body}:4: term #3",
+                f"{body}:5: term #3",
+                f"{body}:6: term #4",
+                f"{body}:7: term #4",
+                f"{body}:8: term #5",
+            ],
+        )
+
+    def test_terms_are_folded_like_the_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp) / "body.md"
+            body.write_text("zorblax and квазиплюх\n", encoding="utf-8")
+
+            code, _, err = _run(
+                ["--body-file", str(body)],
+                {"HARNESS_PRIVATE_TERMS": "ZoRbLaX\nКВАЗИПЛЮХ\n"},
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(_matches(err), [f"{body}:1: term #1", f"{body}:1: term #2"])
+
+    def test_a_lowercase_branch_name_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+
+            code, _, err = _run(
+                ["--repo", str(repo), "--branch", "feature/zorblax-fix"]
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(_matches(err), ["branch:1: term #2"])
+
+
 class CommandLineTests(unittest.TestCase):
     def test_a_run_without_a_source_is_a_usage_error(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()):

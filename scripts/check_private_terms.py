@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
@@ -58,6 +59,15 @@ def _git(repo: Path, *args: str) -> str:
     return result.stdout.decode("utf-8", errors="replace")
 
 
+def fold(text: str) -> str:
+    """Нормализовать текст для сравнения без учёта регистра в латинице и кириллице.
+
+    NFKC собирает разложенные и полноширинные символы, casefold снимает регистр, а ё сводится к е,
+    потому что в русском тексте ё часто пишут как е. Применяется и к терминам, и к тексту.
+    """
+    return unicodedata.normalize("NFKC", text).casefold().replace("ё", "е")
+
+
 def _main_checkout(repo: Path) -> Path | None:
     """Корень основного checkout, общий для всех linked worktree; вне git-репозитория — None."""
     try:
@@ -82,13 +92,14 @@ def load_terms(repo: Path | None, environ: Mapping[str, str]) -> Terms:
     for number, line in enumerate(text.split("\n"), 1):
         term = line.strip()
         if term and not term.startswith("#"):
-            entries.append((number, term))
+            entries.append((number, fold(term)))
     return Terms(source, tuple(entries))
 
 
 def _line_terms(line: str, terms: Terms) -> list[int]:
-    """Номера терминов, которые встречаются в строке как подстрока."""
-    return [number for number, term in terms.entries if term in line]
+    """Номера терминов, которые встречаются в строке как подстрока после `fold`."""
+    folded = fold(line)
+    return [number for number, term in terms.entries if term in folded]
 
 
 def _text_findings(text: str, terms: Terms, location: str) -> list[Finding]:
