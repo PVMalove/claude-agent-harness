@@ -16,7 +16,7 @@ Create the pull request for the named ticket. This is a manual command: never ru
    batches with the same ticket and branch do not matter. If more than one batch accepted that exact
    SHA, stop and repeat the command with its explicit `--batch <batch-id>`. Stop if the command rejects
    missing, unaccepted, or SHA-mismatched evidence, UNLESS the ticket is explicitly labeled `pipeline::fast`. For `pipeline::fast` tickets, bypass the coordinator evidence check.
-   Do not rerun `/qa-gate` when coordinator validation succeeds. If the project is not a valid opt-in, or if the ticket is `pipeline::fast`, run `/qa-gate` if this repository provides it and
+   Do not rerun `/qa-gate` when coordinator validation succeeds; instead, from the PR branch checkout verified in step 2, run `bash "$CLAUDE_PROJECT_DIR/.claude/hooks/record-qa-gate-pass.sh"` so the PR hook accepts that SHA. If the project is not a valid opt-in, or if the ticket is `pipeline::fast`, run `/qa-gate` if this repository provides it and
    stop on failure.
 4. Prepare the PR body using `docs/agents/git-workflow.md` §3. Store it only at `.harness/.sandboxes/pr_body/pr-body-<issue>-<slug>.md`, never in `docs/tasks/`. A developer may manually run `pr-composer` in the coding application; otherwise fill in the template directly. Resolve the repository default branch and use `Closes #<ID>` only for that target, otherwise `Related to #<ID>`.
 5. Ask the developer for explicit confirmation that the branch is ready to become a PR. Stop for their answer.
