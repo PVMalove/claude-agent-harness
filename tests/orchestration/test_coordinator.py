@@ -1845,6 +1845,47 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._submit(brief["dispatch_id"], self._base_report(brief, "architect"))
         self._decide(batch_id, "accept")
 
+    def test_completion_report_retains_optional_memory_evidence(self) -> None:
+        """Memory evidence survives submission but grants no authority to advance."""
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        report = self._base_report(
+            brief,
+            "architect",
+            lessons=["Validate source authorization before retaining content hashes."],
+            used_memory=["historical-hit-without-a-current-index"],
+        )
+        submitted = self._submit(brief["dispatch_id"], report)
+        self.assertEqual(submitted["state"], "reported")
+        stored = json.loads(Path(submitted["report"]).read_text())
+        self.assertEqual(stored["lessons"], report["lessons"])
+        self.assertEqual(stored["used_memory"], report["used_memory"])
+        markdown = Path(submitted["report"]).with_suffix(".md").read_text()
+        self.assertIn("Validate source authorization", markdown)
+        self.assertIn("historical-hit-without-a-current-index", markdown)
+        self.assertEqual(
+            self._batch_record(batch["batch_id"])["state"], "awaiting-approval"
+        )
+
+    def test_completion_report_memory_fields_validate_shape_without_resolving_hits(
+        self,
+    ) -> None:
+        """Lists are optional, but malformed evidence cannot enter an immutable report."""
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        for field in ("lessons", "used_memory"):
+            for invalid in (None, "text", [1], ["   "], {"id": "hit"}):
+                with self.subTest(field=field, invalid=invalid):
+                    report = self._base_report(brief, "architect", **{field: invalid})
+                    with self.assertRaisesRegex(coordinator.CoordinatorError, field):
+                        self._submit(brief["dispatch_id"], report)
+        report = self._base_report(brief, "architect", lessons=[], used_memory=[])
+        self.assertEqual(
+            self._submit(brief["dispatch_id"], report)["state"], "reported"
+        )
+
     def test_milestone_clean_architect_report_prepares_developer(self) -> None:
         self._patch_config(approval_policy="milestone")
         batch = self._create_batch()

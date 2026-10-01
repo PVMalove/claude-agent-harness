@@ -154,7 +154,14 @@ REPORT_FIELDS = {
     "blockers",
     "next_coordinator_action",
 }
-REPORT_OPTIONAL_FIELDS = {"risk_triggers", "review", "report_language", "commit_map"}
+REPORT_OPTIONAL_FIELDS = {
+    "risk_triggers",
+    "review",
+    "report_language",
+    "commit_map",
+    "lessons",
+    "used_memory",
+}
 RISK_ASSESSMENT_FIELDS = {
     "risk_assessment_id",
     "batch_id",

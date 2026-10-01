@@ -80,7 +80,9 @@ def scalar(value: object, default: str = "") -> str:
     return value[:2048] if isinstance(value, str) else default
 
 
-def project_json(raw: bytes, kind: str) -> tuple[str, str, str, str, str] | None:
+def project_json(
+    raw: bytes, kind: str, *, include_qa: bool = False
+) -> tuple[str, str, str, str, str] | None:
     """Project known fields before baseline sanitization; never serialize raw JSON."""
     try:
         value = json.loads(raw)
@@ -90,9 +92,16 @@ def project_json(raw: bytes, kind: str) -> tuple[str, str, str, str, str] | None
         raise ValueError("memory JSON source must be an object")
     if kind == "qa_finding" and value.get("role") != "qa":
         return None
+    lessons = value.get("lessons")
+    if kind == "completion_report" and (
+        not isinstance(lessons, list)
+        or not lessons
+        or not all(isinstance(item, str) and item.strip() for item in lessons)
+    ):
+        return None
     fields = (
         ("ticket", "role", "outcome")
-        if kind == "qa_finding"
+        if kind in {"qa_finding", "completion_report"}
         else ("batch_id", "dispatch_id", "ticket", "role", "state")
     )
     retained = [
@@ -100,7 +109,9 @@ def project_json(raw: bytes, kind: str) -> tuple[str, str, str, str, str] | None
         for key in fields
         if isinstance(value.get(key), str)
     ]
-    if kind == "qa_finding":
+    if kind == "completion_report" and isinstance(lessons, list):
+        retained.extend(scalar(item) for item in lessons[:20])
+    if kind == "qa_finding" or (include_qa and value.get("role") == "qa"):
         for key in ("output", "risks", "blockers"):
             item = value.get(key)
             values = item[:20] if isinstance(item, list) else [item]
@@ -114,8 +125,19 @@ def project_json(raw: bytes, kind: str) -> tuple[str, str, str, str, str] | None
                     )
     status = scalar(
         value.get("status"),
-        scalar(value.get("outcome" if kind == "qa_finding" else "state"), "unknown"),
+        scalar(
+            value.get(
+                "outcome" if kind in {"qa_finding", "completion_report"} else "state"
+            ),
+            "unknown",
+        ),
     )
+    if kind == "completion_report" and status.lower() not in {
+        "superseded",
+        "заменён",
+        "заменен",
+    }:
+        status = "не подтверждено человеком"
     date = scalar(
         value.get("date"),
         scalar(value.get("created_at"), scalar(value.get("updated_at"), "unknown")),
