@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 HARNESS = Path(__file__).resolve().parents[2] / "harness" / "bin" / "harness.py"
 REAL_GIT = shutil.which("git")
 
@@ -350,6 +352,53 @@ def test_online_gitlab_reporter_access_level_can_manage_labels_only(
     assert permissions["status"] == "warn"
     assert "недостаточно прав для PR" in str(permissions["message"])
     assert "метки доступны" in str(permissions["message"])
+
+
+_DEVELOPER_ACCESS = json.dumps(
+    {"permissions": {"project_access": {"access_level": 30}}}
+)
+
+
+@pytest.mark.parametrize(
+    ("remote", "encoded_project"),
+    [
+        (
+            "https://gitlab.example.test:4443/group/sub/project.git",
+            "group%2Fsub%2Fproject",
+        ),
+        (
+            "ssh://git@gitlab.example.test:2222/group/sub/project.git",
+            "group%2Fsub%2Fproject",
+        ),
+        ("git@gitlab.example.test:group/sub/project.git", "group%2Fsub%2Fproject"),
+        (
+            "https://gitlab.example.test/group/sub/project.name.git",
+            "group%2Fsub%2Fproject.name",
+        ),
+        (
+            "https://ci-user@gitlab.example.test:4443/group/sub/project.git",
+            "group%2Fsub%2Fproject",
+        ),
+    ],
+)
+def test_online_gitlab_origin_forms_address_the_full_project_path(
+    tmp_path: Path, remote: str, encoded_project: str
+) -> None:
+    """Проверить, что HTTPS с портом, ssh:// с портом, SCP-форма, точка в имени и userinfo дают
+    GitLab и полный путь проекта с подгруппами в вызове glab api."""
+    repo = _repo(tmp_path / "repo", remote=remote)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
+    glab_log = _fake_glab(
+        bin_dir, {f"api projects/{encoded_project}": (0, _DEVELOPER_ACCESS, "")}
+    )
+
+    _, checks, data = _health_full(repo, bin_dir, online=True)
+
+    assert checks["tracker.auth"]["status"] == "ok"
+    assert checks["tracker.permissions"]["status"] == "ok"
+    assert ["api", f"projects/{encoded_project}"] in _invocations(glab_log)
+    assert "ci-user" not in json.dumps(data, ensure_ascii=False)
 
 
 # --- labels ------------------------------------------------------------------------------------------

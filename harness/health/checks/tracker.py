@@ -8,23 +8,27 @@ local (non-GitHub/GitLab) tracker is `skipped` the same way once detected, even 
 external call gets a 10 second timeout (`_ONLINE_TIMEOUT_SECONDS`), separate from the 60 second
 budget checks/environment.py gives local tool invocations. A missing `gh`/`glab` executable is
 `warn`, never `fail`: it also makes every check that depends on it warn or skip in turn.
+
+The tracker itself is resolved only through the project tracker resolver
+(health/project_tracker.py, docs/adr/0010): an explicit `tracker` field in .harness/project.json
+wins, otherwise the origin URL is parsed.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable
 from urllib.parse import quote
 
 from ..context import HealthContext
 from ..labels_table import parse_canonical_labels
 from ..model import CheckResult, Fix
 from ..process import run_tool
+from ..project_tracker import TrackerType, resolve_project_tracker
 
 GROUP = "tracker"
 
@@ -37,10 +41,7 @@ _TRIAGE_LABELS_REL = Path("docs/agents/triage-labels.md")
 _GITLAB_PUSH_ACCESS_LEVEL = 30
 _GITLAB_LABELS_ACCESS_LEVEL = 20
 
-Tracker = Literal["github", "gitlab", "local"]
-
-_GITHUB_REMOTE = re.compile(r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/.\s]+)")
-_GITLAB_REMOTE = re.compile(r"gitlab\.[^/:\s]+[:/](?P<owner>[^/]+)/(?P<repo>[^/.\s]+)")
+Tracker = TrackerType
 
 
 def _run(
@@ -52,30 +53,13 @@ def _run(
 
 
 def detect_tracker(context: HealthContext) -> tuple[Tracker, str | None]:
-    """Classify origin from `git remote -v`, the same GitHub/GitLab URL heuristic
-    docs/agents/issue-tracker.md and check-branch-name.sh use. Returns (tracker, "owner/repo") -
-    the slug is None whenever it cannot be parsed out of the URL, even for a recognized host."""
-    git = shutil.which("git")
-    if git is None:
+    """The effective project tracker from the project tracker resolver: the explicit `tracker`
+    field of .harness/project.json, otherwise the origin URL. Returns (tracker, project path) -
+    the path keeps every subgroup and is None for a local tracker or whenever it is unknown."""
+    tracker = resolve_project_tracker(context.repo).effective
+    if tracker.type == "local":
         return "local", None
-    result = _run([git, "remote", "-v"], cwd=context.repo)
-    if result is None or result.returncode != 0:
-        return "local", None
-    origin_url = None
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and parts[0] == "origin":
-            origin_url = parts[1]
-            break
-    if not origin_url:
-        return "local", None
-    github_match = _GITHUB_REMOTE.search(origin_url)
-    if github_match:
-        return "github", f"{github_match['owner']}/{github_match['repo']}"
-    gitlab_match = _GITLAB_REMOTE.search(origin_url)
-    if gitlab_match:
-        return "gitlab", f"{gitlab_match['owner']}/{gitlab_match['repo']}"
-    return "local", None
+    return tracker.type, tracker.project
 
 
 def _skip(check_id: str, message: str) -> CheckResult:
