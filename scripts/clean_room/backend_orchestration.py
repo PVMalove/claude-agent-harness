@@ -134,9 +134,16 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("installed project is missing the to-pull-requests PR step")
     if (orchestration_project / ".harness" / "skills" / "to-pr").exists():
         sys.exit("installed project retains the removed to-pr PR step")
-    if "qa evidence" not in installed_pr_step.read_text(encoding="utf-8"):
+    installed_pr_text = installed_pr_step.read_text(encoding="utf-8")
+    if "qa evidence" not in installed_pr_text:
         sys.exit(
             "installed to-pull-requests step does not validate accepted QA evidence"
+        )
+    if installed_pr_text.find("record-qa-gate-pass.sh") < installed_pr_text.find(
+        "qa evidence"
+    ):
+        sys.exit(
+            "installed to-pull-requests step does not record accepted QA evidence"
         )
     orchestration_config = orchestration_project / ".harness" / "orchestration.json"
     if not orchestration_config.is_file():
