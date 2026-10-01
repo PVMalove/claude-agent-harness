@@ -880,6 +880,23 @@ class HookTests(unittest.TestCase):
             dynamic, (2, "", f"private-terms: cannot read body file $BODY{hint}")
         )
 
+    def test_a_body_file_in_an_unknown_home_directory_blocks_the_command(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+
+            results = [
+                _hook(f"{command} ~nosuchuser_zz9/msg.md", repo)
+                for command in ("git commit -F", "gh issue comment 3 --body-file")
+            ]
+
+        message = (
+            "private-terms: cannot read body file ~nosuchuser_zz9/msg.md; "
+            "pass a readable literal path\n"
+        )
+        self.assertEqual(results, [(2, "", message), (2, "", message)])
+
     def test_an_unknown_directory_blocks_when_a_list_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _repo(Path(tmp))

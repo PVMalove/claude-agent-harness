@@ -275,7 +275,7 @@ def _body_findings(
             raise OSError(path)
         file = Path(path) if cwd is None else cwd / Path(path).expanduser()
         text = file.read_bytes().decode("utf-8", errors="replace")
-    except OSError:
+    except (OSError, RuntimeError):  # RuntimeError: `~user` of an unknown user
         hint = "" if cwd is None else "; pass a readable literal path"
         raise CheckError(f"cannot read body file {shown}{hint}") from None
     return _text_findings(text, terms, shown)
