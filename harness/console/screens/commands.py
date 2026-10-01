@@ -131,6 +131,10 @@ class CommandMenuScreen(Screen[None]):
         yield output
         yield Footer()
 
+    def on_unmount(self) -> None:
+        """Отменяет фоновые воркеры при размонтировании экрана."""
+        self.workers.cancel_all()
+
     def run_process(self, cli_line: str, argv: list[str]) -> None:
         """Запускает процесс команды в фоновом потоке без блокировки интерфейса TUI."""
         self._show(f"$ {cli_line}\nвыполняется…")
@@ -141,9 +145,15 @@ class CommandMenuScreen(Screen[None]):
                 result = self._command_runner(argv, cwd=self.repo)
             except OSError as exc:
                 text = f"$ {cli_line}\nне удалось запустить: {exc}"
+            except Exception:
+                return
             else:
                 text = render_result(cli_line, result)
-            self.app.call_from_thread(self._show, text)
+            if self.is_mounted and self.app.is_running:
+                try:
+                    self.app.call_from_thread(self._show, text)
+                except Exception:
+                    pass
 
         self.run_worker(work, thread=True, exclusive=True, group="command")
 

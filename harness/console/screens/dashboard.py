@@ -159,6 +159,10 @@ class DashboardScreen(Screen[None]):
         yield menu
         yield Footer()
 
+    def on_unmount(self) -> None:
+        """Отменяет фоновые воркеры при размонтировании экрана."""
+        self.workers.cancel_all()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id not in ("dashboard-offline", "dashboard-online"):
             return
@@ -169,10 +173,17 @@ class DashboardScreen(Screen[None]):
         )
 
         def work() -> None:
-            text = _render_summary(
-                self._collect_dashboard(self.repo, online=online), online=online
-            )
-            self.app.call_from_thread(summary.update, text)
+            try:
+                text = _render_summary(
+                    self._collect_dashboard(self.repo, online=online), online=online
+                )
+            except Exception:
+                return
+            if self.is_mounted and self.app.is_running:
+                try:
+                    self.app.call_from_thread(summary.update, text)
+                except Exception:
+                    pass
 
         self.run_worker(work, thread=True, exclusive=True, group="dashboard-health")
 

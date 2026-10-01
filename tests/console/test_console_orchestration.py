@@ -68,6 +68,7 @@ async def _choose(pilot: Pilot[None], app: App[None], key: str) -> None:
 
 
 async def _settle(pilot: Pilot[None], app: App[None]) -> None:
+    await pilot.pause()
     await app.workers.wait_for_complete()
     await pilot.pause()
 
