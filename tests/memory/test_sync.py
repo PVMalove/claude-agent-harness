@@ -12,6 +12,7 @@ import pytest
 
 from harness.memory import search
 from .test_build import configure
+from .test_worktrees import checkouts as checkouts
 
 SNAPSHOT = ".harness/.sandboxes/memory/snapshot"
 
@@ -238,6 +239,219 @@ def test_cli_error_does_not_expose_tracker_output(
         sync(remote_repo)
     assert "errorprivate" not in str(error.value)
     assert not (remote_repo / SNAPSHOT).exists()
+
+
+def test_narrow_ticket_grant_does_not_fetch_pull_requests(remote_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from harness.memory import sync
+    configure(remote_repo, source_types=["task_archive"], allow_paths=[SNAPSHOT + "/records/ticket-*.json"])
+    def page(argv: list[str], repo: Path) -> list[dict[str, object]]:
+        assert "pulls?" not in argv[-1]
+        return []
+    monkeypatch.setattr(importlib.import_module("harness.memory.sync"), "fetch_page", page)
+    assert sync(remote_repo)["synced"] == 0
+
+
+def snapshot_state(repo: Path) -> dict[str, tuple[bytes, int]]:
+    paths = list((repo / SNAPSHOT).rglob("*.json")) + [repo / ".harness/.sandboxes/cache/memory/index.sqlite3"]
+    return {str(path): (path.read_bytes(), path.stat().st_mtime_ns) for path in paths}
+
+
+def test_identical_sync_reuses_files_and_complete_inventory_reconciles(remote_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from harness.memory import sync
+    fake_inventory(monkeypatch, [{"number": 1, "state": "closed", "title": "oldword"}])
+    sync(remote_repo)
+    before = snapshot_state(remote_repo)
+    sync(remote_repo)
+    assert snapshot_state(remote_repo) == before
+    fake_inventory(monkeypatch, [{"number": 2, "state": "closed", "title": "newword"}])
+    sync(remote_repo)
+    assert search(remote_repo, "oldword")["pointers"] == []
+    assert search(remote_repo, "newword")["pointers"]
+    assert all(Path(path).exists() for path in before)
+    fake_inventory(monkeypatch, [])
+    sync(remote_repo)
+    assert search(remote_repo, "newword")["pointers"] == []
+
+
+@pytest.mark.parametrize("failure", ["late_page", "cap", "policy_race", "manifest_race"])
+def test_failed_collection_keeps_previous_selected_snapshot_and_index(remote_repo: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    from harness.memory import sync
+    fake_inventory(monkeypatch, [{"number": 1, "state": "closed", "title": "oldword"}])
+    sync(remote_repo)
+    before = snapshot_state(remote_repo)
+    module = importlib.import_module("harness.memory.sync")
+    def page(argv: list[str], repo: Path) -> list[dict[str, object]]:
+        if "page=2" in argv[-1]:
+            if failure == "late_page":
+                raise ValueError("memory sync: gh failed (exit 1); check access and network")
+            return []
+        if "issues?" not in argv[-1]:
+            return []
+        if failure == "policy_race":
+            configure(repo, source_types=[], allow_paths=[])
+        if failure == "manifest_race":
+            (repo / SNAPSHOT / "manifest.json").write_text('{"version":1,"records":[]}')
+        return [{"number": 2, "state": "closed", "title": "newword"}]
+    monkeypatch.setattr(module, "fetch_page", page)
+    if failure == "cap":
+        monkeypatch.setattr(module, "MAX_RECORDS", 0)
+    with pytest.raises(ValueError):
+        sync(remote_repo)
+    after = snapshot_state(remote_repo)
+    for path, evidence in before.items():
+        if failure != "manifest_race" or not path.endswith("manifest.json"):
+            assert after[path] == evidence
+    assert not any("newword" in path.read_text() for path in (remote_repo / SNAPSHOT).rglob("*.json"))
+
+
+def test_index_failure_is_explicit_and_offline_rebuild_recovers(remote_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from harness.memory import sync, rebuild, build
+    fake_inventory(monkeypatch, [{"number": 1, "state": "closed", "title": "oldword"}])
+    sync(remote_repo)
+    index = remote_repo / ".harness/.sandboxes/cache/memory/index.sqlite3"
+    before = index.read_bytes()
+    fake_inventory(monkeypatch, [{"number": 2, "state": "closed", "title": "newword"}])
+    def broken(repo: Path) -> dict[str, object]:
+        raise ValueError("index failed")
+    module = importlib.import_module("harness.memory.sync")
+    monkeypatch.setattr(module, "refresh", broken)
+    assert sync(remote_repo)["status"] == "snapshot_synced_index_failed"
+    assert index.read_bytes() == before
+    def offline(argv: list[str], repo: Path) -> list[dict[str, object]]:
+        pytest.fail("offline operation accessed tracker")
+    monkeypatch.setattr(module, "fetch_page", offline)
+    rebuild(remote_repo)
+    build(remote_repo)
+    assert search(remote_repo, "newword")["pointers"]
+    assert search(remote_repo, "oldword")["pointers"] == []
+
+
+@pytest.mark.parametrize("tool,host", [("gh", "github.com"), ("glab", "gitlab.com")])
+def test_installed_sync_uses_real_fake_cli_without_orchestration(remote_repo: Path, monkeypatch: pytest.MonkeyPatch, tool: str, host: str) -> None:
+    from .test_delivery import CLI
+    subprocess.run(["git", "-C", str(remote_repo), "remote", "set-url", "origin", f"https://{host}/team/project.git"], check=True)
+    installed = subprocess.run([sys.executable, str(CLI), "init", str(remote_repo), "--capability", "pvmalove-suite", "--qa-gate-command", "true"], capture_output=True, text=True)
+    assert installed.returncode == 0, installed.stderr
+    configure(remote_repo, source_types=["task_archive"], allow_paths=[SNAPSHOT + "/records/*.json"])
+    executable = remote_repo / tool
+    executable.write_text(f"#!{sys.executable}\nimport sys,json\ne=sys.argv[-1]\nprint(json.dumps([] if 'page=2' in e else [{{'number':1,'iid':1,'state':'closed','title':'installedword'}}]))\n")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(remote_repo) + os.pathsep + os.environ["PATH"])
+    code = "import importlib.util,sys\nfrom pathlib import Path\ns=importlib.util.spec_from_file_location('harness','.harness/__init__.py',submodule_search_locations=['.harness'])\np=importlib.util.module_from_spec(s)\nsys.modules['harness']=p\ns.loader.exec_module(p)\nfrom harness.memory import sync,search\nassert sync(Path.cwd())['status']=='synced'\nassert search(Path.cwd(),'installedword')['pointers']\n"
+    result = subprocess.run([sys.executable, "-c", code], cwd=remote_repo, env={**os.environ, "PYTHONPATH": ""}, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert not (remote_repo / ".harness/orchestration").exists()
+
+
+@pytest.mark.parametrize("failure", ["invalid_json", "timeout", "output_limit", "missing_cli", "page_limit", "request_limit"])
+def test_tracker_process_failures_preserve_previous_bytes(remote_repo: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    from harness.memory import sync
+    fake_inventory(monkeypatch, [{"number": 1, "state": "closed", "title": "oldword"}])
+    sync(remote_repo)
+    before = snapshot_state(remote_repo)
+    monkeypatch.undo()
+    module = importlib.import_module("harness.memory.sync")
+    directory = remote_repo / "fake-bin"
+    directory.mkdir()
+    (directory / "git").symlink_to("/usr/bin/git")
+    executable = directory / "gh"
+    scripts = {"invalid_json": "print('broken token=private')", "timeout": "import time;time.sleep(1)",
+               "output_limit": "print('x' * 10000)", "page_limit": "print('[{\"number\":1,\"state\":\"closed\"}]')", "request_limit": "print('[]')"}
+    if failure != "missing_cli":
+        executable.write_text(f"#!{sys.executable}\n" + scripts[failure] + "\n")
+        executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(directory))
+    if failure == "timeout":
+        monkeypatch.setattr(module, "TIMEOUT", 0.1)
+    if failure == "output_limit":
+        monkeypatch.setattr(module, "MAX_RESPONSE", 128)
+    if failure == "page_limit":
+        monkeypatch.setattr(module, "MAX_PAGES", 1)
+    if failure == "request_limit":
+        monkeypatch.setattr(module, "MAX_REQUESTS", 1)
+    with pytest.raises(ValueError) as error:
+        sync(remote_repo)
+    assert "private" not in str(error.value)
+    assert snapshot_state(remote_repo) == before
+
+
+def test_linked_worktree_reads_main_snapshot_but_cannot_sync(checkouts: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811 (pytest fixture injection)
+    from harness.memory import sync
+    main, linked = checkouts
+    subprocess.run(["git", "-C", str(main), "remote", "add", "origin", "https://github.com/team/project.git"], check=True)
+    configure(main, source_types=["task_archive"], allow_paths=[SNAPSHOT + "/records/*.json"])
+    fake_inventory(monkeypatch, [{"number": 1, "state": "closed", "title": "sharedword"}])
+    sync(main)
+    before = snapshot_state(main)
+    with pytest.raises(ValueError, match="main checkout"):
+        sync(linked)
+    assert search(linked, "sharedword")["pointers"]
+    assert snapshot_state(main) == before
+
+
+def test_merged_pull_request_pointer_preserves_terminal_status(remote_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from harness.memory import sync
+    configure(remote_repo, source_types=["task_archive"], allow_paths=[SNAPSHOT + "/records/pull_request-*.json"])
+    def page(argv: list[str], repo: Path) -> list[dict[str, object]]:
+        return [] if "page=2" in argv[-1] else [{"number": 4, "state": "closed", "merged_at": "2026-10-01", "title": "mergedword"}]
+    monkeypatch.setattr(importlib.import_module("harness.memory.sync"), "fetch_page", page)
+    sync(remote_repo)
+    pointers = search(remote_repo, "mergedword")["pointers"]
+    assert isinstance(pointers, list) and pointers[0]["status"] == "merged"
+
+
+def test_context_package_assembles_from_snapshot_without_tracker(remote_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from harness.memory import sync
+    from harness.orchestration.ledger.lifecycle import LifecycleLedger
+    from harness.orchestration.workflow.context_package import _persist_context_package
+    from .test_build import git
+    configure(remote_repo, source_types=["task_archive"], allow_paths=[SNAPSHOT + "/records/*.json"], min_similarity=0)
+    git(remote_repo, "config", "user.name", "Fixture")
+    git(remote_repo, "config", "user.email", "fixture@example.invalid")
+    (remote_repo / "app.py").write_text("def packageword():\n    return 1\n")
+    git(remote_repo, "add", "app.py")
+    git(remote_repo, "commit", "-qm", "fixture")
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=remote_repo, text=True).strip()
+    fake_inventory(monkeypatch, [{"number": 1, "state": "closed", "title": "packageword"}])
+    sync(remote_repo)
+    def offline(argv: list[str], repo: Path) -> list[dict[str, object]]:
+        pytest.fail("Context Package accessed tracker")
+    monkeypatch.setattr(importlib.import_module("harness.memory.sync"), "fetch_page", offline)
+    root = remote_repo / "state"
+    ledger = LifecycleLedger(root)
+    ledger.ensure()
+    batch: dict[str, object] = {"batch_id": "batch-memory", "base_commit": sha, "goal": "packageword", "definition_of_done": [], "context_packages": []}
+    package = _persist_context_package(remote_repo, root, ledger, batch, role="shared", snapshot=sha, inclusion_reason="test")
+    assert package["memory"]["pointers"]
+
+
+def test_immutable_record_collision_keeps_previous_selection(remote_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from harness.memory import sync
+    fake_inventory(monkeypatch, [{"number": 1, "state": "closed", "title": "oldword"}])
+    sync(remote_repo)
+    selected = json.loads((remote_repo / SNAPSHOT / "manifest.json").read_text())["records"][0]
+    (remote_repo / selected).write_text("collision")
+    before = snapshot_state(remote_repo)
+    with pytest.raises(ValueError, match="collision"):
+        sync(remote_repo)
+    assert snapshot_state(remote_repo) == before
+
+
+def test_superseded_remote_report_is_not_searchable(remote_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from harness.memory import sync
+    fake_inventory(monkeypatch, [{"number": 1, "state": "closed"}],
+                   [{"id": 9, "body": '## Completion report\n```json\n{"output":"obsoleteword","status":"superseded by ADR-0010"}\n```'}])
+    sync(remote_repo)
+    assert search(remote_repo, "obsoleteword")["pointers"] == []
+
+
+def test_specific_ticket_id_path_grant_is_supported(remote_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from harness.memory import sync
+    configure(remote_repo, source_types=["task_archive"], allow_paths=[SNAPSHOT + "/records/ticket-42-*.json"])
+    fake_inventory(monkeypatch, [{"number": 42, "state": "closed", "title": "selectedword"}, {"number": 43, "state": "closed", "title": "excludedword"}])
+    assert sync(remote_repo)["synced"] == 1
+    assert search(remote_repo, "selectedword")["pointers"]
+    assert search(remote_repo, "excludedword")["pointers"] == []
 
 
 @pytest.mark.parametrize("host,tool", [("github.com", "gh"), ("gitlab.com", "glab")])

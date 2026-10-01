@@ -17,11 +17,12 @@ from urllib.parse import quote
 from .adapters import baseline, scalar
 from .index import context, refresh, writer_lock
 from .policy import Policy
-from .sources import matches, safe_source, SNAPSHOT, snapshot_manifest
+from .sources import matches, safe_source, SNAPSHOT, snapshot_manifest, snapshot_kind_allowed
 
 MAX_PAGES = 20
 MAX_RECORDS = 1000
 MAX_RESPONSE = 4 * 1024 * 1024
+MAX_REQUESTS = 200
 TIMEOUT = 10
 MARKER = re.compile(r"^## Completion report\s*\n```json\s*\n(.*?)\n```\s*$", re.S)
 
@@ -87,10 +88,13 @@ def fetch_page(argv: list[str], repo: Path) -> list[dict[str, object]]:
             reader.join(timeout=0.1)
 
 
-def inventory(tool: str, endpoint: str, repo: Path) -> list[dict[str, object]]:
+def inventory(tool: str, endpoint: str, repo: Path, budget: list[int]) -> list[dict[str, object]]:
     """An empty final page proves the bounded inventory is complete."""
     records: list[dict[str, object]] = []
     for page in range(1, MAX_PAGES + 1):
+        budget[0] += 1
+        if budget[0] > MAX_REQUESTS:
+            raise ValueError("memory sync: request budget exceeded")
         separator = "&" if "?" in endpoint else "?"
         batch = fetch_page(
             [tool, "api", endpoint + f"{separator}per_page=100&page={page}"], repo
@@ -170,6 +174,7 @@ def record(
         "title": clean(value.get("title"), f"{kind} {identifier}"),
         "status": "не подтверждено человеком"
         if completion
+        else "merged" if kind == "pull_request" and isinstance(value.get("merged_at"), str) and value["merged_at"]
         else clean(value.get("state"), "closed"),
         "date": clean(value.get("date"), clean(value.get("updated_at"), "unknown")),
         "body": "\n".join(text)[:16384],
@@ -196,7 +201,7 @@ def sync(repo: Path) -> dict[str, object]:
         )
         if policy.active
         and source in policy.source_types
-        and matches(f"{SNAPSHOT}/records/{kind}-1-{'a' * 64}.json", policy.allow_paths)
+        and snapshot_kind_allowed(kind, policy)
     }
     if not permitted:
         return {"status": "disabled", "synced": 0}
@@ -205,10 +210,13 @@ def sync(repo: Path) -> dict[str, object]:
     root = f"repos/{slug}" if tool == "gh" else f"projects/{quote(slug, safe='')}"
     records: dict[str, bytes] = {}
     skipped = 0
+    budget = [0]
     for kind, collection in (
         ("ticket", "issues"),
         ("pull_request", "pulls" if tool == "gh" else "merge_requests"),
     ):
+        if kind not in permitted and "completion_report" not in permitted:
+            continue
         states = (
             ["closed", "merged"]
             if tool == "glab" and kind == "pull_request"
@@ -216,7 +224,7 @@ def sync(repo: Path) -> dict[str, object]:
         )
         for state in states:
             for item in inventory(
-                tool, f"{root}/{collection}?state={state}", canonical
+                tool, f"{root}/{collection}?state={state}", canonical, budget
             ):
                 if tool == "gh" and collection == "issues" and "pull_request" in item:
                     continue
@@ -240,7 +248,7 @@ def sync(repo: Path) -> dict[str, object]:
                     if tool == "gh"
                     else f"{root}/{collection}/{identifier}/notes"
                 )
-                for comment in inventory(tool, comments, canonical):
+                for comment in inventory(tool, comments, canonical, budget):
                     body = comment.get("body")
                     match = (
                         MARKER.fullmatch(body)
@@ -288,11 +296,12 @@ def sync(repo: Path) -> dict[str, object]:
                     ):
                         skipped += 1
                         continue
-                    if scalar(report.get("status")).strip().lower() in {
+                    report_status = scalar(report.get("status")).strip().lower()
+                    if report_status in {
                         "superseded",
                         "заменён",
                         "заменен",
-                    }:
+                    } or re.match(r"superseded\s+by\s+\S+", report_status):
                         continue
                     path, raw = record("completion_report", report_id, report, policy)
                     if matches(path, policy.allow_paths):

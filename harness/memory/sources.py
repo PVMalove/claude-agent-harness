@@ -64,13 +64,26 @@ def snapshot_enabled(policy: Policy) -> bool:
     """Do not open the reserved snapshot without both type and path grants."""
     return policy.active and any(
         source in policy.source_types
-        and matches(f"{SNAPSHOT}/records/{kind}-1-{'a' * 64}.json", policy.allow_paths)
+        and snapshot_kind_allowed(kind, policy)
         for kind, source in (
             ("ticket", "task_archive"),
             ("pull_request", "task_archive"),
             ("completion_report", "completion_report"),
         )
     )
+
+
+def snapshot_kind_allowed(kind: str, policy: Policy) -> bool:
+    """Permit broad globs or constrained identities; final record paths are rechecked."""
+    if matches(f"{SNAPSHOT}/records/{kind}-1-{'a' * 64}.json", policy.allow_paths):
+        return True
+    for pattern in policy.allow_paths:
+        directory, _, filename = pattern.rpartition("/")
+        if matches(SNAPSHOT + "/records", (directory,)) and re.fullmatch(
+            rf"{kind}-[0-9*?\[\]!-]+-[a-f0-9*?\[\]!-]+\.json", filename
+        ):
+            return True
+    return False
 
 
 def snapshot_paths(repo: Path) -> list[str]:

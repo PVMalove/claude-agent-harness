@@ -72,3 +72,19 @@ lists; lessons may be a string list. Unknown fields are discarded. Unmarked or m
 are skipped and counted in `skipped_reports`. Lessons are optional for remote reports; their status
 is always `не подтверждено человеком`. Superseded reports are omitted. This does not change the
 local ledger contract: local Completion reports still require opted-in nonempty lessons.
+
+Sync performs a complete bounded inventory, not an `updated_since` watermark: successful runs
+remove missing/reopened entries from the manifest. Limits are 20 pages and 1000 records per endpoint,
+200 CLI requests and 1000 active snapshot records per run, 4 MiB combined output per request and
+10 seconds per request. Exceeding a limit fails the whole collection; nothing is silently truncated.
+Unchanged sanitized hashes reuse record files and preserve snapshot/index bytes and mtime.
+
+Records live under `.harness/.sandboxes/memory/snapshot/records/`; `manifest.json` is the atomic
+selection point. Old unselected records remain on disk, with no automatic garbage collection.
+Tracker, parsing and publication failures preserve the prior selection and index. A policy or manifest
+change during fetch cancels publication with a retry diagnostic. Sync serializes publication with
+the existing bounded memory writer lock, then refreshes the index after releasing it.
+`snapshot_synced_index_failed` means the new snapshot is available but index refresh failed;
+explicit offline `harness memory build` or `rebuild` repairs it. Build/rebuild, raw search and Context
+Package assembly never fetch tracker data. Linked worktrees read the main snapshot and reject sync
+before creating files or contacting the tracker.
