@@ -50,6 +50,11 @@ def run(ctx: SimpleNamespace) -> None:
     qa_gate_hook = pv_project / ".claude" / "hooks" / "require-qa-gate.sh"
     if not qa_gate_hook.is_file():
         sys.exit("pvmalove-suite init did not scaffold require-qa-gate.sh")
+    merge_hook = pv_project / ".claude" / "hooks" / "block-pr-merge.sh"
+    if not merge_hook.is_file():
+        sys.exit("pvmalove-suite init did not scaffold block-pr-merge.sh")
+    if not (pv_project / ".claude" / "hooks" / "pr_commands.py").is_file():
+        sys.exit("pvmalove-suite init did not scaffold the pr_commands.py hook helper")
 
     # A PR launched from the primary checkout can explicitly target a tested linked worktree.
     # Its QA marker must belong to that checkout, even when the primary checkout is dirty.
@@ -1194,3 +1199,79 @@ def run(ctx: SimpleNamespace) -> None:
             )
     finally:
         qa_marker.unlink(missing_ok=True)
+
+    # block-pr-merge.sh: Zero Auto-Merge for gh and glab, decided on the tokens bash executes.
+    for command in (
+        "gh pr merge 12 --squash",
+        "glab mr merge 12",
+        "glab mr accept 12",
+        "git push && glab mr merge 1",
+        'git commit -m "x" && gh pr merge 1',
+        "git status; gh pr merge",
+        "false || gh pr merge 1",
+        "gh pr merge 1&& echo done",
+        "echo a#b; gh pr merge 1",
+        "printf '1\\n' | xargs gh pr merge",
+        "echo 'gh pr merge 1' | bash",
+        "bash <<< 'glab mr merge 1'",
+        "( gh pr merge 1 )",
+        "{ glab mr merge 1; }",
+        "if true; then gh pr merge 1; fi",
+        "FOO=1 gh pr merge 1",
+        "/usr/local/bin/gh pr merge 1",
+        "gh.exe pr merge 1",
+        '"gh" pr merge 1',
+        "sudo -u root glab mr merge 1",
+        "timeout 30 gh pr merge 1",
+        "uv run glab mr accept 1",
+        "docker exec c gh pr merge 1",
+        "find . -name x -exec glab mr merge 1 \\;",
+        "bash -c 'gh pr merge 1'",
+        'sh -lc "glab mr merge 1"',
+        "eval 'gh pr merge 1'",
+        "ssh host 'glab mr merge 1'",
+        "python3 -c \"import os; os.system('gh pr merge 1')\"",
+        'echo "$(gh pr merge 1)"',
+        "echo `glab mr merge 1`",
+        "diff <(gh pr merge 1) notes.txt",
+        "bash <<'EOF'\ngh pr merge 1\nEOF",
+        "cat <<'EOF' | bash\nglab mr merge 1\nEOF",
+        "cat <<EOF\n$(glab mr merge 1)\nEOF",
+        "cat <<EOF\nit's `gh pr merge 1`\nEOF",
+        "gh pr \\\nmerge 1",
+        "echo 'unbalanced gh pr merge",
+    ):
+        if run_hook(merge_hook, pv_project, command).returncode != 2:
+            sys.exit(f"block-pr-merge.sh allowed a merge: {command!r}")
+    for command in (
+        "git commit -m 'docs: forbid gh pr merge'",
+        'python tool.py --note "never glab mr merge or accept"',
+        "python tool.py --reason 'never run `gh pr merge` yourself'",
+        "gh pr view 1 && gh pr checks 1",
+        "glab mr view 3 --comments",
+    ):
+        if run_hook(merge_hook, pv_project, command).returncode != 0:
+            sys.exit(f"block-pr-merge.sh blocked a merge mention: {command!r}")
+    multiline_merge = json.dumps(
+        {"tool_input": {"command": "git fetch &&\nglab mr merge 1"}}, indent=2
+    )
+    if (
+        run_hook(merge_hook, pv_project, "", raw_payload=multiline_merge).returncode
+        != 2
+    ):
+        sys.exit("block-pr-merge.sh allowed a merge in a multiline JSON payload")
+    broken_payload = '{"tool_input": {"command": "gh pr merge 1"'
+    if run_hook(merge_hook, pv_project, "", raw_payload=broken_payload).returncode != 2:
+        sys.exit("block-pr-merge.sh allowed a merge in an unparsable payload")
+    description_only = json.dumps(
+        {
+            "tool_input": {
+                "command": "git status",
+                "description": "check status before gh pr merge",
+            }
+        }
+    )
+    if run_hook(merge_hook, pv_project, "", raw_payload=description_only).returncode:
+        sys.exit("block-pr-merge.sh blocked a merge mentioned only in the description")
+    if (pv_project / ".claude" / "hooks" / "__pycache__").exists():
+        sys.exit("a hook left .claude/hooks/__pycache__, which uninstall cannot prune")
