@@ -74,7 +74,9 @@ from harness.health.project_files import (
     project_skill_files,
     public_skill_names,
     skill_inventory,
+    tracker_field_problems,
 )
+from harness.health.project_tracker import resolve_project_tracker
 
 CAPABILITIES_FILE = PACKAGE / "CAPABILITIES.json"
 VERSION_FILE = PACKAGE / "VERSION"
@@ -735,6 +737,16 @@ def scaffold_pvmalove_extras(
                 if not line:
                     break
                 commands.append(line)
+        # The tracker field is filled from origin without a prompt or flag: a GitHub/GitLab tracker
+        # the resolver derives completely is written, a local or default one is left out
+        # (docs/adr/0010). The template stays valid JSON either way.
+        origin_tracker = resolve_project_tracker(repo).from_origin
+        tracker_field = (
+            "\n  " + origin_tracker.snippet() + ","
+            if origin_tracker.type != "local"
+            and not tracker_field_problems(origin_tracker.field())
+            else ""
+        )
         template = (PROJECT_TEMPLATE_DIR / "project.json.tmpl").read_text(
             encoding="utf-8"
         )
@@ -745,6 +757,7 @@ def scaffold_pvmalove_extras(
                 "PR_BASE_BRANCH": base_branch,
                 "BRANCH_PATTERN": branch_pattern,
                 "QA_GATE_COMMANDS": json.dumps(commands, ensure_ascii=False),
+                "TRACKER_FIELD": tracker_field,
             },
         )
         project_json.parent.mkdir(parents=True, exist_ok=True)

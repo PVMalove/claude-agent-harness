@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 HARNESS = Path(__file__).resolve().parents[2] / "harness" / "bin" / "harness.py"
 REAL_GIT = shutil.which("git")
 
@@ -350,6 +352,404 @@ def test_online_gitlab_reporter_access_level_can_manage_labels_only(
     assert permissions["status"] == "warn"
     assert "недостаточно прав для PR" in str(permissions["message"])
     assert "метки доступны" in str(permissions["message"])
+
+
+_DEVELOPER_ACCESS = json.dumps(
+    {"permissions": {"project_access": {"access_level": 30}}}
+)
+
+
+@pytest.mark.parametrize(
+    ("remote", "encoded_project"),
+    [
+        (
+            "https://gitlab.example.test:4443/group/sub/project.git",
+            "group%2Fsub%2Fproject",
+        ),
+        (
+            "ssh://git@gitlab.example.test:2222/group/sub/project.git",
+            "group%2Fsub%2Fproject",
+        ),
+        ("git@gitlab.example.test:group/sub/project.git", "group%2Fsub%2Fproject"),
+        (
+            "https://gitlab.example.test/group/sub/project.name.git",
+            "group%2Fsub%2Fproject.name",
+        ),
+        (
+            "https://ci-user@gitlab.example.test:4443/group/sub/project.git",
+            "group%2Fsub%2Fproject",
+        ),
+    ],
+)
+def test_online_gitlab_origin_forms_address_the_full_project_path(
+    tmp_path: Path, remote: str, encoded_project: str
+) -> None:
+    """Проверить, что HTTPS с портом, ssh:// с портом, SCP-форма, точка в имени и userinfo дают
+    GitLab и полный путь проекта с подгруппами в вызове glab api."""
+    repo = _repo(tmp_path / "repo", remote=remote)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
+    glab_log = _fake_glab(
+        bin_dir, {f"api projects/{encoded_project}": (0, _DEVELOPER_ACCESS, "")}
+    )
+
+    _, checks, data = _health_full(repo, bin_dir, online=True)
+
+    assert checks["tracker.auth"]["status"] == "ok"
+    assert checks["tracker.permissions"]["status"] == "ok"
+    assert ["api", f"projects/{encoded_project}"] in _invocations(glab_log)
+    assert "ci-user" not in json.dumps(data, ensure_ascii=False)
+
+
+_SELF_HOSTED_ORIGIN = "https://git.example.test:4443/group/sub/project.git"
+
+
+def _project_json(repo: Path, tracker: dict[str, str] | None = None) -> None:
+    """Записать .harness/project.json с обязательными полями и опциональным полем tracker."""
+    data: dict[str, object] = {
+        "language": "ru",
+        "base_branch": "main",
+        "branch_pattern": "^feature/.+",
+        "qa_gate_commands": ["echo test"],
+    }
+    if tracker is not None:
+        data["tracker"] = tracker
+    (repo / ".harness").mkdir(parents=True, exist_ok=True)
+    (repo / ".harness" / "project.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_online_host_without_gitlab_in_its_name_without_field_is_local(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что хост без gitlab. в имени без поля tracker — локальный трекер без вызовов glab."""
+    repo = _repo(tmp_path / "repo", remote=_SELF_HOSTED_ORIGIN)
+    _project_json(repo)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+    glab_log = _fake_glab(bin_dir)
+
+    _, checks = _health(repo, bin_dir, online=True)
+
+    for check_id in TRACKER_IDS:
+        assert checks[check_id]["status"] == "skipped"
+        assert "локальный" in str(checks[check_id]["message"])
+    assert _invocations(glab_log) == []
+
+
+def test_online_host_without_gitlab_in_its_name_with_field_is_gitlab(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что тот же хост с полем tracker type gitlab проверяется через glab по полному пути."""
+    repo = _repo(tmp_path / "repo", remote=_SELF_HOSTED_ORIGIN)
+    _project_json(
+        repo,
+        {
+            "type": "gitlab",
+            "host": "git.example.test:4443",
+            "project": "group/sub/project",
+        },
+    )
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
+    glab_log = _fake_glab(
+        bin_dir, {"api projects/group%2Fsub%2Fproject": (0, _DEVELOPER_ACCESS, "")}
+    )
+
+    _, checks = _health(repo, bin_dir, online=True)
+
+    assert checks["files.project_json"]["status"] == "ok"
+    assert checks["tracker.auth"]["status"] == "ok"
+    assert checks["tracker.permissions"]["status"] == "ok"
+    assert ["api", "projects/group%2Fsub%2Fproject"] in _invocations(glab_log)
+
+
+# --- tracker.project (offline) ---------------------------------------------------------------------
+
+_GITLAB_FIELD = {
+    "type": "gitlab",
+    "host": "gitlab.example.test:4443",
+    "project": "group/sub/project",
+}
+
+
+def _snippet(fix: object) -> dict[str, object]:
+    """Разобрать сниппет из текста fix как JSON-фрагмент "tracker": {...}."""
+    assert isinstance(fix, dict)
+    assert fix["command"] is None
+    text = str(fix["text"])
+    prefix = "добавьте в .harness/project.json: "
+    assert text.startswith(prefix)
+    snippet = text[len(prefix) :].split("; ", 1)[0]
+    parsed = json.loads("{" + snippet + "}")
+    assert isinstance(parsed, dict)
+    return parsed
+
+
+@pytest.mark.parametrize(
+    ("remote", "description"),
+    [
+        (
+            "https://gitlab.example.test:4443/group/sub/project.git",
+            "gitlab, хост gitlab.example.test:4443, проект group/sub/project",
+        ),
+        (
+            "ssh://git@gitlab.example.test:2222/group/sub/project.git",
+            "gitlab, хост gitlab.example.test, проект group/sub/project",
+        ),
+        (
+            "git@gitlab.example.test:group/sub/project.git",
+            "gitlab, хост gitlab.example.test, проект group/sub/project",
+        ),
+        (
+            "https://gitlab.example.test/group/sub/project.git",
+            "gitlab, хост gitlab.example.test, проект group/sub/project",
+        ),
+        (
+            "https://gitlab.example.test/group/sub/project.name.git",
+            "gitlab, хост gitlab.example.test, проект group/sub/project.name",
+        ),
+        (
+            "https://ci-user@gitlab.example.test:4443/group/sub/project.git",
+            "gitlab, хост gitlab.example.test:4443, проект group/sub/project",
+        ),
+    ],
+)
+def test_project_reports_gitlab_and_the_full_path_offline(
+    tmp_path: Path, remote: str, description: str
+) -> None:
+    """Проверить, что health --json без --online показывает gitlab и полный путь проекта для
+    HTTPS с портом, ssh:// с портом, SCP-формы, подгрупп, точки в имени и userinfo."""
+    repo = _repo(tmp_path / "repo", remote=remote)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+
+    _, checks, data = _health_full(repo, bin_dir, online=False)
+
+    project = checks["tracker.project"]
+    assert project["status"] == "ok"
+    assert project["message"] == (
+        f"трекер проекта: {description} (источник: origin); .harness/project.json отсутствует"
+    )
+    assert "ci-user" not in json.dumps(data, ensure_ascii=False)
+
+
+def test_project_for_github_origin_without_project_json_is_ok(tmp_path: Path) -> None:
+    """Проверить, что GitHub-origin без project.json даёт ok с тройкой github и источником origin."""
+    repo = _repo(tmp_path / "repo", remote="git@github.com:acme/widgets.git")
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+
+    _, checks = _health(repo, bin_dir)
+
+    assert checks["tracker.project"]["status"] == "ok"
+    assert checks["tracker.project"]["message"] == (
+        "трекер проекта: github, хост github.com, проект acme/widgets (источник: origin); "
+        ".harness/project.json отсутствует"
+    )
+
+
+def test_project_without_origin_and_project_json_is_local_default(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что без origin и project.json трекер локальный с источником «нет origin»."""
+    repo = _repo(tmp_path / "repo")
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+
+    _, checks = _health(repo, bin_dir)
+
+    assert checks["tracker.project"]["message"] == (
+        "трекер проекта: local (источник: нет origin); .harness/project.json отсутствует"
+    )
+
+
+def test_project_without_field_warns_with_a_gitlab_snippet(tmp_path: Path) -> None:
+    """Проверить, что без поля tracker выдаётся warn с готовым к вставке сниппетом GitLab."""
+    repo = _repo(
+        tmp_path / "repo",
+        remote="https://gitlab.example.test:4443/group/sub/project.git",
+    )
+    _project_json(repo)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+
+    _, checks = _health(repo, bin_dir)
+
+    project = checks["tracker.project"]
+    assert project["status"] == "warn"
+    assert project["message"] == (
+        "нет поля tracker в .harness/project.json; трекер проекта: gitlab, хост "
+        "gitlab.example.test:4443, проект group/sub/project (источник: origin)"
+    )
+    assert _snippet(project["fix"]) == {"tracker": _GITLAB_FIELD}
+    assert checks["files.project_json"]["status"] == "ok"
+
+
+def test_project_without_field_warns_with_a_github_snippet(tmp_path: Path) -> None:
+    """Проверить, что для GitHub-origin сниппет содержит github, github.com и owner/repo."""
+    repo = _repo(tmp_path / "repo", remote="git@github.com:acme/widgets.git")
+    _project_json(repo)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+
+    _, checks = _health(repo, bin_dir)
+
+    project = checks["tracker.project"]
+    assert project["status"] == "warn"
+    assert _snippet(project["fix"]) == {
+        "tracker": {"type": "github", "host": "github.com", "project": "acme/widgets"}
+    }
+    assert "SSH" not in str(project["fix"])
+
+
+def test_project_without_field_for_a_host_without_gitlab_suggests_gitlab(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что для хоста без gitlab. сниппет local подсказывает замену на gitlab."""
+    repo = _repo(tmp_path / "repo", remote=_SELF_HOSTED_ORIGIN)
+    _project_json(repo)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+
+    _, checks = _health(repo, bin_dir)
+
+    project = checks["tracker.project"]
+    assert project["status"] == "warn"
+    assert (
+        "трекер проекта: local, хост git.example.test:4443, проект group/sub/project"
+        in str(project["message"])
+    )
+    assert _snippet(project["fix"]) == {
+        "tracker": {
+            "type": "local",
+            "host": "git.example.test:4443",
+            "project": "group/sub/project",
+        }
+    }
+    assert 'замените "local" на "gitlab"' in str(project["fix"])
+
+
+def test_project_without_field_for_an_ssh_origin_asks_for_the_web_port(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что для SSH-origin подсказка просит дописать веб-порт в host."""
+    repo = _repo(
+        tmp_path / "repo", remote="git@gitlab.example.test:group/sub/project.git"
+    )
+    _project_json(repo)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+
+    _, checks = _health(repo, bin_dir)
+
+    fix = checks["tracker.project"]["fix"]
+    assert _snippet(fix) == {
+        "tracker": {
+            "type": "gitlab",
+            "host": "gitlab.example.test",
+            "project": "group/sub/project",
+        }
+    }
+    assert "origin задан по SSH" in str(fix)
+
+
+def test_project_with_a_matching_field_is_ok_from_the_field(tmp_path: Path) -> None:
+    """Проверить, что хост без gitlab. с полем tracker даёт ok из поля без расхождения."""
+    repo = _repo(tmp_path / "repo", remote=_SELF_HOSTED_ORIGIN)
+    _project_json(
+        repo,
+        {
+            "type": "gitlab",
+            "host": "git.example.test:4443",
+            "project": "group/sub/project",
+        },
+    )
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+
+    _, checks = _health(repo, bin_dir)
+
+    assert checks["tracker.project"]["status"] == "ok"
+    assert checks["tracker.project"]["message"] == (
+        "трекер проекта: gitlab, хост git.example.test:4443, проект group/sub/project "
+        "(источник: поле tracker)"
+    )
+
+
+def test_project_field_disagreeing_with_origin_warns_and_the_field_wins(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что при расхождении поля и origin выдаётся warn, а glab адресует проект из поля."""
+    repo = _repo(
+        tmp_path / "repo", remote="https://gitlab.example.test:4443/group/other.git"
+    )
+    _project_json(repo, _GITLAB_FIELD)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
+    glab_log = _fake_glab(
+        bin_dir, {"api projects/group%2Fsub%2Fproject": (0, _DEVELOPER_ACCESS, "")}
+    )
+
+    _, checks = _health(repo, bin_dir, online=True)
+
+    project = checks["tracker.project"]
+    assert project["status"] == "warn"
+    assert project["message"] == (
+        "поле tracker расходится с origin (проект): используется поле — gitlab, хост "
+        "gitlab.example.test:4443, проект group/sub/project; origin — gitlab, хост "
+        "gitlab.example.test:4443, проект group/other"
+    )
+    assert isinstance(project["fix"], dict) and project["fix"]["command"] is None
+    assert checks["tracker.permissions"]["status"] == "ok"
+    invocations = _invocations(glab_log)
+    assert ["api", "projects/group%2Fsub%2Fproject"] in invocations
+    assert not any("group%2Fother" in arg for call in invocations for arg in call)
+
+
+def test_project_with_an_invalid_field_warns_that_it_is_not_applied(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что некорректное поле tracker не применяется и health об этом предупреждает."""
+    repo = _repo(
+        tmp_path / "repo", remote="git@gitlab.example.test:group/sub/project.git"
+    )
+    _project_json(repo, {**_GITLAB_FIELD, "unexpected": "value"})
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+
+    code, checks = _health(repo, bin_dir)
+
+    assert code == 1
+    assert checks["files.project_json"]["status"] == "fail"
+    project = checks["tracker.project"]
+    assert project["status"] == "warn"
+    assert project["message"] == (
+        "поле tracker не применено: .harness/project.json или поле tracker некорректны "
+        "(см. files.project_json); трекер проекта: gitlab, хост gitlab.example.test, "
+        "проект group/sub/project (источник: origin)"
+    )
+
+
+def test_project_local_field_with_github_origin_skips_online_checks(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что поле local при GitHub-origin — ok без расхождения и без вызовов gh."""
+    repo = _repo(tmp_path / "repo", remote="git@github.com:acme/widgets.git")
+    _project_json(repo, {"type": "local"})
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+    gh_log = _fake_gh(bin_dir)
+
+    _, checks = _health(repo, bin_dir, online=True)
+
+    assert checks["tracker.project"]["status"] == "ok"
+    assert checks["tracker.project"]["message"] == (
+        "трекер проекта: local (источник: поле tracker)"
+    )
+    for check_id in TRACKER_IDS:
+        assert checks[check_id]["status"] == "skipped"
+        assert "локальный" in str(checks[check_id]["message"])
+    assert _invocations(gh_log) == []
 
 
 # --- labels ------------------------------------------------------------------------------------------
