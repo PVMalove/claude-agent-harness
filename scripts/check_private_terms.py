@@ -595,7 +595,8 @@ def _hook(payload_text: str, environ: Mapping[str, str]) -> int:
         steps = analyse_command(command, cwd)
     except (ValueError, RecursionError):
         # Substitutions nested too deeply for the recursive analysis are unparsable too.
-        if not PUBLICATION.search(command):
+        # Line continuations are joined as in `_segments`, or `git \` + `commit` would pass.
+        if not PUBLICATION.search(command.replace("\\\n", "")):
             return 0
         if load_terms(cwd, environ) is None:
             print(skip_notice(environ), file=sys.stderr)
