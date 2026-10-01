@@ -53,21 +53,17 @@ def run(ctx: SimpleNamespace) -> None:
 
     # A PR launched from the primary checkout can explicitly target a tested linked worktree.
     # Its QA marker must belong to that checkout, even when the primary checkout is dirty.
+    commit = [
+        "git",
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-q",
+    ]
     subprocess.run(["git", "add", "-A"], cwd=pv_project, check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.invalid",
-            "commit",
-            "-qm",
-            "test fixture",
-        ],
-        cwd=pv_project,
-        check=True,
-    )
+    subprocess.run([*commit, "-m", "test fixture"], cwd=pv_project, check=True)
     linked = test_root / "linked"
     linked_branch = "feature/issue-373-linked"
     subprocess.run(
@@ -145,6 +141,87 @@ def run(ctx: SimpleNamespace) -> None:
     )
     if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode == 0:
         sys.exit("stale linked-worktree QA marker opened a PR")
+
+    # The gitignored .harness/ is absent from a real linked worktree: mark falls back to
+    # the project root config, and /to-pull-requests records coordinator-accepted QA there.
+    no_harness = test_root / "no-harness"
+    no_harness_branch = "feature/issue-463-no-harness"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", no_harness_branch, str(no_harness)],
+        cwd=pv_project,
+        check=True,
+    )
+    subprocess.run(["git", "rm", "-rq", ".harness"], cwd=no_harness, check=True)
+    subprocess.run([*commit, "-m", "drop tracked .harness"], cwd=no_harness, check=True)
+    no_harness_marker = no_harness / ".claude" / ".qa-gate" / "passed"
+    no_harness_pr_payload = json.dumps(
+        {
+            "cwd": str(pv_project),
+            "tool_input": {"command": f"gh pr create --head {no_harness_branch}"},
+        }
+    )
+
+    def mark_no_harness(
+        command: str, project_dir: Path = pv_project
+    ) -> subprocess.CompletedProcess[str]:
+        """Запустить PostToolUse-hook mark для Bash-команды в worktree без `.harness/`."""
+        mark_input = {"cwd": str(no_harness), "tool_input": {"command": command}}
+        return run_hook(mark_gate, project_dir, "", raw_payload=json.dumps(mark_input))
+
+    def no_harness_pr_allowed() -> bool:
+        """Проверить, пропускает ли require-qa-gate.sh PR ветки worktree без `.harness/`."""
+        return not run_hook(
+            require_gate, pv_project, "", raw_payload=no_harness_pr_payload
+        ).returncode
+
+    if no_harness_pr_allowed():
+        sys.exit("PR without a QA marker opened from a worktree without .harness")
+    for command in ("git status", "echo test"):
+        result = mark_no_harness(command)
+        if result.returncode:
+            sys.exit(f"mark failed in a worktree without .harness: {result.stderr}")
+        if no_harness_marker.is_file() != (command == "echo test"):
+            sys.exit(f"mark ignored the project root config for {command!r}")
+    if not no_harness_pr_allowed():
+        sys.exit("root-config QA marker did not permit its PR")
+    subprocess.run(
+        [*commit, "--allow-empty", "-m", "move HEAD"], cwd=no_harness, check=True
+    )
+    if no_harness_pr_allowed():
+        sys.exit("QA marker for a previous HEAD opened a PR")
+    # /to-pull-requests: accepted coordinator QA evidence is recorded without a rerun.
+    if run_hook(record_gate, pv_project, "", cwd=no_harness).returncode:
+        sys.exit("could not record coordinator-accepted QA in the PR checkout")
+    if not no_harness_pr_allowed():
+        sys.exit("recorded coordinator-accepted QA did not permit its PR")
+    tracked = no_harness / "AGENTS.md"
+    tracked.write_text(tracked.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    if no_harness_pr_allowed():
+        sys.exit("QA marker for a previous diff opened a PR")
+    subprocess.run(["git", "checkout", "-q", "--", "AGENTS.md"], cwd=no_harness, check=True)
+    no_harness_marker.unlink()
+    # A session started inside the linked worktree points CLAUDE_PROJECT_DIR at it too:
+    # mark then reads the main worktree's config.
+    if mark_no_harness("echo test", no_harness).returncode or not no_harness_marker.is_file():
+        sys.exit("mark ignored the main worktree config inside a linked-worktree session")
+    no_harness_marker.unlink()
+    hidden_json = project_json.with_name("project.json.hidden")
+    project_json.rename(hidden_json)
+    try:
+        orphan_mark = mark_no_harness("echo test")
+    finally:
+        hidden_json.rename(project_json)
+    if orphan_mark.returncode or no_harness_marker.is_file():
+        sys.exit("mark without any project config did not exit quietly")
+    # A checkout's own config, when present, takes precedence over the project root.
+    local_config = no_harness / ".harness" / "project.json"
+    local_config.parent.mkdir()
+    local_config.write_text('{"qa_gate_commands": ["echo local"]}\n', encoding="utf-8")
+    for command in ("echo test", "echo local"):
+        if mark_no_harness(command).returncode:
+            sys.exit(f"mark failed with a checkout config for {command!r}")
+        if no_harness_marker.is_file() != (command == "echo local"):
+            sys.exit(f"mark ignored the checkout config for {command!r}")
 
     scratch_gitignore = storage_path(pv_project, "scratch", ".gitignore")
     if not scratch_gitignore.is_file():
