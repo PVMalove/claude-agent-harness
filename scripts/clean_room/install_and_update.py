@@ -311,6 +311,7 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("update did not remove an empty retired skill directory")
     run_ok(HARNESS + ["health", str(pv_project)])
     check_tracker_field(pv_project)
+    check_tracker_from_origin(test_root)
     if not filecmp.cmp(
         ROOT / "skills" / "first-party" / "pvmalove" / "to-spec" / "SKILL.md",
         pv_project / ".harness" / "skills" / "to-spec" / "SKILL.md",
@@ -494,3 +495,63 @@ def check_tracker_field(pv_project) -> None:
         sys.exit("health accepted an unknown key inside the tracker field")
     project_json.write_bytes(original)
     run_ok(HARNESS + ["health", str(pv_project)])
+
+
+def check_tracker_from_origin(test_root) -> None:
+    """Поле tracker из GitLab- и GitHub-origin при установке (docs/adr/0010).
+
+    Install без терминала и флагов трекера выводит тип, хост с портом и проект с подгруппами из
+    origin; userinfo в project.json не попадает, `files.project_json` ok, а `tracker.project` берёт
+    трекер из записанного поля.
+    """
+    remotes = {
+        "gitlab": (
+            "https://ci-user@gitlab.example.test:4443/group/sub/project.git",
+            {
+                "type": "gitlab",
+                "host": "gitlab.example.test:4443",
+                "project": "group/sub/project",
+            },
+        ),
+        "github": (
+            "git@github.com:acme/widgets.git",
+            {"type": "github", "host": "github.com", "project": "acme/widgets"},
+        ),
+    }
+    for name, (remote, expected) in remotes.items():
+        project = test_root / f"tracker_{name}_project"
+        project.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", remote], cwd=project, check=True
+        )
+        run_ok(
+            HARNESS
+            + [
+                "init",
+                str(project),
+                "--capability",
+                "pvmalove-suite",
+                "--language",
+                "ru",
+                "--pr-base-branch",
+                "main",
+                "--branch-pattern",
+                "^feature/issue-[0-9]+-.+",
+                "--qa-gate-command",
+                "echo test",
+            ],
+            quiet=True,
+        )
+        text = (project / ".harness" / "project.json").read_text(encoding="utf-8")
+        if json.loads(text).get("tracker") != expected or "ci-user" in text:
+            sys.exit(f"install did not write the {name} tracker derived from origin")
+        fill_agents(project)
+        report = capture_json(HARNESS + ["health", str(project), "--json"])
+        if find_check(report, "files.project_json")["status"] != "ok":
+            sys.exit(f"the {name} tracker field written by install failed health")
+        tracker = find_check(report, "tracker.project")
+        if tracker["status"] != "ok" or not tracker["message"].endswith(
+            "(источник: поле tracker)"
+        ):
+            sys.exit(f"health did not resolve the {name} tracker from the field")

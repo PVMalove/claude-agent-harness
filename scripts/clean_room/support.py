@@ -44,7 +44,10 @@ def run_ok(cmd, quiet=False, quiet_all=False):
     """Запустить команду, которая обязана пройти; при сбое завершиться её кодом выхода, как `set -e`."""
     stdout = subprocess.DEVNULL if (quiet or quiet_all) else None
     stderr = subprocess.DEVNULL if quiet_all else None
-    result = subprocess.run(cmd, stdout=stdout, stderr=stderr, check=False)
+    # No stdin: started from a terminal, `init` would otherwise prompt for the tracker.
+    result = subprocess.run(
+        cmd, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, check=False
+    )
     if result.returncode != 0:
         sys.exit(result.returncode)
 
