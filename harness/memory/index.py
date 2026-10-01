@@ -203,7 +203,7 @@ def refresh(repo: Path) -> dict[str, object]:
                 )
                 generation = (
                     selected_generation(canonical)
-                    if {"ledger", "qa_finding"} & set(policy.source_types)
+                    if sources.STATE_SOURCE_TYPES & set(policy.source_types)
                     and policy.active
                     else ""
                 )

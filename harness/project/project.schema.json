@@ -116,6 +116,7 @@
               "glossary",
               "task_archive",
               "qa_finding",
+              "completion_report",
               "ledger"
             ]
           }

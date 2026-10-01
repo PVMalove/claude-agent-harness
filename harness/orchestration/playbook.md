@@ -287,6 +287,13 @@ The report must include:
 - `blockers`, or an explicit `none`;
 - the next coordinator action, including the required independent gate when applicable.
 
+Optional `lessons` and `used_memory` are lists of non-empty strings; empty lists and omission are
+valid. `lessons` records historical observations, never confirmed truth: memory indexes them only
+with explicit `completion_report` source/path authorization, after sanitization, with status
+“не подтверждено человеком” and the ordinary FTS ranking. `used_memory` lists the identifiers of
+used hits as a weak signal: the coordinator neither resolves them nor uses them as an acceptance
+gate, and memory never indexes them. These fields do not change required proof or ledger version.
+
 For the high-risk triggers in the `code-review` manifest, Standards and Spec are separate
 read-only reports. They must both be present before the coordinator accepts the batch; one combined
 rating cannot replace either report.
@@ -305,7 +312,12 @@ Use this shape so missing proof is visible:
 - Risks: <residual risks|none>
 - Blockers: <blockers|none>
 - Next coordinator action: <accept, block, fail, or create a new dispatch>
+- Lessons (optional, не подтверждено человеком): <historical observations, no extra weight>
+- Used memory (optional, weak signal, not a gate): <used hit identifiers>
 ```
+
+In JSON, represent the optional fields as `"lessons": ["<observation>"]` and
+`"used_memory": ["<hit identifier>"]`; omit them when there is nothing to record.
 
 The coordinator does not rewrite a report to make it pass. A missing commit SHA, changed-file
 list, check result, risk statement, or blocker statement is a proof gap and keeps the batch from

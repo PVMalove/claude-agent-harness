@@ -136,7 +136,7 @@ PR.
 #### Политика памяти проекта
 
 Память включается только через `memory: {"enabled": true}` в `.harness/project.json`.
-Отдельный `memory_policy` содержит все шесть полей: `source_types` (список `adr`/`glossary`/`task_archive`/`qa_finding`/`ledger`),
+Отдельный `memory_policy` содержит все шесть полей: `source_types` (список `adr`/`glossary`/`task_archive`/`qa_finding`/`ledger`/`completion_report`),
 `allow_paths` (явные относительные POSIX glob-пути), `redact_rules` (regex),
 `min_similarity` (конечное число 0..1), `top_k` и `max_tokens` (целые >=1).
 Отсутствующая политика и пустой любой allowlist не разрешают ни одного источника;
@@ -158,6 +158,15 @@ Regex имеют длину 1..512 символов; используйте пр
 полные логи и абсолютные artifact paths не индексируются. `ledger` читает только scalar
 ID/ticket/role/state и явные даты из `batches`, `dispatches`, `dispatch-status` той же generation.
 Selector проверяется read-only; память не мигрирует ledger и не требует backend-orchestration.
+`completion_report` разрешает только `lessons` из `reports/*.json` выбранной generation:
+список непустых строк, максимум первые 20 и до 2048 символов каждой, общий projection до 16 KiB.
+Статус указателя — «не подтверждено человеком», даже если отчёт объявляет `accepted`;
+явно superseded отчёты исключаются. Используется обычный FTS ranking без повышенного веса.
+`used_memory` — опциональный список идентификаторов использованных хитов: только слабый сигнал,
+не гейт coordinator-а, не поисковый текст и не причина увеличивать вес хита.
+Старые отчёты без новых полей продолжают приниматься. При разрешённых одновременно
+`qa_finding` и `completion_report` QA evidence остаётся поисковым; наличие lessons делает весь
+указатель непроверенной историей. Без `completion_report` существующий QA projection не меняется.
 Оба allowlist обязательны. QA/ledger проходят baseline secret sanitization и project regex;
 все сохраняемые текстовые поля проходят project redaction до SQL. Если relative path изменился
 при sanitization, refresh отказывает целиком, сохраняя предыдущий кэш.

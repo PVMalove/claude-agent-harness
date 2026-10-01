@@ -1004,6 +1004,9 @@ def _validate_report(
             remedy="set report_language to 'ru' in the completion report",
         )
     brief = dispatch
+    for field in ("lessons", "used_memory"):
+        if field in report:
+            _strings(report[field], f"completion report {field}", allow_empty=True)
     for field in ("dispatch_id", "ticket", "role"):
         if report[field] != brief[field]:
             raise CoordinatorError(
@@ -1219,6 +1222,13 @@ def _report_markdown(report: JsonObject) -> str:
             f"- Next coordinator action: {report['next_coordinator_action']}",
         ]
     )
+    for field, label in (
+        ("lessons", "Lessons (не подтверждено человеком)"),
+        ("used_memory", "Used memory (слабый сигнал, не гейт)"),
+    ):
+        if field in report:
+            lines.append(f"- {label}:")
+            lines.extend(f"  - {item}" for item in report[field])
     review = report.get("review")
     if isinstance(review, dict):
         lines.extend(

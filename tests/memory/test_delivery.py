@@ -39,7 +39,7 @@ assert not Path('.harness/orchestration/__init__.py').exists()
 config_path = Path('.harness/project.json')
 config = json.loads(config_path.read_text())
 config['memory'] = {'enabled': True}
-config['memory_policy'].update(source_types=['task_archive', 'qa_finding', 'ledger'], allow_paths=['docs/tasks/**/*.md', '.harness/orchestration/state/generations/**/*.json'], redact_rules=['projectsecret'])
+config['memory_policy'].update(source_types=['task_archive', 'qa_finding', 'ledger', 'completion_report'], allow_paths=['docs/tasks/**/*.md', '.harness/orchestration/state/generations/**/*.json'], redact_rules=['projectsecret'])
 config_path.write_text(json.dumps(config))
 archive = Path('docs/tasks/issue-423-memory/issue-423-spec-memory.md')
 archive.parent.mkdir(parents=True)
@@ -50,14 +50,17 @@ generation = state / 'generations/generation-fixture'
 (generation / 'dispatch-status').mkdir()
 (state / 'ledger.json').write_text(json.dumps({'version': 3, 'generation': 'generation-fixture', 'selected_at': '2026-09-30'}))
 (generation / 'reports/qa.json').write_text(json.dumps({'role': 'qa', 'outcome': 'pass', 'output': 'qualityword token=private projectsecret'}))
+(generation / 'reports/dev.json').write_text(json.dumps({'role': 'developer', 'lessons': ['lessonword token=private projectsecret'], 'used_memory': ['unusedword']}))
 (generation / 'dispatch-status/d.json').write_text(json.dumps({'dispatch_id': 'dispatchword', 'state': 'working'}))
 problems = []
 validate_project_json(Path.cwd(), problems)
 assert not problems, problems
-for term in ('archiveword', 'qualityword', 'dispatchword'):
+for term in ('archiveword', 'qualityword', 'dispatchword', 'lessonword'):
     assert harness.memory.search_with_refresh(Path.cwd(), term)['pointers']
 assert harness.memory.search(Path.cwd(), 'private')['pointers'] == []
 assert harness.memory.search(Path.cwd(), 'projectsecret')['pointers'] == []
+assert harness.memory.search(Path.cwd(), 'unusedword')['pointers'] == []
+assert harness.memory.search(Path.cwd(), 'lessonword')['pointers'][0]['status'] == 'не подтверждено человеком'
 """
     environment = {**os.environ, "PYTHONPATH": ""}
     # The installed .harness directory is the package alias used by existing standalone tools.

@@ -28,6 +28,7 @@ EXCLUDED = {
     "qa-artifacts",
     "cache",
 }
+STATE_SOURCE_TYPES = {"ledger", "qa_finding", "completion_report"}
 
 
 @dataclass(frozen=True)
@@ -89,13 +90,24 @@ def read_source(
 ) -> Source | None:
     """Project and sanitize an authorized source before retaining any text."""
     kind = classify(relative)
-    if kind not in policy.source_types or not matches(relative, policy.allow_paths):
+    completion = kind == "qa_finding" and "completion_report" in policy.source_types
+    if (kind not in policy.source_types and not completion) or not matches(
+        relative, policy.allow_paths
+    ):
         return None
     if not safe_source(repo, relative).is_file():
         return None
     raw = raw_bytes(repo, relative) if raw is None else raw
-    if kind in {"ledger", "qa_finding"}:
-        projection = project_json(raw, kind)
+    if kind in STATE_SOURCE_TYPES:
+        projection = None
+        if completion:
+            projection = project_json(
+                raw, "completion_report", include_qa="qa_finding" in policy.source_types
+            )
+            if projection is not None:
+                kind = "completion_report"
+        if projection is None and kind in policy.source_types:
+            projection = project_json(raw, kind)
         if projection is None:
             return None
         title, status, date, superseded, text = projection
@@ -113,7 +125,7 @@ def read_source(
         return None
 
     def sanitize(value: str) -> str:
-        if kind in {"qa_finding", "ledger"}:
+        if kind in STATE_SOURCE_TYPES:
             value = baseline(value)
         for rule in policy.redact_rules:
             value = re.sub(rule, "[REDACTED]", value)
@@ -160,7 +172,7 @@ def allowed_paths(repo: Path, policy: Policy) -> list[str]:
         return []
     generation = (
         selected_generation(repo)
-        if policy.active and {"ledger", "qa_finding"} & set(policy.source_types)
+        if policy.active and STATE_SOURCE_TYPES & set(policy.source_types)
         else ""
     )
     paths: set[str] = set()
@@ -194,9 +206,10 @@ def allowed_paths(repo: Path, policy: Policy) -> list[str]:
                     return
             for child in sorted(path.iterdir()):
                 walk(child)
-        elif (
-            matches(relative, policy.allow_paths)
-            and classify(relative) in policy.source_types
+        elif matches(relative, policy.allow_paths) and (
+            classify(relative) in policy.source_types
+            or classify(relative) == "qa_finding"
+            and "completion_report" in policy.source_types
         ):
             if relative.startswith(STATE + "/") and not relative.startswith(
                 generation + "/"
@@ -231,7 +244,7 @@ def collect_sources(repo: Path, policy: Policy) -> list[Source]:
     documents = []
     generation = (
         selected_generation(repo)
-        if policy.active and {"ledger", "qa_finding"} & set(policy.source_types)
+        if policy.active and STATE_SOURCE_TYPES & set(policy.source_types)
         else ""
     )
     for relative in allowed_paths(repo, policy):

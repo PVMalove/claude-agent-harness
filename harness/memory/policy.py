@@ -70,7 +70,15 @@ def parse_policy(config: dict[str, object]) -> Policy:
             raise ValueError(f"memory_policy.{key} must be a list of strings")
         lists[key] = tuple(items)
     if any(
-        item not in {"adr", "glossary", "task_archive", "qa_finding", "ledger"}
+        item
+        not in {
+            "adr",
+            "glossary",
+            "task_archive",
+            "qa_finding",
+            "ledger",
+            "completion_report",
+        }
         for item in lists["source_types"]
     ):
         raise ValueError(

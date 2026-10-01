@@ -61,6 +61,12 @@ files и ждать writer до 2 секунд. Raw API `harness.memory.search` 
 без commands/prompts/approvals/произвольного JSON; backend-orchestration не обязательна.
 Роли оркестрации search не получают. Completion report получает опциональные поля `lessons`
 (без повышенного веса, статус «не подтверждено человеком») и `used_memory` (слабый сигнал).
+Оба поля — опциональные списки непустых строк, пустые списки допустимы. `used_memory` не
+разрешается против текущего индекса и не влияет на приём отчёта или поисковый вес.
+Для lessons нужен отдельный opt-in `completion_report` вместе с allow_paths на `reports/*.json`
+выбранной generation: индексируется только bounded sanitized projection, не весь отчёт.
+При одновременном opt-in QA evidence сохраняется, но указатель с lessons всегда имеет
+неподтверждённый статус. Версия ledger и обязательные поля Completion report не меняются.
 
 ## Операционные последствия
 
