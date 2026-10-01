@@ -9,11 +9,13 @@ import contextlib
 import importlib.machinery
 import importlib.util
 import io
+import os
 import subprocess
 import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check_private_terms.py"
 
@@ -26,6 +28,10 @@ TERMS = (
     "QX-7741\n"
 )
 ENV = {"HARNESS_PRIVATE_TERMS": TERMS}
+SKIPPED = (
+    "private-terms: skipped: no term list (set HARNESS_PRIVATE_TERMS or create "
+    ".private-terms.txt in the main checkout; see docs/agents/releases.md)\n"
+)
 _GIT = (
     "git",
     "-c",
@@ -392,6 +398,78 @@ class FoldingTests(unittest.TestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(_matches(err), ["branch:1: term #2"])
+
+
+class SkipTests(unittest.TestCase):
+    def test_without_a_list_the_check_skips_with_a_notice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            body = Path(tmp) / "body.md"
+            body.write_text("Zorblax\n", encoding="utf-8")
+
+            code, out, err = _run(["--repo", str(repo), "--body-file", str(body)], {})
+
+        self.assertEqual((code, out, err), (0, SKIPPED, ""))
+
+    def test_the_notice_is_a_workflow_annotation_in_github_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp) / "body.md"
+            body.write_text("Zorblax\n", encoding="utf-8")
+
+            code, out, _ = _run(
+                ["--repo", tmp, "--body-file", str(body)], {"GITHUB_ACTIONS": "true"}
+            )
+
+        self.assertEqual((code, out), (0, "::notice title=private-terms::" + SKIPPED))
+
+    def test_the_check_skips_before_running_git(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out, err = _run(
+                ["--repo", tmp, "--staged", "--commits", "--branch"], {}
+            )
+
+        self.assertEqual((code, out, err), (0, SKIPPED, ""))
+
+    def test_an_empty_variable_falls_through_to_the_file(self) -> None:
+        # GitHub substitutes an empty string for a secret that does not exist.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            (repo / ".private-terms.txt").write_text("Zorblax\n", encoding="utf-8")
+            body = Path(tmp) / "body.md"
+            body.write_text("Zorblax\n", encoding="utf-8")
+
+            code, _, err = _run(
+                ["--repo", str(repo), "--body-file", str(body)],
+                {"HARNESS_PRIVATE_TERMS": ""},
+            )
+
+        self.assertEqual(code, 1)
+        self.assertIn("line numbers in .private-terms.txt:", err)
+
+    def test_a_list_of_comments_only_is_no_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            (repo / ".private-terms.txt").write_text("# Zorblax\n\n", encoding="utf-8")
+            body = Path(tmp) / "body.md"
+            body.write_text("# Zorblax\n", encoding="utf-8")
+
+            from_file = _run(["--repo", str(repo), "--body-file", str(body)], {})
+            from_variable = _run(
+                ["--body-file", str(body)], {"HARNESS_PRIVATE_TERMS": "# Zorblax\n"}
+            )
+
+        self.assertEqual(from_file, (0, SKIPPED, ""))
+        self.assertEqual(from_variable, (0, SKIPPED, ""))
+
+    def test_an_explicit_environment_ignores_the_process_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp) / "body.md"
+            body.write_text("Zorblax\n", encoding="utf-8")
+
+            with mock.patch.dict(os.environ, ENV):
+                code, out, _ = _run(["--repo", tmp, "--body-file", str(body)], {})
+
+        self.assertEqual((code, out), (0, SKIPPED))
 
 
 class CommandLineTests(unittest.TestCase):

@@ -21,6 +21,10 @@ from typing import NamedTuple
 
 ENV_VAR = "HARNESS_PRIVATE_TERMS"
 TERMS_FILE = ".private-terms.txt"
+SKIP_NOTICE = (
+    f"private-terms: skipped: no term list (set {ENV_VAR} or create {TERMS_FILE} "
+    "in the main checkout; see docs/agents/releases.md)"
+)
 # Same patch shape for staged changes and commits: every added line with its new line number.
 DIFF_OPTIONS = (
     "--no-color",
@@ -77,8 +81,12 @@ def _main_checkout(repo: Path) -> Path | None:
     return Path(common.strip()).parent
 
 
-def load_terms(repo: Path | None, environ: Mapping[str, str]) -> Terms:
-    """Загрузить список: непустая переменная окружения, иначе файл основного checkout."""
+def load_terms(repo: Path | None, environ: Mapping[str, str]) -> Terms | None:
+    """Загрузить список: непустая переменная окружения, иначе файл основного checkout.
+
+    Пустая переменная считается незаданной: так GitHub подставляет отсутствующий секрет. Источники
+    не объединяются, чтобы номер термина однозначно указывал строку. Без терминов — None.
+    """
     text = environ.get(ENV_VAR, "")
     source = ENV_VAR
     checkout = None if text or repo is None else _main_checkout(repo)
@@ -93,7 +101,7 @@ def load_terms(repo: Path | None, environ: Mapping[str, str]) -> Terms:
         term = line.strip()
         if term and not term.startswith("#"):
             entries.append((number, fold(term)))
-    return Terms(source, tuple(entries))
+    return Terms(source, tuple(entries)) if entries else None
 
 
 def _line_terms(line: str, terms: Terms) -> list[int]:
@@ -200,6 +208,13 @@ def _body_findings(path: str, terms: Terms) -> list[Finding]:
     return _text_findings(text, terms, path)
 
 
+def skip_notice(environ: Mapping[str, str]) -> str:
+    """Явное уведомление о пропуске; в GitHub Actions — аннотация workflow."""
+    if environ.get("GITHUB_ACTIONS") == "true":
+        return f"::notice title=private-terms::{SKIP_NOTICE}"
+    return SKIP_NOTICE
+
+
 def _report(findings: list[Finding], terms: Terms) -> int:
     """Напечатать итог: только локации и номера терминов, никогда сами термины."""
     if not findings:
@@ -265,8 +280,12 @@ def main(
         parser.error(
             "choose at least one of --staged, --commits, --branch, --body-file"
         )
+    env = os.environ if environ is None else environ
     try:
-        terms = load_terms(args.repo, os.environ if environ is None else environ)
+        terms = load_terms(args.repo, env)
+        if terms is None:
+            print(skip_notice(env))
+            return 0
         findings = []
         if args.staged:
             findings += _staged_findings(args.repo, terms, "--cached")
