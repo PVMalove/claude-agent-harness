@@ -401,6 +401,68 @@ def test_online_gitlab_origin_forms_address_the_full_project_path(
     assert "ci-user" not in json.dumps(data, ensure_ascii=False)
 
 
+_SELF_HOSTED_ORIGIN = "https://git.example.test:4443/group/sub/project.git"
+
+
+def _project_json(repo: Path, tracker: dict[str, str] | None = None) -> None:
+    """Записать .harness/project.json с обязательными полями и опциональным полем tracker."""
+    data: dict[str, object] = {
+        "language": "ru",
+        "base_branch": "main",
+        "branch_pattern": "^feature/.+",
+        "qa_gate_commands": ["echo test"],
+    }
+    if tracker is not None:
+        data["tracker"] = tracker
+    (repo / ".harness").mkdir(parents=True, exist_ok=True)
+    (repo / ".harness" / "project.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_online_host_without_gitlab_in_its_name_without_field_is_local(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что хост без gitlab. в имени без поля tracker — локальный трекер без вызовов glab."""
+    repo = _repo(tmp_path / "repo", remote=_SELF_HOSTED_ORIGIN)
+    _project_json(repo)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+    glab_log = _fake_glab(bin_dir)
+
+    _, checks = _health(repo, bin_dir, online=True)
+
+    for check_id in TRACKER_IDS:
+        assert checks[check_id]["status"] == "skipped"
+        assert "локальный" in str(checks[check_id]["message"])
+    assert _invocations(glab_log) == []
+
+
+def test_online_host_without_gitlab_in_its_name_with_field_is_gitlab(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что тот же хост с полем tracker type gitlab проверяется через glab по полному пути."""
+    repo = _repo(tmp_path / "repo", remote=_SELF_HOSTED_ORIGIN)
+    _project_json(
+        repo,
+        {
+            "type": "gitlab",
+            "host": "git.example.test:4443",
+            "project": "group/sub/project",
+        },
+    )
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
+    glab_log = _fake_glab(
+        bin_dir, {"api projects/group%2Fsub%2Fproject": (0, _DEVELOPER_ACCESS, "")}
+    )
+
+    _, checks = _health(repo, bin_dir, online=True)
+
+    assert checks["files.project_json"]["status"] == "ok"
+    assert checks["tracker.auth"]["status"] == "ok"
+    assert checks["tracker.permissions"]["status"] == "ok"
+    assert ["api", "projects/group%2Fsub%2Fproject"] in _invocations(glab_log)
+
+
 # --- labels ------------------------------------------------------------------------------------------
 
 
