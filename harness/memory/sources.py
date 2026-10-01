@@ -60,6 +60,19 @@ def snapshot_manifest(repo: Path) -> bytes:
         return b""
 
 
+def snapshot_enabled(policy: Policy) -> bool:
+    """Do not open the reserved snapshot without both type and path grants."""
+    return policy.active and any(
+        source in policy.source_types
+        and matches(f"{SNAPSHOT}/records/{kind}-1-{'a' * 64}.json", policy.allow_paths)
+        for kind, source in (
+            ("ticket", "task_archive"),
+            ("pull_request", "task_archive"),
+            ("completion_report", "completion_report"),
+        )
+    )
+
+
 def snapshot_paths(repo: Path) -> list[str]:
     """Only explicitly selected immutable records belong to the snapshot corpus."""
     raw = snapshot_manifest(repo)
@@ -240,7 +253,7 @@ def allowed_paths(repo: Path, policy: Policy) -> list[str]:
     )
     paths: set[str] = {
         path
-        for path in snapshot_paths(repo)
+        for path in (snapshot_paths(repo) if snapshot_enabled(policy) else [])
         if classify(path) in policy.source_types and matches(path, policy.allow_paths)
     }
     visited: set[str] = set()
@@ -311,7 +324,7 @@ def allowed_paths(repo: Path, policy: Policy) -> list[str]:
 def collect_sources(repo: Path, policy: Policy) -> list[Source]:
     """Read only the bounded, explicitly authorized corpus."""
     documents = []
-    snapshot = snapshot_manifest(repo) if policy.active else b""
+    snapshot = snapshot_manifest(repo) if snapshot_enabled(policy) else b""
     generation = (
         selected_generation(repo)
         if policy.active and STATE_SOURCE_TYPES & set(policy.source_types)
@@ -323,6 +336,6 @@ def collect_sources(repo: Path, policy: Policy) -> list[Source]:
             documents.append(document)
     if generation and selected_generation(repo) != generation:
         raise ValueError("memory ledger generation changed during ingestion; retry")
-    if policy.active and snapshot_manifest(repo) != snapshot:
+    if snapshot_enabled(policy) and snapshot_manifest(repo) != snapshot:
         raise ValueError("memory snapshot changed during ingestion; retry")
     return documents

@@ -208,7 +208,9 @@ def refresh(repo: Path) -> dict[str, object]:
                     else ""
                 )
                 snapshot = (
-                    sources.snapshot_manifest(canonical) if policy.active else b""
+                    sources.snapshot_manifest(canonical)
+                    if sources.snapshot_enabled(policy)
+                    else b""
                 )
                 permitted = sources.allowed_paths(canonical, policy)
                 retained = set(permitted)
@@ -233,7 +235,10 @@ def refresh(repo: Path) -> dict[str, object]:
                     raise ValueError(
                         "memory ledger generation changed during ingestion; retry"
                     )
-                if policy.active and sources.snapshot_manifest(canonical) != snapshot:
+                if (
+                    sources.snapshot_enabled(policy)
+                    and sources.snapshot_manifest(canonical) != snapshot
+                ):
                     raise ValueError("memory snapshot changed during ingestion; retry")
                 with connection:
                     replace_documents(connection, documents, policy, retained)

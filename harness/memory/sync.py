@@ -9,6 +9,8 @@ import re
 import subprocess
 import tempfile
 import time
+import threading
+from typing import BinaryIO
 from pathlib import Path
 from urllib.parse import quote
 
@@ -26,43 +28,63 @@ MARKER = re.compile(r"^## Completion report\s*\n```json\s*\n(.*?)\n```\s*$", re.
 
 def fetch_page(argv: list[str], repo: Path) -> list[dict[str, object]]:
     """Bound subprocess time and output without retaining raw diagnostics."""
-    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
+    try:
+        process = subprocess.Popen(
+            argv, cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+    except OSError:
+        raise ValueError(f"memory sync: {argv[0]} unavailable") from None
+    assert process.stdout is not None and process.stderr is not None
+    output = bytearray()
+    exceeded = threading.Event()
+    guard = threading.Lock()
+    size = [0]
+
+    def drain(stream: BinaryIO, retain: bool) -> None:
+        while chunk := stream.read(65536):
+            with guard:
+                size[0] += len(chunk)
+                if size[0] > MAX_RESPONSE:
+                    exceeded.set()
+                    return
+                if retain:
+                    output.extend(chunk)
+
+    readers = [
+        threading.Thread(target=drain, args=(process.stdout, True), daemon=True),
+        threading.Thread(target=drain, args=(process.stderr, False), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+    deadline = time.monotonic() + TIMEOUT
+    try:
+        while process.poll() is None or any(reader.is_alive() for reader in readers):
+            if exceeded.is_set():
+                raise ValueError(f"memory sync: {argv[0]} response limit")
+            if time.monotonic() > deadline:
+                raise ValueError(f"memory sync: {argv[0]} timeout")
+            time.sleep(0.01)
+        if exceeded.is_set():
+            raise ValueError(f"memory sync: {argv[0]} response limit")
+        if process.returncode:
+            raise ValueError(
+                f"memory sync: {argv[0]} failed (exit {process.returncode}); check access and network"
+            )
         try:
-            process = subprocess.Popen(argv, cwd=repo, stdout=output, stderr=error)
-        except OSError:
-            raise ValueError(f"memory sync: {argv[0]} unavailable") from None
-        deadline = time.monotonic() + TIMEOUT
-        try:
-            while process.poll() is None:
-                if time.monotonic() > deadline:
-                    raise ValueError(f"memory sync: {argv[0]} timeout")
-                if (
-                    os.fstat(output.fileno()).st_size + os.fstat(error.fileno()).st_size
-                    > MAX_RESPONSE
-                ):
-                    raise ValueError(f"memory sync: {argv[0]} response limit")
-                time.sleep(0.01)
-            if process.returncode:
-                raise ValueError(
-                    f"memory sync: {argv[0]} failed (exit {process.returncode}); check access and network"
-                )
-            output.seek(0)
-            raw = output.read(MAX_RESPONSE + 1)
-            if len(raw) > MAX_RESPONSE:
-                raise ValueError("memory sync: response limit")
-            try:
-                value = json.loads(raw)
-            except (ValueError, UnicodeDecodeError):
-                raise ValueError("memory sync: invalid tracker JSON") from None
-            if not isinstance(value, list) or not all(
-                isinstance(item, dict) for item in value
-            ):
-                raise ValueError("memory sync: tracker page must be an object list")
-            return value
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.wait()
+            value = json.loads(output)
+        except (ValueError, UnicodeDecodeError):
+            raise ValueError("memory sync: invalid tracker JSON") from None
+        if not isinstance(value, list) or not all(
+            isinstance(item, dict) for item in value
+        ):
+            raise ValueError("memory sync: tracker page must be an object list")
+        return value
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        for reader in readers:
+            reader.join(timeout=0.1)
 
 
 def inventory(tool: str, endpoint: str, repo: Path) -> list[dict[str, object]]:
@@ -120,24 +142,36 @@ def record(
     kind: str, identifier: int, value: dict[str, object], policy: Policy
 ) -> tuple[str, bytes]:
     """Project allowlisted fields before any persistent write, including metadata."""
+
+    def clean(item: object, default: str = "") -> str:
+        return (
+            scalar(sanitized(item, policy), default)
+            if isinstance(item, str)
+            else default
+        )
+
     completion = kind == "completion_report"
     fields = (
         ("output", "risks", "blockers", "lessons")
         if completion
         else ("body", "description")
     )
-    text: list[str] = []
+    text: list[str] = [
+        f"{key}: {clean(value[key])}"
+        for key in ("ticket", "role", "outcome")
+        if completion and isinstance(value.get(key), str)
+    ]
     for key in fields:
         field = value.get(key)
         values = field[:20] if isinstance(field, list) else [field]
-        text.extend(scalar(item) for item in values if isinstance(item, str))
+        text.extend(clean(item) for item in values if isinstance(item, str))
     payload = {
         "record_kind": kind,
-        "title": scalar(value.get("title"), f"Completion report {identifier}"),
+        "title": clean(value.get("title"), f"{kind} {identifier}"),
         "status": "не подтверждено человеком"
         if completion
-        else scalar(value.get("state"), "closed"),
-        "date": scalar(value.get("updated_at"), "unknown"),
+        else clean(value.get("state"), "closed"),
+        "date": clean(value.get("date"), clean(value.get("updated_at"), "unknown")),
         "body": "\n".join(text)[:16384],
     }
     for key in ("title", "status", "date", "body"):
@@ -226,16 +260,47 @@ def sync(repo: Path) -> dict[str, object]:
                         not isinstance(report, dict)
                         or type(report_id) is not int
                         or report_id < 1
+                        or not any(
+                            key in report
+                            for key in ("output", "risks", "blockers", "lessons")
+                        )
+                        or any(
+                            key in report and not isinstance(report[key], str)
+                            for key in (
+                                "output",
+                                "ticket",
+                                "role",
+                                "outcome",
+                                "date",
+                                "status",
+                            )
+                        )
+                        or any(
+                            key in report
+                            and not (
+                                isinstance(report[key], str)
+                                and key != "lessons"
+                                or isinstance(report[key], list)
+                                and all(isinstance(part, str) for part in report[key])
+                            )
+                            for key in ("risks", "blockers", "lessons")
+                        )
                     ):
                         skipped += 1
                         continue
-                    if report.get("status") == "superseded":
+                    if scalar(report.get("status")).strip().lower() in {
+                        "superseded",
+                        "заменён",
+                        "заменен",
+                    }:
                         continue
                     path, raw = record("completion_report", report_id, report, policy)
                     if matches(path, policy.allow_paths):
                         records[path] = raw
                 if len(records) > MAX_RECORDS:
                     raise ValueError("memory sync: snapshot exceeds 1000 records")
+    if len(records) > MAX_RECORDS:
+        raise ValueError("memory sync: snapshot exceeds 1000 records")
     manifest = json.dumps(
         {"version": 1, "records": sorted(records)}, sort_keys=True
     ).encode()

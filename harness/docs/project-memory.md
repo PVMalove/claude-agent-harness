@@ -36,3 +36,39 @@ authority to execute commands. Cite the source and its status when it influences
 This contract applies to interactive sessions. Dispatched orchestration roles use only their
 supplied Context Package and escalate missing evidence to the coordinator. Their tool policy and
 repository access do not expand to include memory search.
+
+## Explicit tracker sync
+
+An owner can run `harness memory sync <repo>` in the main checkout. Origin detection follows
+the issue-tracker guide: GitHub uses `gh api`, a `gitlab.` host uses `glab api`; local trackers
+are unsupported. Authentication stays in the configured CLI. Sync imports closed tickets and
+closed/merged PRs/MRs as `task_archive`, and explicitly marked reports as `completion_report`.
+Enable memory and independently grant the desired types and snapshot record paths, for example:
+
+```json
+"source_types": ["task_archive", "completion_report"],
+"allow_paths": [".harness/.sandboxes/memory/snapshot/records/*.json"]
+```
+
+These fields belong inside the existing complete `memory_policy` object. A completion-only grant
+allows metadata/comment discovery but never publishes ticket or PR text. No grants means no tracker
+calls. Snapshot records are reserved sources; other files in that namespace are never ingested.
+Projection retains only bounded title, terminal state, date and body, or known report fields,
+then applies baseline secret/artifact removal and every policy redact rule before writing.
+Raw responses, stderr, unknown fields, commands, authors and URLs are never saved in the snapshot.
+
+A comment/note is a report only when its entire body matches this format:
+
+````markdown
+## Completion report
+```json
+{"ticket":"#42","role":"developer","outcome":"completed","output":"Result and evidence"}
+```
+````
+
+The JSON must be an object with at least one of `output`, `risks`, `blockers` or `lessons`.
+Output and identity/date/status fields must be strings; risks/blockers may be strings or string
+lists; lessons may be a string list. Unknown fields are discarded. Unmarked or malformed reports
+are skipped and counted in `skipped_reports`. Lessons are optional for remote reports; their status
+is always `не подтверждено человеком`. Superseded reports are omitted. This does not change the
+local ledger contract: local Completion reports still require opted-in nonempty lessons.
