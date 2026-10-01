@@ -5,6 +5,8 @@
 # (skills/first-party/pvmalove/qa-gate/scripts/test_summary.py), which redacts and truncates output
 # instead of dumping a raw multi-thousand-line run into the transcript. A point run of a single test
 # (a pytest node-id containing "::", or a fully-qualified unittest test path) is never blocked.
+# The command is split into simple commands: a read command (cat, sed, grep, ...), heredoc text
+# and comments never fire, so a name they merely mention is not mistaken for a run.
 # Absent .harness/project.json this hook is inactive, so it never fires on an unharnessed project.
 INPUT=$(cat)
 
@@ -12,33 +14,112 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"
 PROJECT_JSON="$PROJECT_DIR/.harness/project.json"
 [ -f "$PROJECT_JSON" ] || exit 0
 
-COMMAND=$(echo "$INPUT" | grep -oE '"command"[[:space:]]*:[[:space:]]*"[^"]*"')
-[ -z "$COMMAND" ] && exit 0
+PY="$(command -v python3 || command -v python)"
+if [ -z "$PY" ]; then
+  echo "Невозможно проверить ограниченный прогон проверок: Python 3.9+ не найден." >&2
+  exit 2
+fi
 
-echo "$COMMAND" | grep -q "test_summary.py" && exit 0
+printf '%s' "$INPUT" | PROJECT_JSON="$PROJECT_JSON" "$PY" -c '
+import io
+import json
+import os
+import re
+import shlex
+import sys
 
-FULL_SUITE=0
-
-while IFS= read -r gate_command; do
-  [ -z "$gate_command" ] && continue
-  ESCAPED=$(echo "$gate_command" | sed -E 's/[][\.*^$/+?(){}|]/\\&/g')
-  echo "$COMMAND" | grep -qE "$ESCAPED" && FULL_SUITE=1
-done < <(
-  grep -oE '"qa_gate_commands"[[:space:]]*:[[:space:]]*\[[^]]*\]' "$PROJECT_JSON" 2>/dev/null \
-    | grep -oE '"[^"]*"' | sed -E 's/^"(.*)"$/\1/'
+SEPARATORS = "();<>|&\n"
+READERS = {"cat", "diff", "egrep", "fgrep", "grep", "head", "jq", "ls", "rg", "sed", "tail", "wc"}
+SHELLS = {"bash", "dash", "sh", "zsh"}
+ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
+HEREDOC = re.compile(r"(?<!<)<<(-?)[ \t]*([\x27\"]?)([A-Za-z_][A-Za-z0-9_.-]*)\2")
+PYTEST = re.compile(r"(?<![A-Za-z0-9_])pytest(?![A-Za-z0-9_])")
+UNITTEST = re.compile(r"(?<![A-Za-z0-9_])python[0-9.]*\s+-m\s+unittest(?![A-Za-z0-9_])")
+UNITTEST_TEST = re.compile(
+    r"unittest\s+[A-Za-z0-9_.]+\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+"
 )
 
-if echo "$COMMAND" | grep -qE '(^|[^a-zA-Z0-9_])(pytest|python[0-9.]*[[:space:]]+-m[[:space:]]+pytest)([^a-zA-Z0-9_]|$)'; then
-  echo "$COMMAND" | grep -q "::" || FULL_SUITE=1
-fi
 
-if echo "$COMMAND" | grep -qE '(^|[^a-zA-Z0-9_])python[0-9.]*[[:space:]]+-m[[:space:]]+unittest([^a-zA-Z0-9_]|$)'; then
-  # A specific unittest test is a dotted path with a module, a class and a method
-  # (pkg.module.Class.test_method) — at least three dots after "unittest".
-  echo "$COMMAND" | grep -qE 'unittest[[:space:]]+[A-Za-z0-9_.]+\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+' || FULL_SUITE=1
-fi
+class Source(io.StringIO):
+    """Ends a comment before its newline, so the newline still separates commands."""
 
-if [ "$FULL_SUITE" = "1" ]; then
+    def readline(self, size=-1):
+        line = super().readline(size)
+        if line.endswith("\n"):
+            self.seek(self.tell() - 1)
+            return line[:-1]
+        return line
+
+
+def without_heredocs(text):
+    """Drop heredoc bodies, except one fed to a shell, which runs as commands."""
+    kept, pending = [], []
+    for line in text.split("\n"):
+        if pending:
+            strip_tabs, word = pending[0]
+            if (line.lstrip("\t") if strip_tabs else line) == word:
+                pending.pop(0)
+            continue
+        kept.append(line)
+        pending = [
+            (match.group(1), match.group(3))
+            for match in HEREDOC.finditer(line)
+            if not SHELLS & {os.path.basename(word) for word in line[: match.start()].split()}
+        ]
+    return "\n".join(kept)
+
+
+def simple_commands(text):
+    """Words of each simple command, without leading VAR=value assignments."""
+    text = without_heredocs(text)
+    lexer = shlex.shlex(Source(text.replace("\\\n", " ")), posix=True, punctuation_chars=SEPARATORS)
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    commands, words = [], []
+    try:
+        for token in lexer:
+            if token and set(token) <= set(SEPARATORS):
+                commands.append(words)
+                words = []
+            elif words or not ASSIGNMENT.fullmatch(token):
+                words.append(token)
+    except ValueError:
+        # An unbalanced quote defeats the parser: fall back to plain words per line.
+        return [line.split() for line in text.split("\n") if line.split()]
+    commands.append(words)
+    return [words for words in commands if words]
+
+
+def reads_only(words):
+    return os.path.basename(words[0]) in READERS and not any(
+        "$(" in word or "`" in word for word in words
+    )
+
+
+try:
+    command = json.load(sys.stdin)["tool_input"]["command"]
+except (json.JSONDecodeError, KeyError, TypeError):
+    raise SystemExit(0)
+if not isinstance(command, str) or "test_summary.py" in command:
+    raise SystemExit(0)
+try:
+    with open(os.environ["PROJECT_JSON"], encoding="utf-8") as source:
+        gates = json.load(source).get("qa_gate_commands", [])
+except (OSError, ValueError, AttributeError):
+    gates = []
+
+runnable = [" ".join(words) for words in simple_commands(command) if not reads_only(words)]
+for gate in gates:
+    parts = [" ".join(words) for words in simple_commands(gate)] if isinstance(gate, str) else []
+    if parts and all(any(part in text for text in runnable) for part in parts):
+        raise SystemExit(2)
+for text in runnable:
+    if PYTEST.search(text) and "::" not in text:
+        raise SystemExit(2)
+    if UNITTEST.search(text) and not UNITTEST_TEST.search(text):
+        raise SystemExit(2)
+'
+if [ $? -eq 2 ]; then
   echo "Заблокировано: полносьютный тестовый/quality-gate прогон без bounded-враппера раздувает историю dispatch-сессии. Оберни вызов:" >&2
   echo "  python .harness/skills/qa-gate/scripts/test_summary.py -- bash -lc '<исходная команда>'" >&2
   echo "(PowerShell-эквивалент — skills/first-party/pvmalove/qa-gate/SKILL.md). Точечный прогон одного теста (node-id с '::', либо полный dotted-путь unittest) не блокируется." >&2
