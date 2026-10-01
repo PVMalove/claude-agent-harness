@@ -136,7 +136,7 @@ PR.
 #### Политика памяти проекта
 
 Память включается только через `memory: {"enabled": true}` в `.harness/project.json`.
-Отдельный `memory_policy` содержит все шесть полей: `source_types` (список `adr`/`glossary`),
+Отдельный `memory_policy` содержит все шесть полей: `source_types` (список `adr`/`glossary`/`task_archive`/`qa_finding`/`ledger`),
 `allow_paths` (явные относительные POSIX glob-пути), `redact_rules` (regex),
 `min_similarity` (конечное число 0..1), `top_k` и `max_tokens` (целые >=1).
 Отсутствующая политика и пустой любой allowlist не разрешают ни одного источника;
@@ -149,29 +149,46 @@ Regex имеют длину 1..512 символов; используйте пр
 векторный срез ADR 0010. `top_k` и `max_tokens` ограничивают окончательный список указателей;
 токены оцениваются консервативно по UTF-8, без привязки к tokenizer модели.
 
-Корпус ограничен обычными UTF-8 Markdown-файлами до 1 MiB, максимум 1000 файлов.
-ADR распознаётся по каталогу `adr` или префиксу имени `adr`; остальные явно разрешённые
-Markdown-файлы относятся к `glossary`. Заголовок — первый H1, без H1 — `untitled`.
-Статус берётся только из `Status:`/`Статус:` (допустим bold) или первой строки под
-`## Status`/`## Статус`; без метаданных — `unknown`. `superseded`, `заменён`, `заменен`
-исключают документ. Symlink-компоненты и выход за корень запрещены.
-Общий SQLite-кэш находится в `.harness/.sandboxes/cache/memory/index.sqlite3` главного checkout.
-Build использует его конфиг и источники, инкрементально обновляя hash и удаляя отозванные файлы.
-Linked worktree вправе только читать общий кэш; writer-команды выполняются из главного checkout.
+Источники ограничены UTF-8 файлами до 1 MiB, максимум 1000 кандидатов и 10 000
+посещённых entries; symlink, dependency/cache/log пространства не обходятся. ADR и glossary
+разрешают обычный Markdown. `task_archive` разрешает только `docs/tasks/issue-*/issue-*.md`,
+`tickets/*.md` и `artifacts/*.md` внутри этой папки; attachments/transcripts исключены.
+`qa_finding` читает только `reports/*.json` с `role=qa` выбранной generation ledger v3:
+короткие outcome/output/risks/blockers и result/evidence проверок. Commands, unknown keys,
+полные логи и абсолютные artifact paths не индексируются. `ledger` читает только scalar
+ID/ticket/role/state и явные даты из `batches`, `dispatches`, `dispatch-status` той же generation.
+Selector проверяется read-only; память не мигрирует ledger и не требует backend-orchestration.
+Оба allowlist обязательны. QA/ledger проходят baseline secret sanitization и project regex;
+все сохраняемые текстовые поля проходят project redaction до SQL. Если relative path изменился
+при sanitization, refresh отказывает целиком, сохраняя предыдущий кэш.
+
+Заголовок Markdown — первый H1, без него `untitled`. Явные `Status:`/`Статус:`,
+`Date:`/`Дата:`, `Superseded-by:`/`Заменён на:` принимаются как строковые поля (включая
+простой front matter) или первая строка одноимённой H2-секции; поле приоритетнее секции.
+Нет status/date — `unknown`, нет superseded_by — пустая строка. JSON status берётся из
+явного status, иначе QA outcome или ledger state; дата — date, иначе created_at, иначе updated_at.
+Дата QA без явного поля остаётся unknown; mtime не используется. Явные `superseded`, `заменён`,
+`заменен` исключают источник до кэширования. Остальные pointers всегда имеют
+`history_to_verify: true`; непустой superseded_by не подтверждает актуальность источника.
 
 Команды: `harness memory build <repo>`, `harness memory search <repo> "запрос"`,
-`harness memory rebuild <repo>` (через `python harness/bin/harness.py`, как остальные команды).
-Search открывает существующий индекс read-only, ранжирует BM25 с tie-break по path и возвращает
-JSON `status`/`pointers`: только `title`, `status`, `path`, `source_hash`, без текста/snippet.
-Перед выдачей проверяются allowlists и hash источника. Смена политики требует build/rebuild;
-удалённые и изменённые источники пропускаются. Disabled, пустой запрос, отсутствующий или
-повреждённый индекс дают пустые указатели и явную диагностическую причину; search ничего не
-создаёт и не ремонтирует. Вход запроса преобразуется в литеральные Unicode-слова: операторы FTS
-не исполняются. SQLite должна поддерживать FTS5; доступность зависит от сборки Python/SQLite.
-Rebuild строит соседнюю базу, проверяет её и атомарно заменяет индекс; ошибка сохраняет прежнюю
-базу. Missing/corrupt cache восстанавливается без миграции. Build/rebuild сериализуются локальным
-SQLite writer-lock с таймаутом 2 секунды; после завершения активного writer команду можно повторить.
-Индекс использует обычный rollback journal, без WAL.
+`harness memory rebuild <repo>` (через `python harness/bin/harness.py`). Общий кэш находится
+в `.harness/.sandboxes/cache/memory/index.sqlite3` главного checkout. **CLI search в main
+лениво обновляет производный кэш перед read-only query**: hash исходных bytes определяет
+изменения; неизменённые источники не project/FTS-index повторно, удалённые/отозванные удаляются.
+Смена policy пересанитизирует корпус; смена schema вызывает verified atomic replacement.
+Raw API `harness.memory.search` и CLI/facade в linked worktree всегда read-only, используют
+конфиг/источники main и не создают missing index. `search_with_refresh` — отдельный facade.
+JSON `status`/`pointers` содержит только title/status/date/superseded_by/path/source_hash/
+history_to_verify, без body/snippet. BM25 ранжирование использует path для tie-break;
+лимиты применяются к полным pointers. Query — литеральные Unicode-слова, без операторов FTS.
+Перед выдачей перепроверяются allowlists/hash. Disabled/invalid/empty main search ничего не
+создаёт. Refresh failure даёт пустые pointers и явную диагностику, сохраняя прежний кэш;
+corrupt cache автоматически не ремонтируется — нужен явный rebuild. Raw query не ремонтирует
+missing/incompatible/corrupt cache. SQLite должна поддерживать FTS5.
+Build/refresh/rebuild сериализованы SQLite writer-lock с таймаутом 2 секунды; после busy можно
+повторить команду. Публикация corpus/metadata/hash manifest атомарна, rollback journal без WAL.
+Rebuild проверяет соседнюю базу и атомарно заменяет индекс; ошибка сохраняет прежний кэш.
 
 #### `init` — первая установка
 

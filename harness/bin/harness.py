@@ -49,7 +49,7 @@ from harness.uninstall import (
 )
 from harness.memory import (
     build as memory_build,
-    search as memory_search,
+    search_with_refresh as memory_search,
     rebuild as memory_rebuild,
 )
 from harness.storage import storage_path
@@ -1103,7 +1103,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 
 
 def cmd_memory(args: argparse.Namespace) -> int:
-    """Run explicit offline writers or read-only pointer search and print JSON."""
+    """Run offline writers or main-only refresh followed by read-only pointer search."""
     repo = Path(args.repo).expanduser().resolve()
     try:
         if args.memory_operation == "search":

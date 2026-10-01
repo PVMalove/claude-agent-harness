@@ -51,8 +51,15 @@ SHA-256, не хранятся в Git и в пакете. `min_similarity` пр�
 калибруется на golden-наборе под pinned-модель. Векторный слой поставляется вторым срезом и
 только при измеримом выигрыше над FTS5 на golden-наборе; до этого память работает на FTS5.
 
-`harness memory search` — read-only CLI для скиллов, возвращающий те же указатели без текста;
-роли оркестрации его не получают. Completion report получает опциональные поля `lessons`
+`harness memory search` в главном checkout лениво обновляет только производный локальный
+кэш перед read-only query. Это явное уточнение CLI-контракта #423: он может создавать cache/lock
+files и ждать writer до 2 секунд. Raw API `harness.memory.search` и search в linked worktree
+остаются read-only; writer использует только конфиг/источники main. Ошибка refresh возвращает
+пустые указатели с диагностикой, сохраняя прежний кэш; corrupt cache требует explicit rebuild.
+Указатель содержит date/superseded_by и `history_to_verify: true` для всех non-superseded
+источников. QA/ledger — только ограниченные безопасные проекции выбранной generation v3,
+без commands/prompts/approvals/произвольного JSON; backend-orchestration не обязательна.
+Роли оркестрации search не получают. Completion report получает опциональные поля `lessons`
 (без повышенного веса, статус «не подтверждено человеком») и `used_memory` (слабый сигнал).
 
 ## Операционные последствия

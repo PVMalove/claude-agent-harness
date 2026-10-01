@@ -69,8 +69,13 @@ def parse_policy(config: dict[str, object]) -> Policy:
         ):
             raise ValueError(f"memory_policy.{key} must be a list of strings")
         lists[key] = tuple(items)
-    if any(item not in {"adr", "glossary"} for item in lists["source_types"]):
-        raise ValueError("memory_policy.source_types supports only adr and glossary")
+    if any(
+        item not in {"adr", "glossary", "task_archive", "qa_finding", "ledger"}
+        for item in lists["source_types"]
+    ):
+        raise ValueError(
+            "memory_policy.source_types contains an unsupported source type"
+        )
     for item in lists["allow_paths"]:
         if (
             not item
