@@ -924,6 +924,96 @@ def run(ctx: SimpleNamespace) -> None:
             "block-direct-master.sh allowed git push to refs/heads/integration/auth"
         )
 
+    # /to-spec publishes a new epic integration branch with `git push -u origin
+    # integration/<name>` without switching the worktree: creating a branch absent on the
+    # remote passes, while updating an existing one or an unverifiable remote stays blocked.
+    direct_remote = test_root / "direct-remote.git"
+    direct_repo = test_root / "direct-repo"
+    subprocess.run(["git", "init", "--bare", "-q", str(direct_remote)], check=True)
+    subprocess.run(["git", "init", "-q", str(direct_repo)], check=True)
+    for args in (
+        ["symbolic-ref", "HEAD", "refs/heads/master"],
+        [*commit[1:], "--allow-empty", "-m", "test fixture"],
+        ["remote", "add", "origin", str(direct_remote)],
+        ["remote", "add", "offline", str(test_root / "missing-remote.git")],
+        ["push", "-q", "origin", "master", "master:integration/existing"],
+    ):
+        subprocess.run(["git", *args], cwd=direct_repo, check=True)
+
+    def direct_push(command: str) -> subprocess.CompletedProcess:
+        return run_hook(direct_hook, direct_repo, command)
+
+    for command in (
+        "git push -u origin integration/new",
+        "git push --set-upstream origin refs/heads/integration/new",
+        "git branch integration/new origin/master && git push -u origin integration/new",
+        "git push -u origin integration/new 2>&1",
+        "git push -u origin integration/new > /dev/null",
+    ):
+        if direct_push(command).returncode != 0:
+            sys.exit(
+                f"block-direct-master.sh rejected creating a new integration branch from master: {command!r}"
+            )
+    for command in (
+        "git push -u origin integration/existing",
+        "git push origin integration/existing",
+        "git push origin HEAD:integration/existing",
+        "git push origin HEAD:refs/heads/integration/existing",
+        "git push origin +HEAD:integration/existing",
+        "git push -u origin integration/new integration/existing",
+        "git push -u origin integration/new && git push",
+        "git push -u origin integration/new master",
+        "git commit -m x && git push -u origin integration/new",
+        "git push -u origin integration/new && bash -c 'git push'",
+        "git push -u origin integration/new && bash -c 'git push origin HEAD:integration/existing'",
+        "git push -u origin integration/new; git -C . push origin HEAD:integration/existing",
+        "git push -u origin integration/new && /usr/bin/git push origin HEAD:integration/existing",
+        "git commit -m x",
+        "git push origin HEAD:master",
+    ):
+        if direct_push(command).returncode == 0:
+            sys.exit(
+                f"block-direct-master.sh allowed a protected push or commit from master: {command!r}"
+            )
+    offline = direct_push("git push -u offline integration/new")
+    if offline.returncode == 0 or "не удалось проверить" not in offline.stderr:
+        sys.exit(
+            "block-direct-master.sh did not block an unverifiable integration push with an "
+            f"explanation: {offline.stderr!r}"
+        )
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "feature/issue-1-test"],
+        cwd=direct_repo,
+        check=True,
+    )
+    if direct_push("git push -u origin integration/new").returncode != 0:
+        sys.exit(
+            "block-direct-master.sh rejected creating a new integration branch from an issue branch"
+        )
+    for command in (
+        "git push origin HEAD:integration/existing",
+        "bash -c 'git push origin HEAD:integration/existing'",
+        "git push origin HEAD:integration/new2 && git --no-pager push origin HEAD:integration/existing",
+    ):
+        if direct_push(command).returncode == 0:
+            sys.exit(
+                f"block-direct-master.sh allowed an issue branch to update an existing integration branch: {command!r}"
+            )
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "integration/existing"],
+        cwd=direct_repo,
+        check=True,
+    )
+    for command in (
+        "git commit -m x",
+        "git push",
+        "git push -u origin integration/existing",
+    ):
+        if direct_push(command).returncode == 0:
+            sys.exit(
+                f"block-direct-master.sh allowed a commit or push from an integration branch: {command!r}"
+            )
+
     # Remove .harness/project.json entirely - the hook must fall back to its own built-in
     # default pattern instead of crashing or blocking every branch name.
     saved_project_json = project_json.read_text(encoding="utf-8")
