@@ -451,6 +451,111 @@ def test_dev_env_out_of_sync_warns_with_uv_sync_command(tmp_path: Path) -> None:
     } <= {check_id for check_id in checks if check_id.startswith("files.")}
 
 
+# --- glab --------------------------------------------------------------------------------------
+
+
+def _with_origin(repo: Path, url: str) -> Path:
+    assert REAL_GIT is not None
+    subprocess.run([REAL_GIT, "remote", "add", "origin", url], cwd=repo, check=True)
+    return repo
+
+
+def _gitlab_tracker_field(repo: Path) -> None:
+    (repo / ".harness").mkdir(parents=True, exist_ok=True)
+    (repo / ".harness" / "project.json").write_text(
+        json.dumps(
+            {
+                "language": "ru",
+                "base_branch": "main",
+                "branch_pattern": "^feature/.+",
+                "qa_gate_commands": ["echo test"],
+                "tracker": {
+                    "type": "gitlab",
+                    "host": "git.example.test:4443",
+                    "project": "group/sub/project",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _fake_glab(bin_dir: Path, version_output: str) -> Path:
+    return _fake_tool(bin_dir, "glab", {"--version": (0, version_output, "")})
+
+
+@pytest.mark.parametrize(
+    "version_output",
+    ["glab 1.116.3 (2025-01-01)\n", "glab version 1.116.0 (2024-12-01)\n"],
+)
+def test_glab_older_than_the_minimum_fails_for_a_gitlab_tracker(
+    tmp_path: Path, version_output: str
+) -> None:
+    repo = _with_origin(
+        _repo(tmp_path / "repo"), "https://git.example.test:4443/group/sub/project.git"
+    )
+    _gitlab_tracker_field(repo)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+    _fake_uv(bin_dir)
+    _fake_glab(bin_dir, version_output)
+
+    _exit_code, checks = _health(repo, bin_dir)
+
+    glab = checks["environment.glab"]
+    assert glab["status"] == "fail"
+    assert "1.116" in str(glab["message"])
+    assert isinstance(glab["fix"], dict)
+    assert "1.117.0" in str(glab["fix"]["text"])
+
+
+def test_glab_at_the_minimum_is_ok_for_a_gitlab_origin(tmp_path: Path) -> None:
+    repo = _with_origin(
+        _repo(tmp_path / "repo"),
+        "https://gitlab.example.test:4443/group/sub/project.git",
+    )
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+    _fake_uv(bin_dir)
+    _fake_glab(bin_dir, "glab 1.117.0 (2025-06-01)\n")
+
+    _exit_code, checks = _health(repo, bin_dir)
+
+    glab = checks["environment.glab"]
+    assert glab["status"] == "ok"
+    assert "1.117.0" in str(glab["message"])
+
+
+def test_missing_glab_warns_for_a_gitlab_tracker(tmp_path: Path) -> None:
+    repo = _with_origin(
+        _repo(tmp_path / "repo"),
+        "https://gitlab.example.test:4443/group/sub/project.git",
+    )
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+    _fake_uv(bin_dir)
+
+    _exit_code, checks = _health(repo, bin_dir)
+
+    glab = checks["environment.glab"]
+    assert glab["status"] == "warn"
+    assert isinstance(glab["fix"], dict)
+    assert "1.117.0" in str(glab["fix"]["text"])
+
+
+def test_glab_is_not_checked_without_a_gitlab_tracker(tmp_path: Path) -> None:
+    repo = _with_origin(_repo(tmp_path / "repo"), "git@github.com:acme/widgets.git")
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir)
+    _fake_uv(bin_dir)
+    glab_log = _fake_glab(bin_dir, "glab 1.100.0 (2024-01-01)\n")
+
+    _exit_code, checks = _health(repo, bin_dir)
+
+    assert checks["environment.glab"]["status"] == "skipped"
+    assert _invocations(glab_log) == []
+
+
 # --- output encoding ---------------------------------------------------------------------------
 
 
