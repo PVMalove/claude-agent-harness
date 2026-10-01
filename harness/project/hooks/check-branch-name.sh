@@ -46,21 +46,12 @@ except Exception:
   fi
 
   # Pattern match alone only proves the branch name has the right shape - confirm the ID it
-  # encodes is a real registered issue, not a made-up number. Only checkable against GitHub/GitLab;
-  # the local-markdown tracker has no global issue numbering, so there's nothing to verify there.
+  # encodes is a real registered issue, not a made-up number. tracker-issue.py addresses the issue
+  # through the project tracker resolver and skips a local tracker or a missing gh/glab.
   ID=$(echo "$BRANCH" | grep -oE '[0-9]+' | head -n1)
   if [ -n "$ID" ]; then
-    if command -v gh >/dev/null 2>&1 && git -C "$REPO_DIR" remote -v 2>/dev/null | grep -q 'github\.com'; then
-      if ! (cd "$REPO_DIR" && gh issue view "$ID" >/dev/null 2>&1); then
-        echo "Issue First (docs/agents/git-workflow.md): issue #$ID из имени ветки '$BRANCH' не найден в трекере — сначала заведи его ('gh issue create' или /to-spec, /to-tickets)." >&2
-        exit 2
-      fi
-    elif command -v glab >/dev/null 2>&1 && git -C "$REPO_DIR" remote -v 2>/dev/null | grep -q 'gitlab\.'; then
-      if ! (cd "$REPO_DIR" && glab issue view "$ID" >/dev/null 2>&1); then
-        echo "Issue First (docs/agents/git-workflow.md): issue #$ID из имени ветки '$BRANCH' не найден в трекере — сначала заведи его ('glab issue create' или /to-spec, /to-tickets)." >&2
-        exit 2
-      fi
-    fi
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    "$PY" "$SCRIPT_DIR/tracker-issue.py" "$REPO_DIR" "$ID" "$BRANCH" || exit 2
   fi
 fi
 

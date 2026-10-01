@@ -22,6 +22,7 @@ EXCLUDED_FROM_GATE = frozenset(
     {
         "scripts/test_clean_room.py",
         "harness/project/hooks/qa-gate-state.py",
+        "harness/project/hooks/tracker-issue.py",
     }
 )
 # The clean-room scenarios `scripts/test_clean_room.py` runs, split into their own package.

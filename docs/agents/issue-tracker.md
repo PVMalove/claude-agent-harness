@@ -3,7 +3,7 @@
 The system-wide workflow and the boundary between interactive delivery and backend orchestration are
 described in [harness-guide.md](../../.harness/docs/harness-guide.md). This guide defines tracker-specific operations.
 
-Detect which section below applies from `git remote -v` (the same check `check-branch-name.sh` uses): a `github.com` remote → GitHub; a `gitlab.`-hosted remote → GitLab; anything else, including no remote at all, → Local markdown. For a different tracker entirely (Jira, Linear, ...), replace this file's content with a description of that workflow instead — see `/setup-matt-pocock-skills`.
+Detect which section below applies from the project tracker, the same resolution `check-branch-name.sh` uses: the `tracker` field of `.harness/project.json` when it is set; otherwise `git remote -v` — a `github.com` remote → GitHub; a `gitlab.`-hosted remote → GitLab; anything else, including no remote at all, → Local markdown. For a different tracker entirely (Jira, Linear, ...), replace this file's content with a description of that workflow instead — see `/setup-matt-pocock-skills`.
 
 This repo's triage label vocabulary is a first-party namespaced taxonomy — `type::*` category, `hitl`/`afk` execution mode, `status::*` pipeline state, optional `priority::*`/`severity::*` context, plus the `task-report::required`/`resolution::wontfix` context labels — see [triage-labels.md](./triage-labels.md) before applying or querying labels, whichever section below applies.
 
