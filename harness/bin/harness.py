@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 # Captured before the forced UTF-8 below so `harness health` can still warn about the console's
@@ -65,6 +67,13 @@ from harness.health.project_files import (
     INTEGRATIONS_REL,
     LOCK_REL,
     REGISTRY_REL,
+    TRACKER_FIELDS,
+    TRACKER_HOST_PATTERN,
+    TRACKER_HOST_RULE,
+    TRACKER_HOSTED_TYPES,
+    TRACKER_PROJECT_PATTERN,
+    TRACKER_PROJECT_RULE,
+    TRACKER_TYPES,
     digest,
     fail,
     file_digest,
@@ -592,6 +601,60 @@ def _prompt(label: str, default: str) -> str:
     return answer or default
 
 
+def _seed_tracker_field(repo: Path, args: argparse.Namespace) -> str:
+    """Собрать запись `tracker` нового project.json для шаблона; "" — поле не пишется.
+
+    Флаги --tracker-* важнее всего; в терминале остальное спрашивается с дефолтами из origin
+    (docs/adr/0010). Ответ или флаг — явный выбор, он пишется даже как `local`; без них пишется
+    только полностью выведенный трекер GitHub/GitLab.
+    """
+    origin = resolve_project_tracker(repo).from_origin
+    flags = {name: getattr(args, f"tracker_{name}", None) for name in TRACKER_FIELDS}
+    explicit = sys.stdin.isatty() or any(flags.values())
+    tracker_type = flags["type"] or _prompt(
+        "tracker type (github/gitlab/local)", origin.type
+    )
+    field = {"type": tracker_type}
+    for name, label in (
+        ("host", "tracker host[:port]"),
+        ("project", "tracker project (group/sub/project)"),
+    ):
+        value = flags[name]
+        if value is None and tracker_type in TRACKER_HOSTED_TYPES:
+            # The host and project of origin are no default for a tracker of another hosted type.
+            default = (
+                getattr(origin, name)
+                if origin.type in (tracker_type, "local")
+                else None
+            )
+            value = _prompt(label, default or "")
+        if value:
+            field[name] = value
+    problems = tracker_field_problems(field)
+    if problems:
+        # The problems never quote a value: a pasted URL can carry credentials.
+        if explicit:
+            print(
+                f"harness: tracker field left out: {'; '.join(problems)}",
+                file=sys.stderr,
+            )
+        return ""
+    if tracker_type not in TRACKER_HOSTED_TYPES and not explicit:
+        return ""
+    return '\n  "tracker": ' + json.dumps(field, ensure_ascii=False) + ","
+
+
+def _matching_arg(pattern: str, rule: str) -> Callable[[str], str]:
+    """Создать argparse-тип, принимающий значение по `pattern`; ошибка не цитирует значение."""
+
+    def parse(value: str) -> str:
+        if not re.fullmatch(pattern, value):
+            raise argparse.ArgumentTypeError(rule)
+        return value
+
+    return parse
+
+
 def _copy_if_absent(
     source: Path,
     target: Path,
@@ -737,16 +800,7 @@ def scaffold_pvmalove_extras(
                 if not line:
                     break
                 commands.append(line)
-        # The tracker field is filled from origin without a prompt or flag: a GitHub/GitLab tracker
-        # the resolver derives completely is written, a local or default one is left out
-        # (docs/adr/0010). The template stays valid JSON either way.
-        origin_tracker = resolve_project_tracker(repo).from_origin
-        tracker_field = (
-            "\n  " + origin_tracker.snippet() + ","
-            if origin_tracker.type != "local"
-            and not tracker_field_problems(origin_tracker.field())
-            else ""
-        )
+        tracker_field = _seed_tracker_field(repo, args)
         template = (PROJECT_TEMPLATE_DIR / "project.json.tmpl").read_text(
             encoding="utf-8"
         )
@@ -1078,6 +1132,24 @@ def _add_pvmalove_args(sub: argparse.ArgumentParser) -> None:
         action="append",
         default=None,
         help="pvmalove-suite: repeatable, in run order",
+    )
+    sub.add_argument(
+        "--tracker-type",
+        choices=TRACKER_TYPES,
+        default=None,
+        help="pvmalove-suite: .harness/project.json tracker type (default: derived from origin)",
+    )
+    sub.add_argument(
+        "--tracker-host",
+        type=_matching_arg(TRACKER_HOST_PATTERN, TRACKER_HOST_RULE),
+        default=None,
+        help="pvmalove-suite: tracker web host with an optional :port (default: from origin)",
+    )
+    sub.add_argument(
+        "--tracker-project",
+        type=_matching_arg(TRACKER_PROJECT_PATTERN, TRACKER_PROJECT_RULE),
+        default=None,
+        help="pvmalove-suite: full tracker project path with subgroups (default: from origin)",
     )
 
 

@@ -242,9 +242,10 @@ python harness\bin\harness.py init C:\path\to\repository `
 | `--pr-base-branch` | Ветка, от которой создаются integration-ветки эпиков (по умолчанию `--base-branch`) |
 | `--branch-pattern` | Регулярное выражение для имён issue-веток |
 | `--qa-gate-command` | Команда полного гейта качества; повторяем, порядок сохраняется ([раздел 6](#qa-gate-skill-context-fork)) |
+| `--tracker-type`, `--tracker-host`, `--tracker-project` | Поле `tracker`: тип (`github`, `gitlab`, `local`), веб-хост с необязательным портом и полный путь проекта с подгруппами (см. ниже) |
 
-Последние четыре флага читает только `pvmalove-suite`; они пишутся в `.harness/project.json`. Их
-можно опустить — `init` спросит интерактивно.
+Флаги от `--language` до `--tracker-project` читает только `pvmalove-suite`; они пишутся в
+`.harness/project.json`. Их можно опустить — `init` спросит интерактивно.
 
 **Поле `tracker`** в `.harness/project.json` явно задаёт трекер проекта
 ([ADR 0010](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0010-explicit-project-tracker.md)).
@@ -258,9 +259,15 @@ python harness\bin\harness.py init C:\path\to\repository `
 ```
 
 - Создавая `project.json` (`init`, а также `adopt`/`update`, если файла ещё нет), харнесс заполняет
-  поле по `origin` без вопросов и флагов: GitHub или GitLab с полностью разобранными хостом и путём
-  записываются, для локального трекера, хоста без `gitlab.` в имени и репозитория без `origin` поле
-  не пишется. Существующий `project.json` — seed-файл проекта — не переписывается.
+  поле так: флаги `--tracker-*` важнее всего; в терминале остальное спрашивается с дефолтами из
+  `origin` — тип, хост с портом и проект с подгруппами, а без распознанного `origin` предлагается
+  `local`; хост и проект `origin` другого типа (GitHub ↔ GitLab) дефолтом не становятся.
+  Подтверждённый ответ или флаг записывается, в том числе `local`. Без терминала и флагов
+  записывается только GitHub или GitLab с полностью разобранными хостом и путём; для локального
+  трекера, хоста без `gitlab.` в имени и репозитория без `origin` поле не пишется. Некорректный
+  `--tracker-host` или `--tracker-project` отклоняется до записи файлов; неполное поле (например,
+  `gitlab` без хоста) не пишется, о чём `init` сообщает в stderr. Существующий `project.json` —
+  seed-файл проекта — не переписывается ни `init`, ни `adopt`/`update`, даже с флагами `--tracker-*`.
 - Без поля трекер определяется по `origin` с учётом схемы, userinfo, порта и подгрупп, а `harness
   health` выдаёт warn с готовым сниппетом (см. `tracker.project` в разделе health). Хост без `gitlab.`
   в имени без поля считается локальным трекером — для self-hosted GitLab поле нужно задать.

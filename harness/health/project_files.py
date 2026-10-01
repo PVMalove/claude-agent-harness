@@ -65,6 +65,14 @@ TRACKER_HOSTED_TYPES = ("github", "gitlab")
 TRACKER_HOST_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?$"
 # The full project path including subgroups, at least two segments, no leading/trailing slash.
 TRACKER_PROJECT_PATTERN = r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$"
+# What a host or project value breaking its pattern must look like instead - never the value.
+TRACKER_HOST_RULE = (
+    "must be a hostname with an optional :port, without scheme, path or userinfo"
+)
+TRACKER_PROJECT_RULE = (
+    "must be the full project path with subgroups (group/sub/project), "
+    "without a leading or trailing slash"
+)
 
 
 # --- Detection helpers moved unchanged from harness/bin/harness.py ----------------------------
@@ -528,17 +536,12 @@ def tracker_field_problems(value: object) -> list[str]:
     if "host" in value and not (
         isinstance(host, str) and re.fullmatch(TRACKER_HOST_PATTERN, host)
     ):
-        problems.append(
-            f"{prefix} host must be a hostname with an optional :port, without scheme, path or userinfo"
-        )
+        problems.append(f"{prefix} host {TRACKER_HOST_RULE}")
     project = value.get("project")
     if "project" in value and not (
         isinstance(project, str) and re.fullmatch(TRACKER_PROJECT_PATTERN, project)
     ):
-        problems.append(
-            f"{prefix} project must be the full project path with subgroups (group/sub/project), "
-            "without a leading or trailing slash"
-        )
+        problems.append(f"{prefix} project {TRACKER_PROJECT_RULE}")
     return problems
 
 
