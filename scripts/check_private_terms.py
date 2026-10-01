@@ -593,7 +593,8 @@ def _hook(payload_text: str, environ: Mapping[str, str]) -> int:
     cwd = Path(payload["cwd"]) if isinstance(payload.get("cwd"), str) else Path.cwd()
     try:
         steps = analyse_command(command, cwd)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # Substitutions nested too deeply for the recursive analysis are unparsable too.
         if not PUBLICATION.search(command):
             return 0
         if load_terms(cwd, environ) is None:

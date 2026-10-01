@@ -918,6 +918,30 @@ class HookTests(unittest.TestCase):
         )
         self.assertEqual(skipped, (0, "", SKIPPED))
 
+    def test_a_too_deeply_nested_command_is_an_unparsable_command(self) -> None:
+        depth = sys.getrecursionlimit() + 50
+        nested = "$(echo " * depth + "x" + ")" * depth
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            with mock.patch.object(check.subprocess, "run") as run:
+                unlisted = _hook(f"echo {nested}", repo, {})
+                listed = _hook(f"echo {nested}", repo)
+            blocked = _hook(f"git commit -m {nested}", repo)
+            skipped = _hook(f"git commit -m {nested}", repo, {})
+
+        run.assert_not_called()
+        self.assertEqual((unlisted, listed), ((0, "", ""), (0, "", "")))
+        self.assertEqual(
+            blocked,
+            (
+                2,
+                "",
+                "private-terms: cannot parse this command; split it or pass the "
+                "text through a readable body file\n",
+            ),
+        )
+        self.assertEqual(skipped, (0, "", SKIPPED))
+
     def test_a_malformed_payload_blocks(self) -> None:
         for stdin in ("not json", json.dumps({"tool_input": {"command": 5}})):
             with self.subTest(stdin=stdin):
