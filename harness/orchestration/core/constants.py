@@ -174,7 +174,7 @@ RISK_ASSESSMENT_FIELDS = {
     "review_scope",
     "created_at",
 }
-CONTEXT_PACKAGE_FIELDS = {
+V2_CONTEXT_PACKAGE_FIELDS = {
     "context_package_id",
     "batch_id",
     "base_commit",
@@ -194,10 +194,15 @@ CONTEXT_PACKAGE_FIELDS = {
     "parser",
     "parser_provenance",
 }
+CONTEXT_PACKAGE_FIELDS = V2_CONTEXT_PACKAGE_FIELDS | {
+    "goal",
+    "definition_of_done",
+    "memory",
+}
 # Schema version 1 (issue #274): before build_context_package delegated its graph/signatures to
 # Repo Map, a package had no schema_version/parser/parser_provenance. Kept valid for one schema
 # version so an already-persisted v1 record still reads back.
-LEGACY_CONTEXT_PACKAGE_FIELDS = CONTEXT_PACKAGE_FIELDS - {
+LEGACY_CONTEXT_PACKAGE_FIELDS = V2_CONTEXT_PACKAGE_FIELDS - {
     "schema_version",
     "parser",
     "parser_provenance",

@@ -166,7 +166,7 @@ class ContextBuilderTests(ContextBuilderFixture):
         self.assertIn("pkg/base.py", package.file_hashes)
         self.assertGreater(package.size_bytes, 0)
 
-        self.assertEqual(package.schema_version, 2)
+        self.assertEqual(package.schema_version, 3)
         self.assertEqual(package.parser, "path-only")
         assert package.parser_provenance is not None
         self.assertEqual(package.parser_provenance["tier"], "minimal")
@@ -1083,3 +1083,308 @@ def test_full_tier_fails_clearly_instead_of_silently_including_too_many_related_
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MemoryPackageTests(ContextBuilderFixture):
+    """Memory pointers freeze separately from pinned code and ADR cards."""
+
+    def test_memory_freezes_goal_and_source_free_pointers(self) -> None:
+        baseline = build_context_package(
+            self.repo, self.base_commit, self.candidate_commit, min_starting_files=1
+        )
+        memory: dict[str, object] = {
+            "status": "ok",
+            "diagnostic": "",
+            "identity": {
+                "mode": "enabled",
+                "query_input_hash": "a" * 64,
+                "selection_policy": "fts-type-quota-v1",
+            },
+            "pointers": [
+                {
+                    "title": "Prior decision",
+                    "status": "accepted",
+                    "source_type": "adr",
+                    "path": "docs/adr/prior.md",
+                    "source_hash": "b" * 64,
+                    "inclusion_reason": "literal relevance; historical source requires verification",
+                    "history_to_verify": True,
+                    "date": "unknown",
+                    "superseded_by": "",
+                }
+            ],
+        }
+        package = build_context_package(
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            goal="Freeze project memory",
+            definition_of_done=["Preserve ADR cards"],
+            memory=memory,
+        )
+        payload = json.loads(package.to_json())
+        self.assertEqual(payload["schema_version"], 3)
+        self.assertEqual(payload["goal"], "Freeze project memory")
+        self.assertEqual(payload["definition_of_done"], ["Preserve ADR cards"])
+        self.assertEqual(payload["memory"], memory)
+        self.assertEqual(package.precedent_cards, baseline.precedent_cards)
+        self.assertGreater(package.estimated_tokens, baseline.estimated_tokens)
+        self.assertNotIn("body", payload["memory"]["pointers"][0])
+
+    def test_workflow_freezes_local_memory_once_and_reuses_matching_query(self) -> None:
+        from harness.memory import build
+        from harness.orchestration.ledger.lifecycle import LifecycleLedger
+        from harness.orchestration.workflow.context_package import (
+            _persist_context_package,
+        )
+        from tests.memory.test_build import configure, source
+
+        configure(self.repo, min_similarity=0)
+        source(
+            self.repo,
+            "CONTEXT.md",
+            "# Prior memory\nStatus: accepted\ntransaction private body",
+        )
+        build(self.repo)
+        root = self.repo / "state"
+        ledger = LifecycleLedger(root)
+        ledger.ensure()
+        batch = {
+            "batch_id": "batch-memory",
+            "base_commit": self.base_commit,
+            "goal": "transaction",
+            "definition_of_done": ["Freeze pointers"],
+            "context_packages": [],
+        }
+        first = _persist_context_package(
+            self.repo,
+            root,
+            ledger,
+            batch,
+            role="shared",
+            snapshot=self.candidate_commit,
+            inclusion_reason="test",
+        )
+        self.assertEqual(first["memory"]["pointers"][0]["title"], "Prior memory")
+        self.assertEqual(first["memory"]["pointers"][0]["source_type"], "glossary")
+        self.assertNotIn("private body", json.dumps(first["memory"]))
+        source(self.repo, "CONTEXT.md", "# Edited after freeze")
+        second = _persist_context_package(
+            self.repo,
+            root,
+            ledger,
+            batch,
+            role="shared",
+            snapshot=self.candidate_commit,
+            inclusion_reason="test",
+        )
+        self.assertEqual(first, second)
+        batch["goal"] = "different query"
+        third = _persist_context_package(
+            self.repo,
+            root,
+            ledger,
+            batch,
+            role="shared",
+            snapshot=self.candidate_commit,
+            inclusion_reason="test",
+        )
+        self.assertNotEqual(first["context_package_id"], third["context_package_id"])
+
+    def test_memory_ceiling_counts_envelope_and_skips_large_pointer_without_slot(
+        self,
+    ) -> None:
+        memory: dict[str, object] = {
+            "status": "ok",
+            "diagnostic": "d" * 240,
+            "identity": {
+                "mode": "enabled",
+                "query_input_hash": "a" * 64,
+                "selection_policy": "fts-type-quota-v1",
+            },
+            "pointers": [
+                {
+                    "title": "Too large",
+                    "status": "accepted",
+                    "source_type": "adr",
+                    "path": "docs/adr/" + "long" * 220 + ".md",
+                    "source_hash": "b" * 64,
+                    "inclusion_reason": "literal relevance; historical source requires verification",
+                },
+                {
+                    "title": "Later small",
+                    "status": "accepted",
+                    "source_type": "adr",
+                    "path": "docs/adr/small.md",
+                    "source_hash": "c" * 64,
+                    "inclusion_reason": "literal relevance; historical source requires verification",
+                },
+                {
+                    "title": "Another small",
+                    "status": "accepted",
+                    "source_type": "adr",
+                    "path": "docs/adr/another.md",
+                    "source_hash": "d" * 64,
+                    "inclusion_reason": "literal relevance; historical source requires verification",
+                },
+            ],
+        }
+        package = build_context_package(
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            memory=memory,
+            memory_top_k=1,
+            memory_max_tokens=440,
+        )
+        self.assertEqual(
+            [p["title"] for p in json.loads(package.to_json())["memory"]["pointers"]],
+            ["Later small"],
+        )
+        self.assertLessEqual(
+            estimate_tokens(json.dumps(package.memory, ensure_ascii=False)), 440
+        )
+        tight = build_context_package(
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            memory=memory,
+            memory_top_k=2,
+            memory_max_tokens=260,
+        )
+        self.assertEqual(tight.memory["pointers"], [])
+
+    def test_memory_uses_remaining_package_token_and_byte_budgets(self) -> None:
+        memory: dict[str, object] = {
+            "status": "ok",
+            "diagnostic": "",
+            "identity": {
+                "mode": "enabled",
+                "query_input_hash": "a" * 64,
+                "selection_policy": "fts-type-quota-v1",
+            },
+            "pointers": [
+                {
+                    "title": "Too large",
+                    "status": "accepted",
+                    "source_type": "adr",
+                    "path": "docs/adr/" + "long" * 220 + ".md",
+                    "source_hash": "b" * 64,
+                    "inclusion_reason": "literal relevance; historical source requires verification",
+                },
+                {
+                    "title": "Later small",
+                    "status": "accepted",
+                    "source_type": "adr",
+                    "path": "docs/adr/small.md",
+                    "source_hash": "c" * 64,
+                    "inclusion_reason": "literal relevance; historical source requires verification",
+                },
+            ],
+        }
+        empty: dict[str, object] = {**memory, "pointers": []}
+        baseline = build_context_package(
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            memory=empty,
+        )
+        for limit in ("tokens", "bytes"):
+            with self.subTest(limit=limit):
+                package = build_context_package(
+                    self.repo,
+                    self.base_commit,
+                    self.candidate_commit,
+                    min_starting_files=1,
+                    memory=memory,
+                    memory_top_k=1,
+                    memory_max_tokens=10000,
+                    max_package_tokens=baseline.estimated_tokens + 180
+                    if limit == "tokens"
+                    else 80000,
+                    max_package_size_bytes=baseline.size_bytes + 360
+                    if limit == "bytes"
+                    else None,
+                )
+                self.assertEqual(
+                    [
+                        p["title"]
+                        for p in json.loads(package.to_json())["memory"]["pointers"]
+                    ],
+                    ["Later small"],
+                )
+                self.assertEqual(package.diff, baseline.diff)
+                self.assertEqual(package.starting_files, baseline.starting_files)
+                self.assertEqual(package.file_hashes, baseline.file_hashes)
+                self.assertEqual(package.precedent_cards, baseline.precedent_cards)
+                self.assertLessEqual(package.size_bytes, baseline.size_bytes + 360)
+                self.assertLessEqual(
+                    package.estimated_tokens, baseline.estimated_tokens + 180
+                )
+        empty_only = build_context_package(
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            memory=memory,
+            max_package_tokens=baseline.estimated_tokens,
+        )
+        self.assertEqual(empty_only.memory["pointers"], [])
+        with self.assertRaises(ContextPackageError):
+            build_context_package(
+                self.repo,
+                self.base_commit,
+                self.candidate_commit,
+                min_starting_files=1,
+                memory=memory,
+                max_package_size_bytes=baseline.size_bytes - 1,
+            )
+
+    def test_empty_memory_envelope_must_fit_its_own_token_ceiling(self) -> None:
+        envelope: dict[str, object] = {
+            "status": "ok",
+            "diagnostic": "",
+            "identity": {
+                "mode": "enabled",
+                "query_input_hash": "a" * 64,
+                "selection_policy": "fts-type-quota-v1",
+            },
+            "pointers": [],
+        }
+        oversized: dict[str, object] = {
+            "title": "Too large",
+            "source_type": "adr",
+            "path": "docs/adr/" + "long" * 200,
+            "status": "accepted",
+            "source_hash": "b" * 64,
+            "inclusion_reason": "literal relevance; historical source requires verification",
+        }
+        for candidates in ([], [oversized]):
+            with self.subTest(candidates=bool(candidates)):
+                with self.assertRaisesRegex(
+                    ContextPackageError, "memory section estimate"
+                ):
+                    build_context_package(
+                        self.repo,
+                        self.base_commit,
+                        self.candidate_commit,
+                        min_starting_files=1,
+                        memory={**envelope, "pointers": candidates},
+                        memory_max_tokens=1,
+                    )
+        package = build_context_package(
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            memory={**envelope, "pointers": [oversized]},
+            memory_max_tokens=300,
+        )
+        self.assertEqual(package.memory["pointers"], [])
+        self.assertLessEqual(
+            estimate_tokens(json.dumps(package.memory, ensure_ascii=False)), 300
+        )

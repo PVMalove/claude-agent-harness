@@ -18,6 +18,8 @@ from harness.context_builder.context_builder import (
     build_context_package,
 )
 from harness.errors import INTERNAL_INVARIANT_REMEDY
+from harness.memory.index import context as memory_context
+from harness.memory.search import search_candidates, degraded
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
@@ -68,10 +70,29 @@ def _persist_context_package(
     max_package_tokens: int | None = None,
     symbol_graph_depth: int | None = None,
     max_related_tests: int | None = None,
+    no_memory: bool = False,
 ) -> JsonObject:
     """Build once and register a reusable Context Package for one pinned diff."""
     package_base = batch.get("integration_base_commit") or batch["base_commit"]
-    reusable = _reusable_context_package(root, batch, package_base, snapshot)
+    goal = batch.get("goal", "")
+    dod = batch.get("definition_of_done", [])
+    query = "\n".join([goal, *dod])
+    try:
+        _, _, memory_policy = memory_context(repo)
+        mode = "enabled" if memory_policy.active else "disabled"
+    except ValueError:
+        memory_policy = None
+        mode = "disabled"
+    if no_memory:
+        mode = "bypass"
+    identity = {
+        "mode": mode,
+        "query_input_hash": hashlib.sha256(
+            _canonical({"goal": goal, "definition_of_done": dod}).encode("utf-8")
+        ).hexdigest(),
+        "selection_policy": "fts-type-quota-v1",
+    }
+    reusable = _reusable_context_package(root, batch, package_base, snapshot, identity)
     if reusable is not None:
         return reusable
     if role != "shared":
@@ -106,6 +127,22 @@ def _persist_context_package(
         if max_related_tests is not None
         else policy["max_related_tests"]
     )
+    if mode == "bypass":
+        memory = degraded("bypass", "memory bypassed by --no-memory")
+    elif mode == "disabled":
+        memory = degraded("disabled", "memory disabled or source allowlist empty")
+    elif memory_policy is not None and memory_policy.min_similarity > 0:
+        memory = degraded(
+            "vector_threshold_unavailable",
+            "cosine threshold requires a vector backend; use min_similarity=0 for BM25",
+        )
+    else:
+        memory = search_candidates(repo, query)
+    memory = {
+        **memory,
+        "diagnostic": memory.get("diagnostic", ""),
+        "identity": identity,
+    }
     scope = batch.get("scope_preflight")
     expected_files = scope.get("expected_files", []) if isinstance(scope, dict) else []
     task_files = [path for path in expected_files if isinstance(path, str)]
@@ -129,6 +166,13 @@ def _persist_context_package(
             max_related_tests=related_tests_cap,
             seed_paths=seed_files,
             section_index_min_tokens=policy["section_index_min_tokens"],
+            goal=goal,
+            definition_of_done=dod,
+            memory=memory,
+            memory_top_k=memory_policy.top_k if memory_policy is not None else 5,
+            memory_max_tokens=memory_policy.max_tokens
+            if memory_policy is not None
+            else 1000,
         )
     except ContextPackageError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
@@ -149,6 +193,9 @@ def _persist_context_package(
         "role": "shared",
         "inclusion_reason": inclusion_reason,
         "schema_version": built.schema_version,
+        "goal": built.goal,
+        "definition_of_done": built.definition_of_done,
+        "memory": built.memory,
         "parser": built.parser,
         "parser_provenance": built.parser_provenance,
     }
@@ -228,6 +275,7 @@ def register_context_package(args: argparse.Namespace) -> JsonObject:
             max_package_tokens=getattr(args, "max_package_tokens", None),
             symbol_graph_depth=getattr(args, "symbol_graph_depth", None),
             max_related_tests=getattr(args, "max_related_tests", None),
+            no_memory=getattr(args, "no_memory", False),
         )
         _safe_id(batch["batch_id"], "batch")
         _replace_record(ledger, BatchRecord.from_dict(batch))
