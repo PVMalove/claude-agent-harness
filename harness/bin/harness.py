@@ -51,6 +51,7 @@ from harness.memory import (
     build as memory_build,
     search_with_refresh as memory_search,
     rebuild as memory_rebuild,
+    sync as memory_sync,
 )
 from harness.storage import storage_path
 from harness.health import registry as health_registry
@@ -1110,6 +1111,8 @@ def cmd_memory(args: argparse.Namespace) -> int:
             result = memory_search(repo, args.query)
         elif args.memory_operation == "rebuild":
             result = memory_rebuild(repo)
+        elif args.memory_operation == "sync":
+            result = memory_sync(repo)
         else:
             result = memory_build(repo)
     except (ValueError, OSError) as exc:
@@ -1198,7 +1201,7 @@ def parser() -> argparse.ArgumentParser:
 
     memory = commands.add_parser("memory", help="explicit offline project-memory cache")
     memory_commands = memory.add_subparsers(dest="memory_operation", required=True)
-    for operation in ("build", "search", "rebuild"):
+    for operation in ("build", "search", "rebuild", "sync"):
         memory_command = memory_commands.add_parser(operation)
         memory_command.add_argument("repo")
         if operation == "search":

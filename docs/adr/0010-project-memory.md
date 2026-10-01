@@ -70,6 +70,20 @@ files и ждать writer до 2 секунд. Raw API `harness.memory.search` 
 
 ## Операционные последствия
 
+Срез #428 реализует явный `harness memory sync <repo>` только из main checkout через `gh api`
+или `glab api` по существующему origin routing. Санитизированные immutable records живут отдельно
+от индекса в `.harness/.sandboxes/memory/snapshot/`; atomic manifest выбирает активный корпус.
+Закрытые тикеты и PR/MR используют существующий `task_archive` с `record_kind`, удалённые отчёты —
+отдельный opt-in `completion_report` и точный marker из project-memory guide; lessons для них
+не обязательны. Локальный lessons-only контракт ledger сохраняется, enum политики не расширяется.
+Полный bounded inventory сверяет исчезновение/reopen; одинаковые hashes сохраняют байты/mtime.
+Лимиты: 20 страниц/1000 записей на endpoint, 200 запросов/1000 активных записей на sync,
+4 MiB stdout+stderr и 10 секунд на запрос. Частичный inventory не публикуется. Fetch/parse/policy
+race сохраняют прежний manifest/index; index failure после публикации имеет отдельный статус и
+восстанавливается offline build/rebuild. Старые неактивные файлы остаются без автоматической GC;
+ticket и PR делят квоту task_archive. Snapshot и index имеют последовательные commit points,
+Context Package остаётся offline. Эти ограничения приняты вместо watermark/retention-политики.
+
 Проекты без `memory.enabled` не меняют поведение и бюджет Package. Схема Package и контракт
 Completion report получают новые поля, а схема проектного конфига и `validate_project_json`
 меняются вместе. `harness health` показывает размер индекса, число источников и статус модели

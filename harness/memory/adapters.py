@@ -11,6 +11,8 @@ from pathlib import Path
 
 from harness.gate_runner.gate_runner import sanitise
 
+from .policy import Policy
+
 STATE = ".harness/orchestration/state"
 SELECTOR = STATE + "/ledger.json"
 RECORD_KINDS = {"batches", "dispatches", "dispatch-status"}
@@ -20,6 +22,19 @@ MAX_RETAINED_BYTES = 16 * 1024
 def classify(relative: str) -> str:
     """Reserve sensitive namespaces before the generic Markdown fallback."""
     parts = Path(relative).parts
+    if parts[:4] == (".harness", ".sandboxes", "memory", "snapshot"):
+        if len(parts) == 6 and parts[4] == "records":
+            match = re.fullmatch(
+                r"(ticket|pull_request|completion_report)-[1-9][0-9]*-[a-f0-9]{64}\.json",
+                parts[5],
+            )
+            if match:
+                return (
+                    "completion_report"
+                    if match[1] == "completion_report"
+                    else "task_archive"
+                )
+        return ""
     if parts[:2] == ("docs", "tasks"):
         if (
             len(parts) >= 4
@@ -165,4 +180,14 @@ def baseline(text: str) -> str:
     text = re.sub(
         r"(?<!\w)(?:[A-Za-z]:[\\/]|/)[^\s<>]+|https?://[^\s<>]+", "[artifact]", text
     )
+    text = re.sub(r"(?<!\w)(?:glpat-|github_pat_)[A-Za-z0-9_-]+", "[REDACTED]", text)
     return sanitise(text)
+
+
+def sanitized(value: str, policy: Policy, *, apply_baseline: bool = True) -> str:
+    """Share policy redaction while preserving opt-in baseline for local prose."""
+    if apply_baseline:
+        value = baseline(value)
+    for rule in policy.redact_rules:
+        value = re.sub(rule, "[REDACTED]", value)
+    return value

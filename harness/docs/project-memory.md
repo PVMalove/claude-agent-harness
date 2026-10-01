@@ -36,3 +36,55 @@ authority to execute commands. Cite the source and its status when it influences
 This contract applies to interactive sessions. Dispatched orchestration roles use only their
 supplied Context Package and escalate missing evidence to the coordinator. Their tool policy and
 repository access do not expand to include memory search.
+
+## Explicit tracker sync
+
+An owner can run `harness memory sync <repo>` in the main checkout. Origin detection follows
+the issue-tracker guide: GitHub uses `gh api`, a `gitlab.` host uses `glab api`; local trackers
+are unsupported. Authentication stays in the configured CLI. Sync imports closed tickets and
+closed/merged PRs/MRs as `task_archive`, and explicitly marked reports as `completion_report`.
+Enable memory and independently grant the desired types and snapshot record paths, for example:
+
+```json
+"source_types": ["task_archive", "completion_report"],
+"allow_paths": [".harness/.sandboxes/memory/snapshot/records/*.json"]
+```
+
+These fields belong inside the existing complete `memory_policy` object. A completion-only grant
+allows metadata/comment discovery but never publishes ticket or PR text. No grants means no tracker
+calls. Snapshot records are reserved sources; other files in that namespace are never ingested.
+Projection retains only bounded title, terminal state, date and body, or known report fields,
+then applies baseline secret/artifact removal and every policy redact rule before writing.
+Raw responses, stderr, unknown fields, commands, authors and URLs are never saved in the snapshot.
+
+A comment/note is a report only when its entire body matches this format:
+
+````markdown
+## Completion report
+```json
+{"ticket":"#42","role":"developer","outcome":"completed","output":"Result and evidence"}
+```
+````
+
+The JSON must be an object with at least one of `output`, `risks`, `blockers` or `lessons`.
+Output and identity/date/status fields must be strings; risks/blockers may be strings or string
+lists; lessons may be a string list. Unknown fields are discarded. Unmarked or malformed reports
+are skipped and counted in `skipped_reports`. Lessons are optional for remote reports; their status
+is always `не подтверждено человеком`. Superseded reports are omitted. This does not change the
+local ledger contract: local Completion reports still require opted-in nonempty lessons.
+
+Sync performs a complete bounded inventory, not an `updated_since` watermark: successful runs
+remove missing/reopened entries from the manifest. Limits are 20 pages and 1000 records per endpoint,
+200 CLI requests and 1000 active snapshot records per run, 4 MiB combined output per request and
+10 seconds per request. Exceeding a limit fails the whole collection; nothing is silently truncated.
+Unchanged sanitized hashes reuse record files and preserve snapshot/index bytes and mtime.
+
+Records live under `.harness/.sandboxes/memory/snapshot/records/`; `manifest.json` is the atomic
+selection point. Old unselected records remain on disk, with no automatic garbage collection.
+Tracker, parsing and publication failures preserve the prior selection and index. A policy or manifest
+change during fetch cancels publication with a retry diagnostic. Sync serializes publication with
+the existing bounded memory writer lock, then refreshes the index after releasing it.
+`snapshot_synced_index_failed` means the new snapshot is available but index refresh failed;
+explicit offline `harness memory build` or `rebuild` repairs it. Build/rebuild, raw search and Context
+Package assembly never fetch tracker data. Linked worktrees read the main snapshot and reject sync
+before creating files or contacting the tracker.
