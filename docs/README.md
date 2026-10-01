@@ -18,6 +18,8 @@
 | [Hooks](./hooks/) | Русские описания двенадцати проектных hooks. |
 | [Runtime discovery](./runtime-discovery.md) | Обнаружение skills в Claude Code и Codex. |
 
-Порядок выпуска версии описан в [releases.md](./agents/releases.md). Операционные правила
+Порядок выпуска версии описан в [releases.md](./agents/releases.md). Там же описана проверка
+приватных терминов мейнтейнера: локальный файл `.private-terms.txt` и секрет репозитория
+`HARNESS_PRIVATE_TERMS`. Операционные правила
 целевого проекта — в [harness-guide.md](../harness/docs/harness-guide.md) и
 [git-workflow.md](./agents/git-workflow.md).
