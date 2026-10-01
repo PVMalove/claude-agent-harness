@@ -58,6 +58,12 @@ Issues and specs for this repo live as GitLab issues. Use the [`glab`](https://g
 
 Infer the repo from `git remote -v` — `glab` does this automatically when run inside a clone.
 
+### `glab` setup
+
+- **Minimum version: `glab` 1.117.0.** When the project tracker is GitLab, `harness health` fails its local `environment.glab` check for an older `glab --version`; upgrade by the [installation guide](https://gitlab.com/gitlab-org/cli#installation).
+- **Host with a port.** The tracker host is `tracker.host` in `.harness/project.json`, including the web port when it is not 443 — for example `gitlab.example.test:4443`. Log in to exactly that host with `glab auth login --hostname gitlab.example.test:4443` and check it with `glab auth status --hostname gitlab.example.test:4443`, the same check `harness health --online` runs. Address the project explicitly: `glab <command> -R https://gitlab.example.test:4443/group/sub/project`, and `glab api --hostname gitlab.example.test:4443 projects/group%2Fsub%2Fproject` with the URL-encoded project path.
+- **Personal CA and proxy.** Keep them in your own `glab` configuration and environment, never in `.harness/project.json` or the repository: `glab config set ca_cert /path/to/ca.pem --host gitlab.example.test:4443` for an internal CA, and the standard `HTTPS_PROXY`/`NO_PROXY` environment variables for a proxy. Tokens stay in the storage `glab auth login` uses.
+
 ### Merge requests as a triage surface
 
 **MRs as a request surface: no.** _(Set to `yes` if this repo treats external merge requests as feature requests; `/triage` reads this flag.)_

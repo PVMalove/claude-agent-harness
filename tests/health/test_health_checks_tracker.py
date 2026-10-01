@@ -86,16 +86,37 @@ def _fake_git(bin_dir: Path, responses: Responses | None = None) -> Path:
 
 def _fake_gh(bin_dir: Path, responses: Responses | None = None) -> Path:
     """Создать фиктивную утилиту gh с заданными ответами."""
-    canned: Responses = {"auth status": (0, "", "")}
+    canned: Responses = {"auth status --hostname github.com": (0, "", "")}
     canned.update(responses or {})
     return _fake_tool(bin_dir, "gh", canned)
 
 
-def _fake_glab(bin_dir: Path, responses: Responses | None = None) -> Path:
-    """Создать фиктивную утилиту glab с заданными ответами."""
-    canned: Responses = {"auth status": (0, "", "")}
+def _fake_glab(
+    bin_dir: Path,
+    responses: Responses | None = None,
+    *,
+    host: str = "gitlab.example.com",
+) -> Path:
+    """Создать фиктивную утилиту glab, аутентифицированную только на host, с заданными ответами."""
+    canned: Responses = {f"auth status --hostname {host}": (0, "", "")}
     canned.update(responses or {})
     return _fake_tool(bin_dir, "glab", canned)
+
+
+def _gitlab_access(host: str, encoded_project: str, access_level: int) -> Responses:
+    """Ответы glab api: текущий пользователь и его эффективный уровень доступа в проекте."""
+    return {
+        f"api --hostname {host} user": (
+            0,
+            json.dumps({"id": 7, "username": "dev"}),
+            "",
+        ),
+        f"api --hostname {host} projects/{encoded_project}/members/all/7": (
+            0,
+            json.dumps({"id": 7, "username": "dev", "access_level": access_level}),
+            "",
+        ),
+    }
 
 
 def _repo(path: Path, *, remote: str | None = None) -> Path:
@@ -242,7 +263,9 @@ def test_online_github_gh_not_authenticated_fails_auth_and_skips_dependents(
     repo = _repo(tmp_path / "repo", remote="git@github.com:acme/widgets.git")
     bin_dir = tmp_path / "bin"
     _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
-    gh_log = _fake_gh(bin_dir, {"auth status": (1, "", "not logged in")})
+    gh_log = _fake_gh(
+        bin_dir, {"auth status --hostname github.com": (1, "", "not logged in")}
+    )
 
     _, checks = _health(repo, bin_dir, online=True)
 
@@ -250,7 +273,7 @@ def test_online_github_gh_not_authenticated_fails_auth_and_skips_dependents(
     # the raw (possibly sensitive) stderr of `gh auth status` never reaches the report.
     assert "not logged in" not in str(checks["tracker.auth"]["message"])
     invocations = _invocations(gh_log)
-    assert ["auth", "status"] in invocations
+    assert ["auth", "status", "--hostname", "github.com"] in invocations
 
 
 def test_online_github_authenticated_reports_ok(tmp_path: Path) -> None:
@@ -261,12 +284,16 @@ def test_online_github_authenticated_reports_ok(tmp_path: Path) -> None:
     _fake_gh(
         bin_dir,
         {
-            "api repos/acme/widgets --jq .permissions": (
+            "api --hostname github.com repos/acme/widgets --jq .permissions": (
                 0,
                 json.dumps({"admin": True, "push": True, "triage": True}),
                 "",
             ),
-            "api --paginate repos/acme/widgets/labels": (0, "[]", ""),
+            "api --hostname github.com --paginate repos/acme/widgets/labels": (
+                0,
+                "[]",
+                "",
+            ),
         },
     )
 
@@ -289,7 +316,7 @@ def test_online_github_triage_only_permissions_warns_about_pull_requests(
     _fake_gh(
         bin_dir,
         {
-            "api repos/acme/widgets --jq .permissions": (
+            "api --hostname github.com repos/acme/widgets --jq .permissions": (
                 0,
                 json.dumps({"push": False, "triage": True}),
                 "",
@@ -314,13 +341,7 @@ def test_online_gitlab_developer_access_level_has_full_permissions(
     _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
     _fake_glab(
         bin_dir,
-        {
-            "api projects/acme%2Fwidgets": (
-                0,
-                json.dumps({"permissions": {"project_access": {"access_level": 30}}}),
-                "",
-            ),
-        },
+        _gitlab_access("gitlab.example.com", "acme%2Fwidgets", 30),
     )
 
     _, checks = _health(repo, bin_dir, online=True)
@@ -337,13 +358,7 @@ def test_online_gitlab_reporter_access_level_can_manage_labels_only(
     _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
     _fake_glab(
         bin_dir,
-        {
-            "api projects/acme%2Fwidgets": (
-                0,
-                json.dumps({"permissions": {"project_access": {"access_level": 20}}}),
-                "",
-            ),
-        },
+        _gitlab_access("gitlab.example.com", "acme%2Fwidgets", 20),
     )
 
     _, checks = _health(repo, bin_dir, online=True)
@@ -354,50 +369,111 @@ def test_online_gitlab_reporter_access_level_can_manage_labels_only(
     assert "метки доступны" in str(permissions["message"])
 
 
-_DEVELOPER_ACCESS = json.dumps(
-    {"permissions": {"project_access": {"access_level": 30}}}
-)
+def test_online_gitlab_developer_through_a_parent_group_has_push_permissions(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что Developer, получивший доступ через родительскую группу, получает ok по правам,
+    хотя прямых прав на проект и его группу в projects/:id нет."""
+    repo = _repo(
+        tmp_path / "repo",
+        remote="https://gitlab.example.test:4443/group/sub/project.git",
+    )
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
+    host = "gitlab.example.test:4443"
+    responses = _gitlab_access(host, "group%2Fsub%2Fproject", 30)
+    responses[f"api --hostname {host} projects/group%2Fsub%2Fproject"] = (
+        0,
+        json.dumps({"permissions": {"project_access": None, "group_access": None}}),
+        "",
+    )
+    glab_log = _fake_glab(bin_dir, responses, host=host)
+
+    _, checks = _health(repo, bin_dir, online=True)
+
+    assert checks["tracker.permissions"]["status"] == "ok"
+    assert [
+        "api",
+        "--hostname",
+        host,
+        "projects/group%2Fsub%2Fproject/members/all/7",
+    ] in _invocations(glab_log)
+
+
+def test_online_gitlab_auth_is_checked_for_exactly_the_tracker_host(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что glab, аутентифицированный только на другом хосте, даёт fail авторизации, а
+    auth status вызывается с --hostname хоста трекера проекта."""
+    repo = _repo(
+        tmp_path / "repo",
+        remote="https://gitlab.example.test:4443/group/sub/project.git",
+    )
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
+    glab_log = _fake_glab(bin_dir, host="gitlab.example.com")
+
+    _, checks = _health(repo, bin_dir, online=True)
+
+    assert checks["tracker.auth"]["status"] == "fail"
+    assert "gitlab.example.test:4443" in str(checks["tracker.auth"]["message"])
+    assert ["auth", "status", "--hostname", "gitlab.example.test:4443"] in _invocations(
+        glab_log
+    )
 
 
 @pytest.mark.parametrize(
-    ("remote", "encoded_project"),
+    ("remote", "host", "encoded_project"),
     [
         (
             "https://gitlab.example.test:4443/group/sub/project.git",
+            "gitlab.example.test:4443",
             "group%2Fsub%2Fproject",
         ),
         (
             "ssh://git@gitlab.example.test:2222/group/sub/project.git",
+            "gitlab.example.test",
             "group%2Fsub%2Fproject",
         ),
-        ("git@gitlab.example.test:group/sub/project.git", "group%2Fsub%2Fproject"),
+        (
+            "git@gitlab.example.test:group/sub/project.git",
+            "gitlab.example.test",
+            "group%2Fsub%2Fproject",
+        ),
         (
             "https://gitlab.example.test/group/sub/project.name.git",
+            "gitlab.example.test",
             "group%2Fsub%2Fproject.name",
         ),
         (
             "https://ci-user@gitlab.example.test:4443/group/sub/project.git",
+            "gitlab.example.test:4443",
             "group%2Fsub%2Fproject",
         ),
     ],
 )
 def test_online_gitlab_origin_forms_address_the_full_project_path(
-    tmp_path: Path, remote: str, encoded_project: str
+    tmp_path: Path, remote: str, host: str, encoded_project: str
 ) -> None:
     """Проверить, что HTTPS с портом, ssh:// с портом, SCP-форма, точка в имени и userinfo дают
-    GitLab и полный путь проекта с подгруппами в вызове glab api."""
+    GitLab, glab api с --hostname хоста трекера и полный путь проекта с подгруппами."""
     repo = _repo(tmp_path / "repo", remote=remote)
     bin_dir = tmp_path / "bin"
     _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
-    glab_log = _fake_glab(
-        bin_dir, {f"api projects/{encoded_project}": (0, _DEVELOPER_ACCESS, "")}
-    )
+    glab_log = _fake_glab(bin_dir, _gitlab_access(host, encoded_project, 30), host=host)
 
     _, checks, data = _health_full(repo, bin_dir, online=True)
 
     assert checks["tracker.auth"]["status"] == "ok"
     assert checks["tracker.permissions"]["status"] == "ok"
-    assert ["api", f"projects/{encoded_project}"] in _invocations(glab_log)
+    invocations = _invocations(glab_log)
+    assert ["auth", "status", "--hostname", host] in invocations
+    assert [
+        "api",
+        "--hostname",
+        host,
+        f"projects/{encoded_project}/members/all/7",
+    ] in invocations
     assert "ci-user" not in json.dumps(data, ensure_ascii=False)
 
 
@@ -451,8 +527,9 @@ def test_online_host_without_gitlab_in_its_name_with_field_is_gitlab(
     )
     bin_dir = tmp_path / "bin"
     _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
+    host = "git.example.test:4443"
     glab_log = _fake_glab(
-        bin_dir, {"api projects/group%2Fsub%2Fproject": (0, _DEVELOPER_ACCESS, "")}
+        bin_dir, _gitlab_access(host, "group%2Fsub%2Fproject", 30), host=host
     )
 
     _, checks = _health(repo, bin_dir, online=True)
@@ -460,7 +537,12 @@ def test_online_host_without_gitlab_in_its_name_with_field_is_gitlab(
     assert checks["files.project_json"]["status"] == "ok"
     assert checks["tracker.auth"]["status"] == "ok"
     assert checks["tracker.permissions"]["status"] == "ok"
-    assert ["api", "projects/group%2Fsub%2Fproject"] in _invocations(glab_log)
+    assert [
+        "api",
+        "--hostname",
+        host,
+        "projects/group%2Fsub%2Fproject/members/all/7",
+    ] in _invocations(glab_log)
 
 
 # --- tracker.project (offline) ---------------------------------------------------------------------
@@ -686,8 +768,9 @@ def test_project_field_disagreeing_with_origin_warns_and_the_field_wins(
     _project_json(repo, _GITLAB_FIELD)
     bin_dir = tmp_path / "bin"
     _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
+    host = "gitlab.example.test:4443"
     glab_log = _fake_glab(
-        bin_dir, {"api projects/group%2Fsub%2Fproject": (0, _DEVELOPER_ACCESS, "")}
+        bin_dir, _gitlab_access(host, "group%2Fsub%2Fproject", 30), host=host
     )
 
     _, checks = _health(repo, bin_dir, online=True)
@@ -702,7 +785,12 @@ def test_project_field_disagreeing_with_origin_warns_and_the_field_wins(
     assert isinstance(project["fix"], dict) and project["fix"]["command"] is None
     assert checks["tracker.permissions"]["status"] == "ok"
     invocations = _invocations(glab_log)
-    assert ["api", "projects/group%2Fsub%2Fproject"] in invocations
+    assert [
+        "api",
+        "--hostname",
+        host,
+        "projects/group%2Fsub%2Fproject/members/all/7",
+    ] in invocations
     assert not any("group%2Fother" in arg for call in invocations for arg in call)
 
 
@@ -763,7 +851,7 @@ def test_missing_triage_labels_file_warns(tmp_path: Path) -> None:
     _fake_gh(
         bin_dir,
         {
-            "api repos/acme/widgets --jq .permissions": (
+            "api --hostname github.com repos/acme/widgets --jq .permissions": (
                 0,
                 json.dumps({"push": True, "triage": True}),
                 "",
@@ -787,12 +875,12 @@ def test_missing_labels_warns_and_list_missing_names(tmp_path: Path) -> None:
     gh_log = _fake_gh(
         bin_dir,
         {
-            "api repos/acme/widgets --jq .permissions": (
+            "api --hostname github.com repos/acme/widgets --jq .permissions": (
                 0,
                 json.dumps({"push": True, "triage": True}),
                 "",
             ),
-            "api --paginate repos/acme/widgets/labels": (
+            "api --hostname github.com --paginate repos/acme/widgets/labels": (
                 0,
                 json.dumps([{"name": "hitl", "color": "fbca04"}]),
                 "",
@@ -820,18 +908,22 @@ def test_missing_labels_with_fix_creates_only_missing_ones(tmp_path: Path) -> No
     gh_log = _fake_gh(
         bin_dir,
         {
-            "api repos/acme/widgets --jq .permissions": (
+            "api --hostname github.com repos/acme/widgets --jq .permissions": (
                 0,
                 json.dumps({"push": True, "triage": True}),
                 "",
             ),
-            "api --paginate repos/acme/widgets/labels": (
+            "api --hostname github.com --paginate repos/acme/widgets/labels": (
                 0,
                 json.dumps([{"name": "hitl", "color": "fbca04"}]),
                 "",
             ),
-            "label create afk --color #54c1e8 -R acme/widgets": (0, "", ""),
-            "label create status::ready --color #0e8a16 -R acme/widgets": (0, "", ""),
+            "label create afk --color #54c1e8 -R github.com/acme/widgets": (0, "", ""),
+            "label create status::ready --color #0e8a16 -R github.com/acme/widgets": (
+                0,
+                "",
+                "",
+            ),
         },
     )
 
@@ -847,6 +939,57 @@ def test_missing_labels_with_fix_creates_only_missing_ones(tmp_path: Path) -> No
     assert any("afk" in entry and "status::ready" in entry for entry in fixes_applied)
 
 
+@pytest.mark.parametrize(
+    ("tracker_field", "remote"),
+    [
+        (None, "https://gitlab.example.test:4443/group/sub/project.git"),
+        (_GITLAB_FIELD, "https://gitlab.example.test:4443/group/other.git"),
+    ],
+    ids=["origin", "tracker-field-over-origin"],
+)
+def test_gitlab_labels_fix_addresses_the_project_and_leaves_project_json_untouched(
+    tmp_path: Path, tracker_field: dict[str, str] | None, remote: str
+) -> None:
+    """Проверить, что health --fix создаёт метки GitLab с явным -R https://<host>/<project> из
+    резолвера (поле tracker побеждает origin) и --hostname для glab api и не меняет
+    .harness/project.json — в том числе не пишет поле tracker."""
+    repo = _repo(tmp_path / "repo", remote=remote)
+    _project_json(repo, tracker_field)
+    project_json = repo / ".harness" / "project.json"
+    before = project_json.read_bytes()
+    _triage_labels(repo)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
+    host = "gitlab.example.test:4443"
+    url = f"https://{host}/group/sub/project"
+    responses = _gitlab_access(host, "group%2Fsub%2Fproject", 30)
+    responses.update(
+        {
+            f"api --hostname {host} --paginate projects/group%2Fsub%2Fproject/labels": (
+                0,
+                json.dumps([{"name": "hitl", "color": "#fbca04"}]),
+                "",
+            ),
+            f"label create --name afk --color #54c1e8 -R {url}": (0, "", ""),
+            f"label create --name status::ready --color #0e8a16 -R {url}": (0, "", ""),
+        }
+    )
+    glab_log = _fake_glab(bin_dir, responses, host=host)
+
+    _exit_code, _checks, data = _health_full(repo, bin_dir, online=True, fix=True)
+
+    created = [
+        call for call in _invocations(glab_log) if call[:2] == ["label", "create"]
+    ]
+    assert created == [
+        ["label", "create", "--name", "afk", "--color", "#54c1e8", "-R", url],
+        ["label", "create", "--name", "status::ready", "--color", "#0e8a16", "-R", url],
+    ]
+    fixes_applied = data["fixes_applied"]
+    assert isinstance(fixes_applied, list) and any("afk" in e for e in fixes_applied)
+    assert project_json.read_bytes() == before
+
+
 def test_color_mismatch_warns_and_never_recolors_even_with_fix(tmp_path: Path) -> None:
     """Проверить, что несовпадение цвета метки выдает предупреждение и не перезаписывает цвет даже с --fix."""
     repo = _repo(tmp_path / "repo", remote="git@github.com:acme/widgets.git")
@@ -856,12 +999,12 @@ def test_color_mismatch_warns_and_never_recolors_even_with_fix(tmp_path: Path) -
     gh_log = _fake_gh(
         bin_dir,
         {
-            "api repos/acme/widgets --jq .permissions": (
+            "api --hostname github.com repos/acme/widgets --jq .permissions": (
                 0,
                 json.dumps({"push": True, "triage": True}),
                 "",
             ),
-            "api --paginate repos/acme/widgets/labels": (
+            "api --hostname github.com --paginate repos/acme/widgets/labels": (
                 0,
                 json.dumps(
                     [
@@ -904,12 +1047,12 @@ def test_labels_beyond_gh_default_page_size_are_not_reported_missing(
     gh_log = _fake_gh(
         bin_dir,
         {
-            "api repos/acme/widgets --jq .permissions": (
+            "api --hostname github.com repos/acme/widgets --jq .permissions": (
                 0,
                 json.dumps({"push": True, "triage": True}),
                 "",
             ),
-            "api --paginate repos/acme/widgets/labels": (
+            "api --hostname github.com --paginate repos/acme/widgets/labels": (
                 0,
                 json.dumps(filler + canonical),
                 "",
@@ -934,12 +1077,12 @@ def test_all_labels_present_and_matching_is_ok(tmp_path: Path) -> None:
     _fake_gh(
         bin_dir,
         {
-            "api repos/acme/widgets --jq .permissions": (
+            "api --hostname github.com repos/acme/widgets --jq .permissions": (
                 0,
                 json.dumps({"push": True, "triage": True}),
                 "",
             ),
-            "api --paginate repos/acme/widgets/labels": (
+            "api --hostname github.com --paginate repos/acme/widgets/labels": (
                 0,
                 json.dumps(
                     [

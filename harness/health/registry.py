@@ -60,6 +60,7 @@ REGISTRY: list[tuple[str, CheckFn]] = [
     ("environment.line_endings", environment_checks.check_line_endings),
     ("environment.python", environment_checks.check_python),
     ("environment.uv", environment_checks.check_uv),
+    ("environment.glab", environment_checks.check_glab),
     ("environment.dev_env", environment_checks.check_dev_environment),
     ("environment.output_encoding", environment_checks.check_output_encoding),
     ("environment.long_paths", windows_checks.check_long_paths),
