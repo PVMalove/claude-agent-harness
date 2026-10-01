@@ -439,7 +439,7 @@ python3 harness/bin/harness.py health /path/to/repository --json     # маши�
 | `files` | Lock, `AGENTS.md`, discovery-ссылки, `project.json`, overlay-локи, интеграции, конфиг оркестрации, маршрутизация verification. Нечитаемый lock — `fail` проверки `files.lock`, а зависящие от него проверки — `skipped` со ссылкой на повреждённый lock |
 | `directories` | `.harness`, `.harness/.sandboxes` и категории `cache`/`logs`/`scratch`/`pr_body`/`runs`/`reports`/`worktrees`, при оркестрации — `.harness/orchestration/state`. Отсутствующий каталог с записываемым родителем — `ok` «будет создан»; незаписываемый — `fail` |
 | `repo_map` | Уровень Repo Map (`full`/`minimal`) с причиной деградации и ремедиа |
-| `environment` | ОС, git и `user.name`/`user.email`, `.gitattributes` и расхождения переводов строк, Python ≥ 3.12, uv, синхронность `.harness/.venv` с `uv.lock` (только в репозитории харнесса), кодировка вывода, длина пути (warn только на Windows при запасе < 160 символов) |
+| `environment` | ОС, git и `user.name`/`user.email`, `.gitattributes` и расхождения переводов строк, Python ≥ 3.12, uv, `glab` ≥ 1.117.0 только для GitLab-трекера проекта (старше — `fail` с подсказкой обновления, нет `glab` — `warn`, иначе — `skipped`), синхронность `.harness/.venv` с `uv.lock` (только в репозитории харнесса), кодировка вывода, длина пути (warn только на Windows при запасе < 160 символов) |
 | `environment` на Windows | `LongPathsEnabled`, владелец и запись `%TEMP%\pytest-of-<user>`, пробный symlink (Developer Mode), `bash` для hooks (`fail`, если это заглушка WSL `System32\bash.exe`) |
 | `orchestration` | Только при `backend-orchestration`, все проверки read-only — см. ниже |
 | `tracker` | `tracker.project` — локально, остальные проверки только с `--online` — см. ниже |
@@ -471,14 +471,17 @@ dry-run план очистки; `ledger migrate`/`reset`, `git worktree remove`
 |---|---|
 | Определение трекера | Единый резолвер трекера проекта: корректное поле `tracker` из `.harness/project.json` побеждает; без него разбирается `origin` из `git remote -v` — `https://`, `ssh://`, SCP-форма, userinfo, порт, подгруппы и точка в имени. `github.com` — GitHub, хост с `gitlab.` в имени — GitLab, иначе локальный трекер: онлайн-проверки для него — `skipped` |
 | `tracker.project` | Работает без `--online` и без сети, никогда не `skipped`: показывает тип, хост, проект и источник (`поле tracker`, `origin` или `нет origin`). Нет поля в существующем `.harness/project.json` — `warn` с готовым к вставке сниппетом `"tracker": {...}` в подсказке; поле расходится с `origin` по типу, хосту или проекту — `warn`, используется поле; некорректное поле — `warn` «поле tracker не применено» вместе с `fail` у `files.project_json`. Без `.harness/project.json` — `ok` |
-| `tracker.auth` | `gh auth status` / `glab auth status`; используется только код возврата — токены health не читает и не печатает |
-| `tracker.permissions` | `gh api repos/{owner}/{repo}` (`push` → PR и комментарии, `triage` и выше → метки) или `glab api projects/:id` (`access_level` ≥ 30 ≈ push, ≥ 20 — метки) |
+| `tracker.auth` | `gh auth status --hostname <host>` / `glab auth status --hostname <host>` для хоста трекера проекта; используется только код возврата — токены health не читает и не печатает |
+| `tracker.permissions` | `gh api --hostname <host> repos/{owner}/{repo}` (`push` → PR и комментарии, `triage` и выше → метки) или `glab api --hostname <host> projects/:id/members/all/:user_id` — эффективный `access_level` с учётом членств, унаследованных от родительских групп и приглашённых групп (≥ 30 ≈ push, ≥ 20 — метки) |
 | `tracker.reachability` | `git ls-remote origin` |
 | `tracker.labels` | Сравнивает метки с таблицами из `docs/agents/triage-labels.md`; отсутствующая метка или другой цвет — `warn`, цвет никогда не перекрашивается |
 
 Каждый внешний вызов ограничен 10 секундами; отсутствующий `gh`/`glab` — `warn`, а не `fail` всего
-прогона. `--online --fix` дополнительно создаёт отсутствующие метки с каноническими цветами (`gh label
-create`/`glab label create`, без `--force`).
+прогона. Каждый вызов `gh`/`glab` адресует проект явно: `api --hostname <host>` (для GitLab — с
+URL-кодированным путём проекта), `-R <host>/<owner>/<repo>` для `gh` и `-R https://<host>/<project>`
+для `glab`. `--online --fix` дополнительно создаёт отсутствующие метки с каноническими цветами (`gh label
+create`/`glab label create` с `-R`, без `--force`) и никогда не пишет `.harness/project.json`, в том
+числе поле `tracker`.
 
 **`--json`** печатает контракт `schema_version: 1`:
 
