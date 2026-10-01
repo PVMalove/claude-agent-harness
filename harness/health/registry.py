@@ -24,6 +24,7 @@ from typing import Callable
 from .checks import directories as directory_checks
 from .checks import environment as environment_checks
 from .checks import files as files_checks
+from .checks import memory as memory_checks
 from .checks import orchestration as orchestration_checks
 from .checks import repo_map as repo_map_checks
 from .checks import tracker as tracker_checks
@@ -53,6 +54,8 @@ REGISTRY: list[tuple[str, CheckFn]] = [
         for check_id in directory_checks.DIRECTORY_PATHS
     ),
     ("repo_map.tier", repo_map_checks.check_tier),
+    ("memory.index", memory_checks.check_index),
+    ("memory.model", memory_checks.check_model),
     ("environment.os", environment_checks.check_os),
     ("environment.git", environment_checks.check_git),
     ("environment.git_identity", environment_checks.check_git_identity),
