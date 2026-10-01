@@ -20,6 +20,19 @@ MAX_RETAINED_BYTES = 16 * 1024
 def classify(relative: str) -> str:
     """Reserve sensitive namespaces before the generic Markdown fallback."""
     parts = Path(relative).parts
+    if parts[:4] == (".harness", ".sandboxes", "memory", "snapshot"):
+        if len(parts) == 6 and parts[4] == "records":
+            match = re.fullmatch(
+                r"(ticket|pull_request|completion_report)-[1-9][0-9]*-[a-f0-9]{64}\.json",
+                parts[5],
+            )
+            if match:
+                return (
+                    "completion_report"
+                    if match[1] == "completion_report"
+                    else "task_archive"
+                )
+        return ""
     if parts[:2] == ("docs", "tasks"):
         if (
             len(parts) >= 4

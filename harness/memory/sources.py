@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ from .policy import Policy
 MAX_SOURCE_BYTES = 1024 * 1024
 MAX_SOURCES = 1000
 MAX_ENTRIES = 10000
+SNAPSHOT = ".harness/.sandboxes/memory/snapshot"
 EXCLUDED = {
     ".git",
     ".venv",
@@ -48,6 +50,43 @@ class Source:
 def source_type(path: str) -> str:
     """Classify reserved namespaces before generic Markdown."""
     return classify(path)
+
+
+def snapshot_manifest(repo: Path) -> bytes:
+    """Read one bounded selector; absence denotes an unsynchronized corpus."""
+    try:
+        return raw_bytes(repo, SNAPSHOT + "/manifest.json")
+    except FileNotFoundError:
+        return b""
+
+
+def snapshot_paths(repo: Path) -> list[str]:
+    """Only explicitly selected immutable records belong to the snapshot corpus."""
+    raw = snapshot_manifest(repo)
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        raise ValueError("memory snapshot manifest is invalid") from None
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"version", "records"}
+        or type(value["version"]) is not int
+        or value["version"] != 1
+        or not isinstance(value["records"], list)
+        or len(value["records"]) > MAX_SOURCES
+        or any(
+            not isinstance(path, str)
+            or not classify(path)
+            or not path.startswith(SNAPSHOT + "/records/")
+            for path in value["records"]
+        )
+    ):
+        raise ValueError("memory snapshot manifest is invalid")
+    for path in value["records"]:
+        safe_source(repo, path)
+    return sorted(set(value["records"]))
 
 
 def safe_source(repo: Path, relative: str) -> Path:
@@ -90,6 +129,7 @@ def read_source(
 ) -> Source | None:
     """Project and sanitize an authorized source before retaining any text."""
     kind = classify(relative)
+    remote = relative.startswith(SNAPSHOT + "/records/")
     completion = kind == "qa_finding" and "completion_report" in policy.source_types
     if (kind not in policy.source_types and not completion) or not matches(
         relative, policy.allow_paths
@@ -98,7 +138,28 @@ def read_source(
     if not safe_source(repo, relative).is_file():
         return None
     raw = raw_bytes(repo, relative) if raw is None else raw
-    if kind in STATE_SOURCE_TYPES:
+    if remote:
+        if relative not in snapshot_paths(repo):
+            return None
+        try:
+            value = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            raise ValueError("memory snapshot record is invalid") from None
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"record_kind", "title", "status", "date", "body"}
+            or not all(isinstance(item, str) for item in value.values())
+            or value["record_kind"]
+            not in {"ticket", "pull_request", "completion_report"}
+            or (kind == "completion_report")
+            != (value["record_kind"] == "completion_report")
+        ):
+            raise ValueError("memory snapshot record is invalid")
+        title, status, date, text = (
+            value[key] for key in ("title", "status", "date", "body")
+        )
+        superseded = ""
+    elif kind in STATE_SOURCE_TYPES:
         projection = None
         if completion:
             projection = project_json(
@@ -121,14 +182,13 @@ def read_source(
         superseded = metadata(text, "superseded[-_]by|заменён на|заменен на", "")
         match = re.search(r"(?m)^#\s+(.+?)\s*$", text)
         title = match.group(1) if match else "untitled"
-    if (
-        status.lower() in {"superseded", "заменён", "заменен"}
-        or re.match(r"superseded\s+by\s+\S+", status, flags=re.IGNORECASE)
+    if status.lower() in {"superseded", "заменён", "заменен"} or re.match(
+        r"superseded\s+by\s+\S+", status, flags=re.IGNORECASE
     ):
         return None
 
     def sanitize(value: str) -> str:
-        if kind in STATE_SOURCE_TYPES:
+        if kind in STATE_SOURCE_TYPES or remote:
             value = baseline(value)
         for rule in policy.redact_rules:
             value = re.sub(rule, "[REDACTED]", value)
@@ -178,7 +238,11 @@ def allowed_paths(repo: Path, policy: Policy) -> list[str]:
         if policy.active and STATE_SOURCE_TYPES & set(policy.source_types)
         else ""
     )
-    paths: set[str] = set()
+    paths: set[str] = {
+        path
+        for path in snapshot_paths(repo)
+        if classify(path) in policy.source_types and matches(path, policy.allow_paths)
+    }
     visited: set[str] = set()
 
     def walk(path: Path) -> None:
@@ -194,6 +258,8 @@ def allowed_paths(repo: Path, policy: Policy) -> list[str]:
             if path.name in EXCLUDED:
                 return
             if relative == ".harness" or relative.startswith(".harness/"):
+                if relative.startswith(SNAPSHOT):
+                    return
                 if not generation or not (
                     generation.startswith(relative + "/")
                     or relative == generation
@@ -245,6 +311,7 @@ def allowed_paths(repo: Path, policy: Policy) -> list[str]:
 def collect_sources(repo: Path, policy: Policy) -> list[Source]:
     """Read only the bounded, explicitly authorized corpus."""
     documents = []
+    snapshot = snapshot_manifest(repo) if policy.active else b""
     generation = (
         selected_generation(repo)
         if policy.active and STATE_SOURCE_TYPES & set(policy.source_types)
@@ -256,4 +323,6 @@ def collect_sources(repo: Path, policy: Policy) -> list[Source]:
             documents.append(document)
     if generation and selected_generation(repo) != generation:
         raise ValueError("memory ledger generation changed during ingestion; retry")
+    if policy.active and snapshot_manifest(repo) != snapshot:
+        raise ValueError("memory snapshot changed during ingestion; retry")
     return documents
