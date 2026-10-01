@@ -141,6 +141,7 @@ def test_registry_runs_without_crashing_even_with_a_lock_file_present(
         "environment.line_endings",
         "environment.python",
         "environment.uv",
+        "environment.glab",
         "environment.dev_env",
         "environment.output_encoding",
         "environment.long_paths",

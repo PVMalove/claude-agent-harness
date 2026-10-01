@@ -14,6 +14,11 @@ external call gets a 10 second timeout (`_ONLINE_TIMEOUT_SECONDS`), separate fro
 budget checks/environment.py gives local tool invocations. A missing `gh`/`glab` executable is
 `warn`, never `fail`: it also makes every check that depends on it warn or skip in turn.
 
+Every `gh`/`glab` call addresses the resolved tracker explicitly, so neither another remote nor
+credentials for another host can redirect it: `auth status --hostname <host>`,
+`api --hostname <host>` with a URL-encoded GitLab project path, and `-R <host>/<owner>/<repo>`
+(gh) or `-R https://<host>/<project>` (glab) for label creation.
+
 The tracker itself is resolved only through the project tracker resolver
 (health/project_tracker.py, docs/adr/0010): an explicit `tracker` field in .harness/project.json
 wins, otherwise the origin URL is parsed.
@@ -61,14 +66,30 @@ def _run(
     return run_tool(argv, timeout=_ONLINE_TIMEOUT_SECONDS, cwd=cwd)
 
 
-def detect_tracker(context: HealthContext) -> tuple[Tracker, str | None]:
+def detect_tracker(context: HealthContext) -> ProjectTracker:
     """The effective project tracker from the project tracker resolver: the explicit `tracker`
-    field of .harness/project.json, otherwise the origin URL. Returns (tracker, project path) -
-    the path keeps every subgroup and is None for a local tracker or whenever it is unknown."""
-    tracker = resolve_project_tracker(context.repo).effective
-    if tracker.type == "local":
-        return "local", None
-    return tracker.type, tracker.project
+    field of .harness/project.json, otherwise the origin URL. Its project path keeps every
+    subgroup and is None whenever it is unknown."""
+    return resolve_project_tracker(context.repo).effective
+
+
+@dataclass(frozen=True)
+class _Target:
+    """The hosted tracker every online call addresses explicitly."""
+
+    tracker: Tracker
+    host: str
+    # The full project path with subgroups; None when origin does not name one.
+    project: str | None
+
+
+def _hosted(found: ProjectTracker) -> _Target | None:
+    """`found` as an online target; None for a local tracker."""
+    if found.type == "local":
+        return None
+    # A hosted tracker always has a host: the tracker field requires it, origin always yields one.
+    assert found.host is not None
+    return _Target(found.type, found.host, found.project)
 
 
 def _skip(check_id: str, message: str) -> CheckResult:
@@ -88,33 +109,35 @@ _SUBJECTS: dict[str, str] = {
 }
 
 
-def _offline_or_local(
-    check_id: str, context: HealthContext
-) -> tuple[Tracker, str | None, CheckResult | None]:
+def _offline_or_local(check_id: str, context: HealthContext) -> _Target | CheckResult:
     """Shared early-exit ladder every tracker.* check starts with: offline, then a non-hosted
-    (local) tracker. Returns the detected tracker/slug plus a skip result when the caller should
-    stop; the caller proceeds only when the third element is None."""
+    (local) tracker. Returns the skip result when the caller should stop, otherwise the target."""
     subject = _SUBJECTS.get(check_id, check_id)
     if not context.online:
-        return (
-            "local",
-            None,
-            _skip(
-                check_id,
-                f"{subject}: не проверено (офлайн — без --online проверки трекера не выполняются)",
-            ),
+        return _skip(
+            check_id,
+            f"{subject}: не проверено (офлайн — без --online проверки трекера не выполняются)",
         )
-    tracker, slug = detect_tracker(context)
-    if tracker == "local":
-        return (
-            tracker,
-            slug,
-            _skip(
-                check_id,
-                f"{subject}: не проверено (локальный трекер задач — онлайн-проверки не применимы)",
-            ),
+    target = _hosted(detect_tracker(context))
+    if target is None:
+        return _skip(
+            check_id,
+            f"{subject}: не проверено (локальный трекер задач — онлайн-проверки не применимы)",
         )
-    return tracker, slug, None
+    return target
+
+
+def _api_json(executable: str, host: str, *args: str, cwd: Path) -> object | None:
+    """Parsed JSON output of `<gh|glab> api --hostname <host> <args>`, or None on any failure to
+    run or parse it."""
+    result = _run([executable, "api", "--hostname", host, *args], cwd=cwd)
+    if result is None or result.returncode != 0:
+        return None
+    try:
+        data: object = json.loads(result.stdout)
+    except ValueError:
+        return None
+    return data
 
 
 # --- tracker.project ------------------------------------------------------------------------------
@@ -199,10 +222,13 @@ class _Host:
     """Everything that differs between GitHub (`gh`) and GitLab (`glab`) for these checks."""
 
     tool: str
-    permissions: Callable[[str, str, Path], tuple[bool, bool] | None]
+    # (executable, host, project, cwd) -> (push, labels), or None.
+    permissions: Callable[[str, str, str, Path], tuple[bool, bool] | None]
     labels_endpoint: Callable[[str], str]
     # `gh label create <name>` takes the name positionally, `glab label create --name <name>`.
     label_name_args: Callable[[str], list[str]]
+    # The `-R` value from (host, project): `gh` takes host/owner/repo, `glab` a full project URL.
+    repo_flag: Callable[[str, str], str]
 
 
 # --- tracker.auth --------------------------------------------------------------------------------
@@ -210,19 +236,21 @@ class _Host:
 
 def check_auth(context: HealthContext) -> CheckResult:
     check_id = "tracker.auth"
-    tracker, _slug, early = _offline_or_local(check_id, context)
-    if early is not None:
-        return early
-    tool = _tracker_tool(tracker)
+    target = _offline_or_local(check_id, context)
+    if isinstance(target, CheckResult):
+        return target
+    tool = _tracker_tool(target.tracker)
     executable = shutil.which(tool)
     if executable is None:
         return CheckResult(
             id=check_id,
             group=GROUP,
             status="warn",
-            message=f"{tool} не найден в PATH: авторизация и права {tracker} не проверены",
+            message=f"{tool} не найден в PATH: авторизация и права {target.tracker} не проверены",
         )
-    result = _run([executable, "auth", "status"], cwd=context.repo)
+    result = _run(
+        [executable, "auth", "status", "--hostname", target.host], cwd=context.repo
+    )
     if result is None:
         return CheckResult(
             id=check_id,
@@ -237,10 +265,14 @@ def check_auth(context: HealthContext) -> CheckResult:
             id=check_id,
             group=GROUP,
             status="fail",
-            message=f"{tool} не аутентифицирован (auth status вернул код {result.returncode})",
+            message=f"{tool} не аутентифицирован на {target.host} "
+            f"(auth status вернул код {result.returncode})",
         )
     return CheckResult(
-        id=check_id, group=GROUP, status="ok", message=f"{tool} аутентифицирован"
+        id=check_id,
+        group=GROUP,
+        status="ok",
+        message=f"{tool} аутентифицирован на {target.host}",
     )
 
 
@@ -249,9 +281,9 @@ def check_auth(context: HealthContext) -> CheckResult:
 
 def check_reachability(context: HealthContext) -> CheckResult:
     check_id = "tracker.reachability"
-    _tracker, _slug, early = _offline_or_local(check_id, context)
-    if early is not None:
-        return early
+    target = _offline_or_local(check_id, context)
+    if isinstance(target, CheckResult):
+        return target
     git = shutil.which("git")
     if git is None:
         return CheckResult(
@@ -284,17 +316,13 @@ def check_reachability(context: HealthContext) -> CheckResult:
 
 
 def _github_permissions(
-    executable: str, slug: str, cwd: Path
+    executable: str, host: str, slug: str, cwd: Path
 ) -> tuple[bool, bool] | None:
     """(push, triage-or-above) from `gh api repos/{owner}/{repo}`'s `.permissions`, or None on
     any failure to run/parse it. Only these two booleans ever leave this function."""
-    result = _run([executable, "api", f"repos/{slug}", "--jq", ".permissions"], cwd=cwd)
-    if result is None or result.returncode != 0:
-        return None
-    try:
-        permissions = json.loads(result.stdout)
-    except ValueError:
-        return None
+    permissions = _api_json(
+        executable, host, f"repos/{slug}", "--jq", ".permissions", cwd=cwd
+    )
     if not isinstance(permissions, dict):
         return None
     push = bool(permissions.get("push"))
@@ -308,31 +336,24 @@ def _github_permissions(
 
 
 def _gitlab_permissions(
-    executable: str, slug: str, cwd: Path
+    executable: str, host: str, slug: str, cwd: Path
 ) -> tuple[bool, bool] | None:
-    """(push, triage-equivalent) from `glab api projects/:id`'s `.permissions`, mapped from the
-    higher of project_access/group_access's access_level. Developer (30) and up ~ push; Reporter
-    (20) and up ~ labels-only. None on any failure to run/parse it."""
-    result = _run([executable, "api", f"projects/{quote(slug, safe='')}"], cwd=cwd)
-    if result is None or result.returncode != 0:
+    """(push, triage-equivalent) from the current user's effective access_level in the project,
+    read from `projects/:id/members/all/:user_id`: unlike `projects/:id`'s own `.permissions`, it
+    counts memberships inherited from ancestor groups and invited groups. Developer (30) and up ~
+    push; Reporter (20) and up ~ labels-only. None on any failure to run/parse it."""
+    user = _api_json(executable, host, "user", cwd=cwd)
+    if not isinstance(user, dict) or not isinstance(user.get("id"), int):
         return None
-    try:
-        project = json.loads(result.stdout)
-    except ValueError:
+    member = _api_json(
+        executable,
+        host,
+        f"projects/{quote(slug, safe='')}/members/all/{user['id']}",
+        cwd=cwd,
+    )
+    if not isinstance(member, dict) or not isinstance(member.get("access_level"), int):
         return None
-    if not isinstance(project, dict):
-        return None
-    permissions = project.get("permissions")
-    if not isinstance(permissions, dict):
-        return None
-    levels = []
-    for key in ("project_access", "group_access"):
-        access = permissions.get(key)
-        if isinstance(access, dict) and isinstance(access.get("access_level"), int):
-            levels.append(access["access_level"])
-    if not levels:
-        return None
-    access_level = max(levels)
+    access_level: int = member["access_level"]
     return (
         access_level >= _GITLAB_PUSH_ACCESS_LEVEL,
         access_level >= _GITLAB_LABELS_ACCESS_LEVEL,
@@ -341,10 +362,10 @@ def _gitlab_permissions(
 
 def check_permissions(context: HealthContext) -> CheckResult:
     check_id = "tracker.permissions"
-    tracker, slug, early = _offline_or_local(check_id, context)
-    if early is not None:
-        return early
-    tool = _tracker_tool(tracker)
+    target = _offline_or_local(check_id, context)
+    if isinstance(target, CheckResult):
+        return target
+    tool = _tracker_tool(target.tracker)
     executable = shutil.which(tool)
     if executable is None:
         return CheckResult(
@@ -353,14 +374,16 @@ def check_permissions(context: HealthContext) -> CheckResult:
             status="warn",
             message=f"{tool} не найден в PATH: права доступа не проверены",
         )
-    if slug is None:
+    if target.project is None:
         return CheckResult(
             id=check_id,
             group=GROUP,
             status="warn",
             message="не удалось разобрать owner/repo из git remote -v: права доступа не проверены",
         )
-    permissions = _HOSTS[tracker].permissions(executable, slug, context.repo)
+    permissions = _HOSTS[target.tracker].permissions(
+        executable, target.host, target.project, context.repo
+    )
     if permissions is None:
         return CheckResult(
             id=check_id,
@@ -395,18 +418,20 @@ _HOSTS: dict[str, _Host] = {
         permissions=_github_permissions,
         labels_endpoint=lambda slug: f"repos/{slug}/labels",
         label_name_args=lambda name: [name],
+        repo_flag=lambda host, slug: f"{host}/{slug}",
     ),
     "gitlab": _Host(
         tool="glab",
         permissions=_gitlab_permissions,
         labels_endpoint=lambda slug: f"projects/{quote(slug, safe='')}/labels",
         label_name_args=lambda name: ["--name", name],
+        repo_flag=lambda host, slug: f"https://{host}/{slug}",
     ),
 }
 
 
 def _list_repo_labels(
-    tracker: Tracker, executable: str, slug: str, cwd: Path
+    target: _Target, executable: str, slug: str, cwd: Path
 ) -> list[tuple[str, str]] | None:
     """Existing repository labels as (name, "#rrggbb") pairs, or None on any failure.
 
@@ -415,14 +440,8 @@ def _list_repo_labels(
     single page too), so a repository with more labels than that default is not misread as
     missing them all past the cutoff - which would otherwise make `--fix` try to recreate labels
     that already exist."""
-    argv = [executable, "api", "--paginate", _HOSTS[tracker].labels_endpoint(slug)]
-    result = _run(argv, cwd=cwd)
-    if result is None or result.returncode != 0:
-        return None
-    try:
-        data = json.loads(result.stdout)
-    except ValueError:
-        return None
+    endpoint = _HOSTS[target.tracker].labels_endpoint(slug)
+    data = _api_json(executable, target.host, "--paginate", endpoint, cwd=cwd)
     if not isinstance(data, list):
         return None
     labels: list[tuple[str, str]] = []
@@ -447,14 +466,14 @@ def _canonical_labels(context: HealthContext) -> list[tuple[str, str]] | None:
 
 
 def _label_diff(
-    context: HealthContext, tracker: Tracker, executable: str, slug: str
+    context: HealthContext, target: _Target, executable: str, slug: str
 ) -> tuple[list[tuple[str, str]], list[str]] | None:
     """(missing, mismatched-by-color) against the canonical table, or None when the canonical
     table or the repository's own label list could not be read."""
     canonical = _canonical_labels(context)
     if not canonical:
         return None
-    existing = _list_repo_labels(tracker, executable, slug, context.repo)
+    existing = _list_repo_labels(target, executable, slug, context.repo)
     if existing is None:
         return None
     existing_by_name = {name.lower(): color for name, color in existing}
@@ -473,9 +492,9 @@ def _label_diff(
 
 def check_labels(context: HealthContext) -> CheckResult:
     check_id = "tracker.labels"
-    tracker, slug, early = _offline_or_local(check_id, context)
-    if early is not None:
-        return early
+    target = _offline_or_local(check_id, context)
+    if isinstance(target, CheckResult):
+        return target
     if not (context.repo / _TRIAGE_LABELS_REL).is_file():
         return CheckResult(
             id=check_id,
@@ -483,7 +502,7 @@ def check_labels(context: HealthContext) -> CheckResult:
             status="warn",
             message=f"нет {_TRIAGE_LABELS_REL.as_posix()}: канонические метки не проверены",
         )
-    tool = _tracker_tool(tracker)
+    tool = _tracker_tool(target.tracker)
     executable = shutil.which(tool)
     if executable is None:
         return CheckResult(
@@ -492,14 +511,14 @@ def check_labels(context: HealthContext) -> CheckResult:
             status="warn",
             message=f"{tool} не найден в PATH: метки не проверены",
         )
-    if slug is None:
+    if target.project is None:
         return CheckResult(
             id=check_id,
             group=GROUP,
             status="warn",
             message="не удалось разобрать owner/repo из git remote -v: метки не проверены",
         )
-    diff = _label_diff(context, tracker, executable, slug)
+    diff = _label_diff(context, target, executable, target.project)
     if diff is None:
         return CheckResult(
             id=check_id,
@@ -541,24 +560,26 @@ def check_labels(context: HealthContext) -> CheckResult:
 def fix_labels(context: HealthContext, result: CheckResult) -> str | None:
     """`harness health --online --fix`: create every missing canonical label with its canonical
     color. An existing label with a mismatched color is never touched - only creation, never
-    `label edit`/`--force` (ticket #346)."""
+    `label edit`/`--force` (ticket #346). The project is addressed explicitly with `-R`, and
+    .harness/project.json - including its tracker field - is never written."""
     if result.status != "warn":
         return None
-    tracker, slug = detect_tracker(context)
-    if tracker == "local" or slug is None:
+    target = _hosted(detect_tracker(context))
+    if target is None or target.project is None:
         return None
-    tool = _tracker_tool(tracker)
-    executable = shutil.which(tool)
+    cli = _HOSTS[target.tracker]
+    executable = shutil.which(cli.tool)
     if executable is None:
         return None
-    diff = _label_diff(context, tracker, executable, slug)
+    diff = _label_diff(context, target, executable, target.project)
     if diff is None:
         return None
     missing, _mismatched = diff
+    repo_flag = cli.repo_flag(target.host, target.project)
     created = []
     for name, color in missing:
-        argv = [executable, "label", "create", *_HOSTS[tracker].label_name_args(name)]
-        argv += ["--color", color, "-R", slug]
+        argv = [executable, "label", "create", *cli.label_name_args(name)]
+        argv += ["--color", color, "-R", repo_flag]
         outcome = _run(argv, cwd=context.repo)
         if outcome is not None and outcome.returncode == 0:
             created.append(f"{name} ({color})")
