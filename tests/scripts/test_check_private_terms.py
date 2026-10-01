@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import textwrap
 import types
 import unittest
 from pathlib import Path
@@ -24,6 +25,7 @@ from scripts import verify
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "check_private_terms.py"
 WRAPPER = ROOT / "scripts" / "hooks" / "check-private-terms.sh"
+WORKFLOW = ROOT / ".github" / "workflows" / "verify.yml"
 
 # Term numbers are physical line numbers: line 1 is a comment, so the terms are #2..#5.
 TERMS = (
@@ -116,6 +118,20 @@ def _commit(repo: Path, message: str) -> str:
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "--allow-empty", "-m", message)
     return _git(repo, "rev-parse", "HEAD")
+
+
+def _workflow_step_script(name: str) -> str:
+    """The `run: |` script of a verify workflow step, dedented like the runner does."""
+    lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == f"- name: {name}")
+    run = next(i for i in range(start, len(lines)) if lines[i].strip() == "run: |")
+    indent = len(lines[run]) - len(lines[run].lstrip())
+    body: list[str] = []
+    for line in lines[run + 1 :]:
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        body.append(line)
+    return textwrap.dedent("\n".join(body)) + "\n"
 
 
 class TermListTests(unittest.TestCase):
@@ -319,6 +335,22 @@ class BranchTests(unittest.TestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(_matches(err), ["branch:1: term #5"])
+
+    def test_a_single_token_branch_value_that_looks_like_an_option_is_checked(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+
+            results = [
+                _run(["--repo", str(repo), f"--branch={name}"])
+                for name in ("-QX-7741-x", "--zorblax")
+            ]
+
+        self.assertEqual(
+            [(code, _matches(err)) for code, _, err in results],
+            [(1, ["branch:1: term #5"]), (1, ["branch:1: term #2"])],
+        )
 
     def test_a_detached_head_has_no_branch_to_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1006,6 +1038,53 @@ class WiringTests(unittest.TestCase):
         self.assertIn(b"  command:1: term #2\n", result.stderr)
         _assert_no_leak(result.stderr.decode("utf-8"), ENV)
 
+    @unittest.skipIf(os.name == "nt", "the workflow step runs under bash on Linux")
+    def test_the_workflow_step_checks_a_head_ref_that_looks_like_an_option(
+        self,
+    ) -> None:
+        script = _workflow_step_script("Check private terms")
+        for ref, match in (
+            ("-QX-7741-x", "branch:1: term #5"),
+            ("--zorblax", "branch:1: term #2"),
+        ):
+            # Never pass the ref to subTest: a failure message would print the term.
+            with self.subTest(match=match), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                repo = _repo(root)
+                base, head = _commit(repo, "base"), _commit(repo, "head")
+                (repo / "scripts").mkdir()
+                (repo / "scripts" / SCRIPT.name).write_bytes(SCRIPT.read_bytes())
+                (root / "bin").mkdir()
+                (root / "bin" / "python").symlink_to(sys.executable)
+                pull = {
+                    "title": "ok",
+                    "body": None,
+                    "head": {"ref": ref, "sha": head},
+                    "base": {"sha": base},
+                }
+                event = root / "event.json"
+                event.write_text(json.dumps({"pull_request": pull}), encoding="utf-8")
+                environ = dict(
+                    os.environ,
+                    **ENV,
+                    GITHUB_EVENT_PATH=str(event),
+                    RUNNER_TEMP=tmp,
+                    PATH=f"{root / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+                )
+
+                result = subprocess.run(
+                    ["bash", "-e", "-c", script],
+                    cwd=repo,
+                    env=environ,
+                    capture_output=True,
+                    check=False,
+                )
+
+                stderr = result.stderr.decode("utf-8")
+                _assert_no_leak(result.stdout.decode("utf-8") + stderr, ENV)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(_matches(stderr), [match])
+
     def test_verify_checks_staged_changes_unpublished_commits_and_the_branch(
         self,
     ) -> None:
@@ -1035,6 +1114,17 @@ class CommandLineTests(unittest.TestCase):
                         check.main(argv, environ=ENV)
 
                 self.assertEqual(raised.exception.code, 2)
+
+    def test_a_usage_error_never_prints_a_single_token_branch_value(self) -> None:
+        for extra in ("--hook", "--bogus"):
+            with self.subTest(extra=extra):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    with self.assertRaises(SystemExit) as raised:
+                        check.main(["--branch=-QX-7741-x", extra], environ=ENV)
+
+                self.assertEqual(raised.exception.code, 2)
+                _assert_no_leak(err.getvalue(), ENV)
 
 
 if __name__ == "__main__":

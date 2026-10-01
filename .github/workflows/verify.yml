@@ -88,7 +88,7 @@ jobs:
           (out / "range.txt").write_text(f'{pr["base"]["sha"]}..{pr["head"]["sha"]}', encoding="utf-8")
           EOF
           python scripts/check_private_terms.py --commits "$(cat "$RUNNER_TEMP/range.txt")" \
-            --branch "$(cat "$RUNNER_TEMP/head-ref.txt")" \
+            --branch="$(cat "$RUNNER_TEMP/head-ref.txt")" \
             --body-file "$RUNNER_TEMP/pr-title.txt" --body-file "$RUNNER_TEMP/pr-body.md"
 
   parser-bundle:
