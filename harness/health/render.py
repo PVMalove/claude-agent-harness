@@ -27,6 +27,7 @@ _SKIPPED_MARKER = "-"
 GROUP_LABELS_RU: dict[str, str] = {
     "files": "Файлы харнесса",
     "repo_map": "Repo Map",
+    "memory": "Память проекта",
     "environment": "Окружение",
     "directories": "Каталоги харнесса",
     "tracker": "Трекер задач",
