@@ -130,6 +130,36 @@ def test_sync_sanitizes_all_retained_fields_and_ignores_unmarked_comments(
     assert search(remote_repo, "riskword")["pointers"]
 
 
+@pytest.mark.parametrize("prefix", ["glpat-", "github_pat_"], ids=["gitlab_pat", "github_fine_grained_pat"])
+def test_sync_redacts_standalone_tracker_tokens_before_persistence(
+    remote_repo: Path, monkeypatch: pytest.MonkeyPatch, prefix: str
+) -> None:
+    from harness.memory import sync
+
+    configure(remote_repo, source_types=["task_archive", "completion_report"],
+              allow_paths=[SNAPSHOT + "/records/*.json"], redact_rules=[])
+    token = prefix + "SyntheticMemoryFixture0123456789_A-b"
+    fake_inventory(monkeypatch, [{
+        "number": 1, "state": "closed", "title": "ticketword " + token,
+        "body": "bodyword " + token, "updated_at": token,
+    }], [{"id": 4, "body": "## Completion report\n```json\n" + json.dumps({
+        "title": token, "ticket": token, "role": token, "outcome": token,
+        "output": token, "lessons": ["lessonword " + token], "date": token,
+    }) + "\n```"}])
+    result = sync(remote_repo)
+    assert result["status"] == "synced"
+    snapshot_text = "".join(path.read_text() for path in (remote_repo / SNAPSHOT).rglob("*.json"))
+    with sqlite3.connect(remote_repo / ".harness/.sandboxes/cache/memory/index.sqlite3") as db:
+        index_text = "\n".join(db.iterdump())
+        assert db.execute("SELECT count(*) FROM documents").fetchone() == (2,)
+    snapshot_retained = token in snapshot_text
+    index_retained = token in index_text
+    assert not snapshot_retained
+    assert not index_retained
+    assert search(remote_repo, "bodyword")["pointers"]
+    assert search(remote_repo, "lessonword")["pointers"]
+
+
 @pytest.mark.parametrize(
     "types,paths",
     [

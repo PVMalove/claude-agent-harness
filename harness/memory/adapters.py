@@ -11,6 +11,8 @@ from pathlib import Path
 
 from harness.gate_runner.gate_runner import sanitise
 
+from .policy import Policy
+
 STATE = ".harness/orchestration/state"
 SELECTOR = STATE + "/ledger.json"
 RECORD_KINDS = {"batches", "dispatches", "dispatch-status"}
@@ -178,4 +180,14 @@ def baseline(text: str) -> str:
     text = re.sub(
         r"(?<!\w)(?:[A-Za-z]:[\\/]|/)[^\s<>]+|https?://[^\s<>]+", "[artifact]", text
     )
+    text = re.sub(r"(?<!\w)(?:glpat-|github_pat_)[A-Za-z0-9_-]+", "[REDACTED]", text)
     return sanitise(text)
+
+
+def sanitized(value: str, policy: Policy, *, apply_baseline: bool = True) -> str:
+    """Share policy redaction while preserving opt-in baseline for local prose."""
+    if apply_baseline:
+        value = baseline(value)
+    for rule in policy.redact_rules:
+        value = re.sub(rule, "[REDACTED]", value)
+    return value

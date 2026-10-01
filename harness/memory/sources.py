@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .adapters import STATE, baseline, classify, project_json, selected_generation
+from .adapters import STATE, classify, project_json, sanitized, selected_generation
 from .policy import Policy
 
 MAX_SOURCE_BYTES = 1024 * 1024
@@ -214,14 +214,10 @@ def read_source(
         return None
 
     def sanitize(value: str) -> str:
-        if kind in STATE_SOURCE_TYPES or remote:
-            value = baseline(value)
-        for rule in policy.redact_rules:
-            value = re.sub(rule, "[REDACTED]", value)
-        return value
+        return sanitized(value, policy, apply_baseline=kind in STATE_SOURCE_TYPES or remote)
 
     # Identity must remain a usable pointer; deny a path that sanitization would alter.
-    if baseline(relative) != relative or sanitize(relative) != relative:
+    if sanitized(relative, policy) != relative:
         raise ValueError("memory source path cannot be safely retained")
     return Source(
         kind,
@@ -310,10 +306,7 @@ def allowed_paths(repo: Path, policy: Policy) -> list[str]:
                 generation + "/"
             ):
                 return
-            sanitized = baseline(relative)
-            for rule in policy.redact_rules:
-                sanitized = re.sub(rule, "[REDACTED]", sanitized)
-            if sanitized != relative:
+            if sanitized(relative, policy) != relative:
                 raise ValueError("memory source path cannot be safely retained")
             paths.add(relative)
             if len(paths) > MAX_SOURCES:

@@ -14,7 +14,7 @@ from typing import BinaryIO
 from pathlib import Path
 from urllib.parse import quote
 
-from .adapters import baseline, scalar
+from .adapters import sanitized, scalar
 from .index import context, refresh, writer_lock
 from .policy import Policy
 from .sources import matches, safe_source, SNAPSHOT, snapshot_manifest, snapshot_kind_allowed
@@ -133,13 +133,6 @@ def tracker(repo: Path) -> tuple[str, str]:
                 return tool, slug
         break
     raise ValueError("memory sync: unsupported or local tracker")
-
-
-def sanitized(value: str, policy: Policy) -> str:
-    value = baseline(value)
-    for rule in policy.redact_rules:
-        value = re.sub(rule, "[REDACTED]", value)
-    return value
 
 
 def record(
