@@ -6,6 +6,7 @@ import json
 import re
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 from harness.token_estimator import estimate_tokens
 
@@ -18,7 +19,7 @@ def degraded(status: str, diagnostic: str) -> dict[str, object]:
     return {"status": status, "pointers": [], "diagnostic": diagnostic}
 
 
-def search(repo: Path, query: str) -> dict[str, object]:
+def search_candidates(repo: Path, query: str) -> dict[str, object]:
     """Search existing cache with mode=ro; never ingest, repair or create files."""
     try:
         canonical, path, policy = context(repo)
@@ -74,20 +75,21 @@ def search(repo: Path, query: str) -> dict[str, object]:
                 if document is None or document.source_hash != source_hash:
                     stale = True
                     continue
+                # Use sanitized authoritative metadata, never arbitrary cached fields.
+                if len(relative) > 1024:
+                    continue
                 pointer = {
-                    "title": title,
-                    "status": status,
-                    "date": date,
-                    "superseded_by": superseded_by,
+                    "title": document.title[:256],
+                    "status": document.status[:64],
+                    "date": document.date[:64],
+                    "superseded_by": document.superseded_by[:256],
                     "history_to_verify": True,
                     "path": relative,
                     "source_hash": source_hash,
+                    "source_type": document.source_type,
+                    "inclusion_reason": "literal relevance; historical source requires verification",
                 }
-                encoded = json.dumps([*pointers, pointer], ensure_ascii=False)
-                if estimate_tokens(encoded) <= policy.max_tokens:
-                    pointers.append(pointer)
-                if len(pointers) >= policy.top_k:
-                    break
+                pointers.append(pointer)
         finally:
             connection.close()
     except (sqlite3.Error, OSError, ValueError):
@@ -102,6 +104,30 @@ def search(repo: Path, query: str) -> dict[str, object]:
             "changed, removed or revoked sources omitted; run harness memory build from main checkout"
         )
     return result
+
+
+def search(repo: Path, query: str) -> dict[str, object]:
+    """Return bounded pointers from the existing read-only cache."""
+    result = search_candidates(repo, query)
+    try:
+        _, _, policy = context(repo)
+    except ValueError:
+        return result
+    selected: list[dict[str, object]] = []
+    for candidate in cast(list[dict[str, object]], result["pointers"]):
+        pointer = {
+            key: value
+            for key, value in candidate.items()
+            if key not in {"source_type", "inclusion_reason"}
+        }
+        if (
+            estimate_tokens(json.dumps([*selected, pointer], ensure_ascii=False))
+            <= policy.max_tokens
+        ):
+            selected.append(pointer)
+        if len(selected) >= policy.top_k:
+            break
+    return {**result, "pointers": selected}
 
 
 def search_with_refresh(repo: Path, query: str) -> dict[str, object]:

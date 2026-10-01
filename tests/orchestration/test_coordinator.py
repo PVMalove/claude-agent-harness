@@ -180,7 +180,10 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         return LifecycleLedger(root).records_root()
 
     def _create_batch(
-        self, ticket: str = "#195", branch: str = "feature/issue-195-thing"
+        self,
+        ticket: str = "#195",
+        branch: str = "feature/issue-195-thing",
+        goal: str | None = None,
     ) -> JsonObject:
         worktree_path = self.tmp / "worktree"
         if not worktree_path.exists():
@@ -191,6 +194,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             repo=str(self.repo),
             state_dir=str(self.state_dir),
             ticket=ticket,
+            goal=goal,
             branch=branch,
             worktree=str(worktree_path),
             zone="repository",
@@ -275,7 +279,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         )
 
     def test_batch_create_writes_immutable_batch_and_plan_records(self) -> None:
-        batch = self._create_batch()
+        batch = self._create_batch(goal="Freeze project memory")
         records = self._records_root()
 
         batch_path = records / "batches" / f"{batch['batch_id']}.json"
@@ -285,6 +289,14 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         on_disk = coordinator._read_object(batch_path, "batch")
         self.assertEqual(on_disk["state"], "planned")
         self.assertEqual(on_disk["dispatches"], [])
+        self.assertEqual(on_disk["goal"], "Freeze project memory")
+        plan = coordinator._read_object(plan_path, "plan")
+        self.assertEqual(plan["goal"], "Freeze project memory")
+        on_disk["goal"] = "Changed goal"
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "goal does not match"
+        ):
+            coordinator._validate_batch_integrity(self.state_dir, on_disk)
 
     def test_dispatch_command_resolves_its_batch_pinned_runtime(self) -> None:
         (self.repo / ".harness" / "orchestration" / "coordinator.py").write_text(

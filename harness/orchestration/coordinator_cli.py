@@ -79,6 +79,9 @@ def build_parser(
         "--integration-ref",
         help="branch on origin this batch's base is fetched and pinned against; falls back to the project's base_branch for epic-less tasks",
     )
+    create.add_argument(
+        "--goal", help="approved local ticket goal frozen in the immutable batch plan"
+    )
     create.add_argument("--definition-of-done", action="append", required=True)
     create.add_argument("--prohibited-change", action="append", required=True)
     create.add_argument("--required-gate", action="append")

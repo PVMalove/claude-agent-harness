@@ -34,6 +34,7 @@ from harness.orchestration.core.constants import (
     ATTENTION_EVENT_KINDS,
     ATTENTION_STATE_FIELDS,
     CONTEXT_PACKAGE_FIELDS,
+    V2_CONTEXT_PACKAGE_FIELDS,
     CONTEXT_PRESSURE_FIELDS,
     CONTEXT_TELEMETRY_SOURCES,
     DEFAULT_COMMUNICATION_POLICY,
@@ -193,6 +194,7 @@ def _validate_context_package(
     _reject_sensitive(package, "context package")
     if set(package) not in (
         CONTEXT_PACKAGE_FIELDS,
+        V2_CONTEXT_PACKAGE_FIELDS,
         LEGACY_CONTEXT_PACKAGE_FIELDS,
         LEGACY_CONTEXT_PACKAGE_FIELDS_NO_TOKENS,
     ):
@@ -230,7 +232,7 @@ def _context_package_summary(package: JsonObject) -> JsonObject:
     bounded navigation to start work without rediscovering files or copying the full diff into
     every model prompt; the pinned commits let a role obtain a precise diff when it truly needs it.
     """
-    return {
+    summary = {
         "base_commit": package["base_commit"],
         "candidate_commit": package["candidate_commit"],
         "starting_files": package["starting_files"],
@@ -238,6 +240,12 @@ def _context_package_summary(package: JsonObject) -> JsonObject:
         "precedent_cards": package["precedent_cards"],
         "estimated_tokens": package.get("estimated_tokens"),
     }
+
+    if package.get("schema_version") == 3:
+        summary.update(
+            {key: package[key] for key in ("goal", "definition_of_done", "memory")}
+        )
+    return summary
 
 
 def _context_package_quality_warning(package: JsonObject) -> JsonObject | None:
@@ -282,6 +290,7 @@ def _reusable_context_package(
     batch: JsonObject,
     base_commit: str,
     candidate_commit: str,
+    memory_identity: JsonObject | None = None,
 ) -> JsonObject | None:
     """Return the current batch's shared package for exactly the same pinned diff.
 
@@ -297,6 +306,11 @@ def _reusable_context_package(
             continue
         package = _load_context_package(root, entry.get("context_package_id"))
         _validate_context_package(root, batch, package)
+        if memory_identity is not None and (
+            package.get("schema_version") != 3
+            or package.get("memory", {}).get("identity") != memory_identity
+        ):
+            continue
         if package.get("role") == "shared":
             return package
     return None
@@ -521,6 +535,11 @@ def _validate_batch_integrity(root: Path, batch: JsonObject) -> None:
         / f"{_safe_id(batch.get('batch_id'), 'batch')}.json",
         "immutable batch plan",
     )
+    if batch.get("goal") != plan.get("goal"):
+        raise CoordinatorError(
+            "batch goal does not match its immutable plan",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     for field in ("approval_policy", "communication_policy"):
         if (field in batch) != (field in plan):
             raise CoordinatorError(

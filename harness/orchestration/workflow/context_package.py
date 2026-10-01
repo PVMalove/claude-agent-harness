@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+from typing import cast
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -18,6 +20,9 @@ from harness.context_builder.context_builder import (
     build_context_package,
 )
 from harness.errors import INTERNAL_INVARIANT_REMEDY
+from harness.memory.index import context as memory_context
+from harness.memory.search import search_candidates, degraded
+from harness.token_estimator import estimate_tokens
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
@@ -71,7 +76,23 @@ def _persist_context_package(
 ) -> JsonObject:
     """Build once and register a reusable Context Package for one pinned diff."""
     package_base = batch.get("integration_base_commit") or batch["base_commit"]
-    reusable = _reusable_context_package(root, batch, package_base, snapshot)
+    goal = batch.get("goal", "")
+    dod = batch.get("definition_of_done", [])
+    query = "\n".join([goal, *dod])
+    try:
+        _, _, memory_policy = memory_context(repo)
+        mode = "enabled" if memory_policy.active else "disabled"
+    except ValueError:
+        memory_policy = None
+        mode = "disabled"
+    identity = {
+        "mode": mode,
+        "query_input_hash": hashlib.sha256(
+            _canonical({"goal": goal, "definition_of_done": dod}).encode("utf-8")
+        ).hexdigest(),
+        "selection_policy": "fts-type-quota-v1",
+    }
+    reusable = _reusable_context_package(root, batch, package_base, snapshot, identity)
     if reusable is not None:
         return reusable
     if role != "shared":
@@ -106,6 +127,27 @@ def _persist_context_package(
         if max_related_tests is not None
         else policy["max_related_tests"]
     )
+    memory = (
+        search_candidates(repo, query)
+        if mode == "enabled"
+        else degraded("disabled", "memory disabled or source allowlist empty")
+    )
+    pointers: list[dict[str, object]] = []
+    if memory_policy is not None:
+        for pointer in cast(list[dict[str, object]], memory["pointers"]):
+            if (
+                estimate_tokens(json.dumps([*pointers, pointer], ensure_ascii=False))
+                <= memory_policy.max_tokens
+            ):
+                pointers.append(pointer)
+            if len(pointers) >= memory_policy.top_k:
+                break
+    memory = {
+        **memory,
+        "pointers": pointers,
+        "diagnostic": memory.get("diagnostic", ""),
+        "identity": identity,
+    }
     scope = batch.get("scope_preflight")
     expected_files = scope.get("expected_files", []) if isinstance(scope, dict) else []
     task_files = [path for path in expected_files if isinstance(path, str)]
@@ -129,6 +171,9 @@ def _persist_context_package(
             max_related_tests=related_tests_cap,
             seed_paths=seed_files,
             section_index_min_tokens=policy["section_index_min_tokens"],
+            goal=goal,
+            definition_of_done=dod,
+            memory=memory,
         )
     except ContextPackageError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
@@ -149,6 +194,9 @@ def _persist_context_package(
         "role": "shared",
         "inclusion_reason": inclusion_reason,
         "schema_version": built.schema_version,
+        "goal": built.goal,
+        "definition_of_done": built.definition_of_done,
+        "memory": built.memory,
         "parser": built.parser,
         "parser_provenance": built.parser_provenance,
     }

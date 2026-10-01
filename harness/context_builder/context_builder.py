@@ -86,7 +86,10 @@ class ContextPackage:
     file_hashes: dict[str, str]
     size_bytes: int
     estimated_tokens: int
-    schema_version: int = 2
+    schema_version: int = 3
+    goal: str = ""
+    definition_of_done: list[str] = field(default_factory=list)
+    memory: dict[str, object] = field(default_factory=dict)
     parser: str = "path-only"
     parser_provenance: dict[str, object] | None = None
 
@@ -542,6 +545,9 @@ def build_context_package(
     max_related_tests: int | None = None,
     seed_paths: list[str] | None = None,
     section_index_min_tokens: int | None = None,
+    goal: str = "",
+    definition_of_done: list[str] | None = None,
+    memory: dict[str, object] | None = None,
 ) -> ContextPackage:
     """Собрать неизменяемый Context Package для пары коммитов `base_commit`..`candidate_commit`.
 
@@ -750,6 +756,15 @@ def build_context_package(
     added_paths: set[str] = {path for path, status in changed if status == "added"}
     payload_text: str = "\n".join(
         [
+            json.dumps(
+                {
+                    "goal": goal,
+                    "definition_of_done": definition_of_done or [],
+                    "memory": memory or {},
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
             diff,
             json.dumps(symbol_graph, ensure_ascii=False, sort_keys=True),
             json.dumps(
@@ -793,7 +808,10 @@ def build_context_package(
         file_hashes=file_hashes,
         size_bytes=size_bytes,
         estimated_tokens=estimated_tokens,
-        schema_version=2,
+        schema_version=3,
+        goal=goal,
+        definition_of_done=list(definition_of_done or []),
+        memory=memory or {},
         parser=parser,
         parser_provenance=parser_provenance,
     )
