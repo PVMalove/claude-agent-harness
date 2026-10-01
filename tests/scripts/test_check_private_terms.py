@@ -657,6 +657,8 @@ class AnalyseCommandTests(unittest.TestCase):
             'git -C "$WT" commit',
             "cd - && git push",
             "git --git-dir=/other/.git commit",
+            "cd ~nosuchuser_zz9 && git commit",
+            "git -C ~nosuchuser_zz9/sub commit",
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self._steps(command)[0][1])
@@ -763,6 +765,16 @@ class HookTests(unittest.TestCase):
                 unparsable = _hook("echo 'Zorblax", Path(tmp))
 
         self.assertEqual((plain, unparsable), ((0, "", ""), (0, "", "")))
+        run.assert_not_called()
+
+    def test_an_unknown_home_directory_never_fails_another_command(self) -> None:
+        command = "cd ~nosuchuser_zz9 || true; ls"
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(check.subprocess, "run") as run:
+                listed = _hook(command, Path(tmp))
+                unlisted = _hook(command, Path(tmp), {})
+
+        self.assertEqual((listed, unlisted), ((0, "", ""), (0, "", "")))
         run.assert_not_called()
 
     def test_without_a_list_a_publication_command_is_allowed_with_a_notice(

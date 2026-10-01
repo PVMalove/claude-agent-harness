@@ -331,7 +331,10 @@ def _join(cwd: Path | None, value: str) -> Path | None:
     """Каталог после `cd` или `git -C`; None, если shell-текст его не определяет."""
     if value == "-" or DYNAMIC.search(value):
         return None
-    target = Path(value).expanduser()
+    try:
+        target = Path(value).expanduser()
+    except RuntimeError:  # `~user` of an unknown user
+        return None
     if target.is_absolute():
         return target
     return None if cwd is None else cwd / target
