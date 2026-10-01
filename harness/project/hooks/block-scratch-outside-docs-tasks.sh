@@ -28,19 +28,42 @@ if project_dir:
         proj = Path(project_dir).resolve()
         resolved = p.resolve()
         if not resolved.is_relative_to(proj):
+            sys.stdout.write(str(resolved))
+            # The runtime memory directory, <config>/projects/<slug>/memory/, sits outside
+            # every project by design.
+            config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+            config = config.expanduser().resolve()
+            if resolved.is_relative_to(config):
+                parts = resolved.relative_to(config).parts
+                if len(parts) > 3 and parts[0] == "projects" and parts[2] == "memory":
+                    raise SystemExit(3)
             raise SystemExit(2)
         value = resolved.relative_to(proj).as_posix()
     except SystemExit:
         raise
     except Exception:
-        raise SystemExit(2)
+        raise SystemExit(4)
 
 sys.stdout.write(value.replace("\\", "/"))
 ')"
-if [ $? -ne 0 ]; then
-  echo "Невозможно проверить путь Write/Edit: hook payload не содержит tool_input.file_path." >&2
-  exit 2
-fi
+# Exit codes: 0 — project-relative path on stdout; 2 — path outside the project (on stdout);
+# 3 — runtime memory directory; 4 — path cannot be resolved; 1 — no file_path in the payload.
+case $? in
+  0) ;;
+  2)
+    echo "artifacts.md: путь Write/Edit вне проекта ${CLAUDE_PROJECT_DIR} — артефакты задач пишем в docs/tasks/ внутри проекта: $FILE_PATH" >&2
+    exit 2
+    ;;
+  3) exit 0 ;;
+  4)
+    echo "Невозможно проверить путь Write/Edit: путь не удаётся разрешить относительно проекта." >&2
+    exit 2
+    ;;
+  *)
+    echo "Невозможно проверить путь Write/Edit: hook payload не содержит tool_input.file_path." >&2
+    exit 2
+    ;;
+esac
 
 BASE_NAME="${FILE_PATH##*/}"
 if printf '%s' "$BASE_NAME" | grep -qiE 'pr-body|pr-comment|issue-comment'; then

@@ -379,18 +379,51 @@ def run(ctx: SimpleNamespace) -> None:
         / "pr_body"
         / "pr-body-1.md"
     )
-    if (
-        run_hook(
-            scratch_hook,
-            pv_project,
-            "",
-            raw_payload=json.dumps({"tool_input": {"file_path": str(escaped_body)}}),
-        ).returncode
-        == 0
-    ):
+    escaped_result = run_hook(
+        scratch_hook,
+        pv_project,
+        "",
+        raw_payload=json.dumps({"tool_input": {"file_path": str(escaped_body)}}),
+    )
+    if escaped_result.returncode == 0:
         sys.exit(
             "block-scratch-outside-docs-tasks.sh accepted a path outside the project"
         )
+    if (
+        "вне проекта" not in escaped_result.stderr
+        or "payload" in escaped_result.stderr
+    ):
+        sys.exit(
+            "block-scratch-outside-docs-tasks.sh did not name the out-of-project path "
+            f"as the reason: {escaped_result.stderr!r}"
+        )
+    # The runtime's own memory directory (<config>/projects/<slug>/memory/) lives outside the
+    # project but is still writable; any other path under the runtime config stays blocked.
+    runtime_home = test_root / "runtime-home"
+    runtime_config = test_root / "runtime-config"
+    home_env = {"HOME": str(runtime_home), "CLAUDE_CONFIG_DIR": ""}
+    config_env = {"HOME": str(runtime_home), "CLAUDE_CONFIG_DIR": str(runtime_config)}
+    home_projects = runtime_home / ".claude" / "projects" / "-repo"
+    for file_path, env, allowed in (
+        (home_projects / "memory" / "feedback.md", home_env, True),
+        (runtime_config / "projects" / "-repo" / "memory" / "MEMORY.md", config_env, True),
+        (home_projects / "notes.md", home_env, False),
+        (runtime_home / ".claude" / "settings.json", home_env, False),
+        (home_projects / "memory" / "feedback.md", config_env, False),
+    ):
+        result = run_hook(
+            scratch_hook,
+            pv_project,
+            "",
+            raw_payload=json.dumps({"tool_input": {"file_path": str(file_path)}}),
+            env_overrides=env,
+        )
+        if (result.returncode == 0) != allowed:
+            sys.exit(
+                "block-scratch-outside-docs-tasks.sh "
+                f"{'blocked' if allowed else 'allowed'} {file_path} with "
+                f"CLAUDE_CONFIG_DIR={env['CLAUDE_CONFIG_DIR']!r}: {result.stderr!r}"
+            )
     sandboxes_cache_path = (
         pv_project
         / ".harness"
@@ -501,6 +534,38 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("require-bounded-check.sh blocked a point unittest test-path run")
     if run_hook(bounded_hook, pv_project, "ls -la").returncode != 0:
         sys.exit("require-bounded-check.sh blocked an unrelated command")
+    for command in (
+        "sed -n 1,40p pytest.ini",
+        "grep -n 'python -m unittest' .github/workflows/ci.yml",
+        "rg -n 'echo test' .harness/project.json",
+        "cat .github/workflows/ci.yml | grep pytest",
+        "head -20 pytest.ini",
+        "cat pytest.ini # don't run it here",
+        "cat > notes.md <<'EOF'\nRun pytest before the PR; don't skip it.\nEOF",
+    ):
+        if run_hook(bounded_hook, pv_project, command).returncode != 0:
+            sys.exit(
+                f"require-bounded-check.sh blocked a command that only mentions a check: {command!r}"
+            )
+    for command in (
+        "cd sub && pytest -q",
+        "pytest | tail -5",
+        "bash -lc 'echo test'",
+        "uv run pytest",
+        "FOO=1 python -m pytest",
+        "cat notes.md\npytest",
+        "pytest # it's fine",
+        "timeout 600 bash -c 'pytest -q'",
+        "find tests -name '*.py' -exec pytest {} +",
+        "git bisect run pytest",
+        'echo "$(pytest)"',
+        "eval 'pytest -q'",
+        "bash <<'EOF'\npytest\nEOF",
+    ):
+        if run_hook(bounded_hook, pv_project, command).returncode == 0:
+            sys.exit(
+                f"require-bounded-check.sh allowed a bare full-suite run: {command!r}"
+            )
     unharnessed = test_root / "unharnessed_project"
     unharnessed.mkdir(parents=True, exist_ok=True)
     if run_hook(bounded_hook, unharnessed, "echo test").returncode != 0:

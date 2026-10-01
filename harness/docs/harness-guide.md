@@ -1205,9 +1205,9 @@ status::ready») — в этом случае этап grilling пропуска
 | `block-pr-merge.sh` | `PreToolUse(Bash)` | `gh pr merge` — безусловно, мердж только вручную. |
 | `check-branch-name.sh` | `PreToolUse(Bash)` | `git checkout -b`/`git switch -c <имя>`, не соответствующее `branch_pattern`. |
 | `check-worktree-branch-name.sh` | `PreToolUse(EnterWorktree)` | То же правило имени для нативного worktree-инструмента. |
-| `block-scratch-outside-docs-tasks.sh` | `PreToolUse(Write\|Edit)` | Task-артефакты в системных temp-директориях вместо `docs/tasks/`, PR-тела и комментарии вне `.harness/.sandboxes/pr_body/`. |
+| `block-scratch-outside-docs-tasks.sh` | `PreToolUse(Write\|Edit)` | Запись вне проекта (кроме каталога памяти runtime `<CLAUDE_CONFIG_DIR или ~/.claude>/projects/<slug>/memory/`), task-артефакты в системных temp-директориях вместо `docs/tasks/`, PR-тела и комментарии вне `.harness/.sandboxes/pr_body/`. |
 | `require-qa-gate.sh` | `PreToolUse(Bash)` | `gh pr create`, если `qa-gate` не запускался или провалился для текущего рабочего дерева. Маркер пишет скилл `qa-gate` или `/to-pull-requests` после accepted QA evidence координатора через `record-qa-gate-pass.sh`; `mark-qa-gate-passed.sh` (`PostToolUse(Bash)`) — fallback для прямого запуска команд, в linked worktree без `.harness/` он берёт `qa_gate_commands` из корня проекта или основного worktree. |
-| `require-bounded-check.sh` | `PreToolUse(Bash)` | Полный прогон тестов или одной из `qa_gate_commands` без обёртки `test_summary.py`; точечный тест (`::` node-id) не блокируется. |
+| `require-bounded-check.sh` | `PreToolUse(Bash)` | Полный прогон тестов или одной из `qa_gate_commands` без обёртки `test_summary.py`; точечный тест (`::` node-id), упоминания в командах чтения (`cat`, `sed`, `grep`, …), комментариях и тексте heredoc не блокируются. |
 | `block-dangerous-git.sh` | `PreToolUse(Bash)` | `git reset --hard`, `git clean -f`/`-fd`, `git branch -D`, `git checkout .`, `git restore .`. В отличие от апстримного `git-guardrails-claude-code` **не** блокирует `git push` целиком — пуш issue-веток нужен. |
 | `count-skill-usage.sh` | `PreToolUse(Skill)` | Ничего — считает частоту вызова скиллов в `.claude/.skill-usage.json`. |
 
