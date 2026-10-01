@@ -175,6 +175,31 @@ python harness\bin\harness.py init C:\path\to\repository `
 Последние четыре флага читает только `pvmalove-suite`; они пишутся в `.harness/project.json`. Их
 можно опустить — `init` спросит интерактивно.
 
+**Поле `tracker`** в `.harness/project.json` явно задаёт трекер проекта
+([ADR 0010](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0010-explicit-project-tracker.md)).
+Это объект из трёх ключей: `type` — `github`, `gitlab` (включая self-hosted) или `local`;
+`host` — веб-хост с необязательным портом, без схемы, пути и userinfo; `project` — полный путь
+проекта с подгруппами. Для `github` и `gitlab` обязательны `host` и `project`; другие ключи внутри
+`tracker` отклоняются:
+
+```json
+"tracker": {"type": "gitlab", "host": "gitlab.example.test:4443", "project": "group/sub/project"}
+```
+
+- Создавая `project.json` (`init`, а также `adopt`/`update`, если файла ещё нет), харнесс заполняет
+  поле по `origin` без вопросов и флагов: GitHub или GitLab с полностью разобранными хостом и путём
+  записываются, для локального трекера, хоста без `gitlab.` в имени и репозитория без `origin` поле
+  не пишется. Существующий `project.json` — seed-файл проекта — не переписывается.
+- Без поля трекер определяется по `origin` с учётом схемы, userinfo, порта и подгрупп, а `harness
+  health` выдаёт warn с готовым сниппетом (см. `tracker.project` в разделе health). Хост без `gitlab.`
+  в имени без поля считается локальным трекером — для self-hosted GitLab поле нужно задать.
+- При SSH-`origin` порт SSH ничего не говорит о веб-интерфейсе: нестандартный веб-порт допишите в
+  `host` вручную.
+- Сертификаты, прокси и учётные данные в поле не пишутся — они остаются в личной конфигурации
+  `gh`/`glab`.
+- `.harness/project.schema.json` в установленном проекте — тоже seed: после обновления харнесса
+  старая копия схемы может не знать о поле `tracker`. Авторитетен валидатор `harness health`.
+
 При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md` и само `.harness/project.json`.
 
 - Этот справочник и руководство по backend-оркестрации — **не** seed-файлы: они входят в
@@ -282,7 +307,7 @@ python3 harness/bin/harness.py health /path/to/repository --json     # маши�
 | `environment` | ОС, git и `user.name`/`user.email`, `.gitattributes` и расхождения переводов строк, Python ≥ 3.12, uv, синхронность `.harness/.venv` с `uv.lock` (только в репозитории харнесса), кодировка вывода, длина пути (warn только на Windows при запасе < 160 символов) |
 | `environment` на Windows | `LongPathsEnabled`, владелец и запись `%TEMP%\pytest-of-<user>`, пробный symlink (Developer Mode), `bash` для hooks (`fail`, если это заглушка WSL `System32\bash.exe`) |
 | `orchestration` | Только при `backend-orchestration`, все проверки read-only — см. ниже |
-| `tracker` | Только с `--online` — см. ниже |
+| `tracker` | `tracker.project` — локально, остальные проверки только с `--online` — см. ниже |
 
 **Группа `orchestration`.** Без capability все шесть проверок сразу `skipped` («backend-orchestration
 capability не выбрана»). Проверки читают леджер и `git worktree list --porcelain` и строят только
@@ -304,12 +329,13 @@ dry-run план очистки; `ledger migrate`/`reset`, `git worktree remove`
 Реестр Windows, Developer Mode, глобальный git config, права доступа и worktree `--fix` не трогает —
 для них в отчёте только команда.
 
-**`--online`** включает группу `tracker`, по умолчанию выключенную, чтобы обычный `health` оставался
-локальным. Без флага каждая проверка `tracker.*` — `skipped` «офлайн».
+**`--online`** включает онлайн-проверки группы `tracker`, по умолчанию выключенные, чтобы обычный
+`health` оставался локальным. Без флага каждая проверка `tracker.*`, кроме `tracker.project`, — `skipped` «офлайн».
 
 | Проверка | Как работает |
 |---|---|
-| Определение трекера | По `git remote -v`: GitHub или GitLab по домену origin; локальный трекер — `skipped` |
+| Определение трекера | Единый резолвер трекера проекта: корректное поле `tracker` из `.harness/project.json` побеждает; без него разбирается `origin` из `git remote -v` — `https://`, `ssh://`, SCP-форма, userinfo, порт, подгруппы и точка в имени. `github.com` — GitHub, хост с `gitlab.` в имени — GitLab, иначе локальный трекер: онлайн-проверки для него — `skipped` |
+| `tracker.project` | Работает без `--online` и без сети, никогда не `skipped`: показывает тип, хост, проект и источник (`поле tracker`, `origin` или `нет origin`). Нет поля в существующем `.harness/project.json` — `warn` с готовым к вставке сниппетом `"tracker": {...}` в подсказке; поле расходится с `origin` по типу, хосту или проекту — `warn`, используется поле; некорректное поле — `warn` «поле tracker не применено» вместе с `fail` у `files.project_json`. Без `.harness/project.json` — `ok` |
 | `tracker.auth` | `gh auth status` / `glab auth status`; используется только код возврата — токены health не читает и не печатает |
 | `tracker.permissions` | `gh api repos/{owner}/{repo}` (`push` → PR и комментарии, `triage` и выше → метки) или `glab api projects/:id` (`access_level` ≥ 30 ≈ push, ≥ 20 — метки) |
 | `tracker.reachability` | `git ls-remote origin` |
