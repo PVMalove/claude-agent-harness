@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
+from harness.memory.index import context as memory_context
+from harness.memory.sources import allowed_paths, read_source
 from harness.orchestration import operational_guards
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
@@ -328,9 +330,10 @@ def _latest_context_package(root: Path, batch: JsonObject) -> JsonObject | None:
 def _context_package_freshness(
     repo: Path, root: Path, batch: JsonObject
 ) -> JsonObject | None:
-    """Shadow-mode evidence only: records whether the batch's latest registered Context Package
-    still matches current repository state (its base and the latest accepted developer candidate).
-    Never blocks dispatch creation -- roles are not yet restricted to the package."""
+    """Admission evidence from pinned commits and authoritative frozen source bytes.
+
+    The derived index is neither queried nor refreshed; index-only changes are irrelevant.
+    """
     package = _latest_context_package(root, batch)
     if package is None:
         return None
@@ -342,7 +345,39 @@ def _context_package_freshness(
     fresh = package["base_commit"] == current_base and (
         current_candidate is None or package["candidate_commit"] == current_candidate
     )
+    pointers = package.get("memory", {}).get("pointers", [])
+    memory_fresh = True
+    if pointers:
+        try:
+            canonical, _, policy = memory_context(repo)
+            permitted = (
+                set(allowed_paths(canonical, policy)) if policy.active else set()
+            )
+            for pointer in pointers:
+                relative = pointer["path"]
+                document = (
+                    read_source(canonical, relative, policy)
+                    if relative in permitted
+                    else None
+                )
+                if (
+                    document is None
+                    or document.source_type != pointer["source_type"]
+                    or document.source_hash != pointer["source_hash"]
+                ):
+                    memory_fresh = False
+                    break
+        except (OSError, ValueError, KeyError, TypeError):
+            memory_fresh = False
+    fresh = fresh and memory_fresh
     return {
+        **(
+            {
+                "memory_diagnostic": "frozen memory source changed, unavailable or revoked"
+            }
+            if not memory_fresh
+            else {}
+        ),
         "context_package_id": package["context_package_id"],
         "status": "fresh" if fresh else "stale",
         "checked_at": utils._now(),
