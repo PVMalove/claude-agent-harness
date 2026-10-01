@@ -126,7 +126,16 @@ def main() -> int:
         return 0
     checkout = checkout_for(project, data, command)
     if mode == "mark":
-        config = checkout / ".harness" / "project.json"
+        # A linked worktree lacks the gitignored .harness/: use the project root config,
+        # then the main worktree's when the session itself runs in a linked worktree.
+        main_checkout = worktrees(project)[0][0]
+        configs = [
+            path / ".harness" / "project.json"
+            for path in (checkout, project, main_checkout)
+        ]
+        config = next((path for path in configs if path.is_file()), None)
+        if config is None:
+            return 0
         commands = json.loads(config.read_text(encoding="utf-8")).get(
             "qa_gate_commands", []
         )
