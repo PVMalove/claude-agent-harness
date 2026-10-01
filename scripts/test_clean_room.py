@@ -30,6 +30,7 @@ from scripts.clean_room import (
     backend_orchestration,
     base_commit_gate,
     baseline_metrics,
+    branch_hooks,
     checkpoint_session,
     context_package,
     coordinator_seam,
@@ -69,6 +70,7 @@ SCENARIOS = (
     baseline_metrics,
     orchestration_config,
     project_hooks,
+    branch_hooks,
     global_install,
 )
 
