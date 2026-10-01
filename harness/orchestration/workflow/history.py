@@ -328,13 +328,23 @@ def _latest_context_package(root: Path, batch: JsonObject) -> JsonObject | None:
 
 
 def _context_package_freshness(
-    repo: Path, root: Path, batch: JsonObject
+    repo: Path,
+    root: Path,
+    batch: JsonObject,
+    *,
+    context_package_id: str | None = None,
 ) -> JsonObject | None:
     """Admission evidence from pinned commits and authoritative frozen source bytes.
 
+    An explicit ID checks the package selected for admission, even when a newer package has a
+    different memory identity. With no ID, retain the deliberate latest-package audit behavior.
     The derived index is neither queried nor refreshed; index-only changes are irrelevant.
     """
-    package = _latest_context_package(root, batch)
+    if context_package_id is None:
+        package = _latest_context_package(root, batch)
+    else:
+        package = _load_context_package(root, context_package_id)
+        _validate_context_package(root, batch, package)
     if package is None:
         return None
     current_base = batch.get("integration_base_commit") or batch.get("base_commit")

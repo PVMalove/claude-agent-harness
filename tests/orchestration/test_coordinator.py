@@ -3898,6 +3898,131 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             brief["transition"]["context_package_id"], brief["context_package_id"]
         )
 
+    def _memory_dispatch_fixture(self) -> tuple[JsonObject, Path]:
+        from harness.memory import build
+
+        project_path = self.repo / ".harness/project.json"
+        project = json.loads(project_path.read_text())
+        project.update(
+            {
+                "memory": {"enabled": True},
+                "memory_policy": {
+                    "source_types": ["glossary"],
+                    "allow_paths": ["CONTEXT.md"],
+                    "redact_rules": [],
+                    "min_similarity": 0,
+                    "top_k": 5,
+                    "max_tokens": 1000,
+                },
+            }
+        )
+        project_path.write_text(json.dumps(project))
+        source_path = self.repo / "CONTEXT.md"
+        source_path.write_text("# Memory\nroute retries")
+        build(self.repo)
+        batch = self._create_batch()
+        return self._proposal_fields(
+            batch["batch_id"], "architect", "work", None
+        ), source_path
+
+    def test_enabled_reuse_checks_its_sources_after_bypass_registration(self) -> None:
+        import sqlite3
+
+        fields, source_path = self._memory_dispatch_fixture()
+        with mock.patch.object(sqlite3, "connect", wraps=sqlite3.connect) as connects:
+            enabled = coordinator.create_dispatch(
+                self._args(propose=True, no_memory=False, **fields)
+            )
+            bypass = coordinator.create_dispatch(
+                self._args(propose=True, no_memory=True, **fields)
+            )
+            self.assertNotEqual(
+                enabled["transition"]["context_package_id"],
+                bypass["transition"]["context_package_id"],
+            )
+            source_path.write_text("# Changed source")
+            for propose in (True, False):
+                with self.subTest(propose=propose):
+                    with self.assertRaisesRegex(
+                        coordinator.CoordinatorError, "Context Package is stale"
+                    ):
+                        coordinator.create_dispatch(
+                            self._args(
+                                propose=propose,
+                                no_memory=False,
+                                transition_digest=enabled["transition_digest"],
+                                **fields,
+                                **self._approval(),
+                            )
+                        )
+            self.assertEqual(
+                connects.call_count,
+                1,
+                "freeze searches once; reused freshness does not query or refresh",
+            )
+
+    def test_bypass_reuse_is_not_blocked_by_a_later_stale_enabled_package(self) -> None:
+        import sqlite3
+
+        fields, source_path = self._memory_dispatch_fixture()
+        with mock.patch.object(sqlite3, "connect", wraps=sqlite3.connect) as connects:
+            bypass = coordinator.create_dispatch(
+                self._args(propose=True, no_memory=True, **fields)
+            )
+            coordinator.create_dispatch(
+                self._args(propose=True, no_memory=False, **fields)
+            )
+            source_path.write_text("# Changed source")
+            proposal = coordinator.create_dispatch(
+                self._args(propose=True, no_memory=True, **fields)
+            )
+            self.assertEqual(
+                proposal["context_package_freshness"]["context_package_id"],
+                bypass["transition"]["context_package_id"],
+            )
+            self.assertEqual(proposal["context_package_freshness"]["status"], "fresh")
+            created = coordinator.create_dispatch(
+                self._args(
+                    no_memory=True,
+                    transition_digest=proposal["transition_digest"],
+                    **fields,
+                    **self._approval(),
+                )
+            )
+            self.assertEqual(
+                created["brief"]["context_package_id"],
+                bypass["transition"]["context_package_id"],
+            )
+            self.assertEqual(
+                connects.call_count,
+                1,
+                "bypass reuse cannot refresh a stale enabled package",
+            )
+
+    def test_selected_enabled_identity_stays_fresh_after_index_only_write(self) -> None:
+        import sqlite3
+        from harness.memory import build
+
+        fields, _ = self._memory_dispatch_fixture()
+        enabled = coordinator.create_dispatch(
+            self._args(propose=True, no_memory=False, **fields)
+        )
+        coordinator.create_dispatch(self._args(propose=True, no_memory=True, **fields))
+        build(self.repo)
+        with mock.patch.object(
+            sqlite3,
+            "connect",
+            side_effect=AssertionError("reuse freshness cannot open index"),
+        ):
+            proposal = coordinator.create_dispatch(
+                self._args(propose=True, no_memory=False, **fields)
+            )
+        self.assertEqual(
+            proposal["context_package_freshness"]["context_package_id"],
+            enabled["transition"]["context_package_id"],
+        )
+        self.assertEqual(proposal["context_package_freshness"]["status"], "fresh")
+
     def test_proposal_warns_about_minimal_repo_map_without_blocking_dispatch(
         self,
     ) -> None:
@@ -4731,9 +4856,29 @@ class CoordinatorCliParserTests(unittest.TestCase):
     def test_no_memory_is_available_for_propose_create_and_register(self) -> None:
         parse = coordinator.parser().parse_args
         for command in ("propose", "create"):
-            args = parse(["dispatch", command, "--batch", "batch-1", "--role", "architect", "--no-memory"])
+            args = parse(
+                [
+                    "dispatch",
+                    command,
+                    "--batch",
+                    "batch-1",
+                    "--role",
+                    "architect",
+                    "--no-memory",
+                ]
+            )
             self.assertTrue(args.no_memory)
-        args = parse(["context-package", "register", "--batch", "batch-1", "--candidate-commit", "a" * 40, "--no-memory"])
+        args = parse(
+            [
+                "context-package",
+                "register",
+                "--batch",
+                "batch-1",
+                "--candidate-commit",
+                "a" * 40,
+                "--no-memory",
+            ]
+        )
         self.assertTrue(args.no_memory)
 
     def test_dispatch_preflight_exposes_purpose_like_other_dispatch_commands(
