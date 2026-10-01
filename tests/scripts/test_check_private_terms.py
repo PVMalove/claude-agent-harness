@@ -642,9 +642,64 @@ class AnalyseCommandTests(unittest.TestCase):
             "cat <<'EOF' > notes.txt\ngit push\nEOF\necho done",
             "git status && git log --oneline",
             "gh pr view 3 && gh issue list",
+            'echo "git commit"',
+            "echo '$(git push)' '`git push`'",
+            "command -v git && timeout 5 git status",
         ):
             with self.subTest(command=command):
                 self.assertEqual(self._steps(command), [])
+
+    def test_shell_words_and_prefix_commands_precede_the_command(self) -> None:
+        commit = [("commit", self.CWD, (), False)]
+        push = [("push", self.CWD, (), False)]
+        cases = {
+            "timeout 60 git commit -m x": commit,
+            "timeout -k 5 -s INT --foreground 1m git push": push,
+            "if git commit -m x; then echo ok; fi": commit,
+            "if true; then git push; elif false; then :; else git push; fi": push * 2,
+            "while ! git push; do sleep 1; done": push,
+            "until git push; do :; done": push,
+            "{ git commit -m x; }": commit,
+            "time -p nice -n 5 nohup command exec -a g git push": push,
+            "/usr/bin/env -u HOME NAME=1 git push": push,
+            "env -- NAME=1 /usr/bin/timeout 9 git commit -m x": commit,
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(self._steps(command), expected)
+
+    def test_a_command_substitution_is_analysed_as_a_command(self) -> None:
+        commit = [("commit", self.CWD, (), False)]
+        cases = {
+            'out="$(git commit -m x 2>&1)"': commit,
+            "out=$(git commit -m x)": commit,
+            'echo "`git commit -m x`"': commit,
+            "echo `git commit -m x`": commit,
+            'echo "$(echo "$(git commit -m x)")"': commit,
+            "echo \"it's $(git commit -m ')')\"": commit,
+            'cd /repo && echo "$(git push)"': [("push", Path("/repo"), (), False)],
+            "git commit -m \"$(cat <<'EOF'\nsubject (don't)\nEOF\n)\"": commit,
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(self._steps(command), expected)
+
+    def test_a_git_alias_from_the_command_line_is_expanded(self) -> None:
+        cases = {
+            "git -c alias.ci=commit ci -m x": [("commit", self.CWD, (), False)],
+            "git -c Alias.CI='commit -a' ci -F m.md": [
+                ("commit", self.CWD, ("m.md",), True)
+            ],
+            "git -c alias.p='!git push origin' p": [("push", self.CWD, (), False)],
+            "git -C sub -c alias.ci=commit ci": [
+                ("commit", Path("/work/sub"), (), False)
+            ],
+            # git never lets an alias replace a built-in command.
+            "git -c alias.push=status push": [("push", self.CWD, (), False)],
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(self._steps(command), expected)
 
     def test_an_option_value_is_never_read_as_a_file(self) -> None:
         self.assertEqual(
@@ -659,13 +714,17 @@ class AnalyseCommandTests(unittest.TestCase):
             "git --git-dir=/other/.git commit",
             "cd ~nosuchuser_zz9 && git commit",
             "git -C ~nosuchuser_zz9/sub commit",
+            "env -C /other git push",
+            "env --chdir=/other git push",
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self._steps(command)[0][1])
 
     def test_an_unclosed_quote_is_a_parse_error(self) -> None:
-        with self.assertRaises(ValueError):
-            check.analyse_command("git commit -m 'oops", self.CWD)
+        for command in ("git commit -m 'oops", 'echo "$(git push"', "echo `git push"):
+            with self.subTest(command=command):
+                with self.assertRaises(ValueError):
+                    check.analyse_command(command, self.CWD)
 
 
 class HookTests(unittest.TestCase):
@@ -678,6 +737,25 @@ class HookTests(unittest.TestCase):
 
         self.assertEqual(code, 2)
         self.assertEqual(_matches(err), ["command:1: term #2"])
+
+    def test_a_commit_in_another_shell_form_is_checked(self) -> None:
+        forms = (
+            "timeout 60 git commit -m 'fix Zorblax'",
+            "if git commit -m 'fix Zorblax'; then echo ok; fi",
+            "! git commit -m 'fix Zorblax'",
+            "{ git commit -m 'fix Zorblax'; }",
+            "out=\"$(git commit -m 'fix Zorblax' 2>&1)\"",
+            "echo \"`git commit -m 'fix Zorblax'`\"",
+            "git -c alias.ci=commit ci -m 'fix Zorblax'",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            _commit(repo, "base")
+            results = {form: _hook(form, repo) for form in forms}
+
+        for form, (code, _, err) in results.items():
+            with self.subTest(form=form):
+                self.assertEqual((code, _matches(err)), (2, ["command:1: term #2"]))
 
     def test_a_term_in_a_message_file_blocks_the_commit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

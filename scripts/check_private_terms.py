@@ -44,6 +44,20 @@ HEREDOC = re.compile(r"(?<!<)<<(-?)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 DYNAMIC = re.compile(r"[$`*?\[]")
 SEPARATORS = frozenset(";&|()\n")
+# A command substitution is replaced by a marker before shlex and analysed as a nested command.
+SUBSTITUTION = re.compile("\x00([0-9]+)\x00")
+# Shell words before a command name, and prefix commands that run the next word as a command
+# with their options that take a value.
+RESERVED = frozenset({"!", "{", "if", "then", "elif", "else", "do", "while", "until"})
+PREFIXES = {
+    "command": frozenset[str](),
+    "env": frozenset({"-u", "--unset", "-C", "--chdir"}),
+    "exec": frozenset({"-a"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "nohup": frozenset[str](),
+    "time": frozenset({"-f", "--format", "-o", "--output"}),
+    "timeout": frozenset({"-k", "--kill-after", "-s", "--signal"}),
+}
 PUBLICATION = re.compile(
     r"\bgit\b[^\n;&|]*\b(?:commit|push)\b|\bgh\s+(?:issue|pr)\s+(?:create|edit|comment)\b"
 )
@@ -308,23 +322,114 @@ def _strip_heredocs(command: str) -> str:
     return "\n".join(kept)
 
 
-def _segments(command: str) -> list[list[str]]:
-    """Слова простых команд: `;`, `&`, `|`, скобки и перевод строки разделяют команды."""
-    lexer = shlex.shlex(
-        _strip_heredocs(command).replace("\\\n", ""),
-        posix=True,
-        punctuation_chars=";&|()\n",
-    )
+def _closing(text: str, start: int, backtick: bool) -> int:
+    """Индекс символа, закрывающего подстановку с телом от `start`; ValueError — не закрыта."""
+    depth, quote, index = 1, "", start
+    while index < len(text):
+        char = text[index]
+        if quote == "'":
+            quote = "" if char == "'" else quote
+        elif char == "\\":
+            index += 1
+        elif backtick:
+            if char == "`":
+                return index
+        elif char == '"':
+            quote = "" if quote else '"'
+        elif not quote and char == "'":
+            quote = "'"
+        elif not quote and char in "()":
+            depth += 1 if char == "(" else -1
+            if depth == 0:
+                return index
+        index += 1
+    raise ValueError("unclosed command substitution")
+
+
+def _substitutions(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Заменить `$(...)` и обратные кавычки вне одинарных кавычек метками.
+
+    Возвращает текст с метками и пары (исходный текст подстановки, её тело).
+    """
+    if "\x00" in text:
+        raise ValueError("NUL in the command text")
+    kept: list[str] = []
+    found: list[tuple[str, str]] = []
+    quote, index = "", 0
+    while index < len(text):
+        char, end = text[index], index + 1
+        if quote == "'":
+            quote = "" if char == "'" else quote
+        elif char == "\\":
+            end += 1
+        elif char == '"':
+            quote = "" if quote else '"'
+        elif not quote and char == "'":
+            quote = "'"
+        elif char == "`" or text.startswith("$(", index):
+            body = index + (1 if char == "`" else 2)
+            end = _closing(text, body, char == "`") + 1
+            found.append((text[index:end], text[body : end - 1]))
+            kept.append(f"\x00{len(found) - 1}\x00")
+            index = end
+            continue
+        kept.append(text[index:end])
+        index = end
+    return "".join(kept), found
+
+
+def _segments(command: str) -> list[tuple[list[str], list[str]]]:
+    """Простые команды как пары (слова, тела подстановок в этих словах).
+
+    `;`, `&`, `|`, скобки и перевод строки разделяют команды; подстановка остаётся в слове своим
+    исходным текстом.
+    """
+    text, found = _substitutions(_strip_heredocs(command).replace("\\\n", ""))
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     lexer.commenters = ""
-    segments: list[list[str]] = [[]]
+    segments: list[tuple[list[str], list[str]]] = [([], [])]
     for token in lexer:
         if token and set(token) <= SEPARATORS:
-            segments.append([])
-        else:
-            segments[-1].append(token)
+            segments.append(([], []))
+            continue
+        words, bodies = segments[-1]
+        bodies += [found[int(number)][1] for number in SUBSTITUTION.findall(token)]
+        words.append(SUBSTITUTION.sub(lambda match: found[int(match[1])][0], token))
     return segments
+
+
+def _name(word: str) -> str:
+    return word.rsplit("/", 1)[-1].removesuffix(".exe")
+
+
+def _command_words(words: list[str], cwd: Path | None) -> tuple[list[str], Path | None]:
+    """Слова команды без присваиваний, зарезервированных слов и префиксных команд.
+
+    `env -C` запускает команду в другом каталоге, поэтому её каталог становится неизвестным.
+    """
+    index = 0
+    while index < len(words):
+        word = words[index]
+        index += 1
+        options = PREFIXES.get(_name(word))
+        if options is None:
+            if word in RESERVED or ASSIGNMENT.match(word):
+                continue
+            return words[index - 1 :], cwd
+        while index < len(words) and words[index].startswith("-"):
+            option = words[index]
+            index += 1
+            if option == "--":
+                break
+            if option.startswith(("-C", "--chdir")):
+                cwd = None
+            if option in options and index < len(words):
+                index += 1
+        if _name(word) == "timeout":
+            index += 1  # the duration
+    return [], cwd
 
 
 def _join(cwd: Path | None, value: str) -> Path | None:
@@ -377,8 +482,12 @@ def _commit_step(cwd: Path | None, args: list[str]) -> Step:
 
 
 def _git_step(cwd: Path | None, args: list[str]) -> list[Step]:
-    """Шаг для `git [глобальные опции] commit|push`; `-C` накапливается, как в git."""
+    """Шаг для `git [глобальные опции] commit|push`; `-C` накапливается, как в git.
+
+    Алиас из `-c alias.<имя>=<значение>` раскрывается; встроенную команду алиас не заменяет.
+    """
     foreign = False
+    aliases: dict[str, str] = {}
     index = 0
     while index < len(args) and args[index].startswith("-"):
         option = args[index]
@@ -388,13 +497,22 @@ def _git_step(cwd: Path | None, args: list[str]) -> list[Step]:
             index += 1
             if option == "-C":
                 cwd = _join(cwd, args[index])
+            elif option == "-c":
+                key, _, value = args[index].partition("=")
+                if key.casefold().startswith("alias."):
+                    aliases[key[6:].casefold()] = value
         index += 1
     cwd = None if foreign else cwd
     subcommand = args[index] if index < len(args) else ""
+    alias = aliases.get(subcommand.casefold())
     if subcommand == "push":
         return [Step("push", cwd)]
     if subcommand == "commit":
         return [_commit_step(cwd, args[index + 1 :])]
+    if alias is not None and alias.startswith("!"):
+        return analyse_command(alias[1:], cwd)
+    if alias is not None:
+        return _git_step(cwd, [*shlex.split(alias), *args[index + 1 :]])
     return []
 
 
@@ -415,26 +533,29 @@ def _gh_step(cwd: Path | None, args: list[str]) -> list[Step]:
     return [Step("gh", cwd, tuple(files))]
 
 
-def analyse_command(command: str, cwd: Path) -> list[Step]:
+def analyse_command(command: str, cwd: Path | None) -> list[Step]:
     """Публикационные шаги команды Bash: git commit/push и gh issue|pr create|edit|comment.
 
-    Упоминание в кавычках остаётся одним аргументом другой команды и шагом не считается; `cd`
-    меняет каталог следующих команд. ValueError — текст не разбирается как shell.
+    Упоминание в кавычках остаётся одним аргументом другой команды и шагом не считается, а
+    подстановка `$(...)` или в обратных кавычках вне одинарных кавычек разбирается как команда;
+    `cd` меняет каталог следующих команд. ValueError — текст не разбирается как shell.
     """
     steps: list[Step] = []
-    current: Path | None = cwd
-    for words in _segments(command):
-        while words and ASSIGNMENT.match(words[0]):
-            words = words[1:]
+    current = cwd
+    for words, bodies in _segments(command):
+        for body in bodies:
+            # A substitution runs before its command, in the directory of that command.
+            steps += analyse_command(body, current)
+        words, directory = _command_words(words, current)
         if not words:
             continue
-        name = words[0].rsplit("/", 1)[-1].removesuffix(".exe")
+        name = _name(words[0])
         if name == "cd":
-            current = _join(current, words[1]) if len(words) == 2 else None
+            current = _join(directory, words[1]) if len(words) == 2 else None
         elif name == "git":
-            steps += _git_step(current, words[1:])
+            steps += _git_step(directory, words[1:])
         elif name == "gh":
-            steps += _gh_step(current, words[1:])
+            steps += _gh_step(directory, words[1:])
     return steps
 
 
