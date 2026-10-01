@@ -283,14 +283,25 @@ def _render_project_template(values: dict[str, str]) -> str:
     return rendered
 
 
-def test_rendered_project_template_passes_the_validator(tmp_path: Path) -> None:
-    """Проверить, что project.json.tmpl, отрендеренный с примерными значениями, проходит валидатор."""
+@pytest.mark.parametrize(
+    ("tracker_field", "expected_tracker"),
+    [
+        ("", None),
+        ('\n  "tracker": ' + json.dumps(_GITLAB_TRACKER) + ",", _GITLAB_TRACKER),
+    ],
+)
+def test_rendered_project_template_passes_the_validator(
+    tmp_path: Path, tracker_field: str, expected_tracker: dict[str, object] | None
+) -> None:
+    """Проверить, что project.json.tmpl, отрендеренный с полем tracker и без него, проходит
+    валидатор."""
     rendered = _render_project_template(
         {
             "LANGUAGE": "ru",
             "PR_BASE_BRANCH": "main",
             "BRANCH_PATTERN": "^feature/issue-[0-9]+-.+",
             "QA_GATE_COMMANDS": json.dumps(["echo test"]),
+            "TRACKER_FIELD": tracker_field,
         }
     )
     project_json = tmp_path / ".harness" / "project.json"
@@ -302,7 +313,7 @@ def test_rendered_project_template_passes_the_validator(tmp_path: Path) -> None:
 
     assert problems == []
     assert "{{" not in rendered
-    assert "tracker" not in json.loads(rendered)
+    assert json.loads(rendered).get("tracker") == expected_tracker
 
 
 def test_check_orchestration_config_skipped_without_capability(tmp_path: Path) -> None:

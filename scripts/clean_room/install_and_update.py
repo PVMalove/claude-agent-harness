@@ -16,6 +16,7 @@ from scripts.clean_room.support import (
     capture,
     capture_json,
     count_skill_files,
+    fail_json,
     fill_agents,
     find_check,
     run_fails,
@@ -309,6 +310,7 @@ def run(ctx: SimpleNamespace) -> None:
     if retired_skill_dir.exists():
         sys.exit("update did not remove an empty retired skill directory")
     run_ok(HARNESS + ["health", str(pv_project)])
+    check_tracker_field(pv_project)
     if not filecmp.cmp(
         ROOT / "skills" / "first-party" / "pvmalove" / "to-spec" / "SKILL.md",
         pv_project / ".harness" / "skills" / "to-spec" / "SKILL.md",
@@ -437,3 +439,58 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("pytest summary wrapper did not save a sanitized failure log")
     ctx.pv_project = pv_project
     ctx.target_home = target_home
+
+
+def check_tracker_field(pv_project) -> None:
+    """Поле tracker в установленном проекте (docs/adr/0010): discovery обоих runtime и health.
+
+    Проект без origin получает при установке project.json без поля tracker. С добавленным полем
+    discovery-ссылки (`.agents/skills` для Codex и `.claude/skills`), `AGENTS.md`, реестр навыков и
+    `files.project_json` остаются ok, а `tracker.project` берёт трекер из поля; неизвестный ключ
+    внутри tracker роняет health. Исходные байты project.json восстанавливаются: по нему дальше
+    работают сценарии hooks.
+    """
+    project_json = pv_project / ".harness" / "project.json"
+    original = project_json.read_bytes()
+    data = json.loads(original)
+    if "tracker" in data:
+        sys.exit("install wrote a tracker field into a project without origin")
+    if not (pv_project / ".harness" / "health" / "project_tracker.py").is_file():
+        sys.exit(
+            "pvmalove-suite health resource is missing the project tracker resolver"
+        )
+    if not (pv_project / ".agents" / "skills" / "qa-gate" / "SKILL.md").is_file():
+        sys.exit("Codex discovery path .agents/skills does not expose installed skills")
+    data["tracker"] = {
+        "type": "gitlab",
+        "host": "git.example.test:4443",
+        "project": "group/sub/project",
+    }
+    project_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    report = capture_json(HARNESS + ["health", str(pv_project), "--json"])
+    for check_id in (
+        "files.project_json",
+        "files.discovery_links",
+        "files.agents_md",
+        "files.skill_registry",
+    ):
+        if find_check(report, check_id)["status"] != "ok":
+            sys.exit(f"health with a tracker field did not keep {check_id} ok")
+    tracker = find_check(report, "tracker.project")
+    if tracker["status"] != "ok" or tracker["message"] != (
+        "трекер проекта: gitlab, хост git.example.test:4443, проект group/sub/project "
+        "(источник: поле tracker)"
+    ):
+        sys.exit("health did not resolve the project tracker from the tracker field")
+    data["tracker"]["unexpected"] = True
+    project_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    invalid = find_check(
+        fail_json(HARNESS + ["health", str(pv_project), "--json"]), "files.project_json"
+    )
+    if (
+        invalid["status"] != "fail"
+        or "tracker has unknown field(s): unexpected" not in invalid["message"]
+    ):
+        sys.exit("health accepted an unknown key inside the tracker field")
+    project_json.write_bytes(original)
+    run_ok(HARNESS + ["health", str(pv_project)])
