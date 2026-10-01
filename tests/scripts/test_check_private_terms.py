@@ -967,6 +967,29 @@ class HookTests(unittest.TestCase):
         )
         self.assertEqual(skipped, (0, "", SKIPPED))
 
+    def test_an_unparsable_command_is_judged_with_its_line_continuations_joined(
+        self,
+    ) -> None:
+        # The apostrophe in a shell comment leaves a quote unclosed for the parser.
+        commit = "git -C . \\\ncommit -m 'Zorblax'  # don't amend"
+        push = "git -C . \\\npush origin HEAD:Zorblax  # it's ready"
+        pr = "gh pr \\\ncreate --title Zorblax  # it's ready"
+        other = "ls -la \\\n  docs  # it's fine"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            with mock.patch.object(check.subprocess, "run") as run:
+                listed = _hook(other, repo)
+                unlisted = _hook(other, repo, {})
+            blocked = [_hook(command, repo) for command in (commit, push, pr)]
+
+        run.assert_not_called()
+        self.assertEqual((listed, unlisted), ((0, "", ""), (0, "", "")))
+        message = (
+            "private-terms: cannot parse this command; split it or pass the "
+            "text through a readable body file\n"
+        )
+        self.assertEqual(blocked, [(2, "", message)] * 3)
+
     def test_a_too_deeply_nested_command_is_an_unparsable_command(self) -> None:
         depth = sys.getrecursionlimit() + 50
         nested = "$(echo " * depth + "x" + ")" * depth
