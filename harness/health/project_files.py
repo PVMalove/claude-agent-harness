@@ -45,6 +45,7 @@ PROJECT_JSON_ALLOWED_FIELDS = frozenset(PROJECT_JSON_REQUIRED_FIELDS) | {
     "shell",
     "memory",
     "memory_policy",
+    "tracker",
 }
 STORY_POINTS_REQUIRED_FIELDS = (
     "scale",
@@ -53,6 +54,17 @@ STORY_POINTS_REQUIRED_FIELDS = (
     "gray_zone",
 )
 STORY_POINTS_ALLOWED_FIELDS = frozenset(STORY_POINTS_REQUIRED_FIELDS)
+
+# The optional `tracker` field (docs/adr/0010): the single definition of its rules. The project
+# tracker resolver (project_tracker.py) imports them from here, and `project.schema.json` repeats
+# the same patterns verbatim - tests/health/test_health_checks_files.py keeps the two in step.
+TRACKER_FIELDS = ("type", "host", "project")
+TRACKER_TYPES = ("github", "gitlab", "local")
+TRACKER_HOSTED_TYPES = ("github", "gitlab")
+# A hostname with an optional :port - no scheme, path or userinfo.
+TRACKER_HOST_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?$"
+# The full project path including subgroups, at least two segments, no leading/trailing slash.
+TRACKER_PROJECT_PATTERN = r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$"
 
 
 # --- Detection helpers moved unchanged from harness/bin/harness.py ----------------------------
@@ -488,6 +500,48 @@ def validate_integrations(repo: Path, problems: list[str]) -> int:
     return len(entries)
 
 
+def tracker_field_problems(value: object) -> list[str]:
+    """Problems of the `tracker` field value of .harness/project.json; empty when it is valid.
+
+    The `host` and `project` values never appear in a message: a pasted URL can carry userinfo
+    credentials, which must not reach a health report or the console.
+    """
+    prefix = ".harness/project.json tracker"
+    if not isinstance(value, dict):
+        return [f"{prefix} must be an object"]
+    problems: list[str] = []
+    extra = sorted(str(key) for key in set(value) - set(TRACKER_FIELDS))
+    if extra:
+        problems.append(f"{prefix} has unknown field(s): {', '.join(extra)}")
+    tracker_type = value.get("type")
+    if "type" not in value:
+        problems.append(f"{prefix} missing required field(s): type")
+    elif tracker_type not in TRACKER_TYPES:
+        problems.append(f"{prefix} type must be one of: {', '.join(TRACKER_TYPES)}")
+    elif tracker_type in TRACKER_HOSTED_TYPES:
+        missing = [field for field in ("host", "project") if field not in value]
+        if missing:
+            problems.append(
+                f"{prefix} of type {tracker_type} missing field(s): {', '.join(missing)}"
+            )
+    host = value.get("host")
+    if "host" in value and not (
+        isinstance(host, str) and re.fullmatch(TRACKER_HOST_PATTERN, host)
+    ):
+        problems.append(
+            f"{prefix} host must be a hostname with an optional :port, without scheme, path or userinfo"
+        )
+    project = value.get("project")
+    if "project" in value and not (
+        isinstance(project, str) and re.fullmatch(TRACKER_PROJECT_PATTERN, project)
+    ):
+        problems.append(
+            f"{prefix} project must be the full project path with subgroups (group/sub/project), "
+            "without a leading or trailing slash"
+        )
+    return problems
+
+
 def validate_project_json(repo: Path, problems: list[str]) -> None:
     """.harness/project.json не является обязательным (создаётся только pvmalove-suite), поэтому его
     отсутствие не считается ошибкой; проверяется только при его наличии.
@@ -544,6 +598,8 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
         problems.append(
             f".harness/project.json shell must be 'bash' or 'powershell', got {data['shell']!r}"
         )
+    if "tracker" in data:
+        problems.extend(tracker_field_problems(data["tracker"]))
     if "story_points" in data:
         story_points = data["story_points"]
         if not isinstance(story_points, dict):
