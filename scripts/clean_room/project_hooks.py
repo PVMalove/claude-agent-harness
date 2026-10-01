@@ -90,10 +90,47 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("could not record primary checkout QA marker")
     if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode == 0:
         sys.exit("primary checkout QA marker opened a linked-worktree PR")
+
+    def gate_code(command: str, cwd: Path) -> int:
+        """Код require-qa-gate.sh для команды, запущенной из `cwd`."""
+        payload = json.dumps({"cwd": str(cwd), "tool_input": {"command": command}})
+        return run_hook(require_gate, pv_project, "", raw_payload=payload).returncode
+
+    # Creates that publish the linked branch from the primary checkout's cwd.
+    linked_creates = [
+        f"glab mr create -s {linked_branch} --fill",
+        f"glab mr create -fs {linked_branch}",
+        f"glab mr create -s{linked_branch}",
+        f"glab mr create --source-branch {linked_branch} --fill",
+        f"glab mr create --source-branch={linked_branch}",
+    ]
+    for command in linked_creates:
+        if gate_code(command, pv_project) != 2:
+            sys.exit(f"primary checkout QA marker opened a linked MR: {command!r}")
+    if gate_code("glab mr create --fill", linked) != 2:
+        sys.exit("glab mr create from an untested linked checkout cwd was allowed")
     if run_hook(record_gate, pv_project, "", cwd=linked).returncode:
         sys.exit("could not record linked-worktree QA marker")
     if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode:
         sys.exit("linked-worktree QA marker did not permit its PR")
+    for command in linked_creates:
+        if gate_code(command, pv_project):
+            sys.exit(f"linked-worktree QA marker did not permit: {command!r}")
+    for command in (
+        "glab mr create --fill",
+        # -s of another command and glab -H (a repository) do not name the MR branch.
+        "git commit -s -m wip && glab mr create --fill",
+        "glab mr create -H group/fork --fill",
+    ):
+        if gate_code(command, linked):
+            sys.exit(f"QA marker did not permit MR from the linked cwd: {command!r}")
+    for command in (
+        "glab mr create -s feature/issue-999-missing",
+        "glab mr create -s",
+        f"glab mr create -s {linked_branch} && gh pr create --fill",
+    ):
+        if gate_code(command, linked) != 2:
+            sys.exit(f"unresolvable MR source branch reused a QA marker: {command!r}")
     local_pr_payload = json.dumps(
         {
             "cwd": str(linked),
@@ -146,6 +183,8 @@ def run(ctx: SimpleNamespace) -> None:
     )
     if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode == 0:
         sys.exit("stale linked-worktree QA marker opened a PR")
+    if gate_code(f"glab mr create -s {linked_branch}", pv_project) != 2:
+        sys.exit("stale linked-worktree QA marker opened an MR")
 
     # The gitignored .harness/ is absent from a real linked worktree: mark falls back to
     # the project root config, and /to-pull-requests records coordinator-accepted QA there.
@@ -1131,6 +1170,14 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit(
             "require-qa-gate.sh allowed gh pr create without QA gate passed marker"
         )
+    # PR/MR creation is still detected by text: a quoted mention needs QA evidence too.
+    for command in (
+        "glab mr create --fill",
+        'git commit -m "docs: run qa-gate before gh pr create"',
+        'python tool.py --note "glab mr create needs qa-gate"',
+    ):
+        if run_hook(qa_gate_hook, pv_project, command).returncode != 2:
+            sys.exit(f"require-qa-gate.sh allowed a create without marker: {command!r}")
 
     escaped_pr_create = json.dumps(
         {

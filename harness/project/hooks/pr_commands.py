@@ -3,6 +3,7 @@
 
 `python pr_commands.py merge` читает payload хука из stdin и завершается с кодом 2, если
 `tool_input.command` выполняет merge PR/MR (`gh pr merge`, `glab mr merge|accept`).
+`qa-gate-state.py` импортирует модуль, чтобы найти ветку создаваемого PR/MR (`create_heads`).
 """
 
 import json
@@ -44,6 +45,11 @@ ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.S)
 HEREDOC = re.compile(r"(?<!<)<<(-?)[ \t]*(\\?)([\x27\"]?)([A-Za-z_][A-Za-z0-9_.-]*)\3")
 WORD_BREAK = re.compile(r"[\s;&|()<>]+")
 MERGE_TEXT = re.compile(r"\bgh\s+pr\s+merge\b|\bglab\s+mr\s+(?:merge|accept)\b")
+CREATE_TEXT = re.compile(r"\bgh\s+pr\s+create\b|\bglab\s+mr\s+create\b")
+# A create fragment that tokens cannot decide may name its branch with one of these flags.
+HEAD_OPTION_TEXT = re.compile(r"--head|--source-branch|(?<![^\s'\"])-[A-Za-z]*[sH]")
+# `glab mr create` shorthands that take a value; in a pflag cluster such a flag ends it.
+GLAB_VALUE_SHORTS = frozenset("abdHilmRst")
 MAX_DEPTH = 8
 
 
@@ -417,6 +423,66 @@ def merge_requested(command: str) -> bool:
     return any(
         _is_merge(argv, start) for argv in parsed.commands for start in positions(argv)
     ) or any(MERGE_TEXT.search(fragment) for fragment in parsed.opaque)
+
+
+def _option(
+    args: list[str], long: str, short: str, value_shorts: frozenset[str]
+) -> str | None:
+    """pflag-значение флага в `args`: `--long X`, `--long=X`, `-sX`, `-s=X`, `-fs X`.
+
+    None — флага нет, "" — флаг без значения. Разбор останавливается на `--`; значение
+    другого короткого флага (`-t -s`) флагом не считается.
+    """
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        index += 1
+        if arg == "--":
+            break
+        if arg == long:
+            return args[index] if index < len(args) else ""
+        if arg.startswith(long + "="):
+            return arg[len(long) + 1 :]
+        if not short or not arg.startswith("-") or arg.startswith("--"):
+            continue
+        for position, char in enumerate(arg[1:], start=2):
+            if char not in value_shorts:
+                continue
+            value = arg[position:]
+            if char == short:
+                value = value.removeprefix("=")
+                return value or (args[index] if index < len(args) else "")
+            if not value:
+                index += 1  # this flag's value is the next argument
+            break
+    return None
+
+
+def create_heads(command: str) -> set[str | None]:
+    """Ветки PR/MR, которые создаёт команда: None — ветка checkout, "" — ветку не определить.
+
+    Ветка берётся из argv самой create-команды: у gh — `--head` (без префикса `owner:`), у
+    glab — `-s`/`--source-branch`; glab `-H`/`--head` задаёт репозиторий, а не ветку.
+    Create-текст в непрозрачном фрагменте даёт "", если во фрагменте есть флаг ветки, иначе None.
+    """
+    parsed = parse(command)
+    heads: set[str | None] = set()
+    for argv in parsed.commands:
+        for start in positions(argv):
+            name = program(argv[start])
+            action = argv[start + 1 : start + 3]
+            if name == "gh" and action == ["pr", "create"]:
+                head = _option(argv[start + 3 :], "--head", "", frozenset())
+                heads.add(None if head is None else head.rsplit(":", 1)[-1])
+            elif name == "glab" and action == ["mr", "create"]:
+                args = argv[start + 3 :]
+                heads.add(_option(args, "--source-branch", "s", GLAB_VALUE_SHORTS))
+    heads.update(
+        "" if HEAD_OPTION_TEXT.search(fragment) else None
+        for fragment in parsed.opaque
+        if CREATE_TEXT.search(fragment)
+    )
+    return heads
 
 
 def merge_exit_code(raw: str) -> int:
