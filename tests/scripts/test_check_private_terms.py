@@ -11,13 +11,15 @@ import importlib.util
 import io
 import os
 import subprocess
+import sys
 import tempfile
 import types
 import unittest
 from pathlib import Path
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check_private_terms.py"
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "check_private_terms.py"
 
 # Term numbers are physical line numbers: line 1 is a comment, so the terms are #2..#5.
 TERMS = (
@@ -62,10 +64,23 @@ check = _load()
 def _run(
     argv: list[str], environ: dict[str, str] | None = None
 ) -> tuple[int, str, str]:
+    environ = ENV if environ is None else environ
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        code = check.main(argv, environ=ENV if environ is None else environ)
+        code = check.main(argv, environ=environ)
+    _assert_no_leak(out.getvalue() + err.getvalue(), environ)
     return code, out.getvalue(), err.getvalue()
+
+
+def _assert_no_leak(output: str, environ: dict[str, str]) -> None:
+    """Fail when the output contains any term of the run, compared the way the check compares."""
+    lists = (TERMS, environ.get("HARNESS_PRIVATE_TERMS", ""))
+    terms = {line.strip() for text in lists for line in text.splitlines()}
+    folded = check.fold(output)
+    for number, term in enumerate(sorted(t for t in terms if t and t[0] != "#"), 1):
+        if check.fold(term) in folded:
+            # Never put the term itself into a failure message: it would reach the CI log.
+            raise AssertionError(f"the output contains term {number} of the test lists")
 
 
 def _matches(stderr: str) -> list[str]:
@@ -470,6 +485,111 @@ class SkipTests(unittest.TestCase):
                 code, out, _ = _run(["--repo", tmp, "--body-file", str(body)], {})
 
         self.assertEqual((code, out), (0, SKIPPED))
+
+
+class NoLeakTests(unittest.TestCase):
+    def test_the_local_term_file_is_ignored_by_git(self) -> None:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "check-ignore", "-q", ".private-terms.txt"],
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0)
+
+    def test_a_staged_path_with_a_term_is_replaced_by_its_ordinal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            _commit(repo, "base")
+            (repo / "a.md").write_text("ok\n", encoding="utf-8")
+            (repo / "Проект").mkdir()
+            (repo / "Проект" / "КвазиПлюх.md").write_text("Zorblax\n", encoding="utf-8")
+            _git(repo, "add", "-A")
+
+            code, _, err = _run(["--repo", str(repo), "--staged"])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            _matches(err),
+            ["staged file #2 (name): term #3", "staged file #2:1: term #2"],
+        )
+
+    def test_a_quoted_path_is_never_printed(self) -> None:
+        patch = (
+            'diff --git "a/x\\tnotes.md" "b/x\\tnotes.md"\n'
+            "new file mode 100644\n"
+            "index 0000000..1111111\n"
+            "--- /dev/null\n"
+            '+++ "b/x\\tnotes.md"\n'
+            "@@ -0,0 +1 @@\n"
+            "+Zorblax\n"
+        )
+        terms = check.load_terms(None, ENV)
+
+        findings = check._patch_findings(patch, terms, "", "staged file")
+
+        self.assertEqual(findings, [("staged file #1:1", 2)])
+
+    def test_a_commit_hash_with_a_term_is_replaced_by_its_position(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _repo(Path(tmp))
+            base = _commit(repo, "base")
+            head = _commit(repo, "Zorblax")
+            environ = {"HARNESS_PRIVATE_TERMS": f"{head[2:9]}\nZorblax\n"}
+
+            code, _, err = _run(
+                ["--repo", str(repo), "--commits", f"{base}..HEAD"], environ
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(_matches(err), ["commit #1:1: term #2"])
+
+    def test_a_body_path_with_a_term_is_replaced_by_its_ordinal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plain, named = Path(tmp) / "title.txt", Path(tmp) / "Zorblax-body.md"
+            plain.write_text("ok\n", encoding="utf-8")
+            named.write_text("QX-7741\n", encoding="utf-8")
+            missing = Path(tmp) / "Zorblax-missing.md"
+
+            code, _, err = _run(["--body-file", str(plain), "--body-file", str(named)])
+            error = _run(["--body-file", str(plain), "--body-file", str(missing)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(_matches(err), ["body file #2:1: term #5"])
+        self.assertEqual(
+            error, (2, "", "private-terms: cannot read body file body file #2\n")
+        )
+
+    def test_an_internal_error_prints_only_its_type(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp) / "body.md"
+            body.write_text("ok\n", encoding="utf-8")
+            failure = RuntimeError("Zorblax")
+
+            with mock.patch.object(check, "_text_findings", side_effect=failure):
+                result = _run(["--body-file", str(body)])
+
+        self.assertEqual(
+            result, (2, "", "private-terms: internal error (RuntimeError)\n")
+        )
+
+    def test_a_legacy_console_encoding_escapes_instead_of_failing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp) / "Проект" / "body.md"
+            body.parent.mkdir()
+            body.write_text("Zorblax\n", encoding="utf-8")
+            env = dict(os.environ, PYTHONIOENCODING="cp1252", **ENV)
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--body-file", str(body)],
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"\\u041f\\u0440", result.stderr)
+        self.assertIn(b": term #2", result.stderr)
+        _assert_no_leak(result.stderr.decode("cp1252"), ENV)
 
 
 class CommandLineTests(unittest.TestCase):

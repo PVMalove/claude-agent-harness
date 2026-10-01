@@ -6,6 +6,8 @@ __pycache__/
 .idea/
 .coverage
 .coverage.diff-coverage.json
+# Maintainer-only private term list of scripts/check_private_terms.py (docs/agents/releases.md).
+/.private-terms.txt
 # harness init/adopt/update self-install output (running this tool on its own
 # repo to test it) — keep only the tool's own source: skills/, harness/,
 # global-skills/, scripts/, bin/. Real templates live under harness/project/.

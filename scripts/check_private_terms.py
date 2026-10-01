@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import re
 import subprocess
@@ -110,6 +111,11 @@ def _line_terms(line: str, terms: Terms) -> list[int]:
     return [number for number, term in terms.entries if term in folded]
 
 
+def _label(component: str, terms: Terms, ordinal: str) -> str:
+    """Нечисловой компонент локации или его порядковая метка, если в нём есть термин."""
+    return ordinal if _line_terms(component, terms) else component
+
+
 def _text_findings(text: str, terms: Terms, location: str) -> list[Finding]:
     """Находки в строках текста с локацией `<location>:<номер строки>`."""
     findings = []
@@ -122,23 +128,28 @@ def _patch_findings(patch: str, terms: Terms, prefix: str, label: str) -> list[F
     """Находки в добавленных строках и именах неудалённых файлов патча с `--unified=0`.
 
     Путь берётся из `diff --git a/P b/P`: при `--no-renames` половины равны, а строки `+++` у
-    пустого нового файла нет. Находка в имени печатается порядковой меткой `<label> #k (name)`.
+    пустого нового файла нет. Путь в кавычках или с термином печатается меткой `<label> #k`.
     """
     findings: list[Finding] = []
     for index, chunk in enumerate(("\n" + patch).split("\ndiff --git ")[1:], 1):
         header, *lines = chunk.split("\n")
-        path = header[2 : 2 + (len(header) - 5) // 2]
+        quoted = header.startswith('"')
+        path = (
+            header[3 : 3 + (len(header) - 9) // 2]
+            if quoted
+            else header[2 : 2 + (len(header) - 5) // 2]
+        )
+        ordinal = f"{label} #{index}"
+        shown = ordinal if quoted else _label(f"{prefix}{path}", terms, ordinal)
         if not any(line.startswith("deleted file mode ") for line in lines):
-            findings += [
-                (f"{label} #{index} (name)", n) for n in _line_terms(path, terms)
-            ]
+            findings += [(f"{ordinal} (name)", n) for n in _line_terms(path, terms)]
         new_line, in_hunk = 0, False
         for line in lines:
             hunk = HUNK.match(line)
             if hunk:
                 new_line, in_hunk = int(hunk.group(1)), True
             elif in_hunk and line.startswith("+"):
-                location = f"{prefix}{path}:{new_line}"
+                location = f"{shown}:{new_line}"
                 findings += [(location, n) for n in _line_terms(line[1:], terms)]
                 new_line += 1
             elif in_hunk and line.startswith(" "):
@@ -185,9 +196,9 @@ def _commit_findings(repo: Path, commit_range: str, terms: Terms) -> list[Findin
     )
     fields = output.split("\0")
     findings = []
-    for start in range(1, len(fields) - 2, 3):
+    for position, start in enumerate(range(1, len(fields) - 2, 3), 1):
         sha, message, patch = fields[start : start + 3]
-        prefix = f"commit {sha[:12]}"
+        prefix = _label(f"commit {sha[:12]}", terms, f"commit #{position}")
         findings += _text_findings(message, terms, prefix)
         findings += _patch_findings(patch, terms, f"{prefix} ", f"{prefix} file")
     return findings
@@ -199,13 +210,14 @@ def _branch_findings(repo: Path, name: str, terms: Terms) -> list[Finding]:
     return [("branch:1", n) for n in _line_terms(branch, terms)]
 
 
-def _body_findings(path: str, terms: Terms) -> list[Finding]:
-    """Находки в файле тела issue, PR или комментария."""
+def _body_findings(path: str, ordinal: int, terms: Terms) -> list[Finding]:
+    """Находки в файле тела issue, PR или комментария; путь с термином — метка `body file #k`."""
+    shown = _label(path, terms, f"body file #{ordinal}")
     try:
         text = Path(path).read_bytes().decode("utf-8", errors="replace")
     except OSError:
-        raise CheckError(f"cannot read body file {path}") from None
-    return _text_findings(text, terms, path)
+        raise CheckError(f"cannot read body file {shown}") from None
+    return _text_findings(text, terms, shown)
 
 
 def skip_notice(environ: Mapping[str, str]) -> str:
@@ -269,6 +281,10 @@ def main(
     argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = None
 ) -> int:
     """Точка входа CLI: 0 — совпадений нет, 1 — есть совпадения, 2 — ошибка."""
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            # A Cyrillic path must not crash the output on a cp1252 console.
+            stream.reconfigure(errors="backslashreplace")
     parser = _parser()
     args = parser.parse_args(argv)
     if not (
@@ -293,10 +309,15 @@ def main(
             findings += _commit_findings(args.repo, args.commits, terms)
         if args.branch is not None:
             findings += _branch_findings(args.repo, args.branch, terms)
-        for path in args.body_file:
-            findings += _body_findings(path, terms)
+        for ordinal, path in enumerate(args.body_file, 1):
+            findings += _body_findings(path, ordinal, terms)
     except CheckError as error:
         print(f"private-terms: {error}", file=sys.stderr)
+        return 2
+    except Exception as error:  # an exception message may quote the checked text
+        print(
+            f"private-terms: internal error ({type(error).__name__})", file=sys.stderr
+        )
         return 2
     return _report(findings, terms)
 
