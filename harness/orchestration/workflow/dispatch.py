@@ -774,6 +774,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 batch,
                 role="shared",
                 snapshot=snapshot_commit,
+                no_memory=getattr(args, "no_memory", False),
                 inclusion_reason=(
                     f"automatic shared package for {role_name} at pinned snapshot {snapshot_commit}; "
                     "included before immutable brief creation"

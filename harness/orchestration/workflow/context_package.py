@@ -73,6 +73,7 @@ def _persist_context_package(
     max_package_tokens: int | None = None,
     symbol_graph_depth: int | None = None,
     max_related_tests: int | None = None,
+    no_memory: bool = False,
 ) -> JsonObject:
     """Build once and register a reusable Context Package for one pinned diff."""
     package_base = batch.get("integration_base_commit") or batch["base_commit"]
@@ -85,6 +86,8 @@ def _persist_context_package(
     except ValueError:
         memory_policy = None
         mode = "disabled"
+    if no_memory:
+        mode = "bypass"
     identity = {
         "mode": mode,
         "query_input_hash": hashlib.sha256(
@@ -130,6 +133,8 @@ def _persist_context_package(
     memory = (
         search_candidates(repo, query)
         if mode == "enabled"
+        else degraded("bypass", "memory bypassed by --no-memory")
+        if mode == "bypass"
         else degraded("disabled", "memory disabled or source allowlist empty")
     )
     pointers: list[dict[str, object]] = []
@@ -276,6 +281,7 @@ def register_context_package(args: argparse.Namespace) -> JsonObject:
             max_package_tokens=getattr(args, "max_package_tokens", None),
             symbol_graph_depth=getattr(args, "symbol_graph_depth", None),
             max_related_tests=getattr(args, "max_related_tests", None),
+            no_memory=getattr(args, "no_memory", False),
         )
         _safe_id(batch["batch_id"], "batch")
         _replace_record(ledger, BatchRecord.from_dict(batch))

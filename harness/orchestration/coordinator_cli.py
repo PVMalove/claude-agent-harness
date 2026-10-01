@@ -249,6 +249,11 @@ def build_parser(
     )
     context_package_register = context_package_commands.add_parser("register")
     _common(context_package_register)
+    context_package_register.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="freeze a package without project memory",
+    )
     context_package_register.add_argument("--batch", required=True)
     context_package_register.add_argument("--candidate-commit", required=True)
     context_package_register.add_argument(
@@ -316,6 +321,11 @@ def build_parser(
         )
         dispatch_shape.add_argument(
             "--purpose", choices=sorted(defaults.DISPATCH_PURPOSES), default="work"
+        )
+        dispatch_shape.add_argument(
+            "--no-memory",
+            action="store_true",
+            help="bypass project memory for this immutable dispatch package",
         )
         dispatch_shape.add_argument("--candidate-commit")
         dispatch_shape.add_argument(

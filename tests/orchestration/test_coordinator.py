@@ -4728,6 +4728,14 @@ class CoordinatorCliParserTests(unittest.TestCase):
 
         self.assertIs(args.handler, coordinator.dispatch_status)
 
+    def test_no_memory_is_available_for_propose_create_and_register(self) -> None:
+        parse = coordinator.parser().parse_args
+        for command in ("propose", "create"):
+            args = parse(["dispatch", command, "--batch", "batch-1", "--role", "architect", "--no-memory"])
+            self.assertTrue(args.no_memory)
+        args = parse(["context-package", "register", "--batch", "batch-1", "--candidate-commit", "a" * 40, "--no-memory"])
+        self.assertTrue(args.no_memory)
+
     def test_dispatch_preflight_exposes_purpose_like_other_dispatch_commands(
         self,
     ) -> None:
