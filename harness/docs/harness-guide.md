@@ -104,8 +104,8 @@ cd claude-agent-harness
 
 | | `project-foundation` | `mattpocock-suite` | `pvmalove-suite` | `backend-orchestration` |
 |---|---|---|---|---|
-| Скиллов | 5 | 25 | 29 | 29 + роли |
-| Домен | Любой: software, content, research, operations, personal | Инженерный pipeline как в апстриме | Инженерный pipeline с доработками ([раздел 7](#7-локальные-кастомизации-10-изменённых-скиллов)) | Согласованная backend-работа несколькими ролями |
+| Скиллов | 5 | 25 | 32 | 32 + роли |
+| Домен | Любой: software, content, research, operations, personal | Инженерный pipeline как в апстриме | Инженерный pipeline с доработками ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)) | Согласованная backend-работа несколькими ролями |
 | Даёт | `grilling`, `handoff`, `writing-for-agents`, `research`, `domain-modeling` | Все upstream-скиллы | Спека → тикеты → implement → commit + push (разделы 1–5) | Coordinator, role manifests, playbook, clean-room QA |
 | Проектные файлы | Нет | Нет | `.harness/project.json`, hooks, `docs/agents/*.md` | То же + `.harness/orchestration.json` |
 
@@ -134,6 +134,10 @@ PR.
 | Обновление апстрима | `harness update` устанавливает изменения без правок | Унаследованное обновляет тот же `update`; за переопределёнными скиллами следите через `scripts/check_upstream_drift` в репозитории харнесса |
 
 #### Политика памяти проекта
+
+Интерактивные потребители и трактовка указателей описаны в [project-memory.md](./project-memory.md).
+Без внешнего CLI установленный проект запускает тот же read-only поиск командой
+`python -B .harness/memory/search_cli.py . "<запрос>"`.
 
 Память включается только через `memory: {"enabled": true}` в `.harness/project.json`.
 Отдельный `memory_policy` содержит все шесть полей: `source_types` (список `adr`/`glossary`/`task_archive`/`qa_finding`/`ledger`),
@@ -167,8 +171,8 @@ Selector проверяется read-only; память не мигрирует 
 простой front matter) или первая строка одноимённой H2-секции; поле приоритетнее секции.
 Нет status/date — `unknown`, нет superseded_by — пустая строка. JSON status берётся из
 явного status, иначе QA outcome или ledger state; дата — date, иначе created_at, иначе updated_at.
-Дата QA без явного поля остаётся unknown; mtime не используется. Явные `superseded`, `заменён`,
-`заменен` исключают источник до кэширования. Остальные pointers всегда имеют
+Дата QA без явного поля остаётся unknown; mtime не используется. Явные `superseded`,
+`superseded by ADR-NNNN`, `заменён`, `заменен` исключают источник до кэширования. Остальные pointers всегда имеют
 `history_to_verify: true`; непустой superseded_by не подтверждает актуальность источника.
 
 Команды: `harness memory build <repo>`, `harness memory search <repo> "запрос"`,
@@ -235,8 +239,9 @@ python harness\bin\harness.py init C:\path\to\repository `
 
 При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md` и само `.harness/project.json`.
 
-- Этот справочник и руководство по backend-оркестрации — **не** seed-файлы: они входят в
-  управляемый снимок `pvmalove-suite` как `.harness/docs/{harness-guide,backend-orchestration}.md` и
+- Этот справочник, руководство по backend-оркестрации и контракт интерактивного поиска памяти —
+  **не** seed-файлы: они входят в управляемый снимок `pvmalove-suite` как
+  `.harness/docs/{harness-guide,backend-orchestration,project-memory}.md` и
   обновляются каждым `update`.
 - Только `backend-orchestration` создаёт `.harness/orchestration/`, управляемый пример
   `.harness/orchestration.example.json` (входит в снимок, обновляется при каждом
@@ -665,7 +670,7 @@ on-ramps (`/triage` для входящих багов и фича-реквес�
 реализации.
 
 **В этом репозитории:** `/grilling`, `/grill-me` и `/grill-with-docs` переопределены first-party-слоем
-([раздел 7](#7-локальные-кастомизации-10-изменённых-скиллов)), чтобы все точки входа завершались
+([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)), чтобы все точки входа завершались
 одинаковым выбором: `/to-spec` или доработка плана.
 
 ### `/wayfinder`
@@ -773,7 +778,7 @@ integration/reports
 интерфейсы и решения, без путей к файлам и кода (кроме сниппета из прототипа, если он кодирует
 решение точно).
 
-**В этом репозитории** ([раздел 7](#7-локальные-кастомизации-10-изменённых-скиллов)): публикуемый
+**В этом репозитории** ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)): публикуемый
 issue — **эпик** с метками `bug`/`enhancement` + `status::specs` (не `status::ready` — декомпозиции
 ещё не было) + `task-report::required` и секцией `## Integration Branch`. `/to-spec` создаёт
 указанную ветку от `base_branch`, если её нет; `/to-tickets` переносит её в дочерние тикеты. Лейбл-
@@ -834,7 +839,7 @@ native GitHub sub-issues.
    - Итоговая таблица (Ticket / What to build / Est. Time / Labels): описания генерирует дешёвая
      модель (`haiku`) одним вызовом на пакет; язык колонки — из `.harness/project.json`.
 
-**В этом репозитории** ([раздел 7](#7-локальные-кастомизации-10-изменённых-скиллов)): дочерние тикеты
+**В этом репозитории** ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)): дочерние тикеты
 эпика (`status::specs`) линкуются как native GitHub sub-issues, а не лейблом `epic::<slug>`; тикет,
 заблокированный другим открытым тикетом той же декомпозиции, получает `status::blocked`. Фронтир
 ищется тем же native-запросом, что у `wayfinder` (`docs/agents/issue-tracker.md#wayfinding-operations`);
@@ -970,7 +975,7 @@ python .harness/orchestration/coordinator.py --repo . dispatch status --batch <b
 **Базовая версия в апстриме** состоит из пяти шагов: реализация тикета, `/tdd` при необходимости,
 регулярный тайпчек и тесты, `/code-review` по готовности, коммит.
 
-**В этом репозитории** first-party override ([раздел 7](#7-локальные-кастомизации-10-изменённых-скиллов))
+**В этом репозитории** first-party override ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов))
 добавляет три фазы. Ту же Phase 1 выполняет и `/implement` перед `batch create`.
 
 [![/fast-implement: одна сессия от тикета до push](./diagrams/fast-implement.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/fast-implement.workflow.html)
@@ -1182,9 +1187,9 @@ python .harness/reporting/delivery_stats.py --repo . --epic 95 \
 
 ---
 
-## 7. Локальные кастомизации (10 изменённых скиллов)
+## 7. Локальные кастомизации (11 изменённых скиллов)
 
-`.harness/harness.lock` фиксирует 10 скиллов с намеренными правками поверх апстрима. В `harness diff`
+`.harness/harness.lock` фиксирует 11 скиллов с намеренными правками поверх апстрима. В `harness diff`
 они видны как `local_changed` — это ожидаемо; `harness update --force` или
 `harness adopt --replace-conflicts` их бы стёрли.
 
@@ -1196,7 +1201,8 @@ python .harness/reporting/delivery_stats.py --repo . --epic 95 \
 | `implement` | Проверяет блокеры и ставит `status::in-progress` до `batch create`; создаёт issue-ветку от integration-ветки; ведёт coordinator-конвейер architect → developer → code-review → qa → publish с approval на каждом гейте, model self-report и watchdog. После publish предлагает `/to-pull-requests`. Однопроходный upstream-флоу переехал в `fast-implement`. |
 | `ask-matt` | Отражает выбор разработчика: двухосевое ревью либо переход к commit и push. |
 | `code-review` | Отчёт выводится на языке из `.harness/project.json` (`### Communication language`). |
-| `grilling` | Вопросы фронтира задаются через `AskUserQuestion` (вкладка на вопрос, варианты или «Other»); текст — запасной формат для открытых вопросов. |
+| `diagnosing-bugs` | Перед гипотезами ищет прошлые фиксы через read-only `harness memory search`, если память включена; воспроизведение остаётся обязательным. |
+| `grilling` | При включённой памяти ищет прецеденты до первого раунда проектирования; указатели не отменяют opt-in Live Artifact. Вопросы фронтира задаются через `AskUserQuestion` (вкладка на вопрос, варианты или «Other»); текст — запасной формат для открытых вопросов. |
 | `grill-me` | Тонкая обёртка над first-party `/grilling` с единым финальным выбором: `/to-spec` или правки плана. |
 | `grill-with-docs` | Тонкая обёртка над `/grilling` с `/domain-modeling`: тот же финальный выбор плюс `CONTEXT.md`/ADR. |
 | `wayfinder` | Тикеты карты дополнительно несут `hitl`/`afk` и `status::ready` (апстримный `wayfinder:<type>` сохраняется); claim ставит `status::in-progress`. |
@@ -1325,9 +1331,9 @@ git commit -F "$MSG_FILE"                                           # забло
 
 ## 12. Полный каталог скиллов проекта
 
-Все 25 скиллов апстрима (capability `mattpocock-suite`) + 10 `pvmalove`-переопределений и 6
+Все 25 скиллов апстрима (capability `mattpocock-suite`) + 11 `pvmalove`-переопределений и 7
 дополнительных first-party скиллов (`qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`,
-`fast-implement`, `delivery-stats`); `pr-composer` поставляется отдельно как subagent. «Только
+`fast-implement`, `delivery-stats`, `architect`); `pr-composer` поставляется отдельно как subagent. «Только
 вручную» = `disable-model-invocation: true` (вызывается только как `/имя`).
 
 ### Инженерные
@@ -1369,6 +1375,7 @@ git commit -F "$MSG_FILE"                                           # забло
 
 | Скилл/агент | Описание |
 |---|---|
+| `architect` (skill) | Ручное сравнение архитектурных вариантов; при включённой памяти ищет прецеденты через read-only `harness memory search`. Отдельный скилл не расширяет доступ роли оркестрации. |
 | `qa-gate` (skill) | `qa_gate_commands` из `.harness/project.json` в изолированном форке перед PR ([раздел 6](#qa-gate-skill-context-fork)). |
 | `pr-composer` (subagent) | Заполняет структурированный PR-шаблон и возвращает путь к файлу ([раздел 6](#pr-composer-subagent-claudeagentspr-composermd)). |
 | `to-guide` (skill) | `hitl`-аналог `/implement` — гайд с промптами для ручного кодинга ([раздел 6](#to-guide-skill)). |

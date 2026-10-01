@@ -38,6 +38,25 @@ def test_search_returns_unicode_pointers_without_source_text(tmp_path: Path) -> 
     assert "hidden" not in json.dumps(pointers)
 
 
+def test_search_excludes_adr_superseded_by_a_replacement(tmp_path: Path) -> None:
+    """The ADR format's replacement reference revokes a precedent, not only its bare status."""
+    configure(tmp_path)
+    source(
+        tmp_path,
+        "docs/adr/0001-old.md",
+        "# Old decision\nStatus: superseded by ADR-0002\ntransaction",
+    )
+    source(
+        tmp_path,
+        "docs/adr/0002-current.md",
+        "# Current decision\nStatus: accepted\ntransaction",
+    )
+    build(tmp_path)
+    pointers = search(tmp_path, "transaction")["pointers"]
+    assert isinstance(pointers, list)
+    assert [p["path"] for p in pointers] == ["docs/adr/0002-current.md"]
+
+
 @pytest.mark.parametrize("query", ["", '"', "*()^-:", "NEAR( OR NOT )"])
 def test_empty_and_operator_queries_return_no_raw_fts_error(
     tmp_path: Path, query: str
