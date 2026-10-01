@@ -219,14 +219,25 @@ class DiagnosticsScreen(Screen[None]):
         self._confirming_apply = False
         self._apply_button().label = _APPLY_LABEL
 
+    def on_unmount(self) -> None:
+        """Отменяет фоновые воркеры при размонтировании экрана."""
+        self.workers.cancel_all()
+
     def _run_health(self, run: Callable[[], Report]) -> None:
         """Запускает процедуру проверки health в фоновом потоке worker."""
         self.query_one("#diagnostics-report", Static).update(_RUNNING)
 
         def work() -> None:
             """Фоновая задача выполнения проверки health и передачи отчёта в основной поток UI."""
-            report = run()
-            self.app.call_from_thread(self._show, report)
+            try:
+                report = run()
+            except Exception:
+                return
+            if self.is_mounted and self.app.is_running:
+                try:
+                    self.app.call_from_thread(self._show, report)
+                except Exception:
+                    pass
 
         self.run_worker(work, thread=True, exclusive=True, group="diagnostics")
 
