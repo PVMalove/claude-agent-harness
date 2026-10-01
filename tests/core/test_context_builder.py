@@ -1343,3 +1343,48 @@ class MemoryPackageTests(ContextBuilderFixture):
                 memory=memory,
                 max_package_size_bytes=baseline.size_bytes - 1,
             )
+
+    def test_empty_memory_envelope_must_fit_its_own_token_ceiling(self) -> None:
+        envelope: dict[str, object] = {
+            "status": "ok",
+            "diagnostic": "",
+            "identity": {
+                "mode": "enabled",
+                "query_input_hash": "a" * 64,
+                "selection_policy": "fts-type-quota-v1",
+            },
+            "pointers": [],
+        }
+        oversized: dict[str, object] = {
+            "title": "Too large",
+            "source_type": "adr",
+            "path": "docs/adr/" + "long" * 200,
+            "status": "accepted",
+            "source_hash": "b" * 64,
+            "inclusion_reason": "literal relevance; historical source requires verification",
+        }
+        for candidates in ([], [oversized]):
+            with self.subTest(candidates=bool(candidates)):
+                with self.assertRaisesRegex(
+                    ContextPackageError, "memory section estimate"
+                ):
+                    build_context_package(
+                        self.repo,
+                        self.base_commit,
+                        self.candidate_commit,
+                        min_starting_files=1,
+                        memory={**envelope, "pointers": candidates},
+                        memory_max_tokens=1,
+                    )
+        package = build_context_package(
+            self.repo,
+            self.base_commit,
+            self.candidate_commit,
+            min_starting_files=1,
+            memory={**envelope, "pointers": [oversized]},
+            memory_max_tokens=300,
+        )
+        self.assertEqual(package.memory["pointers"], [])
+        self.assertLessEqual(
+            estimate_tokens(json.dumps(package.memory, ensure_ascii=False)), 300
+        )

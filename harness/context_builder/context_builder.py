@@ -819,6 +819,15 @@ def build_context_package(
             per_type_quota=min(memory_top_k, 2),
             fits=memory_fits,
         )
+    if memory:
+        memory_tokens = estimate_tokens(
+            json.dumps(frozen_memory, ensure_ascii=False, sort_keys=True)
+        )
+        if memory_tokens > memory_max_tokens:
+            raise ContextPackageError(
+                f"memory section estimate {memory_tokens} tokens exceeds memory_max_tokens={memory_max_tokens}",
+                remedy=f"raise memory_policy.max_tokens to at least {memory_tokens} so the mandatory envelope fits",
+            )
     payload_text = render_payload(frozen_memory)
     size_bytes: int = len(payload_text.encode("utf-8"))
     estimated_tokens: int = estimate_tokens(payload_text)
