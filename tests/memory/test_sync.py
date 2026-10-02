@@ -261,9 +261,16 @@ def test_cli_error_does_not_expose_tracker_output(
     from harness.memory import sync
     directory = remote_repo / "bin"
     directory.mkdir()
-    executable = directory / "gh"
-    executable.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('token=errorprivate')\nsys.exit(7)\n")
-    executable.chmod(0o755)
+    if sys.platform == "win32":
+        executable = directory / "gh.cmd"
+        executable.write_text(
+            f'@"{sys.executable}" -c "import sys; sys.stderr.write(\'token=errorprivate\'); sys.exit(7)"\n',
+            encoding="utf-8",
+        )
+    else:
+        executable = directory / "gh"
+        executable.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('token=errorprivate')\nsys.exit(7)\n")
+        executable.chmod(0o755)
     monkeypatch.setenv("PATH", str(directory) + os.pathsep + os.environ["PATH"])
     with pytest.raises(ValueError, match="gh failed.*exit 7") as error:
         sync(remote_repo)
@@ -363,9 +370,18 @@ def test_installed_sync_uses_real_fake_cli_without_orchestration(remote_repo: Pa
     installed = subprocess.run([sys.executable, str(CLI), "init", str(remote_repo), "--capability", "pvmalove-suite", "--qa-gate-command", "true"], capture_output=True, text=True)
     assert installed.returncode == 0, installed.stderr
     configure(remote_repo, source_types=["task_archive"], allow_paths=[SNAPSHOT + "/records/*.json"])
-    executable = remote_repo / tool
-    executable.write_text(f"#!{sys.executable}\nimport sys,json\ne=sys.argv[-1]\nprint(json.dumps([] if 'page=2' in e else [{{'number':1,'iid':1,'state':'closed','title':'installedword'}}]))\n")
-    executable.chmod(0o755)
+    if sys.platform == "win32":
+        py_script = remote_repo / f"{tool}_fake.py"
+        py_script.write_text(
+            "import sys,json\ne=sys.argv[-1]\nprint(json.dumps([] if 'page=2' in e else [{'number':1,'iid':1,'state':'closed','title':'installedword'}]))\n",
+            encoding="utf-8",
+        )
+        executable = remote_repo / f"{tool}.cmd"
+        executable.write_text(f'@"{sys.executable}" "{py_script}" %*\n', encoding="utf-8")
+    else:
+        executable = remote_repo / tool
+        executable.write_text(f"#!{sys.executable}\nimport sys,json\ne=sys.argv[-1]\nprint(json.dumps([] if 'page=2' in e else [{{'number':1,'iid':1,'state':'closed','title':'installedword'}}]))\n")
+        executable.chmod(0o755)
     monkeypatch.setenv("PATH", str(remote_repo) + os.pathsep + os.environ["PATH"])
     code = "import importlib.util,sys\nfrom pathlib import Path\ns=importlib.util.spec_from_file_location('harness','.harness/__init__.py',submodule_search_locations=['.harness'])\np=importlib.util.module_from_spec(s)\nsys.modules['harness']=p\ns.loader.exec_module(p)\nfrom harness.memory import sync,search\nassert sync(Path.cwd())['status']=='synced'\nassert search(Path.cwd(),'installedword')['pointers']\n"
     result = subprocess.run([sys.executable, "-c", code], cwd=remote_repo, env={**os.environ, "PYTHONPATH": ""}, capture_output=True, text=True)

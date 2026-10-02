@@ -178,14 +178,17 @@ def refresh(repo: Path) -> dict[str, object]:
     try:
         with writer_lock(path):
             if path.exists():
-                with sqlite3.connect(
+                probe = sqlite3.connect(
                     path.as_uri() + "?mode=ro", uri=True, timeout=LOCK_TIMEOUT
-                ) as probe:
+                )
+                try:
                     manifest = dict(probe.execute("SELECT key,value FROM manifest"))
                     if probe.execute("PRAGMA integrity_check").fetchone() != ("ok",):
                         raise ValueError(
                             "memory index corrupt; run harness memory rebuild"
                         )
+                finally:
+                    probe.close()
                 if manifest.get("schema_version") != SCHEMA_VERSION:
                     documents = collect_sources(canonical, policy)
                     _publish_fresh(path, documents, policy)

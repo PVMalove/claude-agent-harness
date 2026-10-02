@@ -34,7 +34,7 @@ def source(repo: Path, path: str, text: str) -> Path:
     """Write an authoritative fixture source."""
     target = repo / path
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text, encoding="utf-8")
+    target.write_bytes(text.encode("utf-8"))
     return target
 
 
