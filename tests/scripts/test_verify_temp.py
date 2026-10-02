@@ -192,6 +192,26 @@ class VerifyStageTimingTest(unittest.TestCase):
         printed.assert_called_once_with("[verify] clean-room: failed in 1.00s")
 
 
+class PytestCommandTest(unittest.TestCase):
+    def test_windows_configuration(self) -> None:
+        cmd = verify.pytest_command(Path("/tmp/run"), platform="win32", cpu_count=8)
+        self.assertIn("-n", cmd)
+        self.assertEqual(cmd[cmd.index("-n") + 1], "2")
+        self.assertIn("--ignore=tests/memory/test_eval.py", cmd)
+        self.assertIn("--ignore=tests/memory/test_vector_probe.py", cmd)
+
+    def test_posix_configuration(self) -> None:
+        cmd = verify.pytest_command(Path("/tmp/run"), platform="linux", cpu_count=8)
+        self.assertIn("-n", cmd)
+        self.assertEqual(cmd[cmd.index("-n") + 1], "4")
+        self.assertNotIn("--ignore=tests/memory/test_eval.py", cmd)
+        self.assertNotIn("--ignore=tests/memory/test_vector_probe.py", cmd)
+
+    def test_single_cpu_fallback(self) -> None:
+        cmd = verify.pytest_command(Path("/tmp/run"), platform="linux", cpu_count=1)
+        self.assertEqual(cmd[cmd.index("-n") + 1], "1")
+
+
 class CleanRoomPathBudgetTest(unittest.TestCase):
     def test_short_root_passes(self) -> None:
         with mock.patch.object(clean_room, "_long_paths_enabled", return_value=False):

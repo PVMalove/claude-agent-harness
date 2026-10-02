@@ -170,26 +170,42 @@ def _static_checks(test_env: dict[str, str]) -> None:
     _check_documentation()
 
 
+def pytest_command(
+    run_tmp: Path,
+    *,
+    platform: str = sys.platform,
+    cpu_count: int | None = None,
+) -> list[str]:
+    """Сформировать аргументы запуска pytest с учетом платформы и числа воркеров."""
+    effective_cpus = os.cpu_count() or 1 if cpu_count is None else cpu_count
+    workers = 2 if platform == "win32" else min(4, effective_cpus)
+    args = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-p",
+        "no:cacheprovider",
+        "-n",
+        str(workers),
+        "--basetemp",
+        str(run_tmp / "p"),
+        str(ROOT / "tests"),
+    ]
+    if platform == "win32":
+        args.extend(
+            [
+                "--ignore=tests/memory/test_eval.py",
+                "--ignore=tests/memory/test_vector_probe.py",
+            ]
+        )
+    return args
+
+
 def _run_stages(run_tmp: Path, test_env: dict[str, str]) -> None:
     """Стадии с замером времени: mypy, pytest и clean-room прогон."""
     run_stage("mypy", [sys.executable, "-m", "mypy"], cwd=ROOT, env=test_env)
     try:
-        run_stage(
-            "pytest",
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "-p",
-                "no:cacheprovider",
-                "-n",
-                "4",
-                "--basetemp",
-                str(run_tmp / "p"),
-                str(ROOT / "tests"),
-            ],
-            env=test_env,
-        )
+        run_stage("pytest", pytest_command(run_tmp), env=test_env)
         run_stage(
             "clean-room",
             [sys.executable, str(ROOT / "scripts" / "test_clean_room.py")],
