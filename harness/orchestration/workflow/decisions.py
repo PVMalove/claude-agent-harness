@@ -72,6 +72,7 @@ from harness.orchestration.workflow.attention import (
 from harness.orchestration.workflow.history import (
     _latest_developer_candidate,
     _pending_report,
+    _require_route,
     _risk_for_candidate,
     _settled,
     _validate_batch_integrity,
@@ -375,24 +376,52 @@ def _retry_routing(
     else:
         category, basis = "unknown", "no structured evidence classifies the cause"
     if stage == "architect":
-        next_action = "architect"
+        next_action, route = "architect", "architect-retry"
         outcome_sentence = "a new architect dispatch runs; no developer starts before an architect report is accepted"
     elif candidate_bound and category in OPERATIONAL_REASON_CATEGORIES:
-        next_action = stage
+        next_action, route = stage, "same-candidate-rerun"
         outcome_sentence = (
             f"a new independent {stage} dispatch runs on the unchanged candidate; "
             "the earlier brief, report and blocker stay as audit evidence"
         )
     else:
-        next_action = "developer-retry"
+        next_action, route = "developer-retry", "developer-retry"
         outcome_sentence = "a developer retry must produce a new candidate commit, which needs a new risk assessment"
     return {
+        "route": route,
         "previous_role": stage,
         "reason_category": category,
         "next_role": "developer" if next_action == "developer-retry" else next_action,
         "next_action": next_action,
         "rationale": f"{stage} reported outcome={outcome}: {basis}; {outcome_sentence}.",
         "candidate_commit": dispatch_candidate if unchanged else None,
+    }
+
+
+def _reporting_stage(dispatch: JsonObject, report: JsonObject) -> str:
+    """The pipeline stage a report closes: ``publish`` is a purpose of the developer role."""
+    return (
+        "publish" if dispatch.get("purpose") == "publish" else cast(str, report["role"])
+    )
+
+
+def _abandon_routing(stage: str, report: JsonObject, moment: str) -> JsonObject:
+    """The routing record of an ``abandon`` decision (no I/O).
+
+    It has the shape of a retry's record but starts nothing, so it names no reason, role, action or
+    candidate. Its rationale holds structural facts only; the approver's ``--reason`` stays the
+    decision note.
+    """
+    return {
+        "route": _require_route("abandon"),
+        "previous_role": stage,
+        "reason_category": None,
+        "next_role": None,
+        "next_action": None,
+        "candidate_commit": None,
+        "rationale": f"{stage} reported outcome={report.get('outcome')}: the batch is abandoned; "
+        "no next dispatch starts and every brief, report and candidate stays as audit evidence.",
+        "decided_at": moment,
     }
 
 
@@ -600,6 +629,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     remedy="block, fail, or abandon (with --reason) this batch, then split or re-plan the work",
                 )
         abandon_reason = ""
+        abandon_routing: JsonObject | None = None
         if args.decision == "abandon":
             abandon_reason = (
                 args.reason.strip() if _non_empty(getattr(args, "reason", None)) else ""
@@ -610,6 +640,9 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     remedy="pass --reason explaining why this batch is abandoned",
                 )
             _reject_sensitive({"reason": abandon_reason}, "abandon reason")
+            abandon_routing = _abandon_routing(
+                _reporting_stage(dispatch, report), report, utils._now()
+            )
         policy_auto_accept = getattr(args, "_policy_auto_accept", False)
         if policy_auto_accept:
             accepted_policy = _auto_accept_policy(config, batch, dispatch, report)
@@ -639,6 +672,8 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         }
         if routing is not None:
             decision["routing"] = routing
+        elif abandon_routing is not None:
+            decision["routing"] = abandon_routing
         if args.decision in {"accept", "override-warning"}:
             divergence = plan_rules.divergence(
                 report, dispatch, partial(_candidate_commit, repo)
@@ -743,9 +778,7 @@ def _decide_retry_route(
         current_candidate: str | None = _latest_developer_candidate(repo, root, batch)
     except CoordinatorError:
         current_candidate = None
-    stage = (
-        "publish" if dispatch.get("purpose") == "publish" else cast(str, report["role"])
-    )
+    stage = _reporting_stage(dispatch, report)
     explicit_category = getattr(args, "reason_category", None)
     hint = (
         _classifier_hint(core_config._config(repo), dispatch, stage, report)
@@ -772,6 +805,7 @@ def _decide_retry_route(
         candidate = _candidate_commit(repo, report["commit_sha"])
         routing = {
             **routing,
+            "route": "verification",
             "next_role": "verification",
             "next_action": "verification",
             "candidate_commit": candidate,
@@ -785,10 +819,12 @@ def _decide_retry_route(
     if forced == "developer" and routing["next_action"] != "developer-retry":
         routing = {
             **routing,
+            "route": "developer-retry",
             "next_role": "developer",
             "next_action": "developer-retry",
             "rationale": f"{routing['rationale']} The approver forced a developer retry with --retry-role developer.",
         }
+    _require_route(routing["route"])
     return routing
 
 

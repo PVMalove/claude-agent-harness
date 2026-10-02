@@ -49,6 +49,7 @@ from harness.orchestration.workflow import (
     commit_plan,
     decisions,
     dispatch,
+    history,
     reports,
 )
 
@@ -2525,6 +2526,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         action: str,
         category: str,
         candidate: str | None,
+        route: str,
     ) -> JsonObject:
         routing = self._routing(batch)
         self.assertEqual(
@@ -2533,8 +2535,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 routing["next_action"],
                 routing["reason_category"],
                 routing["candidate_commit"],
+                routing["route"],
             ),
-            (role, action, category, candidate),
+            (role, action, category, candidate, route),
         )
         self.assertEqual(batch["next_action"], action)
         self.assertTrue(routing["rationale"].strip())
@@ -2571,6 +2574,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             action="verification",
             category="verification-infrastructure",
             candidate=candidate,
+            route="verification",
         )
         registration = decided["candidate_registrations"][-1]
         self.assertEqual(registration["candidate_commit"], candidate)
@@ -2620,6 +2624,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             action="developer-retry",
             category="code",
             candidate=None,
+            route="developer-retry",
         )
         self.assertNotIn("candidate_registrations", decided)
 
@@ -2650,6 +2655,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             action="code-review",
             category="verification-infrastructure",
             candidate=candidate,
+            route="same-candidate-rerun",
         )
         self.assertEqual(routing["previous_role"], "code-review")
         self.assertFalse(decided.get("retry_candidate_required"))
@@ -2768,6 +2774,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     action="developer-retry",
                     category="unknown",
                     candidate=candidate,
+                    route="developer-retry",
                 )
                 self.assertEqual(routing["previous_role"], "code-review")
                 self.assertTrue(decided["retry_candidate_required"])
@@ -2891,6 +2898,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             action="qa",
             category="verification-infrastructure",
             candidate=candidate,
+            route="same-candidate-rerun",
         )
         second = self._dispatch(batch["batch_id"], "qa", candidate=candidate)
         self.assertNotEqual(second["dispatch_id"], first["dispatch_id"])
@@ -2918,6 +2926,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             action="developer-retry",
             category="code",
             candidate=candidate,
+            route="developer-retry",
         )
 
     def test_publish_infrastructure_blocker_retries_a_new_publish_on_the_same_candidate(
@@ -2939,6 +2948,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             action="publish",
             category="transport",
             candidate=candidate,
+            route="same-candidate-rerun",
         )
         self.assertEqual(routing["previous_role"], "publish")
         self.assertFalse(decided.get("retry_candidate_required"))
@@ -2974,6 +2984,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             action="developer-retry",
             category="candidate-change",
             candidate=candidate,
+            route="developer-retry",
         )
         self.assertTrue(decided["retry_candidate_required"])
 
@@ -2998,6 +3009,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             action="architect",
             category="unknown",
             candidate=None,
+            route="architect-retry",
         )
         with self.assertRaises(coordinator.CoordinatorError):
             self._dispatch(batch["batch_id"], "developer")
@@ -3033,6 +3045,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             action="developer-retry",
             category="requirements",
             candidate=candidate,
+            route="developer-retry",
         )
         self.assertEqual(routing["previous_role"], "code-review")
         retry = self._dispatch(batch["batch_id"], "developer")["brief"]
@@ -3160,6 +3173,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             action="developer-retry",
             category="unknown",
             candidate=None,
+            route="developer-retry",
         )
         self.assertEqual(routing["previous_role"], "developer")
         self.assertTrue(decided["retry_candidate_required"])
@@ -3517,6 +3531,22 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             ("abandon", "superseded by a fresh plan"),
         )
         self.assertEqual(entry["approved_by"], "Malove")
+        routing = entry["routing"]
+        self.assertEqual(
+            {key: value for key, value in routing.items() if key != "rationale"},
+            {
+                "route": "abandon",
+                "previous_role": "code-review",
+                "reason_category": None,
+                "next_role": None,
+                "next_action": None,
+                "candidate_commit": None,
+                "decided_at": routing["decided_at"],
+            },
+        )
+        self.assertTrue(routing["decided_at"])
+        self.assertNotIn("superseded", routing["rationale"])
+        self.assertEqual(decided["dispatches"][-1]["decision"]["routing"], routing)
         self.assertEqual(decided["abandoned"]["reason"], "superseded by a fresh plan")
         self.assertEqual(
             decided["abandoned"]["last_accepted"]["candidate_commit"], candidate
@@ -3543,6 +3573,75 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         fresh = coordinator.create_batch(self._args(**self._batch_plan()))
         self.assertNotEqual(fresh["batch_id"], batch["batch_id"])
         self.assertEqual(fresh["state"], "planned")
+
+    def test_a_forced_developer_retry_records_the_developer_retry_route(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._infra_review(batch["batch_id"], candidate)
+
+        decided = self._decide(
+            batch["batch_id"],
+            "retry",
+            reason_category="verification-infrastructure",
+            retry_role="developer",
+        )
+
+        self._assert_route(
+            decided,
+            role="developer",
+            action="developer-retry",
+            category="verification-infrastructure",
+            candidate=candidate,
+            route="developer-retry",
+        )
+
+    def test_a_computed_route_outside_the_enum_is_refused_before_anything_is_written(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._infra_review(batch["batch_id"], candidate)
+        before = self._batch_record(batch["batch_id"])
+        real = decisions._retry_routing
+
+        def unknown_route(*args: object, **kwargs: object) -> JsonObject:
+            return {**real(*args, **kwargs), "route": "rebase"}  # type: ignore[arg-type]
+
+        with mock.patch.object(decisions, "_retry_routing", unknown_route):
+            with self.assertRaises(coordinator.CoordinatorError) as raised:
+                self._decide(
+                    batch["batch_id"],
+                    "retry",
+                    reason_category="verification-infrastructure",
+                )
+
+        self.assertIn("same-candidate-rerun", raised.exception.remedy)
+        self.assertEqual(self._batch_record(batch["batch_id"]), before)
+
+    def test_a_tampered_route_is_refused_when_the_batch_is_read_back(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._infra_review(batch["batch_id"], candidate)
+        self._decide(
+            batch["batch_id"], "retry", reason_category="verification-infrastructure"
+        )
+        root = ledger_ops._state_root(self._args(), self.repo)
+        ledger = LifecycleLedger(root)
+        with ledger_ops._ledger_lock(ledger):
+            record = ledger_ops._load_batch(root, batch["batch_id"])
+            record["coordinator_decisions"][-1]["routing"]["route"] = "rebase"
+            ledger_ops._replace_record(ledger, BatchRecord.from_dict(record))
+
+        with self.assertRaises(coordinator.CoordinatorError) as raised:
+            coordinator.decision_packet(
+                self._args(batch=batch["batch_id"], dispatch=None)
+            )
+
+        self.assertIn("rebase", str(raised.exception))
+        self.assertIn("same-candidate-rerun", raised.exception.remedy)
 
     def test_abandon_closes_unreported_dispatches_and_names_them(self) -> None:
         batch = self._create_batch()
@@ -3910,6 +4009,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             action="code-review",
             category="context-pressure",
             candidate=candidate,
+            route="same-candidate-rerun",
         )
         self.assertFalse(decided.get("needs_attention", False))
 
@@ -4014,6 +4114,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             action="developer-retry",
             category="unknown",
             candidate=candidate,
+            route="developer-retry",
         )
         self.assertTrue(decided["needs_attention"])
         self.assertEqual(decided["attention_reason"], "unknown-reason")
@@ -5536,153 +5637,153 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
         review = self._report()
         no_review = self._report(standards=None)
         cases = [
-            # stage, report, explicit category, candidate moved -> (reason category, next role, next action)
+            # stage, report, explicit category, candidate moved -> (reason category, next role, next action, route)
             (
                 "code-review",
                 review,
                 infra,
                 False,
-                (infra, "code-review", "code-review"),
+                (infra, "code-review", "code-review", "same-candidate-rerun"),
             ),
             (
                 "code-review",
                 review,
                 transport,
                 False,
-                (transport, "code-review", "code-review"),
+                (transport, "code-review", "code-review", "same-candidate-rerun"),
             ),
             (
                 "code-review",
                 review,
                 None,
                 False,
-                ("unknown", "developer", "developer-retry"),
+                ("unknown", "developer", "developer-retry", "developer-retry"),
             ),
             (
                 "code-review",
                 review,
                 "unknown",
                 False,
-                ("unknown", "developer", "developer-retry"),
+                ("unknown", "developer", "developer-retry", "developer-retry"),
             ),
             (
                 "code-review",
                 review,
                 "code",
                 False,
-                ("code", "developer", "developer-retry"),
+                ("code", "developer", "developer-retry", "developer-retry"),
             ),
             (
                 "code-review",
                 review,
                 "requirements",
                 False,
-                ("requirements", "developer", "developer-retry"),
+                ("requirements", "developer", "developer-retry", "developer-retry"),
             ),
             (
                 "code-review",
                 review,
                 "candidate-change",
                 False,
-                ("candidate-change", "developer", "developer-retry"),
+                ("candidate-change", "developer", "developer-retry", "developer-retry"),
             ),
             (
                 "code-review",
                 self._report(standards=("warning", finding)),
                 transport,
                 False,
-                ("code", "developer", "developer-retry"),
+                ("code", "developer", "developer-retry", "developer-retry"),
             ),
             (
                 "code-review",
                 self._report(spec=("blocker", finding)),
                 transport,
                 False,
-                ("requirements", "developer", "developer-retry"),
+                ("requirements", "developer", "developer-retry", "developer-retry"),
             ),
             (
                 "code-review",
                 self._report(spec=("warning", [])),
                 transport,
                 False,
-                ("requirements", "developer", "developer-retry"),
+                ("requirements", "developer", "developer-retry", "developer-retry"),
             ),
             (
                 "code-review",
                 self._report("completed"),
                 transport,
                 False,
-                ("unknown", "developer", "developer-retry"),
+                ("unknown", "developer", "developer-retry", "developer-retry"),
             ),
             (
                 "code-review",
                 self._report("failed"),
                 transport,
                 False,
-                ("unknown", "developer", "developer-retry"),
+                ("unknown", "developer", "developer-retry", "developer-retry"),
             ),
             (
                 "code-review",
                 review,
                 infra,
                 True,
-                ("candidate-change", "developer", "developer-retry"),
+                ("candidate-change", "developer", "developer-retry", "developer-retry"),
             ),
-            ("qa", no_review, infra, False, (infra, "qa", "qa")),
-            ("qa", no_review, None, False, ("unknown", "developer", "developer-retry")),
+            ("qa", no_review, infra, False, (infra, "qa", "qa", "same-candidate-rerun")),
+            ("qa", no_review, None, False, ("unknown", "developer", "developer-retry", "developer-retry")),
             (
                 "qa",
                 self._report("failed", standards=None, failed_check=True),
                 infra,
                 False,
-                ("code", "developer", "developer-retry"),
+                ("code", "developer", "developer-retry", "developer-retry"),
             ),
-            ("publish", no_review, transport, False, (transport, "publish", "publish")),
-            ("publish", no_review, infra, False, (infra, "publish", "publish")),
+            ("publish", no_review, transport, False, (transport, "publish", "publish", "same-candidate-rerun")),
+            ("publish", no_review, infra, False, (infra, "publish", "publish", "same-candidate-rerun")),
             (
                 "publish",
                 no_review,
                 "candidate-change",
                 False,
-                ("candidate-change", "developer", "developer-retry"),
+                ("candidate-change", "developer", "developer-retry", "developer-retry"),
             ),
             (
                 "publish",
                 no_review,
                 None,
                 False,
-                ("unknown", "developer", "developer-retry"),
+                ("unknown", "developer", "developer-retry", "developer-retry"),
             ),
             (
                 "developer",
                 no_review,
                 transport,
                 False,
-                (transport, "developer", "developer-retry"),
+                (transport, "developer", "developer-retry", "developer-retry"),
             ),
             (
                 "developer",
                 self._report("completed", standards=None),
                 transport,
                 False,
-                ("unknown", "developer", "developer-retry"),
+                ("unknown", "developer", "developer-retry", "developer-retry"),
             ),
             (
                 "architect",
                 no_review,
                 transport,
                 False,
-                (transport, "architect", "architect"),
+                (transport, "architect", "architect", "architect-retry"),
             ),
             (
                 "architect",
                 no_review,
                 None,
                 False,
-                ("unknown", "architect", "architect"),
+                ("unknown", "architect", "architect", "architect-retry"),
             ),
         ]
-        for stage, report, category, moved, (reason, role, action) in cases:
+        for stage, report, category, moved, (reason, role, action, route) in cases:
             with self.subTest(
                 stage=stage, category=category, moved=moved, outcome=report["outcome"]
             ):
@@ -5692,8 +5793,9 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                         routing["reason_category"],
                         routing["next_role"],
                         routing["next_action"],
+                        routing["route"],
                     ),
-                    (reason, role, action),
+                    (reason, role, action, route),
                 )
                 self.assertEqual(routing["previous_role"], stage)
                 self.assertTrue(routing["rationale"].strip())
@@ -5713,6 +5815,62 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "context-pressure",
                 "unknown",
             },
+        )
+
+    def test_the_recovery_routes_are_exactly_the_documented_five(self) -> None:
+        self.assertEqual(
+            constants.RECOVERY_ROUTES,
+            (
+                "developer-retry",
+                "same-candidate-rerun",
+                "verification",
+                "architect-retry",
+                "abandon",
+            ),
+        )
+        for route in constants.RECOVERY_ROUTES:
+            with self.subTest(route=route):
+                self.assertEqual(history._require_route(route), route)
+                self.assertEqual(history._require_route(route, recorded=True), route)
+
+    def test_a_route_outside_the_enum_is_rejected_with_the_allowed_routes(
+        self,
+    ) -> None:
+        for value, recorded in (
+            ("rebase", False),
+            ("rebase", True),
+            (None, False),
+            ("", True),
+        ):
+            with self.subTest(value=value, recorded=recorded):
+                with self.assertRaises(coordinator.CoordinatorError) as raised:
+                    history._require_route(value, recorded=recorded)
+                for route in constants.RECOVERY_ROUTES:
+                    self.assertIn(route, raised.exception.remedy)
+
+    def test_a_recorded_route_outside_the_enum_is_rejected_on_read_back(
+        self,
+    ) -> None:
+        routing = {"route": "rebase", "next_action": "developer-retry"}
+        for batch in (
+            {"dispatches": [{"decision": {"decision": "retry", "routing": routing}}]},
+            {"coordinator_decisions": [{"decision": "retry", "routing": routing}]},
+        ):
+            with self.subTest(batch=sorted(batch)):
+                with self.assertRaises(coordinator.CoordinatorError) as raised:
+                    history._validate_operational_batch_fields(batch)
+                self.assertIn("same-candidate-rerun", raised.exception.remedy)
+        # A routing record written before the route field existed carries no route and stays valid.
+        history._validate_operational_batch_fields(
+            {
+                "dispatches": [
+                    {"decision": {"decision": "retry", "routing": {"next_action": "qa"}}}
+                ],
+                "coordinator_decisions": [
+                    {"decision": "retry", "routing": {"next_action": "qa"}},
+                    {"decision": "abandon"},
+                ],
+            }
         )
 
     def test_context_pressure_needs_a_recorded_observation_and_routes_like_an_operational_cause(

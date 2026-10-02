@@ -49,6 +49,7 @@ from harness.orchestration.core.constants import (
     PLAN_FIELDS,
     POLICY_BRIEF_FIELDS,
     PRE_APPROVAL_LEGACY_PLAN_FIELDS,
+    RECOVERY_ROUTES,
     RISK_ASSESSMENT_FIELDS,
 )
 from harness.orchestration.core.git_utils import (
@@ -525,9 +526,38 @@ def _settled(entry: JsonObject) -> bool:
     return entry.get("state") == "reported" and isinstance(entry.get("decision"), dict)
 
 
+def _require_route(value: object, *, recorded: bool = False) -> str:
+    """Return ``value`` when it is one of ``RECOVERY_ROUTES``; refuse anything else.
+
+    ``recorded`` marks a route read back from a batch record rather than one about to be written.
+    """
+    if isinstance(value, str) and value in RECOVERY_ROUTES:
+        return value
+    allowed = ", ".join(RECOVERY_ROUTES)
+    if recorded:
+        raise CoordinatorError(
+            f"batch routing record carries an unknown recovery route {value!r}",
+            remedy=f"a recorded route is one of: {allowed}; restore routing.route to the value "
+            "the coordinator recorded for that decision -- " + INTERNAL_INVARIANT_REMEDY,
+        )
+    raise CoordinatorError(
+        f"the coordinator computed an unknown recovery route {value!r}",
+        remedy=f"a route must be one of: {allowed} -- " + INTERNAL_INVARIANT_REMEDY,
+    )
+
+
 def _validate_operational_batch_fields(batch: JsonObject) -> None:
     """Shape and integrity of the batch-level records issue #250 added. Every field is optional, so a
     batch written before them stays valid; one that carries them must carry them well-formed."""
+    decided = [
+        entry.get("decision")
+        for entry in batch.get("dispatches", [])
+        if isinstance(entry, dict)
+    ]
+    for decision in [*decided, *batch.get("coordinator_decisions", [])]:
+        routing = decision.get("routing") if isinstance(decision, dict) else None
+        if isinstance(routing, dict) and "route" in routing:
+            _require_route(routing["route"], recorded=True)
     for entry in batch.get("context_pressure", []):
         if not isinstance(entry, dict) or set(entry) != CONTEXT_PRESSURE_FIELDS:
             raise CoordinatorError(
