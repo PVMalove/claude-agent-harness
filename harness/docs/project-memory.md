@@ -11,9 +11,10 @@ main checkout's installed script with the worktree path as its first argument. Q
 query derived from the current goal, symptom or decision. If configuration, both entry points or
 enabled sources are absent, continue the skill's ordinary workflow without memory.
 
-The command reads an existing local cache and returns JSON with a search `status` and bounded
-`pointers`. It does not download a model, ingest sources, rebuild the index or call the network.
-FTS5 works without an embedding model. Interpret the response as follows:
+In the main checkout, the command refreshes the derived local cache from allowed sources before
+querying it, including creating a missing index or replacing an incompatible schema. In a linked
+worktree it only reads the main checkout's existing index. Neither path downloads a model or calls
+the tracker/network. FTS5 works without an embedding model. Interpret the response as follows:
 
 - `ok`: consider the returned pointers; an empty list means no usable precedent was found.
 - `stale_sources`: consider only the returned pointers; changed, removed and revoked sources were
