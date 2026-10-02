@@ -63,8 +63,7 @@ def snapshot_manifest(repo: Path) -> bytes:
 def snapshot_enabled(policy: Policy) -> bool:
     """Do not open the reserved snapshot without both type and path grants."""
     return policy.active and any(
-        source in policy.source_types
-        and snapshot_kind_allowed(kind, policy)
+        source in policy.source_types and snapshot_kind_allowed(kind, policy)
         for kind, source in (
             ("ticket", "task_archive"),
             ("pull_request", "task_archive"),
@@ -147,7 +146,7 @@ def metadata(text: str, names: str, default: str) -> str:
     )
     if not match:
         match = re.search(rf"(?im)^##\s+(?:{names})\s*\n\s*([^\n]+)", text)
-    return match.group(1).strip(" *\"'") if match else default
+    return match.group(1).strip().strip("*\"'") if match else default
 
 
 def read_source(
@@ -214,7 +213,9 @@ def read_source(
         return None
 
     def sanitize(value: str) -> str:
-        return sanitized(value, policy, apply_baseline=kind in STATE_SOURCE_TYPES or remote)
+        return sanitized(
+            value, policy, apply_baseline=kind in STATE_SOURCE_TYPES or remote
+        )
 
     # Identity must remain a usable pointer; deny a path that sanitization would alter.
     if sanitized(relative, policy) != relative:

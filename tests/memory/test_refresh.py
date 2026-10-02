@@ -149,8 +149,12 @@ def test_schema_replacement_primes_hashes_and_preserves_cache_on_replace_error(
     source(tmp_path, "CONTEXT.md", "# Main\ntransaction")
     build(tmp_path)
     index = storage_path(tmp_path, "cache", "memory", "index.sqlite3")
-    with sqlite3.connect(index) as db:
+    db = sqlite3.connect(index)
+    try:
         db.execute("UPDATE manifest SET value='old' WHERE key='schema_version'")
+        db.commit()
+    finally:
+        db.close()
     before = index.read_bytes()
     with patch(
         "harness.memory.index.os.replace",

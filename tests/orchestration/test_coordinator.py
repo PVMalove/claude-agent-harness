@@ -1870,10 +1870,12 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         submitted = self._submit(brief["dispatch_id"], report)
         self.assertEqual(submitted["state"], "reported")
-        stored = json.loads(Path(submitted["report"]).read_text())
+        stored = json.loads(Path(submitted["report"]).read_text(encoding="utf-8"))
         self.assertEqual(stored["lessons"], report["lessons"])
         self.assertEqual(stored["used_memory"], report["used_memory"])
-        markdown = Path(submitted["report"]).with_suffix(".md").read_text()
+        markdown = (
+            Path(submitted["report"]).with_suffix(".md").read_text(encoding="utf-8")
+        )
         self.assertIn("Validate source authorization", markdown)
         self.assertIn("historical-hit-without-a-current-index", markdown)
         self.assertEqual(
@@ -3902,7 +3904,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         from harness.memory import build
 
         project_path = self.repo / ".harness/project.json"
-        project = json.loads(project_path.read_text())
+        project = json.loads(project_path.read_text(encoding="utf-8"))
         project.update(
             {
                 "memory": {"enabled": True},
