@@ -278,6 +278,25 @@ def test_cli_error_does_not_expose_tracker_output(
     assert not (remote_repo / SNAPSHOT).exists()
 
 
+def test_windows_cmd_shim_keeps_query_string_quoted(
+    remote_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = importlib.import_module("harness.memory.sync")
+    launched: list[object] = []
+
+    def popen(cmd: object, **kwargs: object) -> object:
+        launched.append(cmd)
+        raise OSError
+
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setattr(module.shutil, "which", lambda name: rf"C:\bin\{name}.cmd")
+    monkeypatch.setattr(module.subprocess, "Popen", popen)
+    endpoint = "repos/o/r/issues?state=closed&per_page=100&page=1"
+    with pytest.raises(ValueError, match="gh unavailable"):
+        module.fetch_page(["gh", "api", endpoint], remote_repo)
+    assert launched == [rf'cmd.exe /d /s /c ""C:\bin\gh.cmd" "api" "{endpoint}""']
+
+
 def test_narrow_ticket_grant_does_not_fetch_pull_requests(remote_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from harness.memory import sync
     configure(remote_repo, source_types=["task_archive"], allow_paths=[SNAPSHOT + "/records/ticket-*.json"])
