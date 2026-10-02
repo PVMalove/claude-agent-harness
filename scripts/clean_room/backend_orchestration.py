@@ -28,8 +28,9 @@ def _require_recovery_route_table(playbook: str) -> None:
     """Обязательное правило playbook: таблица маршрутов восстановления (#497).
 
     Раздел `## Recovery route table` идёт сразу после `## Retry routing and abandon`, содержит
-    таблицу `Situation | Route | Who approves | Evidence` и по строке на каждое значение
-    `RECOVERY_ROUTES` во второй колонке; маршрут вне enum в таблице тоже ошибка.
+    таблицу `Situation | Route | Who approves | Evidence` и хотя бы одну строку на каждое значение
+    `RECOVERY_ROUTES` во второй колонке (у маршрута может быть несколько ситуаций); маршрут вне
+    enum в таблице тоже ошибка.
     """
     missing = "backend-orchestration playbook missing rule: recovery route table"
     headings = [

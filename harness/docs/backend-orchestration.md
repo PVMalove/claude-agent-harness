@@ -604,7 +604,7 @@ agent inbox и записи QA-очереди dispatch, которые уже н
 `.harness/orchestration/playbook.md`.
 
 `batch decision-packet` показывает маршрут до записи решения: поле `route_preview` содержит
-`retry` — routing record, который записал бы `batch decide` (без `decided_at`), и `abandon` —
+`retry` — routing record, вычисленный так же, как в `batch decide` (без `decided_at`), и `abandon` —
 `{"route": "abandon"}`. Packet принимает те же `--reason-category` и `--retry-role developer`, что и
 `batch decide`, и ничего не пишет; для уже решённого report и для пакета следующего dispatch
 `route_preview` равен `null`:
@@ -613,6 +613,9 @@ agent inbox и записи QA-очереди dispatch, которые уже н
 python .harness/orchestration/coordinator.py --repo . batch decision-packet \
   --batch <batch-id> --reason-category verification-infrastructure
 ```
+
+Preview не проверяет `retry_policy.max_developer_retries`: при исчерпанном бюджете он по-прежнему
+показывает маршрут `developer-retry`, а `batch decide --decision retry` такое решение отклоняет.
 
 Каждое решение `batch decide` хранит в transition audit record batch деталь `decision`:
 `dispatch_id`, `decision`, `route` (`null` у решения без маршрута — `accept`, `override-warning`,

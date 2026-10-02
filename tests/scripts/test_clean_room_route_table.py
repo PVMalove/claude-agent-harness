@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests for the clean-room playbook rule of scripts/clean_room/backend_orchestration.py: the
-"Recovery route table" directly follows "Retry routing and abandon" and has one row per
+"Recovery route table" directly follows "Retry routing and abandon" and has at least one row per
 RECOVERY_ROUTES value (issue #497)."""
 
 from __future__ import annotations
@@ -39,13 +39,19 @@ class RecoveryRouteTableRuleTests(unittest.TestCase):
             "\n## ", 1
         )[0]
 
-    def _row(self, route: str) -> str:
-        """The table row of ``route``; the retry table above also names routes in its cells."""
-        return next(
+    def _rows(self, route: str) -> list[str]:
+        """The table rows of ``route``; the retry table above also names routes in its cells."""
+        return [
             line
             for line in self.section.splitlines()
             if line.startswith("|") and f"| `{route}` |" in line
-        )
+        ]
+
+    def _without_rows(self, route: str) -> str:
+        playbook = self.playbook
+        for row in self._rows(route):
+            playbook = playbook.replace(f"{row}\n", "", 1)
+        return playbook
 
     def _assert_refused(self, playbook: str, fragment: str) -> None:
         with self.assertRaises(SystemExit) as raised:
@@ -82,12 +88,18 @@ class RecoveryRouteTableRuleTests(unittest.TestCase):
     def test_every_route_needs_its_row(self) -> None:
         for route in RECOVERY_ROUTES:
             with self.subTest(route=route):
-                self._assert_refused(
-                    self.playbook.replace(f"{self._row(route)}\n", "", 1), route
-                )
+                self._assert_refused(self._without_rows(route), route)
+
+    def test_a_route_may_cover_several_situations(self) -> None:
+        rows = self._rows("developer-retry")
+        self.assertGreater(len(rows), 1)
+
+        backend_orchestration._require_recovery_route_table(
+            self.playbook.replace(f"{rows[0]}\n", "", 1)
+        )
 
     def test_a_route_outside_the_enum_is_refused(self) -> None:
-        row = self._row("abandon")
+        row = self._rows("abandon")[0]
         extra = row.replace("`abandon`", "`rebase`")
 
         self._assert_refused(self.playbook.replace(row, f"{row}\n{extra}", 1), "rebase")
