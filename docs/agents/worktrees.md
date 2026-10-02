@@ -7,7 +7,7 @@ For running more than one feature branch at once without one session's dirty wor
 
 ## When to use it
 
-Only when explicitly asked — by the developer directly, or by this doc. Don't reach for a worktree on a normal single-branch task; the regular `feature/<ticket-id>` + PR flow in [git-workflow.md](./git-workflow.md) covers that. Use a worktree when the developer wants to work on (or have an agent work on) more than one ticket in parallel, so each gets its own working directory and branch instead of sharing one.
+Only when explicitly asked — by the developer directly, or by this doc. Don't reach for a worktree on a normal single-branch task; the regular issue-branch + PR flow in [git-workflow.md](./git-workflow.md) covers that. Use a worktree when the developer wants to work on (or have an agent work on) more than one ticket in parallel, so each gets its own working directory and branch instead of sharing one.
 
 For a subagent spawned via the `Agent` tool to work on an independent ticket in parallel, pass `isolation: "worktree"` on that call instead of manually creating one — same underlying mechanism, scoped to that subagent.
 

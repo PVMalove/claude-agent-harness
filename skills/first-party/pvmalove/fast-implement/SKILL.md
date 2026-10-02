@@ -31,7 +31,7 @@ A strict pipeline, resolved in order: **Pre-flight** (confirm the ticket is actu
 2. **Check blockers**, on the resolved ticket, whatever its current `status::*` label. Read its blockers from this repo's tracker (native GitHub/GitLab dependency links, or the `Blocked by:`/`**Blocked by:**` field — see `docs/agents/issue-tracker.md`).
     - Any blocker still open → stop and tell the user which ones. Don't start the work. If the ticket isn't already `status::blocked`, set it (same label swap as step 3).
     - All blockers closed/resolved (or none) → continue. A `status::blocked` ticket passes through `status::ready` in step 3.
-3. **Mark it in progress — mandatory, before creating the issue branch or editing any file.** This is not deferred to "later" and is not optional in a cloud or single-session run. A ticket carries exactly one `status::*` label (see `docs/agents/triage-labels.md`), so replace, don't add:
+3. **Mark it in progress before creating the issue branch or editing any file**, in every run mode, cloud and single-session runs included. A ticket carries exactly one `status::*` label (see `docs/agents/triage-labels.md`), so replace, don't add:
     - **GitHub:** `gh issue edit <n> --remove-label status::ready --remove-label status::blocked --add-label status::in-progress`, then confirm with `gh issue view <n> --json labels --jq '[.labels[].name]'` that `status::in-progress` is the only `status::*` label.
     - **GitLab:** `glab issue update <n> --unlabel status::ready,status::blocked --label status::in-progress`, and confirm the same way.
     - **Local tracker:** set the file's `**Workflow:**` line to `status::in-progress`.

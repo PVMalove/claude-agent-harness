@@ -45,14 +45,14 @@ the missing ADR or precedent to the coordinator instead.
 
 Evidence stays bounded: a command's full output never returns to the model's dialogue, only a
 truncated summary. Read a long log through the existing
-`python harness/orchestration/advisory.py summarize-log --file <log>` rather than in full, read files
+`python .harness/orchestration/advisory.py summarize-log --file <log>` rather than in full, read files
 in ranges, and re-run a failing test only by its specific node id, never the whole suite. A write role
 with iterative TDD (`developer`, `database-migrations`, `messaging-integration`) that exceeds a
 planned trigger (TDD-cycle volume or accumulated log volume) brings the work to a natural boundary,
 commits, and requests a checkpoint instead of continuing in a bloated session. A read-only role
-(`architect`, `qa`, `code-review`) never spans a dispatch across worker sessions this way; it keeps
-its own output bounded by the same means above and, if genuinely exceeded, escalates a blocker
-instead.
+(`architect`, `qa`, `code-review`, `verification`) never spans a dispatch across worker sessions
+this way; it keeps its own output bounded by the same means above and, if genuinely exceeded,
+escalates a blocker instead.
 
 Context pressure is measured by the provider or runtime, never by your own estimate. When the
 coordinator records a `critical` observation for your dispatch, a write role finishes the current TDD

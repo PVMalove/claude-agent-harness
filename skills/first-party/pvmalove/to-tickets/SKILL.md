@@ -8,11 +8,11 @@ disable-model-invocation: true
 
 **Objective:** Break a plan, spec, or conversation into a set of **tickets** — tracer-bullet vertical slices, each declaring its blocking edges.
 
-The issue tracker and triage label vocabulary should have been provided to you. If not, tell the user to run `/setup-matt-pocock-skills`.
+The issue tracker and triage label vocabulary should have been provided to you in `docs/agents/issue-tracker.md` and `docs/agents/triage-labels.md`. If either file is missing, tell the user to run `harness update`, which seeds both from the harness templates.
 
 ## Execution in Two Phases
 
-You must execute this skill in two distinct phases. Do NOT publish anything to the issue tracker or create local files until the user explicitly approves the ticket breakdown.
+Run this skill in two phases: publish nothing to the issue tracker and create no local files until the user explicitly approves the ticket breakdown.
 
 ### Phase 1: Drafting & Review
 1. **Gather Context:** Work from the conversation context. If passed a reference (spec path, issue number/URL), read its full body and comments.
@@ -36,22 +36,22 @@ You must execute this skill in two distinct phases. Do NOT publish anything to t
     - **What it delivers:** The end-to-end behavior
     - **Relevant Files (Discovery Context):** Assigned and advisory-added paths, each with its reason; omit this field when the parent has no Discovery Context.
     - *Ask the user:* Does the granularity feel right? Are blocking edges correct? Should anything be merged/split? Does the story-point score feel right, and is the derived pipeline label correct — the user may override the label on the gate without changing the score.
-    - **DO NOT PROCEED TO PHASE 2 UNTIL APPROVED.**
+    - Stop here until the user approves the breakdown.
 
 ### Phase 2: Publishing & Summarizing (After Approval)
 1. **Publish to the Tracker:** The method depends on the configured tracker:
     - **Integration branch:** Read the parent epic's `## Integration Branch` section before writing
       any child ticket. Copy its exact branch name into every child ticket; if the epic has no
       integration branch, stop and report the missing prerequisite instead of inferring one.
-    - **Local files:** Write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md` (01, 02...). Use `<local-ticket-template>`. Include the finished per-ticket `Relevant Files (Discovery Context)` list when Discovery Context was present. Set `**Workflow:**` to `status::blocked` if it has blockers, otherwise `status::ready`. Set `**Execution:**` to `hitl` or `afk` per your best judgment of the ticket (see `docs/agents/triage-labels.md`). For `afk` tickets, set `**Story Points:**` to the final score from step 3 and `**Pipeline:**` to the label approved on the STOP-AND-ASK gate — the derived label, or the user's override if they changed it there; the score itself never changes. Omit both lines entirely for `hitl` tickets. Add `**Task report:** required` unless told to skip it (omit the line entirely if not required). `/implement` finds the next ticket by reading each file's `**Workflow:**` field — a purely linear chain resolves top to bottom.
+    - **Local files:** Write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md` (01, 02...). Use `<local-ticket-template>`. Include the finished per-ticket `Relevant Files (Discovery Context)` list when Discovery Context was present. Set `**Workflow:**` to `status::blocked` if it has blockers, otherwise `status::ready`. Set `**Execution:**` to `hitl` or `afk` per your best judgment of the ticket (see `docs/agents/triage-labels.md`). For `afk` tickets, set `**Story Points:**` to the final score from step 3 and `**Pipeline:**` to the label approved on the STOP-AND-ASK gate — the derived label, or the user's override if they changed it there; the score itself never changes. Omit both lines entirely for `hitl` tickets. Add `**Task report:** required` unless told to skip it (omit the line entirely if not required). `/fast-implement` finds the next ticket by reading each file's `**Workflow:**` field — a purely linear chain resolves top to bottom.
     - **GitHub / Real Tracker:**
-        - Publish one issue per ticket in dependency order using `gh issue create --body-file <path>`. **CRITICAL:** Do NOT use inline `--body` heredoc, as it breaks bash quoting.
+        - Publish one issue per ticket in dependency order using `gh issue create --body-file <path>`. Do not pass the body inline with `--body` or a heredoc — it breaks shell quoting (see `docs/agents/git-workflow.md` §1).
         - Include the finished per-ticket `## Relevant Files (Discovery Context)` section when Discovery Context was present. Preserve the exact paths and their reasons; it is the implementation ticket's curated starting context.
         - Include the finished `## Story Points` section (the approved score) for `afk` tickets; omit the section entirely for `hitl` tickets.
         - Apply labels (see `docs/agents/triage-labels.md` for the full taxonomy): `type::*`, `status::ready` (or `status::blocked` if gated by another ticket in this batch), `hitl`/`afk`, `pipeline::fast` or `pipeline::full` for `afk` tickets — the label approved on the STOP-AND-ASK gate, the derived label or the user's override, never applied to `hitl` tickets — and `task-report::required` unless told to skip it.
         - *Grouping:* Link every ticket to the parent epic as a **native sub-issue**. Do NOT use `epic::<slug>` labels.
         - *Local Mirror:* The epic spec already lives in its own folder under `docs/tasks/` (per `docs/agents/artifacts.md`) — rename that folder to `issue-<epic-id>-<epic-slug>/` first if it was still slug-only. Save each published ticket's issue body into that folder's `tickets/` subfolder, as `tickets/issue-<ID>-<slug>.md` — not flat alongside the spec.
-        - *Frontier:* Don't trace `Blocked by` by hand to find what's takeable — query it, the same fields and mechanism as `/wayfinder`'s frontier query (`docs/agents/issue-tracker.md#wayfinding-operations`), scoped to the epic's sub-issues instead of the map's children. `/implement` runs this same query itself when handed the epic instead of a specific ticket.
+        - *Frontier:* Don't trace `Blocked by` by hand to find what's takeable — query it, the same fields and mechanism as `/wayfinder`'s frontier query (`docs/agents/issue-tracker.md#wayfinding-operations`), scoped to the epic's sub-issues instead of the map's children. `/fast-implement` runs this same query itself when handed the epic instead of a specific ticket.
         - Do NOT close or rewrite the parent epic issue, except to append a short list of the subtask numbers you created.
 2. **Summarize the Batch:**
     - Read `language` from `.harness/project.json` (default `ru` if the file or field is absent) — this decides only the "What to build" column below, not the ticket titles/bodies you publish, which stay in whatever language you drafted them in.

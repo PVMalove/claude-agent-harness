@@ -21,16 +21,17 @@ brief, project configuration, or reports.
 
 The coordinator records exactly one current state for each batch. A role may report progress or a
 blocker, but it cannot transition its own batch or silently widen its brief. The installed
-`coordinator.py` implements the first public slice of this contract and keeps its local state under
+`coordinator.py` implements this contract's lifecycle and keeps its local state under
 the gitignored `.harness/orchestration/state/` directory.
 
 | State | Coordinator action and entry condition | Allowed next state |
 | --- | --- | --- |
-| `planned` | Ticket, backend zone, issue branch/worktree, DoD, prohibitions, and verification commands are drafted. | `awaiting-approval`, `blocked` |
-| `awaiting-approval` | The coordinator is waiting for the next explicit human decision: first the role dispatch, and later acceptance of a report. | `active`, `blocked`, `completed`, `failed`, `abandoned` |
-| `active` | An approved dispatch has been handed to the runtime adapter; the role is executing only within its immutable brief. | `awaiting-approval`, `blocked`, `failed` |
+| `planned` | Ticket, backend zone, issue branch/worktree, DoD, prohibitions, and verification commands are drafted. | `awaiting-approval`, `blocked`, `failed`, `not-required` |
+| `awaiting-approval` | The coordinator is waiting for the next explicit human decision: first the role dispatch, and later acceptance of a report. | `active`, `blocked`, `completed`, `failed`, `not-required`, `abandoned` |
+| `active` | An approved dispatch has been handed to the runtime adapter; the role is executing only within its immutable brief. | `awaiting-approval`, `blocked`, `failed`, `not-required` |
 | `completed` | All required role reports, commit proof, verification evidence, and risk gates are accepted. | terminal |
-| `blocked` | An external dependency, missing authority, overlapping zone, or unavailable proof prevents safe continuation. | terminal |
+| `blocked` | An external dependency, missing authority, overlapping zone, or unavailable proof prevents safe continuation. | `awaiting-approval` only through `batch resume --reason` for a startup-blocked or stale batch (a human `block` decision is never resumable); `failed` |
+| `not-required` | `batch not-required` recorded, with approval and evidence, that the pinned snapshot already satisfies every DoD item. | terminal |
 | `failed` | The dispatch attempted work but could not produce an acceptable result. | terminal |
 | `abandoned` | A human explicitly gave up on the batch after a completion report, with a recorded reason. | terminal |
 
@@ -62,7 +63,8 @@ for the reported dispatch; the claim alone is `unknown`.
 | Reporting stage | `accept` | `retry` | `block` / `fail` | `abandon` |
 | --- | --- | --- | --- | --- |
 | architect | developer | new architect | terminal | `abandoned` |
-| developer | risk assessment | `developer-retry` (new candidate, then a new risk assessment) | terminal | `abandoned` |
+| developer | risk assessment | `verification` on the registered candidate when the report is `blocked` with an operational reason; otherwise `developer-retry` (new candidate, then a new risk assessment) | terminal | `abandoned` |
+| verification | risk assessment | `developer-retry` | terminal | `abandoned` |
 | code-review | qa | new code-review on the same candidate only if the report is `blocked`, the reason is `verification-infrastructure`, `transport` or `context-pressure`, there is no finding on either axis, no failed check and the candidate is unchanged; otherwise `developer-retry` | terminal | `abandoned` |
 | qa | publish | new qa on the same candidate under the same conditions (QA stays read-only); a defect or a new candidate means `developer-retry` | terminal | `abandoned` |
 | publish | completed | new publish on the same accepted SHA for `verification-infrastructure`, `transport` or `context-pressure`; `developer-retry` when the candidate must change | terminal | `abandoned` |
@@ -83,7 +85,8 @@ allows a developer retry, it takes `retry` or `abandon`; once that budget is exh
 refused and the blocker takes `block`, `fail` or `abandon`, after which the work is split or
 re-planned in a new batch.
 
-`abandon` is a fifth decision on a completion report. It needs explicit approval and a non-empty
+`abandon` is a decision on a completion report, alongside `accept`, `override-warning`, `retry`,
+`block` and `fail`. It needs explicit approval and a non-empty
 `--reason`, moves the batch to the terminal `abandoned` state and marks unfinished dispatches
 `abandoned`. It keeps the worktree, candidate, briefs, reports, Context Packages and audit records,
 closes no issue and opens no PR. It removes only leftovers that are not evidence: the staged
@@ -154,9 +157,9 @@ that still passes the routing rules above. A failing notification adapter is rec
 the attention state. None of them adds a model tool or edits a prompt, and the selected names, the
 attention thresholds and the approval TTL are frozen in each brief as `orchestration_policy`.
 
-Records written before these fields existed stay valid: every new batch field and the four brief
-fields (`transition`, `transition_digest`, `retry_idempotency_key`, `orchestration_policy`, all
-present or all absent) are optional, and no ledger migration is required.
+These batch fields and the four brief fields (`transition`, `transition_digest`,
+`retry_idempotency_key`, `orchestration_policy`, all present or all absent) are optional; a record
+without them needs no ledger migration.
 
 ## Versioned lifecycle ledger
 
@@ -230,7 +233,7 @@ It must contain, at minimum:
   mode (read-only roles get no edit tools) and a project may override it with `tool_policy`;
   `context_budget` is `adaptive_continuation_policy.context_limit`. The tool list is the role's
   working set, never a deny-list: a brief does not disable the runtime's global tools. A brief
-  created before these fields existed stays valid;
+  without these fields is valid;
 - `zone IDs` and allowed paths: the exact backend zones the role may read or write;
 - `branch/worktree`: issue branch and isolated worktree; protected branches and `integration/*`
   are never write targets;
