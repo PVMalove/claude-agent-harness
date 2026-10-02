@@ -88,3 +88,33 @@ the existing bounded memory writer lock, then refreshes the index after releasin
 explicit offline `harness memory build` or `rebuild` repairs it. Build/rebuild, raw search and Context
 Package assembly never fetch tracker data. Linked worktrees read the main snapshot and reject sync
 before creating files or contacting the tracker.
+
+## Offline retrieval quality gate
+
+Run `harness memory eval <repo> --dataset <tickets.json> --json` against an existing index.
+Evaluation never refreshes the index, syncs the tracker or uses a model/network. Build or rebuild
+the opted-in corpus explicitly before evaluation. Each dataset entry needs a unique positive
+integer `id`, nonempty `title` and `query`, and nonempty `expected_sources` with repository-relative
+POSIX paths. Derive each query from the closed ticket's goal and DoD, then label useful sources.
+In the source repository, omitting `--dataset` selects `tests/memory/golden_tickets.json`;
+other installations should pass their own dataset explicitly.
+
+`recall@1`, `recall@3` and `recall@5` are ticket-level hit rates: a query succeeds if at least
+one labeled source occurs in that ranked window. Noise is the fraction of irrelevant returned
+paths in top-5, averaged equally across queries; empty retrieval has zero noise and zero recall.
+Evaluation measures raw ranked candidates, independently of Context Package quotas, token limits
+and the interactive search policy's `top_k`. JSON includes per-ticket paths, metrics and search
+status; omit `--json` for a compact text report.
+
+The gate requires `recall@5 >= 0.6` and `noise_ratio <= 0.7` by default. Override them explicitly
+with `--min-recall` and `--max-noise` (finite values in `[0, 1]`). Exit code 0 means PASS, 1 means
+FAIL; invalid inputs also exit nonzero. A degraded search always fails, even with relaxed thresholds.
+Invalid dataset/options use the common `HarnessError` diagnostic (`ERROR` and `REMEDY`) and
+exit code 2. Quality failure still returns 1 and contains the measured report.
+The source repository's `tests/memory/baseline_fts5.json` records the measured FTS5 result and
+dataset/corpus SHA-256 hashes for the vector-layer comparison. A recorded failed quality gate is
+evidence of retrieval noise, not a reason to weaken its thresholds.
+Label all useful sources with concrete source evidence before comparing engines. If an annotation
+correction changes the scores, preserve the original measurement and record the revision explicitly;
+it is not an improvement in retrieval. The source repository retains its initial single-label run
+in `baseline_fts5_initial.json` alongside the corrected multi-label baseline.
