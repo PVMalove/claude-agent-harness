@@ -5014,6 +5014,40 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         self.assertEqual(submitted["state"], "reported")
 
+    def test_coverage_claim_contradicting_commit_map_is_rejected_at_submit(
+        self,
+    ) -> None:
+        batch_id = self._plan_batch(self.FIVE_ITEMS)["batch_id"]
+        self._accepted_architect(batch_id)
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        commits, changed = self._commits("a", "b", "c")
+        first, second, third = commits
+        plan = brief["commit_plan"]
+        divergent = self._issue_443_divergence(brief, commits)
+        divergent["commit_map"] = self._commit_map(
+            [(first, plan[0]), (first, plan[1]), (second, plan[3]), (third, plan[4])]
+        )
+        divergent["dod_coverage"][2] = {"dod_item": 3, "commits": [first]}
+        divergent["dod_coverage"][3] = {"dod_item": 4, "commits": [second]}
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError,
+            "dod_coverage item 3 claims commits .* covering item 3 \\(step-3\\)",
+        ) as caught:
+            self._submit(
+                brief["dispatch_id"],
+                self._developer_report(brief, commits[-1], changed, **divergent),
+            )
+
+        self.assertIn("not_covered", caught.exception.remedy)
+        divergent["dod_coverage"][2] = {"dod_item": 3, "not_covered": "step-3 deferred"}
+        submitted = self._submit(
+            brief["dispatch_id"],
+            self._developer_report(brief, commits[-1], changed, **divergent),
+        )
+        self.assertEqual(submitted["state"], "reported")
+
     def test_developer_retry_rejects_coverage_fields_and_keeps_distinct_entries(
         self,
     ) -> None:

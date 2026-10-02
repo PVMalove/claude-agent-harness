@@ -36,7 +36,10 @@ closes several entries gets one pair per entry, and an entry closed by several c
 per commit. When the mapping is not one-to-one (a merged commit, a split entry, or an unclosed
 entry), add `dod_coverage` with exactly one record per Definition of Done item,
 `{"dod_item": <n>, "commits": [<sha>, ...]}` or `{"dod_item": <n>, "not_covered": "<reason>"}`,
-and a `divergence_justification` stating what was merged, split or added and why. With a one-to-one
-mapping, omit `divergence_justification`. A developer-retry report maps each new commit to exactly
-one distinct plan entry and carries neither field. A `not_covered` item is never accepted as clean.
+and a `divergence_justification` stating what was merged, split or added and why. A `commits`
+record must name at least one commit that `commit_map` maps to a plan entry whose `covers` lists that
+item, or `report submit` refuses it; when the mapped work does not complete the item, record it as
+`not_covered` with a reason instead. With a one-to-one mapping, omit `divergence_justification`.
+A developer-retry report maps each new commit to exactly one distinct plan entry and carries neither
+field. A `not_covered` item is never accepted as clean.
 Do not report the candidate SHA alone when it hides multiple commits.

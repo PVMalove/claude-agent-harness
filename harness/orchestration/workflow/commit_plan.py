@@ -202,6 +202,22 @@ def _covers(entry: JsonObject, position: int) -> list[int]:
     return covers if isinstance(covers, list) else [position]
 
 
+def _plan_covers(dispatch: JsonObject) -> dict[object, list[int]]:
+    """Each plan entry id with its definition-of-done items, in plan order."""
+    return {
+        entry.get("id"): _covers(entry, position)
+        for position, entry in enumerate(dispatch["commit_plan"], start=1)
+        if isinstance(entry, dict)
+    }
+
+
+def _covering_commits(
+    item: int, pairs: list[tuple[str, str]], covers: dict[object, list[int]]
+) -> list[str]:
+    """The commits commit_map maps to a plan entry whose ``covers`` lists ``item``."""
+    return _unique([sha for sha, plan_id in pairs if item in covers.get(plan_id, [])])
+
+
 def _relation(pairs: list[tuple[str, str]], plan_ids: list[str]) -> JsonObject:
     by_commit: dict[str, list[str]] = {}
     by_entry: dict[str, list[str]] = {}
@@ -379,6 +395,8 @@ def _check_coverage(
     count: int,
     created: list[str],
     resolve: Callable[[str], str],
+    pairs: list[tuple[str, str]],
+    covers: dict[object, list[int]],
 ) -> None:
     if not isinstance(coverage, list):
         raise CoordinatorError(
@@ -425,15 +443,24 @@ def _check_coverage(
                 f"dod_coverage item {item} commits must be a non-empty list of commit SHAs",
                 remedy=COVERAGE_REMEDY,
             )
-        foreign = [
-            sha
-            for sha in commits
-            if _resolve_reported(resolve, sha, "dod_coverage[].commits") not in created
+        claimed = [
+            _resolve_reported(resolve, sha, "dod_coverage[].commits") for sha in commits
         ]
+        foreign = [sha for sha, full in zip(commits, claimed) if full not in created]
         if foreign:
             raise CoordinatorError(
                 f"dod_coverage item {item} names commits this dispatch did not create: {foreign}",
                 remedy="list only commits this dispatch created as covering commits",
+            )
+        expected = [plan_id for plan_id, items in covers.items() if item in items]
+        if not set(claimed) & set(_covering_commits(item, pairs, covers)):
+            entries = ", ".join(str(plan_id) for plan_id in expected)
+            raise CoordinatorError(
+                f"dod_coverage item {item} claims commits {commits}, but commit_map maps none "
+                f"of them to a plan entry covering item {item} ({entries})",
+                remedy=f"map one of the claimed commits to {entries} in commit_map, list the "
+                f"commits commit_map maps to {entries}, or record item {item} as not_covered "
+                "with a reason",
             )
     missing = [item for item in range(1, count + 1) if item not in seen]
     if missing:
@@ -449,7 +476,8 @@ def check_report(
     created: list[str],
     resolve: Callable[[str], str],
 ) -> None:
-    """Reject only structural errors of a developer report against its brief's commit plan.
+    """Reject structural errors of a developer report against its brief's commit plan, and
+    dod_coverage claims that its commit_map and the plan's ``covers`` contradict.
 
     ``created`` is the ordered list of commits the dispatch created (after ``snapshot_commit``, or
     after the rebase target for a rebase); ``resolve`` turns a reported SHA into its full form.
@@ -480,6 +508,8 @@ def check_report(
             len(dispatch.get("definition_of_done", [])),
             created,
             resolve,
+            resolved,
+            _plan_covers(dispatch),
         )
     if one_to_one:
         if "divergence_justification" in report:
@@ -539,18 +569,12 @@ def coverage(
     reported = report.get("dod_coverage")
     if isinstance(reported, list):
         return reported, "report"
-    covers = {
-        entry.get("id"): _covers(entry, position)
-        for position, entry in enumerate(dispatch["commit_plan"], start=1)
-        if isinstance(entry, dict)
-    }
+    covers = _plan_covers(dispatch)
     pairs = _report_pairs(report, resolve)
     return [
         {
             "dod_item": item,
-            "commits": _unique(
-                [sha for sha, plan_id in pairs if item in covers.get(plan_id, [])]
-            ),
+            "commits": _covering_commits(item, pairs, covers),
         }
         for item in range(1, len(dispatch.get("definition_of_done", [])) + 1)
     ], "derived"
