@@ -868,10 +868,21 @@ def _validate_dispatch(
     }
     # The transition-bound approval contract (issue #250) was added as one group as well.
     accepted |= {fields - POLICY_BRIEF_FIELDS for fields in set(accepted)}
+    # The code-review brief's commit-plan divergence (issue #478) came later than all of them.
+    accepted |= {fields - {"commit_plan_divergence"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError(
             "dispatch record schema mismatch",
             remedy="the dispatch record schema is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    divergence = dispatch.get("commit_plan_divergence")
+    if divergence is not None and (
+        dispatch.get("role") != "code-review" or not isinstance(divergence, dict)
+    ):
+        raise CoordinatorError(
+            "dispatch commit_plan_divergence must be null or, on a code-review brief, an object",
+            remedy="the dispatch record's commit_plan_divergence is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
     if dispatch.get("state") != "approved":
