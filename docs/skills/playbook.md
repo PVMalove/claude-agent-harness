@@ -31,7 +31,7 @@ review dispatch. Advisory tool call остаётся эфемерным non-role
 ## 3. Контракты
 
 - **Вход (Input/Brief):** тикет, зона, issue-ветка/worktree, DoD, запреты, команды проверки, назначение провайдера/модели и явное одобрение человека.
-- **Процесс (Process):** `planned → awaiting-approval → active → awaiting-approval`, затем `completed`, `blocked` или `failed`; Architect предшествует Developer; reports принимаются только при достаточном независимом доказательстве.
+- **Процесс (Process):** `planned → awaiting-approval → active → awaiting-approval`, затем `completed`, `blocked`, `failed`, `not-required` или `abandoned` (`blocked` продолжается только через `batch resume --reason`); Architect предшествует Developer; reports принимаются только при достаточном независимом доказательстве.
 - **Выход (Output/Report):** Context Package, checkpoints, неизменяемые dispatch briefs, completion reports, принятый конечный статус batch и наблюдаемая базовая линия метрик.
 
 ## 4. Архитектурная схема

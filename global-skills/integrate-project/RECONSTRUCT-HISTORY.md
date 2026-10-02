@@ -24,8 +24,8 @@ owner has seen the closing report and separately authorized which ones to write;
 own read-only rule and this skill's standing rule of confirming before durable writes.
 
 For a repository with a long history, forking a sub-investigation per source type (sessions vs.
-PR/MR history) is reasonable. Let each fork's result return as its own completion notification rather than polling or
-scheduling a wakeup for it.
+PR/MR history) is reasonable. Let each fork's result return as its own completion notification;
+never poll or schedule a wakeup to wait on one that's already running.
 
 ## Evidentiary discipline
 

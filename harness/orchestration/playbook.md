@@ -85,7 +85,8 @@ allows a developer retry, it takes `retry` or `abandon`; once that budget is exh
 refused and the blocker takes `block`, `fail` or `abandon`, after which the work is split or
 re-planned in a new batch.
 
-`abandon` is a decision on a completion report, alongside `accept`, `override-warning`, `retry`, `block` and `fail`. It needs explicit approval and a non-empty
+`abandon` is a decision on a completion report, alongside `accept`, `override-warning`, `retry`,
+`block` and `fail`. It needs explicit approval and a non-empty
 `--reason`, moves the batch to the terminal `abandoned` state and marks unfinished dispatches
 `abandoned`. It keeps the worktree, candidate, briefs, reports, Context Packages and audit records,
 closes no issue and opens no PR. It removes only leftovers that are not evidence: the staged

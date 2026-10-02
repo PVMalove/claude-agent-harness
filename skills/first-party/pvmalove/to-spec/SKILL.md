@@ -36,8 +36,8 @@ You must execute this skill in two distinct phases to ensure the user agrees wit
     - *Note:* Do NOT create ad-hoc `epic::<slug>` labels. `/to-tickets` will handle linking sub-tasks natively later, as GitHub sub-issues — see `docs/agents/issue-tracker.md#wayfinding-operations` for the mechanism.
 4. **Ensure the selected integration branch exists after the epic issue succeeds:**
     - Read the required `base_branch` from `.harness/project.json`; if it is absent, stop and report
-      the invalid project config. This is the release/base
-      branch from which the epic integration branch starts.
+      the invalid project config. This is the release/base branch from which the epic integration
+      branch starts.
     - Fetch the base ref. Create `integration/<service-or-team>` from `origin/<base_branch>` when
       a remote exists, otherwise from the local base branch. Do not switch the current worktree;
       it may contain unrelated changes.
