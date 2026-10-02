@@ -9,6 +9,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 from harness.errors import HarnessError
@@ -661,7 +662,7 @@ class RecoveryRouteVersioningTests(unittest.TestCase):
     def _older_batch(self, *, dispatches: bool = True) -> JsonObject:
         """A batch whose decisions predate the route field; ``dispatches=False`` drops the dispatch
         entries, whose records a migration's record-graph check would otherwise require."""
-        retry = {
+        retry: JsonObject = {
             "decision": "retry",
             "approved_by": "Malove",
             "approved_at": "2026-09-20T00:00:00+00:00",
@@ -676,7 +677,7 @@ class RecoveryRouteVersioningTests(unittest.TestCase):
                 "decided_at": "2026-09-20T00:00:00+00:00",
             },
         }
-        abandon = {
+        abandon: JsonObject = {
             "decision": "abandon",
             "approved_by": "Malove",
             "approved_at": "2026-09-20T01:00:00+00:00",
@@ -744,11 +745,11 @@ class RecoveryRouteVersioningTests(unittest.TestCase):
         self,
     ) -> None:
         batch = self._older_batch()
-        routed = {
-            **batch["coordinator_decisions"][0],
-            "routing": {**batch["coordinator_decisions"][0]["routing"], "route": "same-candidate-rerun"},
-        }
-        batch["coordinator_decisions"].append(routed)
+        decisions = cast(list[JsonObject], batch["coordinator_decisions"])
+        routing = cast(JsonObject, decisions[0]["routing"])
+        decisions.append(
+            {**decisions[0], "routing": {**routing, "route": "same-candidate-rerun"}}
+        )
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             ledger = LifecycleLedger(Path(temporary) / "state")
             ledger.ensure()
