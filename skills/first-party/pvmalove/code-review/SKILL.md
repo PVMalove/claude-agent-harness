@@ -17,7 +17,7 @@ This workflow is runtime-neutral. Keep the output language driven by `language` 
 must not launch a runtime-specific adapter, choose a provider or model, or change the reviewed
 branch.
 
-The issue tracker should have been provided to you. If `docs/agents/issue-tracker.md` is missing, tell the user to run `/setup-matt-pocock-skills`.
+The issue tracker should have been provided to you. If `docs/agents/issue-tracker.md` is missing, tell the user to run `harness update`, which seeds it from the harness templates.
 
 ## Process
 

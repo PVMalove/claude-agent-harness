@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 ## Process
 
-1. **Read the tables.** Pull every `Label` / `Color` row from `docs/agents/triage-labels.md` — the taxonomy tables (category, execution mode, workflow state, context labels) and the Wayfinder addendum. Name and hex color only, skip the `Meaning`/`Applied by` columns. If the file doesn't exist, tell the user to run `/setup-matt-pocock-skills` first and stop.
+1. **Read the tables.** Pull every `Label` / `Color` row from `docs/agents/triage-labels.md` — the taxonomy tables (category, execution mode, workflow state, context labels) and the Wayfinder addendum. Name and hex color only, skip the `Meaning`/`Applied by` columns. If the file doesn't exist, tell the user to run `harness update`, which seeds it from the harness templates, and stop.
 2. **Show the plan.** List every label about to be created or updated, with its color. Confirm with the maintainer before touching GitHub — this mutates shared repo state, same discipline as any other tracker-mutating step in this repo (see `docs/agents/issue-tracker.md`).
 3. **Apply.** For each label, run `gh label create "<name>" --color "<hex>" --force`. `--force` makes this idempotent — it updates the color of a label that already exists instead of erroring, and touches nothing else about it (issues already carrying it are unaffected).
 4. **Report.** One line per label: created, updated (color changed), or already correct (no-op). Don't re-print the full plan from step 2.
