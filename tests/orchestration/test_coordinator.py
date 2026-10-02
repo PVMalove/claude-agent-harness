@@ -2321,6 +2321,31 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._assess(batch_id, candidate, changed)
         return candidate
 
+    def _retried_developer_candidate(
+        self, batch_id: str, *names: str
+    ) -> tuple[JsonObject, list[str], list[str]]:
+        """A clean developer report, one commit per name, retried for a code defect, never accepted."""
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        commits = [self._developer_commit(name)[0] for name in names]
+        changed = git_utils._changed_files_between(
+            self.repo, self._batch_record(batch_id)["base_commit"], commits[-1]
+        )
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                commits[-1],
+                changed,
+                commit_map=[
+                    {"commit_sha": sha, "plan_entry_id": entry["id"]}
+                    for sha, entry in zip(commits, brief["commit_plan"])
+                ],
+            ),
+        )
+        self._decide(batch_id, "retry", reason_category="code")
+        return brief, commits, changed
+
     def _assess(self, batch_id: str, candidate: str, changed: list[str]) -> None:
         coordinator.assess_risk(
             self._args(
@@ -3132,6 +3157,242 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         self.assertEqual(routing["previous_role"], "developer")
         self.assertTrue(decided["retry_candidate_required"])
+
+    def test_developer_retry_of_an_unaccepted_report_continues_its_candidate_end_to_end(
+        self,
+    ) -> None:
+        # Issue #477, the #443 batch: a clean developer report retried for a code defect without
+        # an accept must hand its candidate to the next developer instead of rewinding to base.
+        plan = self._batch_plan()
+        plan["definition_of_done"] = ["one", "two", "three"]
+        with mock.patch.object(self, "_batch_plan", return_value=plan):
+            batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        _, commits, _ = self._retried_developer_candidate(batch_id, "a", "b", "c")
+        candidate = commits[-1]
+        self._patch_config(worker_attestation_required=True)
+        planned = config._config
+        with (
+            mock.patch.object(dispatch, "_configured", return_value=True),
+            mock.patch.object(
+                config,
+                "_config",
+                lambda repo: {
+                    **planned(repo),
+                    "assignment_plans": {"developer": {"runtimes": {"claude": {}}}},
+                },
+            ),
+        ):
+            prepared = coordinator.preflight_dispatch(
+                self._args(
+                    batch=batch_id,
+                    role="developer",
+                    purpose="work",
+                    runtime="claude",
+                    candidate_commit=None,
+                )
+            )
+        self.assertEqual(prepared["preview_brief"]["snapshot_commit"], candidate)
+
+        created = self._dispatch(batch_id, "developer")
+
+        retry = created["brief"]
+        self.assertEqual(retry["snapshot_commit"], candidate)
+        self.assertIsNone(retry["candidate_commit"])
+        self.assertEqual(retry["transition"]["next_action"], "developer-retry")
+        self.assertEqual(created["context_package_freshness"]["status"], "fresh")
+        coordinator.send_dispatch(
+            self._args(
+                dispatch=retry["dispatch_id"],
+                adapter=None,
+                adapter_arg=None,
+                checkout=None,
+            )
+        )
+        attested = coordinator.self_report_dispatch(
+            self._args(
+                dispatch=retry["dispatch_id"],
+                model="sonnet",
+                worktree=str(self.worktree),
+            )
+        )
+        self.assertEqual(attested["state"], "working")
+        self.assertEqual(_git(self.worktree, "rev-parse", "HEAD"), candidate)
+        fix, fixed_files = self._developer_commit("d")
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "each created commit"
+        ):
+            self._submit(
+                retry["dispatch_id"],
+                self._developer_report(
+                    retry,
+                    fix,
+                    fixed_files,
+                    commit_map=[
+                        {"commit_sha": sha, "plan_entry_id": entry["id"]}
+                        for sha, entry in zip(commits, retry["commit_plan"])
+                    ],
+                ),
+            )
+        self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry,
+                fix,
+                fixed_files,
+                commit_map=[
+                    {"commit_sha": fix, "plan_entry_id": retry["commit_plan"][0]["id"]}
+                ],
+            ),
+        )
+        self._decide(batch_id, "accept")
+        self._assess(batch_id, fix, fixed_files)
+        self.assertEqual(self._batch_record(batch_id)["next_action"], "code-review")
+
+    def test_risk_assessment_registers_the_retry_pinned_candidate_without_unlocking_review(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        _, (candidate,), changed = self._retried_developer_candidate(batch_id, "x")
+        # Same diff, different commit: only the retried report's own candidate may be assessed.
+        other = _git(
+            self.repo,
+            "commit-tree",
+            f"{candidate}^{{tree}}",
+            "-p",
+            candidate,
+            "-m",
+            "y",
+        )
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._assess(batch_id, other, changed)
+        self.assertEqual(
+            caught.exception.message,
+            "candidate commit does not match the developer report the pending retry continues",
+        )
+        self.assertIn(f"--candidate-commit {candidate}", caught.exception.remedy)
+
+        self._assess(batch_id, candidate, changed)
+
+        record = self._batch_record(batch_id)
+        self.assertEqual(
+            (
+                record["next_action"],
+                record["required_next_role"],
+                record["retry_candidate_required"],
+            ),
+            ("developer-retry", "developer", True),
+        )
+        self.assertEqual(
+            [item["candidate_commit"] for item in record["risk_assessments"]],
+            [candidate],
+        )
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "coordinator-prepared next action"
+        ):
+            self._dispatch(batch_id, "code-review", candidate=candidate)
+        retry = self._dispatch(batch_id, "developer", candidate=candidate)["brief"]
+        self.assertEqual(retry["snapshot_commit"], candidate)
+        self.assertEqual(
+            retry["risk_assessment_id"],
+            record["risk_assessments"][0]["risk_assessment_id"],
+        )
+        self._start(retry["dispatch_id"])
+        with self.assertRaises(coordinator.CoordinatorError):
+            self._submit(
+                retry["dispatch_id"], self._developer_report(retry, candidate, changed)
+            )  # the retry must produce a new candidate
+        fix, fixed_files = self._developer_commit("fix")
+        self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry,
+                fix,
+                fixed_files,
+                commit_map=[
+                    {"commit_sha": fix, "plan_entry_id": retry["commit_plan"][0]["id"]}
+                ],
+            ),
+        )
+
+    def test_a_second_developer_retry_pins_the_newest_unaccepted_candidate_over_the_accepted_one(
+        self,
+    ) -> None:
+        self._patch_config(retry_policy={"max_developer_retries": 2})
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        accepted = self._accepted_candidate(batch_id, "a")
+        self._reported_review(
+            batch_id,
+            accepted,
+            outcome="blocked",
+            blockers="fix needed",
+            spec=(
+                "blocker",
+                [{"severity": "blocker", "summary": "wrong", "evidence": "x.py:1"}],
+            ),
+        )
+        self._decide(batch_id, "retry")
+        first, (retried,), _ = self._retried_developer_candidate(batch_id, "b")
+        self.assertEqual(first["snapshot_commit"], accepted)
+
+        second = self._dispatch(batch_id, "developer")
+
+        self.assertEqual(second["brief"]["snapshot_commit"], retried)
+        self.assertEqual(second["context_package_freshness"]["status"], "fresh")
+        self._start(second["brief"]["dispatch_id"])
+
+    def test_dispatch_create_refuses_a_candidate_brief_that_send_would_reject(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+
+        def assert_refused(candidate: str) -> None:
+            before = self._batch_record(batch_id)
+            written = {
+                kind: sorted(path.name for path in (self._records() / kind).iterdir())
+                for kind in ("dispatches", "dispatch-status")
+            }
+            with self.assertRaises(coordinator.CoordinatorError) as caught:
+                self._dispatch(batch_id, "developer", candidate=candidate)
+            self.assertEqual(
+                caught.exception.message,
+                "dispatch candidate is not linked to its immutable risk assessment",
+            )
+            self.assertIn(
+                f"risk assess --batch {batch_id} --candidate-commit {candidate}",
+                caught.exception.remedy,
+            )
+            after = self._batch_record(batch_id)
+            self.assertEqual(after["dispatches"], before["dispatches"])
+            self.assertEqual(after["state"], "awaiting-approval")
+            self.assertEqual(
+                {
+                    kind: sorted(
+                        path.name for path in (self._records() / kind).iterdir()
+                    )
+                    for kind in written
+                },
+                written,
+            )
+
+        with self.subTest("an initial developer pinned before any accepted report"):
+            assert_refused(self._batch_record(batch_id)["base_commit"])
+        _, (candidate,), changed = self._retried_developer_candidate(batch_id, "x")
+        with self.subTest("a developer retry pinned without its risk assessment"):
+            assert_refused(candidate)
+
+        self._assess(batch_id, candidate, changed)
+        retry = self._dispatch(batch_id, "developer", candidate=candidate)["brief"]
+
+        self.assertIsNotNone(retry["risk_assessment_id"])
+        self._start(retry["dispatch_id"])
 
     def test_block_and_fail_never_create_a_dispatch_automatically(self) -> None:
         for decision, state in (("block", "blocked"), ("fail", "failed")):

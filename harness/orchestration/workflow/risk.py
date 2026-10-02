@@ -49,6 +49,7 @@ from harness.orchestration.ledger.lifecycle import (
 )
 from harness.orchestration.workflow.history import (
     _latest_developer_candidate,
+    _retry_pinned_candidate,
     _validate_batch_integrity,
 )
 
@@ -162,7 +163,17 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
                 "changed_files must exactly match the candidate diff",
                 remedy="regenerate changed_files from the actual diff for candidate_commit",
             )
-        if _latest_developer_candidate(repo, root, batch) != candidate:
+        # While a developer retry is pending, only the candidate it continues may be assessed:
+        # the assessment links that candidate to an explicitly pinned retry brief and is never a
+        # route to review or QA.
+        pinned = _retry_pinned_candidate(repo, root, batch)
+        if pinned is not None:
+            if candidate != pinned:
+                raise CoordinatorError(
+                    "candidate commit does not match the developer report the pending retry continues",
+                    remedy=f"pass --candidate-commit {pinned}, the candidate of the retried developer report",
+                )
+        elif _latest_developer_candidate(repo, root, batch) != candidate:
             raise CoordinatorError(
                 "candidate commit does not match the accepted developer report",
                 remedy="pass the candidate_commit from the accepted developer report",
@@ -223,8 +234,9 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
             batch.pop("risk_reassessment_triggers", None)
         # Assessment is evidence, not a launch instruction.  It makes the one allowed next
         # handoff visible to the coordinator; a later, separately approved dispatch creates the
-        # immutable brief.
-        batch["next_action"] = "code-review" if risk["review_required"] else "qa"
+        # immutable brief.  A pending developer retry stays the next handoff.
+        if pinned is None:
+            batch["next_action"] = "code-review" if risk["review_required"] else "qa"
         _safe_id(batch["batch_id"], "batch")
         _replace_record(ledger, BatchRecord.from_dict(batch))
     return risk
