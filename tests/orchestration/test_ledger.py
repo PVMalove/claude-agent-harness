@@ -294,6 +294,58 @@ class RecordApiTests(unittest.TestCase):
                     )
                 )
 
+    def test_replace_record_writes_a_decision_detail_into_the_transition_audit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            ledger = LifecycleLedger(Path(temporary) / "state")
+            ledger.ensure()
+            ledger.write_record(PlanRecord(batch_id="batch-1"))
+
+            def batch(state: str) -> BatchRecord:
+                return BatchRecord(
+                    batch_id="batch-1",
+                    state=state,
+                    dispatches=[],
+                    coordinator_approval=None,
+                )
+
+            detail: JsonObject = {
+                "dispatch_id": "dispatch-1",
+                "decision": "retry",
+                "route": "developer-retry",
+                "evidence": {
+                    "dispatch_id": "dispatch-1",
+                    "report": "reports/dispatch-1.json",
+                    "report_sha256": "0" * 64,
+                },
+                "approver": {"kind": "human", "name": "Malove"},
+                "approved_at": "2026-09-17T00:00:00+00:00",
+            }
+            ledger.write_record(batch("planned"))
+            ledger.replace_record(batch("planned"), decision=detail)
+            ledger.replace_record(batch("planned"))
+
+            root = ledger.records_root()  # re-validates every audit checksum
+            transitions = sorted(
+                (
+                    record
+                    for record in (
+                        json.loads(path.read_text(encoding="utf-8"))
+                        for path in (root / "audit").glob("*.json")
+                    )
+                    if record["action"] == "transition"
+                ),
+                key=lambda record: record["at"],
+            )
+            self.assertEqual(len(transitions), 2)
+            self.assertEqual(transitions[0]["details"]["decision"], detail)
+            self.assertEqual(
+                (transitions[0]["details"]["from"], transitions[0]["details"]["to"]),
+                ("planned", "planned"),
+            )
+            self.assertNotIn("decision", transitions[1]["details"])
+
     def test_write_record_rejects_a_record_id_that_is_not_a_safe_path_segment(
         self,
     ) -> None:

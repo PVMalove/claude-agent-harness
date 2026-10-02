@@ -3637,6 +3637,145 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     recorded.append(routing)
             self.assertEqual(recorded[0], recorded[1])
 
+    def _decision_audits(self, batch_id: str) -> list[JsonObject]:
+        """The ``decision`` detail of every batch transition audit record, oldest first."""
+        records = sorted(
+            (
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in (self._records() / "audit").glob("*.json")
+            ),
+            key=lambda record: record["at"],
+        )
+        return [
+            record["details"]["decision"]
+            for record in records
+            if record["action"] == "transition"
+            and record["details"].get("path") == f"batches/{batch_id}.json"
+            and "decision" in record["details"]
+        ]
+
+    def _report_evidence(self, batch_id: str, dispatch_id: str) -> JsonObject:
+        entry = next(
+            item
+            for item in self._batch_record(batch_id)["dispatches"]
+            if item["dispatch_id"] == dispatch_id
+        )
+        return {
+            "dispatch_id": dispatch_id,
+            "report": entry["report"],
+            "report_sha256": entry["report_sha256"],
+        }
+
+    def test_the_decision_packet_previews_the_route_the_decision_records(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._infra_review(batch["batch_id"], candidate)
+        before = self._batch_record(batch["batch_id"])
+
+        def packet(**flags: object) -> JsonObject:
+            return coordinator.decision_packet(
+                self._args(batch=batch["batch_id"], dispatch=None, **flags)
+            )
+
+        unflagged = packet()
+        forced = packet(
+            reason_category="verification-infrastructure", retry_role="developer"
+        )
+        preview = packet(reason_category="verification-infrastructure")
+
+        self.assertEqual(unflagged["action"], "decide completion report")
+        self.assertEqual(unflagged["route_preview"]["retry"]["route"], "developer-retry")
+        self.assertEqual(unflagged["route_preview"]["abandon"], {"route": "abandon"})
+        self.assertEqual(forced["route_preview"]["retry"]["route"], "developer-retry")
+        retry = preview["route_preview"]["retry"]
+        self.assertEqual(retry["route"], "same-candidate-rerun")
+        self.assertNotIn("decided_at", retry)
+        self.assertEqual(
+            self._batch_record(batch["batch_id"]), before, "a preview writes nothing"
+        )
+
+        decided = self._decide(
+            batch["batch_id"], "retry", reason_category="verification-infrastructure"
+        )
+
+        recorded = dict(self._routing(decided))
+        recorded.pop("decided_at")
+        self.assertEqual(retry, recorded)
+        self.assertIsNone(packet()["route_preview"])
+
+    def test_a_routed_decision_audits_its_route_evidence_and_human_approver(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        review = self._infra_review(batch["batch_id"], candidate)
+
+        self._decide(
+            batch["batch_id"], "retry", reason_category="verification-infrastructure"
+        )
+
+        audits = self._decision_audits(batch["batch_id"])
+        human = {"kind": "human", "name": "Malove"}
+        self.assertEqual(
+            [(item["decision"], item["route"]) for item in audits],
+            [("accept", None), ("accept", None), ("retry", "same-candidate-rerun")],
+        )
+        self.assertEqual(
+            audits[-1],
+            {
+                "dispatch_id": review["dispatch_id"],
+                "decision": "retry",
+                "route": "same-candidate-rerun",
+                "evidence": self._report_evidence(batch["batch_id"], review["dispatch_id"]),
+                "approver": human,
+                "approved_at": self.APPROVED_AT,
+            },
+        )
+        self.assertTrue(all(item["approver"] == human for item in audits))
+
+    def test_an_abandon_decision_audits_the_abandon_route(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        review = self._infra_review(batch["batch_id"], candidate)
+        evidence = self._report_evidence(batch["batch_id"], review["dispatch_id"])
+
+        self._decide(batch["batch_id"], "abandon", reason="superseded")
+
+        audit = self._decision_audits(batch["batch_id"])[-1]
+        self.assertEqual(
+            (audit["decision"], audit["route"], audit["evidence"], audit["approver"]),
+            ("abandon", "abandon", evidence, {"kind": "human", "name": "Malove"}),
+        )
+
+    def test_a_policy_auto_accept_audits_a_policy_approver(self) -> None:
+        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+
+        self._submit(
+            brief["dispatch_id"], self._base_report(brief, "architect", blockers="none")
+        )
+
+        audit = self._decision_audits(batch["batch_id"])[-1]
+        self.assertEqual(
+            audit,
+            {
+                "dispatch_id": brief["dispatch_id"],
+                "decision": "accept",
+                "route": None,
+                "evidence": self._report_evidence(batch["batch_id"], brief["dispatch_id"]),
+                "approver": {"kind": "policy", "name": "low_risk"},
+                "approved_at": audit["approved_at"],
+            },
+        )
+        self.assertTrue(audit["approved_at"])
+
     def test_a_computed_route_outside_the_enum_is_refused_before_anything_is_written(
         self,
     ) -> None:
@@ -6328,6 +6467,24 @@ class CoordinatorCliParserTests(unittest.TestCase):
             coordinator.parser().parse_args(
                 [*common, "--decision", "retry", "--reason-category", "flaky-network"]
             )
+
+    def test_batch_decision_packet_takes_the_retry_flags_of_batch_decide(
+        self,
+    ) -> None:
+        common = ["batch", "decision-packet", "--batch", "batch-123"]
+
+        flagged = coordinator.parser().parse_args(
+            [*common, "--reason-category", "transport", "--retry-role", "developer"]
+        )
+        default = coordinator.parser().parse_args(common)
+
+        self.assertEqual(
+            (flagged.reason_category, flagged.retry_role), ("transport", "developer")
+        )
+        self.assertEqual((default.reason_category, default.retry_role), (None, None))
+        self.assertIs(default.handler, coordinator.decision_packet)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            coordinator.parser().parse_args([*common, "--retry-role", "qa"])
 
 
 class PinnedRuntimeSnapshotTests(unittest.TestCase):

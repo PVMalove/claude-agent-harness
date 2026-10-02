@@ -53,9 +53,11 @@ def _write_record(ledger: LifecycleLedger, record: LedgerRecordVO) -> None:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def _replace_record(ledger: LifecycleLedger, record: LedgerRecordVO) -> None:
+def _replace_record(
+    ledger: LifecycleLedger, record: LedgerRecordVO, *, decision: JsonObject | None = None
+) -> None:
     try:
-        ledger.replace_record(record)
+        ledger.replace_record(record, decision=decision)
     except LedgerError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 

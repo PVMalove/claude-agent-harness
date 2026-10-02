@@ -233,6 +233,16 @@ def build_parser(
     packet.add_argument(
         "--dispatch", help="approved or reported dispatch in this batch"
     )
+    packet.add_argument(
+        "--reason-category",
+        choices=defaults.RETRY_REASON_CATEGORIES,
+        help="preview the retry route batch decide would record with this --reason-category",
+    )
+    packet.add_argument(
+        "--retry-role",
+        choices=["developer"],
+        help="preview the retry route batch decide would record with --retry-role developer",
+    )
     packet.set_defaults(handler=handlers.decision_packet)
 
     risk = commands.add_parser("risk")

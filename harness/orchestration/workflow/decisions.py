@@ -198,6 +198,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                     core_config._config(repo)
                 ),
                 "needs_attention": bool(batch.get("needs_attention", False)),
+                "route_preview": None,
                 "approval_reason": "the next immutable dispatch has not been created",
                 "options": ["accept", "block", "full review"],
             }
@@ -222,6 +223,13 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
         coverage, coverage_source = (
             plan_rules.coverage(report, dispatch, resolve) if report else (None, None)
         )
+        route_preview: JsonObject | None = None
+        if report is not None and "decision" not in entry:
+            # The same computation ``batch decide`` runs, with the same flags; nothing is written.
+            route_preview = {
+                "retry": _decide_retry_route(repo, root, batch, dispatch, report, args),
+                "abandon": {"route": "abandon"},
+            }
         return {
             "batch_id": batch["batch_id"],
             "ticket": batch["ticket"],
@@ -242,6 +250,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                 "worker_attestation_required", False
             ),
             "needs_attention": bool(batch.get("needs_attention", False)),
+            "route_preview": route_preview,
             "transition_digest": dispatch.get("transition_digest"),
             "summary": report.get("output") if report else "immutable brief prepared",
             "checks": report.get("checks_run", [])
@@ -655,8 +664,10 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 "approved_by": f"policy:{accepted_policy}",
                 "approved_at": utils._now(),
             }
+            approver = {"kind": "policy", "name": accepted_policy}
         else:
             approval = _approval(args)
+            approver = {"kind": "human", "name": approval["approved_by"]}
         decision = {
             "decision": args.decision,
             "approved_by": approval["approved_by"],
@@ -753,10 +764,40 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 "last_accepted": _last_accepted(repo, root, batch),
             }
         _safe_id(batch["batch_id"], "batch")
-        _replace_record(ledger, BatchRecord.from_dict(batch))
+        _replace_record(
+            ledger,
+            BatchRecord.from_dict(batch),
+            decision=_decision_audit(pending[0], decision, approver),
+        )
         if args.decision == "abandon":
             _discard_batch_leftovers(repo, ledger, batch, abandoned)
     return batch
+
+
+def _decision_audit(
+    entry: JsonObject, decision: JsonObject, approver: JsonObject
+) -> JsonObject:
+    """The ``decision`` detail stored on the batch transition audit record (no I/O).
+
+    ``route`` is the recorded recovery route, or ``None`` for a decision that routes nothing. The
+    evidence references the immutable report by its ledger path and integrity hash. ``approver``
+    is ``{"kind": "policy" | "human", "name": ...}``, set by the path that approved the decision.
+    """
+    routing = decision.get("routing")
+    return {
+        "dispatch_id": entry["dispatch_id"],
+        "decision": decision["decision"],
+        "route": _require_route(routing["route"])
+        if isinstance(routing, dict)
+        else None,
+        "evidence": {
+            "dispatch_id": entry["dispatch_id"],
+            "report": entry["report"],
+            "report_sha256": entry["report_sha256"],
+        },
+        "approver": approver,
+        "approved_at": decision["approved_at"],
+    }
 
 
 def _decide_retry_route(
