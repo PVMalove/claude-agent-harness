@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Разбор Bash-команды PreToolUse-хука на simple commands, которые bash действительно выполнит.
+"""Разбор Bash-команды PreToolUse-хуков: merge-блок и ветка создаваемого PR/MR.
 
-`python pr_commands.py merge` читает payload хука из stdin и завершается с кодом 2, если
-`tool_input.command` выполняет merge PR/MR (`gh pr merge`, `glab mr merge|accept`).
+`python pr_commands.py merge` читает payload хука из stdin и завершается с кодом 2, если в
+`tool_input.command` есть merge PR/MR (`gh pr merge`, `glab mr merge|accept`) и команда не
+состоит целиком из инертных simple commands строгого лексера (fail closed, `merge_blocked`).
 `qa-gate-state.py` импортирует модуль, чтобы найти ветку создаваемого PR/MR (`create_heads`).
 """
 
@@ -44,7 +45,73 @@ KEYWORDS = frozenset(
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.S)
 HEREDOC = re.compile(r"(?<!<)<<(-?)[ \t]*(\\?)([\x27\"]?)([A-Za-z_][A-Za-z0-9_.-]*)\3")
 WORD_BREAK = re.compile(r"[\s;&|()<>]+")
-MERGE_TEXT = re.compile(r"\bgh\s+pr\s+merge\b|\bglab\s+mr\s+(?:merge|accept)\b")
+# No word boundaries: a strict superset of the substring the hook matched before #443.
+MERGE_FLOOR = re.compile(r"gh\s+pr\s+merge|glab\s+mr\s+(?:merge|accept)")
+# The hook's check before #443, on the raw payload: whatever it blocked stays blocked.
+LEGACY_MERGE = re.compile(r'"command"\s*:\s*"[^"]*gh pr merge')
+# Exempt from the merge floor: programs that only print, count or search their text...
+INERT_PROGRAMS = frozenset(
+    {
+        ":",
+        "cat",
+        "echo",
+        "egrep",
+        "fgrep",
+        "grep",
+        "head",
+        "printf",
+        "tail",
+        "true",
+        "wc",
+    }
+)
+# ...and subcommands that carry text (a message, a title, a body) without running it.
+TEXT_COMMANDS: frozenset[tuple[str, ...]] = frozenset(
+    {("git", "commit")}
+    | {
+        ("gh", group, verb)
+        for group in ("issue", "pr")
+        for verb in ("create", "edit", "comment", "view")
+    }
+    | {
+        ("glab", group, verb)
+        for group in ("issue", "mr")
+        for verb in ("create", "update", "note", "view")
+    }
+)
+# The strict lexer rejects these in command position: they open compound commands.
+RESERVED_WORDS = frozenset(
+    {
+        "!",
+        "{",
+        "}",
+        "[[",
+        "]]",
+        "case",
+        "coproc",
+        "do",
+        "done",
+        "elif",
+        "else",
+        "esac",
+        "fi",
+        "for",
+        "function",
+        "if",
+        "in",
+        "select",
+        "then",
+        "time",
+        "until",
+        "while",
+    }
+)
+STRICT_WORD_END = " \t\n;&|<>()"
+# Longest first: each tuple is matched in order.
+REDIRECTIONS = ("<<<", "<<-", "<<", "<>", "<&", "<", ">>", ">&", ">|", ">", "&>>", "&>")
+COMMAND_SEPARATORS = ("&&", "||", "|&", ";", "&", "|")
+ASSIGNMENT_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\+?=|\[)")
+FD_NUMBER = re.compile(r"[0-9]+")
 CREATE_TEXT = re.compile(r"\bgh\s+pr\s+(?:create|new)\b|\bglab\s+mr\s+(?:create|new)\b")
 # A create fragment that tokens cannot decide may name its branch with one of these flags.
 HEAD_OPTION_TEXT = re.compile(r"--head|--source-branch|(?<![^\s'\"])-[A-Za-z]*[sH]")
@@ -410,21 +477,235 @@ def _reads_stdin(argv: list[str], names: list[str]) -> bool:
     return False
 
 
-def _is_merge(argv: list[str], start: int) -> bool:
-    """Начинается ли с позиции `start` вызов `gh pr merge` или `glab mr merge|accept`."""
-    name = program(argv[start])
-    action = argv[start + 1 : start + 3]
-    return (name == "gh" and action == ["pr", "merge"]) or (
-        name == "glab" and action in (["mr", "merge"], ["mr", "accept"])
+class OutsideSubset(Exception):
+    """Команда выходит за подмножество bash, которое разбирает строгий лексер."""
+
+
+class StrictLexer:
+    """Строгий лексер небольшого подмножества bash: argv simple commands без тел heredoc.
+
+    Поддержаны слова с `'…'`, `"…"` (экранирование `\\"`, `\\\\`, `` \\` ``), `\\`-экранирование
+    и перенос `\\` + перевод строки, разделители (перевод строки, `;`, `&`, `&&`, `|`, `||`,
+    `|&`), перенаправления с номером дескриптора и `>|`, here-string `<<<` и heredoc `<<`/`<<-`.
+    Всё остальное — `$`, обратная кавычка, комментарий, скобки, `!`, `{`, `}` и другие
+    зарезервированные слова в позиции команды, `;;`, присваивания перед программой,
+    незакрытые кавычки, heredoc без разделителя или тело без кавычек с `$`, `` ` `` или `\\` —
+    даёт `OutsideSubset`.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.index = 0
+        # (delimiter, strip leading tabs, literal body) of operators whose body is not read yet.
+        self.heredocs: list[tuple[str, bool, bool]] = []
+
+    def commands(self) -> list[list[str]]:
+        """argv каждой simple command текста по порядку."""
+        text = self.text
+        commands: list[list[str]] = []
+        argv: list[str] = []
+        while True:
+            self._skip_blanks()
+            if self.index >= len(text):
+                break
+            ends = True
+            if text[self.index] in "()":
+                raise OutsideSubset
+            if text[self.index] == "\n":
+                self.index += 1
+                self._read_bodies()
+            elif (operator := self._operator(REDIRECTIONS)) is not None:
+                self._redirection(operator)
+                ends = False
+            elif (operator := self._operator(COMMAND_SEPARATORS)) is not None:
+                if operator == ";" and text.startswith((";", "&"), self.index):
+                    raise OutsideSubset  # `;;`, `;&`: case terminators
+            else:
+                self._add_word(argv)
+                ends = False
+            if ends and argv:
+                commands.append(argv)
+                argv = []
+        if self.heredocs:
+            raise OutsideSubset
+        return [*commands, argv] if argv else commands
+
+    def _skip_blanks(self) -> None:
+        """Пропустить пробелы, табуляции и переносы `\\` + перевод строки."""
+        while True:
+            if self.index < len(self.text) and self.text[self.index] in " \t":
+                self.index += 1
+            elif self.text.startswith("\\\n", self.index):
+                self.index += 2
+            else:
+                return
+
+    def _operator(self, operators: tuple[str, ...]) -> str | None:
+        """Прочитать первый из `operators`, с которого начинается текст в позиции."""
+        for operator in operators:
+            if self.text.startswith(operator, self.index):
+                self.index += len(operator)
+                return operator
+        return None
+
+    def _add_word(self, argv: list[str]) -> None:
+        """Прочитать слово simple command в `argv`; номер дескриптора перед `<`/`>` пропустить."""
+        start = self.index
+        word = self._word()
+        raw = self.text[start : self.index]
+        if FD_NUMBER.fullmatch(raw) and self.text.startswith(("<", ">"), self.index):
+            return
+        if not argv and (word in RESERVED_WORDS or ASSIGNMENT_WORD.match(raw)):
+            raise OutsideSubset
+        argv.append(word)
+
+    def _redirection(self, operator: str) -> None:
+        """Прочитать цель перенаправления; для heredoc запомнить разделитель."""
+        self._skip_blanks()
+        if self.index >= len(self.text) or self.text[self.index] in STRICT_WORD_END:
+            raise OutsideSubset  # no target word, as in `<(…)` and `>(…)`
+        start = self.index
+        word = self._word()
+        if operator in ("<<", "<<-"):
+            literal = any(char in self.text[start : self.index] for char in "'\"\\")
+            self.heredocs.append((word, operator == "<<-", literal))
+
+    def _word(self) -> str:
+        """Прочитать слово с позиции и вернуть его значение без кавычек."""
+        text = self.text
+        if text[self.index] == "#":
+            raise OutsideSubset  # a comment
+        chars: list[str] = []
+        while self.index < len(text) and text[self.index] not in STRICT_WORD_END:
+            char = text[self.index]
+            if char == "'":
+                end = text.find("'", self.index + 1)
+                if end < 0 or "`" in text[self.index : end]:
+                    raise OutsideSubset
+                chars.append(text[self.index + 1 : end])
+                self.index = end + 1
+            elif char == '"':
+                self.index += 1
+                chars.append(self._double_quoted())
+            elif char == "\\":
+                escaped = text[self.index + 1 : self.index + 2]
+                if not escaped or escaped in "$`":
+                    raise OutsideSubset
+                chars.append("" if escaped == "\n" else escaped)
+                self.index += 2
+            elif char in "$`":
+                raise OutsideSubset
+            else:
+                chars.append(char)
+                self.index += 1
+        return "".join(chars)
+
+    def _double_quoted(self) -> str:
+        """Прочитать текст в двойных кавычках после открывающей кавычки."""
+        text = self.text
+        chars: list[str] = []
+        while self.index < len(text):
+            char = text[self.index]
+            if char == '"':
+                self.index += 1
+                return "".join(chars)
+            if char in "$`":
+                raise OutsideSubset
+            escaped = text[self.index + 1 : self.index + 2] if char == "\\" else ""
+            if escaped == "\n":
+                self.index += 2
+            elif escaped in ('"', "\\", "`"):
+                chars.append(escaped)
+                self.index += 2
+            else:
+                chars.append(char)
+                self.index += 1
+        raise OutsideSubset  # an unterminated quote
+
+    def _read_bodies(self) -> None:
+        """Прочитать тела ожидающих heredoc в порядке операторов со строки после перевода."""
+        text = self.text
+        for delimiter, strip_tabs, literal in self.heredocs:
+            while True:
+                if self.index >= len(text):
+                    raise OutsideSubset  # no delimiter line
+                end = text.find("\n", self.index)
+                end = len(text) if end < 0 else end
+                line = text[self.index : end]
+                self.index = end + 1
+                if strip_tabs:
+                    line = line.lstrip("\t")
+                if line == delimiter:
+                    break
+                if not literal and any(char in line for char in "$`\\"):
+                    raise OutsideSubset
+        self.heredocs = []
+
+
+def strict_commands(command: str) -> list[list[str]] | None:
+    """argv simple commands строгого лексера; None — команда вне его подмножества bash."""
+    try:
+        return StrictLexer(command).commands()
+    except OutsideSubset:
+        return None
+
+
+def fully_inert(command: str) -> bool:
+    """Строгий лексер принял команду, и каждая её simple command — инертная из allowlist."""
+    commands = strict_commands(command)
+    return commands is not None and all(
+        argv[0] in INERT_PROGRAMS
+        or tuple(argv[:2]) in TEXT_COMMANDS
+        or tuple(argv[:3]) in TEXT_COMMANDS
+        for argv in commands
     )
 
 
-def merge_requested(command: str) -> bool:
-    """Выполняет ли команда merge PR/MR; непрозрачный фрагмент с merge-текстом — тоже да."""
-    parsed = parse(command)
-    return any(
-        _is_merge(argv, start) for argv in parsed.commands for start in positions(argv)
-    ) or any(MERGE_TEXT.search(fragment) for fragment in parsed.opaque)
+def _merge_floor(command: str) -> bool:
+    """Есть ли merge-текст в команде или в ней же без переносов `\\` + перевод строки."""
+    return bool(
+        MERGE_FLOOR.search(command) or MERGE_FLOOR.search(command.replace("\\\n", ""))
+    )
+
+
+def _shlex_words(command: str) -> list[str]:
+    """Слова команды по shlex, прочитанные до первой ошибки разбора."""
+    lexer = shlex.shlex(command.replace("\\\n", ""), posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    words: list[str] = []
+    try:
+        for word in lexer:
+            words.append(word)
+    except ValueError:
+        pass  # an unterminated quote: the words before it still decide
+    return words
+
+
+def _names_merge(words: list[str]) -> bool:
+    """Образуют ли слова merge: gh,pr,merge, glab,mr,merge|accept или merge-текст в одном слове."""
+    for index, word in enumerate(words):
+        name, action = program(word), words[index + 1 : index + 3]
+        if (
+            MERGE_FLOOR.search(word)
+            or (name == "gh" and action == ["pr", "merge"])
+            or (name == "glab" and action in (["mr", "merge"], ["mr", "accept"]))
+        ):
+            return True
+    return False
+
+
+def merge_blocked(command: str) -> bool:
+    """Запретить ли команду: merge-текст вне полностью инертной команды или merge по словам.
+
+    Слова берутся у строгого лексера, а если он команду не принял — у shlex; так ловится
+    merge, разбитый кавычками, которого нет в тексте команды.
+    """
+    if _merge_floor(command):
+        return not fully_inert(command)
+    commands = strict_commands(command)
+    groups = [_shlex_words(command)] if commands is None else commands
+    return any(_names_merge(words) for words in groups)
 
 
 def _option(
@@ -491,8 +772,9 @@ def create_heads(command: str) -> set[str | None]:
 def merge_exit_code(raw: str) -> int:
     """Код merge-блока для payload хука: 2 — запрет, 0 — разрешение.
 
-    Решает только `tool_input.command`; payload без строковой команды проверяется по сырому
-    тексту, чтобы нераспознанный ввод с merge-текстом блокировался (fail closed).
+    Решает `tool_input.command`; payload без строковой команды проверяется по сырому тексту,
+    чтобы нераспознанный ввод с merge-текстом блокировался (fail closed). Payload, который
+    блокировала проверка до #443, блокируется, даже если в команде merge-текста нет.
     """
     try:
         data: object = json.loads(raw)
@@ -501,16 +783,25 @@ def merge_exit_code(raw: str) -> int:
     tool_input = data.get("tool_input") if isinstance(data, dict) else None
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str):
-        return 2 if MERGE_TEXT.search(raw) else 0
-    return 2 if merge_requested(command) else 0
+        return 2 if MERGE_FLOOR.search(raw) else 0
+    if LEGACY_MERGE.search(raw) and not _merge_floor(command):
+        return 2
+    return 2 if merge_blocked(command) else 0
 
 
 def main(argv: list[str]) -> int:
-    """CLI для shell-хуков: `pr_commands.py merge < payload.json`."""
+    """CLI для shell-хуков: `pr_commands.py merge < payload.json`.
+
+    Разрешение — код 0 и слово `allow` в stdout: частичная копия модуля, которая завершается
+    без решения, слова не печатает, и хук блокирует команду.
+    """
     if argv[1:] != ["merge"]:
         print("usage: pr_commands.py merge < hook-payload.json", file=sys.stderr)
         return 2
-    return merge_exit_code(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
+    code = merge_exit_code(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
+    if not code:
+        print("allow")
+    return code
 
 
 if __name__ == "__main__":

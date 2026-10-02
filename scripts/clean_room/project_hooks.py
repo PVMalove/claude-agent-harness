@@ -1,12 +1,22 @@
 """Hooks целевого проекта: сценарий clean-room из `scripts/test_clean_room.py`."""
 
 import json
+import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
 from harness.storage import storage_path
+from scripts.clean_room.merge_corpus import (
+    EXEMPT_MENTIONS,
+    OLD_MERGE_CHECK,
+    PERF_PAYLOADS,
+    PROBE_PAYLOADS,
+    REVIEW_PAYLOADS,
+    glab_variants,
+)
 from scripts.clean_room.support import (
     BASH,
     HARNESS,
@@ -1256,7 +1266,41 @@ def run(ctx: SimpleNamespace) -> None:
     finally:
         qa_marker.unlink(missing_ok=True)
 
-    # block-pr-merge.sh: Zero Auto-Merge for gh and glab, decided on the tokens bash executes.
+    # block-pr-merge.sh: Zero Auto-Merge for gh and glab. Differential over the #443 corpus: what
+    # the pre-#443 check blocked stays blocked, with its glab variants, except allowlisted mentions.
+    exempt = {name for name, _, _ in EXEMPT_MENTIONS}
+    corpus = [(name, command) for name, command, _ in EXEMPT_MENTIONS]
+    corpus += [*REVIEW_PAYLOADS, *PROBE_PAYLOADS, *PERF_PAYLOADS]
+    cases = [
+        (name, variant, bool(OLD_MERGE_CHECK.search(payload)))
+        for name, command in corpus
+        for payload in [json.dumps({"tool_input": {"command": command}})]
+        for variant in glab_variants(command)
+    ]
+
+    def merge_code(command: str) -> int:
+        """Код block-pr-merge.sh для команды."""
+        return run_hook(merge_hook, pv_project, command).returncode
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        codes = list(pool.map(merge_code, [variant for _, variant, _ in cases]))
+    missed = sorted(
+        {
+            name
+            for (name, _, old), code in zip(cases, codes)
+            if old and name not in exempt and code != 2
+        }
+    )
+    if missed:
+        sys.exit(
+            f"block-pr-merge.sh allowed {len(missed)} corpus payloads the pre-#443 check "
+            f"blocked: {missed}"
+        )
+    blocked_mentions = sorted(
+        {name for (name, _, _), code in zip(cases, codes) if name in exempt and code}
+    )
+    if blocked_mentions:
+        sys.exit(f"block-pr-merge.sh blocked allowlisted mentions: {blocked_mentions}")
     for command in (
         "gh pr merge 12 --squash",
         "glab mr merge 12",
@@ -1318,6 +1362,19 @@ def run(ctx: SimpleNamespace) -> None:
         'cat <<EOF"x"\nEOFx\ngh pr merge 1\nEOF',
         "echo $((x<<y))\ngh pr merge 1\ny",
         "a[x<<y ]=1\ngh pr merge 1\ny",
+        # Merge text outside the allowlist blocks (fail closed): an unknown program, a comment,
+        # a substitution, backquotes.
+        "git commit -m \"$(cat <<'EOF'\nfeat: don't run gh pr merge\nEOF\n)\"",
+        'python tool.py --note "never glab mr merge or accept"',
+        "python tool.py --reason 'never run `gh pr merge` yourself'",
+        "cat notes.md # gh pr merge later",
+        "echo 'gh pr merge 1' | tee notes.txt",
+        "git -C repo commit -m 'docs: forbid gh pr merge'",
+        "/bin/echo gh pr merge 1",
+        # A merge split by quotes is still a merge.
+        "gh pr mer''ge 1",
+        'glab mr "accept" 1',
+        "bash -c 'glab mr acc''ept 1'",
     ):
         if run_hook(merge_hook, pv_project, command).returncode != 2:
             sys.exit(f"block-pr-merge.sh allowed a merge: {command!r}")
@@ -1326,20 +1383,20 @@ def run(ctx: SimpleNamespace) -> None:
         'cat > notes.md <<"EOF"\nuse glab mr accept manually\nEOF',
         "cat <<\\EOF\ngh pr merge is manual\nEOF",
         "cat <<EOF\nnever run gh pr merge\nEOF",
-        'cat <<"EOF"\ngh pr merge 1\nEOF',
+        'cat <<"EOF"\ngh pr merge 1\nEOF',  # the h4 probe
         "cat <<'EOF'\ngh pr merge 1\nEOF",
         "cat <<\\EOF\ngh pr merge 1\nEOF",
         "cat <<'A' <<\"B\"\nnever gh pr merge\nA\nnor glab mr merge\nB",
         "cat <<-'EOF'\n\tgh pr merge is manual\n\tEOF",
-        "git commit -m \"$(cat <<'EOF'\nfeat: don't run gh pr merge\nEOF\n)\"",
+        "cat <<'EOF' > notes.md\nrun glab mr merge by hand\nEOF",
         "echo gh pr merge 1",
         "echo 'glab mr merge 1'",
         "printf '%s\\n' \"glab mr merge\" > notes.txt",
         "grep -n 'gh pr merge' docs/hooks/block-pr-merge.md",
         "git commit -m 'docs: forbid gh pr merge'",
-        'python tool.py --note "never glab mr merge or accept"',
-        "python tool.py --reason 'never run `gh pr merge` yourself'",
-        "cat notes.md # gh pr merge later",
+        "git commit -m 'docs: forbid glab mr accept' && echo done",
+        "gh issue comment 7 --body 'gh pr merge is manual' 2>&1",
+        "glab mr update 3 --description 'never glab mr merge' | head -n 1",
         "gh pr view 1 && gh pr checks 1",
         "glab mr view 3 --comments",
     ):
@@ -1366,5 +1423,27 @@ def run(ctx: SimpleNamespace) -> None:
     )
     if run_hook(merge_hook, pv_project, "", raw_payload=description_only).returncode:
         sys.exit("block-pr-merge.sh blocked a merge mentioned only in the description")
+    # The pre-#443 raw-payload check still decides when the parsed command hides its match.
+    duplicate = '{"tool_input": {"command": "gh pr merge 1", "command": "git status"}}'
+    if run_hook(merge_hook, pv_project, "", raw_payload=duplicate).returncode != 2:
+        sys.exit("block-pr-merge.sh allowed a payload the pre-#443 check blocked")
+    # Python decides every call: no interpreter, or one that fails, blocks any command.
+    bash_only = test_root / "bash-only-path"
+    bash_only.mkdir()
+    if not Path(BASH).is_absolute():
+        (bash_only / "bash").symlink_to(shutil.which(BASH) or BASH)
+    no_python = run_hook(
+        merge_hook, pv_project, "git status", env_overrides={"PATH": str(bash_only)}
+    )
+    if no_python.returncode != 2:
+        sys.exit("block-pr-merge.sh allowed a command without Python to check it")
+    partial_hooks = test_root / "partial-hooks"
+    shutil.copytree(pv_project / ".claude" / "hooks", partial_hooks)
+    helper = partial_hooks / "pr_commands.py"
+    source = helper.read_text(encoding="utf-8")
+    helper.write_text(source[: len(source) // 2], encoding="utf-8")
+    partial_merge_hook = partial_hooks / "block-pr-merge.sh"
+    if run_hook(partial_merge_hook, pv_project, "git status").returncode != 2:
+        sys.exit("block-pr-merge.sh with a truncated pr_commands.py allowed a command")
     if (pv_project / ".claude" / "hooks" / "__pycache__").exists():
         sys.exit("a hook left .claude/hooks/__pycache__, which uninstall cannot prune")
