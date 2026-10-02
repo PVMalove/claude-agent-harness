@@ -9,6 +9,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 from harness.errors import HarnessError
@@ -32,6 +33,10 @@ from harness.orchestration.core.constants import (
     LEGACY_CONTEXT_PACKAGE_FIELDS_NO_TOKENS,
 )
 from harness.orchestration.core.utils import CoordinatorError
+from harness.orchestration.ledger.lifecycle import (
+    LEDGER_VERSION,
+    SUPPORTED_LEDGER_VERSIONS,
+)
 from harness.orchestration.workflow import history
 
 
@@ -293,6 +298,58 @@ class RecordApiTests(unittest.TestCase):
                         coordinator_approval=None,
                     )
                 )
+
+    def test_replace_record_writes_a_decision_detail_into_the_transition_audit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            ledger = LifecycleLedger(Path(temporary) / "state")
+            ledger.ensure()
+            ledger.write_record(PlanRecord(batch_id="batch-1"))
+
+            def batch(state: str) -> BatchRecord:
+                return BatchRecord(
+                    batch_id="batch-1",
+                    state=state,
+                    dispatches=[],
+                    coordinator_approval=None,
+                )
+
+            detail: JsonObject = {
+                "dispatch_id": "dispatch-1",
+                "decision": "retry",
+                "route": "developer-retry",
+                "evidence": {
+                    "dispatch_id": "dispatch-1",
+                    "report": "reports/dispatch-1.json",
+                    "report_sha256": "0" * 64,
+                },
+                "approver": {"kind": "human", "name": "Malove"},
+                "approved_at": "2026-09-17T00:00:00+00:00",
+            }
+            ledger.write_record(batch("planned"))
+            ledger.replace_record(batch("planned"), decision=detail)
+            ledger.replace_record(batch("planned"))
+
+            root = ledger.records_root()  # re-validates every audit checksum
+            transitions = sorted(
+                (
+                    record
+                    for record in (
+                        json.loads(path.read_text(encoding="utf-8"))
+                        for path in (root / "audit").glob("*.json")
+                    )
+                    if record["action"] == "transition"
+                ),
+                key=lambda record: record["at"],
+            )
+            self.assertEqual(len(transitions), 2)
+            self.assertEqual(transitions[0]["details"]["decision"], detail)
+            self.assertEqual(
+                (transitions[0]["details"]["from"], transitions[0]["details"]["to"]),
+                ("planned", "planned"),
+            )
+            self.assertNotIn("decision", transitions[1]["details"])
 
     def test_write_record_rejects_a_record_id_that_is_not_a_safe_path_segment(
         self,
@@ -596,6 +653,120 @@ class OperationalRecordMigrationTests(unittest.TestCase):
             self.assertFalse(
                 ledger.migrate()["migrated"]
             )  # already current: the schema version did not change
+
+
+class RecoveryRouteVersioningTests(unittest.TestCase):
+    """Issue #497: ``routing.route`` is an optional field under ledger version 3. A decision recorded
+    before it is read verbatim; nothing migrates it or derives a route for it."""
+
+    def _older_batch(self, *, dispatches: bool = True) -> JsonObject:
+        """A batch whose decisions predate the route field; ``dispatches=False`` drops the dispatch
+        entries, whose records a migration's record-graph check would otherwise require."""
+        retry: JsonObject = {
+            "decision": "retry",
+            "approved_by": "Malove",
+            "approved_at": "2026-09-20T00:00:00+00:00",
+            "note": "none",
+            "routing": {
+                "previous_role": "code-review",
+                "reason_category": "transport",
+                "next_role": "code-review",
+                "next_action": "code-review",
+                "rationale": "recorded before the route field existed",
+                "candidate_commit": "c" * 40,
+                "decided_at": "2026-09-20T00:00:00+00:00",
+            },
+        }
+        abandon: JsonObject = {
+            "decision": "abandon",
+            "approved_by": "Malove",
+            "approved_at": "2026-09-20T01:00:00+00:00",
+            "note": "superseded",
+        }
+        return {
+            "batch_id": "batch-1",
+            "state": "abandoned",
+            "dispatches": [
+                {"dispatch_id": "dispatch-1", "state": "reported", "decision": retry},
+                {"dispatch_id": "dispatch-2", "state": "reported", "decision": abandon},
+            ]
+            if dispatches
+            else [],
+            "coordinator_approval": {
+                "approved_by": "Malove",
+                "approved_at": "2026-09-20T00:00:00+00:00",
+            },
+            "coordinator_decisions": [
+                {"dispatch_id": "dispatch-1", **retry, "next_role": "code-review"},
+                {"dispatch_id": "dispatch-2", **abandon},
+            ],
+        }
+
+    def test_an_older_routing_record_migrates_verbatim_and_stays_valid_under_version_3(
+        self,
+    ) -> None:
+        batch = self._older_batch(dispatches=False)
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            root = Path(temporary)
+            for directory, record in (
+                ("batches", batch),
+                ("plans", {"batch_id": "batch-1"}),
+            ):
+                (root / directory).mkdir()
+                (root / directory / "batch-1.json").write_text(
+                    json.dumps(record), encoding="utf-8"
+                )
+            ledger = LifecycleLedger(root)
+
+            self.assertTrue(ledger.migrate()["migrated"])
+
+            stored = json.loads(
+                (ledger.records_root() / "batches" / "batch-1.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(stored, batch, "no route is added or derived")
+            history._validate_operational_batch_fields(stored)
+            self.assertEqual((LEDGER_VERSION, ledger.status()["version"]), (3, 3))
+            self.assertEqual(SUPPORTED_LEDGER_VERSIONS, (1, 2, 3))
+            self.assertFalse(
+                ledger.migrate()["migrated"], "a route field needs no schema upgrade"
+            )
+            self.assertEqual(
+                json.loads(
+                    (ledger.records_root() / "batches" / "batch-1.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+                batch,
+            )
+
+    def test_a_current_generation_reads_an_older_and_a_routed_decision_side_by_side(
+        self,
+    ) -> None:
+        batch = self._older_batch()
+        decisions = cast(list[JsonObject], batch["coordinator_decisions"])
+        routing = cast(JsonObject, decisions[0]["routing"])
+        decisions.append(
+            {**decisions[0], "routing": {**routing, "route": "same-candidate-rerun"}}
+        )
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            ledger = LifecycleLedger(Path(temporary) / "state")
+            ledger.ensure()
+            ledger.write_record(PlanRecord(batch_id="batch-1"))
+            ledger.write_record(BatchRecord.from_dict(batch))
+
+            stored = json.loads(
+                (ledger.records_root() / "batches" / "batch-1.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            self.assertEqual(stored, batch)
+            history._validate_operational_batch_fields(stored)
+            self.assertNotIn("route", stored["coordinator_decisions"][0]["routing"])
+            self.assertNotIn("routing", stored["coordinator_decisions"][1])
+            self.assertFalse(ledger.migrate()["migrated"])
 
 
 _ALL_CONTEXT_PACKAGE_FIELD_VALUES: JsonObject = {

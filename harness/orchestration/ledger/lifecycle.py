@@ -624,9 +624,11 @@ class LifecycleLedger:
         """Persist a new Value-Object-backed record, deriving its path from the record itself."""
         self.write_immutable(self._record_path(record), record.to_dict())
 
-    def replace_record(self, record: LedgerRecordVO) -> None:
+    def replace_record(
+        self, record: LedgerRecordVO, *, decision: JsonObject | None = None
+    ) -> None:
         """Persist a Value-Object-backed record transition, deriving its path from the record."""
-        self.replace(self._record_path(record), record.to_dict())
+        self.replace(self._record_path(record), record.to_dict(), decision=decision)
 
     def write_immutable(
         self, path: Path, value: JsonObject, *, artifact: bool = False
@@ -668,8 +670,14 @@ class LifecycleLedger:
             {"path": relative, "sha256": _digest(path)},
         )
 
-    def replace(self, path: Path, value: JsonObject) -> None:
-        """Atomically persist one allowed record transition and append its immutable audit event."""
+    def replace(
+        self, path: Path, value: JsonObject, *, decision: JsonObject | None = None
+    ) -> None:
+        """Atomically persist one allowed record transition and append its immutable audit event.
+
+        ``decision`` is the coordinator decision this transition records; it is stored in the same
+        audit event, under the same checksum, so the decision and its transition cannot diverge.
+        """
         generation, relative = self._selected_path(path)
         if not path.is_file():
             raise LedgerError(
@@ -683,6 +691,8 @@ class LifecycleLedger:
             transition.update({"from": before.get("state"), "to": value.get("state")})
         self._atomic_write(path, value)
         transition["sha256"] = _digest(path)
+        if decision is not None:
+            transition["decision"] = decision
         self._append_audit(generation, "transition", transition)
 
     def delete(self, path: Path, *, reason: str) -> None:

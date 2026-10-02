@@ -76,7 +76,11 @@ recorded `next_action` without asking the operator to repeat a policy decision. 
 checks, risk triggers, review findings and publish still require the applicable manual decision.
 Never write `--approved-by` on the operator's behalf or
 narrate a decision they did not make. `human_approval_gate: tty` requires confirmation on the
-operator's terminal for transitions that still require human approval.
+operator's terminal for transitions that still require human approval. When choosing a recovery
+route for `retry` or `abandon`, show the decision packet's `route_preview` (with the
+`--reason-category` or `--retry-role` you intend to pass to `batch decide`) and follow the
+Recovery route table in `.harness/orchestration/playbook.md` (situation → route → who approves →
+evidence).
 
 Each worker records a model self-report and is observed by the event-driven watchdog; those facts
 are evidence, never a reason to edit an immutable brief.

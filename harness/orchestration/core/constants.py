@@ -33,6 +33,16 @@ RETRY_REASON_CATEGORIES = (
     *DEVELOPER_REASON_CATEGORIES,
     "unknown",
 )
+# The recovery route a ``retry`` or ``abandon`` decision records in its routing record. Each value
+# names a route the coordinator already computes; a new route adds its value here and its row to
+# the playbook "Recovery route table" in the same change.
+RECOVERY_ROUTES = (
+    "developer-retry",
+    "same-candidate-rerun",
+    "verification",
+    "architect-retry",
+    "abandon",
+)
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {
     "architect": "architect",
