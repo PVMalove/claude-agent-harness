@@ -1,19 +1,31 @@
-"""The commit plan a developer brief carries.
+"""The commit plan a developer brief carries, and how a developer report is checked against it.
 
 Without an operator decision the coordinator derives one plan entry per definition-of-done item.
 When the operator accepts an architect report with ``--commit-plan-file``, the architect's plan is
 validated here and pinned on the batch instead; every later developer brief of the batch carries it.
 
-Pure: no Git and no ledger access, so every rule is testable on plain data.
+An initial or rebase developer report maps its created commits to plan entries as a relation: one
+commit may close several entries (merged), one entry may be closed by several commits (split), and
+an entry may stay unclosed. Anything but one-to-one is a divergence, which the report must justify
+next to a definition-of-done coverage record. A developer-retry report keeps the strict rule: each
+new commit closes exactly one distinct plan entry.
+
+Pure: no Git and no ledger access. The caller passes the created commits and a SHA resolver, so
+every rule is testable on plain data.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
 from pathlib import PurePosixPath
 
-from harness.orchestration.core.constants import COMMIT_PLAN_ENTRY_FIELDS
+from harness.orchestration.core.constants import (
+    COMMIT_PLAN_ENTRY_FIELDS,
+    DOD_COVERED_FIELDS,
+    DOD_NOT_COVERED_FIELDS,
+)
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
@@ -21,6 +33,11 @@ from harness.orchestration.core.utils import (
     _non_empty,
 )
 
+COVERAGE_FIELDS = ("dod_coverage", "divergence_justification")
+COVERAGE_REMEDY = (
+    "set dod_coverage to one record per definition-of-done item: "
+    '{"dod_item": <n>, "commits": [<sha>, ...]} or {"dod_item": <n>, "not_covered": "<reason>"}'
+)
 PLAN_ENTRY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 PLAN_FILE_REMEDY = (
     'write the plan file as {"commit_plan": [{"id": ..., "summary": ..., '
@@ -155,3 +172,384 @@ def accepted_plan_sha256(batch: JsonObject) -> str | None:
             digest = decision.get("commit_plan_sha256")
             return digest if isinstance(digest, str) else None
     return None
+
+
+def _is_retry(dispatch: JsonObject) -> bool:
+    transition = dispatch.get("transition")
+    return (
+        isinstance(transition, dict)
+        and transition.get("next_action") == "developer-retry"
+    )
+
+
+def _relation_applies(dispatch: JsonObject) -> bool:
+    """Only an initial or rebase developer work report maps commits as a relation."""
+    return (
+        dispatch.get("role") == "developer"
+        and bool(dispatch.get("commit_plan"))
+        and not _is_retry(dispatch)
+    )
+
+
+def _unique(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(values))
+
+
+def _covers(entry: JsonObject, position: int) -> list[int]:
+    """An entry's definition-of-done items; a brief written before ``covers`` maps by position."""
+    covers = entry.get("covers")
+    return covers if isinstance(covers, list) else [position]
+
+
+def _relation(pairs: list[tuple[str, str]], plan_ids: list[str]) -> JsonObject:
+    by_commit: dict[str, list[str]] = {}
+    by_entry: dict[str, list[str]] = {}
+    for sha, plan_id in pairs:
+        by_commit.setdefault(sha, []).append(plan_id)
+        by_entry.setdefault(plan_id, []).append(sha)
+    order = {plan_id: index for index, plan_id in enumerate(plan_ids)}
+    return {
+        "merged_commits": [
+            {
+                "commit_sha": sha,
+                "plan_entry_ids": sorted(
+                    ids, key=lambda plan_id: order.get(plan_id, len(order))
+                ),
+            }
+            for sha, ids in by_commit.items()
+            if len(ids) > 1
+        ],
+        "split_entries": [
+            {"plan_entry_id": plan_id, "commit_shas": by_entry[plan_id]}
+            for plan_id in plan_ids
+            if len(by_entry.get(plan_id, [])) > 1
+        ],
+        "unclosed_entries": [
+            plan_id for plan_id in plan_ids if plan_id not in by_entry
+        ],
+    }
+
+
+def _describe(relation: JsonObject) -> str:
+    parts = []
+    for merged in relation["merged_commits"]:
+        parts.append(
+            f"commit {merged['commit_sha']} merges {', '.join(merged['plan_entry_ids'])}"
+        )
+    for split in relation["split_entries"]:
+        parts.append(
+            f"entry {split['plan_entry_id']} is split across {len(split['commit_shas'])} commits"
+        )
+    if relation["unclosed_entries"]:
+        parts.append(f"entries {', '.join(relation['unclosed_entries'])} are unclosed")
+    return "; ".join(parts)
+
+
+def check_fields_allowed(report: JsonObject, dispatch: JsonObject) -> None:
+    """dod_coverage and divergence_justification belong only to an initial or rebase developer
+    report against a commit plan; a developer-retry report keeps its strict commit_map."""
+    present = [field for field in COVERAGE_FIELDS if field in report]
+    if present and not _relation_applies(dispatch):
+        raise CoordinatorError(
+            f"completion report fields {present} belong only to an initial or rebase developer "
+            "report against a commit plan",
+            remedy="drop dod_coverage and divergence_justification: a developer-retry report maps "
+            "each new commit to one distinct plan entry, and other roles have no commit plan",
+        )
+
+
+def _plan_ids(dispatch: JsonObject) -> list[str]:
+    plan = dispatch["commit_plan"]
+    plan_ids = [entry.get("id") for entry in plan if isinstance(entry, dict)]
+    if len(plan_ids) != len(plan) or not all(
+        isinstance(item, str) for item in plan_ids
+    ):
+        raise CoordinatorError(
+            "dispatch commit_plan is malformed",
+            remedy="create a new developer dispatch with a valid immutable commit plan",
+        )
+    return [str(item) for item in plan_ids]
+
+
+def _required_commit_map(report: JsonObject, retry: bool) -> list[object]:
+    commit_map = report.get("commit_map")
+    if not isinstance(commit_map, list) or not commit_map:
+        raise CoordinatorError(
+            "developer completion report requires commit_map for the immutable commit plan",
+            remedy="map every commit created after snapshot_commit to one distinct commit_plan entry"
+            if retry
+            else "map every commit created after the dispatch base (snapshot_commit, or the "
+            "rebase target for a rebase) to one or more commit_plan entries",
+        )
+    return commit_map
+
+
+def _resolve_reported(resolve: Callable[[str], str], sha: str, field: str) -> str:
+    """Resolve a reported SHA, naming the report field instead of candidate_commit on failure."""
+    try:
+        return resolve(sha)
+    except CoordinatorError as exc:
+        raise CoordinatorError(
+            f"{field} entry {sha!r} is not the hexadecimal SHA of a commit in this repository",
+            remedy=f"report every SHA in {field} as the 7-64 character hex SHA of a commit "
+            "this dispatch created",
+        ) from exc
+
+
+def _commit_map_pairs(commit_map: list[object]) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for entry in commit_map:
+        if not isinstance(entry, dict) or set(entry) != {
+            "commit_sha",
+            "plan_entry_id",
+        }:
+            raise CoordinatorError(
+                "commit_map entries must contain only commit_sha and plan_entry_id",
+                remedy="report one SHA-to-plan-entry mapping for every created commit",
+            )
+        sha, plan_id = entry["commit_sha"], entry["plan_entry_id"]
+        if not isinstance(sha, str) or not isinstance(plan_id, str):
+            raise CoordinatorError(
+                "commit_map entries must use string SHA and plan entry id",
+                remedy="report canonical commit SHA strings and commit plan entry ids",
+            )
+        pairs.append((sha, plan_id))
+    return pairs
+
+
+def _check_retry_mapping(
+    pairs: list[tuple[str, str]], created: list[str], plan_ids: list[str]
+) -> None:
+    mapped = dict(pairs)
+    mapped_plan_ids = set(mapped.values())
+    if (
+        set(mapped) != set(created)
+        or not mapped_plan_ids.issubset(plan_ids)
+        or len(mapped) != len(created)
+        or len(mapped) != len(pairs)
+        or len(mapped_plan_ids) != len(mapped)
+    ):
+        raise CoordinatorError(
+            "commit_map must map each created commit to one distinct immutable plan entry",
+            remedy="report every commit created after snapshot_commit once, each against its own "
+            "commit_plan entry; a developer-retry need not close every plan entry",
+        )
+
+
+def _check_relation(
+    pairs: list[tuple[str, str]], created: list[str], plan_ids: list[str]
+) -> None:
+    repeated = _unique(
+        [
+            f"{sha}/{plan_id}"
+            for sha, plan_id in pairs
+            if pairs.count((sha, plan_id)) > 1
+        ]
+    )
+    if repeated:
+        raise CoordinatorError(
+            f"commit_map repeats the pairs {repeated}",
+            remedy="report each commit_sha/plan_entry_id pair once",
+        )
+    unknown = _unique([plan_id for _, plan_id in pairs if plan_id not in plan_ids])
+    if unknown:
+        raise CoordinatorError(
+            f"commit_map names unknown plan entries {unknown}",
+            remedy=f"map commits only to this brief's commit_plan entries: {', '.join(plan_ids)}",
+        )
+    foreign = _unique([sha for sha, _ in pairs if sha not in created])
+    if foreign:
+        raise CoordinatorError(
+            f"commit_map names commits this dispatch did not create: {foreign}",
+            remedy="map only the commits after the dispatch base (snapshot_commit, or the rebase "
+            "target for a rebase) up to commit_sha",
+        )
+    mapped = {sha for sha, _ in pairs}
+    unmapped = [sha for sha in created if sha not in mapped]
+    if unmapped:
+        raise CoordinatorError(
+            f"commit_map must map each created commit to at least one plan entry (unmapped: {unmapped})",
+            remedy="add a commit_sha/plan_entry_id pair for every commit created after the dispatch base",
+        )
+
+
+def _check_coverage(
+    coverage: object,
+    count: int,
+    created: list[str],
+    resolve: Callable[[str], str],
+) -> None:
+    if not isinstance(coverage, list):
+        raise CoordinatorError(
+            "dod_coverage must be a list with one record per definition-of-done item",
+            remedy=COVERAGE_REMEDY,
+        )
+    seen: list[int] = []
+    for record in coverage:
+        if not isinstance(record, dict) or set(record) not in (
+            DOD_COVERED_FIELDS,
+            DOD_NOT_COVERED_FIELDS,
+        ):
+            raise CoordinatorError(
+                "dod_coverage records must be {dod_item, commits} or {dod_item, not_covered}",
+                remedy=COVERAGE_REMEDY,
+            )
+        item = record["dod_item"]
+        if not _is_item_number(item, count):
+            raise CoordinatorError(
+                f"dod_coverage names unknown definition-of-done item {item!r}; "
+                f"this brief has items 1..{count}",
+                remedy=COVERAGE_REMEDY,
+            )
+        if item in seen:
+            raise CoordinatorError(
+                f"dod_coverage records definition-of-done item {item} more than once",
+                remedy=COVERAGE_REMEDY,
+            )
+        seen.append(item)
+        if "not_covered" in record:
+            if not _non_empty(record["not_covered"]):
+                raise CoordinatorError(
+                    f"dod_coverage item {item} is not_covered without a reason",
+                    remedy="state in not_covered why the item is not covered, or list the commits that cover it",
+                )
+            continue
+        commits = record["commits"]
+        if (
+            not isinstance(commits, list)
+            or not commits
+            or not all(isinstance(sha, str) for sha in commits)
+        ):
+            raise CoordinatorError(
+                f"dod_coverage item {item} commits must be a non-empty list of commit SHAs",
+                remedy=COVERAGE_REMEDY,
+            )
+        foreign = [
+            sha
+            for sha in commits
+            if _resolve_reported(resolve, sha, "dod_coverage[].commits") not in created
+        ]
+        if foreign:
+            raise CoordinatorError(
+                f"dod_coverage item {item} names commits this dispatch did not create: {foreign}",
+                remedy="list only commits this dispatch created as covering commits",
+            )
+    missing = [item for item in range(1, count + 1) if item not in seen]
+    if missing:
+        raise CoordinatorError(
+            f"dod_coverage has no record for definition-of-done items {missing}",
+            remedy=COVERAGE_REMEDY,
+        )
+
+
+def check_report(
+    report: JsonObject,
+    dispatch: JsonObject,
+    created: list[str],
+    resolve: Callable[[str], str],
+) -> None:
+    """Reject only structural errors of a developer report against its brief's commit plan.
+
+    ``created`` is the ordered list of commits the dispatch created (after ``snapshot_commit``, or
+    after the rebase target for a rebase); ``resolve`` turns a reported SHA into its full form.
+    """
+    retry = _is_retry(dispatch)
+    commit_map = _required_commit_map(report, retry)
+    plan_ids = _plan_ids(dispatch)
+    pairs = _commit_map_pairs(commit_map)
+    resolved = [
+        (_resolve_reported(resolve, sha, "commit_map[].commit_sha"), plan_id)
+        for sha, plan_id in pairs
+    ]
+    if retry:
+        _check_retry_mapping(resolved, created, plan_ids)
+        return
+    _check_relation(resolved, created, plan_ids)
+    relation = _relation(resolved, plan_ids)
+    one_to_one = not any(relation.values())
+    if not one_to_one and "dod_coverage" not in report:
+        raise CoordinatorError(
+            f"commit_map diverges from the commit plan ({_describe(relation)}) but the report "
+            "has no dod_coverage",
+            remedy=COVERAGE_REMEDY,
+        )
+    if "dod_coverage" in report:
+        _check_coverage(
+            report["dod_coverage"],
+            len(dispatch.get("definition_of_done", [])),
+            created,
+            resolve,
+        )
+    if one_to_one:
+        if "divergence_justification" in report:
+            raise CoordinatorError(
+                "divergence_justification is only for a commit_map that diverges from the commit plan",
+                remedy="drop divergence_justification: every created commit closes exactly one "
+                "plan entry and every entry is closed once",
+            )
+    elif not _non_empty(report.get("divergence_justification")):
+        raise CoordinatorError(
+            f"commit_map diverges from the commit plan ({_describe(relation)}) without a "
+            "divergence_justification",
+            remedy="set divergence_justification to what was merged, split or added and why",
+        )
+
+
+def _report_pairs(
+    report: JsonObject, resolve: Callable[[str], str]
+) -> list[tuple[str, str]]:
+    commit_map = report.get("commit_map")
+    if not isinstance(commit_map, list):
+        return []
+    return [
+        (resolve(entry["commit_sha"]), entry["plan_entry_id"])
+        for entry in commit_map
+        if isinstance(entry, dict)
+    ]
+
+
+def divergence(
+    report: JsonObject, dispatch: JsonObject, resolve: Callable[[str], str]
+) -> JsonObject | None:
+    """The divergence record of an initial or rebase developer report, or None when its
+    commit_map is one-to-one with the plan (or the dispatch has no commit-plan relation)."""
+    if not _relation_applies(dispatch):
+        return None
+    relation = _relation(_report_pairs(report, resolve), _plan_ids(dispatch))
+    if not any(relation.values()):
+        return None
+    return {
+        "developer_dispatch_id": dispatch["dispatch_id"],
+        "justification": report.get("divergence_justification"),
+        **relation,
+    }
+
+
+def coverage(
+    report: JsonObject, dispatch: JsonObject, resolve: Callable[[str], str]
+) -> tuple[list[JsonObject] | None, str | None]:
+    """The definition-of-done coverage of a developer report and where it comes from.
+
+    A report's own ``dod_coverage`` wins (``report``); a one-to-one report without it gets coverage
+    derived from the plan entries' ``covers`` (``derived``). Not applicable: ``(None, None)``.
+    """
+    if not _relation_applies(dispatch):
+        return None, None
+    reported = report.get("dod_coverage")
+    if isinstance(reported, list):
+        return reported, "report"
+    covers = {
+        entry.get("id"): _covers(entry, position)
+        for position, entry in enumerate(dispatch["commit_plan"], start=1)
+        if isinstance(entry, dict)
+    }
+    pairs = _report_pairs(report, resolve)
+    return [
+        {
+            "dod_item": item,
+            "commits": _unique(
+                [sha for sha, plan_id in pairs if item in covers.get(plan_id, [])]
+            ),
+        }
+        for item in range(1, len(dispatch.get("definition_of_done", [])) + 1)
+    ], "derived"

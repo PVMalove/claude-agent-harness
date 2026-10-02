@@ -138,6 +138,9 @@ DISPATCH_FIELDS = {
 }
 # One entry of a developer brief's commit plan; ``covers`` names definition-of-done items 1..n.
 COMMIT_PLAN_ENTRY_FIELDS = frozenset({"id", "summary", "expected_paths", "covers"})
+# One record of a developer report's dod_coverage: the covering commits, or why the item is open.
+DOD_COVERED_FIELDS = frozenset({"dod_item", "commits"})
+DOD_NOT_COVERED_FIELDS = frozenset({"dod_item", "not_covered"})
 # The four fields of the transition-bound approval contract (issue #250) are all present or all absent.
 POLICY_BRIEF_FIELDS = frozenset(
     {"transition", "transition_digest", "retry_idempotency_key", "orchestration_policy"}
@@ -161,6 +164,8 @@ REPORT_OPTIONAL_FIELDS = {
     "review",
     "report_language",
     "commit_map",
+    "dod_coverage",
+    "divergence_justification",
     "lessons",
     "used_memory",
 }

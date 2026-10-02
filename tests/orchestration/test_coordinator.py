@@ -4900,6 +4900,243 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 ):
                     self._dispatch(batch_id, "developer")
 
+    FIVE_ITEMS = ["one", "two", "three", "four", "five"]
+
+    def _commits(self, *names: str) -> tuple[list[str], list[str]]:
+        commits = [self._developer_commit(name)[0] for name in names]
+        changed = git_utils._changed_files_between(
+            self.repo, self._batch_record(self.batch_id)["base_commit"], commits[-1]
+        )
+        return commits, changed
+
+    def _history(self) -> str:
+        return _git(self.worktree, "rev-list", "HEAD")
+
+    def _issue_443_divergence(
+        self, brief: JsonObject, commits: list[str]
+    ) -> JsonObject:
+        """Three commits for the five default plan entries: two commits each close two entries."""
+        first, second, third = commits
+        owners = [first, first, second, third, third]
+        return {
+            "commit_map": self._commit_map(list(zip(owners, brief["commit_plan"]))),
+            "dod_coverage": [
+                {"dod_item": item, "commits": [sha]}
+                for item, sha in enumerate(owners, start=1)
+            ],
+            "divergence_justification": (
+                "step-1 and step-2 share one schema change; step-4 and step-5 share one "
+                "validator, so splitting them would leave a commit that does not pass on its own"
+            ),
+        }
+
+    def test_issue_443_three_commits_with_a_pinned_three_entry_plan_are_accepted(
+        self,
+    ) -> None:
+        entries = [
+            self._plan_entry("contract", [1, 2]),
+            self._plan_entry("rules", [3]),
+            self._plan_entry("evidence", [4, 5]),
+        ]
+        batch_id = self._pinned(self.FIVE_ITEMS, entries)
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        commits, changed = self._commits("a", "b", "c")
+        history = self._history()
+
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                commits[-1],
+                changed,
+                commit_map=self._commit_map(list(zip(commits, entries))),
+            ),
+        )
+        decided = self._decide(batch_id, "accept")
+
+        self.assertEqual(decided["next_action"], "risk-assessment")
+        self.assertEqual(self._history(), history)
+
+    def test_issue_443_three_commits_with_the_default_plan_and_a_justified_divergence_are_accepted(
+        self,
+    ) -> None:
+        batch_id = self._plan_batch(self.FIVE_ITEMS)["batch_id"]
+        self._accepted_architect(batch_id)
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self.assertEqual(len(brief["commit_plan"]), 5)
+        self._start(brief["dispatch_id"])
+        commits, changed = self._commits("a", "b", "c")
+        history = self._history()
+
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                commits[-1],
+                changed,
+                **self._issue_443_divergence(brief, commits),
+            ),
+        )
+        decided = self._decide(batch_id, "accept")
+
+        self.assertEqual(decided["next_action"], "risk-assessment")
+        self.assertEqual(self._history(), history)
+
+    def test_divergent_report_without_justification_is_rejected_with_its_remedy(
+        self,
+    ) -> None:
+        batch_id = self._plan_batch(self.FIVE_ITEMS)["batch_id"]
+        self._accepted_architect(batch_id)
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        commits, changed = self._commits("a", "b", "c")
+        divergent = self._issue_443_divergence(brief, commits)
+        unjustified = {
+            key: value
+            for key, value in divergent.items()
+            if key != "divergence_justification"
+        }
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError,
+            f"commit {commits[0]} merges step-1, step-2.*without a divergence_justification",
+        ) as caught:
+            self._submit(
+                brief["dispatch_id"],
+                self._developer_report(brief, commits[-1], changed, **unjustified),
+            )
+
+        self.assertIn("merged, split or added and why", caught.exception.remedy)
+        submitted = self._submit(
+            brief["dispatch_id"],
+            self._developer_report(brief, commits[-1], changed, **divergent),
+        )
+        self.assertEqual(submitted["state"], "reported")
+
+    def test_developer_retry_rejects_coverage_fields_and_keeps_distinct_entries(
+        self,
+    ) -> None:
+        batch_id = self._plan_batch(["one", "two", "three"])["batch_id"]
+        self._accepted_architect(batch_id)
+        self._retried_developer_candidate(batch_id, "a", "b", "c")
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        self.assertEqual(retry["transition"]["next_action"], "developer-retry")
+        self._start(retry["dispatch_id"])
+        fix, _ = self._developer_commit("fix")
+        changed = git_utils._changed_files_between(
+            self.repo, self._batch_record(batch_id)["base_commit"], fix
+        )
+        plan = retry["commit_plan"]
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "belong only to an initial or rebase"
+        ):
+            self._submit(
+                retry["dispatch_id"],
+                self._developer_report(
+                    retry,
+                    fix,
+                    changed,
+                    commit_map=self._commit_map([(fix, plan[0])]),
+                    dod_coverage=[{"dod_item": 1, "commits": [fix]}],
+                ),
+            )
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "one distinct immutable plan entry"
+        ):
+            self._submit(
+                retry["dispatch_id"],
+                self._developer_report(
+                    retry,
+                    fix,
+                    changed,
+                    commit_map=self._commit_map([(fix, plan[0]), (fix, plan[1])]),
+                ),
+            )
+        submitted = self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry, fix, changed, commit_map=self._commit_map([(fix, plan[0])])
+            ),
+        )
+        self.assertEqual(submitted["state"], "reported")
+
+    def test_rebase_report_applies_initial_rules_from_the_rebase_target(self) -> None:
+        batch_id = self._plan_batch(["one", "two"])["batch_id"]
+        self._accepted_architect(batch_id)
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        commits, changed = self._commits("a", "b")
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                commits[-1],
+                changed,
+                commit_map=self._commit_map(list(zip(commits, brief["commit_plan"]))),
+            ),
+        )
+        self._decide(batch_id, "accept")
+        self._assess(batch_id, commits[-1], changed)
+        (self.repo / "upstream.txt").write_text("upstream\n", encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-m", "upstream")
+        _git(self.repo, "push", "origin", "master")
+        upstream = _git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "batch base is stale"
+        ):
+            self._dispatch(batch_id, "code-review", candidate=commits[-1])
+
+        rebase = self._dispatch(batch_id, "developer")["brief"]
+        self.assertEqual(rebase["transition"]["next_action"], "developer")
+        self._start(rebase["dispatch_id"])
+        _git(self.worktree, "rebase", "master")
+        rebased = _git(self.worktree, "rev-list", "--reverse", f"{upstream}..HEAD")
+        first, second = rebased.splitlines()
+        changed = git_utils._changed_files_between(self.repo, upstream, second)
+        plan = rebase["commit_plan"]
+        merged = self._commit_map(
+            [(first, plan[0]), (first, plan[1]), (second, plan[1])]
+        )
+        divergence = {
+            "dod_coverage": [
+                {"dod_item": 1, "commits": [first]},
+                {"dod_item": 2, "commits": [first, second]},
+            ],
+            "divergence_justification": "the rebase kept both commits; the first one touches both items",
+        }
+
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "no dod_coverage"):
+            self._submit(
+                rebase["dispatch_id"],
+                self._developer_report(rebase, second, changed, commit_map=merged),
+            )
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "names commits this dispatch did not create"
+        ):
+            self._submit(
+                rebase["dispatch_id"],
+                self._developer_report(
+                    rebase,
+                    second,
+                    changed,
+                    commit_map=[*merged, *self._commit_map([(upstream, plan[0])])],
+                    **divergence,
+                ),
+            )
+        self._submit(
+            rebase["dispatch_id"],
+            self._developer_report(
+                rebase, second, changed, commit_map=merged, **divergence
+            ),
+        )
+        decided = self._decide(batch_id, "accept")
+
+        self.assertEqual(decided["integration_base_commit"], upstream)
+        self.assertFalse(decided["base_rebase_required"])
+
 
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     """The pure routing table: structured evidence in, one routing record out (no I/O)."""
