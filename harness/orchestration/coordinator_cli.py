@@ -236,12 +236,12 @@ def build_parser(
     packet.add_argument(
         "--reason-category",
         choices=defaults.RETRY_REASON_CATEGORIES,
-        help="preview the retry route batch decide would record with this --reason-category",
+        help="preview the retry route as batch decide computes it with this --reason-category; the preview does not check the developer-retry budget",
     )
     packet.add_argument(
         "--retry-role",
         choices=["developer"],
-        help="preview the retry route batch decide would record with --retry-role developer",
+        help="preview the retry route as batch decide computes it with --retry-role developer; the preview does not check the developer-retry budget",
     )
     packet.set_defaults(handler=handlers.decision_packet)
 

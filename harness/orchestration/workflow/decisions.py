@@ -226,10 +226,18 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
         route_preview: JsonObject | None = None
         if report is not None and "decision" not in entry:
             # The same computation ``batch decide`` runs, with the same flags; nothing is written.
-            route_preview = {
-                "retry": _decide_retry_route(repo, root, batch, dispatch, report, args),
-                "abandon": {"route": "abandon"},
-            }
+            try:
+                retry_preview = _decide_retry_route(
+                    repo, root, batch, dispatch, report, args
+                )
+            except CoordinatorError as exc:
+                # ``batch decide --decision retry`` refuses with this error; the packet still renders.
+                retry_preview = {
+                    "route": None,
+                    "refused": exc.message,
+                    "remedy": exc.remedy,
+                }
+            route_preview = {"retry": retry_preview, "abandon": {"route": "abandon"}}
         return {
             "batch_id": batch["batch_id"],
             "ticket": batch["ticket"],

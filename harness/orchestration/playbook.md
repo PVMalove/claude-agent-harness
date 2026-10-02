@@ -116,7 +116,10 @@ a route by this table:
 the `retry` routing record computed as `batch decide` computes it (it takes the same
 `--reason-category` and `--retry-role` flags) and the `abandon` route; it writes nothing. The preview
 does not check `retry_policy.max_developer_retries`: once that budget is exhausted it still shows a
-`developer-retry` route, which `batch decide --decision retry` then refuses. Every `batch decide`
+`developer-retry` route, which `batch decide --decision retry` then refuses. When the retry route
+cannot be computed, for example because the configured retry-reason classifier extension fails, the
+packet still renders and `route_preview.retry` is `{"route": null, "refused": ..., "remedy": ...}`
+with the error `batch decide --decision retry` refuses with. Every `batch decide`
 decision stores a `decision` detail on its batch transition audit record: the `route` (`null` for a
 decision that routes nothing), the `evidence` (`dispatch_id`, `report`, `report_sha256`) and the
 `approver` (`{"kind": "policy" | "human", "name": ...}`, set by the path that approved it). A route outside

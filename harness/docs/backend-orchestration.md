@@ -616,6 +616,10 @@ python .harness/orchestration/coordinator.py --repo . batch decision-packet \
 
 Preview не проверяет `retry_policy.max_developer_retries`: при исчерпанном бюджете он по-прежнему
 показывает маршрут `developer-retry`, а `batch decide --decision retry` такое решение отклоняет.
+Если маршрут retry вычислить нельзя (например, упало настроенное расширение retry reason
+classifier), packet всё равно строится, а `route_preview.retry` равен
+`{"route": null, "refused": ..., "remedy": ...}` с той ошибкой, которой откажет
+`batch decide --decision retry`.
 
 Каждое решение `batch decide` хранит в transition audit record batch деталь `decision`:
 `dispatch_id`, `decision`, `route` (`null` у решения без маршрута — `accept`, `override-warning`,

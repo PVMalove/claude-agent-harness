@@ -3715,6 +3715,40 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(retry, recorded)
         self.assertIsNone(packet()["route_preview"])
 
+    def test_a_failing_classifier_still_renders_the_packet_and_refuses_the_retry(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._infra_review(batch["batch_id"], candidate)
+        failure = extensions.ExtensionError(
+            "classifier failed", remedy="fix the classifier"
+        )
+
+        with mock.patch.object(
+            extensions, "retry_reason_classifier", side_effect=failure
+        ):
+            packet = coordinator.decision_packet(
+                self._args(batch=batch["batch_id"], dispatch=None)
+            )
+            with self.assertRaises(coordinator.CoordinatorError) as refused:
+                self._decide(batch["batch_id"], "retry")
+
+        self.assertEqual(packet["action"], "decide completion report")
+        self.assertEqual(
+            packet["route_preview"],
+            {
+                "retry": {
+                    "route": None,
+                    "refused": "classifier failed",
+                    "remedy": "fix the classifier",
+                },
+                "abandon": {"route": "abandon"},
+            },
+        )
+        self.assertEqual(refused.exception.message, "classifier failed")
+
     def test_a_routed_decision_audits_its_route_evidence_and_human_approver(
         self,
     ) -> None:
@@ -5985,6 +6019,27 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "developer",
                 self._report("completed", standards=None),
                 transport,
+                False,
+                ("unknown", "developer", "developer-retry", "developer-retry"),
+            ),
+            (
+                "verification",
+                no_review,
+                transport,
+                False,
+                (transport, "developer", "developer-retry", "developer-retry"),
+            ),
+            (
+                "verification",
+                self._report("completed", standards=None),
+                infra,
+                False,
+                ("unknown", "developer", "developer-retry", "developer-retry"),
+            ),
+            (
+                "verification",
+                no_review,
+                None,
                 False,
                 ("unknown", "developer", "developer-retry", "developer-retry"),
             ),
