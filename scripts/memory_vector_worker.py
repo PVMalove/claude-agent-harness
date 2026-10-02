@@ -34,9 +34,11 @@ def run(artifacts: Path) -> dict:
     from harness.memory.search import search_candidates
     from harness.memory.sources import collect_sources
     from scripts.memory_vector_probe import verify_artifacts, fuse_ranks, recommend
-    from tests.memory.test_build import configure, source
+    from tests.memory.test_build import configure
 
-    lock = json.loads((root / "tests/memory/vector_probe.lock.json").read_text())
+    lock = json.loads(
+        (root / "tests/memory/vector_probe.lock.json").read_text(encoding="utf-8")
+    )
     runtime_lock = root / lock["runtime_lock"]
     if (
         hashlib.sha256(runtime_lock.read_bytes()).hexdigest()
@@ -44,7 +46,7 @@ def run(artifacts: Path) -> dict:
     ):
         raise ValueError("experiment runtime lock changed")
     runtime_project = tomllib.loads(
-        runtime_lock.with_name("pyproject.toml").read_text()
+        runtime_lock.with_name("pyproject.toml").read_text(encoding="utf-8")
     )
     for dependency in runtime_project["project"]["dependencies"]:
         package, version = dependency.split("==")
@@ -104,7 +106,9 @@ def run(artifacts: Path) -> dict:
     en = encode("Search previous project decisions", "query: ")
     if not all(abs(float(np.linalg.norm(v)) - 1) < 1e-5 for v in (ru, en)):
         raise ValueError("non-normalized embedding")
-    baseline = json.loads((root / "tests/memory/baseline_fts5.json").read_text())
+    baseline = json.loads(
+        (root / "tests/memory/baseline_fts5.json").read_text(encoding="utf-8")
+    )
     dataset_path = root / "tests/memory/golden_tickets.json"
     if (
         hashlib.sha256(dataset_path.read_bytes()).hexdigest()
@@ -123,7 +127,9 @@ def run(artifacts: Path) -> dict:
             raw = (root / path).read_bytes()
             if hashlib.sha256(raw).hexdigest() != digest:
                 raise ValueError(f"corpus changed: {path}")
-            source(repo, path, raw.decode("utf-8"))
+            target = repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
         build(repo)
         fts5 = evaluate_memory(repo).to_dict()
         if fts5 != baseline["report"]:
