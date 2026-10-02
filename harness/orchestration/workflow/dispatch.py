@@ -104,6 +104,7 @@ from harness.orchestration.workflow.history import (
     _context_package_quality_warning,
     _context_package_summary,
     _context_package_tier,
+    _current_developer_candidate,
     _effective_base,
     _latest_context_package,
     _latest_developer_candidate,
@@ -113,6 +114,7 @@ from harness.orchestration.workflow.history import (
     _settled,
     _transition_idempotency_key,
     _validate_batch_integrity,
+    _validate_dispatch,
 )
 from harness.orchestration.workflow.risk import (
     _matching_triggers,
@@ -266,10 +268,7 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
             else None
         )
         if candidate is None:
-            try:
-                candidate = _latest_developer_candidate(repo, root, batch)
-            except CoordinatorError:
-                candidate = None
+            candidate = _current_developer_candidate(repo, root, batch)
         snapshot = candidate or batch["base_commit"]
         package = _latest_context_package(root, batch)
         package_pointer: JsonObject = {}
@@ -756,17 +755,17 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             else _dispatch_approval_mode(args, batch, config, role_name, purpose, risk)
         )
         context_package = None
-        # A developer retry amends the latest reviewed candidate.  Pin its immutable
-        # startup snapshot to that candidate too, so the worker keeps the ordered
-        # commit history instead of rewinding HEAD and staging the whole diff.
+        # A developer retry continues the candidate it retries: the unaccepted developer report's
+        # own candidate, else the latest accepted (reviewed) one.  Pin its immutable startup
+        # snapshot to that candidate too, so the worker keeps the ordered commit history instead
+        # of rewinding HEAD and staging the whole diff.
         snapshot_commit = candidate or batch["base_commit"]
         if role_name in {"architect", "developer", "verification", "code-review"}:
-            snapshot_commit = candidate
-            if snapshot_commit is None:
-                try:
-                    snapshot_commit = _latest_developer_candidate(repo, root, batch)
-                except CoordinatorError:
-                    snapshot_commit = batch["base_commit"]
+            snapshot_commit = (
+                candidate
+                or _current_developer_candidate(repo, root, batch)
+                or batch["base_commit"]
+            )
             context_package = _persist_context_package(
                 repo,
                 root,
@@ -934,6 +933,19 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         dispatch["state"] = "approved"
         dispatch["created_at"] = utils._now()
         _safe_id(dispatch_id, "dispatch")
+        batch["dispatches"].append(
+            {
+                "dispatch_id": dispatch_id,
+                "role": role_name,
+                "state": "approved",
+                "brief_sha256": hashlib.sha256(
+                    _canonical(dispatch).encode("utf-8")
+                ).hexdigest(),
+            }
+        )
+        # Never issue a brief that ``dispatch send`` would reject: run the send-time validation on
+        # the assembled brief before anything is written, so a refusal leaves no brief behind.
+        _validate_dispatch(repo, config, root, batch, dispatch)
         _write_record(ledger, DispatchRecord.from_dict(dispatch))
         _write_record(
             ledger,
@@ -944,16 +956,6 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     "updated_at": utils._now(),
                 }
             ),
-        )
-        batch["dispatches"].append(
-            {
-                "dispatch_id": dispatch_id,
-                "role": role_name,
-                "state": "approved",
-                "brief_sha256": hashlib.sha256(
-                    _canonical(dispatch).encode("utf-8")
-                ).hexdigest(),
-            }
         )
         if required_role and role_name == required_role:
             batch.pop("required_next_role", None)
