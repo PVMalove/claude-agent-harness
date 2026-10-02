@@ -138,7 +138,9 @@ class UninstallTests(unittest.TestCase):
         """Проверить, что CLI без --apply только показывает план, а --apply требует UNINSTALL."""
         preview = harness("uninstall", str(self.repo))
         self.assertEqual(preview.returncode, 0, preview.stderr)
-        self.assertIn(".harness", json.loads(preview.stdout)["plan"]["remove"][0]["path"])
+        self.assertIn(
+            ".harness", json.loads(preview.stdout)["plan"]["remove"][0]["path"]
+        )
         self.assertTrue((self.repo / ".harness").is_dir())
 
         refused = harness("uninstall", str(self.repo), "--apply")

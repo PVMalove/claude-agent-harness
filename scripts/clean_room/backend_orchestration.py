@@ -194,9 +194,7 @@ def run(ctx: SimpleNamespace) -> None:
     if installed_pr_text.find("record-qa-gate-pass.sh") < installed_pr_text.find(
         "qa evidence"
     ):
-        sys.exit(
-            "installed to-pull-requests step does not record accepted QA evidence"
-        )
+        sys.exit("installed to-pull-requests step does not record accepted QA evidence")
     orchestration_config = orchestration_project / ".harness" / "orchestration.json"
     if not orchestration_config.is_file():
         sys.exit("backend-orchestration config seed missing")

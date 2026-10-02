@@ -271,12 +271,19 @@ def run(ctx: SimpleNamespace) -> None:
     tracked.write_text(tracked.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     if no_harness_pr_allowed():
         sys.exit("QA marker for a previous diff opened a PR")
-    subprocess.run(["git", "checkout", "-q", "--", "AGENTS.md"], cwd=no_harness, check=True)
+    subprocess.run(
+        ["git", "checkout", "-q", "--", "AGENTS.md"], cwd=no_harness, check=True
+    )
     no_harness_marker.unlink()
     # A session started inside the linked worktree points CLAUDE_PROJECT_DIR at it too:
     # mark then reads the main worktree's config.
-    if mark_no_harness("echo test", no_harness).returncode or not no_harness_marker.is_file():
-        sys.exit("mark ignored the main worktree config inside a linked-worktree session")
+    if (
+        mark_no_harness("echo test", no_harness).returncode
+        or not no_harness_marker.is_file()
+    ):
+        sys.exit(
+            "mark ignored the main worktree config inside a linked-worktree session"
+        )
     no_harness_marker.unlink()
     hidden_json = project_json.with_name("project.json.hidden")
     project_json.rename(hidden_json)
@@ -462,10 +469,7 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit(
             "block-scratch-outside-docs-tasks.sh accepted a path outside the project"
         )
-    if (
-        "вне проекта" not in escaped_result.stderr
-        or "payload" in escaped_result.stderr
-    ):
+    if "вне проекта" not in escaped_result.stderr or "payload" in escaped_result.stderr:
         sys.exit(
             "block-scratch-outside-docs-tasks.sh did not name the out-of-project path "
             f"as the reason: {escaped_result.stderr!r}"
@@ -479,7 +483,11 @@ def run(ctx: SimpleNamespace) -> None:
     home_projects = runtime_home / ".claude" / "projects" / "-repo"
     for file_path, env, allowed in (
         (home_projects / "memory" / "feedback.md", home_env, True),
-        (runtime_config / "projects" / "-repo" / "memory" / "MEMORY.md", config_env, True),
+        (
+            runtime_config / "projects" / "-repo" / "memory" / "MEMORY.md",
+            config_env,
+            True,
+        ),
         (home_projects / "notes.md", home_env, False),
         (runtime_home / ".claude" / "settings.json", home_env, False),
         (home_projects / "memory" / "feedback.md", config_env, False),

@@ -285,7 +285,9 @@ class RepoMapScreen(Screen[None]):
 
         def work() -> None:
             try:
-                outcome = console_repo_map.build_map(self.repo, head, self._command_runner)
+                outcome = console_repo_map.build_map(
+                    self.repo, head, self._command_runner
+                )
             except Exception:
                 return
             if self.is_mounted and self.app.is_running:

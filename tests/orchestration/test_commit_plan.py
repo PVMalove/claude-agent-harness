@@ -349,7 +349,10 @@ class CheckReportTests(unittest.TestCase):
         self.assertIn("map one of the claimed commits to step-3", refused.remedy)
         self.assertIn("not_covered", refused.remedy)
 
-        honest = [*report["dod_coverage"][:2], {"dod_item": 3, "not_covered": "step-3 deferred"}]
+        honest = [
+            *report["dod_coverage"][:2],
+            {"dod_item": 3, "not_covered": "step-3 deferred"},
+        ]
         self._check({**report, "dod_coverage": [*honest, *report["dod_coverage"][3:]]})
 
     def test_a_coverage_claim_reads_pinned_covers_and_resolves_short_shas(self) -> None:

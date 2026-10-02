@@ -89,10 +89,22 @@ def test_missing_index_is_frozen_without_creation_or_refresh(
     root = tmp_path / "state"
     ledger = LifecycleLedger(root)
     ledger.ensure()
-    batch = {"batch_id": "batch-memory", "base_commit": snapshot,
-             "goal": "transaction", "definition_of_done": [], "context_packages": []}
-    package = _persist_context_package(tmp_path, root, ledger, batch, role="shared",
-                                       snapshot=snapshot, inclusion_reason="test")
+    batch = {
+        "batch_id": "batch-memory",
+        "base_commit": snapshot,
+        "goal": "transaction",
+        "definition_of_done": [],
+        "context_packages": [],
+    }
+    package = _persist_context_package(
+        tmp_path,
+        root,
+        ledger,
+        batch,
+        role="shared",
+        snapshot=snapshot,
+        inclusion_reason="test",
+    )
     assert package["memory"]["status"] == "index_missing"
     assert package["memory"]["pointers"] == []
     assert not (tmp_path / ".harness/.sandboxes/cache/memory").exists()
@@ -102,6 +114,13 @@ def test_missing_index_is_frozen_without_creation_or_refresh(
         raise AssertionError("reuse must not query or refresh newly available memory")
 
     monkeypatch.setattr(sqlite3, "connect", forbid_index)
-    reused = _persist_context_package(tmp_path, root, ledger, batch, role="shared",
-                                      snapshot=snapshot, inclusion_reason="test")
+    reused = _persist_context_package(
+        tmp_path,
+        root,
+        ledger,
+        batch,
+        role="shared",
+        snapshot=snapshot,
+        inclusion_reason="test",
+    )
     assert reused == package
