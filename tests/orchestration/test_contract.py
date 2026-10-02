@@ -55,7 +55,7 @@ class HarnessEnvironmentContractTests(unittest.TestCase):
         self.assertNotIn("run: python scripts/verify.py", workflow)
         self.assertEqual(workflow.count("uses: astral-sh/setup-uv@"), 3)
         self.assertEqual(workflow.count("run: make bootstrap"), 3)
-        self.assertEqual(workflow.count("run: make verify"), 2)
+        self.assertEqual(workflow.count("make verify"), 2)
 
 
 class ContractErrorInvariantTests(unittest.TestCase):

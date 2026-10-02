@@ -136,7 +136,7 @@ PR.
 #### Политика памяти проекта
 
 Интерактивные потребители и трактовка указателей описаны в [project-memory.md](./project-memory.md).
-Без внешнего CLI установленный проект запускает тот же read-only поиск командой
+Без внешнего CLI установленный проект запускает тот же поиск командой
 `python -B .harness/memory/search_cli.py . "<запрос>"`.
 
 Память включается только через `memory: {"enabled": true}` в `.harness/project.json`.
@@ -289,11 +289,67 @@ python3 harness/bin/harness.py update /path/to/repository --force-seed-files    
   (как `diff`) и останавливается.
 - `--force-managed-files` перезаписывает только managed snapshot, включая удаление файлов, которых
   больше нет в текущей версии capability.
-- Seed-файлы (`docs/agents/`, hooks, rules, agents, `.harness/project.json`,
-  `.harness/orchestration.json`) сохраняются; `--force-seed-files` перезаписывает только их, а
+- Seed-файлы (`docs/agents/`, hooks, rules, agents, `.harness/project.schema.json`,
+  `.harness/orchestration.json`) сохраняются; `--force-seed-files` разрешает их перезапись, а
   `--force` объединяет оба действия и может потерять project-owned настройки.
+  Существующий `.harness/project.json` сохраняется даже с force-флагами: новые поля добавляются вручную.
 - `.harness/overlays/project-local.lock` и `.harness/integrations.json` `update` не проверяет и не
   трогает — это отдельная подсистема.
+
+#### Обновление существующего проекта и включение памяти
+
+Сначала обновите checkout исходного харнесса до нужного релиза. Следующие команды запускаются
+из него; `/path/to/repository` — основной checkout целевого проекта, а не linked worktree:
+
+```bash
+git pull --ff-only
+python3 harness/bin/harness.py diff /path/to/repository
+python3 harness/bin/harness.py update /path/to/repository
+```
+
+`diff` показывает локальный дрейф установленного snapshot относительно его lock, а не список
+изменений нового релиза. При дрейфе сначала сохраните и перенесите локальные изменения; только
+после этого используйте `--force-managed-files`. Обычный `update` обновляет managed skills,
+memory payload и `.harness/docs/`, но не переносит новые поля в существующий `project.json` и
+не заменяет существующую seed-схему. Не используйте `--force-seed-files` ради одного поля памяти.
+
+Сравните `.harness/project.schema.json` целевого проекта с `harness/project/project.schema.json`
+исходного харнесса. Перенесите новые свойства `memory` и `memory_policy`, сохранив локальные
+расширения схемы; если расширений нет, замените только этот файл актуальной схемой.
+В существующий `.harness/project.json` добавьте следующие два поля верхнего уровня, сохранив
+язык, ветки, QA-команды и остальные настройки:
+
+```json
+{
+  "memory": {"enabled": true},
+  "memory_policy": {
+    "source_types": ["adr", "glossary"],
+    "allow_paths": ["docs/adr/*.md", "CONTEXT.md"],
+    "redact_rules": [],
+    "min_similarity": 0,
+    "top_k": 5,
+    "max_tokens": 1000
+  }
+}
+```
+
+Это фрагмент для объединения, не замена всего конфига. Укажите только существующие и разрешённые
+пути своего проекта. Для первого запуска достаточно локальных ADR и глоссария; tracker snapshot
+и lessons требуют отдельных grants, описанных в [project-memory.md](./project-memory.md).
+Пустой allowlist не разрешает источники. В FTS5 `min_similarity` не отсекает слабые совпадения;
+векторный слой в поставку не входит.
+
+```bash
+python3 harness/bin/harness.py health /path/to/repository
+python3 harness/bin/harness.py memory build /path/to/repository
+python3 harness/bin/harness.py memory search /path/to/repository "решение архитектуры"
+```
+
+После правок схема и `health` должны принимать конфиг; проверьте статус и пути поиска на своих
+источниках. Без packager CLI поиск доступен из целевого проекта через
+`python -B .harness/memory/search_cli.py . "решение архитектуры"`: в основном checkout он
+лениво обновляет локальный кэш, в worktree читает общий индекс без записи. Tracker sync выполняется
+только явно. Чтобы отключить память, установите `memory.enabled: false`; источники остаются на месте.
 
 #### `registry` и `lock-project-skills` — скиллы проекта
 
