@@ -113,6 +113,8 @@ COMMAND_SEPARATORS = ("&&", "||", "|&", ";", "&", "|")
 ASSIGNMENT_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\+?=|\[)")
 FD_NUMBER = re.compile(r"[0-9]+")
 CREATE_TEXT = re.compile(r"\bgh\s+pr\s+(?:create|new)\b|\bglab\s+mr\s+(?:create|new)\b")
+# The only create text the QA gate matched before #443.
+LEGACY_CREATE = re.compile(r"\bgh\s+pr\s+create\b")
 # A create fragment that tokens cannot decide may name its branch with one of these flags.
 HEAD_OPTION_TEXT = re.compile(r"--head|--source-branch|(?<![^\s'\"])-[A-Za-z]*[sH]")
 # `gh pr create` and `glab mr create` shorthands that take a value; in a pflag cluster such
@@ -747,7 +749,8 @@ def create_heads(command: str) -> set[str | None]:
     Ветка берётся из argv самой create-команды (или её алиаса `new`): у gh — `-H`/`--head`
     (без префикса `owner:`), у glab — `-s`/`--source-branch`; glab `-H`/`--head` задаёт
     репозиторий, а не ветку. Create-текст в непрозрачном фрагменте даёт "", если во фрагменте
-    есть флаг ветки, иначе None.
+    есть флаг ветки, иначе None. Ветка глобального разбора QA gate до #443 (`_legacy_head`)
+    добавляется всегда, поэтому выбор ветки не уже прежнего.
     """
     parsed = parse(command)
     heads: set[str | None] = set()
@@ -766,7 +769,30 @@ def create_heads(command: str) -> set[str | None]:
         for fragment in parsed.opaque
         if CREATE_TEXT.search(fragment)
     )
+    legacy = _legacy_head(command)
+    if legacy is not None:
+        heads.add(legacy)
     return heads
+
+
+def _legacy_head(command: str) -> str | None:
+    """Ветка глобального разбора QA gate до #443: первый `--head`/`--head=` во всём тексте.
+
+    Разбор идёт только при тексте `gh pr create`; None — флага нет, "" — флаг без значения
+    или shlex не разобрал текст, в котором есть `--head`.
+    """
+    if not LEGACY_CREATE.search(command):
+        return None
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return "" if "--head" in command else None
+    for index, word in enumerate(words):
+        if word == "--head":
+            return words[index + 1].rsplit(":", 1)[-1] if index + 1 < len(words) else ""
+        if word.startswith("--head="):
+            return word[7:].rsplit(":", 1)[-1]
+    return None
 
 
 def merge_exit_code(raw: str) -> int:

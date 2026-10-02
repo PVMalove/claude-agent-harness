@@ -15,8 +15,9 @@ else:
     sys.dont_write_bytecode = True
     try:
         import pr_commands  # sibling in the installed hooks directory (sys.path[0])
-    except ImportError as exc:
-        # A partial copy of the hooks must block the PR/MR, not fail open.
+    except Exception as exc:
+        # A missing or partial copy (SyntaxError, any import-time failure) must block, not
+        # fail open; missing names fail later inside main(), which also exits 2.
         print(f"qa-gate: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
 
@@ -70,15 +71,12 @@ def command_of(data: dict[str, object]) -> str:
     return command if isinstance(command, str) else ""
 
 
-PR_CREATE = pr_commands.CREATE_TEXT
-
-
 def head_of(command: str) -> str | None:
     """Ветка создаваемого PR/MR: None — ветка checkout из cwd, "" — ветку не определить."""
-    if not PR_CREATE.search(command):
+    if not pr_commands.CREATE_TEXT.search(command):
         return None
     heads = pr_commands.create_heads(command)
-    # Creates of different branches cannot share one checkout's QA evidence.
+    # More than one distinct branch is ambiguous: one checkout's QA evidence cannot cover it.
     return "" if len(heads) > 1 else next(iter(heads), None)
 
 
@@ -125,7 +123,7 @@ def main() -> int:
     project = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
     data = {} if mode == "record" else payload()
     command = command_of(data)
-    if mode == "require" and not PR_CREATE.search(command):
+    if mode == "require" and not pr_commands.CREATE_TEXT.search(command):
         return 0
     checkout = checkout_for(project, data, command)
     if mode == "mark":

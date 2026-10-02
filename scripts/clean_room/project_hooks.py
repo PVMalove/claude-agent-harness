@@ -148,6 +148,18 @@ def run(ctx: SimpleNamespace) -> None:
     ):
         if gate_code(command, linked) != 2:
             sys.exit(f"unresolvable MR source branch reused a QA marker: {command!r}")
+    # A --head the pre-#443 global scan finds is always checked, even where the token parse
+    # sees no create: the cwd checkout's marker must not open a PR for another branch.
+    missing_head = "gh pr create --head feature/issue-999-missing --fill"
+    for command in (
+        f"{{ cat <<'EOF'\n{missing_head}\nEOF\n}} | bash",
+        f"cat <<'EOF' |\n{missing_head}\nEOF\nbash",
+        f"true # note \\\n{missing_head}",
+        f"echo $(true)#; {missing_head}",
+        f"cat <<'EOF'\nx\\\nEOF\n{missing_head}\nEOF",
+    ):
+        if gate_code(command, linked) != 2:
+            sys.exit(f"QA gate reused the cwd marker for another PR head: {command!r}")
     local_pr_payload = json.dumps(
         {
             "cwd": str(linked),
@@ -1437,13 +1449,36 @@ def run(ctx: SimpleNamespace) -> None:
     )
     if no_python.returncode != 2:
         sys.exit("block-pr-merge.sh allowed a command without Python to check it")
-    partial_hooks = test_root / "partial-hooks"
-    shutil.copytree(pv_project / ".claude" / "hooks", partial_hooks)
-    helper = partial_hooks / "pr_commands.py"
-    source = helper.read_text(encoding="utf-8")
-    helper.write_text(source[: len(source) // 2], encoding="utf-8")
-    partial_merge_hook = partial_hooks / "block-pr-merge.sh"
-    if run_hook(partial_merge_hook, pv_project, "git status").returncode != 2:
-        sys.exit("block-pr-merge.sh with a truncated pr_commands.py allowed a command")
+    # A partial copy of pr_commands.py blocks both hooks, cut mid-statement or between functions.
+    source = (pv_project / ".claude" / "hooks" / "pr_commands.py").read_text(
+        encoding="utf-8"
+    )
+    middle = len(source) // 2
+    create_payload = json.dumps(
+        {"cwd": str(linked), "tool_input": {"command": "gh pr create --fill"}}
+    )
+    if (
+        run_hook(record_gate, pv_project, "", cwd=linked).returncode
+        or run_hook(require_gate, pv_project, "", raw_payload=create_payload).returncode
+    ):
+        sys.exit("a fresh linked-worktree QA marker did not permit its PR")
+    for label, end in (
+        ("cut mid-statement", source.index("(", middle) + 1),
+        ("cut between functions", source.index("\ndef ", middle)),
+    ):
+        partial_hooks = test_root / f"partial-hooks-{end}"
+        shutil.copytree(pv_project / ".claude" / "hooks", partial_hooks)
+        (partial_hooks / "pr_commands.py").write_text(source[:end], encoding="utf-8")
+        partial_merge = run_hook(partial_hooks / "block-pr-merge.sh", pv_project, "ls")
+        if partial_merge.returncode != 2:
+            sys.exit(f"block-pr-merge.sh with pr_commands.py {label} allowed a command")
+        partial_gate = run_hook(
+            partial_hooks / "require-qa-gate.sh",
+            pv_project,
+            "",
+            raw_payload=create_payload,
+        )
+        if partial_gate.returncode != 2:
+            sys.exit(f"require-qa-gate.sh with pr_commands.py {label} allowed a PR")
     if (pv_project / ".claude" / "hooks" / "__pycache__").exists():
         sys.exit("a hook left .claude/hooks/__pycache__, which uninstall cannot prune")
