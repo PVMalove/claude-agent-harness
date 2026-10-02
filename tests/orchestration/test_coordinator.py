@@ -3291,6 +3291,54 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(second["context_package_freshness"]["status"], "fresh")
         self._start(second["brief"]["dispatch_id"])
 
+    def test_dispatch_create_refuses_a_candidate_brief_that_send_would_reject(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+
+        def assert_refused(candidate: str) -> None:
+            before = self._batch_record(batch_id)
+            written = {
+                kind: sorted(path.name for path in (self._records() / kind).iterdir())
+                for kind in ("dispatches", "dispatch-status")
+            }
+            with self.assertRaises(coordinator.CoordinatorError) as caught:
+                self._dispatch(batch_id, "developer", candidate=candidate)
+            self.assertEqual(
+                caught.exception.message,
+                "dispatch candidate is not linked to its immutable risk assessment",
+            )
+            self.assertIn(
+                f"risk assess --batch {batch_id} --candidate-commit {candidate}",
+                caught.exception.remedy,
+            )
+            after = self._batch_record(batch_id)
+            self.assertEqual(after["dispatches"], before["dispatches"])
+            self.assertEqual(after["state"], "awaiting-approval")
+            self.assertEqual(
+                {
+                    kind: sorted(
+                        path.name for path in (self._records() / kind).iterdir()
+                    )
+                    for kind in written
+                },
+                written,
+            )
+
+        with self.subTest("an initial developer pinned before any accepted report"):
+            assert_refused(self._batch_record(batch_id)["base_commit"])
+        _, (candidate,), changed = self._retried_developer_candidate(batch_id, "x")
+        with self.subTest("a developer retry pinned without its risk assessment"):
+            assert_refused(candidate)
+
+        self._assess(batch_id, candidate, changed)
+        retry = self._dispatch(batch_id, "developer", candidate=candidate)["brief"]
+
+        self.assertIsNotNone(retry["risk_assessment_id"])
+        self._start(retry["dispatch_id"])
+
     def test_block_and_fail_never_create_a_dispatch_automatically(self) -> None:
         for decision, state in (("block", "blocked"), ("fail", "failed")):
             with self.subTest(decision=decision):

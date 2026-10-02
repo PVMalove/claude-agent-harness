@@ -1021,7 +1021,12 @@ def _validate_dispatch(
         ):
             raise CoordinatorError(
                 "dispatch candidate is not linked to its immutable risk assessment",
-                remedy="link this dispatch candidate to its immutable risk assessment before proceeding",
+                remedy=(
+                    f"if candidate {candidate} has no risk assessment, register one with 'risk "
+                    f"assess --batch {batch['batch_id']} --candidate-commit {candidate} "
+                    "--changed-file <path>...' while the batch awaits approval; then propose and "
+                    "create a new dispatch (cancel an unsent brief first)"
+                ),
             )
         if (
             dispatch["role"] == "code-review"

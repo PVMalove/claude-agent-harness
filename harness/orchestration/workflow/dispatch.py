@@ -114,6 +114,7 @@ from harness.orchestration.workflow.history import (
     _settled,
     _transition_idempotency_key,
     _validate_batch_integrity,
+    _validate_dispatch,
 )
 from harness.orchestration.workflow.risk import (
     _matching_triggers,
@@ -932,6 +933,19 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         dispatch["state"] = "approved"
         dispatch["created_at"] = utils._now()
         _safe_id(dispatch_id, "dispatch")
+        batch["dispatches"].append(
+            {
+                "dispatch_id": dispatch_id,
+                "role": role_name,
+                "state": "approved",
+                "brief_sha256": hashlib.sha256(
+                    _canonical(dispatch).encode("utf-8")
+                ).hexdigest(),
+            }
+        )
+        # Never issue a brief that ``dispatch send`` would reject: run the send-time validation on
+        # the assembled brief before anything is written, so a refusal leaves no brief behind.
+        _validate_dispatch(repo, config, root, batch, dispatch)
         _write_record(ledger, DispatchRecord.from_dict(dispatch))
         _write_record(
             ledger,
@@ -942,16 +956,6 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     "updated_at": utils._now(),
                 }
             ),
-        )
-        batch["dispatches"].append(
-            {
-                "dispatch_id": dispatch_id,
-                "role": role_name,
-                "state": "approved",
-                "brief_sha256": hashlib.sha256(
-                    _canonical(dispatch).encode("utf-8")
-                ).hexdigest(),
-            }
         )
         if required_role and role_name == required_role:
             batch.pop("required_next_role", None)
