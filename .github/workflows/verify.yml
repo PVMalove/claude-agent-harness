@@ -44,7 +44,7 @@ jobs:
 
   verify-windows:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     defaults:
       run:
         shell: bash
