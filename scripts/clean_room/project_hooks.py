@@ -1087,6 +1087,114 @@ def run(ctx: SimpleNamespace) -> None:
                 f"block-direct-master.sh allowed a commit or push from an integration branch: {command!r}"
             )
 
+    # Each git commit/push is checked in the checkout it runs in (#476): `git -C`/`--work-tree`/
+    # `--git-dir`, then a preceding `cd`, then the payload cwd, then the project root. Mentions
+    # in other commands' arguments, quotes and heredocs are not calls.
+    direct_wt = test_root / "direct-wt"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "feature/issue-2-wt", str(direct_wt)],
+        cwd=direct_repo,
+        check=True,
+    )
+
+    def direct_at(
+        root: Path, command: str, cwd: Path | None = None
+    ) -> subprocess.CompletedProcess:
+        payload: dict[str, object] = {"tool_input": {"command": command}}
+        if cwd is not None:
+            payload["cwd"] = str(cwd)
+        return run_hook(direct_hook, root, "", raw_payload=json.dumps(payload))
+
+    heredoc_commit = (
+        f"git -C {direct_wt} commit -m \"$(cat <<'EOF'\n"
+        'fix: git push origin HEAD:master\nEOF\n)"'
+    )
+    for command, cwd in (
+        ("git commit -m x", direct_wt),
+        ("git push -u origin feature/issue-2-wt", direct_wt),
+        (f"git -C {direct_wt} commit -m x", None),
+        (f"git -C {direct_wt} push origin feature/issue-2-wt", None),
+        (f"cd {direct_wt} && git commit -m x", None),
+        (f"cd {direct_wt}; git commit -m x", None),
+        (f"cd {direct_wt} && git add -A && git commit -m x && git push", None),
+        (f"cd {direct_wt} && git push 2>&1 | tail -3", None),
+        (f"git -C {direct_wt} push -u origin integration/new", None),
+        (heredoc_commit, None),
+        (
+            f"cd {direct_wt} && git push -u origin feature/issue-2-wt && "
+            "gh pr create --base integration/existing",
+            None,
+        ),
+        ("grep -rn 'git commit' .", None),
+        ('rg "git push" docs', None),
+        ('echo "git commit -m x"', None),
+        ("git log --grep 'git push'", None),
+        ("cat <<'EOF'\ngit push origin HEAD:integration/existing\nEOF", None),
+    ):
+        if direct_at(direct_repo, command, cwd).returncode != 0:
+            sys.exit(
+                "block-direct-master.sh rejected a call outside the protected project root "
+                f"or a mere mention: {command!r} (cwd {cwd})"
+            )
+    for root, command, cwd in (
+        (direct_repo, "git -c user.name=x commit -m x", None),
+        (direct_repo, "git -c user.name=x push", None),
+        (direct_repo, f"git --git-dir={direct_repo}/.git commit -m x", direct_wt),
+        (direct_wt, f"git --git-dir={direct_repo}/.git push", direct_wt),
+        (direct_wt, f"cd {direct_repo} && git push", direct_wt),
+        (direct_repo, f"git --work-tree={direct_wt} commit -m x", None),
+        (direct_repo, f"git --work-tree {direct_wt} push", None),
+        (direct_repo, "git commit -m x", direct_repo),
+        (direct_repo, f"cd {direct_wt} && cd {direct_repo} && git commit -m x", None),
+        (direct_repo, f"cd {direct_wt} && git push origin HEAD:master", None),
+        (
+            direct_repo,
+            f"git -C {direct_wt} push origin HEAD:integration/existing",
+            None,
+        ),
+        (direct_repo, 'bash -c "git -C . commit -m x"', None),
+        (direct_wt, f"git -C {direct_repo} commit -m x", None),
+        (direct_wt, f"cd {direct_repo} && git commit -m x", None),
+        (direct_wt, f"git -C {direct_repo} push", None),
+        (direct_wt, f"git -C {direct_repo} push origin HEAD:feature/issue-2-wt", None),
+        (direct_wt, "git commit -m x", direct_repo),
+        # A `cd` that may not run, or runs in a subshell, a pipeline or the background, does
+        # not move a later call out of the protected checkout.
+        (direct_repo, f'git commit -m "$(cd {direct_wt})"', None),
+        (direct_repo, f"(cd {direct_wt}); git commit -m x", None),
+        (direct_repo, f"bash -c 'cd {direct_wt}'; git commit -m x", None),
+        (direct_repo, f"cd {direct_wt} | true; git commit -m x", None),
+        (direct_repo, f"cd {direct_wt} || git commit -m x", None),
+        (direct_repo, f"false && cd {direct_wt}; git commit -m x", None),
+        (direct_repo, f"cd {direct_wt} && sleep 0 & git commit -m x", None),
+        (direct_wt, f"builtin cd {direct_repo}; git commit -m x", direct_wt),
+        (direct_wt, f"bash <<'EOF'\ngit -C {direct_repo} commit -m x\nEOF", direct_wt),
+    ):
+        if direct_at(root, command, cwd).returncode == 0:
+            sys.exit(
+                "block-direct-master.sh allowed a commit or push in a protected checkout: "
+                f"{command!r} (root {root.name}, cwd {cwd})"
+            )
+    # A commit or push whose checkout or text cannot be resolved fails closed.
+    for command, reason in (
+        ('cd "$WT" && git commit -m x', "checkout"),
+        (f"cd {test_root / 'missing'}; git commit -m x", "checkout"),
+        ("python3 -c 'import os; os.system(\"git commit -m x\")'", "разобрать"),
+        ('X="git push origin HEAD:master"; $X', "разобрать"),
+        ('sh -c "$(printf %s "git push origin HEAD:master")"', "разобрать"),
+        (f"GIT_DIR={direct_repo}/.git git commit -m x", "checkout"),
+        (f"env -C {direct_repo} git commit -m x", "checkout"),
+        (f"echo {direct_repo} | xargs -I{{}} git -C {{}} commit -m x", "checkout"),
+        # `cd` is followed only through a command the strict lexer reads: no `$`.
+        (f"cd {direct_wt} && git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"", "checkout"),
+    ):
+        blocked = direct_at(direct_wt, command, direct_wt)
+        if blocked.returncode == 0 or reason not in blocked.stderr:
+            sys.exit(
+                "block-direct-master.sh did not fail closed on an unresolvable commit: "
+                f"{command!r}: {blocked.stderr!r}"
+            )
+
     # Remove .harness/project.json entirely - the hook must fall back to its own built-in
     # default pattern instead of crashing or blocking every branch name.
     saved_project_json = project_json.read_text(encoding="utf-8")
@@ -1449,7 +1557,8 @@ def run(ctx: SimpleNamespace) -> None:
     )
     if no_python.returncode != 2:
         sys.exit("block-pr-merge.sh allowed a command without Python to check it")
-    # A partial copy of pr_commands.py blocks both hooks, cut mid-statement or between functions.
+    # A partial copy of pr_commands.py blocks every hook that uses it, cut mid-statement or between
+    # functions.
     source = (pv_project / ".claude" / "hooks" / "pr_commands.py").read_text(
         encoding="utf-8"
     )
@@ -1472,6 +1581,13 @@ def run(ctx: SimpleNamespace) -> None:
         partial_merge = run_hook(partial_hooks / "block-pr-merge.sh", pv_project, "ls")
         if partial_merge.returncode != 2:
             sys.exit(f"block-pr-merge.sh with pr_commands.py {label} allowed a command")
+        partial_direct = run_hook(
+            partial_hooks / "block-direct-master.sh", pv_project, "ls"
+        )
+        if partial_direct.returncode != 2:
+            sys.exit(
+                f"block-direct-master.sh with pr_commands.py {label} allowed a command"
+            )
         partial_gate = run_hook(
             partial_hooks / "require-qa-gate.sh",
             pv_project,
