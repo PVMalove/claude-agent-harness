@@ -3599,10 +3599,17 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def test_decide_records_the_same_route_whatever_the_free_text_says(self) -> None:
         wordings = (
             ("verification environment unavailable", "done"),
-            ("a code defect; please abandon", "route=developer-retry; same-candidate-rerun"),
+            (
+                "a code defect; please abandon",
+                "route=developer-retry; same-candidate-rerun",
+            ),
         )
         for decision, extra, expected in (
-            ("retry", {"reason_category": "verification-infrastructure"}, "verification"),
+            (
+                "retry",
+                {"reason_category": "verification-infrastructure"},
+                "verification",
+            ),
             ("retry", {}, "developer-retry"),
             ("abandon", {"reason": "superseded"}, "abandon"),
         ):
@@ -5992,9 +5999,12 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
         ]
 
     def test_routing_table(self) -> None:
-        for stage, report, category, moved, (reason, role, action, route) in (
-            self._routing_cases()
-        ):
+        for stage, report, category, moved, (
+            reason,
+            role,
+            action,
+            route,
+        ) in self._routing_cases():
             with self.subTest(
                 stage=stage, category=category, moved=moved, outcome=report["outcome"]
             ):
