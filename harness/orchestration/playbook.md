@@ -161,6 +161,11 @@ These batch fields and the four brief fields (`transition`, `transition_digest`,
 `retry_idempotency_key`, `orchestration_policy`, all present or all absent) are optional; a record
 without them needs no ledger migration.
 
+A routing record's `route` and the `decision` detail of a batch transition audit record are optional
+under ledger version 3 in the same way. A decision recorded before them is read verbatim and stays
+valid; `ledger migrate` neither adds nor derives a route for it, and only a new `batch decide`
+decision records one. A recorded `route` outside the closed route set is rejected on read-back.
+
 ## Versioned lifecycle ledger
 
 `coordinator.py` is the lifecycle ledger's CLI adapter. The selected state generation is named by
