@@ -174,6 +174,7 @@ def _run_stages(run_tmp: Path, test_env: dict[str, str]) -> None:
     """Стадии с замером времени: mypy, pytest и clean-room прогон."""
     run_stage("mypy", [sys.executable, "-m", "mypy"], cwd=ROOT, env=test_env)
     try:
+        workers = 2 if sys.platform == "win32" else min(4, os.cpu_count() or 1)
         run_stage(
             "pytest",
             [
@@ -183,7 +184,7 @@ def _run_stages(run_tmp: Path, test_env: dict[str, str]) -> None:
                 "-p",
                 "no:cacheprovider",
                 "-n",
-                "4",
+                str(workers),
                 "--basetemp",
                 str(run_tmp / "p"),
                 str(ROOT / "tests"),
