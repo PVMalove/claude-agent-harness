@@ -135,6 +135,7 @@ DISPATCH_FIELDS = {
     "orchestration_policy",
     "liveness",
     "commit_plan",
+    "commit_plan_divergence",
 }
 # One entry of a developer brief's commit plan; ``covers`` names definition-of-done items 1..n.
 COMMIT_PLAN_ENTRY_FIELDS = frozenset({"id", "summary", "expected_paths", "covers"})

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -104,6 +105,8 @@ def _auto_accept_policy(
         or str(report.get("risks", "")).strip().lower() != "none"
         or report.get("risk_triggers")
         or dispatch.get("purpose") == "publish"
+        # A not-covered definition-of-done item is never clean; a justified divergence is.
+        or plan_rules.not_covered(report)
     ):
         return None
     if policy == "low_risk" and batch.get("zone") not in config.get(
@@ -214,6 +217,10 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             if isinstance(candidate, str)
             else None
         )
+        resolve = partial(_candidate_commit, repo)
+        coverage, coverage_source = (
+            plan_rules.coverage(report, dispatch, resolve) if report else (None, None)
+        )
         return {
             "batch_id": batch["batch_id"],
             "ticket": batch["ticket"],
@@ -246,6 +253,13 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             if report
             else (risk.get("matched_triggers") if risk else "not assessed yet"),
             "blockers": report.get("blockers") if report else "none",
+            "dod_coverage": coverage,
+            "dod_coverage_source": coverage_source,
+            "commit_plan_divergence": (
+                plan_rules.divergence(report, dispatch, resolve) if report else None
+            )
+            if dispatch["role"] != "code-review"
+            else dispatch.get("commit_plan_divergence"),
             "report": str(_records_root(root) / entry["report"]) if report else None,
             "diff": f"git diff {batch['base_commit']}..{candidate}"
             if candidate
@@ -510,6 +524,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 remedy="only accept or warning-override a completed role report",
             )
         pinned_plan = _pinned_commit_plan(repo, batch, report, args)
+        uncovered = plan_rules.not_covered(report)
         if report.get("role") == "code-review":
             severities = _review_severity(report["review"])
             if any(value == "blocker" for value in severities.values()):
@@ -540,10 +555,25 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     "override-warning requires a review warning",
                     remedy="only use override-warning to resolve a recorded review warning",
                 )
+        elif uncovered:
+            items = [record["dod_item"] for record in uncovered]
+            if args.decision == "accept":
+                raise CoordinatorError(
+                    f"definition-of-done items {items} are not covered, so the report is not clean",
+                    remedy="retry the developer, or pass --decision override-warning with a --note "
+                    "explaining why the uncovered items may be accepted",
+                )
+            if args.decision == "override-warning" and (
+                not _non_empty(args.note) or args.note.strip().lower() == "none"
+            ):
+                raise CoordinatorError(
+                    "overriding not-covered definition-of-done items requires a recorded note",
+                    remedy="pass --note (other than 'none') explaining why the uncovered items may be accepted",
+                )
         elif args.decision == "override-warning":
             raise CoordinatorError(
-                "only a recorded review warning can be overridden",
-                remedy="only override a recorded review warning",
+                "only a recorded review warning or a not-covered definition-of-done item can be overridden",
+                remedy="only override a recorded review warning or a not-covered definition-of-done item",
             )
         routing: JsonObject | None = None
         if args.decision == "retry":
@@ -609,6 +639,14 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         }
         if routing is not None:
             decision["routing"] = routing
+        if args.decision in {"accept", "override-warning"}:
+            divergence = plan_rules.divergence(
+                report, dispatch, partial(_candidate_commit, repo)
+            )
+            if divergence is not None:
+                decision["commit_plan_divergence"] = divergence
+            if uncovered and args.decision == "override-warning":
+                decision["dod_not_covered"] = uncovered
         if pinned_plan is not None:
             batch["commit_plan"] = pinned_plan
             decision["commit_plan_sha256"] = plan_rules.plan_sha256(pinned_plan)

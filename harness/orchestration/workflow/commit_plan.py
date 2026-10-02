@@ -174,7 +174,8 @@ def accepted_plan_sha256(batch: JsonObject) -> str | None:
     return None
 
 
-def _is_retry(dispatch: JsonObject) -> bool:
+def is_developer_retry(dispatch: JsonObject) -> bool:
+    """A developer-retry brief keeps the strict one-commit-one-entry commit_map."""
     transition = dispatch.get("transition")
     return (
         isinstance(transition, dict)
@@ -187,7 +188,7 @@ def _relation_applies(dispatch: JsonObject) -> bool:
     return (
         dispatch.get("role") == "developer"
         and bool(dispatch.get("commit_plan"))
-        and not _is_retry(dispatch)
+        and not is_developer_retry(dispatch)
     )
 
 
@@ -453,7 +454,7 @@ def check_report(
     ``created`` is the ordered list of commits the dispatch created (after ``snapshot_commit``, or
     after the rebase target for a rebase); ``resolve`` turns a reported SHA into its full form.
     """
-    retry = _is_retry(dispatch)
+    retry = is_developer_retry(dispatch)
     commit_map = _required_commit_map(report, retry)
     plan_ids = _plan_ids(dispatch)
     pairs = _commit_map_pairs(commit_map)
@@ -553,3 +554,19 @@ def coverage(
         }
         for item in range(1, len(dispatch.get("definition_of_done", [])) + 1)
     ], "derived"
+
+
+def not_covered(report: JsonObject) -> list[JsonObject]:
+    """The definition-of-done items a report declares not covered, with their reasons.
+
+    Any such item keeps the report from being clean: it never auto-accepts, plain ``accept`` is
+    refused, and only ``retry`` or ``override-warning`` with a recorded note decides it.
+    """
+    coverage = report.get("dod_coverage")
+    if not isinstance(coverage, list):
+        return []
+    return [
+        {"dod_item": record["dod_item"], "reason": record["not_covered"]}
+        for record in coverage
+        if isinstance(record, dict) and "not_covered" in record
+    ]

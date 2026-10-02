@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import uuid
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -182,6 +183,36 @@ def _developer_commit_plan(
             + INTERNAL_INVARIANT_REMEDY,
         )
     return [dict(entry) for entry in pinned]
+
+
+def _accepted_divergence(
+    repo: Path, root: Path, batch: JsonObject
+) -> JsonObject | None:
+    """The commit-plan divergence of the last accepted initial or rebase developer report.
+
+    A developer-retry builds on that history and keeps its strict commit_map, so the commit
+    boundaries a reviewer has to judge are the ones the initial or rebase report recorded.
+    """
+    for item in reversed(batch.get("dispatches", [])):
+        decision = item.get("decision")
+        if (
+            item.get("role") != "developer"
+            or item.get("state") != "reported"
+            or not isinstance(decision, dict)
+            or decision.get("decision") not in {"accept", "override-warning"}
+        ):
+            continue
+        developer = _load_dispatch(root, item["dispatch_id"])
+        if developer.get("purpose", "work") != "work" or plan_rules.is_developer_retry(
+            developer
+        ):
+            continue
+        return plan_rules.divergence(
+            _pending_report(root, batch, item),
+            developer,
+            partial(_candidate_commit, repo),
+        )
+    return None
 
 
 def _dispatch_approval_mode(
@@ -941,6 +972,9 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 "stale_after_seconds": stale_after,
             },
             "commit_plan": commit_plan,
+            "commit_plan_divergence": _accepted_divergence(repo, root, batch)
+            if is_review_work
+            else None,
         }
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the

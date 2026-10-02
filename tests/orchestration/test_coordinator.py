@@ -5137,6 +5137,351 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(decided["integration_base_commit"], upstream)
         self.assertFalse(decided["base_rebase_required"])
 
+    def _auto_developer(self, items: list[str]) -> JsonObject:
+        """A batch under the patched policy whose clean architect report prepared the developer."""
+        batch_id = self._plan_batch(items)["batch_id"]
+        architect = self._dispatch(batch_id, "architect")["brief"]
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        developer_id = self._batch_record(batch_id)["dispatches"][-1]["dispatch_id"]
+        brief = coordinator._read_object(
+            self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
+        )
+        self.assertEqual(brief["role"], "developer")
+        self._start(developer_id)
+        return brief
+
+    def _manual_developer(self, items: list[str]) -> JsonObject:
+        batch_id = self._plan_batch(items)["batch_id"]
+        self._accepted_architect(batch_id)
+        brief: JsonObject = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        return brief
+
+    def _override(self, note: str | None) -> JsonObject:
+        return coordinator.decide_batch(
+            self._args(
+                batch=self.batch_id,
+                decision="override-warning",
+                note=note,
+                **self._approval(),
+            )
+        )
+
+    def _not_covered_report(self, brief: JsonObject) -> JsonObject:
+        """Two commits for three plan entries: the third item is reported as not covered."""
+        commits, changed = self._commits("a", "b")
+        plan = brief["commit_plan"]
+        return self._developer_report(
+            brief,
+            commits[-1],
+            changed,
+            commit_map=self._commit_map(list(zip(commits, plan))),
+            dod_coverage=[
+                {"dod_item": 1, "commits": [commits[0]]},
+                {"dod_item": 2, "commits": [commits[1]]},
+                {"dod_item": 3, "not_covered": "needs a product decision first"},
+            ],
+            divergence_justification="step-3 waits for a product decision",
+        )
+
+    def _divergent_report(self, brief: JsonObject) -> tuple[JsonObject, list[str]]:
+        commits, changed = self._commits("a", "b", "c")
+        return (
+            self._developer_report(
+                brief,
+                commits[-1],
+                changed,
+                **self._issue_443_divergence(brief, commits),
+            ),
+            commits,
+        )
+
+    def _expected_divergence(self, brief: JsonObject, commits: list[str]) -> JsonObject:
+        first, _, third = commits
+        return {
+            "developer_dispatch_id": brief["dispatch_id"],
+            "justification": self._issue_443_divergence(brief, commits)[
+                "divergence_justification"
+            ],
+            "merged_commits": [
+                {"commit_sha": first, "plan_entry_ids": ["step-1", "step-2"]},
+                {"commit_sha": third, "plan_entry_ids": ["step-4", "step-5"]},
+            ],
+            "split_entries": [],
+            "unclosed_entries": [],
+        }
+
+    def test_low_risk_divergent_report_with_full_coverage_is_auto_accepted_with_an_audit_record(
+        self,
+    ) -> None:
+        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        brief = self._auto_developer(self.FIVE_ITEMS)
+        report, commits = self._divergent_report(brief)
+
+        result = self._submit(brief["dispatch_id"], report)
+
+        self.assertTrue(result["auto_accepted"])
+        stored = self._batch_record(self.batch_id)
+        decision = stored["coordinator_decisions"][-1]
+        self.assertEqual(decision["dispatch_id"], brief["dispatch_id"])
+        self.assertEqual(decision["approved_by"], "policy:low_risk")
+        self.assertEqual(decision["note"], decisions.AUTO_ACCEPT_RATIONALE)
+        self.assertEqual(
+            decision["commit_plan_divergence"],
+            self._expected_divergence(brief, commits),
+        )
+        self.assertEqual(
+            stored["dispatches"][1]["decision"]["commit_plan_divergence"],
+            decision["commit_plan_divergence"],
+        )
+
+    def test_low_risk_report_with_a_not_covered_item_waits_for_a_manual_decision(
+        self,
+    ) -> None:
+        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        brief = self._auto_developer(["one", "two", "three"])
+
+        result = self._submit(brief["dispatch_id"], self._not_covered_report(brief))
+
+        self.assertNotIn("auto_accepted", result)
+        self.assertNotIn(
+            "decision", self._batch_record(self.batch_id)["dispatches"][-1]
+        )
+
+    def test_milestone_report_with_a_not_covered_item_is_not_auto_accepted(
+        self,
+    ) -> None:
+        self._patch_config(approval_policy="milestone")
+        brief = self._auto_developer(["one", "two", "three"])
+
+        result = self._submit(brief["dispatch_id"], self._not_covered_report(brief))
+
+        self.assertNotIn("auto_accepted", result)
+        self.assertNotIn(
+            "decision", self._batch_record(self.batch_id)["dispatches"][-1]
+        )
+
+    def test_manual_all_divergent_report_still_waits_for_a_human(self) -> None:
+        brief = self._manual_developer(self.FIVE_ITEMS)
+        report, commits = self._divergent_report(brief)
+
+        result = self._submit(brief["dispatch_id"], report)
+
+        self.assertNotIn("auto_accepted", result)
+        self.assertNotIn(
+            "decision", self._batch_record(self.batch_id)["dispatches"][-1]
+        )
+        decided = self._decide(self.batch_id, "accept")
+        decision = decided["coordinator_decisions"][-1]
+        self.assertEqual(decision["approved_by"], "Malove")
+        self.assertEqual(
+            decision["commit_plan_divergence"],
+            self._expected_divergence(brief, commits),
+        )
+        self.assertNotIn("dod_not_covered", decision)
+
+    def test_not_covered_report_refuses_accept_and_takes_override_with_a_note(
+        self,
+    ) -> None:
+        brief = self._manual_developer(["one", "two", "three"])
+        self._submit(brief["dispatch_id"], self._not_covered_report(brief))
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError,
+            r"definition-of-done items \[3\] are not covered",
+        ) as caught:
+            self._decide(self.batch_id, "accept")
+        self.assertIn("override-warning", caught.exception.remedy)
+        self.assertIn("retry", caught.exception.remedy)
+        for note in (None, "none", " "):
+            with self.subTest(note=note):
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError, "requires a recorded note"
+                ):
+                    self._override(note)
+
+        decided = self._override("item 3 is split into a follow-up issue")
+
+        decision = decided["coordinator_decisions"][-1]
+        self.assertEqual(decision["decision"], "override-warning")
+        self.assertEqual(decision["note"], "item 3 is split into a follow-up issue")
+        self.assertEqual(
+            decision["dod_not_covered"],
+            [{"dod_item": 3, "reason": "needs a product decision first"}],
+        )
+        self.assertEqual(
+            decision["commit_plan_divergence"]["unclosed_entries"], ["step-3"]
+        )
+        self.assertEqual(decided["next_action"], "risk-assessment")
+
+    def test_not_covered_report_can_be_retried_as_developer_retry(self) -> None:
+        brief = self._manual_developer(["one", "two", "three"])
+        self._submit(brief["dispatch_id"], self._not_covered_report(brief))
+
+        decided = self._decide(self.batch_id, "retry", reason_category="requirements")
+
+        self.assertEqual(decided["next_action"], "developer-retry")
+        self.assertNotIn("commit_plan_divergence", decided["coordinator_decisions"][-1])
+
+    def test_override_warning_without_a_warning_or_an_uncovered_item_is_refused(
+        self,
+    ) -> None:
+        brief = self._manual_developer(self.FIVE_ITEMS)
+        report, _ = self._divergent_report(brief)
+        self._submit(brief["dispatch_id"], report)
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError,
+            "only a recorded review warning or a not-covered definition-of-done item",
+        ):
+            self._override("looks fine")
+
+    def test_decision_packet_shows_dod_coverage_and_divergence(self) -> None:
+        brief = self._manual_developer(self.FIVE_ITEMS)
+        report, commits = self._divergent_report(brief)
+        self._submit(brief["dispatch_id"], report)
+
+        packet = coordinator.decision_packet(
+            self._args(batch=self.batch_id, dispatch=None)
+        )
+
+        self.assertEqual(packet["dod_coverage"], report["dod_coverage"])
+        self.assertEqual(packet["dod_coverage_source"], "report")
+        self.assertEqual(
+            packet["commit_plan_divergence"], self._expected_divergence(brief, commits)
+        )
+
+        self._reset()
+        entries = [self._plan_entry("first", [1, 2]), self._plan_entry("second", [3])]
+        batch_id = self._pinned(["one", "two", "three"], entries)
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        commits, changed = self._commits("a", "b")
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                commits[-1],
+                changed,
+                commit_map=self._commit_map(list(zip(commits, entries))),
+            ),
+        )
+
+        packet = coordinator.decision_packet(self._args(batch=batch_id, dispatch=None))
+
+        self.assertEqual(
+            packet["dod_coverage"],
+            [
+                {"dod_item": 1, "commits": [commits[0]]},
+                {"dod_item": 2, "commits": [commits[0]]},
+                {"dod_item": 3, "commits": [commits[1]]},
+            ],
+        )
+        self.assertEqual(packet["dod_coverage_source"], "derived")
+        self.assertIsNone(packet["commit_plan_divergence"])
+
+    def test_code_review_brief_carries_the_accepted_divergence(self) -> None:
+        brief = self._manual_developer(self.FIVE_ITEMS)
+        self.assertIsNone(brief["commit_plan_divergence"])
+        report, commits = self._divergent_report(brief)
+        self._submit(brief["dispatch_id"], report)
+        self._decide(self.batch_id, "accept")
+        changed = report["changed_files"]
+        self._assess(self.batch_id, commits[-1], changed)
+
+        review = self._dispatch(self.batch_id, "code-review", candidate=commits[-1])
+
+        expected = self._expected_divergence(brief, commits)
+        self.assertEqual(review["brief"]["commit_plan_divergence"], expected)
+        packet = coordinator.decision_packet(
+            self._args(batch=self.batch_id, dispatch=review["dispatch_id"])
+        )
+        self.assertEqual(packet["commit_plan_divergence"], expected)
+        self.assertIsNone(packet["dod_coverage"])
+
+        self._reset()
+        self._create_batch()
+        self._accepted_architect(self.batch_id)
+        candidate = self._accepted_candidate(self.batch_id)
+
+        review = self._dispatch(self.batch_id, "code-review", candidate=candidate)
+
+        self.assertIsNone(review["brief"]["commit_plan_divergence"])
+
+    def test_code_review_brief_skips_a_developer_retry_for_the_initial_divergence(
+        self,
+    ) -> None:
+        brief = self._manual_developer(self.FIVE_ITEMS)
+        report, commits = self._divergent_report(brief)
+        self._submit(brief["dispatch_id"], report)
+        self._decide(self.batch_id, "accept")
+        self._assess(self.batch_id, commits[-1], report["changed_files"])
+        self._reported_review(
+            self.batch_id,
+            commits[-1],
+            outcome="blocked",
+            blockers="fix needed",
+            spec=(
+                "blocker",
+                [{"severity": "blocker", "summary": "wrong", "evidence": "x.py:1"}],
+            ),
+        )
+        self._decide(self.batch_id, "retry")
+        retry = self._dispatch(self.batch_id, "developer")["brief"]
+        self._start(retry["dispatch_id"])
+        fix, _ = self._developer_commit("fix")
+        changed = git_utils._changed_files_between(
+            self.repo, self._batch_record(self.batch_id)["base_commit"], fix
+        )
+        self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry,
+                fix,
+                changed,
+                commit_map=self._commit_map([(fix, retry["commit_plan"][0])]),
+            ),
+        )
+        self._decide(self.batch_id, "accept")
+        self._assess(self.batch_id, fix, changed)
+
+        review = self._dispatch(self.batch_id, "code-review", candidate=fix)
+
+        self.assertEqual(
+            review["brief"]["commit_plan_divergence"],
+            self._expected_divergence(brief, commits),
+        )
+
+    def test_brief_without_commit_plan_divergence_still_validates(self) -> None:
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        root = ledger_ops._state_root(self._args(), self.repo)
+        stored = ledger_ops._load_dispatch(root, brief["dispatch_id"])
+        legacy = {
+            key: value
+            for key, value in stored.items()
+            if key != "commit_plan_divergence"
+        }
+        forged = {**stored, "commit_plan_divergence": {"split_entries": []}}
+
+        def validate(record: JsonObject) -> None:
+            current = ledger_ops._load_batch(root, batch["batch_id"])
+            current["dispatches"][0]["brief_sha256"] = hashlib.sha256(
+                utils._canonical(record).encode("utf-8")
+            ).hexdigest()
+            coordinator._validate_dispatch(
+                self.repo, coordinator._config(self.repo), root, current, record
+            )
+
+        validate(legacy)
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "commit_plan_divergence must be null"
+        ):
+            validate(forged)
+
 
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     """The pure routing table: structured evidence in, one routing record out (no I/O)."""

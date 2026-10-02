@@ -500,5 +500,27 @@ class DivergenceAndCoverageTests(unittest.TestCase):
         )
 
 
+class NotCoveredTests(unittest.TestCase):
+    def test_not_covered_lists_the_open_items_with_their_reasons(self) -> None:
+        report = {
+            "dod_coverage": [
+                *MERGED_COVERAGE[:4],
+                {"dod_item": 5, "not_covered": "moved to a follow-up issue"},
+            ]
+        }
+
+        self.assertEqual(
+            commit_plan.not_covered(report),
+            [{"dod_item": 5, "reason": "moved to a follow-up issue"}],
+        )
+        self.assertEqual(commit_plan.not_covered({"dod_coverage": MERGED_COVERAGE}), [])
+        self.assertEqual(commit_plan.not_covered({}), [])
+
+    def test_is_developer_retry_reads_the_transition(self) -> None:
+        self.assertTrue(commit_plan.is_developer_retry(_dispatch(retry=True)))
+        self.assertFalse(commit_plan.is_developer_retry(_dispatch()))
+        self.assertFalse(commit_plan.is_developer_retry({"role": "developer"}))
+
+
 if __name__ == "__main__":
     unittest.main()
