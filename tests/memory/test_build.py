@@ -117,7 +117,11 @@ def test_build_rejects_symlink_components(tmp_path: Path) -> None:
         build(tmp_path)
 
 
-@pytest.mark.parametrize("content", [b"\xff", b"x" * (1024 * 1024 + 1)])
+@pytest.mark.parametrize(
+    "content",
+    [b"\xff", b"x" * (1024 * 1024 + 1)],
+    ids=["non-utf8", "oversized"],
+)
 def test_build_rejects_non_utf8_and_oversized_sources(
     tmp_path: Path, content: bytes
 ) -> None:
