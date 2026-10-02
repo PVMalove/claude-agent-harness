@@ -590,9 +590,27 @@ def missing_runtime_gitignore_lines(content: str) -> list[str]:
     ]
 
 
+def _stdin_is_terminal() -> bool:
+    """Определить, подключён ли stdin к терминалу пользователя.
+
+    На Windows `isatty()` истинен для любого символьного устройства, включая NUL, поэтому
+    терминалом считается только дескриптор консоли.
+    """
+    if not sys.stdin.isatty():
+        return False
+    if sys.platform != "win32":
+        return True
+    import ctypes
+    import msvcrt
+
+    mode = ctypes.c_ulong()
+    handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+    return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+
+
 def _prompt(label: str, default: str) -> str:
     """Запросить строковое значение у пользователя с дефолтным вариантом."""
-    if not sys.stdin.isatty():
+    if not _stdin_is_terminal():
         return default
     try:
         answer = input(f"{label} [{default}]: ").strip()
@@ -610,7 +628,7 @@ def _seed_tracker_field(repo: Path, args: argparse.Namespace) -> str:
     """
     origin = resolve_project_tracker(repo).from_origin
     flags = {name: getattr(args, f"tracker_{name}", None) for name in TRACKER_FIELDS}
-    explicit = sys.stdin.isatty() or any(flags.values())
+    explicit = _stdin_is_terminal() or any(flags.values())
     tracker_type = flags["type"] or _prompt(
         "tracker type (github/gitlab/local)", origin.type
     )
@@ -791,7 +809,7 @@ def scaffold_pvmalove_extras(
             "branch_pattern (regex)", "^feature/issue-[0-9]+-.+"
         )
         commands = list(getattr(args, "qa_gate_command", None) or [])
-        if not commands and sys.stdin.isatty():
+        if not commands and _stdin_is_terminal():
             print(
                 "qa_gate_commands (по одной команде на строку, пустая строка — конец):"
             )

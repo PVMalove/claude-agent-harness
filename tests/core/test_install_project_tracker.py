@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -73,11 +75,14 @@ def _install(repo: Path, *flags: str) -> None:
     assert result.returncode == 0, result.stderr
 
 
-class _Terminal:
-    """Заглушка stdin, которую `_prompt` принимает за терминал."""
+class _CharacterDevice:
+    """Заглушка stdin — символьное устройство, для которого `isatty()` истинен (консоль или NUL)."""
 
     def isatty(self) -> bool:
         return True
+
+    def fileno(self) -> int:
+        return 0
 
 
 def _install_interactively(
@@ -91,7 +96,7 @@ def _install_interactively(
         prompts.append(prompt)
         return next(replies)
 
-    monkeypatch.setattr(sys, "stdin", _Terminal())
+    monkeypatch.setattr(harness_cli, "_stdin_is_terminal", lambda: True)
     monkeypatch.setattr("builtins.input", answer)
     args = harness_cli.parser().parse_args(
         ["init", str(repo), "--capability", "pvmalove-suite", *PROJECT_FLAGS, *flags]
@@ -159,6 +164,24 @@ def test_install_writes_no_tracker_field_for_a_local_or_default_tracker(
     _install(repo)
 
     assert "tracker" not in _installed_project_json(repo)
+
+
+@pytest.mark.parametrize(("console_mode_result", "expected"), [(0, False), (1, True)])
+def test_windows_stdin_is_a_terminal_only_for_a_console(
+    monkeypatch: pytest.MonkeyPatch, console_mode_result: int, expected: bool
+) -> None:
+    """Проверить, что на Windows stdin NUL — не терминал, хотя `isatty()` для него истинен."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "stdin", _CharacterDevice())
+    monkeypatch.setitem(
+        sys.modules, "msvcrt", SimpleNamespace(get_osfhandle=lambda fd: 7)
+    )
+    kernel32 = SimpleNamespace(GetConsoleMode=lambda handle, mode: console_mode_result)
+    monkeypatch.setattr(
+        ctypes, "windll", SimpleNamespace(kernel32=kernel32), raising=False
+    )
+
+    assert harness_cli._stdin_is_terminal() is expected
 
 
 def test_install_never_rewrites_an_existing_project_json(tmp_path: Path) -> None:
