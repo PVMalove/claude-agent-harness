@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Issue First для branch-name hooks: есть ли issue с ID из имени ветки в трекере проекта.
 
-Трекер и проект берутся из резолвера `.harness/health/project_tracker.py` (docs/adr/0010), и
+Трекер и проект берутся из резолвера `.harness/health/project_tracker.py` (docs/adr/0011), и
 `gh`/`glab` получают явный `-R`, поэтому self-hosted GitLab с портом и подгруппами адресуется
 верно. Код 2 с сообщением в stderr - отказ; код 0 - issue найдена или проверить нечем: нет
 резолвера, трекер локальный, путь проекта неизвестен или CLI трекера не установлен.

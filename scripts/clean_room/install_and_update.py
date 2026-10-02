@@ -449,7 +449,7 @@ def run(ctx: SimpleNamespace) -> None:
 
 
 def check_tracker_field(pv_project) -> None:
-    """Поле tracker в установленном проекте (docs/adr/0010): discovery обоих runtime и health.
+    """Поле tracker в установленном проекте (docs/adr/0011): discovery обоих runtime и health.
 
     Проект без origin получает при установке project.json без поля tracker. С добавленным полем
     discovery-ссылки (`.agents/skills` для Codex и `.claude/skills`), `AGENTS.md`, реестр навыков и
@@ -504,7 +504,7 @@ def check_tracker_field(pv_project) -> None:
 
 
 def check_tracker_from_origin(test_root) -> None:
-    """Поле tracker из GitLab- и GitHub-origin при установке (docs/adr/0010).
+    """Поле tracker из GitLab- и GitHub-origin при установке (docs/adr/0011).
 
     Install без терминала и флагов трекера выводит тип, хост с портом и проект с подгруппами из
     origin; userinfo в project.json не попадает, `files.project_json` ok, а `tracker.project` берёт

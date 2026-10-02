@@ -53,7 +53,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["type"],
-      "description": "Optional explicit project tracker (docs/adr/0010): when present and valid it is the single source of the tracker for 'harness health'; without it the tracker is derived from the 'origin' URL and health warns with a ready-to-paste snippet. Example: {\"type\": \"gitlab\", \"host\": \"gitlab.example.test:4443\", \"project\": \"group/sub/project\"}. Certificate, proxy and credential settings belong in the tracker CLI's own personal configuration, never in this file.",
+      "description": "Optional explicit project tracker (docs/adr/0011): when present and valid it is the single source of the tracker for 'harness health'; without it the tracker is derived from the 'origin' URL and health warns with a ready-to-paste snippet. Example: {\"type\": \"gitlab\", \"host\": \"gitlab.example.test:4443\", \"project\": \"group/sub/project\"}. Certificate, proxy and credential settings belong in the tracker CLI's own personal configuration, never in this file.",
       "properties": {
         "type": {
           "type": "string",

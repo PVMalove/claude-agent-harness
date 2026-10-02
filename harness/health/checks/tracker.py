@@ -20,7 +20,7 @@ credentials for another host can redirect it: `auth status --hostname <host>`,
 (gh) or `-R https://<host>/<project>` (glab) for label creation.
 
 The tracker itself is resolved only through the project tracker resolver
-(health/project_tracker.py, docs/adr/0010): an explicit `tracker` field in .harness/project.json
+(health/project_tracker.py, docs/adr/0011): an explicit `tracker` field in .harness/project.json
 wins, otherwise the origin URL is parsed.
 """
 
