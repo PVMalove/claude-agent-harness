@@ -4,50 +4,110 @@
     "title": "Planning Poker и story points на to-tickets для автомаршрутизации implement vs fast-implement",
     "query": "Цель: Ввести Planning Poker и story points для выбора implement или fast-implement. DoD: afk с оценкой до 3 получает pipeline::fast; от 5 — full; оценка 4 требует второго прохода; hitl не получает fast; человек утверждает метку.",
     "expected_sources": [
-      "docs/adr/0005-implement-pipeline.md"
+      "docs/adr/0005-implement-pipeline.md",
+      "CONTEXT.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/165",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0005-implement-pipeline.md": {
+        "excerpt": "`/fast-implement` используется для `afk`-тикета с явным `pipeline::fast` и малым радиусом\nизменений. Он реализует задачу в одной сессии через TDD и проверки, без architect шага,\nнезависимой QA-роли и approval gates coordinator. Перед code review и перед commit/push этот\nмаршрут запрашивает отдельные решения разработчика. Для `hitl`-тикета предназначен `/to-guide`.\nОба маршрута после публикации своей issue-ветки лишь предлагают `/to-pull-requests`; открытие PR\nи merge остаются отдельными действиями разработчика.",
+        "relevance": "Контракт полного и короткого маршрутов реализации, допуска fast и независимых QA/review гейтов."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Проектный конфиг** (`.harness/project.json`):\nИсточник проектных значений для `qa-gate`, `pr-composer`, `code-review`, `to-guide` и branch\nhooks: `language`, `base_branch`, `branch_pattern` и `qa_gate_commands`; необязательны `$schema`,\n`story_points` и `shell` (какой шелл `qa-gate` использует для `qa_gate_commands` — `bash` по\nумолчанию или `powershell` для native-Windows checkout). Форма описана в\n`harness/project/project.schema.json`, а `harness health` применяет тот же строгий контракт и\nотклоняет неизвестные поля.\n_Avoid_: конфигурация проекта, settings.",
+        "relevance": "Проектный конфиг содержит story_points и читается интерактивными workflow-скиллами; это место настройки шкалы и порогов."
+      }
+    }
   },
   {
     "id": 339,
     "title": "refactor: Repo Map — вторая очередь исправлений по ревью PR #296",
     "query": "Цель: Разложить Repo Map и parser_bundle на модули и передавать парсер через ParserBackend. DoD: Bundle находится один раз; чтение Git пакетное, отбор в бюджет линейный; грамматики загружаются лениво; full и minimal сохраняют бинарные пути.",
     "expected_sources": [
-      "docs/adr/0008-repo-map.md"
+      "docs/adr/0008-repo-map.md",
+      "CONTEXT.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/339",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0008-repo-map.md": {
+        "excerpt": "`repo_map.py` зависит от протокола `ParserBackend`. `parser_bundle.py` находит один bundle для\nключа кэша и разбора, проверяет lock и SHA-256 wheels и устанавливает грамматики офлайн через\n`uv` под межпроцессной блокировкой. Через границу worker проходит типизированный JSON, а\n`context_builder` валидирует `repo_map.schema.json` и применяет ту же policy к diff и другим\nсырым выдержкам. Вывод включает quality tier, причину деградации и parser provenance.",
+        "relevance": "Протокол парсера, однократный поиск bundle и проверка provenance описаны в одном контракте."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Repo Map**:\nДетерминированная семантическая карта репозитория на pinned commit: сигнатуры определений и связи\nмежду файлами без тел функций, укладывающаяся в заданный бюджет токенов. Даёт агенту обзор всей\nкодовой базы; Context Package берёт из неё срез под конкретный dispatch. Это вычисляемое\nпредставление, а не авторитетная запись: не хранится в ledger и не проверяется на freshness.\n_Avoid_: Path inventory (список путей без сигнатур), Context Package (срез под один dispatch).",
+        "relevance": "Определены pinned commit, детерминизм, сигнатуры и бюджет карты; это инварианты рефакторинга."
+      }
+    }
   },
   {
     "id": 345,
     "title": "Health: каталоги харнесса и локальный --fix",
     "query": "Цель: Проверять каталоги харнесса и права записи в harness health с локальным --fix. DoD: Отсутствующий каталог с записываемым родителем получает ok; незаписываемый — fail; fix создаёт каталоги и registry, не меняя машинных настроек.",
     "expected_sources": [
-      "docs/adr/0006-scratch-artifacts.md"
+      "docs/adr/0006-scratch-artifacts.md",
+      "CONTEXT.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/345",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0006-scratch-artifacts.md": {
+        "excerpt": "`harness/storage.py` находит общий `.harness/.sandboxes/` через Git common directory и\nразрешает только категории `cache`, `logs`, `scratch`, `pr_body`, `runs`, `reports` и\n`worktrees`. `storage_path` отклоняет `..`, составные компоненты и выход через symlink.\nДоступность хранилища и его категорий проверяет `harness health`; `.harness/.gitignore`\nисключает runtime-данные из Git.",
+        "relevance": "Общий storage resolver, категории песочниц, проверка доступности каталогов и shared worktree storage."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Health-отчёт** (`harness health`):\nСводка готовности проекта и машины к работе харнесса: файлы харнесса, окружение (ОС, git, uv, bash),\nRepo Map, каталоги и — при оркестрации — state. Каждая проверка получает один из трёх статусов:\n✅ готово, ⚠️ риск (работа возможна), ❌ харнесс работать не может. Отчёт только диагностирует; менять\nчто-либо он может лишь по явному запросу исправления и только в пределах проекта и трекера, но не\nмашинных настроек.\n_Avoid_: doctor (такого названия нет), QA-gate (проверяет код, а не окружение).",
+        "relevance": "Определены статусы проверок и границы исправлений: только проект, без машинных настроек."
+      }
+    }
   },
   {
     "id": 359,
     "title": "Refactor Soft and Hard cleanup to target .harness/.sandboxes/ and purge legacy folders",
     "query": "Цель: Переработать soft и hard cleanup для .harness/.sandboxes/ и устаревших каталогов. DoD: Soft удаляет устаревшие runs, scratch и logs; hard включает cache и reports с --confirm HARD; активные worktree сохраняются; пути не выходят за .harness.",
     "expected_sources": [
-      "docs/adr/0006-scratch-artifacts.md"
+      "docs/adr/0006-scratch-artifacts.md",
+      "CONTEXT.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/359",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0006-scratch-artifacts.md": {
+        "excerpt": "`harness/storage.py` находит общий `.harness/.sandboxes/` через Git common directory и\nразрешает только категории `cache`, `logs`, `scratch`, `pr_body`, `runs`, `reports` и\n`worktrees`. `storage_path` отклоняет `..`, составные компоненты и выход через symlink.\nДоступность хранилища и его категорий проверяет `harness health`; `.harness/.gitignore`\nисключает runtime-данные из Git.",
+        "relevance": "Общий storage resolver, категории песочниц, проверка доступности каталогов и shared worktree storage."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Песочницы харнесса** (`.harness/.sandboxes/`):\nЕдиная структурированная директория для всех временных данных и кэшей харнесса: `cache/` (кэши repo_map\nи parser_bundle), `logs/` (логи тестов и выполнения), `scratch/` (инбокс ролей),\n`pr_body/` (тела PR и комментариев),\n`runs/` (временные тестовые и QA окружения), `reports/` (генерируемые отчёты) и `worktrees/` (управляемые\nGit worktree). Очищается через `harness cleanup` (в режимах `soft` и `hard`), предотвращая засорение корня `.harness`.",
+        "relevance": "Объяснены категории runs/cache/logs/scratch/reports/worktrees, срок жизни и единый корень очистки."
+      }
+    }
   },
   {
     "id": 391,
     "title": "fix(ci): восстановить регрессии слияния #385/#384 на master",
     "query": "Цель: Восстановить потерянные при merge регрессии проверки проекта на master. DoD: CleanRoomPolicy создаёт temporary_parent; linked-worktree сценарий не дублируется; QA hook сохраняет fallback checkout; verify проходит.",
     "expected_sources": [
-      "docs/adr/0007-python-quality.md"
+      "docs/adr/0007-python-quality.md",
+      "docs/adr/0006-scratch-artifacts.md",
+      "CONTEXT.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/391",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0007-python-quality.md": {
+        "excerpt": "Изменение минимальной версии требует синхронной правки всех entry points, manifest и\nclean-room проверок. Новые ошибки харнесса дают конкретное средство исправления, а\nне заставляют оператора читать исходник. QA проверяет импорт, типизацию и поведение CLI\nкак в исходном, так и в установленном дереве.",
+        "relevance": "Контракт проверок импорта, типизации и поведения CLI в исходном и установленном расположении."
+      },
+      "docs/adr/0006-scratch-artifacts.md": {
+        "excerpt": "`scratch/inbox/` используется для сообщений ролей. `SCRATCH_REL` и `AGENT_INBOX_REL` в\n`harness/orchestration/core/constants.py` относятся только к этой категории. `runs/`\nхранит временные тестовые и QA окружения, `cache/` — перестраиваемые данные Repo Map,\n`logs/` — журналы, `reports/` — генерируемые отчёты, `worktrees/` — управляемые checkout.\nЧерновики спецификаций и тикетов остаются в gitignored `docs/tasks/` целевого проекта;\nдолговечное состояние batch — в `.harness/orchestration/state/`.",
+        "relevance": "Раскладка runs и shared worktree storage объясняет корректный temporary_parent после переноса путей."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Execution policy**:\nЯвный набор правил запуска quality gate: checkout, изоляция, команды и форма evidence. Он выбирается\nвызывающим модулем и не владеет очередью или решением coordinator-а.\n_Avoid_: скрытый режим запуска, policy очереди.",
+        "relevance": "Checkout, изоляция и команды QA закреплены execution policy; это контекст регрессии выбора checkout в hook."
+      }
+    }
   },
   {
     "id": 394,
@@ -57,137 +117,316 @@
       "CONTEXT.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/394",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "CONTEXT.md": {
+        "excerpt": "**Health-отчёт** (`harness health`):\nСводка готовности проекта и машины к работе харнесса: файлы харнесса, окружение (ОС, git, uv, bash),\nRepo Map, каталоги и — при оркестрации — state. Каждая проверка получает один из трёх статусов:\n✅ готово, ⚠️ риск (работа возможна), ❌ харнесс работать не может. Отчёт только диагностирует; менять\nчто-либо он может лишь по явному запросу исправления и только в пределах проекта и трекера, но не\nмашинных настроек.\n_Avoid_: doctor (такого названия нет), QA-gate (проверяет код, а не окружение).",
+        "relevance": "Полный health-отчёт сохраняет все проверки и их индивидуальные статусы, а не прерывается на одной проверке."
+      }
+    }
   },
   {
     "id": 402,
     "title": "Скиллы пропускают лейблы status::* при старте и после закрытия тикета",
     "query": "Цель: Обновлять status::* при старте реализации и после подтверждённого merge. DoD: implement и fast-implement ставят in-progress; закрытый тикет получает done; зависимости разблокируются без потери статуса выполняемой задачи.",
     "expected_sources": [
-      "docs/adr/0005-implement-pipeline.md"
+      "docs/adr/0005-implement-pipeline.md",
+      "docs/adr/0002-controlled-delivery.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/402",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0005-implement-pipeline.md": {
+        "excerpt": "`/fast-implement` используется для `afk`-тикета с явным `pipeline::fast` и малым радиусом\nизменений. Он реализует задачу в одной сессии через TDD и проверки, без architect шага,\nнезависимой QA-роли и approval gates coordinator. Перед code review и перед commit/push этот\nмаршрут запрашивает отдельные решения разработчика. Для `hitl`-тикета предназначен `/to-guide`.\nОба маршрута после публикации своей issue-ветки лишь предлагают `/to-pull-requests`; открытие PR\nи merge остаются отдельными действиями разработчика.",
+        "relevance": "Контракт полного и короткого маршрутов реализации, допуска fast и независимых QA/review гейтов."
+      },
+      "docs/adr/0002-controlled-delivery.md": {
+        "excerpt": "PR открывается лишь после отдельного подтверждения разработчика. Его тело хранится в файле\nи передаётся CLI через `--body-file`; результаты проверок и риски указываются фактически.\nMerge в integration или базовую ветку делает только разработчик вручную. Для PR в default\nbranch используется `Closes #<ID>`, для PR в integration — `Related to #<ID>` с явным\nзакрытием тикета после подтверждённого merge. Автоматическое завершение тикета проверяется,\nа не предполагается.",
+        "relevance": "Контракт требует закрывать integration-тикет лишь после подтверждённого merge; это основание смены terminal status."
+      }
+    }
   },
   {
     "id": 407,
     "title": "fix(tests): console launcher e2e tests hang on Windows (PATHEXT uv lookup)",
     "query": "Цель: Устранить зависание console launcher e2e на Windows при поиске uv через PATHEXT. DoD: Отсутствующий и неработающий uv дают health fallback; тесты не запускают настоящий Textual TUI и не оставляют процессов.",
     "expected_sources": [
-      "docs/adr/0009-harness-console.md"
+      "docs/adr/0009-harness-console.md",
+      "CONTEXT.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/407",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0009-harness-console.md": {
+        "excerpt": "Если `uv` отсутствует в PATH или запуск Textual не удался, CLI сообщает причину и печатает\nтот же текстовый отчёт, который выдаёт `harness health`. Ошибка уже запущенного TUI\nвозвращает его код завершения без повторного текстового отчёта: это сбой интерфейса, а не\nневозможность получить зависимость.",
+        "relevance": "Поведение launcher при отсутствии uv, ошибке relaunch и работающем TUI; общий health fallback."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Harness console** (`harness console`):\nИнтерактивный пульт харнесса: одно место, откуда человек смотрит Health-отчёт, state оркестрации,\nотчёты и Repo Map и запускает все команды харнесса и coordinator. Пульт не дублирует логику команд,\nа вызывает их. Необратимые действия (удаление данных, терминальные решения coordinator, внешние\nизменения, перезапись управляемых файлов) выполняются только после переспроса.\n_Avoid_: doctor, dashboard (дашборд — лишь главный экран пульта), Health-отчёт (неинтерактивное ядро).",
+        "relevance": "Консоль запускает команды и получает health-отчёт; термин отделяет интерфейс от неинтерактивной диагностики при fallback."
+      }
+    }
   },
   {
     "id": 416,
     "title": "console: update --force-seed-files и очистка soft/hard в командах Harness",
     "query": "Цель: Добавить update --force-seed-files и упорядочить команды очистки в Harness console. DoD: Перезапись seed-файлов требует подтверждения; есть план soft/hard, применение hard с HARD; каталог команд, справка и тесты обновлены.",
     "expected_sources": [
-      "docs/adr/0009-harness-console.md"
+      "docs/adr/0009-harness-console.md",
+      "docs/adr/0001-portable-capability-delivery.md",
+      "docs/adr/0006-scratch-artifacts.md",
+      "CONTEXT.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/416",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0009-harness-console.md": {
+        "excerpt": "Если `uv` отсутствует в PATH или запуск Textual не удался, CLI сообщает причину и печатает\nтот же текстовый отчёт, который выдаёт `harness health`. Ошибка уже запущенного TUI\nвозвращает его код завершения без повторного текстового отчёта: это сбой интерфейса, а не\nневозможность получить зависимость.",
+        "relevance": "Поведение launcher при отсутствии uv, ошибке relaunch и работающем TUI; общий health fallback."
+      },
+      "docs/adr/0001-portable-capability-delivery.md": {
+        "excerpt": "`harness/CAPABILITIES.json` задаёт состав, наследование, overrides, additions и ресурсы\ncapability. `project-foundation` даёт небольшую доменно-нейтральную основу;\n`mattpocock-suite` использует полный закреплённый upstream-снимок; `pvmalove-suite` добавляет\nпроектный инженерный workflow; `backend-orchestration` выбирается явно поверх него.\n`selected_skills` разрешает каждое итоговое имя к одному источнику. `package_files()`\nкопирует выбранные файлы в `.harness/skills/` и ресурсы из `harness/` в `.harness/`.\n`init`, `adopt` и `update` записывают lock и registry установленного snapshot. `diff`\nпоказывает изменения управляемых файлов. `update` сохраняет локальные правки, пока владелец\nявно не выберет `--force`.",
+        "relevance": "Обновление сохраняет локальные правки до явного выбора принудительной перезаписи."
+      },
+      "docs/adr/0006-scratch-artifacts.md": {
+        "excerpt": "Шаблоны `harness/project/agents/` и `docs-agents/` направляют автора PR к одной директории,\nа hook проверяет путь перед записью. `harness cleanup --mode soft` лишь показывает\nподлежащие удалению старые файлы `pr_body/`, `scratch/`, `logs/` и `runs/`; фактическая\nочистка требует `--apply`. Режим `hard` дополнительно охватывает кэши, отчёты и\nнеиспользуемые worktrees. Ledger и `docs/tasks/` не входят в эти категории.",
+        "relevance": "Описаны preview/apply soft и hard, границы удаления и исключение ledger/архива из cleanup."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Harness console** (`harness console`):\nИнтерактивный пульт харнесса: одно место, откуда человек смотрит Health-отчёт, state оркестрации,\nотчёты и Repo Map и запускает все команды харнесса и coordinator. Пульт не дублирует логику команд,\nа вызывает их. Необратимые действия (удаление данных, терминальные решения coordinator, внешние\nизменения, перезапись управляемых файлов) выполняются только после переспроса.\n_Avoid_: doctor, dashboard (дашборд — лишь главный экран пульта), Health-отчёт (неинтерактивное ядро).",
+        "relevance": "Перезапись файлов и удаление данных в консоли требуют подтверждения пользователя."
+      }
+    }
   },
   {
     "id": 421,
     "title": "qa-gate-state: ложная ошибка на командах с подстрокой --head",
     "query": "Цель: Исключить ложную ошибку QA hook на командах с подстрокой --head. DoD: Только gh pr create с отдельным --head или --head=branch выбирает PR head; git ls-remote --heads не вызывает ошибку; require сохраняет проверку.",
     "expected_sources": [
-      "docs/adr/0005-implement-pipeline.md"
+      "docs/adr/0005-implement-pipeline.md",
+      "CONTEXT.md",
+      "docs/adr/0002-controlled-delivery.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/421",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0005-implement-pipeline.md": {
+        "excerpt": "`/fast-implement` используется для `afk`-тикета с явным `pipeline::fast` и малым радиусом\nизменений. Он реализует задачу в одной сессии через TDD и проверки, без architect шага,\nнезависимой QA-роли и approval gates coordinator. Перед code review и перед commit/push этот\nмаршрут запрашивает отдельные решения разработчика. Для `hitl`-тикета предназначен `/to-guide`.\nОба маршрута после публикации своей issue-ветки лишь предлагают `/to-pull-requests`; открытие PR\nи merge остаются отдельными действиями разработчика.",
+        "relevance": "Контракт полного и короткого маршрутов реализации, допуска fast и независимых QA/review гейтов."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Execution policy**:\nЯвный набор правил запуска quality gate: checkout, изоляция, команды и форма evidence. Он выбирается\nвызывающим модулем и не владеет очередью или решением coordinator-а.\n_Avoid_: скрытый режим запуска, policy очереди.",
+        "relevance": "Выбор checkout — часть execution policy гейта; ложное распознавание --head нарушает именно эту границу."
+      },
+      "docs/adr/0002-controlled-delivery.md": {
+        "excerpt": "`.harness/project.json` задаёт `base_branch`, `branch_pattern`, язык и `qa_gate_commands`.\nРабота начинается с зарегистрированного тикета и ведётся в изолированной issue-ветке.\nДочерний тикет берёт точную `integration/<service-or-team>` ветку из своего epic; тикет\nбез epic — `base_branch`. Ветка создаётся от этой базы, а не от случайного текущего checkout.\nGit и операции трекера выполняются через CLI (`git` и `gh` либо `glab`). Тикет фиксирует\nscope, блокеры и требуемую ветку; QA выполняет команды проекта. До коммита проверяются\nрезультаты локальных тестов, а до PR — полный quality gate.",
+        "relevance": "Полный quality gate обязателен до PR, а issue-ветка и commit определяют проверяемый checkout."
+      }
+    }
   },
   {
     "id": 422,
     "title": "Память проекта: конфиг, FTS5-индекс и harness memory search/rebuild",
     "query": "Цель: Включить память проекта через memory.enabled и memory_policy; создать FTS5-индекс ADR и глоссария. DoD: Без allowlist ничего не индексируется; search возвращает только указатели, rebuild восстанавливает кэш; SQLite работает офлайн.",
     "expected_sources": [
-      "docs/adr/0010-project-memory.md"
+      "docs/adr/0010-project-memory.md",
+      "CONTEXT.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/422",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0010-project-memory.md": {
+        "excerpt": "Память — opt-in capability целевого проекта: `memory.enabled` и `memory_policy` в проектном\nконфиге. Политика deny-by-default: индексируются только разрешённые типы и пути источников,\nс redact-правилами; QA findings и ledger попадают только в санитизированной форме. Coordinator\nпринимает per-dispatch `--no-memory`.",
+        "relevance": "Архитектурный контракт opt-in памяти, deny-by-default политики и санитизированного корпуса."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Память проекта** (project memory):\nВычисляемый из уже существующих артефактов проекта (ADR, `CONTEXT.md`, постоянный локальный архив\nзадач, закрытые тикеты, PR и Completion report, QA findings и Lifecycle ledger) поисковый индекс\n«как это решали раньше». Не источник истины: любой хит указывает на исходный артефакт и его hash,\nиндекс можно удалить и пересобрать. Включается проектом явно; хиты попадают в Context Package\nкак advisory-контекст с пометкой статуса источника.\n_Avoid_: RAG-хранилище, база знаний, долгосрочная память агента, вектор-стор.\n",
+        "relevance": "Определены выводимый индекс, исходные артефакты, source_hash, явное включение и advisory-указатели."
+      }
+    }
   },
   {
     "id": 423,
     "title": "Память проекта: статусы источников и санитизированный ingest архива, QA findings и ledger",
     "query": "Цель: Извлекать статус, дату и superseded-by; санитизировать архив задач, QA findings и Lifecycle ledger. DoD: Superseded ADR исключены, исторические хиты помечены; redact применяется; ingest инкрементален по content-hash.",
     "expected_sources": [
-      "docs/adr/0010-project-memory.md"
+      "docs/adr/0010-project-memory.md",
+      "CONTEXT.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/423",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0010-project-memory.md": {
+        "excerpt": "`harness memory search` в главном checkout лениво обновляет только производный локальный\nкэш перед read-only query. Это явное уточнение CLI-контракта #423: он может создавать cache/lock\nfiles и ждать writer до 2 секунд. Raw API `harness.memory.search` и search в linked worktree\nостаются read-only; writer использует только конфиг/источники main. Ошибка refresh возвращает\nпустые указатели с диагностикой, сохраняя прежний кэш; corrupt cache требует explicit rebuild.\nУказатель содержит date/superseded_by и `history_to_verify: true` для всех non-superseded\nисточников. QA/ledger — только ограниченные безопасные проекции выбранной generation v3,\nбез commands/prompts/approvals/произвольного JSON; backend-orchestration не обязательна.\nРоли оркестрации search не получают. Completion report получает опциональные поля `lessons`\n(без повышенного веса, статус «не подтверждено человеком») и `used_memory` (слабый сигнал).\nОба поля — опциональные списки непустых строк, пустые списки допустимы. `used_memory` не\nразрешается против текущего индекса и не влияет на приём отчёта или поисковый вес.\nДля lessons нужен отдельный opt-in `completion_report` вместе с allow_paths на `reports/*.json`\nвыбранной generation: индексируется только bounded sanitized projection, не весь отчёт.\nПри одновременном opt-in QA evidence сохраняется, но указатель с lessons всегда имеет\nнеподтверждённый статус. Версия ledger и обязательные поля Completion report не меняются.",
+        "relevance": "Архитектурный контракт opt-in памяти, deny-by-default политики и санитизированного корпуса."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Санитизированный QA-артефакт**:\nПолный stdout/stderr clean-room gate, очищенный от secret-shaped значений, сохранённый локально вне\nGit с checksum; canonical JSON report содержит только краткое evidence и ссылку на артефакт.\n_Avoid_: сырые логи в Git, report с секретами, удаление evidence ролью.",
+        "relevance": "QA evidence очищается от секретов и хранится локально; это исходная граница перед memory ingest."
+      }
+    }
   },
   {
     "id": 424,
     "title": "Память проекта: один индекс на репозиторий, read-only из worktree",
     "query": "Цель: Использовать один индекс памяти на репозиторий в главном checkout. DoD: Worktree читает общий индекс read-only без собственного кэша; параллельные сборки не повреждают SQLite.",
     "expected_sources": [
-      "docs/adr/0010-project-memory.md"
+      "docs/adr/0010-project-memory.md",
+      "docs/adr/0006-scratch-artifacts.md",
+      "CONTEXT.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/424",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0010-project-memory.md": {
+        "excerpt": "Локальный FTS5-кэш расположен в `.harness/.sandboxes/cache/memory/` главного checkout;\nего policy и исходные файлы, включая разрешённый gitignored архив, общие для worktree.\n`build` и `rebuild` отклоняют запуск из связанного worktree до создания файлов и используют\nобщую межпроцессную SQLite-блокировку, отдельную от заменяемого индекса. При недоступности Git\nоперации памяти в checkout с `.git`-файлом не создают собственный кэш; остальные потребители\nобщего storage resolver сохраняют прежний fallback. Для отдельного Git-каталога главный checkout\nдолжен быть явно задан общим `core.worktree`: путь проверяется на существование и связь с главным\nGit-каталогом, а неверная привязка отклоняется операциями памяти. Без `core.worktree` Git-каталог\nс именем `.git` неотличим от обычного `<main>/.git`; такой отдельный layout не поддерживается и\nтребует настройки `core.worktree` до работы с памятью.",
+        "relevance": "Архитектурный контракт opt-in памяти, deny-by-default политики и санитизированного корпуса."
+      },
+      "docs/adr/0006-scratch-artifacts.md": {
+        "excerpt": "`harness/storage.py` находит общий `.harness/.sandboxes/` через Git common directory и\nразрешает только категории `cache`, `logs`, `scratch`, `pr_body`, `runs`, `reports` и\n`worktrees`. `storage_path` отклоняет `..`, составные компоненты и выход через symlink.\nДоступность хранилища и его категорий проверяет `harness health`; `.harness/.gitignore`\nисключает runtime-данные из Git.",
+        "relevance": "Storage resolver разрешает общий корень main checkout через Git common directory и защищает пути от escape."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Песочницы харнесса** (`.harness/.sandboxes/`):\nЕдиная структурированная директория для всех временных данных и кэшей харнесса: `cache/` (кэши repo_map\nи parser_bundle), `logs/` (логи тестов и выполнения), `scratch/` (инбокс ролей),\n`pr_body/` (тела PR и комментариев),\n`runs/` (временные тестовые и QA окружения), `reports/` (генерируемые отчёты) и `worktrees/` (управляемые\nGit worktree). Очищается через `harness cleanup` (в режимах `soft` и `hard`), предотвращая засорение корня `.harness`.",
+        "relevance": "Общий корень песочниц разделяется linked worktree и содержит кэши; индекс не должен дублироваться по веткам."
+      }
+    }
   },
   {
     "id": 425,
     "title": "Память проекта: секция памяти в harness health",
     "query": "Цель: Добавить секцию памяти в harness health и Harness console. DoD: Отражены выключенная память, отсутствие индекса и модели, валидный индекс; JSON содержит секцию; health ничего не пишет.",
     "expected_sources": [
-      "docs/adr/0010-project-memory.md"
+      "docs/adr/0010-project-memory.md",
+      "docs/adr/0009-harness-console.md",
+      "CONTEXT.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/425",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0010-project-memory.md": {
+        "excerpt": "В FTS5-срезе секция «Память проекта» в `harness health` и его `--json`-отчёте содержит\nпроверки `memory.index` и `memory.model`. Выключенная память или пустой allowlist дают\n`skipped`; отсутствующий, повреждённый или несовместимый со схемой/политикой индекс — `warn`\nс командой `harness memory rebuild` для главного checkout. Валидный индекс получает `ok`\nс размером в байтах и числом индексированных источников. Отсутствие модели отдельно отмечается\nкак `skipped`: FTS5 работает без модели до подключения векторного среза. Проверки читают общий\nиндекс из worktree, не создают кэш, не скачивают модель и не пересобирают индекс даже с `--fix`.\nЭкран диагностики Harness console использует тот же health-отчёт.",
+        "relevance": "Архитектурный контракт opt-in памяти, deny-by-default политики и санитизированного корпуса."
+      },
+      "docs/adr/0009-harness-console.md": {
+        "excerpt": "`harness console` запускает закреплённую в `harness/console/pin.py` версию Textual через\n`uv run --with textual==<pin>` на том же Python, не правя lock или зависимости целевого\nпроекта. Launcher решает, нужен ли повторный запуск с Textual; модули экранов импортируют\nTextual только внутри TUI-пути. Содержимое экранов берётся из stdlib-команд `harness health`,\ncoordinator и других CLI, поэтому пульт не создаёт параллельной логики проверок.",
+        "relevance": "Экраны используют тот же stdlib health-отчёт; секция памяти должна попасть в него, без отдельного UI-контракта."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Health-отчёт** (`harness health`):\nСводка готовности проекта и машины к работе харнесса: файлы харнесса, окружение (ОС, git, uv, bash),\nRepo Map, каталоги и — при оркестрации — state. Каждая проверка получает один из трёх статусов:\n✅ готово, ⚠️ риск (работа возможна), ❌ харнесс работать не может. Отчёт только диагностирует; менять\nчто-либо он может лишь по явному запросу исправления и только в пределах проекта и трекера, но не\nмашинных настроек.\n_Avoid_: doctor (такого названия нет), QA-gate (проверяет код, а не окружение).",
+        "relevance": "Определена диагностика проекта, статусы и ограничения на изменение машины в health."
+      }
+    }
   },
   {
     "id": 426,
     "title": "Память проекта: скиллы вызывают harness memory search",
     "query": "Цель: Скиллы diagnosing-bugs, grilling и architect вызывают поиск по включённой памяти. DoD: Скиллы трактуют статус указателей; роли оркестрации не получают search; vendor не редактируется; verify проходит.",
     "expected_sources": [
-      "docs/adr/0010-project-memory.md"
+      "docs/adr/0010-project-memory.md",
+      "docs/adr/0001-portable-capability-delivery.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/426",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0010-project-memory.md": {
+        "excerpt": "Память — opt-in capability целевого проекта: `memory.enabled` и `memory_policy` в проектном\nконфиге. Политика deny-by-default: индексируются только разрешённые типы и пути источников,\nс redact-правилами; QA findings и ledger попадают только в санитизированной форме. Coordinator\nпринимает per-dispatch `--no-memory`.",
+        "relevance": "Архитектурный контракт opt-in памяти, deny-by-default политики и санитизированного корпуса."
+      },
+      "docs/adr/0001-portable-capability-delivery.md": {
+        "excerpt": "Upstream skills хранятся как закреплённый byte-for-byte snapshot в `skills/vendor/`;\nprovenance, license, lock и checksums находятся в `third_party/`. Собственные skills лежат в\n`skills/first-party/` и не редактируют vendor-снимок. Нативные runtime-discovery ссылки и\n`REGISTRY.md` указывают на один установленный набор.",
+        "relevance": "First-party overlay и pinned vendor snapshot разделены; интерактивные memory hooks не должны менять vendor."
+      }
+    }
   },
   {
     "id": 427,
     "title": "Память проекта: замороженные указатели в Context Package",
     "query": "Цель: Заморозить найденные по цели и DoD указатели памяти в Context Package без текста источников. DoD: Hash источника определяет freshness; disabled и --no-memory исключают память; нет индекса — явная деградация; квоты и бюджет соблюдаются офлайн.",
     "expected_sources": [
-      "docs/adr/0010-project-memory.md"
+      "docs/adr/0010-project-memory.md",
+      "CONTEXT.md",
+      "docs/adr/0005-implement-pipeline.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/427",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0010-project-memory.md": {
+        "excerpt": "Сборка Context Package один раз выполняет поиск по цели и DoD тикета и замораживает хиты в\nпакете как указатели: заголовок, статус источника, путь, hash источника и причина включения.\nТекст источника в пакет не попадает. Freshness пакета сверяет hash источников замороженных\nхитов, а не состояние индекса, поэтому недетерминизм поиска не нарушает immutability. Хиты\nограничены `min_similarity`, top-k, квотами слотов по типу источника и токен-потолком внутри\nбюджета Package. Superseded-источники не выдаются, остальные исторические помечаются как\nтребующие проверки.",
+        "relevance": "Архитектурный контракт opt-in памяти, deny-by-default политики и санитизированного корпуса."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Context Package**:\nLedger-owned immutable бандл для Разработчика, детерминированно построенный отдельным модулем без участия LLM до\ndispatch: цель и DoD, integration base и candidate SHA, точный diff, стартовые файлы с причиной\nвключения, ограниченный граф символов/зависимостей, связанные тесты, релевантные ADR-карточки и\nhash каждого включённого файла. Собирается `context_builder.py` из Discovery Context: локальные\nимпорты разворачиваются на 1 уровень вглубь, из них берутся только сигнатуры. Coordinator проверяет\nего свежесть перед каждым новым dispatch и отказывается создавать brief, если пакет устарел.\n_Avoid_: brief, discovery-лог, произвольное чтение репозитория, контекст разработчика, пакет\nконтекста.",
+        "relevance": "Immutable package содержит pinned base/candidate, hash файлов и требует freshness перед новым dispatch."
+      },
+      "docs/adr/0005-implement-pipeline.md": {
+        "excerpt": "Перед handoff `dispatch preflight` проверяет проектный контракт. Context Builder детерминированно\nсобирает Context Package из закреплённых commit, отфильтрованных файлов и Repo Map. Пакет\nрегистрируется в ledger и повторно используется architect, developer и продолжениями того же\ndispatch, пока candidate не изменился. Новый candidate для review получает новый общий пакет.\nImmutable brief закрепляет package ID, scope, DoD, разрешённый model/effort, транспорт, зоны,\nкоманды проверки и путь для отчёта. Writer brief также содержит упорядоченный commit plan;\ncompletion report связывает каждый созданный commit с пунктом плана.",
+        "relevance": "Закрепление и повторное использование Context Package объясняет, почему memory-указатели замораживаются один раз."
+      }
+    }
   },
   {
     "id": 428,
     "title": "Память проекта: harness memory sync для тикетов, PR и Completion report",
     "query": "Цель: Явно синхронизировать закрытые тикеты, PR и Completion report через harness memory sync. DoD: Политика соблюдается, снапшот санитизирован; повторный sync инкрементален; ошибка сети сохраняет прошлый снапшот; Package не обращается к трекеру.",
     "expected_sources": [
-      "docs/adr/0010-project-memory.md"
+      "docs/adr/0010-project-memory.md",
+      "docs/adr/0002-controlled-delivery.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/428",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0010-project-memory.md": {
+        "excerpt": "Срез #428 реализует явный `harness memory sync <repo>` только из main checkout через `gh api`\nили `glab api` по существующему origin routing. Санитизированные immutable records живут отдельно\nот индекса в `.harness/.sandboxes/memory/snapshot/`; atomic manifest выбирает активный корпус.\nЗакрытые тикеты и PR/MR используют существующий `task_archive` с `record_kind`, удалённые отчёты —\nотдельный opt-in `completion_report` и точный marker из project-memory guide; lessons для них\nне обязательны. Локальный lessons-only контракт ledger сохраняется, enum политики не расширяется.\nПолный bounded inventory сверяет исчезновение/reopen; одинаковые hashes сохраняют байты/mtime.\nЛимиты: 20 страниц/1000 записей на endpoint, 200 запросов/1000 активных записей на sync,\n4 MiB stdout+stderr и 10 секунд на запрос. Частичный inventory не публикуется. Fetch/parse/policy\nrace сохраняют прежний manifest/index; index failure после публикации имеет отдельный статус и\nвосстанавливается offline build/rebuild. Старые неактивные файлы остаются без автоматической GC;\nticket и PR делят квоту task_archive. Snapshot и index имеют последовательные commit points,\nContext Package остаётся offline. Эти ограничения приняты вместо watermark/retention-политики.",
+        "relevance": "Архитектурный контракт opt-in памяти, deny-by-default политики и санитизированного корпуса."
+      },
+      "docs/adr/0002-controlled-delivery.md": {
+        "excerpt": "`.harness/project.json` задаёт `base_branch`, `branch_pattern`, язык и `qa_gate_commands`.\nРабота начинается с зарегистрированного тикета и ведётся в изолированной issue-ветке.\nДочерний тикет берёт точную `integration/<service-or-team>` ветку из своего epic; тикет\nбез epic — `base_branch`. Ветка создаётся от этой базы, а не от случайного текущего checkout.\nGit и операции трекера выполняются через CLI (`git` и `gh` либо `glab`). Тикет фиксирует\nscope, блокеры и требуемую ветку; QA выполняет команды проекта. До коммита проверяются\nрезультаты локальных тестов, а до PR — полный quality gate.",
+        "relevance": "Трекер читается через существующий CLI gh/glab; это граница явного sync, а не сетевого поиска в Package."
+      }
+    }
   },
   {
     "id": 429,
     "title": "Память проекта: поля lessons и used_memory в Completion report",
     "query": "Цель: Добавить lessons и used_memory в Completion report. DoD: Отчёты с полями и без них принимаются; lessons индексируются как не подтверждённые человеком без повышенного веса; глоссарий и шаблон обновлены.",
     "expected_sources": [
-      "docs/adr/0010-project-memory.md"
+      "docs/adr/0010-project-memory.md",
+      "CONTEXT.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/429",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0010-project-memory.md": {
+        "excerpt": "`harness memory search` в главном checkout лениво обновляет только производный локальный\nкэш перед read-only query. Это явное уточнение CLI-контракта #423: он может создавать cache/lock\nfiles и ждать writer до 2 секунд. Raw API `harness.memory.search` и search в linked worktree\nостаются read-only; writer использует только конфиг/источники main. Ошибка refresh возвращает\nпустые указатели с диагностикой, сохраняя прежний кэш; corrupt cache требует explicit rebuild.\nУказатель содержит date/superseded_by и `history_to_verify: true` для всех non-superseded\nисточников. QA/ledger — только ограниченные безопасные проекции выбранной generation v3,\nбез commands/prompts/approvals/произвольного JSON; backend-orchestration не обязательна.\nРоли оркестрации search не получают. Completion report получает опциональные поля `lessons`\n(без повышенного веса, статус «не подтверждено человеком») и `used_memory` (слабый сигнал).\nОба поля — опциональные списки непустых строк, пустые списки допустимы. `used_memory` не\nразрешается против текущего индекса и не влияет на приём отчёта или поисковый вес.\nДля lessons нужен отдельный opt-in `completion_report` вместе с allow_paths на `reports/*.json`\nвыбранной generation: индексируется только bounded sanitized projection, не весь отчёт.\nПри одновременном opt-in QA evidence сохраняется, но указатель с lessons всегда имеет\nнеподтверждённый статус. Версия ledger и обязательные поля Completion report не меняются.",
+        "relevance": "Архитектурный контракт opt-in памяти, deny-by-default политики и санитизированного корпуса."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Completion report**:\nЕдинственный отчёт роли о завершении: commit SHA для write work, changed files, выполненные проверки и\nих результат, риски и blockers. После приёма он оставляет dispatch в `reported`: это фактическое\nevidence, а не право двигать batch. Новая информация после dispatch требует решения coordinator-а.\nОпциональные `lessons` и `used_memory` — списки непустых строк (можно пустые): первые сохраняют\nисторические выводы со статусом «не подтверждено человеком» и без повышенного поискового веса;\nвторой перечисляет идентификаторы использованных хитов как слабый сигнал, не гейт. Старые отчёты\nбез обоих полей валидны; индексирование lessons требует явного opt-in `completion_report` и путей.\n_Avoid_: сообщение «готово», изменение brief задним числом.",
+        "relevance": "Точно описаны optional lessons/used_memory, неподтверждённый статус уроков и отсутствие нового гейта."
+      }
+    }
   },
   {
     "id": 445,
     "title": "fix: ложные отказы scratch-path и bounded-check hooks",
     "query": "Цель: Исправить ложные отказы scratch-path и bounded-check hooks. DoD: Ошибки называют выход пути за пределы проекта; память runtime разрешена; команды чтения не считаются QA-запуском; реальные проверки остаются ограниченными.",
     "expected_sources": [
-      "docs/adr/0006-scratch-artifacts.md"
+      "docs/adr/0006-scratch-artifacts.md",
+      "CONTEXT.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/445",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0006-scratch-artifacts.md": {
+        "excerpt": "`harness/storage.py` находит общий `.harness/.sandboxes/` через Git common directory и\nразрешает только категории `cache`, `logs`, `scratch`, `pr_body`, `runs`, `reports` и\n`worktrees`. `storage_path` отклоняет `..`, составные компоненты и выход через symlink.\nДоступность хранилища и его категорий проверяет `harness health`; `.harness/.gitignore`\nисключает runtime-данные из Git.",
+        "relevance": "Общий storage resolver, категории песочниц, проверка доступности каталогов и shared worktree storage."
+      },
+      "CONTEXT.md": {
+        "excerpt": "**Песочницы харнесса** (`.harness/.sandboxes/`):\nЕдиная структурированная директория для всех временных данных и кэшей харнесса: `cache/` (кэши repo_map\nи parser_bundle), `logs/` (логи тестов и выполнения), `scratch/` (инбокс ролей),\n`pr_body/` (тела PR и комментариев),\n`runs/` (временные тестовые и QA окружения), `reports/` (генерируемые отчёты) и `worktrees/` (управляемые\nGit worktree). Очищается через `harness cleanup` (в режимах `soft` и `hard`), предотвращая засорение корня `.harness`.",
+        "relevance": "Указаны runtime-категории и единый корень, по которому scratch hook отличает артефакты от запрещённых путей."
+      }
+    }
   },
   {
     "id": 459,
@@ -197,6 +436,12 @@
       "docs/adr/0009-harness-console.md"
     ],
     "url": "https://github.com/PVMalove/claude-agent-harness/issues/459",
-    "state": "CLOSED"
+    "state": "CLOSED",
+    "source_evidence": {
+      "docs/adr/0009-harness-console.md": {
+        "excerpt": "Если `uv` отсутствует в PATH или запуск Textual не удался, CLI сообщает причину и печатает\nтот же текстовый отчёт, который выдаёт `harness health`. Ошибка уже запущенного TUI\nвозвращает его код завершения без повторного текстового отчёта: это сбой интерфейса, а не\nневозможность получить зависимость.",
+        "relevance": "Поведение launcher при отсутствии uv, ошибке relaunch и работающем TUI; общий health fallback."
+      }
+    }
   }
 ]

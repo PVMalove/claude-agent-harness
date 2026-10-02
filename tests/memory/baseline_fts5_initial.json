@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 1,
   "engine": "sqlite3 FTS5 bm25, path tie-break",
   "corpus": "Tracked ADRs and CONTEXT.md; excludes task archives and tracker snapshots",
   "k_values": [
@@ -10,7 +10,7 @@
   "noise_window": 5,
   "min_recall_at_5": 0.6,
   "max_noise_ratio": 0.7,
-  "dataset_hash": "f5a2cf6fc5afbd8141697ba53050c83ccd00568cb9bf5a6ff2b0411949815cc8",
+  "dataset_hash": "d2dd5522c6281517f5eea9801c122228c831ca7911409acbc3e0a11e117ba2c5",
   "source_hashes": {
     "CONTEXT.md": "9eeddd16b0cb5ed943fe0f8925f409a734419e23cbfbbac7a878df56095f2e48",
     "docs/adr/0001-portable-capability-delivery.md": "5254f06b516ee14371422ba9cbca9947ced09067edf167bcef09fc9b446d805b",
@@ -28,11 +28,11 @@
   "report": {
     "total_queries": 20,
     "mean_recall": {
-      "1": 0.95,
-      "3": 0.95,
-      "5": 0.95
+      "1": 0.7,
+      "3": 0.75,
+      "5": 0.85
     },
-    "mean_noise_ratio": 0.6,
+    "mean_noise_ratio": 0.8300000000000001,
     "query_results": [
       {
         "ticket_id": 165,
@@ -45,15 +45,14 @@
           "docs/adr/0010-project-memory.md"
         ],
         "expected": [
-          "docs/adr/0005-implement-pipeline.md",
-          "CONTEXT.md"
+          "docs/adr/0005-implement-pipeline.md"
         ],
         "recall_at_k": {
           "1": 1.0,
           "3": 1.0,
           "5": 1.0
         },
-        "noise_ratio": 0.6,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -67,15 +66,14 @@
           "docs/adr/0009-harness-console.md"
         ],
         "expected": [
-          "docs/adr/0008-repo-map.md",
-          "CONTEXT.md"
+          "docs/adr/0008-repo-map.md"
         ],
         "recall_at_k": {
           "1": 1.0,
           "3": 1.0,
           "5": 1.0
         },
-        "noise_ratio": 0.6,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -89,15 +87,14 @@
           "docs/adr/0004-role-assignments.md"
         ],
         "expected": [
-          "docs/adr/0006-scratch-artifacts.md",
-          "CONTEXT.md"
+          "docs/adr/0006-scratch-artifacts.md"
         ],
         "recall_at_k": {
-          "1": 1.0,
-          "3": 1.0,
-          "5": 1.0
+          "1": 0.0,
+          "3": 0.0,
+          "5": 0.0
         },
-        "noise_ratio": 0.8,
+        "noise_ratio": 1.0,
         "search_status": "ok"
       },
       {
@@ -111,15 +108,14 @@
           "docs/adr/0004-role-assignments.md"
         ],
         "expected": [
-          "docs/adr/0006-scratch-artifacts.md",
-          "CONTEXT.md"
+          "docs/adr/0006-scratch-artifacts.md"
         ],
         "recall_at_k": {
           "1": 1.0,
           "3": 1.0,
           "5": 1.0
         },
-        "noise_ratio": 0.6,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -133,16 +129,14 @@
           "docs/adr/0006-scratch-artifacts.md"
         ],
         "expected": [
-          "docs/adr/0007-python-quality.md",
-          "docs/adr/0006-scratch-artifacts.md",
-          "CONTEXT.md"
+          "docs/adr/0007-python-quality.md"
         ],
         "recall_at_k": {
-          "1": 1.0,
-          "3": 1.0,
-          "5": 1.0
+          "1": 0.0,
+          "3": 0.0,
+          "5": 0.0
         },
-        "noise_ratio": 0.6,
+        "noise_ratio": 1.0,
         "search_status": "ok"
       },
       {
@@ -177,15 +171,14 @@
           "docs/adr/0009-harness-console.md"
         ],
         "expected": [
-          "docs/adr/0005-implement-pipeline.md",
-          "docs/adr/0002-controlled-delivery.md"
+          "docs/adr/0005-implement-pipeline.md"
         ],
         "recall_at_k": {
           "1": 1.0,
           "3": 1.0,
           "5": 1.0
         },
-        "noise_ratio": 0.6,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -199,15 +192,14 @@
           "docs/adr/0004-role-assignments.md"
         ],
         "expected": [
-          "docs/adr/0009-harness-console.md",
-          "CONTEXT.md"
+          "docs/adr/0009-harness-console.md"
         ],
         "recall_at_k": {
           "1": 1.0,
           "3": 1.0,
           "5": 1.0
         },
-        "noise_ratio": 0.6,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -221,17 +213,14 @@
           "docs/adr/0009-harness-console.md"
         ],
         "expected": [
-          "docs/adr/0009-harness-console.md",
-          "docs/adr/0001-portable-capability-delivery.md",
-          "docs/adr/0006-scratch-artifacts.md",
-          "CONTEXT.md"
+          "docs/adr/0009-harness-console.md"
         ],
         "recall_at_k": {
-          "1": 1.0,
-          "3": 1.0,
+          "1": 0.0,
+          "3": 0.0,
           "5": 1.0
         },
-        "noise_ratio": 0.2,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -245,16 +234,14 @@
           "docs/adr/0010-project-memory.md"
         ],
         "expected": [
-          "docs/adr/0005-implement-pipeline.md",
-          "CONTEXT.md",
-          "docs/adr/0002-controlled-delivery.md"
+          "docs/adr/0005-implement-pipeline.md"
         ],
         "recall_at_k": {
-          "1": 1.0,
-          "3": 1.0,
+          "1": 0.0,
+          "3": 0.0,
           "5": 1.0
         },
-        "noise_ratio": 0.4,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -268,15 +255,14 @@
           "docs/adr/0008-repo-map.md"
         ],
         "expected": [
-          "docs/adr/0010-project-memory.md",
-          "CONTEXT.md"
+          "docs/adr/0010-project-memory.md"
         ],
         "recall_at_k": {
           "1": 1.0,
           "3": 1.0,
           "5": 1.0
         },
-        "noise_ratio": 0.6,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -290,15 +276,14 @@
           "docs/adr/0003-orchestration-core.md"
         ],
         "expected": [
-          "docs/adr/0010-project-memory.md",
-          "CONTEXT.md"
+          "docs/adr/0010-project-memory.md"
         ],
         "recall_at_k": {
           "1": 1.0,
           "3": 1.0,
           "5": 1.0
         },
-        "noise_ratio": 0.6,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -312,16 +297,14 @@
           "docs/adr/0005-implement-pipeline.md"
         ],
         "expected": [
-          "docs/adr/0010-project-memory.md",
-          "docs/adr/0006-scratch-artifacts.md",
-          "CONTEXT.md"
+          "docs/adr/0010-project-memory.md"
         ],
         "recall_at_k": {
           "1": 1.0,
           "3": 1.0,
           "5": 1.0
         },
-        "noise_ratio": 0.6,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -335,16 +318,14 @@
           "docs/adr/0004-role-assignments.md"
         ],
         "expected": [
-          "docs/adr/0010-project-memory.md",
-          "docs/adr/0009-harness-console.md",
-          "CONTEXT.md"
+          "docs/adr/0010-project-memory.md"
         ],
         "recall_at_k": {
           "1": 1.0,
           "3": 1.0,
           "5": 1.0
         },
-        "noise_ratio": 0.4,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -358,15 +339,14 @@
           "docs/adr/0001-portable-capability-delivery.md"
         ],
         "expected": [
-          "docs/adr/0010-project-memory.md",
-          "docs/adr/0001-portable-capability-delivery.md"
+          "docs/adr/0010-project-memory.md"
         ],
         "recall_at_k": {
           "1": 1.0,
           "3": 1.0,
           "5": 1.0
         },
-        "noise_ratio": 0.6,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -380,16 +360,14 @@
           "docs/adr/0001-portable-capability-delivery.md"
         ],
         "expected": [
-          "docs/adr/0010-project-memory.md",
-          "CONTEXT.md",
-          "docs/adr/0005-implement-pipeline.md"
+          "docs/adr/0010-project-memory.md"
         ],
         "recall_at_k": {
           "1": 1.0,
           "3": 1.0,
           "5": 1.0
         },
-        "noise_ratio": 0.4,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -403,8 +381,7 @@
           "docs/adr/0005-implement-pipeline.md"
         ],
         "expected": [
-          "docs/adr/0010-project-memory.md",
-          "docs/adr/0002-controlled-delivery.md"
+          "docs/adr/0010-project-memory.md"
         ],
         "recall_at_k": {
           "1": 1.0,
@@ -425,15 +402,14 @@
           "docs/adr/0005-implement-pipeline.md"
         ],
         "expected": [
-          "docs/adr/0010-project-memory.md",
-          "CONTEXT.md"
+          "docs/adr/0010-project-memory.md"
         ],
         "recall_at_k": {
           "1": 1.0,
           "3": 1.0,
           "5": 1.0
         },
-        "noise_ratio": 0.6,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -447,15 +423,14 @@
           "docs/adr/0001-portable-capability-delivery.md"
         ],
         "expected": [
-          "docs/adr/0006-scratch-artifacts.md",
-          "CONTEXT.md"
+          "docs/adr/0006-scratch-artifacts.md"
         ],
         "recall_at_k": {
-          "1": 1.0,
+          "1": 0.0,
           "3": 1.0,
           "5": 1.0
         },
-        "noise_ratio": 0.6,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -480,7 +455,6 @@
         "search_status": "ok"
       }
     ],
-    "gate_passed": true
-  },
-  "annotation_revision": "Source-grounded multi-label correction; queries, corpus, engine, window and thresholds unchanged. Initial single-label measurement is baseline_fts5_initial.json."
+    "gate_passed": false
+  }
 }

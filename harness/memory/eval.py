@@ -8,11 +8,21 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import cast
 
+from harness.errors import HarnessError
+
 from .search import search_candidates
 
 DEFAULT_DATASET = (
     Path(__file__).resolve().parents[2] / "tests/memory/golden_tickets.json"
 )
+DATASET_REMEDY = (
+    "Provide a non-empty JSON list with unique positive integer id, non-empty title/query, "
+    "and unique repository-relative POSIX paths in expected_sources via --dataset <path>."
+)
+
+
+class MemoryEvalError(HarnessError):
+    """Invalid evaluation input with an actionable correction for API and CLI users."""
 
 
 @dataclass(frozen=True)
@@ -64,23 +74,36 @@ class MemoryEvalReport:
 def validate_dataset(value: object) -> list[dict[str, object]]:
     """Reject ambiguous IDs, empty labels and unsafe paths before evaluating."""
     if not isinstance(value, list) or not value:
-        raise ValueError("memory eval dataset must be a non-empty list")
+        raise MemoryEvalError(
+            "memory eval dataset must be a non-empty list", remedy=DATASET_REMEDY
+        )
     ids: set[int] = set()
     for row in value:
         if not isinstance(row, dict):
-            raise ValueError("memory eval dataset entries must be objects")
+            raise MemoryEvalError(
+                "memory eval dataset entries must be objects", remedy=DATASET_REMEDY
+            )
         ticket_id = row.get("id")
         paths = row.get("expected_sources")
         if type(ticket_id) is not int or ticket_id <= 0 or ticket_id in ids:
-            raise ValueError("memory eval dataset needs unique positive integer IDs")
+            raise MemoryEvalError(
+                "memory eval dataset needs unique positive integer IDs",
+                remedy=DATASET_REMEDY,
+            )
         ids.add(ticket_id)
         if any(
             not isinstance(row.get(field), str) or not row[field].strip()
             for field in ("title", "query")
         ):
-            raise ValueError("memory eval dataset needs non-empty title and query")
+            raise MemoryEvalError(
+                "memory eval dataset needs non-empty title and query",
+                remedy=DATASET_REMEDY,
+            )
         if not isinstance(paths, list) or not paths:
-            raise ValueError("memory eval dataset needs non-empty expected_sources")
+            raise MemoryEvalError(
+                "memory eval dataset needs non-empty expected_sources",
+                remedy=DATASET_REMEDY,
+            )
         for path in paths:
             if (
                 not isinstance(path, str)
@@ -90,11 +113,14 @@ def validate_dataset(value: object) -> list[dict[str, object]]:
                 or PurePosixPath(path).is_absolute()
                 or any(part in {"", ".", ".."} for part in path.split("/"))
             ):
-                raise ValueError(
-                    "memory eval expected_sources must be relative POSIX paths"
+                raise MemoryEvalError(
+                    "memory eval expected_sources must be relative POSIX paths",
+                    remedy=DATASET_REMEDY,
                 )
         if len(set(paths)) != len(paths):
-            raise ValueError("memory eval expected_sources must be unique")
+            raise MemoryEvalError(
+                "memory eval expected_sources must be unique", remedy=DATASET_REMEDY
+            )
     return cast(list[dict[str, object]], value)
 
 
@@ -104,8 +130,14 @@ def load_golden_dataset(path: Path | None = None) -> list[dict[str, object]]:
     try:
         value = json.loads(selected.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        raise ValueError(
-            f"memory eval dataset not found: {selected}; pass --dataset <path>"
+        raise MemoryEvalError(
+            f"memory eval dataset not found: {selected}",
+            remedy="Pass --dataset <path> pointing to an existing UTF-8 JSON dataset.",
+        ) from None
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise MemoryEvalError(
+            f"memory eval dataset cannot be read as UTF-8 JSON: {selected}",
+            remedy="Check the dataset's permissions, UTF-8 encoding and JSON syntax; pass --dataset <path>.",
         ) from None
     return validate_dataset(value)
 
@@ -115,7 +147,9 @@ def calculate_recall_at_k(
 ) -> float:
     """Ticket-level recall: at least one labeled source must appear in top-k."""
     if k <= 0:
-        raise ValueError("k must be positive")
+        raise MemoryEvalError(
+            "k must be positive", remedy="Pass a positive integer for k."
+        )
     return float(bool(set(retrieved_paths[:k]) & set(expected_sources)))
 
 
@@ -124,7 +158,9 @@ def calculate_noise_ratio(
 ) -> float:
     """Count irrelevant returned hits; empty retrieval has zero noise."""
     if k is not None and k <= 0:
-        raise ValueError("k must be positive")
+        raise MemoryEvalError(
+            "k must be positive", remedy="Pass a positive integer for k."
+        )
     paths = retrieved_paths if k is None else retrieved_paths[:k]
     expected = set(expected_sources)
     return sum(path not in expected for path in paths) / len(paths) if paths else 0.0
@@ -145,18 +181,27 @@ def evaluate_memory(
     A degraded search never passes, even with permissive numerical thresholds.
     """
     if dataset is not None and dataset_path is not None:
-        raise ValueError("pass dataset or dataset_path, not both")
+        raise MemoryEvalError(
+            "pass dataset or dataset_path, not both",
+            remedy="Supply either in-memory dataset or dataset_path; omit the other argument.",
+        )
     if (
         5 not in k_values
         or any(type(k) is not int or k <= 0 for k in k_values)
         or len(set(k_values)) != len(k_values)
     ):
-        raise ValueError("k_values must contain 5 and unique positive integers")
+        raise MemoryEvalError(
+            "k_values must contain 5 and unique positive integers",
+            remedy="Pass unique positive k_values including 5, for example (1, 3, 5).",
+        )
     if any(
         not math.isfinite(value) or not 0 <= value <= 1
         for value in (min_recall_at_5, max_noise_ratio)
     ):
-        raise ValueError("memory eval thresholds must be finite values in [0, 1]")
+        raise MemoryEvalError(
+            "memory eval thresholds must be finite values in [0, 1]",
+            remedy="Set --min-recall and --max-noise to finite numbers between 0 and 1.",
+        )
     rows = (
         validate_dataset(dataset)
         if dataset is not None

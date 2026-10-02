@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from harness.memory import build
+from harness.errors import HarnessError
 from harness.storage import storage_path
 from .test_build import configure, source
 from .test_delivery import CLI
@@ -34,8 +35,13 @@ def test_golden_dataset_structure_and_no_secrets() -> None:
         assert row["state"] == "CLOSED"
         assert row["url"].endswith(f'/issues/{row["id"]}')
         assert isinstance(row["expected_sources"], list) and row["expected_sources"]
+        assert set(row["source_evidence"]) == set(row["expected_sources"])
         for path in row["expected_sources"]:
             assert (root / path).is_file()
+            evidence = row["source_evidence"][path]
+            assert len(evidence["excerpt"]) >= 20
+            assert evidence["excerpt"] in (root / path).read_text(encoding="utf-8")
+            assert evidence["relevance"].strip()
     assert not re.search(r"Bearer|ghp_|gho_|glpat-|-----BEGIN", text, re.I)
 
 
@@ -249,8 +255,9 @@ def test_cli_memory_eval_text_and_invalid_input(tmp_path: Path) -> None:
     )
     dataset.write_text("[]", encoding="utf-8")
     process = subprocess.run(argv, capture_output=True, text=True)
-    assert process.returncode != 0
+    assert process.returncode == 2
     assert "non-empty list" in process.stderr
+    assert "ERROR:" in process.stderr and "REMEDY:" in process.stderr
 
 
 @pytest.mark.parametrize(
@@ -283,35 +290,72 @@ def test_invalid_dataset_is_rejected(
     """Invalid labels cannot turn missing evidence into a passing quality gate."""
     from harness.memory import evaluate_memory
 
-    with pytest.raises(ValueError, match="dataset|expected_sources"):
+    with pytest.raises(HarnessError, match="dataset|expected_sources") as error:
         evaluate_memory(tmp_path, dataset=dataset)
+    assert error.value.remedy
 
 
 @pytest.mark.parametrize(
-    "options",
-    [
-        {"k_values": (1, 3)},
-        {"k_values": (0, 5)},
-        {"k_values": (5, 5)},
-        {"min_recall_at_5": float("nan")},
-        {"min_recall_at_5": -0.1},
-        {"max_noise_ratio": 1.1},
-    ],
+    "k_values",
+    [(1, 3), (0, 5), (5, 5)],
 )
-def test_invalid_gate_options_are_rejected(
-    tmp_path: Path, options: dict[str, object]
+def test_invalid_recall_windows_are_rejected(
+    tmp_path: Path, k_values: tuple[int, ...]
 ) -> None:
-    """A recall@5 gate requires a valid window and finite probability thresholds."""
+    """A recall@5 gate requires unique positive windows including five."""
     from harness.memory import evaluate_memory
 
-    with pytest.raises(ValueError, match="k_values|thresholds"):
-        evaluate_memory(tmp_path, **options)  # type: ignore[arg-type]
+    with pytest.raises(HarnessError, match="k_values") as error:
+        evaluate_memory(tmp_path, k_values=k_values)
+    assert error.value.remedy
 
 
-def test_fts5_baseline_is_reproducible(tmp_path: Path) -> None:
-    """The real ADR/glossary corpus reproduces the recorded FTS5 decision offline."""
+@pytest.mark.parametrize(
+    "min_recall,max_noise",
+    [(float("nan"), 0.7), (-0.1, 0.7), (0.6, 1.1)],
+)
+def test_invalid_gate_thresholds_are_rejected(
+    tmp_path: Path, min_recall: float, max_noise: float
+) -> None:
+    """Gate thresholds must be finite probabilities with a corrective diagnostic."""
     from harness.memory import evaluate_memory
 
+    with pytest.raises(HarnessError, match="thresholds") as error:
+        evaluate_memory(tmp_path, min_recall_at_5=min_recall, max_noise_ratio=max_noise)
+    assert error.value.remedy
+
+
+@pytest.mark.parametrize("content", [None, "{", "[]", "invalid UTF-8"])
+def test_dataset_read_errors_use_the_cli_error_contract(
+    tmp_path: Path, content: str | None
+) -> None:
+    """Missing, malformed and undecodable input all expose a concrete remedy."""
+    path = tmp_path / "dataset.json"
+    if content == "invalid UTF-8":
+        path.write_bytes(b"\xff")
+    elif content is not None:
+        path.write_text(content, encoding="utf-8")
+    process = subprocess.run(
+        [
+            sys.executable,
+            str(CLI),
+            "memory",
+            "eval",
+            str(tmp_path),
+            "--dataset",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert process.returncode == 2
+    assert "ERROR:" in process.stderr and "REMEDY:" in process.stderr
+    assert "Traceback" not in process.stderr
+
+
+@pytest.fixture
+def golden_corpus(tmp_path: Path) -> Path:
+    """Build the pinned authoritative corpus without changing this checkout's policy."""
     baseline = json.loads(
         GOLDEN.with_name("baseline_fts5.json").read_text(encoding="utf-8")
     )
@@ -325,5 +369,61 @@ def test_fts5_baseline_is_reproducible(tmp_path: Path) -> None:
         source(tmp_path, path, raw.decode("utf-8"))
     assert hashlib.sha256(GOLDEN.read_bytes()).hexdigest() == baseline["dataset_hash"]
     assert build(tmp_path)["indexed"] == len(baseline["source_hashes"])
-    report = evaluate_memory(tmp_path).to_dict()
+    return tmp_path
+
+
+def test_fts5_baseline_is_reproducible(golden_corpus: Path) -> None:
+    """The real corpus passes the default gate through both the public API and CLI."""
+    from harness.memory import evaluate_memory
+
+    baseline = json.loads(
+        GOLDEN.with_name("baseline_fts5.json").read_text(encoding="utf-8")
+    )
+    report = evaluate_memory(golden_corpus).to_dict()
     assert report == baseline["report"]
+    assert report["gate_passed"] is True
+    process = subprocess.run(
+        [sys.executable, str(CLI), "memory", "eval", str(golden_corpus), "--json"],
+        capture_output=True,
+        text=True,
+    )
+    assert process.returncode == 0, process.stderr
+    assert json.loads(process.stdout) == report
+
+
+def test_initial_single_label_measurement_is_preserved(golden_corpus: Path) -> None:
+    """Relabeling must not be reported as an improvement in the FTS5 engine."""
+    from harness.memory import evaluate_memory
+    from harness.memory.eval import load_golden_dataset
+
+    initial = json.loads(
+        GOLDEN.with_name("baseline_fts5_initial.json").read_text(encoding="utf-8")
+    )
+    current = json.loads(
+        GOLDEN.with_name("baseline_fts5.json").read_text(encoding="utf-8")
+    )
+    assert initial["source_hashes"] == current["source_hashes"]
+    assert initial["engine"] == current["engine"]
+    old_labels = {
+        result["ticket_id"]: result["expected"]
+        for result in initial["report"]["query_results"]
+    }
+    dataset = [
+        {
+            key: row[key]
+            for key in ("id", "title", "query", "expected_sources", "url", "state")
+        }
+        for row in load_golden_dataset()
+    ]
+    for row in dataset:
+        row["expected_sources"] = old_labels[row["id"]]
+    original_bytes = (json.dumps(dataset, ensure_ascii=False, indent=2) + "\n").encode(
+        "utf-8"
+    )
+    assert hashlib.sha256(original_bytes).hexdigest() == initial["dataset_hash"]
+    report = evaluate_memory(golden_corpus, dataset=dataset)
+    assert report.to_dict() == initial["report"]
+    assert report.gate_passed is False
+    assert [item.retrieved for item in report.query_results] == [
+        item["retrieved"] for item in current["report"]["query_results"]
+    ]
