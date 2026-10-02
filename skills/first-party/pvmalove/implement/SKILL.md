@@ -54,11 +54,16 @@ guess where its report belongs writes it outside the project. The coordinator ne
 evidence, not permission to advance. Architect precedes developer; accepted candidate proceeds
 through the required review/QA/publish gates.
 
-Before every write-role dispatch, record an ordered commit plan in the immutable brief. Each entry
-names one independently reviewable logical change and its expected files; use one entry only when
-the entire approved change is inseparable. A recovery preserves the accepted plan, or replaces it
-with a newly approved plan that explains the changed boundary. The developer's completion report
-maps every created commit to exactly one entry and explains any approved deviation. Do not collapse
+Before every write-role dispatch, the immutable brief carries an ordered commit plan. Each entry
+names one independently reviewable logical change, its expected files and the DoD items it covers;
+use one entry only when the entire approved change is inseparable. The coordinator derives one entry
+per DoD item; to use the architect's plan instead, pin it on the architect accept with
+`batch decide --decision accept --commit-plan-file <path>`. A recovery preserves the accepted plan,
+or replaces it with a newly approved plan that explains the changed boundary. The developer's
+completion report maps every created commit to the entries it closes; a mapping that is not
+one-to-one needs `dod_coverage` and `divergence_justification`, and a report with a `not_covered`
+item can be accepted only by `override-warning` with a note other than `none`, or returned with
+`retry`. Do not collapse
 unrelated implementation, tests, documentation, or type-only repairs into a recovery commit merely
 because they are staged together.
 
