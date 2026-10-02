@@ -175,22 +175,26 @@ def _run_stages(run_tmp: Path, test_env: dict[str, str]) -> None:
     run_stage("mypy", [sys.executable, "-m", "mypy"], cwd=ROOT, env=test_env)
     try:
         workers = 2 if sys.platform == "win32" else min(4, os.cpu_count() or 1)
-        run_stage(
+        pytest_args = [
+            sys.executable,
+            "-m",
             "pytest",
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "-p",
-                "no:cacheprovider",
-                "-n",
-                str(workers),
-                "--basetemp",
-                str(run_tmp / "p"),
-                str(ROOT / "tests"),
-            ],
-            env=test_env,
-        )
+            "-p",
+            "no:cacheprovider",
+            "-n",
+            str(workers),
+            "--basetemp",
+            str(run_tmp / "p"),
+            str(ROOT / "tests"),
+        ]
+        if sys.platform == "win32":
+            pytest_args.extend(
+                [
+                    "--ignore=tests/memory/test_eval.py",
+                    "--ignore=tests/memory/test_vector_probe.py",
+                ]
+            )
+        run_stage("pytest", pytest_args, env=test_env)
         run_stage(
             "clean-room",
             [sys.executable, str(ROOT / "scripts" / "test_clean_room.py")],

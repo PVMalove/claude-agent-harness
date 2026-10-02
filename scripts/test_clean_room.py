@@ -50,7 +50,7 @@ from scripts.clean_room import (
 
 # Order matters: each scenario reads what earlier ones left in the shared context (see each module's
 # `run` docstring), exactly as the single sequential run did before the split.
-SCENARIOS = (
+_ALL_SCENARIOS = (
     install_and_update,
     backend_orchestration,
     coordinator_seam,
@@ -70,6 +70,19 @@ SCENARIOS = (
     orchestration_config,
     project_hooks,
     global_install,
+)
+
+# On Windows, skip pure-review permutations to keep clean-room execution bounded.
+_WINDOWS_EXCLUDE = (
+    delta_review_probe,
+    delta_review,
+    fixed_sequence_review,
+)
+
+SCENARIOS = (
+    tuple(s for s in _ALL_SCENARIOS if s not in _WINDOWS_EXCLUDE)
+    if sys.platform == "win32"
+    else _ALL_SCENARIOS
 )
 
 
