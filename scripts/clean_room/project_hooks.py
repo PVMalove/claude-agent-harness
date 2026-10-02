@@ -114,6 +114,23 @@ def run(ctx: SimpleNamespace) -> None:
         == 0
     ):
         sys.exit("unknown PR head reused a linked-worktree QA marker")
+    heads_payload = json.dumps(
+        {
+            "cwd": str(linked),
+            "tool_input": {"command": "git ls-remote --heads origin foo"},
+        }
+    )
+    for gate in (mark_gate, require_gate):
+        if run_hook(gate, pv_project, "", raw_payload=heads_payload).returncode:
+            sys.exit(f"{gate.name} treated --heads of a non-PR command as a PR head")
+    head_eq_payload = json.dumps(
+        {
+            "cwd": str(pv_project),
+            "tool_input": {"command": f"gh pr create --head={linked_branch}"},
+        }
+    )
+    if run_hook(require_gate, pv_project, "", raw_payload=head_eq_payload).returncode:
+        sys.exit("gh pr create --head=<branch> did not resolve its linked checkout")
     (linked / ".claude" / ".qa-gate" / "passed").unlink()
     mark_payload = json.dumps(
         {"cwd": str(linked), "tool_input": {"command": "echo test"}}
