@@ -1239,7 +1239,7 @@ status::ready») — в этом случае этап grilling пропуска
 |---|---|---|
 | `block-direct-master.sh` | `PreToolUse(Bash)` | `git commit`/`git push` из `base_branch` или `integration/*` и push в эти рефы; пропускает только push, создающий `integration/*`, которой ещё нет на remote, а при недоступном remote блокирует. |
 | `block-public-attribution.sh` | `PreToolUse(Bash)` | Запрещённые сведения в commit messages, PR/MR titles/bodies и их файлах; push непереданных коммитов с тем же содержимым. |
-| `block-pr-merge.sh` | `PreToolUse(Bash)` | `gh pr merge` и `glab mr merge`/`accept` — безусловно, мердж только вручную. Решение по токенам команды (`pr_commands.py`), включая цепочки, подстановки, `bash -c` и обёртки; упоминания в кавычках, heredoc с кавычками и аргументах `echo`/`cat`/`grep` не блокируются. |
+| `block-pr-merge.sh` | `PreToolUse(Bash)` | `gh pr merge` и `glab mr merge`/`accept` — безусловно, мердж только вручную. Merge-текст в команде блокируется (fail closed), если строгий лексер `pr_commands.py` не принял её целиком или не каждая её simple command инертна по allowlist: `echo`, `printf`, `cat`, `grep`, `head`, `tail`, `wc`, `git commit`, текстовые подкоманды `gh`/`glab`. |
 | `check-branch-name.sh` | `PreToolUse(Bash)` | `git checkout -b`/`git switch -c <имя>`, не соответствующее `branch_pattern`. |
 | `check-worktree-branch-name.sh` | `PreToolUse(EnterWorktree)` | То же правило имени для нативного worktree-инструмента. |
 | `block-scratch-outside-docs-tasks.sh` | `PreToolUse(Write\|Edit)` | Запись вне проекта (кроме каталога памяти runtime `<CLAUDE_CONFIG_DIR или ~/.claude>/projects/<slug>/memory/`), task-артефакты в системных temp-директориях вместо `docs/tasks/`, PR-тела и комментарии вне `.harness/.sandboxes/pr_body/`. |
