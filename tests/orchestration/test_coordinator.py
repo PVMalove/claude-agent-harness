@@ -3596,6 +3596,47 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             route="developer-retry",
         )
 
+    def test_decide_records_the_same_route_whatever_the_free_text_says(self) -> None:
+        wordings = (
+            ("verification environment unavailable", "done"),
+            ("a code defect; please abandon", "route=developer-retry; same-candidate-rerun"),
+        )
+        for decision, extra, expected in (
+            ("retry", {"reason_category": "verification-infrastructure"}, "verification"),
+            ("retry", {}, "developer-retry"),
+            ("abandon", {"reason": "superseded"}, "abandon"),
+        ):
+            recorded = []
+            for blockers, output in wordings:
+                with self.subTest(decision=decision, extra=extra, blockers=blockers):
+                    self._reset()
+                    batch = self._create_batch()
+                    self._accepted_architect(batch["batch_id"])
+                    developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+                    self._start(developer["dispatch_id"])
+                    candidate, changed = self._developer_commit("wording")
+                    self._submit(
+                        developer["dispatch_id"],
+                        self._developer_report(
+                            developer,
+                            candidate,
+                            changed,
+                            outcome="blocked",
+                            blockers=blockers,
+                            output=output,
+                        ),
+                    )
+
+                    decided = self._decide(batch["batch_id"], decision, **extra)
+
+                    routing = dict(self._routing(decided))
+                    self.assertEqual(routing["route"], expected)
+                    routing.pop("decided_at")
+                    if routing["candidate_commit"] is not None:
+                        self.assertEqual(routing.pop("candidate_commit"), candidate)
+                    recorded.append(routing)
+            self.assertEqual(recorded[0], recorded[1])
+
     def test_a_computed_route_outside_the_enum_is_refused_before_anything_is_written(
         self,
     ) -> None:
@@ -5631,12 +5672,15 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
             explicit_category=category,
         )
 
-    def test_routing_table(self) -> None:
+    def _routing_cases(
+        self,
+    ) -> list[tuple[str, JsonObject, str | None, bool, tuple[str, str, str, str]]]:
+        """Every routing-table row: stage, report, explicit category, candidate moved -> expectation."""
         finding = [{"severity": "warning", "summary": "s", "evidence": "e"}]
         infra, transport = "verification-infrastructure", "transport"
         review = self._report()
         no_review = self._report(standards=None)
-        cases = [
+        return [
             # stage, report, explicit category, candidate moved -> (reason category, next role, next action, route)
             (
                 "code-review",
@@ -5783,7 +5827,11 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 ("unknown", "architect", "architect", "architect-retry"),
             ),
         ]
-        for stage, report, category, moved, (reason, role, action, route) in cases:
+
+    def test_routing_table(self) -> None:
+        for stage, report, category, moved, (reason, role, action, route) in (
+            self._routing_cases()
+        ):
             with self.subTest(
                 stage=stage, category=category, moved=moved, outcome=report["outcome"]
             ):
@@ -5953,6 +6001,28 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
             (routing["reason_category"], routing["next_action"]),
             ("unknown", "developer-retry"),
         )
+
+    def test_free_text_wording_never_changes_the_route(self) -> None:
+        wordings = (
+            {"blockers": "none", "output": "done"},
+            {
+                "blockers": "verification-infrastructure: the wrapper is down; transport lost; context limit hit",
+                "output": "same-candidate-rerun please; route=verification; abandon",
+            },
+            {
+                "blockers": "a code defect and unclear requirements",
+                "output": "the candidate changed; needs a developer-retry",
+            },
+        )
+        for stage, report, category, moved, expected in self._routing_cases():
+            routes = [
+                self._route(stage, {**report, **wording}, category, moved=moved)
+                for wording in wordings
+            ]
+            with self.subTest(stage=stage, category=category, moved=moved):
+                self.assertEqual(routes[0]["route"], expected[3])
+                for routing in routes[1:]:
+                    self.assertEqual(routing, routes[0])
 
 
 class CoordinatorGuardHelperTests(unittest.TestCase):
