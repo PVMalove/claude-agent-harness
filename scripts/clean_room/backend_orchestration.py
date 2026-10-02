@@ -155,6 +155,8 @@ def run(ctx: SimpleNamespace) -> None:
         "module-owned guidance",
         ".harness/orchestration/playbook.md",
         ".harness/orchestration/roles/",
+        "Recovery route table",
+        "route_preview",
     ):
         if required_contract.casefold() not in installed_implement.casefold():
             sys.exit(
