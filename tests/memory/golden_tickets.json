@@ -1,0 +1,202 @@
+[
+  {
+    "id": 165,
+    "title": "Planning Poker и story points на to-tickets для автомаршрутизации implement vs fast-implement",
+    "query": "Цель: Ввести Planning Poker и story points для выбора implement или fast-implement. DoD: afk с оценкой до 3 получает pipeline::fast; от 5 — full; оценка 4 требует второго прохода; hitl не получает fast; человек утверждает метку.",
+    "expected_sources": [
+      "docs/adr/0005-implement-pipeline.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/165",
+    "state": "CLOSED"
+  },
+  {
+    "id": 339,
+    "title": "refactor: Repo Map — вторая очередь исправлений по ревью PR #296",
+    "query": "Цель: Разложить Repo Map и parser_bundle на модули и передавать парсер через ParserBackend. DoD: Bundle находится один раз; чтение Git пакетное, отбор в бюджет линейный; грамматики загружаются лениво; full и minimal сохраняют бинарные пути.",
+    "expected_sources": [
+      "docs/adr/0008-repo-map.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/339",
+    "state": "CLOSED"
+  },
+  {
+    "id": 345,
+    "title": "Health: каталоги харнесса и локальный --fix",
+    "query": "Цель: Проверять каталоги харнесса и права записи в harness health с локальным --fix. DoD: Отсутствующий каталог с записываемым родителем получает ok; незаписываемый — fail; fix создаёт каталоги и registry, не меняя машинных настроек.",
+    "expected_sources": [
+      "docs/adr/0006-scratch-artifacts.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/345",
+    "state": "CLOSED"
+  },
+  {
+    "id": 359,
+    "title": "Refactor Soft and Hard cleanup to target .harness/.sandboxes/ and purge legacy folders",
+    "query": "Цель: Переработать soft и hard cleanup для .harness/.sandboxes/ и устаревших каталогов. DoD: Soft удаляет устаревшие runs, scratch и logs; hard включает cache и reports с --confirm HARD; активные worktree сохраняются; пути не выходят за .harness.",
+    "expected_sources": [
+      "docs/adr/0006-scratch-artifacts.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/359",
+    "state": "CLOSED"
+  },
+  {
+    "id": 391,
+    "title": "fix(ci): восстановить регрессии слияния #385/#384 на master",
+    "query": "Цель: Восстановить потерянные при merge регрессии проверки проекта на master. DoD: CleanRoomPolicy создаёт temporary_parent; linked-worktree сценарий не дублируется; QA hook сохраняет fallback checkout; verify проходит.",
+    "expected_sources": [
+      "docs/adr/0007-python-quality.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/391",
+    "state": "CLOSED"
+  },
+  {
+    "id": 394,
+    "title": "Health: изоляция падений проверок в registry.run",
+    "query": "Цель: Изолировать падения отдельных проверок в registry.run health. DoD: Exception и SystemExit дают fail со стабильным id; KeyboardInterrupt не перехватывается; процессный health JSON остаётся полным без git.",
+    "expected_sources": [
+      "CONTEXT.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/394",
+    "state": "CLOSED"
+  },
+  {
+    "id": 402,
+    "title": "Скиллы пропускают лейблы status::* при старте и после закрытия тикета",
+    "query": "Цель: Обновлять status::* при старте реализации и после подтверждённого merge. DoD: implement и fast-implement ставят in-progress; закрытый тикет получает done; зависимости разблокируются без потери статуса выполняемой задачи.",
+    "expected_sources": [
+      "docs/adr/0005-implement-pipeline.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/402",
+    "state": "CLOSED"
+  },
+  {
+    "id": 407,
+    "title": "fix(tests): console launcher e2e tests hang on Windows (PATHEXT uv lookup)",
+    "query": "Цель: Устранить зависание console launcher e2e на Windows при поиске uv через PATHEXT. DoD: Отсутствующий и неработающий uv дают health fallback; тесты не запускают настоящий Textual TUI и не оставляют процессов.",
+    "expected_sources": [
+      "docs/adr/0009-harness-console.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/407",
+    "state": "CLOSED"
+  },
+  {
+    "id": 416,
+    "title": "console: update --force-seed-files и очистка soft/hard в командах Harness",
+    "query": "Цель: Добавить update --force-seed-files и упорядочить команды очистки в Harness console. DoD: Перезапись seed-файлов требует подтверждения; есть план soft/hard, применение hard с HARD; каталог команд, справка и тесты обновлены.",
+    "expected_sources": [
+      "docs/adr/0009-harness-console.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/416",
+    "state": "CLOSED"
+  },
+  {
+    "id": 421,
+    "title": "qa-gate-state: ложная ошибка на командах с подстрокой --head",
+    "query": "Цель: Исключить ложную ошибку QA hook на командах с подстрокой --head. DoD: Только gh pr create с отдельным --head или --head=branch выбирает PR head; git ls-remote --heads не вызывает ошибку; require сохраняет проверку.",
+    "expected_sources": [
+      "docs/adr/0005-implement-pipeline.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/421",
+    "state": "CLOSED"
+  },
+  {
+    "id": 422,
+    "title": "Память проекта: конфиг, FTS5-индекс и harness memory search/rebuild",
+    "query": "Цель: Включить память проекта через memory.enabled и memory_policy; создать FTS5-индекс ADR и глоссария. DoD: Без allowlist ничего не индексируется; search возвращает только указатели, rebuild восстанавливает кэш; SQLite работает офлайн.",
+    "expected_sources": [
+      "docs/adr/0010-project-memory.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/422",
+    "state": "CLOSED"
+  },
+  {
+    "id": 423,
+    "title": "Память проекта: статусы источников и санитизированный ingest архива, QA findings и ledger",
+    "query": "Цель: Извлекать статус, дату и superseded-by; санитизировать архив задач, QA findings и Lifecycle ledger. DoD: Superseded ADR исключены, исторические хиты помечены; redact применяется; ingest инкрементален по content-hash.",
+    "expected_sources": [
+      "docs/adr/0010-project-memory.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/423",
+    "state": "CLOSED"
+  },
+  {
+    "id": 424,
+    "title": "Память проекта: один индекс на репозиторий, read-only из worktree",
+    "query": "Цель: Использовать один индекс памяти на репозиторий в главном checkout. DoD: Worktree читает общий индекс read-only без собственного кэша; параллельные сборки не повреждают SQLite.",
+    "expected_sources": [
+      "docs/adr/0010-project-memory.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/424",
+    "state": "CLOSED"
+  },
+  {
+    "id": 425,
+    "title": "Память проекта: секция памяти в harness health",
+    "query": "Цель: Добавить секцию памяти в harness health и Harness console. DoD: Отражены выключенная память, отсутствие индекса и модели, валидный индекс; JSON содержит секцию; health ничего не пишет.",
+    "expected_sources": [
+      "docs/adr/0010-project-memory.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/425",
+    "state": "CLOSED"
+  },
+  {
+    "id": 426,
+    "title": "Память проекта: скиллы вызывают harness memory search",
+    "query": "Цель: Скиллы diagnosing-bugs, grilling и architect вызывают поиск по включённой памяти. DoD: Скиллы трактуют статус указателей; роли оркестрации не получают search; vendor не редактируется; verify проходит.",
+    "expected_sources": [
+      "docs/adr/0010-project-memory.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/426",
+    "state": "CLOSED"
+  },
+  {
+    "id": 427,
+    "title": "Память проекта: замороженные указатели в Context Package",
+    "query": "Цель: Заморозить найденные по цели и DoD указатели памяти в Context Package без текста источников. DoD: Hash источника определяет freshness; disabled и --no-memory исключают память; нет индекса — явная деградация; квоты и бюджет соблюдаются офлайн.",
+    "expected_sources": [
+      "docs/adr/0010-project-memory.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/427",
+    "state": "CLOSED"
+  },
+  {
+    "id": 428,
+    "title": "Память проекта: harness memory sync для тикетов, PR и Completion report",
+    "query": "Цель: Явно синхронизировать закрытые тикеты, PR и Completion report через harness memory sync. DoD: Политика соблюдается, снапшот санитизирован; повторный sync инкрементален; ошибка сети сохраняет прошлый снапшот; Package не обращается к трекеру.",
+    "expected_sources": [
+      "docs/adr/0010-project-memory.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/428",
+    "state": "CLOSED"
+  },
+  {
+    "id": 429,
+    "title": "Память проекта: поля lessons и used_memory в Completion report",
+    "query": "Цель: Добавить lessons и used_memory в Completion report. DoD: Отчёты с полями и без них принимаются; lessons индексируются как не подтверждённые человеком без повышенного веса; глоссарий и шаблон обновлены.",
+    "expected_sources": [
+      "docs/adr/0010-project-memory.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/429",
+    "state": "CLOSED"
+  },
+  {
+    "id": 445,
+    "title": "fix: ложные отказы scratch-path и bounded-check hooks",
+    "query": "Цель: Исправить ложные отказы scratch-path и bounded-check hooks. DoD: Ошибки называют выход пути за пределы проекта; память runtime разрешена; команды чтения не считаются QA-запуском; реальные проверки остаются ограниченными.",
+    "expected_sources": [
+      "docs/adr/0006-scratch-artifacts.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/445",
+    "state": "CLOSED"
+  },
+  {
+    "id": 459,
+    "title": "pytest зависает при закрытии asyncio loop в консольных тестах",
+    "query": "Цель: Устранить зависание консольных тестов при asyncio.Runner.close. DoD: Полный pytest завершается без зависания asyncio loop; консольные тесты закрывают workers и отложенные callbacks.",
+    "expected_sources": [
+      "docs/adr/0009-harness-console.md"
+    ],
+    "url": "https://github.com/PVMalove/claude-agent-harness/issues/459",
+    "state": "CLOSED"
+  }
+]
