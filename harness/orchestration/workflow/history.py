@@ -315,16 +315,13 @@ def _context_package_freshness(
     repo: Path, root: Path, batch: JsonObject
 ) -> JsonObject | None:
     """Shadow-mode evidence only: records whether the batch's latest registered Context Package
-    still matches current repository state (its base and the latest accepted developer candidate).
+    still matches current repository state (its base and the current developer candidate).
     Never blocks dispatch creation -- roles are not yet restricted to the package."""
     package = _latest_context_package(root, batch)
     if package is None:
         return None
     current_base = batch.get("integration_base_commit") or batch.get("base_commit")
-    try:
-        current_candidate = _latest_developer_candidate(repo, root, batch)
-    except CoordinatorError:
-        current_candidate = None
+    current_candidate = _current_developer_candidate(repo, root, batch)
     fresh = package["base_commit"] == current_base and (
         current_candidate is None or package["candidate_commit"] == current_candidate
     )
@@ -363,6 +360,48 @@ def _latest_developer_candidate(repo: Path, root: Path, batch: JsonObject) -> st
             remedy="accept the developer's completion report before creating a candidate dispatch",
         )
     return candidates[-1]
+
+
+def _retry_pinned_candidate(repo: Path, root: Path, batch: JsonObject) -> str | None:
+    """The candidate of the unaccepted developer report a pending developer retry continues.
+
+    A ``retry`` decision on a developer work report leaves its candidate unaccepted, yet the next
+    developer starts from that history, not from an older accepted candidate or the base. Any other
+    retried stage (code-review, QA, publish, verification) has no such candidate: ``None``."""
+    if batch.get("next_action") != "developer-retry":
+        return None
+    previous = next(
+        (
+            item
+            for item in reversed(batch.get("dispatches", []))
+            if isinstance(item.get("decision"), dict)
+        ),
+        None,
+    )
+    if (
+        previous is None
+        or previous.get("role") != "developer"
+        or previous["decision"].get("decision") != "retry"
+    ):
+        return None
+    if _load_dispatch(root, previous["dispatch_id"]).get("purpose", "work") != "work":
+        return None
+    report = _pending_report(root, batch, previous)
+    return _candidate_commit(repo, report["commit_sha"])
+
+
+def _current_developer_candidate(
+    repo: Path, root: Path, batch: JsonObject
+) -> str | None:
+    """The candidate the next developer-side dispatch continues: the retry-pinned candidate, else
+    the latest accepted developer candidate, else ``None``."""
+    pinned = _retry_pinned_candidate(repo, root, batch)
+    if pinned is not None:
+        return pinned
+    try:
+        return _latest_developer_candidate(repo, root, batch)
+    except CoordinatorError:
+        return None
 
 
 def _latest_registered_verification_candidate(repo: Path, batch: JsonObject) -> str:
@@ -648,15 +687,12 @@ def _pinned_package_stale(
     repo: Path, root: Path, batch: JsonObject, dispatch: JsonObject
 ) -> bool:
     """Whether the Context Package a not-yet-finished brief pinned no longer matches the batch's
-    current base or latest accepted candidate."""
+    current base or current developer candidate."""
     package_id = dispatch.get("context_package_id")
     if not isinstance(package_id, str):
         return False
     package = _load_context_package(root, package_id)
-    try:
-        current_candidate: str | None = _latest_developer_candidate(repo, root, batch)
-    except CoordinatorError:
-        current_candidate = None
+    current_candidate = _current_developer_candidate(repo, root, batch)
     return package["base_commit"] != _effective_base(batch) or (
         current_candidate is not None
         and package["candidate_commit"] != current_candidate
