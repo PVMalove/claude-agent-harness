@@ -4,7 +4,8 @@
 `python pr_commands.py merge` читает payload хука из stdin и завершается с кодом 2, если в
 `tool_input.command` есть merge PR/MR (`gh pr merge`, `glab mr merge|accept`) и команда не
 состоит целиком из инертных simple commands строгого лексера (fail closed, `merge_blocked`).
-`qa-gate-state.py` импортирует модуль, чтобы найти ветку создаваемого PR/MR (`create_heads`).
+`qa-gate-state.py` импортирует модуль, чтобы найти ветку создаваемого PR/MR (`create_heads`),
+`direct_commits.py` — чтобы найти вызовы `git commit`/`git push` (`parse`, `strict_steps`).
 """
 
 import json
@@ -192,12 +193,29 @@ def _parse(text: str, out: Parsed, depth: int) -> None:
         out.opaque.append(source)
         return
     words: list[str] = []
+    target = False
     for token in [*tokens, ";"]:
-        if token and set(token) <= set(SEPARATORS):
+        if not (token and set(token) <= set(SEPARATORS)):
+            if not target:
+                words.append(token)
+            target = False
+            continue
+        # A redirection (`>`, `2>&1`, `&>`, `<<<`) keeps the command going: its target word and
+        # descriptor number are not arguments. `<(`/`>(` open a substitution parsed above.
+        redirect = next((i for i, char in enumerate(token) if char in "<>"), None)
+        if redirect is None or token.endswith("("):
             _add_command(words, source, out, depth)
             words = []
-        else:
-            words.append(token)
+            continue
+        head = token[:redirect]
+        if head.endswith("&") and not head.endswith("&&"):
+            head = head[:-1]  # `&>`, not a background `&`
+        if head:
+            _add_command(words, source, out, depth)
+            words = []
+        elif words and FD_NUMBER.fullmatch(words[-1]):
+            words.pop()
+        target = True
 
 
 # Contexts of the heredoc scanner, named by what opened them. Commands run at the top level (""),
@@ -500,37 +518,47 @@ class StrictLexer:
         self.index = 0
         # (delimiter, strip leading tabs, literal body) of operators whose body is not read yet.
         self.heredocs: list[tuple[str, bool, bool]] = []
+        # Separators before each command `commands()` returns, joined: "", "&&", "|", ";\n", ...
+        self.links: list[str] = []
 
     def commands(self) -> list[list[str]]:
         """argv каждой simple command текста по порядку."""
         text = self.text
         commands: list[list[str]] = []
         argv: list[str] = []
+        link = ""
         while True:
             self._skip_blanks()
             if self.index >= len(text):
                 break
-            ends = True
+            separator = ""
             if text[self.index] in "()":
                 raise OutsideSubset
             if text[self.index] == "\n":
                 self.index += 1
                 self._read_bodies()
+                separator = "\n"
             elif (operator := self._operator(REDIRECTIONS)) is not None:
                 self._redirection(operator)
-                ends = False
             elif (operator := self._operator(COMMAND_SEPARATORS)) is not None:
                 if operator == ";" and text.startswith((";", "&"), self.index):
                     raise OutsideSubset  # `;;`, `;&`: case terminators
+                separator = operator
             else:
                 self._add_word(argv)
-                ends = False
-            if ends and argv:
+            if not separator:
+                continue
+            if argv:
                 commands.append(argv)
-                argv = []
+                self.links.append(link)
+                argv, link = [], ""
+            link += separator
         if self.heredocs:
             raise OutsideSubset
-        return [*commands, argv] if argv else commands
+        if argv:
+            commands.append(argv)
+            self.links.append(link)
+        return commands
 
     def _skip_blanks(self) -> None:
         """Пропустить пробелы, табуляции и переносы `\\` + перевод строки."""
@@ -650,6 +678,16 @@ def strict_commands(command: str) -> list[list[str]] | None:
         return StrictLexer(command).commands()
     except OutsideSubset:
         return None
+
+
+def strict_steps(command: str) -> list[tuple[str, list[str]]] | None:
+    """(разделители перед командой, argv) строгого лексера; None — команда вне подмножества."""
+    lexer = StrictLexer(command)
+    try:
+        commands = lexer.commands()
+    except OutsideSubset:
+        return None
+    return list(zip(lexer.links, commands))
 
 
 def fully_inert(command: str) -> bool:

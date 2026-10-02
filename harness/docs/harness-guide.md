@@ -1237,7 +1237,7 @@ status::ready») — в этом случае этап grilling пропуска
 
 | Hook | Событие | Что блокирует |
 |---|---|---|
-| `block-direct-master.sh` | `PreToolUse(Bash)` | `git commit`/`git push` из `base_branch` или `integration/*` и push в эти рефы; пропускает только push, создающий `integration/*`, которой ещё нет на remote, а при недоступном remote блокирует. |
+| `block-direct-master.sh` | `PreToolUse(Bash)` | `git commit`/`git push` из `base_branch` или `integration/*` и push в эти рефы; пропускает только push, создающий `integration/*`, которой ещё нет на remote, а при недоступном remote блокирует. Ветка берётся из checkout самого вызова (`git -C`/`--work-tree`/`--git-dir`, `cd` раньше в простой цепочке без `$`, скобок, `|` и `||`, `cwd` из payload, корень проекта); упоминание в аргументах других команд, кавычках и heredoc вызовом не считается, а неразобранная команда с commit/push блокируется. |
 | `block-public-attribution.sh` | `PreToolUse(Bash)` | Запрещённые сведения в commit messages, PR/MR titles/bodies и их файлах; push непереданных коммитов с тем же содержимым. |
 | `block-pr-merge.sh` | `PreToolUse(Bash)` | `gh pr merge` и `glab mr merge`/`accept` — безусловно, мердж только вручную. Merge-текст в команде блокируется (fail closed), если строгий лексер `pr_commands.py` не принял её целиком или не каждая её simple command инертна по allowlist: `echo`, `printf`, `cat`, `grep`, `head`, `tail`, `wc`, `git commit`, текстовые подкоманды `gh`/`glab`. |
 | `check-branch-name.sh` | `PreToolUse(Bash)` | `git checkout -b`/`git switch -c <имя>`, не соответствующее `branch_pattern`. |
