@@ -3694,7 +3694,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         preview = packet(reason_category="verification-infrastructure")
 
         self.assertEqual(unflagged["action"], "decide completion report")
-        self.assertEqual(unflagged["route_preview"]["retry"]["route"], "developer-retry")
+        self.assertEqual(
+            unflagged["route_preview"]["retry"]["route"], "developer-retry"
+        )
         self.assertEqual(unflagged["route_preview"]["abandon"], {"route": "abandon"})
         self.assertEqual(forced["route_preview"]["retry"]["route"], "developer-retry")
         retry = preview["route_preview"]["retry"]
@@ -3737,7 +3739,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 "dispatch_id": review["dispatch_id"],
                 "decision": "retry",
                 "route": "same-candidate-rerun",
-                "evidence": self._report_evidence(batch["batch_id"], review["dispatch_id"]),
+                "evidence": self._report_evidence(
+                    batch["batch_id"], review["dispatch_id"]
+                ),
                 "approver": human,
                 "approved_at": self.APPROVED_AT,
             },
@@ -3776,7 +3780,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 "dispatch_id": brief["dispatch_id"],
                 "decision": "accept",
                 "route": None,
-                "evidence": self._report_evidence(batch["batch_id"], brief["dispatch_id"]),
+                "evidence": self._report_evidence(
+                    batch["batch_id"], brief["dispatch_id"]
+                ),
                 "approver": {"kind": "policy", "name": "low_risk"},
                 "approved_at": audit["approved_at"],
             },
