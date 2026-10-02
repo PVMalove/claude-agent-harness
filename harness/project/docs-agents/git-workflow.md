@@ -21,18 +21,17 @@ branch is the PR target for child work; `base_branch` is the release target for 
 
 1. **Initialization (Branching):**
    An isolated issue branch is created for each task from the epic's exact integration branch — never from whatever branch happens to already be checked out. If the task has no epic, use `base_branch`.
-   * **Format:** must match `branch_pattern` in `.harness/project.json` (default: `feature/issue-<ID>-<short-slug>`, where `<ID>` is the tracker issue number and `<short-slug>` is a short task description — transliterated per whatever convention this project's `.harness/project.json` documents, words separated by hyphens or underscores).
-   * **Command:** `git fetch origin <integration-branch> && git switch -c feature/issue-<ID>-<slug> --track origin/<integration-branch>`. For an epic-less task, replace `<integration-branch>` with `base_branch` from `.harness/project.json` (default `main`).
+   * **Format:** must match `branch_pattern` in `.harness/project.json` (default: `feature/issue-<ID>-<short-slug>`, where `<ID>` is the tracker issue number and `<short-slug>` is a short task description — transliterated, words separated by hyphens or underscores).
+   * **Command:** `git fetch origin <integration-branch> && git switch -c feature/issue-<ID>-<slug> --track origin/<integration-branch>`. For an epic-less task, replace `<integration-branch>` with the required `base_branch` from `.harness/project.json`.
 2. **Post-branch Push:**
-   * Immediately after creating the branch, push it to GitHub so it exists remotely: `git push -u origin feature/issue-<ID>-<slug>`.
+   * Immediately after creating the branch, push it to the remote (`origin`) so it exists there: `git push -u origin feature/issue-<ID>-<slug>`.
 3. **Implementation & Quality Assurance (TDD):**
-   * Code MUST be written in strict accordance with the **TDD** (Test-Driven Development) methodology.
-   * Local testing is mandatory before committing any changes.
+   * Write code test-first (TDD) and run the local tests before every commit.
 4. **Committing Changes:**
    * Commits are made only to the current issue branch. Before the first edit and before every commit, verify that the current branch matches `branch_pattern` and is not `base_branch` or `integration/*`.
-   * Commit messages **MUST** follow the **Semantic Commit Messages** standard (e.g., `feat: ...`, `fix: ...`, `refactor: ...`).
+   * Commit messages follow the **Semantic Commit Messages** standard (e.g., `feat: ...`, `fix: ...`, `refactor: ...`).
 5. **Continuous Push:**
-   * Push commits to GitHub both while implementing the task and after addressing code-review feedback: `git push origin feature/issue-<ID>-<slug>`. Never leave finished commits sitting only in the local repo.
+   * Push commits to the remote (`origin`) both while implementing the task and after addressing code-review feedback: `git push origin feature/issue-<ID>-<slug>`. Never leave finished commits sitting only in the local repo.
 6. **Integration (Pull Request):** *(local markdown tracker: skip this step and step 7 — see "Issue First" above.)*
    * **Confirm before opening:** before creating the PR, explicitly ask the developer whether the branch is ready to be opened as a pull request. Do not run `gh pr create` just because implementation, tests, and code-review are done — wait for an explicit go-ahead. Silence, or the mere fact that the task is otherwise complete, does not count as consent.
    * Once the developer confirms, run the `qa-gate` skill (see [issue-tracker.md](./issue-tracker.md)'s "When a skill says…" conventions for how tickets are referenced) and only proceed once it passes.

@@ -51,17 +51,17 @@ This project uses a namespace-based, enterprise-style label taxonomy. Every tria
 
 - `resolution::wontfix` — the request was explicitly rejected. Applied at close time (see "Apply the outcome" below), not during normal triage.
 
-`task-report::required` is a context label too, but `triage` doesn't apply or read it — `/to-spec` and `/to-tickets` apply it, `/implement` acts on it. See `docs/agents/triage-labels.md`.
+`task-report::required` is a context label too, but `triage` doesn't apply or read it — `/to-spec` and `/to-tickets` apply it, `/to-pull-requests` acts on it. See `docs/agents/triage-labels.md`.
 
 An unlabeled issue is implicitly "needs triage" — there is no dedicated label for that state, it's just the absence of the required axes.
 
 For a PR, the same labels read against the attached code: `status::ready` + `afk` means a brief is attached and an agent should take the next step on the diff; `status::ready` + `hitl` means it's ready for the maintainer to review or merge.
 
-These are the actual label strings for this repo (no translation table needed — this taxonomy fully replaces the upstream canonical state roles, including the category axis). See `docs/agents/triage-labels.md`.
+These are the actual label strings for this repo. See `docs/agents/triage-labels.md`.
 
-Never apply upstream canonical labels (`ready-for-agent`, `ready-for-human`, `needs-triage`, `needs-info`, `wontfix`) or the retired `epic::<slug>` — if the maintainer asks to group a ticket under an epic via a label, remind them grouping is now a tracker-native link instead of a label — GitHub sub-issues, GitLab's `Part of #<map>` convention, or the local-markdown folder structure (see `docs/agents/issue-tracker.md#wayfinding-operations`).
+Never apply upstream canonical labels (`ready-for-agent`, `ready-for-human`, `needs-triage`, `needs-info`, `wontfix`) or an `epic::<slug>` label. This repo groups a ticket under an epic with a tracker-native link — GitHub sub-issues, GitLab's `Part of #<map>` convention, or the local-markdown folder structure (see `docs/agents/issue-tracker.md#wayfinding-operations`); explain that if the maintainer asks for an epic label.
 
-State transitions: analyze an unlabeled issue to determine its `type::*` label and whether it's `hitl` or `afk`, then place it in `status::ready` or `status::blocked` (dependency or missing info) — or, if it's too large to specify in one triage pass, `status::specs` and point the maintainer at `/to-spec`. `status::blocked` returns to `status::ready` once the blocker clears or the reporter replies — that transition is `/implement`'s job, at the moment it starts work on that specific ticket, not a sweep `triage` runs over a decomposition on its own initiative. The maintainer can override at any time — flag transitions that look unusual and ask before proceeding.
+State transitions: analyze an unlabeled issue to determine its `type::*` label and whether it's `hitl` or `afk`, then place it in `status::ready` or `status::blocked` (dependency or missing info) — or, if it's too large to specify in one triage pass, `status::specs` and point the maintainer at `/to-spec`. `status::blocked` returns to `status::ready` once the blocker clears or the reporter replies — `/to-pull-requests` sweeps a closed ticket's dependents, and `/implement`/`/fast-implement` re-check blockers in pre-flight; `triage` does not run that sweep on its own initiative. The maintainer can override at any time — flag transitions that look unusual and ask before proceeding.
 
 ## Invocation
 
