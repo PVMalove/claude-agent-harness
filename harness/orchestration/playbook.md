@@ -371,9 +371,13 @@ Use this shape so missing proof is visible:
 In JSON, represent the optional fields as `"lessons": ["<observation>"]` and
 `"used_memory": ["<hit identifier>"]`; omit them when there is nothing to record.
 
-Report submission rejects only structural commit-plan errors, each with a remedy, such as an
+Report submission rejects structural commit-plan errors, each with a remedy, such as an
 unmapped created commit, an unknown plan entry, an uncovered item without a reason, or a divergence
-without a justification. A justified divergence with full coverage does not by itself make a report
+without a justification. It also checks `dod_coverage` against `commit_map` and the plan's `covers`:
+an item claimed by commits none of which `commit_map` maps to an entry covering that item is
+refused, and the remedy names the item, the claimed commits, and the entries that cover it. A
+`not_covered` item that the mapping formally covers stays valid and needs a manual decision like any
+other `not_covered` item. A justified divergence with full coverage does not by itself make a report
 unclean, and the decision records it as `commit_plan_divergence`. Any `not_covered` item is never
 clean: no policy accepts it automatically, plain `accept` is refused, and the report can be
 accepted only by `override-warning` with a note other than `none`, or returned with `retry`.

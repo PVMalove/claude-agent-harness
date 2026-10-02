@@ -208,6 +208,11 @@ class CheckReportTests(unittest.TestCase):
         self._check(report, dispatch)
         self._check({**report, "dod_coverage": _covered([C1], [C2], [C3])}, dispatch)
         self._refused(
+            {**report, "dod_coverage": _covered([C1], [C1], [C3])},
+            r"item 2 claims commits .* covering item 2 \(step-2\)",
+            dispatch,
+        )
+        self._refused(
             {**report, "divergence_justification": "nothing diverged"},
             "only for a commit_map that diverges",
             dispatch,
@@ -324,6 +329,64 @@ class CheckReportTests(unittest.TestCase):
         for name, (coverage, message) in cases.items():
             with self.subTest(name):
                 self._refused({**justified, "dod_coverage": coverage}, message)
+
+    def test_a_coverage_claim_must_follow_commit_map_and_covers(self) -> None:
+        # The #478 code-review shape: item 3 claimed by C1 while step-3 stays unclosed.
+        report = {
+            "commit_map": _pairs(
+                (C1, "step-1"), (C1, "step-2"), (C2, "step-4"), (C3, "step-5")
+            ),
+            "dod_coverage": _covered([C1], [C1], [C1], [C2], [C3]),
+            "divergence_justification": "step-1 and step-2 share one seam",
+        }
+        refused = self._refused(
+            report,
+            re.escape(
+                f"dod_coverage item 3 claims commits ['{C1}'], but commit_map maps none "
+                "of them to a plan entry covering item 3 (step-3)"
+            ),
+        )
+        self.assertIn("map one of the claimed commits to step-3", refused.remedy)
+        self.assertIn("not_covered", refused.remedy)
+
+        honest = [*report["dod_coverage"][:2], {"dod_item": 3, "not_covered": "step-3 deferred"}]
+        self._check({**report, "dod_coverage": [*honest, *report["dod_coverage"][3:]]})
+
+    def test_a_coverage_claim_reads_pinned_covers_and_resolves_short_shas(self) -> None:
+        plan = [_entry("pin", [1]), _entry("rules", [3, 2])]
+        dispatch = _dispatch(plan, items=FIVE[:3])
+        commit_map = _pairs((C1, "pin"), (C2, "pin"), (C3, "rules"))
+        justified = {"commit_map": commit_map, "divergence_justification": "split"}
+        short = {C3[:7]: C3}
+
+        self._check(
+            {**justified, "dod_coverage": _covered([C1, C2], [C2, C3[:7]], [C3])},
+            dispatch,
+            resolve=lambda sha: short.get(sha, sha),
+        )
+        refused = self._refused(
+            {**justified, "dod_coverage": _covered([C1], [C1, C2], [C3])},
+            r"item 2 claims commits .* covering item 2 \(rules\)",
+            dispatch,
+        )
+        self.assertIn(C2, refused.message)
+
+    def test_not_covered_stays_valid_for_an_item_the_mapping_covers(self) -> None:
+        report = {
+            "commit_map": MERGED,
+            "dod_coverage": [
+                *MERGED_COVERAGE[:2],
+                {"dod_item": 3, "not_covered": "step-3 landed without its tests"},
+                *MERGED_COVERAGE[3:],
+            ],
+            "divergence_justification": "step-1 and step-2 share one seam",
+        }
+
+        self._check(report)
+        self.assertEqual(
+            commit_plan.not_covered(report),
+            [{"dod_item": 3, "reason": "step-3 landed without its tests"}],
+        )
 
     def test_commit_map_shape_errors_keep_their_messages(self) -> None:
         missing = self._refused({"commit_map": []}, "requires commit_map")
