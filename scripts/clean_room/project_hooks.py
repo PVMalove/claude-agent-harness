@@ -1,12 +1,22 @@
 """Hooks целевого проекта: сценарий clean-room из `scripts/test_clean_room.py`."""
 
 import json
+import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
 from harness.storage import storage_path
+from scripts.clean_room.merge_corpus import (
+    EXEMPT_MENTIONS,
+    OLD_MERGE_CHECK,
+    PERF_PAYLOADS,
+    PROBE_PAYLOADS,
+    REVIEW_PAYLOADS,
+    glab_variants,
+)
 from scripts.clean_room.support import (
     BASH,
     HARNESS,
@@ -50,6 +60,11 @@ def run(ctx: SimpleNamespace) -> None:
     qa_gate_hook = pv_project / ".claude" / "hooks" / "require-qa-gate.sh"
     if not qa_gate_hook.is_file():
         sys.exit("pvmalove-suite init did not scaffold require-qa-gate.sh")
+    merge_hook = pv_project / ".claude" / "hooks" / "block-pr-merge.sh"
+    if not merge_hook.is_file():
+        sys.exit("pvmalove-suite init did not scaffold block-pr-merge.sh")
+    if not (pv_project / ".claude" / "hooks" / "pr_commands.py").is_file():
+        sys.exit("pvmalove-suite init did not scaffold the pr_commands.py hook helper")
 
     # A PR launched from the primary checkout can explicitly target a tested linked worktree.
     # Its QA marker must belong to that checkout, even when the primary checkout is dirty.
@@ -85,10 +100,66 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("could not record primary checkout QA marker")
     if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode == 0:
         sys.exit("primary checkout QA marker opened a linked-worktree PR")
+
+    def gate_code(command: str, cwd: Path) -> int:
+        """Код require-qa-gate.sh для команды, запущенной из `cwd`."""
+        payload = json.dumps({"cwd": str(cwd), "tool_input": {"command": command}})
+        return run_hook(require_gate, pv_project, "", raw_payload=payload).returncode
+
+    # Creates that publish the linked branch from the primary checkout's cwd.
+    linked_creates = [
+        f"glab mr create -s {linked_branch} --fill",
+        f"glab mr create -fs {linked_branch}",
+        f"glab mr create -s{linked_branch}",
+        f"glab mr create --source-branch {linked_branch} --fill",
+        f"glab mr create --source-branch={linked_branch}",
+        # The `new` aliases and the gh -H shorthand of --head publish the same branch.
+        f"glab mr new -s {linked_branch}",
+        f"gh pr new --head {linked_branch}",
+        f"gh pr create -H {linked_branch}",
+        f"gh pr create -H{linked_branch}",
+        f"gh pr create -dH {linked_branch}",
+        f"gh pr create -H=origin:{linked_branch}",
+    ]
+    for command in linked_creates:
+        if gate_code(command, pv_project) != 2:
+            sys.exit(f"primary checkout QA marker opened a linked MR: {command!r}")
+    if gate_code("glab mr create --fill", linked) != 2:
+        sys.exit("glab mr create from an untested linked checkout cwd was allowed")
     if run_hook(record_gate, pv_project, "", cwd=linked).returncode:
         sys.exit("could not record linked-worktree QA marker")
     if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode:
         sys.exit("linked-worktree QA marker did not permit its PR")
+    for command in linked_creates:
+        if gate_code(command, pv_project):
+            sys.exit(f"linked-worktree QA marker did not permit: {command!r}")
+    for command in (
+        "glab mr create --fill",
+        # -s of another command and glab -H (a repository) do not name the MR branch.
+        "git commit -s -m wip && glab mr create --fill",
+        "glab mr create -H group/fork --fill",
+    ):
+        if gate_code(command, linked):
+            sys.exit(f"QA marker did not permit MR from the linked cwd: {command!r}")
+    for command in (
+        "glab mr create -s feature/issue-999-missing",
+        "glab mr create -s",
+        f"glab mr create -s {linked_branch} && gh pr create --fill",
+    ):
+        if gate_code(command, linked) != 2:
+            sys.exit(f"unresolvable MR source branch reused a QA marker: {command!r}")
+    # A --head the pre-#443 global scan finds is always checked, even where the token parse
+    # sees no create: the cwd checkout's marker must not open a PR for another branch.
+    missing_head = "gh pr create --head feature/issue-999-missing --fill"
+    for command in (
+        f"{{ cat <<'EOF'\n{missing_head}\nEOF\n}} | bash",
+        f"cat <<'EOF' |\n{missing_head}\nEOF\nbash",
+        f"true # note \\\n{missing_head}",
+        f"echo $(true)#; {missing_head}",
+        f"cat <<'EOF'\nx\\\nEOF\n{missing_head}\nEOF",
+    ):
+        if gate_code(command, linked) != 2:
+            sys.exit(f"QA gate reused the cwd marker for another PR head: {command!r}")
     local_pr_payload = json.dumps(
         {
             "cwd": str(linked),
@@ -141,6 +212,8 @@ def run(ctx: SimpleNamespace) -> None:
     )
     if run_hook(require_gate, pv_project, "", raw_payload=pr_payload).returncode == 0:
         sys.exit("stale linked-worktree QA marker opened a PR")
+    if gate_code(f"glab mr create -s {linked_branch}", pv_project) != 2:
+        sys.exit("stale linked-worktree QA marker opened an MR")
 
     # The gitignored .harness/ is absent from a real linked worktree: mark falls back to
     # the project root config, and /to-pull-requests records coordinator-accepted QA there.
@@ -1126,6 +1199,16 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit(
             "require-qa-gate.sh allowed gh pr create without QA gate passed marker"
         )
+    # PR/MR creation is still detected by text: a quoted mention needs QA evidence too.
+    for command in (
+        "glab mr create --fill",
+        "gh pr new --fill",
+        "glab mr new --fill",
+        'git commit -m "docs: run qa-gate before gh pr create"',
+        'python tool.py --note "glab mr create needs qa-gate"',
+    ):
+        if run_hook(qa_gate_hook, pv_project, command).returncode != 2:
+            sys.exit(f"require-qa-gate.sh allowed a create without marker: {command!r}")
 
     escaped_pr_create = json.dumps(
         {
@@ -1194,3 +1277,208 @@ def run(ctx: SimpleNamespace) -> None:
             )
     finally:
         qa_marker.unlink(missing_ok=True)
+
+    # block-pr-merge.sh: Zero Auto-Merge for gh and glab. Differential over the #443 corpus: what
+    # the pre-#443 check blocked stays blocked, with its glab variants, except allowlisted mentions.
+    exempt = {name for name, _, _ in EXEMPT_MENTIONS}
+    corpus = [(name, command) for name, command, _ in EXEMPT_MENTIONS]
+    corpus += [*REVIEW_PAYLOADS, *PROBE_PAYLOADS, *PERF_PAYLOADS]
+    cases = [
+        (name, variant, bool(OLD_MERGE_CHECK.search(payload)))
+        for name, command in corpus
+        for payload in [json.dumps({"tool_input": {"command": command}})]
+        for variant in glab_variants(command)
+    ]
+
+    def merge_code(command: str) -> int:
+        """Код block-pr-merge.sh для команды."""
+        return run_hook(merge_hook, pv_project, command).returncode
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        codes = list(pool.map(merge_code, [variant for _, variant, _ in cases]))
+    missed = sorted(
+        {
+            name
+            for (name, _, old), code in zip(cases, codes)
+            if old and name not in exempt and code != 2
+        }
+    )
+    if missed:
+        sys.exit(
+            f"block-pr-merge.sh allowed {len(missed)} corpus payloads the pre-#443 check "
+            f"blocked: {missed}"
+        )
+    blocked_mentions = sorted(
+        {name for (name, _, _), code in zip(cases, codes) if name in exempt and code}
+    )
+    if blocked_mentions:
+        sys.exit(f"block-pr-merge.sh blocked allowlisted mentions: {blocked_mentions}")
+    for command in (
+        "gh pr merge 12 --squash",
+        "glab mr merge 12",
+        "glab mr accept 12",
+        "git push && glab mr merge 1",
+        'git commit -m "x" && gh pr merge 1',
+        "git status; gh pr merge",
+        "false || gh pr merge 1",
+        "gh pr merge 1&& echo done",
+        "echo a#b; gh pr merge 1",
+        "printf '1\\n' | xargs gh pr merge",
+        "echo 'gh pr merge 1' | bash",
+        "bash <<< 'glab mr merge 1'",
+        "( gh pr merge 1 )",
+        "{ glab mr merge 1; }",
+        "if true; then gh pr merge 1; fi",
+        "FOO=1 gh pr merge 1",
+        "/usr/local/bin/gh pr merge 1",
+        "gh.exe pr merge 1",
+        '"gh" pr merge 1',
+        "sudo -u root glab mr merge 1",
+        "timeout 30 gh pr merge 1",
+        "uv run glab mr accept 1",
+        "docker exec c gh pr merge 1",
+        "find . -name x -exec glab mr merge 1 \\;",
+        "bash -c 'gh pr merge 1'",
+        'sh -lc "glab mr merge 1"',
+        "eval 'gh pr merge 1'",
+        "ssh host 'glab mr merge 1'",
+        "python3 -c \"import os; os.system('gh pr merge 1')\"",
+        'echo "$(gh pr merge 1)"',
+        "echo `glab mr merge 1`",
+        "diff <(gh pr merge 1) notes.txt",
+        "bash <<'EOF'\ngh pr merge 1\nEOF",
+        "cat <<'EOF' | bash\nglab mr merge 1\nEOF",
+        "cat <<EOF\n$(glab mr merge 1)\nEOF",
+        "cat <<EOF\nit's `gh pr merge 1`\nEOF",
+        "gh pr \\\nmerge 1",
+        "echo 'unbalanced gh pr merge",
+        # A heredoc starts only at a `<<` operator outside quotes and comments: operator text
+        # in quotes, in a comment or in a here-string cannot hide a merge on a later line.
+        "echo '<<EOF'\ngh pr merge 1\nEOF",
+        'echo "<<EOF"\ngh pr merge 1\nEOF',
+        "echo '<<EOF'\nglab mr merge 1\nEOF",
+        'echo "<<EOF"\nglab mr merge 1\nEOF',
+        "echo '<<EOF'\nglab mr accept 1\nEOF",
+        "echo $'\\' <<EOF '' \\'\ngh pr merge 1\nEOF",
+        'echo "${x:-"<<EOF "}"\ngh pr merge 1\nEOF',
+        "git commit -m 'see <<EOF'\ngh pr merge 1\nEOF",
+        "# cat <<EOF\ngh pr merge 1\nEOF",
+        "ls # it's <<EOF\nglab mr merge 1\nEOF",
+        "cat <<'A' <<\"B\"\nnever gh pr merge\nA\nnor glab mr merge\nB\ngh pr merge 1",
+        "cat <<-'EOF'\n\tgh pr merge is manual\n\tEOF\ngh pr merge 1",
+        "cat <<< EOF\ngh pr merge 1\nEOF",
+        'printf "%s" "<<X"; gh pr merge 1\nX',
+        "true '<<EOF' && gh pr merge 1\nEOF",
+        # An operator the scanner cannot decide blocks on its merge text (fail closed).
+        "cat <<$END\nnever gh pr merge\n$END",
+        'cat <<EOF"x"\nEOFx\ngh pr merge 1\nEOF',
+        "echo $((x<<y))\ngh pr merge 1\ny",
+        "a[x<<y ]=1\ngh pr merge 1\ny",
+        # Merge text outside the allowlist blocks (fail closed): an unknown program, a comment,
+        # a substitution, backquotes.
+        "git commit -m \"$(cat <<'EOF'\nfeat: don't run gh pr merge\nEOF\n)\"",
+        'python tool.py --note "never glab mr merge or accept"',
+        "python tool.py --reason 'never run `gh pr merge` yourself'",
+        "cat notes.md # gh pr merge later",
+        "echo 'gh pr merge 1' | tee notes.txt",
+        "git -C repo commit -m 'docs: forbid gh pr merge'",
+        "/bin/echo gh pr merge 1",
+        # A merge split by quotes is still a merge.
+        "gh pr mer''ge 1",
+        'glab mr "accept" 1',
+        "bash -c 'glab mr acc''ept 1'",
+    ):
+        if run_hook(merge_hook, pv_project, command).returncode != 2:
+            sys.exit(f"block-pr-merge.sh allowed a merge: {command!r}")
+    for command in (
+        "cat <<'EOF'\nnever run gh pr merge or glab mr merge\nEOF",
+        'cat > notes.md <<"EOF"\nuse glab mr accept manually\nEOF',
+        "cat <<\\EOF\ngh pr merge is manual\nEOF",
+        "cat <<EOF\nnever run gh pr merge\nEOF",
+        'cat <<"EOF"\ngh pr merge 1\nEOF',  # the h4 probe
+        "cat <<'EOF'\ngh pr merge 1\nEOF",
+        "cat <<\\EOF\ngh pr merge 1\nEOF",
+        "cat <<'A' <<\"B\"\nnever gh pr merge\nA\nnor glab mr merge\nB",
+        "cat <<-'EOF'\n\tgh pr merge is manual\n\tEOF",
+        "cat <<'EOF' > notes.md\nrun glab mr merge by hand\nEOF",
+        "echo gh pr merge 1",
+        "echo 'glab mr merge 1'",
+        "printf '%s\\n' \"glab mr merge\" > notes.txt",
+        "grep -n 'gh pr merge' docs/hooks/block-pr-merge.md",
+        "git commit -m 'docs: forbid gh pr merge'",
+        "git commit -m 'docs: forbid glab mr accept' && echo done",
+        "gh issue comment 7 --body 'gh pr merge is manual' 2>&1",
+        "glab mr update 3 --description 'never glab mr merge' | head -n 1",
+        "gh pr view 1 && gh pr checks 1",
+        "glab mr view 3 --comments",
+    ):
+        if run_hook(merge_hook, pv_project, command).returncode != 0:
+            sys.exit(f"block-pr-merge.sh blocked a merge mention: {command!r}")
+    multiline_merge = json.dumps(
+        {"tool_input": {"command": "git fetch &&\nglab mr merge 1"}}, indent=2
+    )
+    if (
+        run_hook(merge_hook, pv_project, "", raw_payload=multiline_merge).returncode
+        != 2
+    ):
+        sys.exit("block-pr-merge.sh allowed a merge in a multiline JSON payload")
+    broken_payload = '{"tool_input": {"command": "gh pr merge 1"'
+    if run_hook(merge_hook, pv_project, "", raw_payload=broken_payload).returncode != 2:
+        sys.exit("block-pr-merge.sh allowed a merge in an unparsable payload")
+    description_only = json.dumps(
+        {
+            "tool_input": {
+                "command": "git status",
+                "description": "check status before gh pr merge",
+            }
+        }
+    )
+    if run_hook(merge_hook, pv_project, "", raw_payload=description_only).returncode:
+        sys.exit("block-pr-merge.sh blocked a merge mentioned only in the description")
+    # The pre-#443 raw-payload check still decides when the parsed command hides its match.
+    duplicate = '{"tool_input": {"command": "gh pr merge 1", "command": "git status"}}'
+    if run_hook(merge_hook, pv_project, "", raw_payload=duplicate).returncode != 2:
+        sys.exit("block-pr-merge.sh allowed a payload the pre-#443 check blocked")
+    # Python decides every call: no interpreter, or one that fails, blocks any command.
+    bash_only = test_root / "bash-only-path"
+    bash_only.mkdir()
+    if not Path(BASH).is_absolute():
+        (bash_only / "bash").symlink_to(shutil.which(BASH) or BASH)
+    no_python = run_hook(
+        merge_hook, pv_project, "git status", env_overrides={"PATH": str(bash_only)}
+    )
+    if no_python.returncode != 2:
+        sys.exit("block-pr-merge.sh allowed a command without Python to check it")
+    # A partial copy of pr_commands.py blocks both hooks, cut mid-statement or between functions.
+    source = (pv_project / ".claude" / "hooks" / "pr_commands.py").read_text(
+        encoding="utf-8"
+    )
+    middle = len(source) // 2
+    create_payload = json.dumps(
+        {"cwd": str(linked), "tool_input": {"command": "gh pr create --fill"}}
+    )
+    if (
+        run_hook(record_gate, pv_project, "", cwd=linked).returncode
+        or run_hook(require_gate, pv_project, "", raw_payload=create_payload).returncode
+    ):
+        sys.exit("a fresh linked-worktree QA marker did not permit its PR")
+    for label, end in (
+        ("cut mid-statement", source.index("(", middle) + 1),
+        ("cut between functions", source.index("\ndef ", middle)),
+    ):
+        partial_hooks = test_root / f"partial-hooks-{end}"
+        shutil.copytree(pv_project / ".claude" / "hooks", partial_hooks)
+        (partial_hooks / "pr_commands.py").write_text(source[:end], encoding="utf-8")
+        partial_merge = run_hook(partial_hooks / "block-pr-merge.sh", pv_project, "ls")
+        if partial_merge.returncode != 2:
+            sys.exit(f"block-pr-merge.sh with pr_commands.py {label} allowed a command")
+        partial_gate = run_hook(
+            partial_hooks / "require-qa-gate.sh",
+            pv_project,
+            "",
+            raw_payload=create_payload,
+        )
+        if partial_gate.returncode != 2:
+            sys.exit(f"require-qa-gate.sh with pr_commands.py {label} allowed a PR")
+    if (pv_project / ".claude" / "hooks" / "__pycache__").exists():
+        sys.exit("a hook left .claude/hooks/__pycache__, which uninstall cannot prune")
