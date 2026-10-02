@@ -34,6 +34,12 @@ the candidate. Reserve a retry for a deviation that changes behaviour, scope or 
 the batch a developer-retry budget and, once the candidate is rebuilt, can land on a larger and
 less reviewable diff than the one it replaced.
 
+A brief whose `commit_plan_divergence` is not `null` records how the accepted initial or rebase
+developer report diverged from its commit plan: merged commits, split entries, unclosed entries, and
+the developer's justification. Check that every commit boundary is still independently reviewable
+and that the justification holds; report a boundary that cannot be reviewed on its own as a
+Standards `warning`.
+
 When the approved verification cannot run at all (unavailable Bash/WSL wrapper, transport failure,
 rate limit, context limit), report `outcome: blocked` with empty `findings` and severity `none` on
 both axes, and state the operational cause in `blockers`. Never invent a finding to explain an

@@ -25,6 +25,13 @@ repository and requirement evidence sufficient for the coordinator to make the d
 required only for a substantial irreversible trade-off. The completion report links to this brief and
 does not repeat its narrative.
 
+Propose the commit plan in `output` as ordered entries `{id, summary, expected_paths, covers}`, one
+entry per independently reviewable commit, where `covers` lists the Definition of Done item numbers
+(counted from one) the entry implements and every item is covered at least once. The coordinator's
+default plan is one entry per item. When the proposed plan differs from it, say so in `risks`: the
+report then waits for a manual accept, where the operator can pin the plan with
+`batch decide --decision accept --commit-plan-file`.
+
 Escalate a blocker naming the missing ADR or precedent card when the Context Package lacks one the
 decision needs, rather than reading the repository at large to reconstruct it.
 

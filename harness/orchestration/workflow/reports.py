@@ -13,6 +13,7 @@ import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -91,6 +92,7 @@ from harness.orchestration.runtime_attestation import (
 from harness.orchestration.runtime_attestation import (
     attest as attest_runtime_worktree,
 )
+from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.approval import (
     _approval,
 )
@@ -1067,6 +1069,7 @@ def _validate_report(
             f"(expected {dispatch['verification_commands']}, got {commands_run})",
             remedy="re-run exactly the approved verification_commands and report those results",
         )
+    plan_rules.check_fields_allowed(report, dispatch)
     commit_sha = report["commit_sha"]
     if role["mode"] == "write" and (
         not isinstance(commit_sha, str)
@@ -1114,72 +1117,25 @@ def _validate_report(
                     "completion report changed_files must exactly match commit_sha",
                     remedy="regenerate completion report changed_files from the actual diff at commit_sha",
                 )
-        commit_plan = dispatch.get("commit_plan", [])
-        commit_map = report.get("commit_map")
         # The commit plan is verified against Git history, so it needs the repository, like the
         # changed_files check above.
-        if role.get("name") == "developer" and commit_plan and repo is not None:
-            if not isinstance(commit_map, list) or not commit_map:
-                raise CoordinatorError(
-                    "developer completion report requires commit_map for the immutable commit plan",
-                    remedy="map every commit created after snapshot_commit to exactly one commit_plan entry",
-                )
-            plan_ids = [
-                entry.get("id") for entry in commit_plan if isinstance(entry, dict)
-            ]
-            if len(plan_ids) != len(commit_plan) or not all(
-                isinstance(item, str) for item in plan_ids
-            ):
-                raise CoordinatorError(
-                    "dispatch commit_plan is malformed",
-                    remedy="create a new developer dispatch with a valid immutable commit plan",
-                )
-            pairs: list[tuple[str, str]] = []
-            for entry in commit_map:
-                if not isinstance(entry, dict) or set(entry) != {
-                    "commit_sha",
-                    "plan_entry_id",
-                }:
-                    raise CoordinatorError(
-                        "commit_map entries must contain only commit_sha and plan_entry_id",
-                        remedy="report one SHA-to-plan-entry mapping for every created commit",
-                    )
-                sha, plan_id = entry["commit_sha"], entry["plan_entry_id"]
-                if not isinstance(sha, str) or not isinstance(plan_id, str):
-                    raise CoordinatorError(
-                        "commit_map entries must use string SHA and plan entry id",
-                        remedy="report canonical commit SHA strings and commit plan entry ids",
-                    )
-                pairs.append((sha, plan_id))
+        if (
+            role.get("name") == "developer"
+            and dispatch.get("commit_plan")
+            and repo is not None
+        ):
             snapshot = dispatch.get("snapshot_commit")
             if not isinstance(snapshot, str):
                 raise CoordinatorError(
                     "developer dispatch lacks snapshot_commit",
                     remedy="create a new developer dispatch with an immutable snapshot",
                 )
-            if repo is not None:
-                mapped = {
-                    _candidate_commit(repo, sha): plan_id for sha, plan_id in pairs
-                }
-                created = _commits_between(repo, rebase_target or snapshot, resolved)
-                transition = dispatch.get("transition")
-                is_retry = (
-                    isinstance(transition, dict)
-                    and transition.get("next_action") == "developer-retry"
-                )
-                mapped_plan_ids = set(mapped.values())
-                if (
-                    set(mapped) != set(created)
-                    or not mapped_plan_ids.issubset(plan_ids)
-                    or len(mapped) != len(created)
-                    or len(mapped) != len(pairs)
-                    or len(mapped_plan_ids) != len(mapped)
-                    or (not is_retry and mapped_plan_ids != set(plan_ids))
-                ):
-                    raise CoordinatorError(
-                        "commit_map must map each created commit to one distinct immutable plan entry",
-                        remedy="report every new commit once against a distinct commit_plan entry; the initial dispatch must cover the full plan",
-                    )
+            plan_rules.check_report(
+                report,
+                dispatch,
+                _commits_between(repo, rebase_target or snapshot, resolved),
+                partial(_candidate_commit, repo),
+            )
     if role["mode"] == "read-only" and commit_sha != "not applicable — read-only role":
         raise CoordinatorError(
             "read-only completion reports must not claim a commit SHA",

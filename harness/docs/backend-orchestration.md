@@ -433,6 +433,29 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    `.harness/orchestration.json` к `dispatch create` добавляются `--model` и `--effort` вызывающей
    сессии; для coordinator и architect выбирайте `medium`, если разработчик явно не одобрил иное.
 
+   Accept отчёта architect может закрепить предложенный им commit plan вместо плана по умолчанию:
+
+   ```bash
+   python .harness/orchestration/coordinator.py --repo . batch decide \
+     --batch <batch-id> --decision accept --approved-by 'имя утверждающего' \
+     --approved-at 2026-09-09T12:00:30Z --commit-plan-file .harness/.sandboxes/scratch/commit-plan.json
+   ```
+
+   Файл лежит в репозитории или одном из его worktree и содержит ровно один ключ
+   `{"commit_plan": [...]}`. Каждая entry содержит ровно четыре поля: уникальный `id`
+   (`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`), непустой `summary`, непустой список `expected_paths`
+   (относительные пути или glob без ведущего `/` и сегмента `..`) и `covers` — номера пунктов DoD
+   `1..n`, которые реализует entry. Порядок entries — порядок коммитов. Accept отклоняется с
+   remedy, если какой-то пункт DoD не покрыт ни одной entry, entry называет несуществующий пункт
+   или флаг передан не с `--decision accept` на отчёте architect; отчёт тогда остаётся ожидающим
+   решения, а batch не меняется. Проверенный план сохраняется в batch как `commit_plan`, решение
+   architect получает `commit_plan_sha256`, и этот план становится `commit_plan` каждого developer
+   brief batch-а, включая `developer-retry`. Если план в batch не совпадает с digest принятого
+   решения, developer brief не создаётся. Без файла brief содержит по одной entry `step-N` на
+   пункт DoD с `covers: [N]`. При `low_risk` и `milestone` чистый architect report принимается
+   автоматически с планом по умолчанию, поэтому architect, предлагающий другой план, указывает
+   это в `risks`, и report ждёт ручного решения.
+
    `dispatch send --role code-review` — единственный случай, когда нужен ещё один обязательный флаг:
    `--checkout <путь>`, указывающий на worktree, реально зачекаученный на `candidate_commit` dispatch-а
    (см. clean-room QA lane ниже — та же изоляция нужна и для review). Все остальные роли `--checkout` не
@@ -458,6 +481,34 @@ checks, раскрытые risks, risk triggers и findings любой оси re
      --batch <batch-id> --decision accept --approved-by 'имя утверждающего' \
      --approved-at 2026-09-09T12:02:00Z
    ```
+
+   Developer report против brief с `commit_plan` несёт `commit_map` — пары
+   `{commit_sha, plan_entry_id}` для каждого коммита после `snapshot_commit` (у rebase — после
+   `rebase_target`). В initial и rebase отчёте это отношение: коммит, закрывающий несколько entries,
+   даёт по паре на каждую, entry, закрытая несколькими коммитами, — по паре на каждый коммит.
+   Отображение не one-to-one (объединённый коммит, разделённая или незакрытая entry) — расхождение,
+   и тогда отчёт обязан нести `dod_coverage` — ровно по записи на каждый пункт DoD:
+   `{"dod_item": <n>, "commits": [<sha>, ...]}` из коммитов этого dispatch или
+   `{"dod_item": <n>, "not_covered": "<причина>"}` — и непустой `divergence_justification`: что
+   объединено, разделено или добавлено и почему. При one-to-one `dod_coverage` необязателен
+   (coordinator выводит покрытие из `covers` плана), а `divergence_justification` отклоняется.
+   `report submit` и `batch decide` отклоняют только структурные ошибки, каждую с remedy:
+   неотображённый созданный коммит, коммит не из этого dispatch, неизвестная entry, повтор пары,
+   расхождение без `dod_coverage` или без обоснования, покрытие без пункта, с чужим пунктом или
+   чужим коммитом, `not_covered` без причины. В `developer-retry` и в отчётах других ролей эти два
+   поля отклоняются.
+
+   Обоснованное расхождение с полным покрытием само по себе не делает отчёт нечистым: при
+   `low_risk` и `milestone` чистый в остальном отчёт принимается автоматически, а запись решения
+   получает `commit_plan_divergence` (`developer_dispatch_id`, `justification`, `merged_commits`,
+   `split_entries`, `unclosed_entries`); ту же запись получает и ручное принятие. Любой пункт `not_covered` делает
+   отчёт нечистым при любой policy: auto-accept не срабатывает, `--decision accept` отклоняется,
+   принять отчёт можно только `--decision override-warning` с `--note`, отличным от `none`
+   (решение получает `dod_not_covered` с причинами), либо вернуть его через `retry`.
+   `batch decision-packet` показывает `dod_coverage`, `dod_coverage_source` (`report` или
+   `derived`) и `commit_plan_divergence`. Brief code-review несёт `commit_plan_divergence`
+   последнего принятого initial или rebase developer report (у остальных ролей поле `null`), чтобы
+   reviewer проверил, что границы коммитов остались reviewable.
 
 Минимальный ручной brief хранит ticket и dispatch ID, роль и её access, выбранный profile/model/effort,
 zone и allowed paths, issue-ветку/worktree, DoD, запреты, команды, dependencies, approval. Для
@@ -504,7 +555,9 @@ operational-категории могут повторить read-only стад�
 Retry непринятого developer report продолжает его историю. Пока batch ждёт этот `developer-retry`,
 coordinator берёт candidate из immutable report (`commit_sha`, сверенный по hash) и пинит на него
 `snapshot_commit` нового developer dispatch. Worktree не откатывается ни к base, ни к более старому
-принятому candidate, а `commit_map` retry считает только коммиты поверх `snapshot_commit`. Путь по
+принятому candidate, а `commit_map` retry считает только коммиты поверх `snapshot_commit`: каждый
+новый коммит закрывает ровно одну distinct entry плана, а `dod_coverage` и
+`divergence_justification` в retry-отчёте отклоняются. Путь по
 умолчанию — `dispatch propose`/`create` без `--candidate-commit`: brief получает
 `candidate_commit: null` и не требует risk assessment, как developer retry после code-review. Чтобы
 привязать этот SHA к transition digest, передайте `--candidate-commit <commit_sha>`; тогда до
@@ -620,6 +673,8 @@ candidate и evidence, но запрещает создание следующе
 валидными, версия ledger не меняется и `ledger migrate` не нужен. Новые записи проходят ту же
 целостностную проверку (`context_pressure` с hash, форма attention-полей, согласованность brief).
 Изменилось поведение CLI: `dispatch create` с `--approved-by` теперь требует `--transition-digest`.
+Brief без поля `commit_plan_divergence` и batch без `commit_plan` тоже остаются валидными; entry
+плана без `covers` покрывает пункт DoD по своей позиции.
 
 ### Инвентарь и закрытие тупикового batch
 

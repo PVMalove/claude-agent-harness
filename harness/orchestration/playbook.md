@@ -243,7 +243,12 @@ It must contain, at minimum:
   work dispatch may use focused developer commands; clean-room QA always uses the full verification
   commands;
 - `dependencies and assumptions`: known blockers, required inputs, and their owner;
-- `coordinator approval`: approving person, timestamp, and the approved concurrency decision.
+- `coordinator approval`: approving person, timestamp, and the approved concurrency decision;
+- `commit plan` (developer work): ordered entries `{id, summary, expected_paths, covers}`, where
+  `covers` names the Definition of Done items an entry implements. It is one entry per item unless
+  the operator pinned the architect's plan with `batch decide --decision accept --commit-plan-file`;
+- `commit plan divergence` (code-review): how the last accepted initial or rebase developer report
+  diverged from its plan, or `null`.
 
 The brief is a starting contract, not a conversation buffer. A role must escalate an ambiguity,
 overlap, credential request, irreversible action, policy decision, or missing proof. It must not
@@ -288,7 +293,14 @@ The report must include:
   check result;
 - residual `risks`, including unverified edge cases and deferred decisions;
 - `blockers`, or an explicit `none`;
-- the next coordinator action, including the required independent gate when applicable.
+- the next coordinator action, including the required independent gate when applicable;
+- for a developer brief with a `commit_plan`: a `commit_map` of `{commit_sha, plan_entry_id}` pairs
+  covering every created commit. An initial or rebase report may map one commit to several entries
+  and one entry to several commits; when that mapping is not one-to-one it also carries
+  `dod_coverage` (one record per Definition of Done item, either its covering commits or
+  `not_covered` with a reason) and a `divergence_justification` naming what was merged, split or
+  added and why. A developer-retry report maps each new commit to one distinct entry and carries
+  neither field.
 
 Optional `lessons` and `used_memory` are lists of non-empty strings; empty lists and omission are
 valid. `lessons` records historical observations, never confirmed truth: memory indexes them only
@@ -321,6 +333,13 @@ Use this shape so missing proof is visible:
 
 In JSON, represent the optional fields as `"lessons": ["<observation>"]` and
 `"used_memory": ["<hit identifier>"]`; omit them when there is nothing to record.
+
+Report submission rejects only structural commit-plan errors, each with a remedy, such as an
+unmapped created commit, an unknown plan entry, an uncovered item without a reason, or a divergence
+without a justification. A justified divergence with full coverage does not by itself make a report
+unclean, and the decision records it as `commit_plan_divergence`. Any `not_covered` item is never
+clean: no policy accepts it automatically, plain `accept` is refused, and the report can be
+accepted only by `override-warning` with a note other than `none`, or returned with `retry`.
 
 The coordinator does not rewrite a report to make it pass. A missing commit SHA, changed-file
 list, check result, risk statement, or blocker statement is a proof gap and keeps the batch from

@@ -30,5 +30,13 @@ commit is valid only when the plan records one inseparable unit. For recovery, r
 plan or stop for a newly approved replacement before creating an affected commit.
 
 The completion report's `commit_map` is mandatory for a developer brief with a `commit_plan`.
-It contains one `{commit_sha, plan_entry_id}` pair for every commit after `snapshot_commit`; every
-plan entry is matched once. Do not report the candidate SHA alone when it hides multiple commits.
+It holds `{commit_sha, plan_entry_id}` pairs that cover every commit after `snapshot_commit` (after
+the rebase target for a rebase). In an initial or rebase report it is a relation: a commit that
+closes several entries gets one pair per entry, and an entry closed by several commits gets one pair
+per commit. When the mapping is not one-to-one (a merged commit, a split entry, or an unclosed
+entry), add `dod_coverage` with exactly one record per Definition of Done item,
+`{"dod_item": <n>, "commits": [<sha>, ...]}` or `{"dod_item": <n>, "not_covered": "<reason>"}`,
+and a `divergence_justification` stating what was merged, split or added and why. With a one-to-one
+mapping, omit `divergence_justification`. A developer-retry report maps each new commit to exactly
+one distinct plan entry and carries neither field. A `not_covered` item is never accepted as clean.
+Do not report the candidate SHA alone when it hides multiple commits.

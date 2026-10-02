@@ -193,6 +193,12 @@ def build_parser(
         choices=["developer"],
         help="force a developer retry where the coordinator would re-run the same candidate",
     )
+    decide.add_argument(
+        "--commit-plan-file",
+        help="only with --decision accept on an architect report: a JSON file "
+        '{"commit_plan": [{"id", "summary", "expected_paths", "covers"}, ...]} pinned as the '
+        "batch's developer commit plan",
+    )
     decide.set_defaults(handler=handlers.decide_batch)
     attention = batch_commands.add_parser(
         "attention", help="operational-loop attention state of a batch"
