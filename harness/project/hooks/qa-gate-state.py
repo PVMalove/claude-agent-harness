@@ -60,15 +60,20 @@ def command_of(data: dict[str, object]) -> str:
     return command if isinstance(command, str) else ""
 
 
+PR_CREATE = re.compile(r"\bgh\s+pr\s+create\b")
+
+
 def head_of(command: str) -> str | None:
-    """Извлечь имя целевой ветки из флага --head переданной команды."""
+    """Извлечь ветку из токена --head команды gh pr create; "" — флаг есть, ветки нет."""
+    if not PR_CREATE.search(command):
+        return None
     try:
         words = shlex.split(command)
     except ValueError:
-        return None
+        return "" if "--head" in command else None
     for index, word in enumerate(words):
-        if word == "--head" and index + 1 < len(words):
-            return words[index + 1].rsplit(":", 1)[-1]
+        if word == "--head":
+            return words[index + 1].rsplit(":", 1)[-1] if index + 1 < len(words) else ""
         if word.startswith("--head="):
             return word[7:].rsplit(":", 1)[-1]
     return None
@@ -78,7 +83,7 @@ def checkout_for(project: Path, data: dict[str, object], command: str) -> Path:
     """Определить подходящий checkout проекта на основе переданной команды и контекста."""
     available = worktrees(project)
     head = head_of(command)
-    if "--head" in command and not head:
+    if head == "":
         raise ValueError("cannot resolve PR head branch")
     if head:
         matches = [path for path, branch in available if branch == head]
@@ -117,7 +122,7 @@ def main() -> int:
     project = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
     data = {} if mode == "record" else payload()
     command = command_of(data)
-    if mode == "require" and not re.search(r"\bgh\s+pr\s+create\b", command):
+    if mode == "require" and not PR_CREATE.search(command):
         return 0
     checkout = checkout_for(project, data, command)
     if mode == "mark":

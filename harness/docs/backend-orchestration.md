@@ -486,7 +486,7 @@ evidence (`verification-infrastructure` или `transport`), а не code findin
 | Стадия отчёта | `accept` | `retry` | `block` / `fail` | `abandon` |
 | --- | --- | --- | --- | --- |
 | architect | developer | новый architect | terminal | `abandoned` |
-| developer | risk assessment | `developer-retry`: новый candidate и новая risk assessment | terminal | `abandoned` |
+| developer | risk assessment | `developer-retry` продолжает непринятый candidate этого report (`snapshot_commit` — его `commit_sha`); retry создаёт новый candidate, и тот получает новую risk assessment | terminal | `abandoned` |
 | code-review | qa | новый code-review на том же `candidate_commit`, если report `blocked`, причина — `verification-infrastructure`/`transport`/`context-pressure`, findings пусты, обе оси без findings, нет failed check и candidate не менялся; иначе `developer-retry` | terminal | `abandoned` |
 | qa | publish | новый qa на том же SHA при том же условии (QA остаётся read-only); defect или новый candidate — `developer-retry` | terminal | `abandoned` |
 | publish | `completed` | новый publish на том же принятом SHA при `verification-infrastructure`/`transport`/`context-pressure`; `developer-retry`, если candidate должен измениться | terminal | `abandoned` |
@@ -500,6 +500,19 @@ operational-категории могут повторить read-only стад�
 используются; новый candidate всегда требует новой risk assessment; `block` и `fail` сами retry не
 запускают. `--retry-role developer` принудительно выбирает developer retry там, где coordinator
 иначе повторил бы ту же роль на том же SHA.
+
+Retry непринятого developer report продолжает его историю. Пока batch ждёт этот `developer-retry`,
+coordinator берёт candidate из immutable report (`commit_sha`, сверенный по hash) и пинит на него
+`snapshot_commit` нового developer dispatch. Worktree не откатывается ни к base, ни к более старому
+принятому candidate, а `commit_map` retry считает только коммиты поверх `snapshot_commit`. Путь по
+умолчанию — `dispatch propose`/`create` без `--candidate-commit`: brief получает
+`candidate_commit: null` и не требует risk assessment, как developer retry после code-review. Чтобы
+привязать этот SHA к transition digest, передайте `--candidate-commit <commit_sha>`; тогда до
+`dispatch propose`/`create`, пока batch в `awaiting-approval`, нужна `risk assess` для того же SHA.
+Такая оценка — только evidence: `next_action` остаётся `developer-retry`, `required_next_role` и
+требование нового candidate сохраняются, code-review и QA не открываются, а `risk assess` для
+другого SHA отклоняется. Retry-report с тем же SHA не принимается. Retry после code-review, qa или
+publish по-прежнему пинит `snapshot_commit` на последний принятый developer candidate.
 
 Code-review `blocker` никогда не принимается. Пока `retry_policy.max_developer_retries` ещё допускает
 developer retry, для него доступны `retry` или `abandon`; после исчерпания budget `retry`
@@ -590,7 +603,7 @@ candidate и evidence, но запрещает создание следующе
 | `unknown-reason` | retry с причиной `unknown` |
 | `infrastructure-retry-repeated` | operational retry одного candidate больше `max_infrastructure_retries` |
 | `retry-queued-too-long` | принятый retry ждёт dispatch дольше `retry_queue_seconds` |
-| `stale-evidence` | закреплённый в незавершённом dispatch Context Package расходится с base или принятым candidate |
+| `stale-evidence` | закреплённый в незавершённом dispatch Context Package расходится с base или текущим developer candidate (тем же, что выбирает `snapshot_commit`) |
 | `stale-dispatch` | живой dispatch молчит дольше `stale_dispatch_seconds` |
 
 Флаг ставят `batch decide --decision retry`, `dispatch wait` (событие `stale`) и
@@ -716,13 +729,27 @@ write-роли либо pinned SHA review-роли; расхождение не�
 подменённая или неверно настроенная модель видна сразу, а не после потраченного окна.
 
 Для architect/developer `worker_attestation_required` также требует, чтобы Git-worktree HEAD в момент
-`self-report` буквально совпадал с immutable `snapshot_commit` из brief. После `batch decide --decision
-retry`, маршрутизированного в `developer-retry` (например, после code-review blocker; повтор на том же
-SHA developer dispatch не создаёт), новый developer dispatch **всегда** пинит
-`snapshot_commit` на последний кандидатный коммит. Retry продолжает его историю и добавляет отдельные
-логические коммиты для замечаний review по immutable commit plan; coordinator не выполняет и не
-предлагает `git reset --soft`. Если HEAD worktree не совпадает с pinned snapshot, исправляйте
-конфигурацию нового dispatch или выбирайте worktree на этом commit, не переписывая существующую историю.
+`self-report` буквально совпадал с immutable `snapshot_commit` из brief. Для architect, developer,
+verification и code-review `dispatch create` выбирает `snapshot_commit` в таком порядке:
+
+1. явный `--candidate-commit`;
+2. `commit_sha` непринятого developer report, пока batch ждёт его `developer-retry`;
+3. последний принятый developer candidate — например, `developer-retry` после code-review blocker,
+   qa или publish (повтор на том же SHA developer dispatch не создаёт);
+4. иначе `base_commit`.
+
+`dispatch preflight` и проверка свежести Context Package используют то же правило. Retry продолжает
+историю этого candidate и добавляет отдельные логические коммиты по immutable commit plan;
+coordinator не выполняет и не предлагает `git reset --soft`. Если HEAD worktree не совпадает с pinned
+snapshot, исправляйте конфигурацию нового dispatch или выбирайте worktree на этом commit, не
+переписывая существующую историю.
+
+`dispatch create` до записи brief выполняет над ним ту же проверку, что `dispatch send`. Brief,
+который send отклонил бы, не создаётся: в ledger не появляются ни brief, ни его status. Пример —
+`--candidate-commit` без связанной immutable risk assessment. Remedy называет
+`risk assess --batch <batch-id> --candidate-commit <sha> --changed-file <path>...`; после неё нужны
+новые `dispatch propose` и `create` (неотправленный brief сначала отменяется через
+`dispatch cancel`). Проверка при `dispatch send` остаётся на месте.
 
 Пока роль работает, она отбивает heartbeat, а coordinator-сессия опрашивает состояние. По умолчанию
 dispatch допускает до часа тишины для долгой сборки или теста, но immutable brief требует heartbeat
