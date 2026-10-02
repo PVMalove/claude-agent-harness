@@ -3,12 +3,23 @@
 
 import json
 import os
-import re
-import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from harness.project.hooks import pr_commands
+else:
+    # .claude/hooks must stay prunable by uninstall: never leave __pycache__ next to it.
+    sys.dont_write_bytecode = True
+    try:
+        import pr_commands  # sibling in the installed hooks directory (sys.path[0])
+    except Exception as exc:
+        # A missing or partial copy (SyntaxError, any import-time failure) must block, not
+        # fail open; missing names fail later inside main(), which also exits 2.
+        print(f"qa-gate: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 def git(checkout: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
@@ -60,23 +71,13 @@ def command_of(data: dict[str, object]) -> str:
     return command if isinstance(command, str) else ""
 
 
-PR_CREATE = re.compile(r"\bgh\s+pr\s+create\b")
-
-
 def head_of(command: str) -> str | None:
-    """Извлечь ветку из токена --head команды gh pr create; "" — флаг есть, ветки нет."""
-    if not PR_CREATE.search(command):
+    """Ветка создаваемого PR/MR: None — ветка checkout из cwd, "" — ветку не определить."""
+    if not pr_commands.CREATE_TEXT.search(command):
         return None
-    try:
-        words = shlex.split(command)
-    except ValueError:
-        return "" if "--head" in command else None
-    for index, word in enumerate(words):
-        if word == "--head":
-            return words[index + 1].rsplit(":", 1)[-1] if index + 1 < len(words) else ""
-        if word.startswith("--head="):
-            return word[7:].rsplit(":", 1)[-1]
-    return None
+    heads = pr_commands.create_heads(command)
+    # More than one distinct branch is ambiguous: one checkout's QA evidence cannot cover it.
+    return "" if len(heads) > 1 else next(iter(heads), None)
 
 
 def checkout_for(project: Path, data: dict[str, object], command: str) -> Path:
@@ -84,7 +85,7 @@ def checkout_for(project: Path, data: dict[str, object], command: str) -> Path:
     available = worktrees(project)
     head = head_of(command)
     if head == "":
-        raise ValueError("cannot resolve PR head branch")
+        raise ValueError("cannot resolve PR/MR head branch")
     if head:
         matches = [path for path, branch in available if branch == head]
         if len(matches) != 1:
@@ -122,7 +123,7 @@ def main() -> int:
     project = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
     data = {} if mode == "record" else payload()
     command = command_of(data)
-    if mode == "require" and not PR_CREATE.search(command):
+    if mode == "require" and not pr_commands.CREATE_TEXT.search(command):
         return 0
     checkout = checkout_for(project, data, command)
     if mode == "mark":
@@ -148,7 +149,7 @@ def main() -> int:
             not marker.is_file()
             or marker.read_text(encoding="utf-8").strip() != current
         ):
-            raise ValueError("сначала запусти skill qa-gate для checkout ветки PR")
+            raise ValueError("сначала запусти skill qa-gate для checkout ветки PR/MR")
     else:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(current + "\n", encoding="utf-8")
@@ -158,6 +159,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+    except Exception as exc:  # any failure must block (exit 2), never fail open
         print(f"qa-gate: {exc}", file=sys.stderr)
         sys.exit(2)
