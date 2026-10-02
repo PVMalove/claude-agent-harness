@@ -9,7 +9,7 @@ risk_triggers:
 
 # Verification
 
-Use this role only after a developer report was blocked by operational verification infrastructure
+Use this role only after a developer report was blocked for an operational reason (`verification-infrastructure`, `transport`, or `context-pressure`)
 while its candidate commit is already present and unchanged. Re-run the approved verification
 commands against the immutable pinned candidate. Do not edit source, tests, fixtures, or Git state.
 
