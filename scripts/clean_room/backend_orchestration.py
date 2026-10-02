@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from harness.orchestration.core.constants import RECOVERY_ROUTES
 from harness.storage import storage_path
 from scripts.clean_room.support import (
     HARNESS,
@@ -16,6 +17,54 @@ from scripts.clean_room.support import (
     find_check,
     run_ok,
 )
+
+
+RETRY_ROUTING_HEADING = "## Retry routing and abandon"
+RECOVERY_ROUTE_TABLE_HEADING = "## Recovery route table"
+RECOVERY_ROUTE_TABLE_HEADER = ("Situation", "Route", "Who approves", "Evidence")
+
+
+def _require_recovery_route_table(playbook: str) -> None:
+    """Обязательное правило playbook: таблица маршрутов восстановления (#497).
+
+    Раздел `## Recovery route table` идёт сразу после `## Retry routing and abandon`, содержит
+    таблицу `Situation | Route | Who approves | Evidence` и по строке на каждое значение
+    `RECOVERY_ROUTES` во второй колонке; маршрут вне enum в таблице тоже ошибка.
+    """
+    missing = "backend-orchestration playbook missing rule: recovery route table"
+    headings = [
+        line.strip() for line in playbook.splitlines() if line.startswith("## ")
+    ]
+    if RECOVERY_ROUTE_TABLE_HEADING not in headings:
+        sys.exit(f"{missing} ({RECOVERY_ROUTE_TABLE_HEADING})")
+    position = headings.index(RECOVERY_ROUTE_TABLE_HEADING)
+    if position == 0 or headings[position - 1] != RETRY_ROUTING_HEADING:
+        sys.exit(
+            f"{missing}: {RECOVERY_ROUTE_TABLE_HEADING} must directly follow "
+            f"{RETRY_ROUTING_HEADING}"
+        )
+    section = playbook.split(RECOVERY_ROUTE_TABLE_HEADING, 1)[1].split("\n## ", 1)[0]
+    rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in section.splitlines()
+        if line.strip().startswith("|")
+    ]
+    if not rows or tuple(rows[0]) != RECOVERY_ROUTE_TABLE_HEADER:
+        sys.exit(
+            f"{missing}: header must be | {' | '.join(RECOVERY_ROUTE_TABLE_HEADER)} |"
+        )
+    routes = [
+        row[1].strip("`")
+        for row in rows[2:]
+        if len(row) == len(RECOVERY_ROUTE_TABLE_HEADER)
+    ]
+    unknown = sorted(set(routes) - set(RECOVERY_ROUTES))
+    absent = [route for route in RECOVERY_ROUTES if route not in routes]
+    if len(routes) != len(rows) - 2 or unknown or absent:
+        sys.exit(
+            f"{missing}: every row needs four cells and one route of RECOVERY_ROUTES "
+            f"(missing: {absent}, unknown: {unknown})"
+        )
 
 
 def run(ctx: SimpleNamespace) -> None:
@@ -386,6 +435,7 @@ def run(ctx: SimpleNamespace) -> None:
     ):
         if required_rule not in normalized_playbook:
             sys.exit(f"backend-orchestration playbook missing rule: {required_rule}")
+    _require_recovery_route_table(playbook)
 
     code_review_role = (
         orchestration_project

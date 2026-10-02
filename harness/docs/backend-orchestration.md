@@ -523,7 +523,7 @@ risks, blockers и следующее решение coordinator-а. Для read
 ### Маршрутизация `retry` и решение `abandon`
 
 `batch decide --decision retry` больше не означает «снова developer». Coordinator сохраняет на
-решении routing record: `previous_role`, `reason_category`, `next_role`, `next_action`,
+решении routing record: `route`, `previous_role`, `reason_category`, `next_role`, `next_action`,
 `rationale` и `candidate_commit` (пока он не изменился). Причина определяется только по
 структурированным данным report: outcome, findings, severity осей Standards/Spec, failed checks и
 тому, изменился ли candidate. Свободный текст `blockers`/`output` не классифицируется. Явную причину
@@ -590,6 +590,38 @@ agent inbox и записи QA-очереди dispatch, которые уже н
 `abandon` никогда не является автоматическим fallback для `block`, `fail` или `retry`. Команда
 `batch abandon` для batch, у которого не будет ни одного report, остаётся прежней и завершает его
 в `failed`.
+
+#### Поле `route`: routing record, decision packet и audit
+
+Каждое решение `retry` и `abandon` в `batch decide` записывает выбранный маршрут восстановления в
+`routing.route` — одно значение закрытого набора `RECOVERY_ROUTES`: `developer-retry`,
+`same-candidate-rerun` (новый code-review, qa или publish на том же SHA), `verification`,
+`architect-retry` и `abandon`. Маршрут ставится там же, где `next_action`, по тем же
+структурированным данным и никогда по свободному тексту. У `abandon` routing record той же формы, но
+`reason_category`, `next_role`, `next_action` и `candidate_commit` равны `null`, а `rationale`
+содержит только структурные факты (`--reason` остаётся в `note`). Нормативная таблица «ситуация →
+маршрут → кто утверждает → evidence» — раздел «Recovery route table» в
+`.harness/orchestration/playbook.md`.
+
+`batch decision-packet` показывает маршрут до записи решения: поле `route_preview` содержит
+`retry` — routing record, который записал бы `batch decide` (без `decided_at`), и `abandon` —
+`{"route": "abandon"}`. Packet принимает те же `--reason-category` и `--retry-role developer`, что и
+`batch decide`, и ничего не пишет; для уже решённого report и для пакета следующего dispatch
+`route_preview` равен `null`:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch decision-packet \
+  --batch <batch-id> --reason-category verification-infrastructure
+```
+
+Каждое решение `batch decide` хранит в transition audit record batch деталь `decision`:
+`dispatch_id`, `decision`, `route` (`null` у решения без маршрута — `accept`, `override-warning`,
+`block`, `fail`), `evidence` (`dispatch_id`, путь `report` и `report_sha256` immutable report),
+`approver` и `approved_at`. `approver` — `{"kind": "policy", "name": "low_risk" | "milestone"}` для
+policy auto-accept или `{"kind": "human", "name": <--approved-by>}` для явного решения; вид
+определяется путём, которым решение утверждено, а не строкой имени. Деталь входит в ту же audit-запись
+и ту же контрольную сумму, что и переход batch. Маршрут вне `RECOVERY_ROUTES` отклоняется с remedy
+при записи и при чтении batch.
 
 ### Approval, привязанный к digest перехода
 

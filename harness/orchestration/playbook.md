@@ -48,7 +48,7 @@ any evidence.
 ## Retry routing and abandon
 
 `batch decide --decision retry` does not always mean "ask a developer again". The coordinator
-stores a routing record on the decision (`previous_role`, `reason_category`, `next_role`,
+stores a routing record on the decision (`route`, `previous_role`, `reason_category`, `next_role`,
 `next_action`, `rationale`, and the `candidate_commit` when it has not changed) and derives the
 reason from structured report data only: outcome, review findings, Standards/Spec severity, failed
 checks, and whether the candidate moved. Free text in `blockers` or `output` is never classified. An
@@ -94,6 +94,30 @@ copies of reports in the agent inbox and the QA queue entries of dispatches that
 The batch records `abandoned.last_accepted` (the newest accepted stage and candidate), so a fresh
 batch can be created on the same branch and candidate. It is never a fallback for `block`, `fail`
 or `retry`.
+
+## Recovery route table
+
+Every `retry` and `abandon` decision records its recovery route as `routing.route`, one value of the
+closed set `RECOVERY_ROUTES`. The route is set in the same step that sets `next_action`, from the
+same structured evidence, and never from free text. The coordinator chooses a route by this table:
+
+| Situation | Route | Who approves | Evidence |
+| --- | --- | --- | --- |
+| An architect report is retried, whatever the reason category | `architect-retry` | A human decides the retry with `batch decide`; the new architect dispatch is approved under `approval_policy` | Dispatch ID and `report_sha256` of the architect report. Not `same-candidate-rerun`: it is not conditioned on a reason category and pins no candidate |
+| A developer report is `blocked` with an operational reason, no finding and no failed check | `verification` | A human decides the retry; the read-only verification dispatch is approved under `approval_policy` | Dispatch ID, `report_sha256`, the `candidate_registrations` entry with its `source_report_sha256`, and for `context-pressure` the critical `context_pressure` record |
+| A code-review, qa or publish report is `blocked` with an operational reason, no finding on either axis, no failed check and an unchanged candidate | `same-candidate-rerun` | A human decides the retry; the new dispatch on the same SHA needs its own approval under `approval_policy` | Dispatch ID, `report_sha256`, the unchanged `candidate_commit`, and for `context-pressure` the critical `context_pressure` record |
+| A finding or a warning/blocker severity, a failed check, a moved candidate, a `code`, `requirements`, `candidate-change` or `unknown` reason, a contradictory reason, or `--retry-role developer` | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, and the axis, check or candidate change that decided it |
+| `batch decide --decision abandon` on any completion report | `abandon` | A human only, with a non-empty `--reason`; never a policy | Dispatch ID, `report_sha256` and `abandoned.last_accepted` |
+
+`batch decision-packet` shows the route before the decision is recorded: its `route_preview` holds
+the `retry` routing record `batch decide` would write (it takes the same `--reason-category` and
+`--retry-role` flags) and the `abandon` route; it writes nothing. Every `batch decide` decision stores
+a `decision` detail on its batch transition audit record: the `route` (`null` for a decision that
+routes nothing), the `evidence` (`dispatch_id`, `report`, `report_sha256`) and the `approver`
+(`{"kind": "policy" | "human", "name": ...}`, set by the path that approved it). A route outside
+`RECOVERY_ROUTES` is refused when it is written and when a batch is read back.
+
+A later recovery route adds its `RECOVERY_ROUTES` value and its row here in the same change.
 
 ## Approvals bound to the transition digest
 
