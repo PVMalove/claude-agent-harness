@@ -170,7 +170,22 @@ def storage_path(repo: Path, *parts: str) -> Path:
     if root.parent.is_symlink() or root.is_symlink():
         raise ValueError("storage root must not be a symlink")
     target = root.joinpath(*parts)
-    if not target.resolve().is_relative_to(root.resolve()):
+    resolved_target = target.resolve()
+    resolved_root = root.resolve()
+    is_relative = False
+    try:
+        resolved_target.relative_to(resolved_root)
+        is_relative = True
+    except ValueError:
+        if os.name == "nt":
+            try:
+                Path(os.path.normcase(str(resolved_target))).relative_to(
+                    Path(os.path.normcase(str(resolved_root)))
+                )
+                is_relative = True
+            except ValueError:
+                is_relative = False
+    if not is_relative:
         raise ValueError(f"path escaped {root_name}: {target}")
     return target
 

@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import threading
@@ -17,7 +19,13 @@ from urllib.parse import quote
 from .adapters import sanitized, scalar
 from .index import context, refresh, writer_lock
 from .policy import Policy
-from .sources import matches, safe_source, SNAPSHOT, snapshot_manifest, snapshot_kind_allowed
+from .sources import (
+    matches,
+    safe_source,
+    SNAPSHOT,
+    snapshot_manifest,
+    snapshot_kind_allowed,
+)
 
 MAX_PAGES = 20
 MAX_RECORDS = 1000
@@ -29,9 +37,16 @@ MARKER = re.compile(r"^## Completion report\s*\n```json\s*\n(.*?)\n```\s*$", re.
 
 def fetch_page(argv: list[str], repo: Path) -> list[dict[str, object]]:
     """Bound subprocess time and output without retaining raw diagnostics."""
+    cmd = list(argv)
+    if sys.platform == "win32":
+        resolved = shutil.which(argv[0])
+        if resolved and resolved.lower().endswith((".cmd", ".bat")):
+            cmd = ["cmd.exe", "/c", resolved, *argv[1:]]
+        elif resolved:
+            cmd = [resolved, *argv[1:]]
     try:
         process = subprocess.Popen(
-            argv, cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            cmd, cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
     except OSError:
         raise ValueError(f"memory sync: {argv[0]} unavailable") from None
@@ -88,7 +103,9 @@ def fetch_page(argv: list[str], repo: Path) -> list[dict[str, object]]:
             reader.join(timeout=0.1)
 
 
-def inventory(tool: str, endpoint: str, repo: Path, budget: list[int]) -> list[dict[str, object]]:
+def inventory(
+    tool: str, endpoint: str, repo: Path, budget: list[int]
+) -> list[dict[str, object]]:
     """An empty final page proves the bounded inventory is complete."""
     records: list[dict[str, object]] = []
     for page in range(1, MAX_PAGES + 1):
@@ -167,7 +184,10 @@ def record(
         "title": clean(value.get("title"), f"{kind} {identifier}"),
         "status": "не подтверждено человеком"
         if completion
-        else "merged" if kind == "pull_request" and isinstance(value.get("merged_at"), str) and value["merged_at"]
+        else "merged"
+        if kind == "pull_request"
+        and isinstance(value.get("merged_at"), str)
+        and value["merged_at"]
         else clean(value.get("state"), "closed"),
         "date": clean(value.get("date"), clean(value.get("updated_at"), "unknown")),
         "body": "\n".join(text)[:16384],
