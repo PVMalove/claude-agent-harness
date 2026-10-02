@@ -12,12 +12,12 @@
   "max_noise_ratio": 0.7,
   "dataset_hash": "d2dd5522c6281517f5eea9801c122228c831ca7911409acbc3e0a11e117ba2c5",
   "source_hashes": {
-    "CONTEXT.md": "12c436cfd9bcf97625140b5372e3a151c6be5efbc0c5a995bfe1d3dd60589df2",
+    "CONTEXT.md": "75a0e4775fff418fcdc2e0246e4a927d5ba517a86d439607b95667692325b5a0",
     "docs/adr/0001-portable-capability-delivery.md": "5254f06b516ee14371422ba9cbca9947ced09067edf167bcef09fc9b446d805b",
     "docs/adr/0002-controlled-delivery.md": "769be42fd2da1bfbcdf27829d672df48e85a91cc9d283f1be28b5e3235b063aa",
     "docs/adr/0003-orchestration-core.md": "eba04529bff1e9899409cba2434c2f423e9e29862e96ed16a334ec9b6dbb09bf",
     "docs/adr/0004-role-assignments.md": "3721543a888daea209f74e3ca92ea920074213b0b758cbc6c1497b53ba782bd0",
-    "docs/adr/0005-implement-pipeline.md": "27f08c077e8a4d0121b89ed5ad27b961037e253e472b768f155504ea930c724d",
+    "docs/adr/0005-implement-pipeline.md": "9d3692f8f10b67cf0b9e4b6ed1122c6ddfff3213db83ea23fcc4c7ce6af42453",
     "docs/adr/0006-scratch-artifacts.md": "99f53f8af2a319af5dd90b9e7ac97ef718f17aa63029545636035be8bab7e14b",
     "docs/adr/0007-python-quality.md": "866c0aa5cddae54238750e54733e281d0ed8cdd5e4c4336713c82ca4f30a6677",
     "docs/adr/0008-repo-map.md": "a1efc331e1f698c964b04593c8665595e667a0f24acc5a3bc8d0b447ccdc329e",
@@ -82,8 +82,8 @@
         "retrieved": [
           "CONTEXT.md",
           "docs/adr/0010-project-memory.md",
-          "docs/adr/0001-portable-capability-delivery.md",
           "docs/adr/0005-implement-pipeline.md",
+          "docs/adr/0001-portable-capability-delivery.md",
           "docs/adr/0004-role-assignments.md"
         ],
         "expected": [
@@ -252,7 +252,7 @@
           "CONTEXT.md",
           "docs/adr/0009-harness-console.md",
           "docs/adr/0003-orchestration-core.md",
-          "docs/adr/0008-repo-map.md"
+          "docs/adr/0005-implement-pipeline.md"
         ],
         "expected": [
           "docs/adr/0010-project-memory.md"

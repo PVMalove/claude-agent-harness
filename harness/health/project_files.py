@@ -55,7 +55,7 @@ STORY_POINTS_REQUIRED_FIELDS = (
 )
 STORY_POINTS_ALLOWED_FIELDS = frozenset(STORY_POINTS_REQUIRED_FIELDS)
 
-# The optional `tracker` field (docs/adr/0010): the single definition of its rules. The project
+# The optional `tracker` field (docs/adr/0011): the single definition of its rules. The project
 # tracker resolver (project_tracker.py) imports them from here, and `project.schema.json` repeats
 # the same patterns verbatim - tests/health/test_health_checks_files.py keeps the two in step.
 TRACKER_FIELDS = ("type", "host", "project")

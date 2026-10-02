@@ -605,7 +605,7 @@ def _seed_tracker_field(repo: Path, args: argparse.Namespace) -> str:
     """Собрать запись `tracker` нового project.json для шаблона; "" — поле не пишется.
 
     Флаги --tracker-* важнее всего; в терминале остальное спрашивается с дефолтами из origin
-    (docs/adr/0010). Ответ или флаг — явный выбор, он пишется даже как `local`; без них пишется
+    (docs/adr/0011). Ответ или флаг — явный выбор, он пишется даже как `local`; без них пишется
     только полностью выведенный трекер GitHub/GitLab.
     """
     origin = resolve_project_tracker(repo).from_origin

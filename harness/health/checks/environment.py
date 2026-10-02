@@ -28,7 +28,7 @@ from ..project_tracker import resolve_project_tracker
 GROUP = "environment"
 
 MIN_PYTHON: tuple[int, int] = (3, 12)
-# The minimum glab for a GitLab project tracker (docs/adr/0010): older releases miss flags or
+# The minimum glab for a GitLab project tracker (docs/adr/0011): older releases miss flags or
 # mishandle a host with a port that delivery relies on.
 MIN_GLAB: tuple[int, int, int] = (1, 117, 0)
 _GLAB_INSTALL_URL = "https://gitlab.com/gitlab-org/cli#installation"

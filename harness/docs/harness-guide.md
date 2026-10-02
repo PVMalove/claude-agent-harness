@@ -248,7 +248,7 @@ python harness\bin\harness.py init C:\path\to\repository `
 `.harness/project.json`. Их можно опустить — `init` спросит интерактивно.
 
 **Поле `tracker`** в `.harness/project.json` явно задаёт трекер проекта
-([ADR 0010](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0010-explicit-project-tracker.md)).
+([ADR 0011](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0011-explicit-project-tracker.md)).
 Это объект из трёх ключей: `type` — `github`, `gitlab` (включая self-hosted) или `local`;
 `host` — веб-хост с необязательным портом, без схемы, пути и userinfo; `project` — полный путь
 проекта с подгруппами. Для `github` и `gitlab` обязательны `host` и `project`; другие ключи внутри
