@@ -4,7 +4,12 @@
   "description": "Project-specific values pvmalove-suite's qa-gate, pr-composer, code-review, to-guide, and the check-branch-name.sh/check-worktree-branch-name.sh hooks read. Written once by 'harness init'/'adopt'/'update' when pvmalove-suite is selected (harness/bin/harness.py, scaffold_pvmalove_extras) and safe to hand-edit afterward - see docs/adr/0003 and CONTEXT.md (\"Проектный конфиг\"). This schema is editor-facing only (autocomplete/validation); 'harness health' enforces the same rules by hand, since this repo has no jsonschema dependency to load this file at runtime.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["language", "base_branch", "branch_pattern", "qa_gate_commands"],
+  "required": [
+    "language",
+    "base_branch",
+    "branch_pattern",
+    "qa_gate_commands"
+  ],
   "properties": {
     "$schema": {
       "type": "string",
@@ -12,7 +17,10 @@
     },
     "language": {
       "type": "string",
-      "enum": ["ru", "en"],
+      "enum": [
+        "ru",
+        "en"
+      ],
       "description": "Output language for code-review reports and the PR body template."
     },
     "base_branch": {
@@ -35,13 +43,21 @@
     },
     "shell": {
       "type": "string",
-      "enum": ["bash", "powershell"],
+      "enum": [
+        "bash",
+        "powershell"
+      ],
       "description": "Shell qa-gate wraps each qa_gate_commands entry in before running it. 'bash' (default when this field is absent) runs 'bash -lc <command>' - correct on Linux/macOS and inside WSL. 'powershell' runs 'powershell -NoProfile -NonInteractive -Command <command>' - use this on a native Windows checkout, where a bare 'bash' on PATH can resolve to the System32 WSL launcher stub ahead of Git Bash and fail if no WSL distro is configured, even for a command that needs no shell at all."
     },
     "story_points": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["scale", "fast_threshold", "full_threshold", "gray_zone"],
+      "required": [
+        "scale",
+        "fast_threshold",
+        "full_threshold",
+        "gray_zone"
+      ],
       "description": "Fibonacci story-point scale and pipeline::fast/pipeline::full routing thresholds that to-tickets, /implement, and /fast-implement read without depending on the optional backend-orchestration capability (see docs/tasks/issue-165-planning-poker/issue-165-spec-planning-poker.md). Optional field - a project without it has no story-point routing configured.",
       "properties": {
         "scale": {
@@ -64,6 +80,77 @@
         "gray_zone": {
           "type": "integer",
           "description": "The single score strictly between fast_threshold and full_threshold that triggers a second advisory scoring pass in to-tickets."
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "memory_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_types",
+        "allow_paths",
+        "redact_rules",
+        "min_similarity",
+        "top_k",
+        "max_tokens"
+      ],
+      "properties": {
+        "source_types": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "adr",
+              "glossary",
+              "task_archive",
+              "qa_finding",
+              "completion_report",
+              "ledger"
+            ]
+          }
+        },
+        "allow_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)(?!.*[:\\\\])(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*\\/$).+$"
+          }
+        },
+        "redact_rules": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "regex",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "min_similarity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Dormant until cosine-vector slice; does not filter FTS5 ranks."
+        },
+        "top_k": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     }

@@ -47,6 +47,13 @@ from harness.uninstall import (
     apply_uninstall,
     plan_uninstall,
 )
+from harness.memory import (
+    build as memory_build,
+    evaluate_memory,
+    search_with_refresh as memory_search,
+    rebuild as memory_rebuild,
+    sync as memory_sync,
+)
 from harness.storage import storage_path
 from harness.health import registry as health_registry
 from harness.health import render as health_render
@@ -1097,6 +1104,45 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     return 1 if result["failed"] else 0
 
 
+def cmd_memory(args: argparse.Namespace) -> int:
+    """Run offline writers or main-only refresh followed by read-only pointer search."""
+    repo = Path(args.repo).expanduser().resolve()
+    try:
+        if args.memory_operation == "eval":
+            report = evaluate_memory(
+                repo,
+                dataset_path=Path(args.dataset).expanduser() if args.dataset else None,
+                min_recall_at_5=args.min_recall,
+                max_noise_ratio=args.max_noise,
+            )
+            if args.json:
+                print(json.dumps(report.to_dict(), ensure_ascii=False))
+            else:
+                print(f"Queries: {report.total_queries}")
+                for k, value in report.mean_recall.items():
+                    print(f"recall@{k}: {value:.6f}")
+                print(f"noise_ratio: {report.mean_noise_ratio:.6f}")
+                print(f"Gate: {'PASS' if report.gate_passed else 'FAIL'}")
+                for query_result in report.query_results:
+                    if query_result.search_status != "ok":
+                        print(
+                            f"#{query_result.ticket_id}: {query_result.search_status}"
+                        )
+            return 0 if report.gate_passed else 1
+        elif args.memory_operation == "search":
+            result = memory_search(repo, args.query)
+        elif args.memory_operation == "rebuild":
+            result = memory_rebuild(repo)
+        elif args.memory_operation == "sync":
+            result = memory_sync(repo)
+        else:
+            result = memory_build(repo)
+    except (ValueError, OSError) as exc:
+        fail(str(exc))
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     """Сконфигурировать парсер аргументов командной строки CLI harness."""
     root = argparse.ArgumentParser(prog="harness")
@@ -1174,6 +1220,20 @@ def parser() -> argparse.ArgumentParser:
     lock_project = commands.add_parser("lock-project-skills")
     lock_project.add_argument("repo")
     lock_project.set_defaults(func=cmd_lock_project_skills)
+
+    memory = commands.add_parser("memory", help="explicit offline project-memory cache")
+    memory_commands = memory.add_subparsers(dest="memory_operation", required=True)
+    for operation in ("build", "search", "rebuild", "sync", "eval"):
+        memory_command = memory_commands.add_parser(operation)
+        memory_command.add_argument("repo")
+        if operation == "search":
+            memory_command.add_argument("query")
+        if operation == "eval":
+            memory_command.add_argument("--dataset", help="offline labeled ticket JSON")
+            memory_command.add_argument("--min-recall", type=float, default=0.6)
+            memory_command.add_argument("--max-noise", type=float, default=0.7)
+            memory_command.add_argument("--json", action="store_true")
+        memory_command.set_defaults(func=cmd_memory)
 
     health = commands.add_parser("health")
     health.add_argument("repo")

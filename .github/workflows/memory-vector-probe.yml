@@ -1,0 +1,45 @@
+name: memory-vector-probe
+
+on:
+  push:
+    branches: [feature/issue-431-vector-go-no-go]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      UV_PROJECT_ENVIRONMENT: ${{ github.workspace }}/.harness/.sandboxes/runs/issue-431-vector/venv
+      HARNESS_VECTOR_PROBE_ARTIFACTS: ${{ github.workspace }}/.harness/.sandboxes/runs/issue-431-vector/artifacts
+      HARNESS_VECTOR_PROBE_REQUIRED: "1"
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+      - name: Install separately locked runtime
+        run: uv sync --locked --project tests/memory/vector_probe_runtime
+      - name: Download pinned artifacts and verify bytes
+        run: python scripts/memory_vector_probe.py --artifacts "$HARNESS_VECTOR_PROBE_ARTIFACTS"
+      - name: Real offline extension and model tests
+        run: uv run --locked --project tests/memory/vector_probe_runtime python -m pytest -q tests/memory/test_vector_probe.py tests/memory/test_vector_probe_integration.py
+      - name: Record real comparison
+        run: uv run --locked --project tests/memory/vector_probe_runtime python scripts/memory_vector_worker.py --artifacts "$HARNESS_VECTOR_PROBE_ARTIFACTS" --output .harness/.sandboxes/reports/issue-431-vector-comparison.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: vector-probe-${{ matrix.os }}
+          path: .harness/.sandboxes/reports/issue-431-vector-comparison.json
+          if-no-files-found: error

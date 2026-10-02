@@ -13,9 +13,9 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 # Mirrors exactly what CAPABILITIES.json's pvmalove-suite capability copies into an installed
-# project's .harness/ for the "health" and "repo_map" resources (both file and directory entries).
+# project's .harness/ for health and its runtime dependencies (file and directory entries).
 _FILE_RESOURCES = ("__init__.py", "errors.py", "storage.py", "token_estimator.py")
-_DIR_RESOURCES = ("repo_map", "health")
+_DIR_RESOURCES = ("repo_map", "health", "memory", "gate_runner")
 
 
 def _install_shipped_only_tree(tmp_path: Path) -> Path:
@@ -71,6 +71,7 @@ def test_registry_runs_from_a_copied_health_only_tree_with_no_bin_harness(
         "files",
         "directories",
         "repo_map",
+        "memory",
         "environment",
         "tracker",
         "orchestration",
@@ -134,6 +135,8 @@ def test_registry_runs_without_crashing_even_with_a_lock_file_present(
         "directories.worktrees",
         "directories.orchestration_state",
         "repo_map.tier",
+        "memory.index",
+        "memory.model",
         "environment.os",
         "environment.git",
         "environment.git_identity",

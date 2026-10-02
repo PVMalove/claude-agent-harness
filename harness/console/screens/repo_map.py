@@ -276,12 +276,23 @@ class RepoMapScreen(Screen[None]):
 
         self.app.push_screen(BuildConfirmScreen(head), on_confirm)
 
+    def on_unmount(self) -> None:
+        """Отменяет фоновые воркеры при размонтировании экрана."""
+        self.workers.cancel_all()
+
     def _build(self, head: str) -> None:
         self._set_status(f"строится карта HEAD {head[:12]}…")
 
         def work() -> None:
-            outcome = console_repo_map.build_map(self.repo, head, self._command_runner)
-            self.app.call_from_thread(self._apply_build, outcome)
+            try:
+                outcome = console_repo_map.build_map(self.repo, head, self._command_runner)
+            except Exception:
+                return
+            if self.is_mounted and self.app.is_running:
+                try:
+                    self.app.call_from_thread(self._apply_build, outcome)
+                except Exception:
+                    pass
 
         self.run_worker(work, thread=True, exclusive=True, group="repo-map-build")
 

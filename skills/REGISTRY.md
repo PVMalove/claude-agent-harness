@@ -5,9 +5,11 @@ catalog into every session.
 
 | Skill | Canonical path | When to use |
 |---|---|---|
+| `architect` | `skills/first-party/pvmalove/architect` | Compare architectural options and produce a decision brief in an interactive session. |
 | `ask-matt` | `skills/first-party/pvmalove/ask-matt` | Ask which skill or flow fits your situation. A router over the skills in this repo. |
 | `code-review` | `skills/first-party/pvmalove/code-review` | Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes — Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to "review since X". |
 | `delivery-stats` | `skills/first-party/pvmalove/delivery-stats` | Collect delivery statistics for a finished epic and every ticket under it: tokens by model, cache efficiency, estimated cost, subscription window and code volume. |
+| `diagnosing-bugs` | `skills/first-party/pvmalove/diagnosing-bugs` | Diagnosis loop for hard bugs and performance regressions. Use when the user says "diagnose"/"debug this", or reports something broken/throwing/failing/slow. |
 | `fast-implement` | `skills/first-party/pvmalove/fast-implement` | Implement a piece of work in a single session, without the coordinator pipeline's approval gates. |
 | `grill-me` | `skills/first-party/pvmalove/grill-me` | A relentless interview to sharpen a plan or design. |
 | `grill-with-docs` | `skills/first-party/pvmalove/grill-with-docs` | A relentless interview to sharpen a plan or design, which also creates docs (ADR's and glossary) as we go. |

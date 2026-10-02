@@ -1,0 +1,460 @@
+{
+  "version": 1,
+  "engine": "sqlite3 FTS5 bm25, path tie-break",
+  "corpus": "Tracked ADRs and CONTEXT.md; excludes task archives and tracker snapshots",
+  "k_values": [
+    1,
+    3,
+    5
+  ],
+  "noise_window": 5,
+  "min_recall_at_5": 0.6,
+  "max_noise_ratio": 0.7,
+  "dataset_hash": "d2dd5522c6281517f5eea9801c122228c831ca7911409acbc3e0a11e117ba2c5",
+  "source_hashes": {
+    "CONTEXT.md": "9eeddd16b0cb5ed943fe0f8925f409a734419e23cbfbbac7a878df56095f2e48",
+    "docs/adr/0001-portable-capability-delivery.md": "5254f06b516ee14371422ba9cbca9947ced09067edf167bcef09fc9b446d805b",
+    "docs/adr/0002-controlled-delivery.md": "769be42fd2da1bfbcdf27829d672df48e85a91cc9d283f1be28b5e3235b063aa",
+    "docs/adr/0003-orchestration-core.md": "eba04529bff1e9899409cba2434c2f423e9e29862e96ed16a334ec9b6dbb09bf",
+    "docs/adr/0004-role-assignments.md": "3721543a888daea209f74e3ca92ea920074213b0b758cbc6c1497b53ba782bd0",
+    "docs/adr/0005-implement-pipeline.md": "27f08c077e8a4d0121b89ed5ad27b961037e253e472b768f155504ea930c724d",
+    "docs/adr/0006-scratch-artifacts.md": "99f53f8af2a319af5dd90b9e7ac97ef718f17aa63029545636035be8bab7e14b",
+    "docs/adr/0007-python-quality.md": "866c0aa5cddae54238750e54733e281d0ed8cdd5e4c4336713c82ca4f30a6677",
+    "docs/adr/0008-repo-map.md": "a1efc331e1f698c964b04593c8665595e667a0f24acc5a3bc8d0b447ccdc329e",
+    "docs/adr/0009-harness-console.md": "3f9877cda4a63259bba0247ec199a24082a11515da63fdc6a826329d9d0fa459",
+    "docs/adr/0010-project-memory.md": "77806c8fa874bb36023df433db75a7320fe6250caacd08e42e3bd8c810242eaf",
+    "docs/adr/template.md": "c6e731c451d5018f6c3000d4621dd7a4b6fe87fa0935363c78b2ac6620edf3fd"
+  },
+  "report": {
+    "total_queries": 20,
+    "mean_recall": {
+      "1": 0.7,
+      "3": 0.75,
+      "5": 0.85
+    },
+    "mean_noise_ratio": 0.8300000000000001,
+    "query_results": [
+      {
+        "ticket_id": 165,
+        "query": "Цель: Ввести Planning Poker и story points для выбора implement или fast-implement. DoD: afk с оценкой до 3 получает pipeline::fast; от 5 — full; оценка 4 требует второго прохода; hitl не получает fast; человек утверждает метку.",
+        "retrieved": [
+          "docs/adr/0005-implement-pipeline.md",
+          "CONTEXT.md",
+          "docs/adr/0008-repo-map.md",
+          "docs/adr/0007-python-quality.md",
+          "docs/adr/0010-project-memory.md"
+        ],
+        "expected": [
+          "docs/adr/0005-implement-pipeline.md"
+        ],
+        "recall_at_k": {
+          "1": 1.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 339,
+        "query": "Цель: Разложить Repo Map и parser_bundle на модули и передавать парсер через ParserBackend. DoD: Bundle находится один раз; чтение Git пакетное, отбор в бюджет линейный; грамматики загружаются лениво; full и minimal сохраняют бинарные пути.",
+        "retrieved": [
+          "docs/adr/0008-repo-map.md",
+          "docs/adr/0010-project-memory.md",
+          "CONTEXT.md",
+          "docs/adr/0005-implement-pipeline.md",
+          "docs/adr/0009-harness-console.md"
+        ],
+        "expected": [
+          "docs/adr/0008-repo-map.md"
+        ],
+        "recall_at_k": {
+          "1": 1.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 345,
+        "query": "Цель: Проверять каталоги харнесса и права записи в harness health с локальным --fix. DoD: Отсутствующий каталог с записываемым родителем получает ok; незаписываемый — fail; fix создаёт каталоги и registry, не меняя машинных настроек.",
+        "retrieved": [
+          "CONTEXT.md",
+          "docs/adr/0010-project-memory.md",
+          "docs/adr/0001-portable-capability-delivery.md",
+          "docs/adr/0005-implement-pipeline.md",
+          "docs/adr/0004-role-assignments.md"
+        ],
+        "expected": [
+          "docs/adr/0006-scratch-artifacts.md"
+        ],
+        "recall_at_k": {
+          "1": 0.0,
+          "3": 0.0,
+          "5": 0.0
+        },
+        "noise_ratio": 1.0,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 359,
+        "query": "Цель: Переработать soft и hard cleanup для .harness/.sandboxes/ и устаревших каталогов. DoD: Soft удаляет устаревшие runs, scratch и logs; hard включает cache и reports с --confirm HARD; активные worktree сохраняются; пути не выходят за .harness.",
+        "retrieved": [
+          "docs/adr/0006-scratch-artifacts.md",
+          "CONTEXT.md",
+          "docs/adr/0010-project-memory.md",
+          "docs/adr/0008-repo-map.md",
+          "docs/adr/0004-role-assignments.md"
+        ],
+        "expected": [
+          "docs/adr/0006-scratch-artifacts.md"
+        ],
+        "recall_at_k": {
+          "1": 1.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 391,
+        "query": "Цель: Восстановить потерянные при merge регрессии проверки проекта на master. DoD: CleanRoomPolicy создаёт temporary_parent; linked-worktree сценарий не дублируется; QA hook сохраняет fallback checkout; verify проходит.",
+        "retrieved": [
+          "CONTEXT.md",
+          "docs/adr/0010-project-memory.md",
+          "docs/adr/0009-harness-console.md",
+          "docs/adr/0005-implement-pipeline.md",
+          "docs/adr/0006-scratch-artifacts.md"
+        ],
+        "expected": [
+          "docs/adr/0007-python-quality.md"
+        ],
+        "recall_at_k": {
+          "1": 0.0,
+          "3": 0.0,
+          "5": 0.0
+        },
+        "noise_ratio": 1.0,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 394,
+        "query": "Цель: Изолировать падения отдельных проверок в registry.run health. DoD: Exception и SystemExit дают fail со стабильным id; KeyboardInterrupt не перехватывается; процессный health JSON остаётся полным без git.",
+        "retrieved": [
+          "CONTEXT.md",
+          "docs/adr/0001-portable-capability-delivery.md",
+          "docs/adr/0010-project-memory.md",
+          "docs/adr/0002-controlled-delivery.md",
+          "docs/adr/0009-harness-console.md"
+        ],
+        "expected": [
+          "CONTEXT.md"
+        ],
+        "recall_at_k": {
+          "1": 1.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 402,
+        "query": "Цель: Обновлять status::* при старте реализации и после подтверждённого merge. DoD: implement и fast-implement ставят in-progress; закрытый тикет получает done; зависимости разблокируются без потери статуса выполняемой задачи.",
+        "retrieved": [
+          "docs/adr/0005-implement-pipeline.md",
+          "CONTEXT.md",
+          "docs/adr/0002-controlled-delivery.md",
+          "docs/adr/0007-python-quality.md",
+          "docs/adr/0009-harness-console.md"
+        ],
+        "expected": [
+          "docs/adr/0005-implement-pipeline.md"
+        ],
+        "recall_at_k": {
+          "1": 1.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 407,
+        "query": "Цель: Устранить зависание console launcher e2e на Windows при поиске uv через PATHEXT. DoD: Отсутствующий и неработающий uv дают health fallback; тесты не запускают настоящий Textual TUI и не оставляют процессов.",
+        "retrieved": [
+          "docs/adr/0009-harness-console.md",
+          "docs/adr/0010-project-memory.md",
+          "CONTEXT.md",
+          "docs/adr/0008-repo-map.md",
+          "docs/adr/0004-role-assignments.md"
+        ],
+        "expected": [
+          "docs/adr/0009-harness-console.md"
+        ],
+        "recall_at_k": {
+          "1": 1.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 416,
+        "query": "Цель: Добавить update --force-seed-files и упорядочить команды очистки в Harness console. DoD: Перезапись seed-файлов требует подтверждения; есть план soft/hard, применение hard с HARD; каталог команд, справка и тесты обновлены.",
+        "retrieved": [
+          "CONTEXT.md",
+          "docs/adr/0001-portable-capability-delivery.md",
+          "docs/adr/0006-scratch-artifacts.md",
+          "docs/adr/0010-project-memory.md",
+          "docs/adr/0009-harness-console.md"
+        ],
+        "expected": [
+          "docs/adr/0009-harness-console.md"
+        ],
+        "recall_at_k": {
+          "1": 0.0,
+          "3": 0.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 421,
+        "query": "Цель: Исключить ложную ошибку QA hook на командах с подстрокой --head. DoD: Только gh pr create с отдельным --head или --head=branch выбирает PR head; git ls-remote --heads не вызывает ошибку; require сохраняет проверку.",
+        "retrieved": [
+          "CONTEXT.md",
+          "docs/adr/0002-controlled-delivery.md",
+          "docs/adr/0006-scratch-artifacts.md",
+          "docs/adr/0005-implement-pipeline.md",
+          "docs/adr/0010-project-memory.md"
+        ],
+        "expected": [
+          "docs/adr/0005-implement-pipeline.md"
+        ],
+        "recall_at_k": {
+          "1": 0.0,
+          "3": 0.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 422,
+        "query": "Цель: Включить память проекта через memory.enabled и memory_policy; создать FTS5-индекс ADR и глоссария. DoD: Без allowlist ничего не индексируется; search возвращает только указатели, rebuild восстанавливает кэш; SQLite работает офлайн.",
+        "retrieved": [
+          "docs/adr/0010-project-memory.md",
+          "CONTEXT.md",
+          "docs/adr/0009-harness-console.md",
+          "docs/adr/0003-orchestration-core.md",
+          "docs/adr/0008-repo-map.md"
+        ],
+        "expected": [
+          "docs/adr/0010-project-memory.md"
+        ],
+        "recall_at_k": {
+          "1": 1.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 423,
+        "query": "Цель: Извлекать статус, дату и superseded-by; санитизировать архив задач, QA findings и Lifecycle ledger. DoD: Superseded ADR исключены, исторические хиты помечены; redact применяется; ingest инкрементален по content-hash.",
+        "retrieved": [
+          "docs/adr/0010-project-memory.md",
+          "CONTEXT.md",
+          "docs/adr/0008-repo-map.md",
+          "docs/adr/0005-implement-pipeline.md",
+          "docs/adr/0003-orchestration-core.md"
+        ],
+        "expected": [
+          "docs/adr/0010-project-memory.md"
+        ],
+        "recall_at_k": {
+          "1": 1.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 424,
+        "query": "Цель: Использовать один индекс памяти на репозиторий в главном checkout. DoD: Worktree читает общий индекс read-only без собственного кэша; параллельные сборки не повреждают SQLite.",
+        "retrieved": [
+          "docs/adr/0010-project-memory.md",
+          "CONTEXT.md",
+          "docs/adr/0008-repo-map.md",
+          "docs/adr/0004-role-assignments.md",
+          "docs/adr/0005-implement-pipeline.md"
+        ],
+        "expected": [
+          "docs/adr/0010-project-memory.md"
+        ],
+        "recall_at_k": {
+          "1": 1.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 425,
+        "query": "Цель: Добавить секцию памяти в harness health и Harness console. DoD: Отражены выключенная память, отсутствие индекса и модели, валидный индекс; JSON содержит секцию; health ничего не пишет.",
+        "retrieved": [
+          "docs/adr/0010-project-memory.md",
+          "CONTEXT.md",
+          "docs/adr/0005-implement-pipeline.md",
+          "docs/adr/0009-harness-console.md",
+          "docs/adr/0004-role-assignments.md"
+        ],
+        "expected": [
+          "docs/adr/0010-project-memory.md"
+        ],
+        "recall_at_k": {
+          "1": 1.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 426,
+        "query": "Цель: Скиллы diagnosing-bugs, grilling и architect вызывают поиск по включённой памяти. DoD: Скиллы трактуют статус указателей; роли оркестрации не получают search; vendor не редактируется; verify проходит.",
+        "retrieved": [
+          "docs/adr/0010-project-memory.md",
+          "CONTEXT.md",
+          "docs/adr/0003-orchestration-core.md",
+          "docs/adr/0005-implement-pipeline.md",
+          "docs/adr/0001-portable-capability-delivery.md"
+        ],
+        "expected": [
+          "docs/adr/0010-project-memory.md"
+        ],
+        "recall_at_k": {
+          "1": 1.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 427,
+        "query": "Цель: Заморозить найденные по цели и DoD указатели памяти в Context Package без текста источников. DoD: Hash источника определяет freshness; disabled и --no-memory исключают память; нет индекса — явная деградация; квоты и бюджет соблюдаются офлайн.",
+        "retrieved": [
+          "docs/adr/0010-project-memory.md",
+          "CONTEXT.md",
+          "docs/adr/0008-repo-map.md",
+          "docs/adr/0005-implement-pipeline.md",
+          "docs/adr/0001-portable-capability-delivery.md"
+        ],
+        "expected": [
+          "docs/adr/0010-project-memory.md"
+        ],
+        "recall_at_k": {
+          "1": 1.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 428,
+        "query": "Цель: Явно синхронизировать закрытые тикеты, PR и Completion report через harness memory sync. DoD: Политика соблюдается, снапшот санитизирован; повторный sync инкрементален; ошибка сети сохраняет прошлый снапшот; Package не обращается к трекеру.",
+        "retrieved": [
+          "docs/adr/0010-project-memory.md",
+          "CONTEXT.md",
+          "docs/adr/0009-harness-console.md",
+          "docs/adr/0001-portable-capability-delivery.md",
+          "docs/adr/0005-implement-pipeline.md"
+        ],
+        "expected": [
+          "docs/adr/0010-project-memory.md"
+        ],
+        "recall_at_k": {
+          "1": 1.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 429,
+        "query": "Цель: Добавить lessons и used_memory в Completion report. DoD: Отчёты с полями и без них принимаются; lessons индексируются как не подтверждённые человеком без повышенного веса; глоссарий и шаблон обновлены.",
+        "retrieved": [
+          "docs/adr/0010-project-memory.md",
+          "CONTEXT.md",
+          "docs/adr/0003-orchestration-core.md",
+          "docs/adr/0006-scratch-artifacts.md",
+          "docs/adr/0005-implement-pipeline.md"
+        ],
+        "expected": [
+          "docs/adr/0010-project-memory.md"
+        ],
+        "recall_at_k": {
+          "1": 1.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 445,
+        "query": "Цель: Исправить ложные отказы scratch-path и bounded-check hooks. DoD: Ошибки называют выход пути за пределы проекта; память runtime разрешена; команды чтения не считаются QA-запуском; реальные проверки остаются ограниченными.",
+        "retrieved": [
+          "CONTEXT.md",
+          "docs/adr/0006-scratch-artifacts.md",
+          "docs/adr/0010-project-memory.md",
+          "docs/adr/0007-python-quality.md",
+          "docs/adr/0001-portable-capability-delivery.md"
+        ],
+        "expected": [
+          "docs/adr/0006-scratch-artifacts.md"
+        ],
+        "recall_at_k": {
+          "1": 0.0,
+          "3": 1.0,
+          "5": 1.0
+        },
+        "noise_ratio": 0.8,
+        "search_status": "ok"
+      },
+      {
+        "ticket_id": 459,
+        "query": "Цель: Устранить зависание консольных тестов при asyncio.Runner.close. DoD: Полный pytest завершается без зависания asyncio loop; консольные тесты закрывают workers и отложенные callbacks.",
+        "retrieved": [
+          "CONTEXT.md",
+          "docs/adr/0002-controlled-delivery.md",
+          "docs/adr/0003-orchestration-core.md",
+          "docs/adr/0004-role-assignments.md",
+          "docs/adr/0008-repo-map.md"
+        ],
+        "expected": [
+          "docs/adr/0009-harness-console.md"
+        ],
+        "recall_at_k": {
+          "1": 0.0,
+          "3": 0.0,
+          "5": 0.0
+        },
+        "noise_ratio": 1.0,
+        "search_status": "ok"
+      }
+    ],
+    "gate_passed": false
+  }
+}

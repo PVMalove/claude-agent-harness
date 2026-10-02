@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -133,6 +134,26 @@ def test_storage_path_escape_and_invalid_components(tmp_path: Path) -> None:
     # Unknown category
     with pytest.raises(ValueError, match="unknown storage category"):
         storage_path(tmp_path, "invalid_cat", "sub")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path resolution")
+def test_storage_path_accepts_extended_prefix_from_racing_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Принять `\\\\?\\`-путь, который `resolve()` оставляет при параллельном `os.replace`."""
+    original = Path.resolve
+
+    def racing_resolve(self: Path, strict: bool = False) -> Path:
+        resolved = original(self, strict)
+        if self.name == "index.sqlite3":
+            return Path("\\\\?\\" + str(resolved).upper())
+        return resolved
+
+    monkeypatch.setattr(Path, "resolve", racing_resolve)
+    path = storage_path(tmp_path, "cache", "memory", "index.sqlite3")
+    assert (
+        path == storage_root(tmp_path) / SANDBOXES_DIR / "cache" / "memory" / path.name
+    )
 
 
 @pytest.mark.parametrize("linked_part", [".harness", ".sandboxes"])

@@ -17,9 +17,54 @@ SANDBOX_CATEGORIES = frozenset(
 LEGACY_STORAGE_DIRS = (".cache", "test-logs", "tmp", "reports", "scratch")
 
 
-def storage_root(repo: Path) -> Path:
+def _unresolved_storage(checkout: Path, *, required: bool) -> Path:
+    """Preserve legacy local fallback unless the caller requires a known main checkout."""
+    if required:
+        raise ValueError("cannot locate main checkout for shared storage")
+    return checkout / ".harness"
+
+
+def _is_main_checkout(checkout: Path, common: Path) -> bool:
+    """A configured owner must be the main Git directory's actual, existing checkout."""
+    if not checkout.is_dir():
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                f"safe.directory={checkout}",
+                "-C",
+                str(checkout),
+                "rev-parse",
+                "--show-toplevel",
+                "--git-dir",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        return False
+    lines = result.stdout.splitlines()
+    if (
+        result.returncode != 0
+        or len(lines) != 2
+        or Path(lines[0]).resolve() != checkout
+    ):
+        return False
+    git_dir = Path(lines[1])
+    if not git_dir.is_absolute():
+        git_dir = checkout / git_dir
+    return git_dir.resolve() == common
+
+
+def storage_root(repo: Path, *, require_main_checkout: bool = False) -> Path:
     """Найти общий `.harness` для корня репозитория и связанных worktree."""
     checkout = repo.expanduser().resolve()
+    unresolved_pointer = require_main_checkout and (checkout / ".git").is_file()
     try:
         result = subprocess.run(
             [
@@ -39,20 +84,55 @@ def storage_root(repo: Path) -> Path:
             check=False,
         )
     except OSError:
-        # No runnable git (reported by `harness health` as environment.git): a linked worktree
-        # cannot be resolved, so fall back to the checkout's own storage like a git error does.
-        return checkout / ".harness"
+        # No runnable Git: a linked worktree must not become a separate cache owner.
+        return _unresolved_storage(checkout, required=unresolved_pointer)
     if result.returncode != 0:
-        return checkout / ".harness"
+        return _unresolved_storage(checkout, required=unresolved_pointer)
     lines = result.stdout.splitlines()
     if len(lines) != 2 or Path(lines[0]).resolve() != checkout:
-        return checkout / ".harness"
+        return _unresolved_storage(checkout, required=require_main_checkout)
     common = Path(lines[1])
     if not common.is_absolute():
         common = checkout / common
     common = common.resolve()
-    if common.name != ".git" or not common.is_dir():
-        return checkout / ".harness"
+    if not common.is_dir():
+        return _unresolved_storage(checkout, required=require_main_checkout)
+    # --separate-git-dir has no backlink to its checkout. Use an explicit shared
+    # core.worktree when configured, rather than treating metadata as source files.
+    try:
+        configured = subprocess.run(
+            [
+                "git",
+                "-c",
+                f"safe.directory={checkout}",
+                "--git-dir",
+                str(common),
+                "config",
+                "--local",
+                "--get",
+                "core.worktree",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        return _unresolved_storage(checkout, required=require_main_checkout)
+    if configured.returncode == 0:
+        value = configured.stdout.removesuffix("\n")
+        if not value:
+            return _unresolved_storage(checkout, required=require_main_checkout)
+        main = Path(value)
+        if not main.is_absolute():
+            main = common / main
+        main = main.resolve()
+        if not _is_main_checkout(main, common):
+            return _unresolved_storage(checkout, required=require_main_checkout)
+        return main / ".harness"
+    if configured.returncode != 1 or common.name != ".git":
+        return _unresolved_storage(checkout, required=require_main_checkout)
     return common.parent / ".harness"
 
 
@@ -90,9 +170,22 @@ def storage_path(repo: Path, *parts: str) -> Path:
     if root.parent.is_symlink() or root.is_symlink():
         raise ValueError("storage root must not be a symlink")
     target = root.joinpath(*parts)
-    if not target.resolve().is_relative_to(root.resolve()):
+    resolved_target, resolved_root = target.resolve(), root.resolve()
+    if os.name == "nt":
+        resolved_target = _windows_comparable(resolved_target)
+        resolved_root = _windows_comparable(resolved_root)
+    if not resolved_target.is_relative_to(resolved_root):
         raise ValueError(f"path escaped {root_name}: {target}")
     return target
+
+
+def _windows_comparable(path: Path) -> Path:
+    """Сравнивать пути Windows без учёта регистра и без префикса `\\\\?\\`.
+
+    `Path.resolve()` оставляет этот префикс, если файл заменяется во время разрешения пути,
+    как при параллельной публикации индекса памяти через `os.replace`.
+    """
+    return Path(os.path.normcase(str(path)).removeprefix("\\\\?\\"))
 
 
 def sandboxes_health(repo: Path) -> list[str]:

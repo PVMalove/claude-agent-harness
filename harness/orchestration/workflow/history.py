@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
+from harness.memory.index import context as memory_context
+from harness.memory.sources import allowed_paths, read_source
 from harness.orchestration import operational_guards
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
@@ -34,6 +36,7 @@ from harness.orchestration.core.constants import (
     ATTENTION_EVENT_KINDS,
     ATTENTION_STATE_FIELDS,
     CONTEXT_PACKAGE_FIELDS,
+    V2_CONTEXT_PACKAGE_FIELDS,
     CONTEXT_PRESSURE_FIELDS,
     CONTEXT_TELEMETRY_SOURCES,
     DEFAULT_COMMUNICATION_POLICY,
@@ -193,6 +196,7 @@ def _validate_context_package(
     _reject_sensitive(package, "context package")
     if set(package) not in (
         CONTEXT_PACKAGE_FIELDS,
+        V2_CONTEXT_PACKAGE_FIELDS,
         LEGACY_CONTEXT_PACKAGE_FIELDS,
         LEGACY_CONTEXT_PACKAGE_FIELDS_NO_TOKENS,
     ):
@@ -230,7 +234,7 @@ def _context_package_summary(package: JsonObject) -> JsonObject:
     bounded navigation to start work without rediscovering files or copying the full diff into
     every model prompt; the pinned commits let a role obtain a precise diff when it truly needs it.
     """
-    return {
+    summary = {
         "base_commit": package["base_commit"],
         "candidate_commit": package["candidate_commit"],
         "starting_files": package["starting_files"],
@@ -238,6 +242,12 @@ def _context_package_summary(package: JsonObject) -> JsonObject:
         "precedent_cards": package["precedent_cards"],
         "estimated_tokens": package.get("estimated_tokens"),
     }
+
+    if package.get("schema_version") == 3:
+        summary.update(
+            {key: package[key] for key in ("goal", "definition_of_done", "memory")}
+        )
+    return summary
 
 
 def _context_package_quality_warning(package: JsonObject) -> JsonObject | None:
@@ -282,6 +292,7 @@ def _reusable_context_package(
     batch: JsonObject,
     base_commit: str,
     candidate_commit: str,
+    memory_identity: JsonObject | None = None,
 ) -> JsonObject | None:
     """Return the current batch's shared package for exactly the same pinned diff.
 
@@ -297,6 +308,11 @@ def _reusable_context_package(
             continue
         package = _load_context_package(root, entry.get("context_package_id"))
         _validate_context_package(root, batch, package)
+        if memory_identity is not None and (
+            package.get("schema_version") != 3
+            or package.get("memory", {}).get("identity") != memory_identity
+        ):
+            continue
         if package.get("role") == "shared":
             return package
     return None
@@ -312,12 +328,23 @@ def _latest_context_package(root: Path, batch: JsonObject) -> JsonObject | None:
 
 
 def _context_package_freshness(
-    repo: Path, root: Path, batch: JsonObject
+    repo: Path,
+    root: Path,
+    batch: JsonObject,
+    *,
+    context_package_id: str | None = None,
 ) -> JsonObject | None:
-    """Shadow-mode evidence only: records whether the batch's latest registered Context Package
-    still matches current repository state (its base and the current developer candidate).
-    Never blocks dispatch creation -- roles are not yet restricted to the package."""
-    package = _latest_context_package(root, batch)
+    """Admission evidence from pinned commits and authoritative frozen source bytes.
+
+    An explicit ID checks the package selected for admission, even when a newer package has a
+    different memory identity. With no ID, retain the deliberate latest-package audit behavior.
+    The derived index is neither queried nor refreshed; index-only changes are irrelevant.
+    """
+    if context_package_id is None:
+        package = _latest_context_package(root, batch)
+    else:
+        package = _load_context_package(root, context_package_id)
+        _validate_context_package(root, batch, package)
     if package is None:
         return None
     current_base = batch.get("integration_base_commit") or batch.get("base_commit")
@@ -325,7 +352,39 @@ def _context_package_freshness(
     fresh = package["base_commit"] == current_base and (
         current_candidate is None or package["candidate_commit"] == current_candidate
     )
+    pointers = package.get("memory", {}).get("pointers", [])
+    memory_fresh = True
+    if pointers:
+        try:
+            canonical, _, policy = memory_context(repo)
+            permitted = (
+                set(allowed_paths(canonical, policy)) if policy.active else set()
+            )
+            for pointer in pointers:
+                relative = pointer["path"]
+                document = (
+                    read_source(canonical, relative, policy)
+                    if relative in permitted
+                    else None
+                )
+                if (
+                    document is None
+                    or document.source_type != pointer["source_type"]
+                    or document.source_hash != pointer["source_hash"]
+                ):
+                    memory_fresh = False
+                    break
+        except (OSError, ValueError, KeyError, TypeError):
+            memory_fresh = False
+    fresh = fresh and memory_fresh
     return {
+        **(
+            {
+                "memory_diagnostic": "frozen memory source changed, unavailable or revoked"
+            }
+            if not memory_fresh
+            else {}
+        ),
         "context_package_id": package["context_package_id"],
         "status": "fresh" if fresh else "stale",
         "checked_at": utils._now(),
@@ -560,6 +619,11 @@ def _validate_batch_integrity(root: Path, batch: JsonObject) -> None:
         / f"{_safe_id(batch.get('batch_id'), 'batch')}.json",
         "immutable batch plan",
     )
+    if batch.get("goal") != plan.get("goal"):
+        raise CoordinatorError(
+            "batch goal does not match its immutable plan",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     for field in ("approval_policy", "communication_policy"):
         if (field in batch) != (field in plan):
             raise CoordinatorError(

@@ -592,3 +592,41 @@ def test_dashboard_summary_lists_problems_and_splits_repo_map_facts() -> None:
     assert "ошибки и предупреждения:" in text
     assert "env.git — git \\[bold] missing" in text
     assert text.index("env.git") < text.index("repo_map.tier —")
+
+
+def test_diagnostics_screen_unmount_cancels_workers_without_deadlock(tmp_path: Path) -> None:
+    """Проверить, что размонтирование экрана отменяет фоновые воркеры и не приводит к зависанию."""
+    import threading
+    from textual.app import App
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_diagnostics(repo: Path, *, online: bool = False) -> Report:
+        started.set()
+        release.wait(timeout=2.0)
+        return _fake_report(online=online)
+
+    screen = DiagnosticsScreen(tmp_path, collect_diagnostics=slow_diagnostics)
+
+    class _HostApp(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(screen)
+
+    async def scenario() -> None:
+        app = _HostApp()
+        async with app.run_test() as pilot:
+            # Mount starts slow_diagnostics in worker; wait for thread to begin
+            for _ in range(50):
+                if started.is_set():
+                    break
+                await pilot.pause(0.01)
+            app.pop_screen()
+            # Release worker so it finishes its work function while screen is unmounted
+            release.set()
+            await pilot.pause(0.01)
+
+    # Must complete cleanly without hanging on loop closure / shutdown_default_executor
+    asyncio.run(scenario())
+
+

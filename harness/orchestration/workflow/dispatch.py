@@ -278,7 +278,9 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
                 "sha256": hashlib.sha256(
                     _canonical(package).encode("utf-8")
                 ).hexdigest(),
-                "freshness": _context_package_freshness(repo, root, batch),
+                "freshness": _context_package_freshness(
+                    repo, root, batch, context_package_id=package["context_package_id"]
+                ),
             }
         checks = _dispatch_verification_commands(batch, args.role, args.purpose)
         state = {
@@ -773,12 +775,18 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 batch,
                 role="shared",
                 snapshot=snapshot_commit,
+                no_memory=getattr(args, "no_memory", False),
                 inclusion_reason=(
                     f"automatic shared package for {role_name} at pinned snapshot {snapshot_commit}; "
                     "included before immutable brief creation"
                 ),
             )
-            context_package_freshness = _context_package_freshness(repo, root, batch)
+            context_package_freshness = _context_package_freshness(
+                repo,
+                root,
+                batch,
+                context_package_id=context_package["context_package_id"],
+            )
             if (
                 context_package_freshness is None
                 or context_package_freshness["status"] != "fresh"
@@ -787,6 +795,9 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     "newly registered Context Package is stale; refresh before dispatch",
                     remedy="re-register the Context Package immediately before dispatching; it is validated fresh at dispatch time",
                 )
+            batch.setdefault("context_package_freshness_checks", []).append(
+                context_package_freshness
+            )
             # `context_package_policy.max_tokens` is a package-wide ceiling and may legitimately
             # exceed the role's context budget, so admission checks the budget the brief records.
             # A reused pre-estimate ledger record has no estimate to check.

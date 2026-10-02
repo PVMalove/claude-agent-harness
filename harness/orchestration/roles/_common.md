@@ -38,6 +38,11 @@ reading the repository blindly. This is a working discipline, not a dispatch-cre
 Package freshness enforcement at `dispatch create` stays in shadow mode, gated by its own separate,
 explicitly authorized pilot.
 
+Project-memory precedents come only from the supplied Context Package. Roles must not invoke
+`harness memory search`, the installed `memory/search_cli.py`, or the Python memory-search API.
+An available Bash tool or installed memory resource grants no exception. Escalate a blocker naming
+the missing ADR or precedent to the coordinator instead.
+
 Evidence stays bounded: a command's full output never returns to the model's dialogue, only a
 truncated summary. Read a long log through the existing
 `python harness/orchestration/advisory.py summarize-log --file <log>` rather than in full, read files

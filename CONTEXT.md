@@ -62,7 +62,7 @@ _Avoid_: шаблонные артефакты, foundation-файлы.
 заменять или добавлять скиллы.
 _Avoid_: пакет, набор скиллов.
 
-В текущем составе `pvmalove-suite` 10 скиллов переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`.
+В текущем составе `pvmalove-suite` 11 скиллов переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`, `diagnosing-bugs`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`, `architect`.
 
 **Vendor-скилл**:
 Скилл из байт-в-байт snapshot закреплённого upstream-источника в `skills/vendor/`, связанный с
@@ -214,6 +214,10 @@ _Avoid_: поток уточнений в исходной задаче, сво�
 Единственный отчёт роли о завершении: commit SHA для write work, changed files, выполненные проверки и
 их результат, риски и blockers. После приёма он оставляет dispatch в `reported`: это фактическое
 evidence, а не право двигать batch. Новая информация после dispatch требует решения coordinator-а.
+Опциональные `lessons` и `used_memory` — списки непустых строк (можно пустые): первые сохраняют
+исторические выводы со статусом «не подтверждено человеком» и без повышенного поискового веса;
+второй перечисляет идентификаторы использованных хитов как слабый сигнал, не гейт. Старые отчёты
+без обоих полей валидны; индексирование lessons требует явного opt-in `completion_report` и путей.
 _Avoid_: сообщение «готово», изменение brief задним числом.
 
 **Quality-gate lane**:
@@ -473,3 +477,17 @@ _Avoid_: doctor (такого названия нет), QA-gate (проверя�
 а вызывает их. Необратимые действия (удаление данных, терминальные решения coordinator, внешние
 изменения, перезапись управляемых файлов) выполняются только после переспроса.
 _Avoid_: doctor, dashboard (дашборд — лишь главный экран пульта), Health-отчёт (неинтерактивное ядро).
+
+**Дашборд выполнения** (execution dashboard):
+Главный обзор текущего проекта в Harness console, связывающий batch и вложенные dispatch с
+сигналами для проверки и переходами к evidence. Его предупреждения являются наблюдениями:
+они не изменяют lifecycle и не заменяют решения coordinator.
+_Avoid_: scheduler, worker monitor с гарантией жизни процесса, источник разрешения dispatch.
+
+**Память проекта** (project memory):
+Вычисляемый из уже существующих артефактов проекта (ADR, `CONTEXT.md`, постоянный локальный архив
+задач, закрытые тикеты, PR и Completion report, QA findings и Lifecycle ledger) поисковый индекс
+«как это решали раньше». Не источник истины: любой хит указывает на исходный артефакт и его hash,
+индекс можно удалить и пересобрать. Включается проектом явно; хиты попадают в Context Package
+как advisory-контекст с пометкой статуса источника.
+_Avoid_: RAG-хранилище, база знаний, долгосрочная память агента, вектор-стор.

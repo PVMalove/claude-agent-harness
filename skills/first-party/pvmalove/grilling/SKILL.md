@@ -5,6 +5,16 @@ description: Grill the user relentlessly about a plan, decision, or idea to stre
 
 **Objective:** Interview the user relentlessly to dismantle assumptions, stress-test their logic, and build a robust shared understanding. Map the entire process as a **design tree**, where every decision branches into subsequent dependencies.
 
+**Project memory (interactive sessions):** Before the first design-tree round about repository
+code or architecture, if project memory is enabled, run
+`harness memory search . "<goal, decision and affected module>"` once for prior decisions.
+Repeat only when a newly settled decision changes the subject. Use the installed equivalent from
+`.harness/docs/project-memory.md` when the packager CLI is absent. Follow that guide for
+configuration, search-result and pointer statuses,
+source validation and graceful fallback. Treat hits as candidate precedents, and keep the
+Live Artifact's explicit path-approval rule. In an orchestration dispatch, use the supplied
+Context Package and escalate missing evidence instead of invoking memory search.
+
 **Core Mechanics:**
 1. **Rounds & The Frontier:** Work through the tree in discrete rounds. The **frontier** consists of every decision whose prerequisites are currently settled.
     - Ask the current frontier in a single round, showing at most 4 questions; if the frontier is larger, carry the remaining questions into the next round.

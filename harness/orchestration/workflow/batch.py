@@ -272,6 +272,13 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         else _required_base_branch(repo)
     )
     pinned_base = _fetch_ref_tip(repo, fetch_ref)
+    goal = getattr(args, "goal", None)
+    if goal is not None and (not _non_empty(goal) or len(goal) > 4096):
+        raise CoordinatorError(
+            "goal must be a non-empty string of at most 4096 characters",
+            remedy="pass the approved bounded ticket goal through --goal",
+        )
+    _reject_non_english([goal] if goal else [], "goal")
     _reject_non_english(dod, "definition_of_done")
     _reject_non_english(prohibited, "prohibited_changes")
     scope_preflight = _scope_preflight(
@@ -292,6 +299,7 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         "worktree": worktree.strip(),
         "zone": zone.strip(),
         "definition_of_done": dod,
+        "goal": getattr(args, "goal", None) or "",
         "prohibited_changes": prohibited,
         "developer_verification_commands": _developer_verification_commands(config),
         "review_verification_commands": _review_verification_commands(config),
@@ -323,7 +331,12 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         _safe_id(record["batch_id"], "batch")
         _write_record(
             ledger,
-            PlanRecord.from_dict({field: record[field] for field in PLAN_FIELDS}),
+            PlanRecord.from_dict(
+                {
+                    **{field: record[field] for field in PLAN_FIELDS},
+                    "goal": record["goal"],
+                }
+            ),
         )
         _write_record(ledger, BatchRecord.from_dict(record))
     return record
