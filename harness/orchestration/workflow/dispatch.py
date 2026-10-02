@@ -82,6 +82,7 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord,
     LifecycleLedger,
 )
+from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.approval import (
     _approval,
 )
@@ -163,20 +164,24 @@ def _enforce_base_freshness(
 def _developer_commit_plan(
     batch: JsonObject, write_paths: list[str]
 ) -> list[JsonObject]:
-    """Turn the approved DoD into a compact, immutable commit-plan interface.
+    """The compact, immutable commit-plan interface of a developer brief.
 
-    The coordinator owns the structure; a worker only supplies the SHA-to-entry evidence.
-    This keeps plan construction out of every runtime adapter while making each logical
-    DoD item independently reviewable.
+    The coordinator owns the structure; a worker only supplies the SHA-to-entry evidence. A plan
+    the operator pinned on the architect accept is used as recorded; otherwise every DoD item gets
+    its own entry, which keeps each logical DoD item independently reviewable.
     """
-    return [
-        {
-            "id": f"step-{index}",
-            "summary": item,
-            "expected_paths": write_paths,
-        }
-        for index, item in enumerate(batch["definition_of_done"], start=1)
-    ]
+    pinned = batch.get("commit_plan")
+    if pinned is None:
+        return plan_rules.default_plan(batch["definition_of_done"], write_paths)
+    if not isinstance(pinned, list) or plan_rules.plan_sha256(
+        pinned
+    ) != plan_rules.accepted_plan_sha256(batch):
+        raise CoordinatorError(
+            "the batch commit plan does not match the plan pinned on the architect accept",
+            remedy="the batch commit_plan diverged from its architect accept -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    return [dict(entry) for entry in pinned]
 
 
 def _dispatch_approval_mode(

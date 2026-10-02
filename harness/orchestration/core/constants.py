@@ -136,6 +136,8 @@ DISPATCH_FIELDS = {
     "liveness",
     "commit_plan",
 }
+# One entry of a developer brief's commit plan; ``covers`` names definition-of-done items 1..n.
+COMMIT_PLAN_ENTRY_FIELDS = frozenset({"id", "summary", "expected_paths", "covers"})
 # The four fields of the transition-bound approval contract (issue #250) are all present or all absent.
 POLICY_BRIEF_FIELDS = frozenset(
     {"transition", "transition_digest", "retry_idempotency_key", "orchestration_policy"}

@@ -44,7 +44,13 @@ from harness.orchestration.ledger import (
     LifecycleLedger,
     ledger_ops,
 )
-from harness.orchestration.workflow import approval, decisions, dispatch, reports
+from harness.orchestration.workflow import (
+    approval,
+    commit_plan,
+    decisions,
+    dispatch,
+    reports,
+)
 
 ORCHESTRATION_ROOT = Path(__file__).resolve().parents[2] / "harness" / "orchestration"
 
@@ -4719,6 +4725,181 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         self.assertIn("digest", caught.exception.message.lower())
 
+    # -- commit plan pinning and divergence (issue #478) --------------------------------------
+
+    def _plan_batch(self, items: list[str]) -> JsonObject:
+        plan = self._batch_plan()
+        plan["definition_of_done"] = items
+        with mock.patch.object(self, "_batch_plan", return_value=plan):
+            return self._create_batch()
+
+    def _reported_architect(self, batch_id: str) -> None:
+        brief = self._dispatch(batch_id, "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        self._submit(brief["dispatch_id"], self._base_report(brief, "architect"))
+
+    @staticmethod
+    def _plan_entry(entry_id: str, covers: list[int]) -> JsonObject:
+        return {
+            "id": entry_id,
+            "summary": f"implement {entry_id}",
+            "expected_paths": ["services/**"],
+            "covers": covers,
+        }
+
+    def _plan_file(self, entries: list[JsonObject]) -> str:
+        path = workspace._prepare_agent_inbox(self.repo) / "commit-plan.json"
+        path.write_text(json.dumps({"commit_plan": entries}), encoding="utf-8")
+        return str(path)
+
+    def _pinned(self, items: list[str], entries: list[JsonObject]) -> str:
+        batch_id = cast(str, self._plan_batch(items)["batch_id"])
+        self._reported_architect(batch_id)
+        self._decide(batch_id, "accept", commit_plan_file=self._plan_file(entries))
+        return batch_id
+
+    def _commit_map(self, pairs: list[tuple[str, JsonObject]]) -> list[JsonObject]:
+        return [
+            {"commit_sha": sha, "plan_entry_id": entry["id"]} for sha, entry in pairs
+        ]
+
+    def test_architect_accept_pins_the_commit_plan_into_the_developer_brief(
+        self,
+    ) -> None:
+        entries = [self._plan_entry("first", [1, 2]), self._plan_entry("second", [3])]
+        batch_id = self._pinned(["one", "two", "three"], entries)
+
+        record = self._batch_record(batch_id)
+        self.assertEqual(record["commit_plan"], entries)
+        self.assertEqual(
+            record["coordinator_decisions"][-1]["commit_plan_sha256"],
+            commit_plan.plan_sha256(entries),
+        )
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self.assertEqual(brief["commit_plan"], entries)
+
+        self._start(brief["dispatch_id"])
+        commits = [self._developer_commit(name)[0] for name in ("a", "b")]
+        changed = git_utils._changed_files_between(
+            self.repo, record["base_commit"], commits[-1]
+        )
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                commits[-1],
+                changed,
+                commit_map=self._commit_map(list(zip(commits, entries))),
+            ),
+        )
+        self._decide(batch_id, "retry", reason_category="code")
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        self.assertEqual(retry["transition"]["next_action"], "developer-retry")
+        self.assertEqual(retry["commit_plan"], entries)
+
+    def _assert_plan_refused(
+        self, entries: list[JsonObject], message: str, remedy: str
+    ) -> None:
+        batch_id = self._plan_batch(["one", "two", "three"])["batch_id"]
+        self._reported_architect(batch_id)
+
+        with self.assertRaisesRegex(coordinator.CoordinatorError, message) as caught:
+            self._decide(batch_id, "accept", commit_plan_file=self._plan_file(entries))
+
+        self.assertIn(remedy, caught.exception.remedy)
+        record = self._batch_record(batch_id)
+        self.assertNotIn("commit_plan", record)
+        self.assertNotIn("decision", record["dispatches"][-1])
+        self.assertEqual(record["dispatches"][-1]["state"], "reported")
+
+    def test_architect_accept_refuses_a_plan_that_leaves_an_item_uncovered(
+        self,
+    ) -> None:
+        self._assert_plan_refused(
+            [self._plan_entry("first", [1]), self._plan_entry("second", [3])],
+            r"no entry covers definition-of-done items \[2\]",
+            "so every definition-of-done item 1..3 is covered",
+        )
+
+    def test_architect_accept_refuses_a_plan_naming_an_unknown_item(self) -> None:
+        self._assert_plan_refused(
+            [self._plan_entry("first", [1, 2]), self._plan_entry("second", [3, 4])],
+            r"covers unknown definition-of-done items \[4\]",
+            "name only definition-of-done items 1..3",
+        )
+
+    def test_developer_brief_without_a_pinned_plan_keeps_one_entry_per_item(
+        self,
+    ) -> None:
+        items = ["one", "two", "three"]
+        batch_id = self._plan_batch(items)["batch_id"]
+        self._accepted_architect(batch_id)
+
+        brief = self._dispatch(batch_id, "developer")["brief"]
+
+        self.assertNotIn("commit_plan", self._batch_record(batch_id))
+        self.assertEqual(
+            brief["commit_plan"],
+            [
+                {
+                    "id": f"step-{index}",
+                    "summary": item,
+                    "expected_paths": brief["write_paths"],
+                    "covers": [index],
+                }
+                for index, item in enumerate(items, start=1)
+            ],
+        )
+
+    def test_commit_plan_file_is_refused_outside_an_architect_accept(self) -> None:
+        batch_id = self._plan_batch(["one"])["batch_id"]
+        self._reported_architect(batch_id)
+        plan_file = self._plan_file([self._plan_entry("only", [1])])
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError,
+            "only valid when accepting an architect report",
+        ):
+            self._decide(
+                batch_id, "retry", reason_category="code", commit_plan_file=plan_file
+            )
+        self._decide(batch_id, "accept")
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit("only")
+        self._submit(
+            brief["dispatch_id"], self._developer_report(brief, candidate, changed)
+        )
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError,
+            "only valid when accepting an architect report",
+        ):
+            self._decide(batch_id, "accept", commit_plan_file=plan_file)
+
+        self.assertNotIn("commit_plan", self._batch_record(batch_id))
+
+    def test_tampered_pinned_plan_is_refused(self) -> None:
+        entries = [self._plan_entry("first", [1]), self._plan_entry("second", [2])]
+        forged = {
+            "edited after the accept": [{**entries[0], "covers": [1, 2]}],
+            "never pinned": commit_plan.default_plan(["one", "two"], ["**"]),
+        }
+        for label, plan in forged.items():
+            with self.subTest(label):
+                self._reset()
+                if label == "never pinned":
+                    batch_id = self._plan_batch(["one", "two"])["batch_id"]
+                    self._accepted_architect(batch_id)
+                else:
+                    batch_id = self._pinned(["one", "two"], entries)
+                self._edit_batch(batch_id, commit_plan=plan)
+
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError,
+                    "does not match the plan pinned on the architect accept",
+                ):
+                    self._dispatch(batch_id, "developer")
+
 
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     """The pure routing table: structured evidence in, one routing record out (no I/O)."""
@@ -5110,6 +5291,27 @@ class CoordinatorCliParserTests(unittest.TestCase):
         args = parser.parse_args(["dispatch", "status"])
 
         self.assertIs(args.handler, coordinator.dispatch_status)
+
+    def test_batch_decide_accepts_a_commit_plan_file(self) -> None:
+        decide = [
+            "batch",
+            "decide",
+            "--batch",
+            "batch-1",
+            "--decision",
+            "accept",
+            "--approved-by",
+            "Malove",
+            "--approved-at",
+            "2026-09-17T00:00:00+00:00",
+        ]
+        parse = coordinator.parser().parse_args
+
+        pinned = parse([*decide, "--commit-plan-file", "plan.json"])
+
+        self.assertIs(pinned.handler, coordinator.decide_batch)
+        self.assertEqual(pinned.commit_plan_file, "plan.json")
+        self.assertIsNone(parse(decide).commit_plan_file)
 
     def test_coordinator_parser_wires_the_same_handler(self) -> None:
         args = coordinator.parser().parse_args(["dispatch", "status"])

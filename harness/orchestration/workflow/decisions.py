@@ -37,10 +37,12 @@ from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
     _non_empty,
+    _read_object,
     _repo,
     _safe_id,
 )
 from harness.orchestration.core.workspace import (
+    _agent_authored_file,
     _agent_inbox,
     _integration_ref,
 )
@@ -61,6 +63,7 @@ from harness.orchestration.ledger.lifecycle import (
 from harness.orchestration.workflow.approval import (
     _approval,
 )
+from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.attention import (
     _apply_attention,
     _attention_findings,
@@ -447,6 +450,28 @@ def _last_accepted(repo: Path, root: Path, batch: JsonObject) -> JsonObject | No
     }
 
 
+def _pinned_commit_plan(
+    repo: Path, batch: JsonObject, report: JsonObject, args: argparse.Namespace
+) -> list[JsonObject] | None:
+    """The operator-supplied commit plan an architect accept pins on the batch, validated.
+
+    The policy auto-accept builds its own namespace without ``commit_plan_file``, so it never pins.
+    """
+    plan_file = getattr(args, "commit_plan_file", None)
+    if plan_file is None:
+        return None
+    if args.decision != "accept" or report.get("role") != "architect":
+        raise CoordinatorError(
+            "--commit-plan-file is only valid when accepting an architect report",
+            remedy="drop --commit-plan-file, or pass it with --decision accept on the pending architect report",
+        )
+    document = _read_object(
+        _agent_authored_file(repo, plan_file, "a commit plan"), "commit plan"
+    )
+    _reject_sensitive(document, "commit plan")
+    return plan_rules.pinned_plan(document, batch["definition_of_done"])
+
+
 def decide_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -484,6 +509,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 "a non-completed role report cannot be accepted or warning-overridden",
                 remedy="only accept or warning-override a completed role report",
             )
+        pinned_plan = _pinned_commit_plan(repo, batch, report, args)
         if report.get("role") == "code-review":
             severities = _review_severity(report["review"])
             if any(value == "blocker" for value in severities.values()):
@@ -583,6 +609,9 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         }
         if routing is not None:
             decision["routing"] = routing
+        if pinned_plan is not None:
+            batch["commit_plan"] = pinned_plan
+            decision["commit_plan_sha256"] = plan_rules.plan_sha256(pinned_plan)
         pending[0]["decision"] = decision
         decision_entry = {"dispatch_id": pending[0]["dispatch_id"], **decision}
         if routing is not None:
