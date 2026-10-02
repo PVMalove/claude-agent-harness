@@ -5912,8 +5912,20 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 True,
                 ("candidate-change", "developer", "developer-retry", "developer-retry"),
             ),
-            ("qa", no_review, infra, False, (infra, "qa", "qa", "same-candidate-rerun")),
-            ("qa", no_review, None, False, ("unknown", "developer", "developer-retry", "developer-retry")),
+            (
+                "qa",
+                no_review,
+                infra,
+                False,
+                (infra, "qa", "qa", "same-candidate-rerun"),
+            ),
+            (
+                "qa",
+                no_review,
+                None,
+                False,
+                ("unknown", "developer", "developer-retry", "developer-retry"),
+            ),
             (
                 "qa",
                 self._report("failed", standards=None, failed_check=True),
@@ -5921,8 +5933,20 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 False,
                 ("code", "developer", "developer-retry", "developer-retry"),
             ),
-            ("publish", no_review, transport, False, (transport, "publish", "publish", "same-candidate-rerun")),
-            ("publish", no_review, infra, False, (infra, "publish", "publish", "same-candidate-rerun")),
+            (
+                "publish",
+                no_review,
+                transport,
+                False,
+                (transport, "publish", "publish", "same-candidate-rerun"),
+            ),
+            (
+                "publish",
+                no_review,
+                infra,
+                False,
+                (infra, "publish", "publish", "same-candidate-rerun"),
+            ),
             (
                 "publish",
                 no_review,
@@ -6051,7 +6075,12 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
         history._validate_operational_batch_fields(
             {
                 "dispatches": [
-                    {"decision": {"decision": "retry", "routing": {"next_action": "qa"}}}
+                    {
+                        "decision": {
+                            "decision": "retry",
+                            "routing": {"next_action": "qa"},
+                        }
+                    }
                 ],
                 "coordinator_decisions": [
                     {"decision": "retry", "routing": {"next_action": "qa"}},

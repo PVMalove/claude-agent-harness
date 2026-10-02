@@ -538,7 +538,8 @@ def _require_route(value: object, *, recorded: bool = False) -> str:
         raise CoordinatorError(
             f"batch routing record carries an unknown recovery route {value!r}",
             remedy=f"a recorded route is one of: {allowed}; restore routing.route to the value "
-            "the coordinator recorded for that decision -- " + INTERNAL_INVARIANT_REMEDY,
+            "the coordinator recorded for that decision -- "
+            + INTERNAL_INVARIANT_REMEDY,
         )
     raise CoordinatorError(
         f"the coordinator computed an unknown recovery route {value!r}",
