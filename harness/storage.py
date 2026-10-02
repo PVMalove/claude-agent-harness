@@ -170,24 +170,22 @@ def storage_path(repo: Path, *parts: str) -> Path:
     if root.parent.is_symlink() or root.is_symlink():
         raise ValueError("storage root must not be a symlink")
     target = root.joinpath(*parts)
-    resolved_target = target.resolve()
-    resolved_root = root.resolve()
-    is_relative = False
-    try:
-        resolved_target.relative_to(resolved_root)
-        is_relative = True
-    except ValueError:
-        if os.name == "nt":
-            try:
-                Path(os.path.normcase(str(resolved_target))).relative_to(
-                    Path(os.path.normcase(str(resolved_root)))
-                )
-                is_relative = True
-            except ValueError:
-                is_relative = False
-    if not is_relative:
+    resolved_target, resolved_root = target.resolve(), root.resolve()
+    if os.name == "nt":
+        resolved_target = _windows_comparable(resolved_target)
+        resolved_root = _windows_comparable(resolved_root)
+    if not resolved_target.is_relative_to(resolved_root):
         raise ValueError(f"path escaped {root_name}: {target}")
     return target
+
+
+def _windows_comparable(path: Path) -> Path:
+    """Сравнивать пути Windows без учёта регистра и без префикса `\\\\?\\`.
+
+    `Path.resolve()` оставляет этот префикс, если файл заменяется во время разрешения пути,
+    как при параллельной публикации индекса памяти через `os.replace`.
+    """
+    return Path(os.path.normcase(str(path)).removeprefix("\\\\?\\"))
 
 
 def sandboxes_health(repo: Path) -> list[str]:

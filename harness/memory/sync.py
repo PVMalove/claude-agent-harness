@@ -37,11 +37,13 @@ MARKER = re.compile(r"^## Completion report\s*\n```json\s*\n(.*?)\n```\s*$", re.
 
 def fetch_page(argv: list[str], repo: Path) -> list[dict[str, object]]:
     """Bound subprocess time and output without retaining raw diagnostics."""
-    cmd = list(argv)
+    cmd: list[str] | str = list(argv)
     if sys.platform == "win32":
         resolved = shutil.which(argv[0])
         if resolved and resolved.lower().endswith((".cmd", ".bat")):
-            cmd = ["cmd.exe", "/c", resolved, *argv[1:]]
+            # cmd.exe splits an unquoted `&` in the query string into separate commands.
+            line = " ".join(f'"{part}"' for part in (resolved, *argv[1:]))
+            cmd = f'cmd.exe /d /s /c "{line}"'
         elif resolved:
             cmd = [resolved, *argv[1:]]
     try:
