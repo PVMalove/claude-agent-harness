@@ -574,9 +574,11 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    записывает решение coordinator `carry-over` с `approved_by: policy:carry-over` и прикрепляет
    находки к последнему принятому developer work report; batch с `next_action: qa` переходит в
    `code-review`. Команда отклоняется с remedy, пока какой-либо report ждёт решения, если в batch нет
-   принятого developer work report и если после него уже создан не отменённый dispatch: для
-   неотправленного code-review (или qa, созданного low_risk-цепочкой) remedy — `dispatch cancel` и
-   повтор `batch carry-over`, для отправленного — сообщить дефект при решении его report.
+   принятого developer work report и если после него уже создан dispatch, не отменённый и не
+   переведённый `batch resume` в `abandoned`: для неотправленного code-review (или qa, созданного
+   low_risk-цепочкой) remedy — `dispatch cancel` и повтор `batch carry-over`, для отправленного —
+   сообщить дефект при решении его report, для уже решённого report — приложить находку через
+   `batch decide --findings-file` при accept следующего developer report.
 
    Пока находка открыта, risk assessment ведёт candidate в `code-review`, даже если ни один триггер
    не совпал (`review_required` записи оценки не меняется). Находка закрыта, когда принят (`accept`
