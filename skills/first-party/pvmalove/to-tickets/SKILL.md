@@ -20,7 +20,7 @@ Run this skill in two phases: publish nothing to the issue tracker and create no
 3. **Draft Vertical Slices:** Break the work into **tracer bullet** tickets.
     - *Vertical Slices:* Cut a narrow but COMPLETE path through every layer (schema, API, UI, tests). Must be demoable/verifiable on its own and fit in a single context window.
     - *Wide Refactors (Exception):* If a change has a massive blast radius (e.g., renaming a shared column), use **expand-contract** instead of vertical slicing. Sequence as: Expand → Migrate (in batches) → Contract.
-    - *Blocking Edges:* Give each ticket its blocking edges (which other tickets must complete first).
+    - *Blocking Edges:* Give each ticket its blocking edges (which other tickets must complete first). Add a blocker only for a **result dependency** (the ticket uses what its predecessor delivers) or a **known requirement incompatibility** (the two requirements cannot both hold until the predecessor lands — e.g. one removes what the other still requires; a textual merge conflict is not one), and write the substantive reason for each one. A **file overlap** alone is not a blocker: two independent changes to one file proceed in parallel, without artificial sequencing. A blocker holds until the predecessor is merged into the integration branch and closed — a push, a publish, an accepted QA, or an open PR does not release it.
     - *Story Points:* Assign every `afk` ticket a Fibonacci story-point score, using `story_points.scale` from `.harness/project.json` when present, otherwise `1, 2, 3, 5, 8, 13…`. This is a decomposition-quality signal, not a commitment. `hitl` tickets never receive a score — skip this field for them.
     - *Escalation Pass:* If a ticket's primary score equals `story_points.gray_zone` (default `4`), run one cheap-model advisory call for that ticket alone (`model: haiku` or the cheapest configured equivalent — same model-selection rule as step 4's Discovery Context call, but one call per gray-zone ticket, not one call for the whole batch). If the two scores disagree, keep the higher (more conservative) one. If no cheap-model route exists, stop and report the blocker before presenting the approval request, same as step 4.
     - *Pipeline Label:* Derive the ticket's `pipeline::*` label from its final score: `pipeline::fast` when the score is `≤ story_points.fast_threshold` (default `3`) *and* `Execution: afk`; `pipeline::full` when the score is `≥ story_points.full_threshold` (default `5`) *and* `Execution: afk`. A score `≥13` also means the slice isn't tracer-bullet-sized — flag it on the STOP-AND-ASK gate in step 5 as needing further splitting. `hitl` tickets never receive a `pipeline::*` label.
@@ -31,7 +31,7 @@ Run this skill in two phases: publish nothing to the issue tracker and create no
     - Add every valid suggested dependency to the relevant ticket's Discovery Context with its reason. Discard suggestions that are not exact Path inventory paths or do not support that ticket's end-to-end behavior. The resulting per-ticket lists are ready only when every original path is assigned (or explicitly surfaced as unassigned) and every addition is traceable to the Path inventory.
 5. **STOP AND ASK (Quiz the User):** Present the proposed breakdown as a numbered list. For each ticket, show:
     - **Title:** Short descriptive name
-    - **Blocked by:** Which tickets gate it
+    - **Blocked by:** Which tickets gate it, each with its reason (result dependency or known incompatibility)
     - **Story Points / Pipeline:** For `afk` tickets, the final Fibonacci score and the derived `pipeline::fast`/`pipeline::full` label, flagged `⚠️ score ≥13 — split further` when that applies. Omit for `hitl` tickets — they carry neither a score nor a `pipeline::*` label.
     - **What it delivers:** The end-to-end behavior
     - **Relevant Files (Discovery Context):** Assigned and advisory-added paths, each with its reason; omit this field when the parent has no Discovery Context.
@@ -45,7 +45,7 @@ Run this skill in two phases: publish nothing to the issue tracker and create no
       integration branch, stop and report the missing prerequisite instead of inferring one.
     - **Local files:** Write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md` (01, 02...). Use `<local-ticket-template>`. Include the finished per-ticket `Relevant Files (Discovery Context)` list when Discovery Context was present. Set `**Workflow:**` to `status::blocked` if it has blockers, otherwise `status::ready`. Set `**Execution:**` to `hitl` or `afk` per your best judgment of the ticket (see `docs/agents/triage-labels.md`). For `afk` tickets, set `**Story Points:**` to the final score from step 3 and `**Pipeline:**` to the label approved on the STOP-AND-ASK gate — the derived label, or the user's override if they changed it there; the score itself never changes. Omit both lines entirely for `hitl` tickets. Add `**Task report:** required` unless told to skip it (omit the line entirely if not required). `/fast-implement` finds the next ticket by reading each file's `**Workflow:**` field — a purely linear chain resolves top to bottom.
     - **GitHub / GitLab:** `<project-url>`, `<host>` and `<project-id>` in the GitLab commands are defined in `docs/agents/issue-tracker.md` → GitLab → Conventions.
-        - Publish one issue per ticket in dependency order, using `<issue-template>`. GitHub: `gh issue create --body-file <path>`. GitLab: `glab issue create -R <project-url> --title '<title>' --description-file <path> --yes`, with `<title>` in single quotes and each apostrophe in it written as `'\''` in a POSIX shell or as `''` in PowerShell; the ticket's number is the last segment of the issue URL it prints. Do not pass the body inline with `--body`/`--description` or a heredoc — it breaks shell quoting (see `docs/agents/git-workflow.md` §1).
+        - Publish one issue per ticket in dependency order, using `<issue-template>`. GitHub: `gh issue create --body-file <path>`. GitLab: `glab issue create -R <project-url> --title '<title>' --description-file <path> --yes`, with `<title>` in single quotes and each apostrophe in it written as `'\''` in a POSIX shell or as `''` in PowerShell; the ticket's number is the last segment of the issue URL it prints. Do not pass the body inline with `--body`/`--description` or a heredoc — it breaks shell quoting (see `docs/agents/git-workflow.md` §1). Record each blocker with its reason: a native dependency on GitHub, a `Blocked by #<M>` line on GitLab; the text fallback carries the same edge and the same reason.
         - Include the finished per-ticket `## Relevant Files (Discovery Context)` section when Discovery Context was present. Preserve the exact paths and their reasons; it is the implementation ticket's curated starting context.
         - Include the finished `## Story Points` section (the approved score) for `afk` tickets; omit the section entirely for `hitl` tickets.
         - Apply labels (see `docs/agents/triage-labels.md` for the full taxonomy): `type::*`, `status::ready` (or `status::blocked` if gated by another ticket in this batch), `hitl`/`afk`, `pipeline::fast` or `pipeline::full` for `afk` tickets — the label approved on the STOP-AND-ASK gate, the derived label or the user's override, never applied to `hitl` tickets — and `task-report::required` unless told to skip it. GitLab: `glab issue update <n> -R <project-url> --label '<label>,<label>'`; a label the project doesn't have yet is silently created with GitLab's default color, so `/setup-labels` must have run first.
@@ -70,7 +70,7 @@ Run this skill in two phases: publish nothing to the issue tracker and create no
 # <NN> — <Ticket title>
 
 **What to build:** The end-to-end behavior this ticket makes work from the user's perspective.
-**Blocked by:** The numbers/titles of the tickets that gate this one, or "None — can start immediately".
+**Blocked by:** The numbers/titles of the tickets that gate this one, each with its reason, or "None — can start immediately".
 **Integration branch:** The exact branch recorded by the parent epic.
 
 ## Relevant Files (Discovery Context)
@@ -111,7 +111,7 @@ derived pipeline::fast/pipeline::full label is applied on the tracker, not writt
 - [ ] Criterion 2
 
 ## Blocked by
-- Blocked by #<M> — one such line per blocking ticket, or "None — can start immediately".
+- Blocked by #<M> — one such line per blocking ticket with its reason, or "None — can start immediately".
   </issue-template>
 
 *Note for both templates: `Relevant Files (Discovery Context)` is the sole file-path section; keep only the assigned paths and their short reasons. Avoid paths and code snippets everywhere else unless it is a vital prototype snippet (trim to decision-rich parts only).*
@@ -121,7 +121,7 @@ derived pipeline::fast/pipeline::full label is applied on the tracker, not writt
 # <NN> — <Название задачи>
 
 **What to build:** Поведение системы от начала до конца, которое эта задача делает рабочим с точки зрения пользователя.
-**Blocked by:** Номера/названия задач, которые блокируют эту, или "None — can start immediately".
+**Blocked by:** Номера/названия задач, которые блокируют эту, с причиной каждого, или "None — can start immediately".
 **Integration branch:** Точная ветка, записанная родительским эпиком.
 
 ## Relevant Files (Discovery Context)
@@ -162,7 +162,7 @@ derived pipeline::fast/pipeline::full label is applied on the tracker, not writt
 - [ ] Критерий 2
 
 ## Blocked by
-- Blocked by #<M> — по одной такой строке на каждую блокирующую задачу, или "None — can start immediately".
+- Blocked by #<M> — по одной такой строке на каждую блокирующую задачу с причиной, или "None — can start immediately".
   </issue-template>
 
 *Примечание к обоим шаблонам: `Relevant Files (Discovery Context)` — единственная секция с путями; оставляйте в ней только назначенные файлы и краткие причины. В остальных секциях избегайте путей и фрагментов кода, кроме жизненно важного фрагмента прототипа (оставьте только части, насыщенные решением).*
