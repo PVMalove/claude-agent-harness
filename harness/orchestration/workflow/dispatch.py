@@ -113,6 +113,7 @@ from harness.orchestration.workflow.history import (
     _latest_developer_candidate,
     _latest_registered_verification_candidate,
     _pending_report,
+    _retry_handoff,
     _risk_for_candidate,
     _settled,
     _transition_idempotency_key,
@@ -332,6 +333,10 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
             "related_tests": package.get("related_tests", []) if package else [],
             "pinned_diff": package.get("diff", "") if package else "",
             "prior_findings": batch.get("prior_findings", []),
+            "retry_handoff": _retry_handoff(root, batch, package)
+            if args.role == "developer" and args.purpose == "work"
+            else None,
+            "retry_package": package,
         }
     try:
         prepared = prepare_dispatch(batch["ticket"], args.role, state)
