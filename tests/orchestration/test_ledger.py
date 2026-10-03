@@ -9,7 +9,7 @@ import os
 import socket
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -425,6 +425,7 @@ class LockTests(unittest.TestCase):
             self.assertIsNotNone(datetime.fromisoformat(owner["acquired_at"]).tzinfo)
             assert state is not None
             self.assertEqual(state["owner"], owner)
+            self.assertEqual(state["owner_record"], "readable")
             self.assertEqual(state["acquired_at"], owner["acquired_at"])
             self.assertGreaterEqual(cast(int, state["held_seconds"]), 0)
             self.assertFalse(lock_dir.exists())
@@ -521,25 +522,70 @@ class LockTests(unittest.TestCase):
 
             self.assertFalse(lock_dir.exists())
 
-    def test_break_lock_never_removes_an_owner_record_it_cannot_read(self) -> None:
-        """A record that is created but not yet written may belong to a live acquirer that is
-        about to hold the lock, so a release refuses it instead of removing it."""
+    def test_an_owner_record_that_cannot_be_read_is_aged_by_its_own_mtime(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             state_root = Path(temporary) / "state"
             ledger = LifecycleLedger(state_root)
             lock_dir = state_root / ".coordinator.lock"
             lock_dir.mkdir(parents=True)
             (lock_dir / "owner.json").touch()
+            os.utime(lock_dir, (1_000_000, 1_000_000))
+            os.utime(lock_dir / "owner.json", (2_000_000, 2_000_000))
+
+            state = ledger.lock_state()
+
+            assert state is not None
+            self.assertIsNone(state["owner"])
+            self.assertEqual(state["owner_record"], "unreadable")
+            self.assertEqual(
+                state["acquired_at"], datetime.fromtimestamp(2_000_000, UTC).isoformat()
+            )
+
+    def test_break_lock_removes_the_unreadable_owner_record_it_observed(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            lock_dir = ledger._take_lock_directory()
+            (lock_dir / "owner.json").touch()
             observed = ledger.lock_state()
             assert observed is not None
-            self.assertIsNone(observed["owner"])
 
-            with self.assertRaisesRegex(LedgerError, "cannot be read") as refused:
-                ledger.break_lock(observed)
+            ledger.break_lock(observed)
 
-            self.assertNotIn("remove", refused.exception.remedy.lower())
-            self.assertEqual(sorted(os.listdir(lock_dir)), ["owner.json"])
-            self.assertEqual((lock_dir / "owner.json").read_bytes(), b"")
+            self.assertFalse(lock_dir.exists())
+            with ledger.lock():
+                pass
+
+    def test_break_lock_never_removes_an_owner_record_written_or_created_since_observed(
+        self,
+    ) -> None:
+        """An acquirer that records itself after the release judged the lock holds it: a record
+        that became readable, or appeared where none was observed, is never removed."""
+        for before, after in ((b"", b'{"pid": 1}'), (None, b"")):
+            with (
+                self.subTest(before=before, after=after),
+                tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary,
+            ):
+                state_root = Path(temporary) / "state"
+                ledger = LifecycleLedger(state_root)
+                lock_dir = ledger._take_lock_directory()
+                owner = lock_dir / "owner.json"
+                if before is not None:
+                    owner.write_bytes(before)
+                    os.utime(owner, (1_000_000, 1_000_000))
+                os.utime(lock_dir, (1_000_000, 1_000_000))
+                observed = ledger.lock_state()
+                assert observed is not None
+                owner.write_bytes(after)
+                os.utime(owner, (1_000_000, 1_000_000))
+
+                with self.assertRaisesRegex(LedgerError, "changed"):
+                    ledger.break_lock(observed)
+
+                self.assertEqual(sorted(os.listdir(lock_dir)), ["owner.json"])
+                self.assertEqual(owner.read_bytes(), after)
 
 
 class StructuralValidationCharacterizationTests(unittest.TestCase):

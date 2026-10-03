@@ -18,6 +18,7 @@ import inspect
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -6819,6 +6820,21 @@ class LedgerLockReleaseTests(unittest.TestCase):
     def _lock_files(self) -> dict[str, bytes]:
         return {path.name: path.read_bytes() for path in self.lock_dir.iterdir()}
 
+    def _age(self, path: Path, seconds: float) -> None:
+        """Set ``path``'s mtime ``seconds`` in the past."""
+        then = datetime.now(UTC).timestamp() - seconds
+        os.utime(path, (then, then))
+
+    def _assert_remedy_names_remaining_time(
+        self, refused: coordinator.CoordinatorError
+    ) -> None:
+        held = re.search(r"for (\d+) seconds", refused.message)
+        remaining = re.search(r" in (\d+) seconds", refused.remedy)
+        assert held is not None and remaining is not None
+        self.assertEqual(
+            int(remaining[1]), constants.LEDGER_LOCK_STALE_SECONDS - int(held[1])
+        )
+
     def test_a_lock_whose_owner_is_alive_is_never_released(self) -> None:
         with self.ledger.lock():
             before = self._lock_files()
@@ -6874,14 +6890,16 @@ class LedgerLockReleaseTests(unittest.TestCase):
             self._release()
 
         self.assertIn("owner-unknown-recent", refused.exception.message)
+        self._assert_remedy_names_remaining_time(refused.exception)
         self.assertTrue(self.lock_dir.is_dir())
-        aged = datetime.now(UTC).timestamp() - constants.LEDGER_LOCK_STALE_SECONDS - 60
-        os.utime(self.lock_dir, (aged, aged))
+        self._age(self.lock_dir, constants.LEDGER_LOCK_STALE_SECONDS + 60)
 
         released = self._release()
 
         self.assertEqual(released["reason"], "owner-unknown-stale")
-        self.assertIsNone(cast(JsonObject, released["lock"])["owner"])
+        lock = cast(JsonObject, released["lock"])
+        self.assertIsNone(lock["owner"])
+        self.assertEqual(lock["owner_record"], "absent")
         self.assertFalse(self.lock_dir.exists())
         with self.ledger.lock():
             pass
@@ -6891,8 +6909,7 @@ class LedgerLockReleaseTests(unittest.TestCase):
         lock (#498), so it can never remove a lock that was taken again in the meantime."""
         self.state_dir.mkdir()
         self.lock_dir.mkdir()
-        aged = datetime.now(UTC).timestamp() - constants.LEDGER_LOCK_STALE_SECONDS - 60
-        os.utime(self.lock_dir, (aged, aged))
+        self._age(self.lock_dir, constants.LEDGER_LOCK_STALE_SECONDS + 60)
 
         with self.ledger._release_guard():
             with self.assertRaises(coordinator.CoordinatorError) as refused:
@@ -6906,20 +6923,38 @@ class LedgerLockReleaseTests(unittest.TestCase):
         self.assertEqual(self._release()["reason"], "owner-unknown-stale")
         self.assertFalse(self.lock_dir.exists())
 
-    def test_a_lock_whose_owner_record_cannot_be_read_is_not_released(self) -> None:
-        self.state_dir.mkdir()
-        self.lock_dir.mkdir()
-        (self.lock_dir / "owner.json").touch()
-        aged = datetime.now(UTC).timestamp() - constants.LEDGER_LOCK_STALE_SECONDS - 60
-        os.utime(self.lock_dir, (aged, aged))
-        before = self._lock_files()
+    def test_a_lock_whose_owner_record_cannot_be_read_is_released_only_once_stale(
+        self,
+    ) -> None:
+        """An owner that died between creating its record and writing it (#525) leaves an empty
+        or unreadable record; its age is the record's own mtime, not the lock directory's."""
+        for content in (b"", b'{"pid": 4'):
+            with self.subTest(content=content):
+                self.lock_dir.mkdir(parents=True)
+                owner = self.lock_dir / "owner.json"
+                owner.write_bytes(content)
+                self._age(self.lock_dir, constants.LEDGER_LOCK_STALE_SECONDS + 60)
+                self._age(owner, constants.LEDGER_LOCK_STALE_SECONDS - 60)
+                before = self._lock_files()
 
-        with self.assertRaises(coordinator.CoordinatorError) as refused:
-            self._release()
+                with self.assertRaises(coordinator.CoordinatorError) as refused:
+                    self._release()
 
-        self.assertIn("cannot be read", refused.exception.message)
-        self.assertNotIn("remove", refused.exception.remedy.lower())
-        self.assertEqual(self._lock_files(), before)
+                self.assertIn("owner-unknown-recent", refused.exception.message)
+                self._assert_remedy_names_remaining_time(refused.exception)
+                self.assertNotIn("remove", refused.exception.remedy.lower())
+                self.assertEqual(self._lock_files(), before)
+                self._age(owner, constants.LEDGER_LOCK_STALE_SECONDS + 60)
+
+                released = self._release()
+
+                self.assertEqual(released["reason"], "owner-unknown-stale")
+                lock = cast(JsonObject, released["lock"])
+                self.assertIsNone(lock["owner"])
+                self.assertEqual(lock["owner_record"], "unreadable")
+                self.assertFalse(self.lock_dir.exists())
+                with self.ledger.lock():
+                    pass
 
     def test_no_lock_means_nothing_to_release(self) -> None:
         self.assertEqual(self._release(), {"released": False, "lock": None})
