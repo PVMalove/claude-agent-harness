@@ -22,8 +22,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -4449,6 +4452,127 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             (record["needs_attention"], record["attention_reason"], record["state"]),
             (True, "stale-dispatch", "active"),
         )
+
+    # 2b. a busy ledger lock while the coordinator polls (#498)
+
+    @contextlib.contextmanager
+    def _ledger_held(self, release: threading.Event) -> Iterator[None]:
+        """Hold the real ledger lock from a concurrent thread until ``release`` is set."""
+        holding = threading.Event()
+
+        def hold() -> None:
+            with LifecycleLedger(self.state_dir).lock():
+                holding.set()
+                release.wait(30)
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        try:
+            self.assertTrue(holding.wait(10))
+            yield
+        finally:
+            release.set()
+            holder.join()
+
+    def _architect_reported(self) -> JsonObject:
+        batch = self._create_batch()
+        brief = self._live_architect(batch["batch_id"])
+        self._submit(brief["dispatch_id"], self._base_report(brief, "architect"))
+        return brief
+
+    def _wait_busy(self, dispatch_id: str, timeout: int) -> JsonObject:
+        return coordinator.wait_dispatch(
+            self._args(
+                dispatch=dispatch_id, timeout=timeout, poll_interval=1, stale_after=900
+            )
+        )
+
+    def test_dispatch_wait_polls_through_a_busy_ledger_and_returns_the_report_once_released(
+        self,
+    ) -> None:
+        brief = self._architect_reported()
+        release = threading.Event()
+
+        with self._ledger_held(release):
+            timer = threading.Timer(1.5, release.set)
+            timer.start()
+            started = time.monotonic()
+            event = self._wait_busy(brief["dispatch_id"], timeout=10)
+            elapsed = time.monotonic() - started
+            timer.join()
+
+        self.assertEqual(
+            event, {"dispatch_id": brief["dispatch_id"], "event": "reported"}
+        )
+        self.assertGreaterEqual(elapsed, 1.5)
+
+    def test_dispatch_wait_times_out_normally_while_the_ledger_stays_busy(
+        self,
+    ) -> None:
+        brief = self._architect_reported()
+
+        with self._ledger_held(threading.Event()):
+            event = self._wait_busy(brief["dispatch_id"], timeout=2)
+
+        self.assertEqual(
+            event, {"dispatch_id": brief["dispatch_id"], "event": "timeout"}
+        )
+
+    def test_dispatch_status_answers_a_busy_ledger_with_a_structured_retry(
+        self,
+    ) -> None:
+        brief = self._architect_reported()
+        args = self._args(dispatch=None, batch=brief["batch_id"], stale_after=900)
+
+        with LifecycleLedger(self.state_dir).lock():
+            busy = coordinator.dispatch_status(args)
+
+        self.assertTrue(busy["ledger_busy"])
+        self.assertEqual(
+            busy["retry_after_seconds"],
+            config._execution_policy(config._config(self.repo))[
+                "dispatch_poll_interval_seconds"
+            ],
+        )
+        self.assertEqual(busy["lock"]["owner"]["pid"], os.getpid())
+        self.assertIn("repeat dispatch status", busy["remedy"])
+        self.assertIn("ledger release-lock", busy["remedy"])
+        self.assertNotIn("dispatches", busy)
+        after = coordinator.dispatch_status(args)
+        self.assertNotIn("ledger_busy", after)
+        self.assertEqual(
+            [entry["dispatch_id"] for entry in after["dispatches"]],
+            [brief["dispatch_id"]],
+        )
+
+    def test_the_dispatch_status_cli_exits_zero_on_a_busy_ledger(self) -> None:
+        brief = self._architect_reported()
+
+        with self._ledger_held(threading.Event()):
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ORCHESTRATION_ROOT / "coordinator.py"),
+                    "--repo",
+                    str(self.repo),
+                    "--state-dir",
+                    str(self.state_dir),
+                    "dispatch",
+                    "status",
+                    "--batch",
+                    brief["batch_id"],
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        answer = json.loads(result.stdout)
+        self.assertTrue(answer["ledger_busy"])
+        self.assertEqual(answer["lock"]["owner"]["pid"], os.getpid())
 
     # 3. approvals bound to the transition digest
 
