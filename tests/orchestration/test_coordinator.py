@@ -6812,6 +6812,41 @@ class LedgerLockReleaseTests(unittest.TestCase):
         with self.ledger.lock():
             pass
 
+    def test_two_releases_never_overlap(self) -> None:
+        """A second release-lock that starts while one is releasing is refused before it reads the
+        lock (#498), so it can never remove a lock that was taken again in the meantime."""
+        self.state_dir.mkdir()
+        self.lock_dir.mkdir()
+        aged = datetime.now(UTC).timestamp() - constants.LEDGER_LOCK_STALE_SECONDS - 60
+        os.utime(self.lock_dir, (aged, aged))
+
+        with self.ledger._release_guard():
+            with self.assertRaises(coordinator.CoordinatorError) as refused:
+                self._release()
+
+            self.assertIn("another ledger release-lock", refused.exception.message)
+            self.assertIn("ledger release-lock", refused.exception.remedy)
+            self.assertNotIn("remove", refused.exception.remedy.lower())
+            self.assertTrue(self.lock_dir.is_dir())
+
+        self.assertEqual(self._release()["reason"], "owner-unknown-stale")
+        self.assertFalse(self.lock_dir.exists())
+
+    def test_a_lock_whose_owner_record_cannot_be_read_is_not_released(self) -> None:
+        self.state_dir.mkdir()
+        self.lock_dir.mkdir()
+        (self.lock_dir / "owner.json").touch()
+        aged = datetime.now(UTC).timestamp() - constants.LEDGER_LOCK_STALE_SECONDS - 60
+        os.utime(self.lock_dir, (aged, aged))
+        before = self._lock_files()
+
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            self._release()
+
+        self.assertIn("cannot be read", refused.exception.message)
+        self.assertNotIn("remove", refused.exception.remedy.lower())
+        self.assertEqual(self._lock_files(), before)
+
     def test_no_lock_means_nothing_to_release(self) -> None:
         self.assertEqual(self._release(), {"released": False, "lock": None})
 
