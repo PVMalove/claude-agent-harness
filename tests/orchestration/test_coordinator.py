@@ -6891,6 +6891,83 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertIn(review["dispatch_id"], refusals[1]["refused"])
         self.assertIn("route", architect["retry"])
 
+    def test_issue_443_a_defect_in_a_clean_developer_report_is_carried_into_review(
+        self,
+    ) -> None:
+        """Regression for #443: the coordinator found a defect in a clean developer report and
+        retried it before review, so the only developer retry was gone when the review found more
+        and the batch had to be abandoned. Now the defect rides into review as a carried item and
+        the single retry answers the review and the finding together."""
+        batch_id = cast(str, self._plan_batch(["add simple marker"])["batch_id"])
+        self._accepted_architect(batch_id)
+        _, candidate, changed = self._reported_developer(batch_id)
+
+        self._decide(batch_id, "accept", findings_file=self._findings_file())
+        self._assess_without_triggers(batch_id, candidate, changed)
+
+        assessed = self._batch_record(batch_id)
+        self.assertFalse(assessed["risk_assessments"][-1]["review_required"])
+        self.assertEqual(assessed["next_action"], "code-review")
+        self.assertEqual(decisions._developer_retry_count(assessed), 0)
+        finding = {
+            "severity": "warning",
+            "summary": "the reset path has no test",
+            "evidence": "tests/test_x.py:1",
+        }
+        review = self._reported_review(
+            batch_id,
+            candidate,
+            standards=("warning", [finding]),
+            carried={"coordinator-finding-1": "open"},
+        )
+        self.assertEqual(
+            [item["item_id"] for item in self._carried(review)],
+            ["coordinator-finding-1"],
+        )
+
+        retried = self._decide(batch_id, "retry")
+        retry = self._dispatch(batch_id, "developer")["brief"]
+
+        self.assertEqual(self._routing(retried)["route"], "developer-retry")
+        self.assertEqual(
+            [item["item_id"] for item in self._carried(retry)],
+            ["coordinator-finding-1", "review-finding-1"],
+        )
+        self._start(retry["dispatch_id"])
+        fix, _ = self._developer_commit("fix")
+        fixed = git_utils._changed_files_between(
+            self.repo, self._batch_record(batch_id)["base_commit"], fix
+        )
+        self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry,
+                fix,
+                fixed,
+                commit_map=self._commit_map([(fix, retry["commit_plan"][0])]),
+            ),
+        )
+        self._decide(batch_id, "accept")
+        self._assess_without_triggers(batch_id, fix, fixed)
+        self.assertEqual(self._batch_record(batch_id)["next_action"], "code-review")
+        closing = self._reported_review(
+            batch_id, fix, carried={"coordinator-finding-1": "closed"}
+        )
+
+        done = self._decide(batch_id, "accept")
+
+        self.assertEqual(
+            [item["item_id"] for item in self._carried(closing)],
+            ["coordinator-finding-1"],
+        )
+        self.assertEqual(
+            (done["state"], done["next_action"]), ("awaiting-approval", "qa")
+        )
+        self.assertNotIn("abandoned", done)
+        self.assertEqual(decisions._developer_retry_count(done), 1)
+        root = ledger_ops._state_root(self._args(), self.repo)
+        self.assertEqual(carried_items.open_coordinator_findings(root, done), [])
+
 
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     """The pure routing table: structured evidence in, one routing record out (no I/O)."""
