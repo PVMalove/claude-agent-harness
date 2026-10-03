@@ -474,7 +474,28 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    `Auto-accepted due to low_risk policy and clean report`, вычисляет `next_action` и готовит
    следующий допустимый dispatch. При `milestone` чистый отчёт вне вехи также получает `accept`;
    после developer оценивается риск, а QA-dispatch ждёт отдельного approval. Чистый QA-report при
-   `milestone` ждёт решения человека. Ручное решение выглядит так:
+   `milestone` ждёт решения человека.
+
+   Policy-цепочка после записи report (`policy-decide`, `risk-assess`, `next-dispatch`) идёт
+   отдельными командами уже после записи report, и каждая может остановиться: ledger занят,
+   поднят `needs_attention`, изменилось состояние batch. Тогда `report submit` всё равно завершается
+   с кодом 0: report записан, ответ называет его (`report`, `report_sha256`) и несёт объект
+   `completion` — `route: "report-completion"`, `failed_step`, состояние каждого шага (`done`,
+   `already-done`, `not-applicable`, `failed`, `not-run`), `error`, `remedy` и точную команду
+   `command`, которую выполняет сам coordinator (`run_by: "coordinator"`), а не worker:
+
+   ```bash
+   python .harness/orchestration/coordinator.py --repo . report complete --dispatch <dispatch-id>
+   ```
+
+   `report complete` идемпотентна: каждый шаг выводится из ledger, поэтому уже записанное решение,
+   risk assessment или следующий dispatch не повторяются, а повторный запуск ничего не пишет. Она
+   повторяет только policy, записанную при `report submit` (`auto_accept_policy` в статусе
+   dispatch), никогда не записывает report заново и не создаёт dispatch для роли, сдавшей report.
+   Шаг, которому нужен человек, останавливается с remedy этого шага. Для report, оставленного
+   человеку, все шаги — `not-applicable`. Повторно отправлять report нельзя: он уже записан.
+
+   Ручное решение выглядит так:
 
    ```bash
    python .harness/orchestration/coordinator.py --repo . batch decide \
@@ -604,7 +625,9 @@ agent inbox и записи QA-очереди dispatch, которые уже н
 Каждое решение `retry` и `abandon` в `batch decide` записывает выбранный маршрут восстановления в
 `routing.route` — одно значение закрытого набора `RECOVERY_ROUTES`: `developer-retry`,
 `same-candidate-rerun` (новый code-review, qa или publish на том же SHA), `verification`,
-`architect-retry` и `abandon`. Маршрут ставится там же, где `next_action`, по тем же
+`architect-retry` и `abandon`. Шестое значение, `report-completion`, `batch decide` не записывает:
+его называет `completion` у `report submit`, когда policy-цепочка после записанного report
+остановилась (см. шаг 4 выше и «Занятый ledger» ниже). Маршрут ставится там же, где `next_action`, по тем же
 структурированным данным и никогда по свободному тексту. У `abandon` routing record той же формы, но
 `reason_category`, `next_role`, `next_action` и `candidate_commit` равны `null`, а `rationale`
 содержит только структурные факты (`--reason` остаётся в `note`). Нормативная таблица «ситуация →
@@ -886,6 +909,49 @@ coordinator выносит человеку: сам он состояние по
 (`dispatch telemetry`, см. ниже) и `context_advisory` — чистое чтение: отсутствие телеметрии не
 считается ошибкой, `telemetry` и `context_advisory.observed` в этом случае — `null`
 (`context_advisory.level` при этом остаётся `"ok"`).
+
+### Занятый ledger, `report complete` и `ledger release-lock`
+
+Каждая команда coordinator-а берёт эксклюзивный lock ledger-а (`.coordinator.lock` в каталоге
+state). Lock записывает владельца — `pid`, `host` и `acquired_at`. Пока его держит другая операция,
+команда записи завершается ошибкой `ledger is locked by another operation`; её remedy предлагает
+повторить команду и называет `ledger release-lock`, а не ручное удаление.
+
+Опрос coordinator-а занятый lock переживает:
+
+- `dispatch wait` считает занятый lock пропущенным опросом и опрашивает дальше до своего
+  `--timeout`: report возвращается, как только lock освобождён, а если lock занят до конца ожидания,
+  результат — обычный `{"dispatch_id": ..., "event": "timeout"}`;
+- `dispatch status` при занятом lock завершается с кодом 0 и отвечает структурно:
+  `{"ledger_busy": true, "retry_after_seconds": ..., "lock": {...}, "remedy": ...}`, где `lock`
+  содержит владельца и `held_seconds`. Это не недоступность coordinator-а: повторите
+  `dispatch status` через `retry_after_seconds`.
+
+Терпимость касается только этих двух команд опроса и `report complete`: ни одна запись не идёт без
+lock, а занятый lock у остальных команд остаётся ошибкой. `report complete` при занятом lock
+останавливается на шаге, который не смог прочитать состояние, ничего не пишет и в remedy называет
+себя для повтора.
+
+Lock, который остаётся занятым, снимается только командой с проверкой владельца:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . ledger release-lock
+```
+
+Вердикт зависит от владельца:
+
+| Владелец lock | Вердикт |
+| --- | --- |
+| Процесс владельца жив (на этом host) | отказ `owner-alive` — при любом возрасте lock |
+| Владелец на другом host | отказ `owner-on-another-host`: запустите команду на том host |
+| Процесс владельца завершился (на этом host) | снимается, `owner-dead` |
+| Нет записи владельца (lock старого runtime), lock младше `LEDGER_LOCK_STALE_SECONDS` (3600 с) | отказ `owner-unknown-recent` |
+| Нет записи владельца, lock старше `LEDGER_LOCK_STALE_SECONDS` | снимается, `owner-unknown-stale` |
+
+Успех — `{"released": true, "reason": ..., "lock": {...}}`; если lock нет —
+`{"released": false, "lock": null}`; отказ — ошибка с причиной, владельцем и `held_seconds`, lock
+не трогается. Команда снимает только тот lock, который проверила: если владелец сменился во время
+снятия, она отказывает и просит повторить. Удалять lock или другие файлы state вручную нельзя.
 
 ### Отчётность и мониторинг токенов: `dispatch telemetry`
 

@@ -215,6 +215,13 @@ remain untouched as migration evidence. `ledger reset --confirm RESET` selects a
 only after the literal confirmation, and refuses while any batch is `active`; prior generations
 remain immutable audit history.
 
+Every coordinator command holds the exclusive ledger lock, which records its owner (`pid`, `host`,
+`acquired_at`). A busy lock fails a write command with a remedy to repeat it; `dispatch wait` and
+`dispatch status` keep polling instead (`dispatch status` answers `ledger_busy`). A lock that stays
+held is released only by `coordinator.py --repo . ledger release-lock`, which refuses a lock whose
+owner process is alive or runs on another host, releases a dead owner's lock, and releases a lock
+without an owner record only once it is stale. Nobody removes the lock or any state file by hand.
+
 When a new fact appears after dispatch, the coordinator appends a new coordinator decision before
 acting on it. The decision records the dispatch ID, fact and evidence, impact on scope or risk,
 chosen action, and author/time. The original brief remains immutable. If the fact changes the
