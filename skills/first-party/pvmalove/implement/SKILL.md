@@ -25,6 +25,8 @@ python .harness/orchestration/coordinator.py --repo . dispatch status
 ```
 
 If the command is unavailable or cannot read its state, stop and tell the developer to run `/fast-implement` instead.
+A `ledger_busy` answer is not unavailability: another coordinator operation holds the ledger lock,
+so repeat the command after its `retry_after_seconds`.
 Do not infer or repair an opt-in capability. Process one ticket to a terminal batch state before
 beginning another.
 
@@ -94,6 +96,14 @@ exception to that budget.
 Run `dispatch wait` between send and report. `stale`, model/worktree mismatch, changed harness
 snapshot, and a failed deterministic gate are blockers for the coordinator, not prompts for broad
 LLM recovery. In-process and external transports preserve the same brief and evidence contract.
+
+A busy ledger (`ledger is locked by another operation`, or `ledger_busy` from `dispatch status`) is
+transient: repeat `dispatch wait` or `dispatch status`. When a relayed `report submit` result
+carries `completion`, the report is already recorded: never ask the worker to submit it again. Run
+its `command` (`report complete --dispatch <dispatch-id>`) yourself and repeat it until no step
+fails; it is idempotent. When the failed step needs a human, follow its remedy instead. Never remove
+the ledger lock or any state file by hand; a lock that stays held goes to
+`coordinator.py --repo . ledger release-lock`, which refuses a lock whose owner process is alive.
 
 ## Authoritative guidance
 

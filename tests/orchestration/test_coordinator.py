@@ -17,12 +17,17 @@ import hashlib
 import inspect
 import io
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -42,6 +47,7 @@ from harness.orchestration.ledger import (
     BatchRecord,
     DispatchStatusRecord,
     LifecycleLedger,
+    ledger_admin,
     ledger_ops,
 )
 from harness.orchestration.workflow import (
@@ -1448,9 +1454,13 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         exists) still uses the bare ``Path``+``dict`` primitives, but takes its ``LifecycleLedger``
         explicitly rather than rediscovering it by walking the filesystem for a ``ledger.json``
         marker (the now-deleted ``_ledger_for_path``)."""
+        parameters = inspect.signature(coordinator._persist_report).parameters
         self.assertEqual(
-            list(inspect.signature(coordinator._persist_report).parameters),
-            ["ledger", "root", "batch", "dispatch", "report"],
+            list(parameters),
+            ["ledger", "root", "batch", "dispatch", "report", "auto_accept_policy"],
+        )
+        self.assertIs(
+            parameters["auto_accept_policy"].kind, inspect.Parameter.KEYWORD_ONLY
         )
 
     def _ledger(self) -> LifecycleLedger:
@@ -4448,6 +4458,432 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             (True, "stale-dispatch", "active"),
         )
 
+    # 2b. a busy ledger lock while the coordinator polls (#498)
+
+    @contextlib.contextmanager
+    def _ledger_held(self, release: threading.Event) -> Iterator[None]:
+        """Hold the real ledger lock from a concurrent thread until ``release`` is set."""
+        holding = threading.Event()
+
+        def hold() -> None:
+            with LifecycleLedger(self.state_dir).lock():
+                holding.set()
+                release.wait(30)
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        try:
+            self.assertTrue(holding.wait(10))
+            yield
+        finally:
+            release.set()
+            holder.join()
+
+    def _architect_reported(self) -> JsonObject:
+        batch = self._create_batch()
+        brief = self._live_architect(batch["batch_id"])
+        self._submit(brief["dispatch_id"], self._base_report(brief, "architect"))
+        return brief
+
+    def _wait_busy(self, dispatch_id: str, timeout: int) -> JsonObject:
+        return coordinator.wait_dispatch(
+            self._args(
+                dispatch=dispatch_id, timeout=timeout, poll_interval=1, stale_after=900
+            )
+        )
+
+    def test_dispatch_wait_polls_through_a_busy_ledger_and_returns_the_report_once_released(
+        self,
+    ) -> None:
+        brief = self._architect_reported()
+        release = threading.Event()
+
+        with self._ledger_held(release):
+            timer = threading.Timer(1.5, release.set)
+            timer.start()
+            started = time.monotonic()
+            event = self._wait_busy(brief["dispatch_id"], timeout=10)
+            elapsed = time.monotonic() - started
+            timer.join()
+
+        self.assertEqual(
+            event, {"dispatch_id": brief["dispatch_id"], "event": "reported"}
+        )
+        self.assertGreaterEqual(elapsed, 1.5)
+
+    def test_dispatch_wait_times_out_normally_while_the_ledger_stays_busy(
+        self,
+    ) -> None:
+        brief = self._architect_reported()
+
+        with self._ledger_held(threading.Event()):
+            event = self._wait_busy(brief["dispatch_id"], timeout=2)
+
+        self.assertEqual(
+            event, {"dispatch_id": brief["dispatch_id"], "event": "timeout"}
+        )
+
+    def test_dispatch_status_answers_a_busy_ledger_with_a_structured_retry(
+        self,
+    ) -> None:
+        brief = self._architect_reported()
+        args = self._args(dispatch=None, batch=brief["batch_id"], stale_after=900)
+
+        with LifecycleLedger(self.state_dir).lock():
+            busy = coordinator.dispatch_status(args)
+
+        self.assertTrue(busy["ledger_busy"])
+        self.assertEqual(
+            busy["retry_after_seconds"],
+            config._execution_policy(config._config(self.repo))[
+                "dispatch_poll_interval_seconds"
+            ],
+        )
+        self.assertEqual(busy["lock"]["owner"]["pid"], os.getpid())
+        self.assertIn("repeat dispatch status", busy["remedy"])
+        self.assertIn("ledger release-lock", busy["remedy"])
+        self.assertNotIn("dispatches", busy)
+        after = coordinator.dispatch_status(args)
+        self.assertNotIn("ledger_busy", after)
+        self.assertEqual(
+            [entry["dispatch_id"] for entry in after["dispatches"]],
+            [brief["dispatch_id"]],
+        )
+
+    def test_the_dispatch_status_cli_exits_zero_on_a_busy_ledger(self) -> None:
+        brief = self._architect_reported()
+
+        with self._ledger_held(threading.Event()):
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ORCHESTRATION_ROOT / "coordinator.py"),
+                    "--repo",
+                    str(self.repo),
+                    "--state-dir",
+                    str(self.state_dir),
+                    "dispatch",
+                    "status",
+                    "--batch",
+                    brief["batch_id"],
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        answer = json.loads(result.stdout)
+        self.assertTrue(answer["ledger_busy"])
+        self.assertEqual(answer["lock"]["owner"]["pid"], os.getpid())
+
+    # 2c. completing a recorded report's stopped policy chain (#498)
+
+    def _ledger_files(self) -> dict[str, bytes]:
+        records = self._records()
+        return {
+            path.relative_to(records).as_posix(): path.read_bytes()
+            for path in sorted(records.rglob("*"))
+            if path.is_file()
+        }
+
+    def _complete(self, dispatch_id: str) -> JsonObject:
+        return coordinator.complete_report(self._args(dispatch=dispatch_id))
+
+    def _completion_command(self, dispatch_id: str) -> str:
+        return (
+            "python .harness/orchestration/coordinator.py --repo . report complete "
+            f"--dispatch {dispatch_id} --state-dir {shlex.quote(str(self.state_dir))}"
+        )
+
+    def _architect_report_under_attention(self) -> tuple[JsonObject, JsonObject]:
+        """A low_risk architect report whose batch raised attention before it was submitted:
+        the policy decision is recorded, then the next dispatch is refused on attention."""
+        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        batch = self._create_batch()
+        brief = self._live_architect(batch["batch_id"])
+        self._age_heartbeat(brief["dispatch_id"], 7200)
+        self.assertEqual(
+            self._wait_busy(brief["dispatch_id"], timeout=1)["event"], "stale"
+        )
+        submitted = self._submit(
+            brief["dispatch_id"], self._base_report(brief, "architect")
+        )
+        return brief, submitted
+
+    def test_a_stopped_policy_chain_reports_the_recorded_report_and_its_completion(
+        self,
+    ) -> None:
+        brief, submitted = self._architect_report_under_attention()
+
+        stored = self._batch_record(brief["batch_id"])
+        self.assertEqual(submitted["state"], "reported")
+        self.assertEqual(submitted["dispatch_id"], brief["dispatch_id"])
+        self.assertTrue(Path(submitted["report"]).is_file())
+        self.assertEqual(
+            submitted["report_sha256"], stored["dispatches"][0]["report_sha256"]
+        )
+        self.assertTrue(submitted["auto_accepted"])
+        self.assertEqual(submitted["next_action"], "developer")
+        self.assertIsNone(submitted["next_dispatch_id"])
+        completion = submitted["completion"]
+        self.assertEqual(completion["route"], "report-completion")
+        self.assertEqual(completion["failed_step"], "next-dispatch")
+        self.assertEqual(
+            completion["steps"],
+            {
+                "policy-decide": "done",
+                "risk-assess": "not-applicable",
+                "next-dispatch": "failed",
+            },
+        )
+        self.assertIn("attention", completion["error"]["message"])
+        self.assertEqual(
+            completion["command"], self._completion_command(brief["dispatch_id"])
+        )
+        self.assertEqual(completion["run_by"], "coordinator")
+        self.assertIn("never submit it again", completion["remedy"])
+        self.assertEqual(len(stored["coordinator_decisions"]), 1)
+        self.assertEqual(
+            stored["coordinator_decisions"][0]["approved_by"], "policy:low_risk"
+        )
+        self.assertEqual(len(stored["dispatches"]), 1)
+        status = ledger_ops._load_dispatch_status(
+            ledger_ops._state_root(self._args(), self.repo), brief["dispatch_id"]
+        )
+        self.assertEqual(status["auto_accept_policy"], "low_risk")
+
+    def test_report_complete_finishes_the_chain_once_and_a_rerun_changes_nothing(
+        self,
+    ) -> None:
+        brief, submitted = self._architect_report_under_attention()
+        self._resolve_attention(brief["batch_id"])
+
+        completed = self._complete(brief["dispatch_id"])
+
+        stored = self._batch_record(brief["batch_id"])
+        self.assertEqual(
+            completed["steps"],
+            {
+                "policy-decide": "already-done",
+                "risk-assess": "not-applicable",
+                "next-dispatch": "done",
+            },
+        )
+        self.assertEqual(completed["route"], "report-completion")
+        self.assertEqual(completed["report"], submitted["report"])
+        self.assertEqual(completed["report_sha256"], submitted["report_sha256"])
+        self.assertEqual(completed["auto_accept_policy"], "low_risk")
+        self.assertEqual(completed["next_action"], "developer")
+        self.assertEqual(
+            [entry["role"] for entry in stored["dispatches"]],
+            ["architect", "developer"],
+        )
+        self.assertEqual(
+            completed["next_dispatch_id"], stored["dispatches"][1]["dispatch_id"]
+        )
+        self.assertEqual(stored["dispatches"][1]["state"], "approved")
+        self.assertEqual(len(stored["coordinator_decisions"]), 1)
+        before = self._ledger_files()
+
+        repeated = self._complete(brief["dispatch_id"])
+
+        self.assertEqual(
+            repeated["steps"],
+            {
+                "policy-decide": "already-done",
+                "risk-assess": "not-applicable",
+                "next-dispatch": "already-done",
+            },
+        )
+        self.assertEqual(repeated["next_dispatch_id"], completed["next_dispatch_id"])
+        self.assertEqual(self._ledger_files(), before)
+
+    def test_report_complete_on_a_busy_ledger_names_the_step_and_writes_nothing(
+        self,
+    ) -> None:
+        brief, _ = self._architect_report_under_attention()
+        self._resolve_attention(brief["batch_id"])
+        before = self._ledger_files()
+
+        with LifecycleLedger(self.state_dir).lock():
+            with self.assertRaises(coordinator.CoordinatorError) as stopped:
+                self._complete(brief["dispatch_id"])
+
+        self.assertIn("policy-decide", stopped.exception.message)
+        self.assertIn(
+            "ledger is locked by another operation", stopped.exception.message
+        )
+        self.assertIn(
+            self._completion_command(brief["dispatch_id"]), stopped.exception.remedy
+        )
+        self.assertEqual(self._ledger_files(), before)
+
+    def test_report_complete_has_nothing_to_run_for_a_report_left_for_a_human(
+        self,
+    ) -> None:
+        brief = self._architect_reported()  # manual_all: no policy decides it
+        before = self._ledger_files()
+
+        completed = self._complete(brief["dispatch_id"])
+
+        self.assertEqual(
+            completed["steps"],
+            dict.fromkeys(
+                ("policy-decide", "risk-assess", "next-dispatch"), "not-applicable"
+            ),
+        )
+        self.assertIsNone(completed["auto_accept_policy"])
+        self.assertIsNone(completed["next_dispatch_id"])
+        self.assertEqual(self._ledger_files(), before)
+
+    def test_a_completed_policy_chain_keeps_the_submit_response(self) -> None:
+        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        batch = self._create_batch()
+        brief = self._live_architect(batch["batch_id"])
+
+        submitted = self._submit(
+            brief["dispatch_id"], self._base_report(brief, "architect")
+        )
+
+        self.assertEqual(
+            set(submitted),
+            {
+                "dispatch_id",
+                "state",
+                "report",
+                "auto_accepted",
+                "next_action",
+                "next_dispatch_id",
+            },
+        )
+        self.assertTrue(submitted["auto_accepted"])
+        self.assertEqual(
+            submitted["next_dispatch_id"],
+            self._batch_record(batch["batch_id"])["dispatches"][1]["dispatch_id"],
+        )
+
+    def test_an_auto_accepted_verification_report_is_assessed_on_its_pinned_candidate(
+        self,
+    ) -> None:
+        """A verification report is read-only and has no commit of its own: its policy chain
+        assesses the candidate its dispatch pinned and hands that candidate to QA, so the chain
+        completes and report complete has nothing left to run."""
+        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        plan = self._batch_plan()
+        plan["definition_of_done"] = ["add simple marker"]
+        with mock.patch.object(self, "_batch_plan", return_value=plan):
+            batch = self._create_batch()
+        architect = self._live_architect(batch["batch_id"])
+        developer_id = self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )["next_dispatch_id"]
+        developer = coordinator._read_object(
+            self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
+        )
+        self._start(developer_id)
+        candidate, changed = self._developer_commit("marker")
+        self._submit(
+            developer_id,
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers="verification environment unavailable",
+            ),
+        )
+        self._decide(
+            batch["batch_id"], "retry", reason_category="verification-infrastructure"
+        )
+        verification = self._dispatch(
+            batch["batch_id"], "verification", candidate=candidate
+        )["brief"]
+        self._start(verification["dispatch_id"], checkout=self.worktree)
+
+        submitted = self._submit(
+            verification["dispatch_id"],
+            self._base_report(verification, "verification"),
+        )
+
+        self.assertTrue(submitted["auto_accepted"])
+        self.assertNotIn("completion", submitted)
+        stored = self._batch_record(batch["batch_id"])
+        self.assertEqual(
+            [item["candidate_commit"] for item in stored["risk_assessments"]],
+            [candidate],
+        )
+        self.assertEqual(submitted["next_action"], "qa")
+        qa = stored["dispatches"][-1]
+        self.assertEqual(
+            (qa["role"], qa["dispatch_id"]), ("qa", submitted["next_dispatch_id"])
+        )
+        self.assertEqual(
+            coordinator._read_object(
+                self._records() / "dispatches" / f"{qa['dispatch_id']}.json",
+                "dispatch",
+            )["candidate_commit"],
+            candidate,
+        )
+        before = self._ledger_files()
+
+        repeated = self._complete(verification["dispatch_id"])
+
+        self.assertEqual(
+            repeated["steps"],
+            dict.fromkeys(
+                ("policy-decide", "risk-assess", "next-dispatch"), "already-done"
+            ),
+        )
+        self.assertEqual(self._ledger_files(), before)
+
+    def test_risk_assessment_for_a_completion_is_refused_once_the_batch_moved_on(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("x")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(developer, candidate, changed),
+        )
+        self._decide(batch["batch_id"], "accept")
+        before = self._ledger_files()
+
+        def assess(expected: str) -> JsonObject:
+            return coordinator.assess_risk(
+                self._args(
+                    batch=batch["batch_id"],
+                    candidate_commit=candidate,
+                    base_commit=None,
+                    changed_file=changed,
+                    developer_trigger=[],
+                    _expected_next_action=expected,
+                )
+            )
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "no longer awaits the risk assessment"
+        ):
+            assess("code-review")
+        self.assertEqual(self._ledger_files(), before)
+        assess("risk-assessment")
+        self.assertEqual(
+            len(self._batch_record(batch["batch_id"])["risk_assessments"]), 1
+        )
+
+    def test_the_cli_wires_report_complete(self) -> None:
+        args = coordinator.parser().parse_args(
+            ["report", "complete", "--dispatch", "dispatch-1"]
+        )
+
+        self.assertIs(args.handler, coordinator.complete_report)
+        self.assertEqual(args.dispatch, "dispatch-1")
+
     # 3. approvals bound to the transition digest
 
     def test_the_proposal_is_a_dry_run_that_binds_the_canonical_transition(
@@ -6133,7 +6569,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
             },
         )
 
-    def test_the_recovery_routes_are_exactly_the_documented_five(self) -> None:
+    def test_the_recovery_routes_are_exactly_the_documented_six(self) -> None:
         self.assertEqual(
             constants.RECOVERY_ROUTES,
             (
@@ -6142,6 +6578,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "verification",
                 "architect-retry",
                 "abandon",
+                "report-completion",
             ),
         )
         for route in constants.RECOVERY_ROUTES:
@@ -6358,6 +6795,196 @@ class CoordinatorGuardHelperTests(unittest.TestCase):
                     caught.exception.remedy,
                     "rewrite purpose in English, keeping commands, paths, IDs and quoted evidence verbatim",
                 )
+
+
+class LedgerLockReleaseTests(unittest.TestCase):
+    """``ledger release-lock`` against the real ledger lock (#498): the lock records its owner,
+    and a stuck lock is released only after that owner has been checked."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.tmp = Path(self._tmp.name)
+        self.state_dir = self.tmp / "state"
+        self.lock_dir = self.state_dir / ".coordinator.lock"
+        self.ledger = LifecycleLedger(self.state_dir)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _release(self) -> JsonObject:
+        return coordinator.release_ledger_lock(
+            _ns(repo=str(self.tmp), state_dir=str(self.state_dir))
+        )
+
+    def _lock_files(self) -> dict[str, bytes]:
+        return {path.name: path.read_bytes() for path in self.lock_dir.iterdir()}
+
+    def test_a_lock_whose_owner_is_alive_is_never_released(self) -> None:
+        with self.ledger.lock():
+            before = self._lock_files()
+
+            with self.assertRaises(coordinator.CoordinatorError) as refused:
+                self._release()
+
+            self.assertIn("owner-alive", refused.exception.message)
+            self.assertIn(str(os.getpid()), refused.exception.message)
+            self.assertIn("never released", refused.exception.remedy)
+            self.assertEqual(self._lock_files(), before)
+
+    def test_a_lock_left_by_a_dead_owner_is_released(self) -> None:
+        holder = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import os, sys\n"
+                "from pathlib import Path\n"
+                "from harness.orchestration.ledger.lifecycle import LifecycleLedger\n"
+                "held = LifecycleLedger(Path(sys.argv[1])).lock()\n"
+                "held.__enter__()\n"
+                "print(os.getpid(), flush=True)\n"
+                "os._exit(0)\n",
+                str(self.state_dir),
+            ],
+            cwd=ORCHESTRATION_ROOT.parents[1],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        with self.assertRaises(ledger_ops.LedgerBusyError):
+            with ledger_ops._ledger_lock(self.ledger):
+                pass
+
+        released = self._release()
+
+        self.assertTrue(released["released"])
+        self.assertEqual(released["reason"], "owner-dead")
+        lock = cast(JsonObject, released["lock"])
+        self.assertEqual(lock["owner"]["pid"], int(holder.stdout))
+        self.assertFalse(self.lock_dir.exists())
+        with self.ledger.lock():
+            pass
+
+    def test_a_lock_without_an_owner_record_is_released_only_once_stale(
+        self,
+    ) -> None:
+        self.state_dir.mkdir()
+        self.lock_dir.mkdir()  # the shape an older runtime's lock has: no owner record
+
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            self._release()
+
+        self.assertIn("owner-unknown-recent", refused.exception.message)
+        self.assertTrue(self.lock_dir.is_dir())
+        aged = datetime.now(UTC).timestamp() - constants.LEDGER_LOCK_STALE_SECONDS - 60
+        os.utime(self.lock_dir, (aged, aged))
+
+        released = self._release()
+
+        self.assertEqual(released["reason"], "owner-unknown-stale")
+        self.assertIsNone(cast(JsonObject, released["lock"])["owner"])
+        self.assertFalse(self.lock_dir.exists())
+        with self.ledger.lock():
+            pass
+
+    def test_two_releases_never_overlap(self) -> None:
+        """A second release-lock that starts while one is releasing is refused before it reads the
+        lock (#498), so it can never remove a lock that was taken again in the meantime."""
+        self.state_dir.mkdir()
+        self.lock_dir.mkdir()
+        aged = datetime.now(UTC).timestamp() - constants.LEDGER_LOCK_STALE_SECONDS - 60
+        os.utime(self.lock_dir, (aged, aged))
+
+        with self.ledger._release_guard():
+            with self.assertRaises(coordinator.CoordinatorError) as refused:
+                self._release()
+
+            self.assertIn("another ledger release-lock", refused.exception.message)
+            self.assertIn("ledger release-lock", refused.exception.remedy)
+            self.assertNotIn("remove", refused.exception.remedy.lower())
+            self.assertTrue(self.lock_dir.is_dir())
+
+        self.assertEqual(self._release()["reason"], "owner-unknown-stale")
+        self.assertFalse(self.lock_dir.exists())
+
+    def test_a_lock_whose_owner_record_cannot_be_read_is_not_released(self) -> None:
+        self.state_dir.mkdir()
+        self.lock_dir.mkdir()
+        (self.lock_dir / "owner.json").touch()
+        aged = datetime.now(UTC).timestamp() - constants.LEDGER_LOCK_STALE_SECONDS - 60
+        os.utime(self.lock_dir, (aged, aged))
+        before = self._lock_files()
+
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            self._release()
+
+        self.assertIn("cannot be read", refused.exception.message)
+        self.assertNotIn("remove", refused.exception.remedy.lower())
+        self.assertEqual(self._lock_files(), before)
+
+    def test_no_lock_means_nothing_to_release(self) -> None:
+        self.assertEqual(self._release(), {"released": False, "lock": None})
+
+    def test_the_verdict_never_releases_a_live_or_foreign_owner(self) -> None:
+        owner = {
+            "pid": 4242,
+            "host": "here",
+            "acquired_at": "2026-01-01T00:00:00+00:00",
+        }
+        ancient = 10 * constants.LEDGER_LOCK_STALE_SECONDS
+        cases = (
+            ({"owner": owner, "held_seconds": ancient}, True, (False, "owner-alive")),
+            ({"owner": owner, "held_seconds": 0}, False, (True, "owner-dead")),
+            (
+                {"owner": {**owner, "host": "elsewhere"}, "held_seconds": ancient},
+                False,
+                (False, "owner-on-another-host"),
+            ),
+            (
+                {"owner": None, "held_seconds": 5},
+                False,
+                (False, "owner-unknown-recent"),
+            ),
+            (
+                {"owner": {"pid": "x"}, "held_seconds": ancient},
+                True,
+                (True, "owner-unknown-stale"),
+            ),
+        )
+        for state, alive, expected in cases:
+
+            def probe(pid: int, alive: bool = alive) -> bool:
+                return alive
+
+            with self.subTest(state=state, alive=alive):
+                self.assertEqual(
+                    ledger_admin._release_verdict(
+                        state,
+                        host="here",
+                        pid_active=probe,
+                        stale_after=constants.LEDGER_LOCK_STALE_SECONDS,
+                    ),
+                    expected,
+                )
+
+    def test_a_busy_ledger_names_release_lock_instead_of_manual_removal(self) -> None:
+        with self.ledger.lock():
+            with self.assertRaises(ledger_ops.LedgerBusyError) as busy:
+                coordinator.ledger_status(
+                    _ns(repo=str(self.tmp), state_dir=str(self.state_dir))
+                )
+
+        self.assertIsInstance(busy.exception, coordinator.CoordinatorError)
+        self.assertEqual(
+            busy.exception.message, "ledger is locked by another operation"
+        )
+        self.assertIn("ledger release-lock", busy.exception.remedy)
+        self.assertNotIn("remove", busy.exception.remedy.lower())
+        self.assertNotIn(".coordinator.lock", busy.exception.remedy)
+
+    def test_the_cli_wires_release_lock(self) -> None:
+        args = coordinator.parser().parse_args(["ledger", "release-lock"])
+
+        self.assertIs(args.handler, coordinator.release_ledger_lock)
 
 
 class CoordinatorCliParserTests(unittest.TestCase):

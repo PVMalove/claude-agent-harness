@@ -6,8 +6,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -36,6 +38,7 @@ from harness.orchestration.core.utils import CoordinatorError
 from harness.orchestration.ledger.lifecycle import (
     LEDGER_VERSION,
     SUPPORTED_LEDGER_VERSIONS,
+    LedgerLockBusy,
 )
 from harness.orchestration.workflow import history
 
@@ -403,6 +406,140 @@ class LockTests(unittest.TestCase):
 
             with ledger.lock():
                 pass
+
+    def test_lock_records_its_owner_and_removes_it_on_release(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            lock_dir = state_root / ".coordinator.lock"
+
+            self.assertIsNone(ledger.lock_state())
+            with ledger.lock():
+                owner = json.loads(
+                    (lock_dir / "owner.json").read_text(encoding="utf-8")
+                )
+                state = ledger.lock_state()
+
+            self.assertEqual(owner["pid"], os.getpid())
+            self.assertEqual(owner["host"], socket.gethostname())
+            self.assertIsNotNone(datetime.fromisoformat(owner["acquired_at"]).tzinfo)
+            assert state is not None
+            self.assertEqual(state["owner"], owner)
+            self.assertEqual(state["acquired_at"], owner["acquired_at"])
+            self.assertGreaterEqual(cast(int, state["held_seconds"]), 0)
+            self.assertFalse(lock_dir.exists())
+            self.assertIsNone(ledger.lock_state())
+
+    def test_contention_raises_lock_busy_whose_remedy_names_release_lock(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            state_root = Path(temporary) / "state"
+            first = LifecycleLedger(state_root)
+            second = LifecycleLedger(state_root)
+
+            with first.lock():
+                with self.assertRaises(LedgerLockBusy) as raised, second.lock():
+                    pass
+
+            self.assertIsInstance(raised.exception, LedgerError)
+            self.assertEqual(
+                raised.exception.message, "ledger is locked by another operation"
+            )
+            self.assertIn("ledger release-lock", raised.exception.remedy)
+            self.assertNotIn("remove", raised.exception.remedy.lower())
+
+    def test_break_lock_refuses_a_lock_whose_owner_changed(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            lock_dir = state_root / ".coordinator.lock"
+
+            with ledger.lock():
+                state = ledger.lock_state()
+                assert state is not None
+                owner = cast(JsonObject, state["owner"])
+                recorded = (lock_dir / "owner.json").read_bytes()
+                stamped = (lock_dir / "owner.json").stat().st_ctime_ns
+                observed = {**state, "owner": {**owner, "pid": -1}}
+
+                with self.assertRaisesRegex(LedgerError, "changed"):
+                    ledger.break_lock(observed)
+
+                self.assertEqual(sorted(os.listdir(lock_dir)), ["owner.json"])
+                self.assertEqual((lock_dir / "owner.json").read_bytes(), recorded)
+                # Never even moved aside for a moment: a rename would touch its ctime.
+                self.assertEqual((lock_dir / "owner.json").stat().st_ctime_ns, stamped)
+
+            self.assertFalse(lock_dir.exists())
+
+    def test_an_acquirer_whose_directory_was_released_before_it_recorded_itself_is_busy(
+        self,
+    ) -> None:
+        """The interleaving review found (#498): an acquirer has taken the lock directory but not
+        yet recorded itself, a release removes the still-empty directory, and another acquirer
+        takes it again.  Whoever records itself first holds the lock; the other is busy and never
+        writes into a lock it does not hold, whichever of the two records first."""
+        for first_to_record in ("late", "new"):
+            with (
+                self.subTest(first_to_record=first_to_record),
+                tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary,
+            ):
+                state_root = Path(temporary) / "state"
+                late = LifecycleLedger(state_root)
+                new = LifecycleLedger(state_root)
+                lock_dir = late._take_lock_directory()
+                observed = late.lock_state()
+                assert observed is not None
+                late.break_lock(observed)
+                self.assertEqual(new._take_lock_directory(), lock_dir)
+                first, second = (
+                    (late, new) if first_to_record == "late" else (new, late)
+                )
+
+                first._record_lock_owner(lock_dir)
+                recorded = (lock_dir / "owner.json").read_bytes()
+                with self.assertRaises(LedgerLockBusy):
+                    second._record_lock_owner(lock_dir)
+
+                self.assertEqual(sorted(os.listdir(lock_dir)), ["owner.json"])
+                self.assertEqual((lock_dir / "owner.json").read_bytes(), recorded)
+
+    def test_an_acquirer_whose_directory_is_gone_before_it_recorded_itself_is_busy(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            lock_dir = ledger._take_lock_directory()
+            observed = ledger.lock_state()
+            assert observed is not None
+            ledger.break_lock(observed)
+
+            with self.assertRaises(LedgerLockBusy):
+                ledger._record_lock_owner(lock_dir)
+
+            self.assertFalse(lock_dir.exists())
+
+    def test_break_lock_never_removes_an_owner_record_it_cannot_read(self) -> None:
+        """A record that is created but not yet written may belong to a live acquirer that is
+        about to hold the lock, so a release refuses it instead of removing it."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            lock_dir = state_root / ".coordinator.lock"
+            lock_dir.mkdir(parents=True)
+            (lock_dir / "owner.json").touch()
+            observed = ledger.lock_state()
+            assert observed is not None
+            self.assertIsNone(observed["owner"])
+
+            with self.assertRaisesRegex(LedgerError, "cannot be read") as refused:
+                ledger.break_lock(observed)
+
+            self.assertNotIn("remove", refused.exception.remedy.lower())
+            self.assertEqual(sorted(os.listdir(lock_dir)), ["owner.json"])
+            self.assertEqual((lock_dir / "owner.json").read_bytes(), b"")
 
 
 class StructuralValidationCharacterizationTests(unittest.TestCase):

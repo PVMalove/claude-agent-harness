@@ -9,10 +9,14 @@ atomically switched.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import json
 import os
 import shutil
+import socket
+import sys
 import time
 import uuid
 from collections.abc import Iterator
@@ -20,7 +24,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import ClassVar, Protocol, cast
+from typing import BinaryIO, ClassVar, Protocol, cast
 
 from ...errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 
@@ -28,6 +32,10 @@ LEDGER_VERSION = 3
 SUPPORTED_LEDGER_VERSIONS = (1, 2, 3)
 POINTER_NAME = "ledger.json"
 GENERATIONS = "generations"
+LOCK_DIRECTORY = ".coordinator.lock"
+LOCK_OWNER = "owner.json"
+# The operating-system file lock that lets one release at a time judge and remove the ledger lock.
+LOCK_RELEASE_GUARD = ".coordinator.lock.release"
 RECORD_DIRECTORIES = (
     "batches",
     "plans",
@@ -51,6 +59,37 @@ type JsonObject = dict[str, JsonValue]
 
 class LedgerError(HarnessError):
     """The durable lifecycle state cannot safely be selected or changed."""
+
+
+class LedgerLockBusy(LedgerError):
+    """Another operation holds the ledger lock."""
+
+
+def _lock_busy() -> LedgerLockBusy:
+    return LedgerLockBusy(
+        "ledger is locked by another operation",
+        remedy="repeat the command once the other operation finishes; if the lock stays held, "
+        "run 'coordinator.py ledger release-lock', which releases it only when its owner process "
+        "is gone",
+    )
+
+
+def _guard_byte(handle: BinaryIO, *, acquire: bool) -> None:
+    """Take without waiting, or drop, the operating-system lock on a file's first byte."""
+    handle.seek(0)
+    if sys.platform == "win32":
+        import msvcrt
+
+        msvcrt.locking(
+            handle.fileno(), msvcrt.LK_NBLCK if acquire else msvcrt.LK_UNLCK, 1
+        )
+    else:
+        import fcntl
+
+        fcntl.flock(
+            handle.fileno(),
+            (fcntl.LOCK_EX | fcntl.LOCK_NB) if acquire else fcntl.LOCK_UN,
+        )
 
 
 @dataclass(frozen=True)
@@ -310,24 +349,151 @@ class LifecycleLedger:
     def lock(self) -> Iterator[None]:
         """Non-blocking exclusive lock on ``self.root``, mirroring coordinator.py's own
         ``_state_lock`` technique (same lock path, same mkdir/rmdir mechanism) but raising
-        ``LedgerError`` on contention so this module never imports an exception type from
-        coordinator.py."""
-        self.root.mkdir(parents=True, exist_ok=True)
-        lock_dir = self.root / ".coordinator.lock"
-        try:
-            lock_dir.mkdir()
-        except FileExistsError as exc:
-            raise LedgerError(
-                "ledger is locked by another operation",
-                remedy=f"wait for the other operation to finish, or remove a stale lock at {lock_dir} if no operation is actually running",
-            ) from exc
+        ``LedgerLockBusy`` on contention so this module never imports an exception type from
+        coordinator.py.  The lock directory records its owner (pid, host, acquired_at) so a lock
+        left behind by a dead process can be judged by ``ledger release-lock``."""
+        lock_dir = self._take_lock_directory()
+        owner = self._record_lock_owner(lock_dir)
         try:
             yield
         finally:
             try:
+                owner.unlink(missing_ok=True)
                 lock_dir.rmdir()
             except OSError:
                 pass
+
+    def _take_lock_directory(self) -> Path:
+        """The first step of ``lock()``: create the lock directory, or be busy."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        lock_dir = self.root / LOCK_DIRECTORY
+        try:
+            lock_dir.mkdir()
+        except FileExistsError as exc:
+            raise _lock_busy() from exc
+        return lock_dir
+
+    def _record_lock_owner(self, lock_dir: Path) -> Path:
+        """The second step of ``lock()``: hold the lock by creating its owner record exclusively.
+
+        A directory that has no owner record yet can be released as stale and taken again before
+        its creator records itself, so taking the directory alone does not hold the lock: whoever
+        creates the record first does.  A later creator meets that record, or no directory at all,
+        and is busy; it never writes into, or removes, a lock it does not hold."""
+        owner = lock_dir / LOCK_OWNER
+        created = False
+        try:
+            with owner.open("x", encoding="utf-8") as stream:
+                created = True
+                stream.write(
+                    json.dumps(
+                        {
+                            "pid": os.getpid(),
+                            "host": socket.gethostname(),
+                            "acquired_at": _now(),
+                        }
+                    )
+                )
+        except (FileExistsError, FileNotFoundError) as exc:
+            raise _lock_busy() from exc
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                if created:
+                    owner.unlink()
+                lock_dir.rmdir()
+            raise LedgerError(
+                "ledger lock owner could not be recorded",
+                remedy=f"make {self.root} writable, then repeat the command",
+            ) from exc
+        return owner
+
+    def lock_state(self) -> JsonObject | None:
+        """The current lock as its owner recorded it, or ``None`` when nothing holds it.
+
+        ``owner`` is ``None`` for a lock without a readable owner record (one taken by an older
+        runtime); its age is then measured from the lock directory itself."""
+        lock_dir = self.root / LOCK_DIRECTORY
+        try:
+            created = lock_dir.stat().st_mtime
+        except FileNotFoundError:
+            return None
+        owner = self.read_record_lenient(lock_dir / LOCK_OWNER)
+        recorded = owner.get("acquired_at") if owner is not None else None
+        try:
+            since = (
+                datetime.fromisoformat(recorded) if isinstance(recorded, str) else None
+            )
+        except ValueError:
+            since = None
+        if since is None or since.tzinfo is None:
+            since = datetime.fromtimestamp(created, UTC)
+        held = (datetime.now(UTC) - since).total_seconds()
+        return {
+            "path": str(lock_dir),
+            "owner": owner,
+            "acquired_at": since.isoformat(),
+            "held_seconds": max(0, int(held)),
+        }
+
+    @contextmanager
+    def _release_guard(self) -> Iterator[None]:
+        """Let one ``break_lock`` at a time judge and remove the lock.
+
+        An operating-system file lock, not a lock directory: the system drops it when its holder
+        exits, so a release that dies never leaves a guard behind for anyone to remove."""
+        with (self.root / LOCK_RELEASE_GUARD).open("a+b") as handle:
+            try:
+                _guard_byte(handle, acquire=True)
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise LedgerError(
+                        f"ledger release guard could not be taken: {exc.strerror}",
+                        remedy=f"make {self.root} support file locks, then run "
+                        "'coordinator.py ledger release-lock' again",
+                    ) from exc
+                raise LedgerError(
+                    "another ledger release-lock is releasing the ledger lock",
+                    remedy="run 'coordinator.py ledger release-lock' again once it finishes",
+                ) from exc
+            try:
+                yield
+            finally:
+                _guard_byte(handle, acquire=False)
+
+    def break_lock(self, observed: JsonObject) -> None:
+        """Remove the lock ``lock_state()`` returned as ``observed``, and only that lock.
+
+        The caller decides whether the lock may go; this only guarantees it removes the lock it
+        judged.  Under the release guard the lock is read again and must still be the observed
+        one, and nothing else can change it before it goes: a holder only creates an owner record
+        where none exists and removes only its own, and the observed owner was judged gone.  A
+        record that cannot be read is never removed, since its acquirer may be about to hold the
+        lock, and the directory goes by rmdir, which never removes a lock someone recorded."""
+        lock_dir = self.root / LOCK_DIRECTORY
+        owner = lock_dir / LOCK_OWNER
+        changed = LedgerError(
+            "ledger lock changed while it was being released",
+            remedy="run 'coordinator.py ledger release-lock' again",
+        )
+        with self._release_guard():
+            current = self.lock_state()
+            if current is None or any(
+                current[key] != observed.get(key) for key in ("owner", "acquired_at")
+            ):
+                raise changed
+            if current["owner"] is None and owner.exists():
+                raise LedgerError(
+                    "ledger lock has an owner record that cannot be read, so its owner cannot be "
+                    "checked",
+                    remedy="its owner may still be recording itself: run 'coordinator.py ledger "
+                    "release-lock' again; a lock whose owner cannot be checked is never released",
+                )
+            try:
+                if current["owner"] is not None:
+                    owner.unlink()
+                lock_dir.rmdir()
+            except OSError as exc:
+                raise changed from exc
 
     @property
     def pointer_path(self) -> Path:

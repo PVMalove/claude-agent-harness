@@ -100,6 +100,9 @@ from harness.orchestration.ledger.ledger_admin import (
 from harness.orchestration.ledger.ledger_admin import (
     reset_ledger as reset_ledger,
 )
+from harness.orchestration.ledger.ledger_admin import (
+    release_ledger_lock as release_ledger_lock,
+)
 from harness.orchestration.ledger.ledger_ops import (
     _load_batch as _load_batch,
 )
@@ -139,6 +142,9 @@ from harness.orchestration.workflow.batch import (
 )
 from harness.orchestration.workflow.batch import (
     resume_batch as resume_batch,
+)
+from harness.orchestration.workflow.completion import (
+    complete_report as complete_report,
 )
 from harness.orchestration.workflow.context_package import (
     register_context_package as register_context_package,

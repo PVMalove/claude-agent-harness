@@ -119,6 +119,18 @@ def _trigger_patterns(trigger: str) -> tuple[str, ...]:
     return tuple(patterns)
 
 
+def _candidate_changed_files(
+    repo: Path, batch: JsonObject, candidate: str
+) -> list[str]:
+    """The files ``candidate`` changes against the batch base, as a risk assessment measures them."""
+    base = batch.get("integration_base_commit") or batch.get("base_commit")
+    return (
+        _changed_files_between(repo, base, candidate)
+        if base
+        else _commit_changed_files(repo, candidate)
+    )
+
+
 def assess_risk(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -134,6 +146,16 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
+        # `report complete` assesses a recorded report's candidate only while its batch still
+        # awaits that assessment, so a repeated or concurrent completion never records it twice.
+        expected = getattr(args, "_expected_next_action", None)
+        if expected is not None and batch.get("next_action") != expected:
+            raise CoordinatorError(
+                "the batch no longer awaits the risk assessment of this report "
+                f"(next_action is {batch.get('next_action')!r}); it is already recorded or the "
+                "batch has moved on",
+                remedy="run report complete again; it skips a step that is already recorded",
+            )
         if batch.get("state") != "awaiting-approval":
             raise CoordinatorError(
                 "risk assessment requires a batch awaiting coordinator approval",
@@ -153,12 +175,7 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
                 "risk assessment base must be an ancestor of the candidate commit",
                 remedy="pass a risk assessment base that is an ancestor of candidate_commit",
             )
-        actual_files = (
-            _changed_files_between(repo, base, candidate)
-            if base
-            else _commit_changed_files(repo, candidate)
-        )
-        if actual_files != changed_files:
+        if _candidate_changed_files(repo, batch, candidate) != changed_files:
             raise CoordinatorError(
                 "changed_files must exactly match the candidate diff",
                 remedy="regenerate changed_files from the actual diff for candidate_commit",
