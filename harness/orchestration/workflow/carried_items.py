@@ -445,8 +445,8 @@ def _refuse_after(root: Path, entry: JsonObject) -> CoordinatorError:
 def _carry_over_target(root: Path, batch: JsonObject) -> JsonObject:
     """The accepted developer work report ``batch carry-over`` attaches findings to.
 
-    It is the batch's last accepted developer work report, and nothing but a cancelled dispatch
-    may follow it: a created code-review dispatch (or a qa dispatch a policy chain created) already
+    It is the batch's last accepted developer work report, and nothing but a cancelled or abandoned
+    dispatch may follow it (``batch resume`` abandons a stale or blocked one, which never reports): a created code-review dispatch (or a qa dispatch a policy chain created) already
     holds the brief the findings would have to be in.
     """
     entries = batch.get("dispatches", [])
@@ -473,7 +473,9 @@ def _carry_over_target(root: Path, batch: JsonObject) -> JsonObject:
             "before its code-review dispatch is created",
         )
     following = [
-        item for item in entries[position + 1 :] if item.get("state") != "cancelled"
+        item
+        for item in entries[position + 1 :]
+        if item.get("state") not in {"abandoned", "cancelled"}
     ]
     if following:
         raise _refuse_after(root, following[0])

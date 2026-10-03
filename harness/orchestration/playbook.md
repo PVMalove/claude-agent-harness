@@ -146,9 +146,10 @@ open ones, and an open finding sends the candidate to code-review even when risk
 no trigger. A finding is settled once a code-review whose brief carried it is accepted or
 warning-overridden; a retried review leaves it open, and the developer-retry that follows carries it
 together with the review's findings, so `retry_policy.max_developer_retries` is spent once.
-`batch carry-over` refuses once a dispatch other than a cancelled one follows the accepted developer
-report, and names it: an unsent one is cancelled with `dispatch cancel` first, a sent one leaves the
-defect to the decision on its report.
+`batch carry-over` refuses once a dispatch other than a cancelled or abandoned one follows the
+accepted developer report, and names it: an unsent one is cancelled with `dispatch cancel` first, a
+sent one leaves the defect to the decision on its report, and one whose report is already decided
+takes the finding through `batch decide --findings-file` when the next developer report is accepted.
 
 A later recovery route adds its `RECOVERY_ROUTES` value and its row here in the same change.
 
