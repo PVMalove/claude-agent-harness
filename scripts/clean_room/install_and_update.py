@@ -331,9 +331,19 @@ def run(ctx: SimpleNamespace) -> None:
         "enumerate every path under those directories",
         "one cheap-model advisory call",
         "stop and report blocker",
+        "result dependency",
+        "known requirement incompatibility",
+        "file overlap",
     ):
         if required_text not in to_tickets_text:
             sys.exit(f"to-tickets discovery contract is missing: {required_text}")
+    # The release rule must reach every installed place that states it, not only to-tickets.
+    for rule_file in (
+        pv_project / ".harness" / "skills" / "to-pull-requests" / "SKILL.md",
+        pv_project / "docs" / "agents" / "triage-labels.md",
+    ):
+        if "accepted QA" not in rule_file.read_text(encoding="utf-8"):
+            sys.exit(f"blocker release rule is missing from {rule_file.name}")
     for name in ("grill-me", "grill-with-docs", "diagnosing-bugs", "architect"):
         if not filecmp.cmp(
             ROOT / "skills" / "first-party" / "pvmalove" / name / "SKILL.md",
