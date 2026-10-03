@@ -550,4 +550,11 @@ def build_parser(
     _common(report_submit)
     report_submit.add_argument("--file", required=True)
     report_submit.set_defaults(handler=handlers.submit_report)
+    report_complete = report_commands.add_parser(
+        "complete",
+        help="run the pending steps of a recorded report's policy chain; idempotent",
+    )
+    _common(report_complete)
+    report_complete.add_argument("--dispatch", required=True)
+    report_complete.set_defaults(handler=handlers.complete_report)
     return root

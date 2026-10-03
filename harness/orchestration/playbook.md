@@ -100,8 +100,10 @@ or `retry`.
 Every `retry` and `abandon` decision of `batch decide` records its recovery route as
 `routing.route`, one value of the closed set `RECOVERY_ROUTES`. The route is set in the same step
 that sets `next_action`, from the same structured evidence, and never from free text. `batch abandon`
-(a batch that will never have a report) and `batch resume` record no route. The coordinator chooses
-a route by this table:
+(a batch that will never have a report) and `batch resume` record no route. `report-completion` is
+not recorded by `batch decide`: `report submit` names it in its `completion` object when the policy
+chain after a recorded report stops, and the coordinator completes that chain with
+`report complete --dispatch <dispatch-id>`. The coordinator chooses a route by this table:
 
 | Situation | Route | Who approves | Evidence |
 | --- | --- | --- | --- |
@@ -111,6 +113,8 @@ a route by this table:
 | A verification report is retried, whatever its outcome or reason category | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID and `report_sha256` of the verification report. A verification report is never re-run on the same SHA |
 | A finding or a warning/blocker severity, a failed check, a moved candidate, a `code`, `requirements`, `candidate-change` or `unknown` reason, a contradictory reason, or `--retry-role developer` | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, and the axis, check or candidate change that decided it |
 | `batch decide --decision abandon` on any completion report | `abandon` | A human only, with a non-empty `--reason`; never a policy | Dispatch ID, `report_sha256` and `abandoned.last_accepted` |
+| `report submit` recorded the report but its policy chain stopped (`completion.failed_step`: `policy-decide`, `risk-assess` or `next-dispatch`) | `report-completion` | No human approval: the coordinator runs `report complete` itself; it replays only the `auto_accept_policy` decision recorded at submit, and a step that needs a human stops with that step's remedy | Dispatch ID, `report_sha256`, the submit `completion` object and the `report complete` steps |
+| Ledger busy: `ledger is locked by another operation`, or a `ledger_busy` answer from `dispatch status` | `report-completion` | No approval: repeat `dispatch wait`/`dispatch status`, run `report complete` when a recorded report's chain stopped, and never remove the lock by hand; a lock that stays held goes to `ledger release-lock`, which refuses a live owner | Lock owner (`pid`, `host`, `acquired_at`, `held_seconds`) and the `ledger release-lock` verdict |
 
 `batch decision-packet` shows the route before the decision is recorded: its `route_preview` holds
 the `retry` routing record computed as `batch decide` computes it (it takes the same

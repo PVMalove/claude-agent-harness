@@ -18,6 +18,7 @@ import inspect
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1453,9 +1454,13 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         exists) still uses the bare ``Path``+``dict`` primitives, but takes its ``LifecycleLedger``
         explicitly rather than rediscovering it by walking the filesystem for a ``ledger.json``
         marker (the now-deleted ``_ledger_for_path``)."""
+        parameters = inspect.signature(coordinator._persist_report).parameters
         self.assertEqual(
-            list(inspect.signature(coordinator._persist_report).parameters),
-            ["ledger", "root", "batch", "dispatch", "report"],
+            list(parameters),
+            ["ledger", "root", "batch", "dispatch", "report", "auto_accept_policy"],
+        )
+        self.assertIs(
+            parameters["auto_accept_policy"].kind, inspect.Parameter.KEYWORD_ONLY
         )
 
     def _ledger(self) -> LifecycleLedger:
@@ -4574,6 +4579,237 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertTrue(answer["ledger_busy"])
         self.assertEqual(answer["lock"]["owner"]["pid"], os.getpid())
 
+    # 2c. completing a recorded report's stopped policy chain (#498)
+
+    def _ledger_files(self) -> dict[str, bytes]:
+        records = self._records()
+        return {
+            path.relative_to(records).as_posix(): path.read_bytes()
+            for path in sorted(records.rglob("*"))
+            if path.is_file()
+        }
+
+    def _complete(self, dispatch_id: str) -> JsonObject:
+        return coordinator.complete_report(self._args(dispatch=dispatch_id))
+
+    def _completion_command(self, dispatch_id: str) -> str:
+        return (
+            "python .harness/orchestration/coordinator.py --repo . report complete "
+            f"--dispatch {dispatch_id} --state-dir {shlex.quote(str(self.state_dir))}"
+        )
+
+    def _architect_report_under_attention(self) -> tuple[JsonObject, JsonObject]:
+        """A low_risk architect report whose batch raised attention before it was submitted:
+        the policy decision is recorded, then the next dispatch is refused on attention."""
+        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        batch = self._create_batch()
+        brief = self._live_architect(batch["batch_id"])
+        self._age_heartbeat(brief["dispatch_id"], 7200)
+        self.assertEqual(
+            self._wait_busy(brief["dispatch_id"], timeout=1)["event"], "stale"
+        )
+        submitted = self._submit(
+            brief["dispatch_id"], self._base_report(brief, "architect")
+        )
+        return brief, submitted
+
+    def test_a_stopped_policy_chain_reports_the_recorded_report_and_its_completion(
+        self,
+    ) -> None:
+        brief, submitted = self._architect_report_under_attention()
+
+        stored = self._batch_record(brief["batch_id"])
+        self.assertEqual(submitted["state"], "reported")
+        self.assertEqual(submitted["dispatch_id"], brief["dispatch_id"])
+        self.assertTrue(Path(submitted["report"]).is_file())
+        self.assertEqual(
+            submitted["report_sha256"], stored["dispatches"][0]["report_sha256"]
+        )
+        self.assertTrue(submitted["auto_accepted"])
+        self.assertEqual(submitted["next_action"], "developer")
+        self.assertIsNone(submitted["next_dispatch_id"])
+        completion = submitted["completion"]
+        self.assertEqual(completion["route"], "report-completion")
+        self.assertEqual(completion["failed_step"], "next-dispatch")
+        self.assertEqual(
+            completion["steps"],
+            {
+                "policy-decide": "done",
+                "risk-assess": "not-applicable",
+                "next-dispatch": "failed",
+            },
+        )
+        self.assertIn("attention", completion["error"]["message"])
+        self.assertEqual(
+            completion["command"], self._completion_command(brief["dispatch_id"])
+        )
+        self.assertEqual(completion["run_by"], "coordinator")
+        self.assertIn("never submit it again", completion["remedy"])
+        self.assertEqual(len(stored["coordinator_decisions"]), 1)
+        self.assertEqual(
+            stored["coordinator_decisions"][0]["approved_by"], "policy:low_risk"
+        )
+        self.assertEqual(len(stored["dispatches"]), 1)
+        status = ledger_ops._load_dispatch_status(
+            ledger_ops._state_root(self._args(), self.repo), brief["dispatch_id"]
+        )
+        self.assertEqual(status["auto_accept_policy"], "low_risk")
+
+    def test_report_complete_finishes_the_chain_once_and_a_rerun_changes_nothing(
+        self,
+    ) -> None:
+        brief, submitted = self._architect_report_under_attention()
+        self._resolve_attention(brief["batch_id"])
+
+        completed = self._complete(brief["dispatch_id"])
+
+        stored = self._batch_record(brief["batch_id"])
+        self.assertEqual(
+            completed["steps"],
+            {
+                "policy-decide": "already-done",
+                "risk-assess": "not-applicable",
+                "next-dispatch": "done",
+            },
+        )
+        self.assertEqual(completed["route"], "report-completion")
+        self.assertEqual(completed["report"], submitted["report"])
+        self.assertEqual(completed["report_sha256"], submitted["report_sha256"])
+        self.assertEqual(completed["auto_accept_policy"], "low_risk")
+        self.assertEqual(completed["next_action"], "developer")
+        self.assertEqual(
+            [entry["role"] for entry in stored["dispatches"]],
+            ["architect", "developer"],
+        )
+        self.assertEqual(
+            completed["next_dispatch_id"], stored["dispatches"][1]["dispatch_id"]
+        )
+        self.assertEqual(stored["dispatches"][1]["state"], "approved")
+        self.assertEqual(len(stored["coordinator_decisions"]), 1)
+        before = self._ledger_files()
+
+        repeated = self._complete(brief["dispatch_id"])
+
+        self.assertEqual(
+            repeated["steps"],
+            {
+                "policy-decide": "already-done",
+                "risk-assess": "not-applicable",
+                "next-dispatch": "already-done",
+            },
+        )
+        self.assertEqual(repeated["next_dispatch_id"], completed["next_dispatch_id"])
+        self.assertEqual(self._ledger_files(), before)
+
+    def test_report_complete_on_a_busy_ledger_names_the_step_and_writes_nothing(
+        self,
+    ) -> None:
+        brief, _ = self._architect_report_under_attention()
+        self._resolve_attention(brief["batch_id"])
+        before = self._ledger_files()
+
+        with LifecycleLedger(self.state_dir).lock():
+            with self.assertRaises(coordinator.CoordinatorError) as stopped:
+                self._complete(brief["dispatch_id"])
+
+        self.assertIn("policy-decide", stopped.exception.message)
+        self.assertIn(
+            "ledger is locked by another operation", stopped.exception.message
+        )
+        self.assertIn(
+            self._completion_command(brief["dispatch_id"]), stopped.exception.remedy
+        )
+        self.assertEqual(self._ledger_files(), before)
+
+    def test_report_complete_has_nothing_to_run_for_a_report_left_for_a_human(
+        self,
+    ) -> None:
+        brief = self._architect_reported()  # manual_all: no policy decides it
+        before = self._ledger_files()
+
+        completed = self._complete(brief["dispatch_id"])
+
+        self.assertEqual(
+            completed["steps"],
+            dict.fromkeys(
+                ("policy-decide", "risk-assess", "next-dispatch"), "not-applicable"
+            ),
+        )
+        self.assertIsNone(completed["auto_accept_policy"])
+        self.assertIsNone(completed["next_dispatch_id"])
+        self.assertEqual(self._ledger_files(), before)
+
+    def test_a_completed_policy_chain_keeps_the_submit_response(self) -> None:
+        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        batch = self._create_batch()
+        brief = self._live_architect(batch["batch_id"])
+
+        submitted = self._submit(
+            brief["dispatch_id"], self._base_report(brief, "architect")
+        )
+
+        self.assertEqual(
+            set(submitted),
+            {
+                "dispatch_id",
+                "state",
+                "report",
+                "auto_accepted",
+                "next_action",
+                "next_dispatch_id",
+            },
+        )
+        self.assertTrue(submitted["auto_accepted"])
+        self.assertEqual(
+            submitted["next_dispatch_id"],
+            self._batch_record(batch["batch_id"])["dispatches"][1]["dispatch_id"],
+        )
+
+    def test_risk_assessment_for_a_completion_is_refused_once_the_batch_moved_on(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("x")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(developer, candidate, changed),
+        )
+        self._decide(batch["batch_id"], "accept")
+        before = self._ledger_files()
+
+        def assess(expected: str) -> JsonObject:
+            return coordinator.assess_risk(
+                self._args(
+                    batch=batch["batch_id"],
+                    candidate_commit=candidate,
+                    base_commit=None,
+                    changed_file=changed,
+                    developer_trigger=[],
+                    _expected_next_action=expected,
+                )
+            )
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "no longer awaits the risk assessment"
+        ):
+            assess("code-review")
+        self.assertEqual(self._ledger_files(), before)
+        assess("risk-assessment")
+        self.assertEqual(
+            len(self._batch_record(batch["batch_id"])["risk_assessments"]), 1
+        )
+
+    def test_the_cli_wires_report_complete(self) -> None:
+        args = coordinator.parser().parse_args(
+            ["report", "complete", "--dispatch", "dispatch-1"]
+        )
+
+        self.assertIs(args.handler, coordinator.complete_report)
+        self.assertEqual(args.dispatch, "dispatch-1")
+
     # 3. approvals bound to the transition digest
 
     def test_the_proposal_is_a_dry_run_that_binds_the_canonical_transition(
@@ -6259,7 +6495,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
             },
         )
 
-    def test_the_recovery_routes_are_exactly_the_documented_five(self) -> None:
+    def test_the_recovery_routes_are_exactly_the_documented_six(self) -> None:
         self.assertEqual(
             constants.RECOVERY_ROUTES,
             (
@@ -6268,6 +6504,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "verification",
                 "architect-retry",
                 "abandon",
+                "report-completion",
             ),
         )
         for route in constants.RECOVERY_ROUTES:

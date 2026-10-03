@@ -35,13 +35,16 @@ RETRY_REASON_CATEGORIES = (
 )
 # The recovery route a ``retry`` or ``abandon`` decision records in its routing record. Each value
 # names a route the coordinator already computes; a new route adds its value here and its row to
-# the playbook "Recovery route table" in the same change.
+# the playbook "Recovery route table" in the same change. ``report-completion`` is not a
+# ``batch decide`` route: ``report submit`` names it when the policy chain after a recorded report
+# stops, and the coordinator completes that chain with ``report complete``.
 RECOVERY_ROUTES = (
     "developer-retry",
     "same-candidate-rerun",
     "verification",
     "architect-retry",
     "abandon",
+    "report-completion",
 )
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {

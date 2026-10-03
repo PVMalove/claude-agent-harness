@@ -134,6 +134,16 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
+        # `report complete` assesses a recorded report's candidate only while its batch still
+        # awaits that assessment, so a repeated or concurrent completion never records it twice.
+        expected = getattr(args, "_expected_next_action", None)
+        if expected is not None and batch.get("next_action") != expected:
+            raise CoordinatorError(
+                "the batch no longer awaits the risk assessment of this report "
+                f"(next_action is {batch.get('next_action')!r}); it is already recorded or the "
+                "batch has moved on",
+                remedy="run report complete again; it skips a step that is already recorded",
+            )
         if batch.get("state") != "awaiting-approval":
             raise CoordinatorError(
                 "risk assessment requires a batch awaiting coordinator approval",
