@@ -105,6 +105,38 @@ fails; it is idempotent. When the failed step needs a human, follow its remedy i
 the ledger lock or any state file by hand; a lock that stays held goes to
 `coordinator.py --repo . ledger release-lock`, which refuses a lock whose owner process is alive.
 
+## Worker prompt
+
+Every worker prompt is this template, filled from the `dispatch send` result. The brief and the
+Context Package already carry the task, so the prompt carries only pointers to them:
+
+```text
+You are the <role> worker for dispatch <dispatch_id>.
+Brief: <brief path from dispatch send>
+Report staging path: <report_staging_path from dispatch send, verbatim>
+Context Package <context_package_id>: start from its starting_files, symbol_graph and
+related_tests. For a starting file with non-empty sections, read only the start_line–end_line
+ranges the task needs.
+Work within the brief; escalate a blocker for anything the brief and the package leave out.
+```
+
+A developer retry adds two lines from the `retry_start` of its `dispatch preflight`:
+
+```text
+Retry handoff: <retry_start.handoff, verbatim JSON>
+Retry starting files: <paths from retry_start.starting_files>
+```
+
+Large documents (the role catalog, `playbook.md`, `backend-orchestration.md`, `git-workflow.md`) and
+prior reports reach a worker only as Context Package section ranges or through the retry handoff.
+The work a prompt asks for is exactly its brief plus, for a retry, the handoff's blocking findings.
+
+A developer retry is always a new session started from its compact handoff, never a continuation of
+the previous developer session's history. The preflight's decision packet carries the retry's
+`retry_context_estimate` and `retry_context_warning` as evidence; they never gate the dispatch. Code-review and QA stay new
+independent sessions; only their prompt follows this template. The playbook's "Developer-retry
+handoff" defines the handoff, the smart-zone threshold and the compact.
+
 ## Authoritative guidance
 
 This is a short coordinator contract, not a second orchestration manual. Full rules are module-owned guidance:

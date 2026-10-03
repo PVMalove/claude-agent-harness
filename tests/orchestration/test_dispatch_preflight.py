@@ -52,7 +52,7 @@ class PreflightErrorInvariantTests(unittest.TestCase):
             self.assertEqual(len(remedies), 1, f"line {site.lineno} has no remedy")
 
 
-class PrepareTests(unittest.TestCase):
+class _PreflightFixture(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -99,6 +99,8 @@ class PrepareTests(unittest.TestCase):
         self.assertIn(remedy_part, ctx.exception.remedy)
         return ctx.exception
 
+
+class PrepareTests(_PreflightFixture):
     def test_prepares_a_dispatch_from_valid_state(self) -> None:
         prepared = self._prepare()
         self.assertEqual(
@@ -249,6 +251,146 @@ class PrepareTests(unittest.TestCase):
             )
         )
         self.assertIn("git rev-parse", ctx.exception.remedy)
+
+
+class RetryStartTests(_PreflightFixture):
+    """Issue #524: a developer retry starts from a compact handoff inside the smart zone."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.worktree / "big.py").write_text("x" * 8000, encoding="utf-8")
+        for name in ("changed.py", "named.py", "d.py", "guide.md"):
+            (self.worktree / name).write_text("y", encoding="utf-8")
+        section: JsonObject = {
+            "heading": "A",
+            "level": 2,
+            "start_line": 1,
+            "end_line": 9,
+        }
+        self.package: JsonObject = {
+            "context_package_id": "pkg-1",
+            "estimated_tokens": 5000,
+            "starting_files": [
+                {"path": "big.py", "reason": "seed", "sections": []},
+                {"path": "changed.py", "reason": "seed", "sections": []},
+                {"path": "named.py", "reason": "seed", "sections": []},
+                {"path": "d.py", "reason": "seed", "sections": []},
+                {"path": "guide.md", "reason": "index", "sections": [section]},
+            ],
+        }
+        self.handoff: JsonObject = {
+            "context_package_id": "pkg-1",
+            "commit_plan": [
+                {
+                    "id": "c1",
+                    "summary": "s",
+                    "expected_paths": ["changed.py"],
+                    "covers": [1],
+                }
+            ],
+            "developer_report": {
+                "dispatch_id": "d-1",
+                "outcome": "completed",
+                "commit_sha": "abc",
+                "changed_files": ["changed.py"],
+                "commit_map": [{"commit_sha": "abc", "plan_entry_id": "c1"}],
+                "output": "o" * 4000,
+            },
+            "retry_decision": {
+                "dispatch_id": "d-2",
+                "role": "code-review",
+                "route": "developer-retry",
+                "reason_category": "code",
+                "rationale": "r" * 400,
+                "findings": [
+                    {
+                        "axis": "spec",
+                        "severity": "warning",
+                        "summary": "named.py misses a case",
+                        "evidence": "quoted log " * 200,
+                    }
+                ],
+            },
+        }
+
+    def _retry(self, limit: int) -> JsonObject:
+        return self._prepared_retry(limit).retry_start or {}
+
+    def _prepared_retry(self, limit: int) -> dispatch_preflight.PreparedDispatch:
+        config: JsonObject = {
+            "assignment_plans": {"developer": {"runtimes": {"claude": {}}}},
+            "adaptive_continuation_policy": {
+                "context_limit": limit,
+                "context_warn_ratio": 0.5,
+            },
+        }
+        return self._prepare(
+            config=config, retry_handoff=self.handoff, retry_package=self.package
+        )
+
+    def test_no_retry_start_without_a_developer_retry_handoff(self) -> None:
+        self.assertIsNone(self._prepare().retry_start)
+        config: JsonObject = {"assignment_plans": {"qa": {"runtimes": {"claude": {}}}}}
+        qa = self._prepare("qa", config=config, retry_handoff=self.handoff)
+        self.assertIsNone(qa.retry_start)
+
+    def test_below_the_threshold_the_handoff_and_starting_files_pass_unchanged(
+        self,
+    ) -> None:
+        start = self._retry(200000)
+        estimate = cast(JsonObject, start["context_estimate"])
+        self.assertEqual(estimate["threshold"], 100000)
+        self.assertFalse(estimate["compacted"])
+        self.assertEqual(estimate["before"], estimate["after"])
+        self.assertEqual(start["handoff"], self.handoff)
+        self.assertEqual(start["starting_files"], self.package["starting_files"])
+        self.assertIsNone(start["warning"])
+
+    def test_above_the_threshold_the_compact_reduces_the_start_into_the_smart_zone(
+        self,
+    ) -> None:
+        start = self._retry(10000)
+        estimate = cast(dict[str, int], start["context_estimate"])
+        self.assertTrue(estimate["compacted"])
+        self.assertGreater(estimate["before"], estimate["threshold"])
+        self.assertLessEqual(estimate["after"], estimate["threshold"])
+        self.assertIsNone(start["warning"])
+        self.assertEqual(
+            [item["path"] for item in cast(list[JsonObject], start["starting_files"])],
+            ["changed.py", "named.py", "guide.md"],
+        )
+        handoff = cast(JsonObject, start["handoff"])
+        self.assertEqual(handoff["context_package_id"], "pkg-1")
+        self.assertEqual(handoff["commit_plan"], self.handoff["commit_plan"])
+        self.assertNotIn("output", cast(JsonObject, handoff["developer_report"]))
+        decision = cast(JsonObject, handoff["retry_decision"])
+        self.assertNotIn("rationale", decision)
+        self.assertEqual(
+            decision["findings"],
+            [
+                {
+                    "axis": "spec",
+                    "severity": "warning",
+                    "summary": "named.py misses a case",
+                }
+            ],
+        )
+
+    def test_a_compact_short_of_the_threshold_warns_without_blocking(self) -> None:
+        prepared = self._prepared_retry(1000)
+        start = prepared.retry_start or {}
+        estimate = cast(dict[str, int], start["context_estimate"])
+        self.assertTrue(estimate["compacted"])
+        self.assertLess(estimate["after"], estimate["before"])
+        self.assertGreater(estimate["after"], estimate["threshold"])
+        self.assertIn("above the smart-zone threshold", cast(str, start["warning"]))
+        self.assertEqual(
+            (
+                prepared.decision_packet["retry_context_estimate"],
+                prepared.decision_packet["retry_context_warning"],
+            ),
+            (estimate, start["warning"]),
+        )
 
 
 if __name__ == "__main__":

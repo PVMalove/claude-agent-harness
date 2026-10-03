@@ -3188,20 +3188,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(routing["previous_role"], "developer")
         self.assertTrue(decided["retry_candidate_required"])
 
-    def test_developer_retry_of_an_unaccepted_report_continues_its_candidate_end_to_end(
-        self,
-    ) -> None:
-        # Issue #477, the #443 batch: a clean developer report retried for a code defect without
-        # an accept must hand its candidate to the next developer instead of rewinding to base.
-        plan = self._batch_plan()
-        plan["definition_of_done"] = ["one", "two", "three"]
-        with mock.patch.object(self, "_batch_plan", return_value=plan):
-            batch = self._create_batch()
-        batch_id = batch["batch_id"]
-        self._accepted_architect(batch_id)
-        _, commits, _ = self._retried_developer_candidate(batch_id, "a", "b", "c")
-        candidate = commits[-1]
-        self._patch_config(worker_attestation_required=True)
+    def _developer_preflight(self, batch_id: str) -> JsonObject:
         planned = config._config
         with (
             mock.patch.object(dispatch, "_configured", return_value=True),
@@ -3214,7 +3201,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 },
             ),
         ):
-            prepared = coordinator.preflight_dispatch(
+            return coordinator.preflight_dispatch(
                 self._args(
                     batch=batch_id,
                     role="developer",
@@ -3223,7 +3210,78 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     candidate_commit=None,
                 )
             )
+
+    def test_developer_retry_preflight_starts_from_a_checkpoint_shaped_handoff(
+        self,
+    ) -> None:
+        # Issue #524: the retry starts from the developer report, the retry decision with its
+        # findings, the commit plan and the Context Package ID -- not the earlier session's history.
+        batch_id = self._create_batch()["batch_id"]
+        self._accepted_architect(batch_id)
+        candidate = self._accepted_candidate(batch_id)
+        developer = self._batch_record(batch_id)["dispatches"][-1]
+        blocker = {"severity": "blocker", "summary": "wrong", "evidence": "a.py:1"}
+        review = self._reported_review(
+            batch_id,
+            candidate,
+            outcome="blocked",
+            blockers="fix needed",
+            spec=("blocker", [blocker]),
+        )
+        self._decide(batch_id, "retry")
+
+        start = self._developer_preflight(batch_id)["retry_start"]
+
+        handoff = start["handoff"]
+        self.assertEqual(
+            (
+                handoff["developer_report"]["dispatch_id"],
+                handoff["developer_report"]["commit_sha"],
+            ),
+            (developer["dispatch_id"], candidate),
+        )
+        self.assertEqual(
+            handoff["commit_plan"],
+            coordinator._read_object(
+                self._records() / "dispatches" / f"{developer['dispatch_id']}.json",
+                "dispatch",
+            )["commit_plan"],
+        )
+        self.assertEqual(
+            handoff["context_package_id"],
+            self._batch_record(batch_id)["context_packages"][-1]["context_package_id"],
+        )
+        decision = handoff["retry_decision"]
+        self.assertEqual(
+            (decision["dispatch_id"], decision["route"]),
+            (review["dispatch_id"], "developer-retry"),
+        )
+        self.assertEqual(decision["findings"], [{"axis": "spec", **blocker}])
+        self.assertFalse(start["context_estimate"]["compacted"])
+        self.assertIsNone(start["warning"])
+
+    def test_developer_retry_of_an_unaccepted_report_continues_its_candidate_end_to_end(
+        self,
+    ) -> None:
+        # Issue #477, the #443 batch: a clean developer report retried for a code defect without
+        # an accept must hand its candidate to the next developer instead of rewinding to base.
+        plan = self._batch_plan()
+        plan["definition_of_done"] = ["one", "two", "three"]
+        with mock.patch.object(self, "_batch_plan", return_value=plan):
+            batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        returned, commits, _ = self._retried_developer_candidate(
+            batch_id, "a", "b", "c"
+        )
+        candidate = commits[-1]
+        self._patch_config(worker_attestation_required=True)
+        prepared = self._developer_preflight(batch_id)
         self.assertEqual(prepared["preview_brief"]["snapshot_commit"], candidate)
+        self.assertEqual(
+            prepared["retry_start"]["handoff"]["developer_report"]["dispatch_id"],
+            returned["dispatch_id"],
+        )
 
         created = self._dispatch(batch_id, "developer")
 

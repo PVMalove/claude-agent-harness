@@ -878,6 +878,12 @@ coordinator не выполняет и не предлагает `git reset --so
 snapshot, исправляйте конфигурацию нового dispatch или выбирайте worktree на этом commit, не
 переписывая существующую историю.
 
+Для `developer-retry` `dispatch preflight` дополнительно возвращает `retry_start`: handoff, с
+которого стартует новая developer-сессия, её стартовые файлы, `context_estimate` (порог, оценка до и
+после компакта) и `warning`. Оценку и warning повторяет `decision_packet` как
+`retry_context_estimate` и `retry_context_warning`. Состав handoff, порог smart zone и правила
+компакта — раздел "Developer-retry handoff" в `playbook.md`.
+
 `dispatch create` до записи brief выполняет над ним ту же проверку, что `dispatch send`. Brief,
 который send отклонил бы, не создаётся: в ledger не появляются ни brief, ни его status. Пример —
 `--candidate-commit` без связанной immutable risk assessment. Remedy называет

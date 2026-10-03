@@ -35,6 +35,7 @@ from harness.orchestration.core.config import (
 from harness.orchestration.core.constants import (
     ATTENTION_EVENT_KINDS,
     ATTENTION_STATE_FIELDS,
+    CHECKPOINT_NO_CONTEXT_PACKAGE,
     CONTEXT_PACKAGE_FIELDS,
     V2_CONTEXT_PACKAGE_FIELDS,
     CONTEXT_PRESSURE_FIELDS,
@@ -67,6 +68,7 @@ from harness.orchestration.core.workspace import (
     _validate_branch,
     _validate_harness_runtime_snapshot,
 )
+from harness.orchestration.ledger import JsonValue
 from harness.orchestration.ledger.ledger_ops import (
     _load_checkpoint,
     _load_context_package,
@@ -448,6 +450,59 @@ def _retry_pinned_candidate(repo: Path, root: Path, batch: JsonObject) -> str | 
         return None
     report = _pending_report(root, batch, previous)
     return _candidate_commit(repo, report["commit_sha"])
+
+
+def _retry_handoff(
+    root: Path, batch: JsonObject, package: JsonObject | None
+) -> JsonObject | None:
+    """The compact handoff a pending developer retry starts from, or ``None`` for any other dispatch.
+
+    Shaped like a checkpoint, not a session: the last developer work report (accepted or returned),
+    the retry decision with its review findings, the commit plan that developer worked against and
+    the Context Package ID. No chat history and no logs of failed attempts reach the retry."""
+    if batch.get("next_action") != "developer-retry":
+        return None
+    entries = batch.get("dispatches", [])
+    retried = next(
+        (item for item in reversed(entries) if isinstance(item.get("decision"), dict)),
+        None,
+    )
+    if retried is None or retried["decision"].get("decision") != "retry":
+        return None
+    developer_report: JsonObject | None = None
+    commit_plan: JsonValue = None
+    for item in reversed(entries):
+        if item.get("role") != "developer" or not isinstance(item.get("report"), str):
+            continue
+        developer_brief = _load_dispatch(root, item["dispatch_id"])
+        if developer_brief.get("purpose", "work") == "work":
+            developer_report = _pending_report(root, batch, item)
+            commit_plan = developer_brief.get("commit_plan")
+            break
+    review = _pending_report(root, batch, retried).get("review")
+    findings = [
+        {"axis": axis, **finding}
+        for axis in ("standards", "spec")
+        if isinstance(review, dict) and isinstance(review.get(axis), dict)
+        for finding in review[axis].get("findings", [])
+    ]
+    routing = retried["decision"].get("routing") or {}
+    return {
+        "context_package_id": package["context_package_id"]
+        if package
+        else CHECKPOINT_NO_CONTEXT_PACKAGE,
+        "commit_plan": commit_plan,
+        "developer_report": developer_report,
+        "retry_decision": {
+            "dispatch_id": retried["dispatch_id"],
+            "role": retried.get("role"),
+            "route": routing.get("route"),
+            "reason_category": routing.get("reason_category"),
+            "rationale": routing.get("rationale"),
+            "note": retried["decision"].get("note"),
+            "findings": findings,
+        },
+    }
 
 
 def _current_developer_candidate(
