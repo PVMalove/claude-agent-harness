@@ -17,6 +17,7 @@ import hashlib
 import inspect
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,7 @@ from harness.orchestration.ledger import (
     BatchRecord,
     DispatchStatusRecord,
     LifecycleLedger,
+    ledger_admin,
     ledger_ops,
 )
 from harness.orchestration.workflow import (
@@ -6358,6 +6360,161 @@ class CoordinatorGuardHelperTests(unittest.TestCase):
                     caught.exception.remedy,
                     "rewrite purpose in English, keeping commands, paths, IDs and quoted evidence verbatim",
                 )
+
+
+class LedgerLockReleaseTests(unittest.TestCase):
+    """``ledger release-lock`` against the real ledger lock (#498): the lock records its owner,
+    and a stuck lock is released only after that owner has been checked."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.tmp = Path(self._tmp.name)
+        self.state_dir = self.tmp / "state"
+        self.lock_dir = self.state_dir / ".coordinator.lock"
+        self.ledger = LifecycleLedger(self.state_dir)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _release(self) -> JsonObject:
+        return coordinator.release_ledger_lock(
+            _ns(repo=str(self.tmp), state_dir=str(self.state_dir))
+        )
+
+    def _lock_files(self) -> dict[str, bytes]:
+        return {path.name: path.read_bytes() for path in self.lock_dir.iterdir()}
+
+    def test_a_lock_whose_owner_is_alive_is_never_released(self) -> None:
+        with self.ledger.lock():
+            before = self._lock_files()
+
+            with self.assertRaises(coordinator.CoordinatorError) as refused:
+                self._release()
+
+            self.assertIn("owner-alive", refused.exception.message)
+            self.assertIn(str(os.getpid()), refused.exception.message)
+            self.assertIn("never released", refused.exception.remedy)
+            self.assertEqual(self._lock_files(), before)
+
+    def test_a_lock_left_by_a_dead_owner_is_released(self) -> None:
+        holder = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import os, sys\n"
+                "from pathlib import Path\n"
+                "from harness.orchestration.ledger.lifecycle import LifecycleLedger\n"
+                "held = LifecycleLedger(Path(sys.argv[1])).lock()\n"
+                "held.__enter__()\n"
+                "print(os.getpid(), flush=True)\n"
+                "os._exit(0)\n",
+                str(self.state_dir),
+            ],
+            cwd=ORCHESTRATION_ROOT.parents[1],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        with self.assertRaises(ledger_ops.LedgerBusyError):
+            with ledger_ops._ledger_lock(self.ledger):
+                pass
+
+        released = self._release()
+
+        self.assertTrue(released["released"])
+        self.assertEqual(released["reason"], "owner-dead")
+        lock = cast(JsonObject, released["lock"])
+        self.assertEqual(lock["owner"]["pid"], int(holder.stdout))
+        self.assertFalse(self.lock_dir.exists())
+        with self.ledger.lock():
+            pass
+
+    def test_a_lock_without_an_owner_record_is_released_only_once_stale(
+        self,
+    ) -> None:
+        self.state_dir.mkdir()
+        self.lock_dir.mkdir()  # the shape an older runtime's lock has: no owner record
+
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            self._release()
+
+        self.assertIn("owner-unknown-recent", refused.exception.message)
+        self.assertTrue(self.lock_dir.is_dir())
+        aged = datetime.now(UTC).timestamp() - constants.LEDGER_LOCK_STALE_SECONDS - 60
+        os.utime(self.lock_dir, (aged, aged))
+
+        released = self._release()
+
+        self.assertEqual(released["reason"], "owner-unknown-stale")
+        self.assertIsNone(cast(JsonObject, released["lock"])["owner"])
+        self.assertFalse(self.lock_dir.exists())
+        with self.ledger.lock():
+            pass
+
+    def test_no_lock_means_nothing_to_release(self) -> None:
+        self.assertEqual(self._release(), {"released": False, "lock": None})
+
+    def test_the_verdict_never_releases_a_live_or_foreign_owner(self) -> None:
+        owner = {
+            "pid": 4242,
+            "host": "here",
+            "acquired_at": "2026-01-01T00:00:00+00:00",
+        }
+        ancient = 10 * constants.LEDGER_LOCK_STALE_SECONDS
+        cases = (
+            ({"owner": owner, "held_seconds": ancient}, True, (False, "owner-alive")),
+            ({"owner": owner, "held_seconds": 0}, False, (True, "owner-dead")),
+            (
+                {"owner": {**owner, "host": "elsewhere"}, "held_seconds": ancient},
+                False,
+                (False, "owner-on-another-host"),
+            ),
+            (
+                {"owner": None, "held_seconds": 5},
+                False,
+                (False, "owner-unknown-recent"),
+            ),
+            (
+                {"owner": {"pid": "x"}, "held_seconds": ancient},
+                True,
+                (True, "owner-unknown-stale"),
+            ),
+        )
+        for state, alive, expected in cases:
+
+            def probe(pid: int, alive: bool = alive) -> bool:
+                return alive
+
+            with self.subTest(state=state, alive=alive):
+                self.assertEqual(
+                    ledger_admin._release_verdict(
+                        state,
+                        host="here",
+                        pid_active=probe,
+                        stale_after=constants.LEDGER_LOCK_STALE_SECONDS,
+                    ),
+                    expected,
+                )
+
+    def test_a_busy_ledger_names_release_lock_instead_of_manual_removal(self) -> None:
+        with self.ledger.lock():
+            with self.assertRaises(ledger_ops.LedgerBusyError) as busy:
+                coordinator.ledger_status(
+                    _ns(repo=str(self.tmp), state_dir=str(self.state_dir))
+                )
+
+        self.assertIsInstance(busy.exception, coordinator.CoordinatorError)
+        self.assertEqual(
+            busy.exception.message, "ledger is locked by another operation"
+        )
+        self.assertIn("ledger release-lock", busy.exception.remedy)
+        self.assertNotIn("remove", busy.exception.remedy.lower())
+        self.assertNotIn(".coordinator.lock", busy.exception.remedy)
+
+    def test_the_cli_wires_release_lock(self) -> None:
+        args = coordinator.parser().parse_args(["ledger", "release-lock"])
+
+        self.assertIs(args.handler, coordinator.release_ledger_lock)
 
 
 class CoordinatorCliParserTests(unittest.TestCase):

@@ -61,6 +61,10 @@ DEFAULT_PROFILE = "session"
 # heartbeats so an actually lost worker is eventually surfaced.
 DEFAULT_STALE_AFTER_SECONDS = 3_600
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 300
+# `ledger release-lock` releases a lock without an owner record (taken by an older runtime) only
+# once it is this old. `dispatch publish` legitimately holds the lock across `git push`, so the
+# bound stays generous; a lock that records its owner is judged by that owner's process instead.
+LEDGER_LOCK_STALE_SECONDS = 3_600
 DEFAULT_COMMUNICATION_POLICY = {
     "agent_to_agent_language": "en",
     "coordinator_report_language": "ru",

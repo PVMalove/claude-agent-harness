@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import time
 import uuid
 from collections.abc import Iterator
@@ -28,6 +29,8 @@ LEDGER_VERSION = 3
 SUPPORTED_LEDGER_VERSIONS = (1, 2, 3)
 POINTER_NAME = "ledger.json"
 GENERATIONS = "generations"
+LOCK_DIRECTORY = ".coordinator.lock"
+LOCK_OWNER = "owner.json"
 RECORD_DIRECTORIES = (
     "batches",
     "plans",
@@ -51,6 +54,10 @@ type JsonObject = dict[str, JsonValue]
 
 class LedgerError(HarnessError):
     """The durable lifecycle state cannot safely be selected or changed."""
+
+
+class LedgerLockBusy(LedgerError):
+    """Another operation holds the ledger lock."""
 
 
 @dataclass(frozen=True)
@@ -310,24 +317,112 @@ class LifecycleLedger:
     def lock(self) -> Iterator[None]:
         """Non-blocking exclusive lock on ``self.root``, mirroring coordinator.py's own
         ``_state_lock`` technique (same lock path, same mkdir/rmdir mechanism) but raising
-        ``LedgerError`` on contention so this module never imports an exception type from
-        coordinator.py."""
+        ``LedgerLockBusy`` on contention so this module never imports an exception type from
+        coordinator.py.  The lock directory records its owner (pid, host, acquired_at) so a lock
+        left behind by a dead process can be judged by ``ledger release-lock``."""
         self.root.mkdir(parents=True, exist_ok=True)
-        lock_dir = self.root / ".coordinator.lock"
+        lock_dir = self.root / LOCK_DIRECTORY
         try:
             lock_dir.mkdir()
         except FileExistsError as exc:
-            raise LedgerError(
+            raise LedgerLockBusy(
                 "ledger is locked by another operation",
-                remedy=f"wait for the other operation to finish, or remove a stale lock at {lock_dir} if no operation is actually running",
+                remedy="repeat the command once the other operation finishes; if the lock "
+                "stays held, run 'coordinator.py ledger release-lock', which releases it only "
+                "when its owner process is gone",
+            ) from exc
+        owner = lock_dir / LOCK_OWNER
+        try:
+            owner.write_text(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "host": socket.gethostname(),
+                        "acquired_at": _now(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            try:
+                owner.unlink(missing_ok=True)
+                lock_dir.rmdir()
+            except OSError:
+                pass
+            raise LedgerError(
+                "ledger lock owner could not be recorded",
+                remedy=f"make {self.root} writable, then repeat the command",
             ) from exc
         try:
             yield
         finally:
             try:
+                owner.unlink(missing_ok=True)
                 lock_dir.rmdir()
             except OSError:
                 pass
+
+    def lock_state(self) -> JsonObject | None:
+        """The current lock as its owner recorded it, or ``None`` when nothing holds it.
+
+        ``owner`` is ``None`` for a lock without a readable owner record (one taken by an older
+        runtime); its age is then measured from the lock directory itself."""
+        lock_dir = self.root / LOCK_DIRECTORY
+        try:
+            created = lock_dir.stat().st_mtime
+        except FileNotFoundError:
+            return None
+        owner = self.read_record_lenient(lock_dir / LOCK_OWNER)
+        recorded = owner.get("acquired_at") if owner is not None else None
+        try:
+            since = (
+                datetime.fromisoformat(recorded) if isinstance(recorded, str) else None
+            )
+        except ValueError:
+            since = None
+        if since is None or since.tzinfo is None:
+            since = datetime.fromtimestamp(created, UTC)
+        held = (datetime.now(UTC) - since).total_seconds()
+        return {
+            "path": str(lock_dir),
+            "owner": owner,
+            "acquired_at": since.isoformat(),
+            "held_seconds": max(0, int(held)),
+        }
+
+    def break_lock(self, observed: JsonObject) -> None:
+        """Remove the lock ``lock_state()`` returned as ``observed``, and only that lock.
+
+        The caller decides whether the lock may go; this only guarantees it removes the lock it
+        judged.  An owner record is first claimed by an atomic rename: while the claim exists the
+        lock directory is not empty, so no other operation can take or drop it, and a claim that is
+        not the observed owner is put back.  An owner-less lock is removed only while it is still
+        the directory that was observed."""
+        lock_dir = self.root / LOCK_DIRECTORY
+        owner = lock_dir / LOCK_OWNER
+        changed = LedgerError(
+            "ledger lock changed while it was being released",
+            remedy="run 'coordinator.py ledger release-lock' again",
+        )
+        try:
+            if owner.exists():
+                claim = lock_dir / f"{LOCK_OWNER}.release-{uuid.uuid4().hex}"
+                os.rename(owner, claim)
+                if self.read_record_lenient(claim) != observed.get("owner"):
+                    os.rename(claim, owner)
+                    raise changed
+                claim.unlink()
+            else:
+                current = self.lock_state()
+                if (
+                    observed.get("owner") is not None
+                    or current is None
+                    or current["acquired_at"] != observed.get("acquired_at")
+                ):
+                    raise changed
+            lock_dir.rmdir()
+        except OSError as exc:
+            raise changed from exc
 
     @property
     def pointer_path(self) -> Path:
