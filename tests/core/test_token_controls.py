@@ -37,7 +37,7 @@ class TokenControlTests(unittest.TestCase):
         result = batch._scope_preflight(
             {},
             "#1",
-            "orders",
+            ["src/orders/**"],
             ["protect checkout lock"],
             ["none"],
             self._scope_args(),
@@ -56,7 +56,7 @@ class TokenControlTests(unittest.TestCase):
             batch._scope_preflight(
                 {},
                 "#372",
-                "orders",
+                ["src/orders/**"],
                 ["one"],
                 ["none"],
                 self._scope_args(
@@ -72,7 +72,7 @@ class TokenControlTests(unittest.TestCase):
             batch._scope_preflight(
                 {},
                 "#1",
-                "orders",
+                ["src/orders/**"],
                 ["one"],
                 ["none"],
                 self._scope_args(

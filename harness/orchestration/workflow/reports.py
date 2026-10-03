@@ -444,8 +444,8 @@ def _validate_checkpoint(
             or not any(fnmatchcase(normalized, pattern) for pattern in paths)
         ):
             raise CoordinatorError(
-                "checkpoint changed_files must remain inside the approved zone",
-                remedy="keep checkpoint changed_files inside the role's approved write zone",
+                "checkpoint changed_files must remain inside the approved scope",
+                remedy="keep checkpoint changed_files inside the brief's write_paths",
             )
     resolved = _candidate_commit(repo, commit_sha)
     actual_files = (
@@ -1105,8 +1105,8 @@ def _validate_report(
                 or not any(fnmatchcase(normalized, pattern) for pattern in paths)
             ):
                 raise CoordinatorError(
-                    "completion report changed_files must remain inside the approved zone",
-                    remedy="keep completion report changed_files inside the role's approved write zone",
+                    "completion report changed_files must remain inside the approved scope",
+                    remedy="keep completion report changed_files inside the brief's write_paths",
                 )
         if repo is not None:
             resolved = _candidate_commit(repo, commit_sha)
