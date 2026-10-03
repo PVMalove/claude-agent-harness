@@ -25,9 +25,11 @@ Locate the seam through the Context Package's `starting_files` and `symbol_graph
 the repository; a failing test is re-run by its node id through the bounded wrapper, not the full suite.
 
 Follow the immutable brief's ordered commit plan. Each commit implements one independently
-reviewable logical change and is reported against its plan entry with the files it contains. A single
-commit is valid only when the plan records one inseparable unit. For recovery, retain the accepted
-plan or stop for a newly approved replacement before creating an affected commit.
+reviewable logical change and is reported against the plan entries it closes. In an initial or
+rebase dispatch the mapping is many-to-many: one commit may close several entries, and one entry may
+take several commits. A developer-retry keeps the strict rule: each new commit closes exactly one
+plan entry, no two commits close the same entry, and entries may stay unclosed. For recovery, retain
+the accepted plan or stop for a newly approved replacement before creating an affected commit.
 
 The completion report's `commit_map` is mandatory for a developer brief with a `commit_plan`.
 It holds `{commit_sha, plan_entry_id}` pairs that cover every commit after `snapshot_commit` (after

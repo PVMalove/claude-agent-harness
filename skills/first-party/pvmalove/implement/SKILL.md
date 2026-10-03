@@ -65,9 +65,8 @@ or replaces it with a newly approved plan that explains the changed boundary. Th
 completion report maps every created commit to the entries it closes; a mapping that is not
 one-to-one needs `dod_coverage` and `divergence_justification`, and a report with a `not_covered`
 item can be accepted only by `override-warning` with a note other than `none`, or returned with
-`retry`. Do not collapse
-unrelated implementation, tests, documentation, or type-only repairs into a recovery commit merely
-because they are staged together.
+`retry`. Do not collapse unrelated implementation, tests, documentation, or type-only repairs into a
+recovery commit merely because they are staged together.
 
 Follow the configured approval policy. Under `manual_all`, every transition needs explicit approval:
 show the decision packet, ask, and wait. Under `low_risk`, a clean completed report in an eligible

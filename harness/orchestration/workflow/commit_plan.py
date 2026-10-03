@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import PurePosixPath
 
 from harness.orchestration.core.constants import (
@@ -160,17 +160,28 @@ def plan_sha256(plan: list[JsonObject]) -> str:
     return hashlib.sha256(_canonical({"commit_plan": plan}).encode("utf-8")).hexdigest()
 
 
-def accepted_plan_sha256(batch: JsonObject) -> str | None:
-    """The plan digest recorded by the batch's accepted architect decision, if it pinned one."""
+def decided_entries(
+    batch: JsonObject, role: str, decisions: set[str]
+) -> Iterator[JsonObject]:
+    """The batch's ``role`` dispatch entries decided with one of ``decisions``, newest first.
+
+    A decision is only ever recorded on a reported entry, so it needs no separate state check.
+    """
     for item in reversed(batch.get("dispatches", [])):
         decision = item.get("decision")
         if (
-            item.get("role") == "architect"
+            item.get("role") == role
             and isinstance(decision, dict)
-            and decision.get("decision") == "accept"
+            and decision.get("decision") in decisions
         ):
-            digest = decision.get("commit_plan_sha256")
-            return digest if isinstance(digest, str) else None
+            yield item
+
+
+def accepted_plan_sha256(batch: JsonObject) -> str | None:
+    """The plan digest recorded by the batch's accepted architect decision, if it pinned one."""
+    for item in decided_entries(batch, "architect", {"accept"}):
+        digest = item["decision"].get("commit_plan_sha256")
+        return digest if isinstance(digest, str) else None
     return None
 
 
@@ -532,11 +543,7 @@ def _report_pairs(
     commit_map = report.get("commit_map")
     if not isinstance(commit_map, list):
         return []
-    return [
-        (resolve(entry["commit_sha"]), entry["plan_entry_id"])
-        for entry in commit_map
-        if isinstance(entry, dict)
-    ]
+    return [(resolve(sha), plan_id) for sha, plan_id in _commit_map_pairs(commit_map)]
 
 
 def divergence(
@@ -584,7 +591,8 @@ def not_covered(report: JsonObject) -> list[JsonObject]:
     """The definition-of-done items a report declares not covered, with their reasons.
 
     Any such item keeps the report from being clean: it never auto-accepts, plain ``accept`` is
-    refused, and only ``retry`` or ``override-warning`` with a recorded note decides it.
+    refused, and it can be accepted only by ``override-warning`` with a note other than ``none``,
+    or returned with ``retry``.
     """
     coverage = report.get("dod_coverage")
     if not isinstance(coverage, list):
