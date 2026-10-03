@@ -13,11 +13,11 @@
 
 Messaging Integration — write-роль для границ outbox, message schema/routing, retry и dead-letter queue. Она запускается только когда соответствующий риск-триггер объявлен в brief; не поглощает несвязанные service-изменения.
 
-Роль реализует совместимое изменение в объявленной messaging/infrastructure зоне и явно описывает последствия доставки и отказов. До handoff она выполняет контрактные, routing и failure-path проверки, а также необходимый risk review. Неясность зоны или отсутствие доказательства — эскалация, а не расширение scope.
+Роль реализует совместимое изменение в allowed paths brief для messaging/infrastructure и явно описывает последствия доставки и отказов. До handoff она выполняет контрактные, routing и failure-path проверки, а также необходимый risk review. Неясность scope или отсутствие доказательства — эскалация, а не расширение scope.
 
 ## 3. Контракты
 
-- **Вход (Input/Brief):** immutable brief с зоной сообщений, контрактом, правилами маршрутизации и retry/DLQ, DoD и required checks.
+- **Вход (Input/Brief):** immutable brief с allowed paths сообщений, контрактом, правилами маршрутизации и retry/DLQ, DoD и required checks.
 - **Выход (Output/Report):** commit SHA совместимого изменения; перечень файлов и проверок; последствия delivery/failure, риски, блокеры и следующий gate.
 
 ## 4. Архитектурная схема

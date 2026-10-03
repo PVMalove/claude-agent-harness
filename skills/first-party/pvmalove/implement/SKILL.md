@@ -30,7 +30,8 @@ so repeat the command after its `retry_after_seconds`.
 Do not infer or repair an opt-in capability. Process one ticket to a terminal batch state before
 beginning another.
 
-If another batch blocks the ticket or zone, inspect `batch list --open`, the conflicting dispatch,
+If another batch holds the same unfinished ticket, branch or worktree, or the `concurrency_budget`
+is exhausted, inspect `batch list --open`, the conflicting dispatch,
 and its decision packet. Tell the developer which batch is blocking and how to finish it normally.
 If its worker can no longer produce a report, show a copyable `batch abandon` command with the
 actual batch ID, the verified operator name, `--approved-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`,
@@ -47,7 +48,9 @@ exists: check the ticket's blockers whatever its current label (any still open �
 and make sure it carries `status::blocked`); otherwise replace its `status::*` label with
 `status::in-progress` exactly as `/fast-implement` Phase 1 steps 2–3 do, and confirm it is the
 only `status::*` label. A failed label write is a blocker, not a warning. Before `batch create`, run the batch-level preflight with bounded expected files, services and
-diff size. If it rejects the ticket, split it with `/to-tickets`; never ask an architect to discover
+diff size. Pin the writer's explicit scope with `--allowed-path` (repeat it; a path or glob inside
+the developer's write ceiling): batches with overlapping files run in parallel in their own
+worktrees, and a change outside the scope is rejected. If it rejects the ticket, split it with `/to-tickets`; never ask an architect to discover
 whether an oversized ticket should have been split.
 
 For each handoff, run `dispatch preflight`, show `batch decision-packet`, then create an approved
@@ -69,8 +72,8 @@ item can be accepted only by `override-warning` with a note other than `none`, o
 recovery commit merely because they are staged together.
 
 Follow the configured approval policy. Under `manual_all`, every transition needs explicit approval:
-show the decision packet, ask, and wait. Under `low_risk`, a clean completed report in an eligible
-zone is accepted by the coordinator with an audited policy decision, and the next eligible dispatch
+show the decision packet, ask, and wait. Under `low_risk`, a clean completed report of a batch whose
+allowed paths lie inside `low_risk_paths` is accepted by the coordinator with an audited policy decision, and the next eligible dispatch
 may already be approved. Under `milestone`, clean reports outside QA, publish and risk milestones
 are also accepted automatically; stop for the remaining milestone decisions. Continue from the
 recorded `next_action` without asking the operator to repeat a policy decision. Blockers, failed
@@ -83,12 +86,12 @@ route for `retry` or `abandon`, show the decision packet's `route_preview` (with
 Recovery route table in `.harness/orchestration/playbook.md` (situation → route → who approves →
 evidence).
 
-When you find a defect in a clean developer report whose DoD is met inside its zone, do not retry
+When you find a defect in a clean developer report whose DoD is met inside its allowed paths, do not retry
 it: accept it with `batch decide --findings-file <path>`, or after a policy auto-accept run
 `batch carry-over --batch <id> --findings-file <path>` before its code-review dispatch exists. The
 finding travels into the code-review brief as a carried item (route `carry-over`), and the one
 developer retry is spent after review. Retry a developer report without accept only for an unmet
-DoD item or an out-of-zone change.
+DoD item or an out-of-scope change.
 
 Each worker records a model self-report and is observed by the event-driven watchdog; those facts
 are evidence, never a reason to edit an immutable brief.
