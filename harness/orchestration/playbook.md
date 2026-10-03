@@ -103,7 +103,10 @@ that sets `next_action`, from the same structured evidence, and never from free 
 (a batch that will never have a report) and `batch resume` record no route. `report-completion` is
 not recorded by `batch decide`: `report submit` names it in its `completion` object when the policy
 chain after a recorded report stops, and the coordinator completes that chain with
-`report complete --dispatch <dispatch-id>`. The coordinator chooses a route by this table:
+`report complete --dispatch <dispatch-id>`. `carry-over` is recorded by an `accept` or
+`override-warning` with `--findings-file` and by `batch carry-over`; its routing record names the
+`carried_item_ids` and is never applied to `next_action`, which moves through risk assessment as on
+any developer accept. The coordinator chooses a route by this table:
 
 | Situation | Route | Who approves | Evidence |
 | --- | --- | --- | --- |
@@ -124,11 +127,27 @@ does not check `retry_policy.max_developer_retries`: once that budget is exhaust
 `developer-retry` route, which `batch decide --decision retry` then refuses. When the retry route
 cannot be computed, for example because the configured retry-reason classifier extension fails, the
 packet still renders and `route_preview.retry` is `{"route": null, "refused": ..., "remedy": ...}`
-with the error `batch decide --decision retry` refuses with. Every `batch decide`
+with the error `batch decide --decision retry` refuses with. With `--findings-file`,
+`route_preview["carry-over"]` holds the carry-over record that `batch decide --findings-file` on the
+pending developer report, or else `batch carry-over`, would record, or the same
+`{"route": null, "refused": ..., "remedy": ...}` refusal. Every `batch decide`
 decision stores a `decision` detail on its batch transition audit record: the `route` (`null` for a
 decision that routes nothing), the `evidence` (`dispatch_id`, `report`, `report_sha256`) and the
 `approver` (`{"kind": "policy" | "human", "name": ...}`, set by the path that approved it). A route outside
 `RECOVERY_ROUTES` is refused when it is written and when a batch is read back.
+
+A defect the coordinator finds in a clean developer report is a coordinator finding, not a reason
+for a retry before review: retrying a developer report without accepting it is an exception allowed
+only for an unmet Definition of Done item or a change outside the declared zone. A finding file is
+`{"findings": [{"summary", "files", "expected_evidence"}, ...]}` in English. The batch records each
+finding append-only and hash-checked in `carried_items`; every later code-review brief carries the
+open ones, and an open finding sends the candidate to code-review even when risk assessment matched
+no trigger. A finding is settled once a code-review whose brief carried it is accepted or
+warning-overridden; a retried review leaves it open, and the developer-retry that follows carries it
+together with the review's findings, so `retry_policy.max_developer_retries` is spent once.
+`batch carry-over` refuses once a dispatch other than a cancelled one follows the accepted developer
+report, and names it: an unsent one is cancelled with `dispatch cancel` first, a sent one leaves the
+defect to the decision on its report.
 
 A later recovery route adds its `RECOVERY_ROUTES` value and its row here in the same change.
 
@@ -298,7 +317,13 @@ It must contain, at minimum:
   `covers` names the Definition of Done items an entry implements. It is one entry per item unless
   the operator pinned the architect's plan with `batch decide --decision accept --commit-plan-file`;
 - `commit plan divergence` (code-review): how the last accepted initial or rebase developer report
-  diverged from its plan, or `null`.
+  diverged from its plan, or `null`;
+- `carried items`: one shared channel keyed by the kind of source,
+  `{"coordinator-finding": [...], "review-finding": [...]}`, each item
+  `{item_id, source, summary, files, expected_evidence}`, or `{}`. A code-review or developer work
+  brief carries every open coordinator finding; a developer brief answering a retried code-review
+  also carries that review's Standards and Spec findings. A non-empty section is bound into the
+  transition as `carried_items_sha256`.
 
 The brief is a starting contract, not a conversation buffer. A role must escalate an ambiguity,
 overlap, credential request, irreversible action, policy decision, or missing proof. It must not
@@ -350,7 +375,12 @@ The report must include:
   `dod_coverage` (one record per Definition of Done item, either its covering commits or
   `not_covered` with a reason) and a `divergence_justification` naming what was merged, split or
   added and why. A developer-retry report maps each new commit to one distinct entry and carries
-  neither field.
+  neither field;
+- for a code-review brief with carried items: `review.carried_items`, one
+  `{item_id, status: closed | open | unverified, evidence}` per item the brief carried. An omitted,
+  `unverified` or `open` item is a carried gap: the report is never clean, no policy accepts it, plain
+  `accept` is refused, and only `override-warning` with a note other than `none` (recorded as
+  `carried_items_gap`) or `retry` decides it. An `open` item is `code` evidence for the retry route.
 
 Optional `lessons` and `used_memory` are lists of non-empty strings; empty lists and omission are
 valid. `lessons` records historical observations, never confirmed truth: memory indexes them only

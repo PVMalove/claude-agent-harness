@@ -84,6 +84,13 @@ route for `retry` or `abandon`, show the decision packet's `route_preview` (with
 Recovery route table in `.harness/orchestration/playbook.md` (situation → route → who approves →
 evidence).
 
+When you find a defect in a clean developer report whose DoD is met inside its zone, do not retry
+it: accept it with `batch decide --findings-file <path>`, or after a policy auto-accept run
+`batch carry-over --batch <id> --findings-file <path>` before its code-review dispatch exists. The
+finding travels into the code-review brief as a carried item (route `carry-over`), and the one
+developer retry is spent after review. Retry a developer report without accept only for an unmet
+DoD item or an out-of-zone change.
+
 Each worker records a model self-report and is observed by the event-driven watchdog; those facts
 are evidence, never a reason to edit an immutable brief.
 
