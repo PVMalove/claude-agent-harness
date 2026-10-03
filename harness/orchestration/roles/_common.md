@@ -69,4 +69,6 @@ SHA is included in the completion report.
 Escalate instead of guessing when the requested zone is unclear or overlaps another batch, required
 proof cannot be produced, a risk trigger applies without a stated gate, or the work needs credentials,
 an irreversible action, or a policy decision. A blocked or failed attempt is not retried in place: the
-coordinator creates a new dispatch with a new immutable brief.
+coordinator creates a new dispatch with a new immutable brief. A developer retry starts from the
+compact handoff in its prompt, the playbook's "Developer-retry handoff", as its only record of the
+earlier attempt; the previous session's raw history never carries over.

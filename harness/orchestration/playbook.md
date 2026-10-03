@@ -152,6 +152,36 @@ defect to the decision on its report.
 
 A later recovery route adds its `RECOVERY_ROUTES` value and its row here in the same change.
 
+## Developer-retry handoff
+
+A developer retry starts a new worker session from a compact handoff; it never resumes the previous
+developer session or replays its history. The handoff has the shape of a checkpoint, structured
+evidence without chat history or logs of failed attempts:
+
+- `developer_report`: the last developer work report, accepted or returned with `retry`;
+- `retry_decision`: the retried dispatch, its role, `route`, `reason_category`, rationale and note,
+  and every review finding with its axis;
+- `commit_plan`: the plan that developer brief carried;
+- `context_package_id`: the batch's latest registered Context Package, or the no-package sentinel.
+
+`dispatch preflight` for a developer retry returns this handoff as `retry_start` and estimates the
+retry's starting context (the preview brief, the Context Package and the handoff) with the same
+byte-based token estimate a Context Package uses. The smart-zone threshold is
+`adaptive_continuation_policy.context_warn_ratio × context_limit`. Above it, the preflight compacts:
+
+- the handoff keeps only structured fields: the report's dispatch ID, outcome, commit, changed
+  files and `commit_map`; the decision's dispatch, role, route and reason category; each finding's
+  axis, severity and summary, without its quoted evidence;
+- the starting files narrow to the files a finding names or the developer report lists in
+  `changed_files`;
+- a large document stays only as its `sections` index.
+
+`retry_start.context_estimate` records the threshold and the estimates before and after the compact,
+and the preflight's decision packet repeats it as `retry_context_estimate` with
+`retry_context_warning`. The preflight writes nothing and never blocks the dispatch: when the compact
+cannot reach the threshold, the warning names both numbers and the dispatch proceeds. Read-only roles
+(code-review, QA) always start new independent sessions.
+
 ## Approvals bound to the transition digest
 
 Before any dispatch exists, `dispatch propose` renders the canonical transition and its
