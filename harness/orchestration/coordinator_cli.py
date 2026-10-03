@@ -204,7 +204,26 @@ def build_parser(
         '{"commit_plan": [{"id", "summary", "expected_paths", "covers"}, ...]} pinned as the '
         "batch's developer commit plan",
     )
+    decide.add_argument(
+        "--findings-file",
+        help="only with --decision accept or override-warning on a developer work report: a "
+        'JSON file {"findings": [{"summary", "files", "expected_evidence"}, ...]} of coordinator '
+        "findings every later code-review brief carries until a review settles them",
+    )
     decide.set_defaults(handler=handlers.decide_batch)
+    carry_over = batch_commands.add_parser(
+        "carry-over",
+        help="carry coordinator findings into review after the developer report was accepted, "
+        "before its code-review dispatch is created",
+    )
+    _common(carry_over)
+    carry_over.add_argument("--batch", required=True)
+    carry_over.add_argument(
+        "--findings-file",
+        required=True,
+        help='a JSON file {"findings": [{"summary", "files", "expected_evidence"}, ...]}',
+    )
+    carry_over.set_defaults(handler=handlers.carry_over_findings)
     attention = batch_commands.add_parser(
         "attention", help="operational-loop attention state of a batch"
     )
@@ -247,6 +266,11 @@ def build_parser(
         "--retry-role",
         choices=["developer"],
         help="preview the retry route as batch decide computes it with --retry-role developer; the preview does not check the developer-retry budget",
+    )
+    packet.add_argument(
+        "--findings-file",
+        help="preview the carry-over route that batch decide --findings-file on the pending "
+        "developer report, or else batch carry-over, records with this findings file",
     )
     packet.set_defaults(handler=handlers.decision_packet)
 

@@ -92,6 +92,7 @@ from harness.orchestration.runtime_attestation import (
 from harness.orchestration.runtime_attestation import (
     attest as attest_runtime_worktree,
 )
+from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.approval import (
     _approval,
@@ -866,7 +867,8 @@ def _persist_report(
 
 
 def _validate_review(review: object, dispatch: JsonObject) -> None:
-    if not isinstance(review, dict) or set(review) != {
+    # ``carried_items`` (issue #499) is optional: the review's account of the brief's carried items.
+    if not isinstance(review, dict) or set(review) - {"carried_items"} != {
         "candidate_commit",
         "scope",
         "standards",
@@ -965,6 +967,7 @@ def _validate_review(review: object, dispatch: JsonObject) -> None:
                 f"composite review {axis} must state risks and blockers",
                 remedy=f"composite review {axis} must state its risks and blockers explicitly",
             )
+    carried_items.validate_review_accounting(review, dispatch)
 
 
 def _rebase_target(batch: JsonObject, dispatch: JsonObject) -> str | None:

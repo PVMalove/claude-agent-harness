@@ -35,6 +35,9 @@ from harness.orchestration.core.config import (
 from harness.orchestration.core.constants import (
     ATTENTION_EVENT_KINDS,
     ATTENTION_STATE_FIELDS,
+    CARRIED_ITEM_FIELDS,
+    CARRIED_ITEM_RECORD_FIELDS,
+    CARRIED_ITEM_SOURCES,
     CONTEXT_PACKAGE_FIELDS,
     V2_CONTEXT_PACKAGE_FIELDS,
     CONTEXT_PRESSURE_FIELDS,
@@ -602,6 +605,23 @@ def _validate_operational_batch_fields(batch: JsonObject) -> None:
                 remedy="the context_pressure level or source is inconsistent -- "
                 + INTERNAL_INVARIANT_REMEDY,
             )
+    for entry in batch.get("carried_items", []):
+        if not isinstance(entry, dict) or set(entry) != CARRIED_ITEM_RECORD_FIELDS:
+            raise CoordinatorError(
+                "batch carried_items record schema mismatch",
+                remedy="the batch carried_items record is malformed -- "
+                + INTERNAL_INVARIANT_REMEDY,
+            )
+        body = {key: value for key, value in entry.items() if key != "record_sha256"}
+        if (
+            entry["record_sha256"]
+            != hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest()
+        ):
+            raise CoordinatorError(
+                "batch carried_items record failed immutable integrity check",
+                remedy="a carried_items record was modified after its hash was recorded -- "
+                + INTERNAL_INVARIANT_REMEDY,
+            )
     if "needs_attention" in batch:
         flag = batch["needs_attention"]
         if not isinstance(flag, bool):
@@ -798,9 +818,9 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
     """The brief's transition, digest, approval, idempotency key and policy agree with one another
     and with the brief's own fields; the brief hash already proves none of them was edited alone."""
     transition = dispatch["transition"]
-    if not isinstance(transition, dict) or set(transition) != set(
-        operational_guards.TRANSITION_FIELDS
-    ):
+    if not isinstance(transition, dict) or set(transition) - set(
+        operational_guards.OPTIONAL_TRANSITION_FIELDS
+    ) != set(operational_guards.TRANSITION_FIELDS):
         raise CoordinatorError(
             "dispatch transition schema mismatch",
             remedy="the dispatch transition is malformed -- "
@@ -831,6 +851,18 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
         raise CoordinatorError(
             "dispatch transition does not match its brief",
             remedy="the dispatch transition diverged from its brief -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    # A non-empty carried-items section is part of what was approved (issue #499); an empty or
+    # absent one binds nothing, so every earlier transition keeps its digest.
+    carried = dispatch.get("carried_items")
+    expected_carried = (
+        operational_guards.carried_items_digest(carried) if carried else None
+    )
+    if transition.get("carried_items_sha256") != expected_carried:
+        raise CoordinatorError(
+            "dispatch transition does not match its carried items",
+            remedy="the dispatch transition diverged from its carried items -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
     if dispatch["retry_idempotency_key"] != _transition_idempotency_key(
@@ -870,6 +902,41 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
         )
 
 
+def _validate_carried_section(dispatch: JsonObject) -> None:
+    """A brief's carried-items section: one list of items per known source kind, only on a
+    developer or code-review work brief, each item id carried once (issue #499)."""
+    section = dispatch["carried_items"]
+    items = (
+        [item for kind in section.values() if isinstance(kind, list) for item in kind]
+        if isinstance(section, dict)
+        else []
+    )
+    ids = [item.get("item_id") for item in items if isinstance(item, dict)]
+    if (
+        not isinstance(section, dict)
+        or not set(section) <= set(CARRIED_ITEM_SOURCES)
+        or any(not isinstance(kind, list) or not kind for kind in section.values())
+        or any(
+            not isinstance(item, dict) or set(item) != CARRIED_ITEM_FIELDS
+            for item in items
+        )
+        or len(set(ids)) != len(items)
+        or (
+            section
+            and (
+                dispatch.get("role") not in {"developer", "code-review"}
+                or dispatch.get("purpose") != "work"
+            )
+        )
+    ):
+        raise CoordinatorError(
+            "dispatch carried_items must map known source kinds to their items, on a developer "
+            "or code-review work brief only",
+            remedy="the dispatch record's carried_items is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+
+
 def _validate_dispatch(
     repo: Path, config: JsonObject, root: Path, batch: JsonObject, dispatch: JsonObject
 ) -> None:
@@ -901,6 +968,8 @@ def _validate_dispatch(
     accepted |= {fields - POLICY_BRIEF_FIELDS for fields in set(accepted)}
     # The code-review brief's commit-plan divergence (issue #478) came later than all of them.
     accepted |= {fields - {"commit_plan_divergence"} for fields in set(accepted)}
+    # The carried-items section (issue #499) came after that.
+    accepted |= {fields - {"carried_items"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError(
             "dispatch record schema mismatch",
@@ -916,6 +985,8 @@ def _validate_dispatch(
             remedy="the dispatch record's commit_plan_divergence is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
+    if "carried_items" in dispatch:
+        _validate_carried_section(dispatch)
     if dispatch.get("state") != "approved":
         raise CoordinatorError(
             "dispatch record is not an approved immutable brief",

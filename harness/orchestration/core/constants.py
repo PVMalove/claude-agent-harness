@@ -37,7 +37,9 @@ RETRY_REASON_CATEGORIES = (
 # names a route the coordinator already computes; a new route adds its value here and its row to
 # the playbook "Recovery route table" in the same change. ``report-completion`` is not a
 # ``batch decide`` route: ``report submit`` names it when the policy chain after a recorded report
-# stops, and the coordinator completes that chain with ``report complete``.
+# stops, and the coordinator completes that chain with ``report complete``. ``carry-over`` is
+# recorded by an ``accept`` with ``--findings-file`` and by ``batch carry-over`` (issue #499): a
+# coordinator finding goes into review instead of costing a developer retry before it.
 RECOVERY_ROUTES = (
     "developer-retry",
     "same-candidate-rerun",
@@ -45,6 +47,7 @@ RECOVERY_ROUTES = (
     "architect-retry",
     "abandon",
     "report-completion",
+    "carry-over",
 )
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {
@@ -153,6 +156,23 @@ DISPATCH_FIELDS = {
     "liveness",
     "commit_plan",
     "commit_plan_divergence",
+    "carried_items",
+}
+# The carried-items brief section (issue #499) is one shared channel keyed by the kind of source
+# that raised an item; a later kind adds its value here without changing the section's shape.
+CARRIED_ITEM_SOURCES = ("coordinator-finding", "review-finding")
+# One carried item as a brief hands it to a role.
+CARRIED_ITEM_FIELDS = frozenset(
+    {"item_id", "source", "summary", "files", "expected_evidence"}
+)
+# How a code-review report accounts for one carried item; only ``closed`` settles it as clean.
+CARRIED_ITEM_STATUSES = ("closed", "open", "unverified")
+CARRIED_ITEM_ACCOUNTING_FIELDS = frozenset({"item_id", "status", "evidence"})
+# One coordinator finding as the batch records it, append-only and hash-checked.
+CARRIED_ITEM_RECORD_FIELDS = CARRIED_ITEM_FIELDS | {
+    "attached_at",
+    "attached_by",
+    "record_sha256",
 }
 # One entry of a developer brief's commit plan; ``covers`` names definition-of-done items 1..n.
 COMMIT_PLAN_ENTRY_FIELDS = frozenset({"id", "summary", "expected_paths", "covers"})
