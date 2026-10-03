@@ -4765,6 +4765,80 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self._batch_record(batch["batch_id"])["dispatches"][1]["dispatch_id"],
         )
 
+    def test_an_auto_accepted_verification_report_is_assessed_on_its_pinned_candidate(
+        self,
+    ) -> None:
+        """A verification report is read-only and has no commit of its own: its policy chain
+        assesses the candidate its dispatch pinned and hands that candidate to QA, so the chain
+        completes and report complete has nothing left to run."""
+        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        plan = self._batch_plan()
+        plan["definition_of_done"] = ["add simple marker"]
+        with mock.patch.object(self, "_batch_plan", return_value=plan):
+            batch = self._create_batch()
+        architect = self._live_architect(batch["batch_id"])
+        developer_id = self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )["next_dispatch_id"]
+        developer = coordinator._read_object(
+            self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
+        )
+        self._start(developer_id)
+        candidate, changed = self._developer_commit("marker")
+        self._submit(
+            developer_id,
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers="verification environment unavailable",
+            ),
+        )
+        self._decide(
+            batch["batch_id"], "retry", reason_category="verification-infrastructure"
+        )
+        verification = self._dispatch(
+            batch["batch_id"], "verification", candidate=candidate
+        )["brief"]
+        self._start(verification["dispatch_id"], checkout=self.worktree)
+
+        submitted = self._submit(
+            verification["dispatch_id"],
+            self._base_report(verification, "verification"),
+        )
+
+        self.assertTrue(submitted["auto_accepted"])
+        self.assertNotIn("completion", submitted)
+        stored = self._batch_record(batch["batch_id"])
+        self.assertEqual(
+            [item["candidate_commit"] for item in stored["risk_assessments"]],
+            [candidate],
+        )
+        self.assertEqual(submitted["next_action"], "qa")
+        qa = stored["dispatches"][-1]
+        self.assertEqual(
+            (qa["role"], qa["dispatch_id"]), ("qa", submitted["next_dispatch_id"])
+        )
+        self.assertEqual(
+            coordinator._read_object(
+                self._records() / "dispatches" / f"{qa['dispatch_id']}.json",
+                "dispatch",
+            )["candidate_commit"],
+            candidate,
+        )
+        before = self._ledger_files()
+
+        repeated = self._complete(verification["dispatch_id"])
+
+        self.assertEqual(
+            repeated["steps"],
+            dict.fromkeys(
+                ("policy-decide", "risk-assess", "next-dispatch"), "already-done"
+            ),
+        )
+        self.assertEqual(self._ledger_files(), before)
+
     def test_risk_assessment_for_a_completion_is_refused_once_the_batch_moved_on(
         self,
     ) -> None:

@@ -33,7 +33,7 @@ from harness.orchestration.ledger.lifecycle import LifecycleLedger
 from harness.orchestration.workflow.decisions import decide_batch
 from harness.orchestration.workflow.dispatch import create_dispatch
 from harness.orchestration.workflow.history import _require_route
-from harness.orchestration.workflow.risk import assess_risk
+from harness.orchestration.workflow.risk import _candidate_changed_files, assess_risk
 
 POLICY_CHAIN_STEPS = ("policy-decide", "risk-assess", "next-dispatch")
 COMPLETION_ROUTE = "report-completion"
@@ -86,9 +86,18 @@ def _chain_state(root: Path, dispatch_id: str) -> JsonObject:
     }
 
 
-def _clean_assessment(repo: Path, batch: JsonObject, report: JsonObject) -> bool:
+def _assessed_candidate(state: JsonObject) -> object:
+    """The candidate an accepted report puts up for risk assessment: a developer's own commit, or,
+    for a read-only verification report that has no commit of its own, the candidate its
+    dispatch was pinned to."""
+    if state["report"].get("role") == "verification":
+        return state["dispatch"].get("candidate_commit")
+    return state["report"].get("commit_sha")
+
+
+def _clean_assessment(repo: Path, batch: JsonObject, reported: object) -> bool:
     """Whether the latest risk assessment of the reported candidate matched no trigger."""
-    candidate = _candidate_commit(repo, report["commit_sha"])
+    candidate = _candidate_commit(repo, reported)
     assessments = [
         item
         for item in batch.get("risk_assessments", [])
@@ -170,14 +179,21 @@ def _run_policy_chain(
         ):
             steps[step] = "already-done"
         else:
+            candidate = _assessed_candidate(state)
+            changed_files = report["changed_files"]
+            if report.get("role") == "verification":
+                # Nor a diff of its own: measure the pinned candidate as risk assess does.
+                changed_files = _candidate_changed_files(
+                    repo, state["batch"], _candidate_commit(repo, candidate)
+                )
             assess_risk(
                 argparse.Namespace(
                     repo=str(repo),
                     state_dir=state_dir,
                     batch=batch_id,
-                    candidate_commit=report["commit_sha"],
+                    candidate_commit=candidate,
                     base_commit=None,
-                    changed_file=report["changed_files"],
+                    changed_file=changed_files,
                     developer_trigger=report.get("risk_triggers", []),
                     _expected_next_action="risk-assessment",
                 )
@@ -195,7 +211,7 @@ def _run_policy_chain(
             next_action == "qa"
             and policy == "low_risk"
             and assessed
-            and _clean_assessment(repo, state["batch"], report)
+            and _clean_assessment(repo, state["batch"], _assessed_candidate(state))
         ):
             dispatch = state["dispatch"]
             prepared = create_dispatch(
@@ -206,7 +222,7 @@ def _run_policy_chain(
                     role=next_action,
                     runtime=dispatch.get("resolved_runtime"),
                     purpose="work",
-                    candidate_commit=report.get("commit_sha")
+                    candidate_commit=_assessed_candidate(state)
                     if next_action == "qa"
                     else None,
                     delta_review_of=None,
