@@ -113,17 +113,35 @@ the ledger lock or any state file by hand; a lock that stays held goes to
 
 ## Worker prompt
 
-Every worker prompt is this template, filled from the `dispatch send` result. The brief and the
-Context Package already carry the task, so the prompt carries only pointers to them:
+Every worker prompt is this template, filled from the `dispatch send` result and the CLI invocation
+used to send it. The brief and Context Package carry the task; the prompt also carries the mandatory
+lifecycle. Fill `<coordinator CLI>` with the Python executable, absolute `coordinator.py` path and
+absolute `--repo` (plus `--state-dir` when supplied) used for that dispatch. Quote paths for the
+worker's shell. Keep this same ledger address even when the worker runs in another worktree.
+Copy the heartbeat interval from `dispatch send.heartbeat.every_seconds` verbatim.
 
 ```text
 You are the <role> worker for dispatch <dispatch_id>.
 Brief: <brief path from dispatch send>
 Report staging path: <report_staging_path from dispatch send, verbatim>
+Coordinator CLI: <coordinator CLI>
+Before task work, run git rev-parse --show-toplevel, git branch --show-current and git rev-parse HEAD
+in your runtime's current directory. Confirm your actually active model and the probed Git top-level:
+<coordinator CLI> dispatch self-report --dispatch <dispatch_id> --model "<actual active model>" --worktree "<probed Git top-level>"
+Proceed only after a successful self-report; escalate a mismatch or unavailable model identity.
+Immediately after self-report and at least every <heartbeat.every_seconds> seconds while working, run:
+<coordinator CLI> dispatch heartbeat --dispatch <dispatch_id>
 Context Package <context_package_id>: start from its starting_files, symbol_graph and
 related_tests. For a starting file with non-empty sections, read only the start_line–end_line
 ranges the task needs.
 Work within the brief; escalate a blocker for anything the brief and the package leave out.
+Before your final reply, write the completion report JSON to the exact report staging path using
+the common and role-specific report contract, with report_language: ru, then run:
+<coordinator CLI> report submit --file "<report_staging_path>"
+Completion means the report is recorded in the ledger. Include the submit result in your final reply.
+If submission fails before recording, return the command and error as a blocker; keep the report file.
+If the result includes completion, relay it to the coordinator for report complete; the report is
+already recorded, so submit it only once. Chat text alone does not complete the dispatch.
 ```
 
 A developer retry adds two lines from the `retry_start` of its `dispatch preflight`:
@@ -132,6 +150,11 @@ A developer retry adds two lines from the `retry_start` of its `dispatch preflig
 Retry handoff: <retry_start.handoff, verbatim JSON>
 Retry starting files: <paths from retry_start.starting_files>
 ```
+
+Use this lifecycle for every new or resumed worker session, including developer-retry. A continuation
+that stops at a checkpoint follows the checkpoint protocol instead of submitting a completion report.
+The coordinator treats a final reply without recorded completion or a valid checkpoint as an
+unfinished handoff and requests the missing protocol from the same available worker session.
 
 Large documents (the role catalog, `playbook.md`, `backend-orchestration.md`, `git-workflow.md`) and
 prior reports reach a worker only as Context Package section ranges or through the retry handoff.

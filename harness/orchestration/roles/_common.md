@@ -24,9 +24,22 @@ records the selected provider and model separately; manifests never choose eithe
 
 Start with the Context Package and one startup probe: run `git rev-parse --show-toplevel`, `git branch
 --show-current`, and `git rev-parse HEAD` in the runtime's current directory. Report that canonical
-worktree through `dispatch self-report --dispatch <dispatch_id> --model <model> --worktree <top-level>` when the project requires worker
-attestation. This is the only startup discovery needed before role-specific files; after the probe,
+worktree through `dispatch self-report --dispatch <dispatch_id> --model <actual-active-model>
+--worktree <top-level>` before task work in every new or resumed session. Model self-report is always
+required; `worker_attestation_required` controls the additional worktree check. Use the coordinator
+CLI and its absolute repo/state paths from the prompt even when your current directory is another
+worktree. After a successful self-report, send `dispatch heartbeat --dispatch <dispatch_id>`
+immediately and at least every `liveness.heartbeat_every_seconds` from the brief while working.
+Escalate a mismatch or unavailable model identity instead of copying the expected model as evidence.
+This is the only startup discovery needed before role-specific files; after the probe,
 work from the package rather than navigating to a guessed relative repository path.
+
+Before a final reply, submit the JSON completion report with `report submit --file
+<report_staging_path>` and verify that it was recorded. Chat text alone does not complete a dispatch.
+If submission fails before recording, preserve the staged report and relay the command and error as
+a blocker. A result with `completion` means the report is already recorded: relay that result to the
+coordinator for `report complete`, rather than submitting again. A planned checkpoint is the separate
+continuation protocol, not a completion report.
 
 The Context Package's `starting_files`, `symbol_graph`, and `related_tests` are the working set for
 the role's task: read those first. A starting file with non-empty `sections` is a large document

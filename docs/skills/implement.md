@@ -79,18 +79,41 @@ blockers и ссылку на package. Read-only роли не могут checkp
 
 ## Промпт воркера
 
-Каждый промпт воркера — этот шаблон, заполненный из результата `dispatch send`. Задачу уже несут
-brief и Context Package, поэтому промпт содержит только указатели на них:
+Каждый промпт воркера — этот шаблон, заполненный из результата `dispatch send` и вызова CLI,
+которым его отправили. Brief и Context Package несут задачу; промпт также несёт обязательный
+lifecycle. В `<coordinator CLI>` подставляются Python executable, абсолютный путь `coordinator.py`
+и абсолютный `--repo` (плюс `--state-dir`, если он задан) исходного dispatch. Пути экранируются для
+shell воркера. Адрес ledger сохраняется и при работе из другого worktree. Интервал heartbeat
+копируется дословно из `dispatch send.heartbeat.every_seconds`.
 
 ```text
 You are the <role> worker for dispatch <dispatch_id>.
 Brief: <brief path from dispatch send>
 Report staging path: <report_staging_path from dispatch send, verbatim>
+Coordinator CLI: <coordinator CLI>
+Before task work, run git rev-parse --show-toplevel, git branch --show-current and git rev-parse HEAD
+in your runtime's current directory. Confirm your actually active model and the probed Git top-level:
+<coordinator CLI> dispatch self-report --dispatch <dispatch_id> --model "<actual active model>" --worktree "<probed Git top-level>"
+Proceed only after a successful self-report; escalate a mismatch or unavailable model identity.
+Immediately after self-report and at least every <heartbeat.every_seconds> seconds while working, run:
+<coordinator CLI> dispatch heartbeat --dispatch <dispatch_id>
 Context Package <context_package_id>: start from its starting_files, symbol_graph and
 related_tests. For a starting file with non-empty sections, read only the start_line–end_line
 ranges the task needs.
 Work within the brief; escalate a blocker for anything the brief and the package leave out.
+Before your final reply, write the completion report JSON to the exact report staging path using
+the common and role-specific report contract, with report_language: ru, then run:
+<coordinator CLI> report submit --file "<report_staging_path>"
+Completion means the report is recorded in the ledger. Include the submit result in your final reply.
+If submission fails before recording, return the command and error as a blocker; keep the report file.
+If the result includes completion, relay it to the coordinator for report complete; the report is
+already recorded, so submit it only once. Chat text alone does not complete the dispatch.
 ```
+
+Этот lifecycle обязателен для каждой новой или resumed worker session, включая developer-retry.
+Сессия, остановившаяся на checkpoint, следует отдельному checkpoint-протоколу вместо completion
+report. Финальный текст без записанного completion или валидного checkpoint — незавершённый
+handoff; coordinator запрашивает недостающий протокол у той же доступной worker session.
 
 Developer-retry добавляет две строки из `retry_start` своего `dispatch preflight`:
 
