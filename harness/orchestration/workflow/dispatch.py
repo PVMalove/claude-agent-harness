@@ -194,15 +194,9 @@ def _accepted_divergence(
     A developer-retry builds on that history and keeps its strict commit_map, so the commit
     boundaries a reviewer has to judge are the ones the initial or rebase report recorded.
     """
-    for item in reversed(batch.get("dispatches", [])):
-        decision = item.get("decision")
-        if (
-            item.get("role") != "developer"
-            or item.get("state") != "reported"
-            or not isinstance(decision, dict)
-            or decision.get("decision") not in {"accept", "override-warning"}
-        ):
-            continue
+    for item in plan_rules.decided_entries(
+        batch, "developer", {"accept", "override-warning"}
+    ):
         developer = _load_dispatch(root, item["dispatch_id"])
         if developer.get("purpose", "work") != "work" or plan_rules.is_developer_retry(
             developer
