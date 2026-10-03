@@ -15,26 +15,46 @@ report and risk modules call into it, never the other way round.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 from pathlib import Path, PurePosixPath
+from typing import cast
 
 from harness.orchestration import operational_guards
+from harness.orchestration.core import utils
 from harness.orchestration.core.config import _reject_sensitive
 from harness.orchestration.core.constants import CARRIED_ITEM_FIELDS
+from harness.orchestration.core.git_utils import _candidate_commit
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
     _canonical,
     _non_empty,
     _read_object,
+    _repo,
+    _safe_id,
 )
 from harness.orchestration.core.workspace import (
     _agent_authored_file,
     _reject_non_english,
 )
-from harness.orchestration.ledger.ledger_ops import _load_dispatch
+from harness.orchestration.ledger.ledger_ops import (
+    _ledger_lock,
+    _load_batch,
+    _load_dispatch,
+    _replace_record,
+    _state_root,
+)
+from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
+from harness.orchestration.workflow.history import (
+    _pending_report,
+    _validate_batch_integrity,
+)
 
 COORDINATOR_FINDING = "coordinator-finding"
+# ``batch carry-over`` starts no dispatch and moves no candidate, so the coordinator runs it under
+# this policy name, the way ``batch resume`` records ``policy:operational-recovery``.
+CARRY_OVER_POLICY = "carry-over"
 FINDING_FIELDS = frozenset({"summary", "files", "expected_evidence"})
 FINDINGS_FILE_REMEDY = (
     'write the findings file as {"findings": [{"summary": ..., "files": [...], '
@@ -222,3 +242,142 @@ def brief_section(root: Path, batch: JsonObject, role: str, purpose: str) -> Jso
 def section_sha256(section: JsonObject) -> str | None:
     """The digest a transition binds for a non-empty section; ``None`` binds nothing."""
     return operational_guards.carried_items_digest(section) if section else None
+
+
+def _accepted_developer_work(root: Path, entry: JsonObject) -> bool:
+    decision = entry.get("decision")
+    return (
+        entry.get("role") == "developer"
+        and entry.get("state") == "reported"
+        and isinstance(decision, dict)
+        and decision.get("decision") in {"accept", "override-warning"}
+        and _load_dispatch(root, entry["dispatch_id"]).get("purpose") == "work"
+    )
+
+
+def _refuse_after(root: Path, entry: JsonObject) -> CoordinatorError:
+    """The refusal once a dispatch was created after the accepted developer report."""
+    candidate = _load_dispatch(root, entry["dispatch_id"]).get("candidate_commit")
+    message = (
+        f"{entry['role']} dispatch {entry['dispatch_id']} for candidate {candidate} was "
+        "already created after the accepted developer report, so its brief cannot carry new "
+        "coordinator findings"
+    )
+    if entry.get("state") == "approved":
+        remedy = (
+            f"cancel the unsent dispatch with dispatch cancel --dispatch {entry['dispatch_id']} "
+            "--approved-by <name> --approved-at <ISO-8601> --reason <why>, then run batch "
+            "carry-over again"
+        )
+    else:
+        remedy = (
+            "report the defect when deciding that dispatch's report: a retry routes a "
+            "developer-retry whose brief carries the review findings and every open "
+            "coordinator finding"
+        )
+    return CoordinatorError(message, remedy=remedy)
+
+
+def _carry_over_target(root: Path, batch: JsonObject) -> JsonObject:
+    """The accepted developer work report ``batch carry-over`` attaches findings to.
+
+    It is the batch's last accepted developer work report, and nothing but a cancelled dispatch
+    may follow it: a created code-review dispatch (or a qa dispatch a policy chain created) already
+    holds the brief the findings would have to be in.
+    """
+    entries = batch.get("dispatches", [])
+    if any(
+        item.get("state") == "reported" and "decision" not in item for item in entries
+    ):
+        raise CoordinatorError(
+            "batch carry-over requires a batch with no completion report awaiting a decision",
+            remedy="decide the pending report first; a developer report accepted with batch "
+            "decide --findings-file <path> carries the findings in that same decision",
+        )
+    position = next(
+        (
+            index
+            for index in range(len(entries) - 1, -1, -1)
+            if _accepted_developer_work(root, entries[index])
+        ),
+        None,
+    )
+    if position is None:
+        raise CoordinatorError(
+            "batch carry-over requires an accepted developer work report in this batch",
+            remedy="accept a developer work report first; carry-over attaches findings to it "
+            "before its code-review dispatch is created",
+        )
+    following = [
+        item for item in entries[position + 1 :] if item.get("state") != "cancelled"
+    ]
+    if following:
+        raise _refuse_after(root, following[0])
+    if batch.get("state") != "awaiting-approval":
+        raise CoordinatorError(
+            f"batch carry-over requires a batch awaiting approval, not {batch.get('state')!r}",
+            remedy="carry findings over only while the batch awaits its next dispatch",
+        )
+    return cast(JsonObject, entries[position])
+
+
+def carry_over_findings(args: argparse.Namespace) -> JsonObject:
+    """Attach coordinator findings to an already accepted developer report (``batch carry-over``).
+
+    This is the route after a policy auto-accept, which never takes a findings file. It starts no
+    dispatch and moves no candidate, so the coordinator records it under ``policy:carry-over``; it
+    only adds review obligations, and a batch bound for qa goes to code-review instead.
+    """
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    findings = read_findings(repo, args.findings_file)
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
+        batch = _load_batch(root, args.batch)
+        _validate_batch_integrity(root, batch)
+        entry = _carry_over_target(root, batch)
+        report = _pending_report(root, batch, entry)
+        moment = utils._now()
+        approved_by = f"policy:{CARRY_OVER_POLICY}"
+        records = attach(
+            batch,
+            findings,
+            source=coordinator_source(
+                entry, _candidate_commit(repo, report["commit_sha"])
+            ),
+            attached_at=moment,
+            attached_by=approved_by,
+        )
+        if batch.get("next_action") == "qa":
+            batch["next_action"] = "code-review"
+        decision: JsonObject = {
+            "dispatch_id": entry["dispatch_id"],
+            "decision": "carry-over",
+            "approved_by": approved_by,
+            "approved_at": moment,
+            "note": f"{len(records)} coordinator finding(s) carried into code-review",
+        }
+        batch.setdefault("coordinator_decisions", []).append(decision)
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(
+            ledger,
+            BatchRecord.from_dict(batch),
+            decision={
+                "dispatch_id": entry["dispatch_id"],
+                "decision": "carry-over",
+                "route": None,
+                "evidence": {
+                    "dispatch_id": entry["dispatch_id"],
+                    "report": entry["report"],
+                    "report_sha256": entry["report_sha256"],
+                },
+                "approver": {"kind": "policy", "name": CARRY_OVER_POLICY},
+                "approved_at": moment,
+            },
+        )
+    return {
+        "batch_id": batch["batch_id"],
+        "dispatch_id": entry["dispatch_id"],
+        "carried_item_ids": [record["item_id"] for record in records],
+        "next_action": batch.get("next_action"),
+    }

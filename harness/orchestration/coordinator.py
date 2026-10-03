@@ -143,6 +143,9 @@ from harness.orchestration.workflow.batch import (
 from harness.orchestration.workflow.batch import (
     resume_batch as resume_batch,
 )
+from harness.orchestration.workflow.carried_items import (
+    carry_over_findings as carry_over_findings,
+)
 from harness.orchestration.workflow.completion import (
     complete_report as complete_report,
 )

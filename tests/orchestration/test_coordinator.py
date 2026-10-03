@@ -6499,6 +6499,127 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         with self.assertRaisesRegex(coordinator.CoordinatorError, "carried items"):
             validate(emptied)
 
+    def _carry_over(self, batch_id: str) -> JsonObject:
+        return coordinator.carry_over_findings(
+            self._args(batch=batch_id, findings_file=self._findings_file())
+        )
+
+    def _auto_accepted_developer(self) -> tuple[str, JsonObject, str]:
+        """A trigger-free developer report the patched policy accepted and risk-assessed."""
+        brief = self._auto_developer(["add simple marker"])
+        candidate, changed = self._developer_commit("x")
+        self._submit(
+            brief["dispatch_id"], self._developer_report(brief, candidate, changed)
+        )
+        stored = self._batch_record(self.batch_id)
+        developer = next(
+            item
+            for item in stored["dispatches"]
+            if item["dispatch_id"] == brief["dispatch_id"]
+        )
+        self.assertEqual(
+            developer["decision"]["approved_by"], f"policy:{stored['approval_policy']}"
+        )
+        return self.batch_id, brief, candidate
+
+    def test_carry_over_attaches_findings_after_a_policy_auto_accept(self) -> None:
+        self._patch_config(approval_policy="milestone")
+        batch_id, developer, candidate = self._auto_accepted_developer()
+        self.assertEqual(self._batch_record(batch_id)["next_action"], "qa")
+
+        carried = self._carry_over(batch_id)
+
+        stored = self._batch_record(batch_id)
+        self.assertEqual(carried["carried_item_ids"], ["coordinator-finding-1"])
+        self.assertEqual(stored["next_action"], "code-review")
+        [record] = stored["carried_items"]
+        self.assertEqual(record["source"]["dispatch_id"], developer["dispatch_id"])
+        self.assertEqual(record["source"]["candidate_commit"], candidate)
+        self.assertEqual(record["attached_by"], "policy:carry-over")
+        decision = stored["coordinator_decisions"][-1]
+        self.assertEqual(
+            (decision["decision"], decision["dispatch_id"], decision["approved_by"]),
+            ("carry-over", developer["dispatch_id"], "policy:carry-over"),
+        )
+        self.assertEqual(decisions._developer_retry_count(stored), 0)
+        review = self._dispatch(batch_id, "code-review", candidate=candidate)
+        self.assertEqual(
+            [item["item_id"] for item in self._carried(review["brief"])],
+            ["coordinator-finding-1"],
+        )
+
+    def test_carry_over_names_a_chain_created_qa_dispatch_until_it_is_cancelled(
+        self,
+    ) -> None:
+        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        batch_id, _, _ = self._auto_accepted_developer()
+        qa = self._batch_record(batch_id)["dispatches"][-1]
+        self.assertEqual((qa["role"], qa["state"]), ("qa", "approved"))
+        before = self._batch_record(batch_id)
+
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            self._carry_over(batch_id)
+
+        self.assertIn(qa["dispatch_id"], refused.exception.message)
+        self.assertIn("dispatch cancel", refused.exception.remedy)
+        self.assertEqual(self._batch_record(batch_id), before)
+        coordinator.cancel_dispatch(
+            self._args(
+                dispatch=qa["dispatch_id"],
+                reason="carry a coordinator finding into review",
+                **self._approval(),
+            )
+        )
+
+        self._carry_over(batch_id)
+
+        self.assertEqual(self._batch_record(batch_id)["next_action"], "code-review")
+
+    def test_carry_over_is_refused_once_the_code_review_dispatch_exists(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        _, candidate, changed = self._reported_developer(batch["batch_id"])
+        self._decide(batch["batch_id"], "accept")
+        self._assess(batch["batch_id"], candidate, changed)
+        review = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+        before = self._batch_record(batch["batch_id"])
+
+        with self.assertRaises(coordinator.CoordinatorError) as unsent:
+            self._carry_over(batch["batch_id"])
+        self._start(review["dispatch_id"], checkout=self.worktree)
+        with self.assertRaises(coordinator.CoordinatorError) as running:
+            self._carry_over(batch["batch_id"])
+
+        for refused in (unsent, running):
+            self.assertIn(review["dispatch_id"], refused.exception.message)
+            self.assertIn(candidate, refused.exception.message)
+        self.assertIn("dispatch cancel", unsent.exception.remedy)
+        self.assertIn("retry", running.exception.remedy)
+        self.assertNotIn("dispatch cancel", running.exception.remedy)
+        self.assertNotIn("carried_items", self._batch_record(batch["batch_id"]))
+        self.assertEqual(
+            before["coordinator_decisions"],
+            self._batch_record(batch["batch_id"])["coordinator_decisions"],
+        )
+
+    def test_carry_over_needs_an_accepted_developer_report_and_no_pending_one(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+
+        with self.assertRaises(coordinator.CoordinatorError) as unaccepted:
+            self._carry_over(batch["batch_id"])
+        self._reported_developer(batch["batch_id"])
+        with self.assertRaises(coordinator.CoordinatorError) as pending:
+            self._carry_over(batch["batch_id"])
+
+        self.assertIn("accepted developer", unaccepted.exception.message)
+        self.assertIn("--findings-file", pending.exception.remedy)
+        self.assertNotIn("carried_items", self._batch_record(batch["batch_id"]))
+
 
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     """The pure routing table: structured evidence in, one routing record out (no I/O)."""
@@ -7312,6 +7433,26 @@ class CoordinatorCliParserTests(unittest.TestCase):
         self.assertIs(carried.handler, coordinator.decide_batch)
         self.assertEqual(carried.findings_file, "findings.json")
         self.assertIsNone(parse(decide).findings_file)
+
+    def test_batch_carry_over_requires_a_batch_and_a_findings_file(self) -> None:
+        parse = coordinator.parser().parse_args
+
+        carried = parse(
+            ["batch", "carry-over", "--batch", "batch-1", "--findings-file", "f.json"]
+        )
+
+        self.assertIs(carried.handler, coordinator.carry_over_findings)
+        self.assertEqual((carried.batch, carried.findings_file), ("batch-1", "f.json"))
+        for missing in (
+            ["batch", "carry-over", "--batch", "batch-1"],
+            ["batch", "carry-over", "--findings-file", "f.json"],
+        ):
+            with self.subTest(missing=missing):
+                with (
+                    self.assertRaises(SystemExit),
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    parse(missing)
 
     def test_coordinator_parser_wires_the_same_handler(self) -> None:
         args = coordinator.parser().parse_args(["dispatch", "status"])

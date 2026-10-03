@@ -211,6 +211,19 @@ def build_parser(
         "findings every later code-review brief carries until a review settles them",
     )
     decide.set_defaults(handler=handlers.decide_batch)
+    carry_over = batch_commands.add_parser(
+        "carry-over",
+        help="carry coordinator findings into review after the developer report was accepted, "
+        "before its code-review dispatch is created",
+    )
+    _common(carry_over)
+    carry_over.add_argument("--batch", required=True)
+    carry_over.add_argument(
+        "--findings-file",
+        required=True,
+        help='a JSON file {"findings": [{"summary", "files", "expected_evidence"}, ...]}',
+    )
+    carry_over.set_defaults(handler=handlers.carry_over_findings)
     attention = batch_commands.add_parser(
         "attention", help="operational-loop attention state of a batch"
     )
