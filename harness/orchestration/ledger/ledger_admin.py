@@ -11,6 +11,7 @@ import argparse
 import socket
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 from harness.cleanup import _pid_active
 from harness.orchestration.core.constants import (
@@ -141,14 +142,15 @@ def release_ledger_lock(args: argparse.Namespace) -> JsonObject:
             if isinstance(owner, dict)
             else "an unrecorded owner"
         )
+        remaining = LEDGER_LOCK_STALE_SECONDS - cast(int, state["held_seconds"])
         remedy = {
             "owner-alive": "let the owner process finish its ledger operation and repeat the "
             "command that met the lock; a lock whose owner process is alive is never released",
             "owner-on-another-host": "run 'coordinator.py ledger release-lock' on the owner's "
             "host, where its process can be checked",
-            "owner-unknown-recent": "repeat 'coordinator.py ledger release-lock' once the lock "
-            f"has been held for {LEDGER_LOCK_STALE_SECONDS} seconds; a lock without an owner "
-            "record is released only once it is stale",
+            "owner-unknown-recent": "repeat 'coordinator.py ledger release-lock' in "
+            f"{remaining} seconds; a lock without a readable owner record is released only once "
+            f"it has been held for {LEDGER_LOCK_STALE_SECONDS} seconds",
         }[reason]
         raise CoordinatorError(
             f"ledger lock is not released ({reason}): held by {holder} for "

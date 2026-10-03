@@ -65,9 +65,8 @@ or replaces it with a newly approved plan that explains the changed boundary. Th
 completion report maps every created commit to the entries it closes; a mapping that is not
 one-to-one needs `dod_coverage` and `divergence_justification`, and a report with a `not_covered`
 item can be accepted only by `override-warning` with a note other than `none`, or returned with
-`retry`. Do not collapse
-unrelated implementation, tests, documentation, or type-only repairs into a recovery commit merely
-because they are staged together.
+`retry`. Do not collapse unrelated implementation, tests, documentation, or type-only repairs into a
+recovery commit merely because they are staged together.
 
 Follow the configured approval policy. Under `manual_all`, every transition needs explicit approval:
 show the decision packet, ask, and wait. Under `low_risk`, a clean completed report in an eligible
@@ -83,6 +82,13 @@ route for `retry` or `abandon`, show the decision packet's `route_preview` (with
 `--reason-category` or `--retry-role` you intend to pass to `batch decide`) and follow the
 Recovery route table in `.harness/orchestration/playbook.md` (situation → route → who approves →
 evidence).
+
+When you find a defect in a clean developer report whose DoD is met inside its zone, do not retry
+it: accept it with `batch decide --findings-file <path>`, or after a policy auto-accept run
+`batch carry-over --batch <id> --findings-file <path>` before its code-review dispatch exists. The
+finding travels into the code-review brief as a carried item (route `carry-over`), and the one
+developer retry is spent after review. Retry a developer report without accept only for an unmet
+DoD item or an out-of-zone change.
 
 Each worker records a model self-report and is observed by the event-driven watchdog; those facts
 are evidence, never a reason to edit an immutable brief.

@@ -542,6 +542,70 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    последнего принятого initial или rebase developer report (у остальных ролей поле `null`), чтобы
    reviewer проверил, что границы коммитов остались reviewable.
 
+   Дефект, который coordinator нашёл в чистом developer report, не тратит developer-retry до review
+   (маршрут `carry-over`). Retry developer report без accept — исключение только для невыполненного
+   пункта DoD или изменения вне зоны; в остальных случаях report принимается с находками:
+
+   ```bash
+   python .harness/orchestration/coordinator.py --repo . batch decide \
+     --batch <batch-id> --decision accept --approved-by 'имя утверждающего' \
+     --approved-at 2026-09-09T12:02:00Z --findings-file .harness/.sandboxes/scratch/findings.json
+   ```
+
+   Файл лежит в репозитории или одном из его worktree и содержит ровно один ключ
+   `{"findings": [...]}`. Каждая находка содержит ровно три поля: непустой `summary`, `files` —
+   непустой список уникальных путей от корня репозитория в POSIX-форме (без ведущего `/`, обратной
+   косой черты и сегмента `..`) — и непустой `expected_evidence`: чем review подтвердит закрытие.
+   Текст находки передаётся роли, поэтому он на английском. Флаг допустим только с `accept` или
+   `override-warning` на completed developer work report; иначе решение отклоняется с remedy, и
+   batch не меняется. Каждая находка записывается в batch append-only как запись `carried_items`:
+   `item_id` `coordinator-finding-<n>` (порядковый номер в batch), `source` (`kind`, `dispatch_id` и
+   `report_sha256` принятого report, `candidate_commit`), `summary`, `files`, `expected_evidence`,
+   `attached_at`, `attached_by` и `record_sha256`, который сверяется при каждом чтении batch.
+
+   После policy auto-accept, который файл находок не принимает, находки добавляет `batch carry-over`:
+
+   ```bash
+   python .harness/orchestration/coordinator.py --repo . batch carry-over \
+     --batch <batch-id> --findings-file .harness/.sandboxes/scratch/findings.json
+   ```
+
+   Команда не создаёт dispatch и не меняет candidate, поэтому человек её не утверждает: она
+   записывает решение coordinator `carry-over` с `approved_by: policy:carry-over` и прикрепляет
+   находки к последнему принятому developer work report; batch с `next_action: qa` переходит в
+   `code-review`. Команда отклоняется с remedy, пока какой-либо report ждёт решения, если в batch нет
+   принятого developer work report и если после него уже создан не отменённый dispatch: для
+   неотправленного code-review (или qa, созданного low_risk-цепочкой) remedy — `dispatch cancel` и
+   повтор `batch carry-over`, для отправленного — сообщить дефект при решении его report.
+
+   Пока находка открыта, risk assessment ведёт candidate в `code-review`, даже если ни один триггер
+   не совпал (`review_required` записи оценки не меняется). Находка закрыта, когда принят (`accept`
+   или `override-warning`) code-review, чей brief её нёс; retry review оставляет её открытой.
+
+   Каждый brief несёт секцию `carried_items` — общий канал переносимых пунктов: объект, ключ —
+   вид источника (`coordinator-finding`, `review-finding`), значение — список
+   `{item_id, source, summary, files, expected_evidence}`; пустой канал — `{}`. Brief code-review и
+   developer work несёт все открытые `coordinator-finding`. Developer brief, отвечающий на `retry`
+   code-review с маршрутом `developer-retry`, несёт ещё находки осей Standards и Spec этого review
+   как `review-finding` (`item_id` `review-finding-<n>`; `source` — `dispatch_id`, `report_sha256`,
+   `axis`, `severity`; `files: []`; `expected_evidence` — evidence находки). Поэтому единственный
+   developer-retry закрывает обе группы и тратит `retry_policy.max_developer_retries` один раз;
+   accept с находками и `batch carry-over` бюджет не тратят. Непустая секция входит в transition как
+   `carried_items_sha256`, так что находка, добавленная после `dispatch propose`, требует нового
+   approval.
+
+   Отчёт code-review отчитывается по каждому пункту brief в необязательном `review.carried_items`:
+   `[{"item_id": ..., "status": "closed" | "open" | "unverified", "evidence": ...}]`. `report submit`
+   отклоняет пункт, которого brief не нёс, повтор пункта, неизвестный статус и пустое evidence.
+   Пропуск пункта структурно допустим, но вместе с `unverified` и `open` это carried gap: отчёт не
+   clean, policy его автоматически не принимает, `--decision accept` отклоняется, а
+   `override-warning` требует `--note`, отличный от `none`, и записывает в решение
+   `carried_items_gap`; отчёт можно и вернуть через `retry`. Правила blocker и warning сохраняют
+   приоритет. Пункт `open` — структурное evidence категории `code`, поэтому такой retry ведёт в
+   `developer-retry`. `batch decision-packet` показывает `carried_items` (каждый пункт с `source`,
+   `summary`, `status` — у отчёта code-review `omitted` для пропущенного пункта — и `evidence`) и
+   `carried_items_gap`.
+
 Минимальный ручной brief хранит ticket и dispatch ID, роль и её access, выбранный profile/model/effort,
 zone и allowed paths, issue-ветку/worktree, DoD, запреты, команды, dependencies, approval. Для
 write-роли completion report обязан включать commit SHA, exact changed files, результаты всех checks,
@@ -630,7 +694,11 @@ agent inbox и записи QA-очереди dispatch, которые уже н
 `same-candidate-rerun` (новый code-review, qa или publish на том же SHA), `verification`,
 `architect-retry` и `abandon`. Шестое значение, `report-completion`, `batch decide` не записывает:
 его называет `completion` у `report submit`, когда policy-цепочка после записанного report
-остановилась (см. шаг 4 выше и «Занятый ledger» ниже). Маршрут ставится там же, где `next_action`, по тем же
+остановилась (см. шаг 4 выше и «Занятый ledger» ниже). Седьмое, `carry-over`, записывают `accept`
+или `override-warning` с `--findings-file` и `batch carry-over` (см. шаг 4): routing record с
+`previous_role: developer`, `next_role` и `next_action` `code-review`, `candidate_commit`,
+`carried_item_ids` и `rationale`, без `reason_category` и `decided_at`. К `next_action` он не
+применяется: тот идёт через risk assessment, как при любом accept developer. Маршрут ставится там же, где `next_action`, по тем же
 структурированным данным и никогда по свободному тексту. У `abandon` routing record той же формы, но
 `reason_category`, `next_role`, `next_action` и `candidate_commit` равны `null`, а `rationale`
 содержит только структурные факты (`--reason` остаётся в `note`). Нормативная таблица «ситуация →
@@ -653,13 +721,19 @@ Preview не проверяет `retry_policy.max_developer_retries`: при и�
 Если маршрут retry вычислить нельзя (например, упало настроенное расширение retry reason
 classifier), packet всё равно строится, а `route_preview.retry` равен
 `{"route": null, "refused": ..., "remedy": ...}` с той ошибкой, которой откажет
-`batch decide --decision retry`.
+`batch decide --decision retry`. С `--findings-file <path>` packet добавляет
+`route_preview["carry-over"]` — запись, которую сделает `batch decide --findings-file` на ожидающем
+developer report, а без такого report — `batch carry-over`, либо отказ той же формы
+`{"route": null, "refused": ..., "remedy": ...}`; без флага `route_preview` не меняется.
 
 Каждое решение `batch decide` хранит в transition audit record batch деталь `decision`:
-`dispatch_id`, `decision`, `route` (`null` у решения без маршрута — `accept`, `override-warning`,
+`dispatch_id`, `decision`, `route` (`carry-over` у `accept` и `override-warning` с
+`--findings-file`, `null` у решения без маршрута — остальных `accept`, `override-warning`,
 `block`, `fail`), `evidence` (`dispatch_id`, путь `report` и `report_sha256` immutable report),
 `approver` и `approved_at`. `approver` — `{"kind": "policy", "name": "low_risk" | "milestone"}` для
-policy auto-accept или `{"kind": "human", "name": <--approved-by>}` для явного решения; вид
+policy auto-accept или `{"kind": "human", "name": <--approved-by>}` для явного решения; решение
+`batch carry-over` пишет ту же деталь с `route: "carry-over"` и
+`{"kind": "policy", "name": "carry-over"}`; вид
 определяется путём, которым решение утверждено, а не строкой имени. Деталь входит в ту же audit-запись
 и ту же контрольную сумму, что и переход batch. Маршрут вне `RECOVERY_ROUTES` отклоняется с remedy
 при записи и при чтении batch.
@@ -747,7 +821,9 @@ candidate и evidence, но запрещает создание следующе
 целостностную проверку (`context_pressure` с hash, форма attention-полей, согласованность brief).
 Изменилось поведение CLI: `dispatch create` с `--approved-by` теперь требует `--transition-digest`.
 Brief без поля `commit_plan_divergence` и batch без `commit_plan` тоже остаются валидными; entry
-плана без `covers` покрывает пункт DoD по своей позиции.
+плана без `covers` покрывает пункт DoD по своей позиции. Brief без `carried_items`, transition без
+`carried_items_sha256`, batch без `carried_items` и отчёт code-review без `review.carried_items`
+тоже валидны: пустой канал ничего не добавляет в transition, поэтому прежние digest не меняются.
 
 Поле `route` в routing record и деталь `decision` в transition audit record batch тоже
 необязательны и введены без смены версии ledger (остаётся 3). Решение, записанное до них, читается
@@ -956,14 +1032,29 @@ python .harness/orchestration/coordinator.py --repo . ledger release-lock
 | Процесс владельца жив (на этом host) | отказ `owner-alive` — при любом возрасте lock |
 | Владелец на другом host | отказ `owner-on-another-host`: запустите команду на том host |
 | Процесс владельца завершился (на этом host) | снимается, `owner-dead` |
-| Нет записи владельца (lock старого runtime), lock младше `LEDGER_LOCK_STALE_SECONDS` (3600 с) | отказ `owner-unknown-recent` |
-| Нет записи владельца, lock старше `LEDGER_LOCK_STALE_SECONDS` | снимается, `owner-unknown-stale` |
-| Запись владельца есть, но не читается (владелец ещё записывает себя) | отказ при любом возрасте lock: владельца нельзя проверить |
+| Нет читаемой записи владельца, lock младше `LEDGER_LOCK_STALE_SECONDS` (3600 с) | отказ `owner-unknown-recent`; remedy называет, через сколько секунд lock можно снять |
+| Нет читаемой записи владельца, lock старше `LEDGER_LOCK_STALE_SECONDS` | снимается, `owner-unknown-stale` |
+
+Нет читаемой записи владельца, если lock взят старым runtime и записи нет вовсе или если владелец
+умер, создав `owner.json`, но не записав его: запись пустая или нечитаемая. Возраст нечитаемой
+записи считается от mtime `owner.json`, а без записи — от mtime каталога lock. Пока lock моложе
+порога, владелец может ещё записывать себя, поэтому команда отказывает. Владелец, который за
+`LEDGER_LOCK_STALE_SECONDS` так и не записал созданную запись, считается завершившимся.
 
 Успех — `{"released": true, "reason": ..., "lock": {...}}`; если lock нет —
 `{"released": false, "lock": null}`; отказ — ошибка с причиной, владельцем и `held_seconds`, lock
-не трогается. Команда снимает только тот lock, который проверила: если владелец сменился во время
-снятия, она отказывает и просит повторить. Запуски `ledger release-lock` не пересекаются: их
+не трогается. Объект `lock` описывает снятый lock:
+
+| Поле | Значение |
+| --- | --- |
+| `path` | каталог lock |
+| `owner` | запись владельца (`pid`, `host`, `acquired_at`) или `null`, если читаемой записи нет |
+| `owner_record` | `readable` — запись прочитана; `unreadable` — `owner.json` есть, но пустой или нечитаемый; `absent` — записи нет |
+| `acquired_at` | `acquired_at` из записи, иначе mtime `owner.json` для нечитаемой записи или каталога lock |
+| `held_seconds` | сколько секунд lock держится к моменту проверки |
+
+Команда снимает только тот lock, который проверила: если владелец сменился во время снятия, она
+отказывает и просит повторить. Запуски `ledger release-lock` не пересекаются: их
 сериализует файловая блокировка ОС (`.coordinator.lock.release` в каталоге state), которую система
 снимает сама при выходе процесса, а второй параллельный запуск получает отказ
 `another ledger release-lock is releasing the ledger lock` и повторяется после первого. Удалять lock

@@ -29,9 +29,11 @@ handoff") and its starting files. Start from the handoff's findings and starting
 re-reading the earlier work, and the existing candidate history is the code to extend.
 
 Follow the immutable brief's ordered commit plan. Each commit implements one independently
-reviewable logical change and is reported against its plan entry with the files it contains. A single
-commit is valid only when the plan records one inseparable unit. For recovery, retain the accepted
-plan or stop for a newly approved replacement before creating an affected commit.
+reviewable logical change and is reported against the plan entries it closes. In an initial or
+rebase dispatch the mapping is many-to-many: one commit may close several entries, and one entry may
+take several commits. A developer-retry keeps the strict rule: each new commit closes exactly one
+plan entry, no two commits close the same entry, and entries may stay unclosed. For recovery, retain
+the accepted plan or stop for a newly approved replacement before creating an affected commit.
 
 The completion report's `commit_map` is mandatory for a developer brief with a `commit_plan`.
 It holds `{commit_sha, plan_entry_id}` pairs that cover every commit after `snapshot_commit` (after
@@ -47,3 +49,14 @@ item, or `report submit` refuses it; when the mapped work does not complete the 
 A developer-retry report maps each new commit to exactly one distinct plan entry and carries neither
 field. A `not_covered` item is never accepted as clean.
 Do not report the candidate SHA alone when it hides multiple commits.
+
+A developer-retry brief whose `carried_items` is not empty hands the retry obligations an earlier
+decision recorded, keyed by source: each `coordinator-finding` is a defect the coordinator found when
+it accepted a developer report, and each `review-finding` is a Standards or Spec finding of the
+retried code-review; every item has an `item_id`, `summary`, `files` and `expected_evidence`. Close
+every carried item in this retry: its files belong to the working set, and its fix goes into the
+commit of the plan entry whose scope it belongs to. In the completion report's `output`, name each
+`item_id` with the evidence that closes it (commit SHA, `file:line`, test name), as its
+`expected_evidence` asks. An item that cannot be closed inside the zone and the prohibited changes
+is a blocker, never a silent omission: the next code-review carries every open coordinator finding
+again and accounts for it.

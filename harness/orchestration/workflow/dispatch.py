@@ -83,6 +83,7 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord,
     LifecycleLedger,
 )
+from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.approval import (
     _approval,
@@ -194,15 +195,9 @@ def _accepted_divergence(
     A developer-retry builds on that history and keeps its strict commit_map, so the commit
     boundaries a reviewer has to judge are the ones the initial or rebase report recorded.
     """
-    for item in reversed(batch.get("dispatches", [])):
-        decision = item.get("decision")
-        if (
-            item.get("role") != "developer"
-            or item.get("state") != "reported"
-            or not isinstance(decision, dict)
-            or decision.get("decision") not in {"accept", "override-warning"}
-        ):
-            continue
+    for item in plan_rules.decided_entries(
+        batch, "developer", {"accept", "override-warning"}
+    ):
         developer = _load_dispatch(root, item["dispatch_id"])
         if developer.get("purpose", "work") != "work" or plan_rules.is_developer_retry(
             developer
@@ -359,11 +354,14 @@ def _proposed_transition(
     risk: JsonObject | None,
     verification_commands: list[str],
     context_package: JsonObject | None,
+    carried: JsonObject,
 ) -> JsonObject:
     """The canonical transition an approval binds: what came before, and exactly what is about to run.
 
     "What came before" is the newest dispatch a human decided on, so a brief that was created but is
-    still unsent (or was cancelled) does not change the transition it was created for."""
+    still unsent (or was cancelled) does not change the transition it was created for. A non-empty
+    carried-items section is bound by its digest, so a finding attached after the proposal needs a
+    new approval."""
     previous = next(
         (
             item
@@ -392,6 +390,7 @@ def _proposed_transition(
         if context_package
         else None,
         required_gates=batch["required_gates"],
+        carried_items_sha256=carried_items.section_sha256(carried),
     )
 
 
@@ -872,6 +871,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                         )
         dispatch_id = f"dispatch-{uuid.uuid4()}"
         dispatch_commands = _dispatch_verification_commands(batch, role_name, purpose)
+        carried = carried_items.brief_section(root, batch, role_name, purpose)
         transition = _proposed_transition(
             batch,
             next_action,
@@ -881,6 +881,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             risk,
             dispatch_commands,
             context_package,
+            carried,
         )
         digest = operational_guards.transition_digest(transition)
         idempotency_key = _transition_idempotency_key(role_name, purpose, transition)
@@ -980,6 +981,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "commit_plan_divergence": _accepted_divergence(repo, root, batch)
             if is_review_work
             else None,
+            "carried_items": carried,
         }
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the
