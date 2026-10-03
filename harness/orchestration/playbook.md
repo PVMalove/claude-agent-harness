@@ -219,8 +219,9 @@ Every coordinator command holds the exclusive ledger lock, which records its own
 `acquired_at`). A busy lock fails a write command with a remedy to repeat it; `dispatch wait` and
 `dispatch status` keep polling instead (`dispatch status` answers `ledger_busy`). A lock that stays
 held is released only by `coordinator.py --repo . ledger release-lock`, which refuses a lock whose
-owner process is alive or runs on another host, releases a dead owner's lock, and releases a lock
-without an owner record only once it is stale. Nobody removes the lock or any state file by hand.
+owner process is alive or runs on another host, releases a dead owner's lock, releases a lock
+without an owner record only once it is stale, and never releases a lock whose owner record cannot
+be read; concurrent releases are serialised. Nobody removes the lock or any state file by hand.
 
 When a new fact appears after dispatch, the coordinator appends a new coordinator decision before
 acting on it. The decision records the dispatch ID, fact and evidence, impact on scope or risk,

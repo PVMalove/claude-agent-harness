@@ -492,6 +492,9 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    risk assessment или следующий dispatch не повторяются, а повторный запуск ничего не пишет. Она
    повторяет только policy, записанную при `report submit` (`auto_accept_policy` в статусе
    dispatch), никогда не записывает report заново и не создаёт dispatch для роли, сдавшей report.
+   Шаг `risk-assess` оценивает candidate report-а: у developer — его `commit_sha` и `changed_files`,
+   у read-only verification — candidate, закреплённый в её dispatch, с файлами из diff от base batch,
+   как их считает `risk assess`.
    Шаг, которому нужен человек, останавливается с remedy этого шага. Для report, оставленного
    человеку, все шаги — `not-applicable`. Повторно отправлять report нельзя: он уже записан.
 
@@ -913,9 +916,11 @@ coordinator выносит человеку: сам он состояние по
 ### Занятый ledger, `report complete` и `ledger release-lock`
 
 Каждая команда coordinator-а берёт эксклюзивный lock ledger-а (`.coordinator.lock` в каталоге
-state). Lock записывает владельца — `pid`, `host` и `acquired_at`. Пока его держит другая операция,
-команда записи завершается ошибкой `ledger is locked by another operation`; её remedy предлагает
-повторить команду и называет `ledger release-lock`, а не ручное удаление.
+state). Lock записывает владельца — `pid`, `host` и `acquired_at`. Держит lock тот, кто первым
+эксклюзивно создал эту запись: процесс, чей ещё пустой каталог lock успели снять и занять снова,
+получает отказ и в чужой lock не пишет. Пока lock держит другая операция, команда записи
+завершается ошибкой `ledger is locked by another operation`; её remedy предлагает повторить
+команду и называет `ledger release-lock`, а не ручное удаление.
 
 Опрос coordinator-а занятый lock переживает:
 
@@ -947,11 +952,16 @@ python .harness/orchestration/coordinator.py --repo . ledger release-lock
 | Процесс владельца завершился (на этом host) | снимается, `owner-dead` |
 | Нет записи владельца (lock старого runtime), lock младше `LEDGER_LOCK_STALE_SECONDS` (3600 с) | отказ `owner-unknown-recent` |
 | Нет записи владельца, lock старше `LEDGER_LOCK_STALE_SECONDS` | снимается, `owner-unknown-stale` |
+| Запись владельца есть, но не читается (владелец ещё записывает себя) | отказ при любом возрасте lock: владельца нельзя проверить |
 
 Успех — `{"released": true, "reason": ..., "lock": {...}}`; если lock нет —
 `{"released": false, "lock": null}`; отказ — ошибка с причиной, владельцем и `held_seconds`, lock
 не трогается. Команда снимает только тот lock, который проверила: если владелец сменился во время
-снятия, она отказывает и просит повторить. Удалять lock или другие файлы state вручную нельзя.
+снятия, она отказывает и просит повторить. Запуски `ledger release-lock` не пересекаются: их
+сериализует файловая блокировка ОС (`.coordinator.lock.release` в каталоге state), которую система
+снимает сама при выходе процесса, а второй параллельный запуск получает отказ
+`another ledger release-lock is releasing the ledger lock` и повторяется после первого. Удалять lock
+или другие файлы state вручную нельзя.
 
 ### Отчётность и мониторинг токенов: `dispatch telemetry`
 
