@@ -37,7 +37,9 @@ RETRY_REASON_CATEGORIES = (
 # names a route the coordinator already computes; a new route adds its value here and its row to
 # the playbook "Recovery route table" in the same change. ``report-completion`` is not a
 # ``batch decide`` route: ``report submit`` names it when the policy chain after a recorded report
-# stops, and the coordinator completes that chain with ``report complete``.
+# stops, and the coordinator completes that chain with ``report complete``. ``carry-over`` is
+# recorded by an ``accept`` with ``--findings-file`` and by ``batch carry-over`` (issue #499): a
+# coordinator finding goes into review instead of costing a developer retry before it.
 RECOVERY_ROUTES = (
     "developer-retry",
     "same-candidate-rerun",
@@ -45,6 +47,7 @@ RECOVERY_ROUTES = (
     "architect-retry",
     "abandon",
     "report-completion",
+    "carry-over",
 )
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {

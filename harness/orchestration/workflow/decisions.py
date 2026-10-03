@@ -201,7 +201,11 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                     core_config._config(repo)
                 ),
                 "needs_attention": bool(batch.get("needs_attention", False)),
-                "route_preview": None,
+                "route_preview": {
+                    "carry-over": _carry_over_preview(repo, root, batch, None, args)
+                }
+                if getattr(args, "findings_file", None) is not None
+                else None,
                 "approval_reason": "the next immutable dispatch has not been created",
                 "options": ["accept", "block", "full review"],
             }
@@ -241,6 +245,19 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                     "remedy": exc.remedy,
                 }
             route_preview = {"retry": retry_preview, "abandon": {"route": "abandon"}}
+        if getattr(args, "findings_file", None) is not None:
+            route_preview = {
+                **(route_preview or {}),
+                "carry-over": _carry_over_preview(
+                    repo,
+                    root,
+                    batch,
+                    (dispatch, report)
+                    if report is not None and "decision" not in entry
+                    else None,
+                    args,
+                ),
+            }
         return {
             "batch_id": batch["batch_id"],
             "ticket": batch["ticket"],
@@ -299,6 +316,44 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                 "delta-review",
             ],
         }
+
+
+def _carry_over_preview(
+    repo: Path,
+    root: Path,
+    batch: JsonObject,
+    pending: tuple[JsonObject, JsonObject] | None,
+    args: argparse.Namespace,
+) -> JsonObject:
+    """The carry-over routing record ``--findings-file`` would record now; nothing is written.
+
+    With a pending report (its brief and report), that is ``batch decide --decision accept
+    --findings-file``; without one, ``batch carry-over``. A refusal renders as the error the command
+    refuses with, like the retry preview.
+    """
+    try:
+        if pending is None:
+            return carried_items.carry_over_preview(
+                repo, root, batch, args.findings_file
+            )
+        dispatch, report = pending
+        if report.get("outcome") != "completed":
+            raise CoordinatorError(
+                "a non-completed role report cannot be accepted or warning-overridden",
+                remedy="only accept or warning-override a completed role report",
+            )
+        findings = _decision_findings(
+            repo,
+            dispatch,
+            report,
+            argparse.Namespace(**{**vars(args), "decision": "accept"}),
+        )
+        return carried_items.carry_over_routing(
+            _candidate_commit(repo, report["commit_sha"]),
+            carried_items.next_item_ids(batch, len(findings)),
+        )
+    except CoordinatorError as exc:
+        return {"route": None, "refused": exc.message, "remedy": exc.remedy}
 
 
 def _developer_retry_count(batch: JsonObject) -> int:
@@ -762,14 +817,18 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             batch["commit_plan"] = pinned_plan
             decision["commit_plan_sha256"] = plan_rules.plan_sha256(pinned_plan)
         if findings:
-            carried_items.attach(
+            candidate = _candidate_commit(repo, report["commit_sha"])
+            records = carried_items.attach(
                 batch,
                 findings,
-                source=carried_items.coordinator_source(
-                    pending[0], _candidate_commit(repo, report["commit_sha"])
-                ),
+                source=carried_items.coordinator_source(pending[0], candidate),
                 attached_at=decision["approved_at"],
                 attached_by=decision["approved_by"],
+            )
+            # Recorded for audit only: ``next_action`` moves through risk assessment as on any
+            # developer accept, and the open findings send the candidate to code-review there.
+            decision["routing"] = carried_items.carry_over_routing(
+                candidate, [record["item_id"] for record in records]
             )
         pending[0]["decision"] = decision
         decision_entry = {"dispatch_id": pending[0]["dispatch_id"], **decision}

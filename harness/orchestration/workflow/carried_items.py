@@ -52,6 +52,7 @@ from harness.orchestration.ledger.ledger_ops import (
 from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
 from harness.orchestration.workflow.history import (
     _pending_report,
+    _require_route,
     _validate_batch_integrity,
 )
 
@@ -478,6 +479,40 @@ def _carry_over_target(root: Path, batch: JsonObject) -> JsonObject:
     return cast(JsonObject, entries[position])
 
 
+def carry_over_routing(candidate: str, item_ids: list[str]) -> JsonObject:
+    """The routing record of a carry-over (no I/O).
+
+    It has a retry record's shape, but the decision carrying it is an ``accept`` or a
+    ``carry-over``: it names no reason, starts no dispatch and spends no developer retry, so
+    ``batch decide`` never applies it to ``next_action``. Its rationale holds structural facts only.
+    """
+    return {
+        "route": _require_route("carry-over"),
+        "previous_role": "developer",
+        "reason_category": None,
+        "next_role": "code-review",
+        "next_action": "code-review",
+        "candidate_commit": candidate,
+        "carried_item_ids": item_ids,
+        "rationale": f"the accepted developer report of candidate {candidate} carries "
+        f"coordinator findings {', '.join(item_ids)} into code-review; the candidate is "
+        "unchanged and no developer retry is spent.",
+    }
+
+
+def carry_over_preview(
+    repo: Path, root: Path, batch: JsonObject, findings_file: str
+) -> JsonObject:
+    """The routing record ``batch carry-over`` would record now; it writes nothing."""
+    findings = read_findings(repo, findings_file)
+    entry = _carry_over_target(root, batch)
+    report = _pending_report(root, batch, entry)
+    return carry_over_routing(
+        _candidate_commit(repo, report["commit_sha"]),
+        next_item_ids(batch, len(findings)),
+    )
+
+
 def carry_over_findings(args: argparse.Namespace) -> JsonObject:
     """Attach coordinator findings to an already accepted developer report (``batch carry-over``).
 
@@ -494,16 +529,18 @@ def carry_over_findings(args: argparse.Namespace) -> JsonObject:
         _validate_batch_integrity(root, batch)
         entry = _carry_over_target(root, batch)
         report = _pending_report(root, batch, entry)
+        candidate = _candidate_commit(repo, report["commit_sha"])
         moment = utils._now()
         approved_by = f"policy:{CARRY_OVER_POLICY}"
         records = attach(
             batch,
             findings,
-            source=coordinator_source(
-                entry, _candidate_commit(repo, report["commit_sha"])
-            ),
+            source=coordinator_source(entry, candidate),
             attached_at=moment,
             attached_by=approved_by,
+        )
+        routing = carry_over_routing(
+            candidate, [record["item_id"] for record in records]
         )
         if batch.get("next_action") == "qa":
             batch["next_action"] = "code-review"
@@ -513,6 +550,7 @@ def carry_over_findings(args: argparse.Namespace) -> JsonObject:
             "approved_by": approved_by,
             "approved_at": moment,
             "note": f"{len(records)} coordinator finding(s) carried into code-review",
+            "routing": routing,
         }
         batch.setdefault("coordinator_decisions", []).append(decision)
         _safe_id(batch["batch_id"], "batch")
@@ -522,7 +560,7 @@ def carry_over_findings(args: argparse.Namespace) -> JsonObject:
             decision={
                 "dispatch_id": entry["dispatch_id"],
                 "decision": "carry-over",
-                "route": None,
+                "route": routing["route"],
                 "evidence": {
                     "dispatch_id": entry["dispatch_id"],
                     "report": entry["report"],

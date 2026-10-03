@@ -267,6 +267,11 @@ def build_parser(
         choices=["developer"],
         help="preview the retry route as batch decide computes it with --retry-role developer; the preview does not check the developer-retry budget",
     )
+    packet.add_argument(
+        "--findings-file",
+        help="preview the carry-over route that batch decide --findings-file on the pending "
+        "developer report, or else batch carry-over, records with this findings file",
+    )
     packet.set_defaults(handler=handlers.decision_packet)
 
     risk = commands.add_parser("risk")

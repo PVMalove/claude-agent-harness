@@ -6797,6 +6797,100 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         self.assertEqual(retry["carried_items"], {})
 
+    def _packet(self, **flags: object) -> JsonObject:
+        return coordinator.decision_packet(
+            self._args(batch=self.batch_id, dispatch=None, **flags)
+        )
+
+    def test_an_accept_with_findings_records_the_carry_over_route_it_previewed(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer, candidate, _ = self._reported_developer(batch["batch_id"])
+        findings_file = self._findings_file()
+        before = self._batch_record(self.batch_id)
+
+        plain = self._packet()
+        preview = self._packet(findings_file=findings_file)["route_preview"]
+
+        self.assertEqual(set(plain["route_preview"]), {"retry", "abandon"})
+        self.assertEqual(self._batch_record(self.batch_id), before)
+        self.assertEqual(
+            preview["carry-over"],
+            {
+                "route": "carry-over",
+                "previous_role": "developer",
+                "reason_category": None,
+                "next_role": "code-review",
+                "next_action": "code-review",
+                "candidate_commit": candidate,
+                "carried_item_ids": ["coordinator-finding-1"],
+                "rationale": preview["carry-over"]["rationale"],
+            },
+        )
+        self.assertEqual(preview["retry"], plain["route_preview"]["retry"])
+
+        decided = self._decide(self.batch_id, "accept", findings_file=findings_file)
+
+        decision = decided["coordinator_decisions"][-1]
+        self.assertEqual(decision["routing"], preview["carry-over"])
+        self.assertNotIn("next_role", decision)
+        self.assertEqual(decided["next_action"], "risk-assessment")
+        audit = self._decision_audits(self.batch_id)[-1]
+        self.assertEqual(
+            (audit["decision"], audit["route"], audit["dispatch_id"]),
+            ("accept", "carry-over", developer["dispatch_id"]),
+        )
+
+    def test_a_carry_over_records_the_route_it_previewed_with_a_policy_approver(
+        self,
+    ) -> None:
+        self._patch_config(approval_policy="milestone")
+        batch_id, developer, candidate = self._auto_accepted_developer()
+        findings_file = self._findings_file()
+
+        preview = self._packet(findings_file=findings_file)["route_preview"]
+        coordinator.carry_over_findings(
+            self._args(batch=batch_id, findings_file=findings_file)
+        )
+
+        self.assertEqual(set(preview), {"carry-over"})
+        self.assertEqual(preview["carry-over"]["candidate_commit"], candidate)
+        decision = self._batch_record(batch_id)["coordinator_decisions"][-1]
+        self.assertEqual(decision["routing"], preview["carry-over"])
+        audit = self._decision_audits(batch_id)[-1]
+        self.assertEqual(
+            (audit["decision"], audit["route"], audit["approver"]),
+            ("carry-over", "carry-over", {"kind": "policy", "name": "carry-over"}),
+        )
+        self.assertEqual(
+            audit["evidence"], self._report_evidence(batch_id, developer["dispatch_id"])
+        )
+
+    def test_a_carry_over_preview_that_would_be_refused_says_why(self) -> None:
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        self._submit(brief["dispatch_id"], self._base_report(brief, "architect"))
+        findings_file = self._findings_file()
+
+        architect = self._packet(findings_file=findings_file)["route_preview"]
+        self._decide(self.batch_id, "accept")
+        _, candidate, changed = self._reported_developer(self.batch_id)
+        self._decide(self.batch_id, "accept")
+        self._assess(self.batch_id, candidate, changed)
+        review = self._dispatch(self.batch_id, "code-review", candidate=candidate)
+        created = self._packet(findings_file=findings_file)["route_preview"]
+
+        refusals = (architect["carry-over"], created["carry-over"])
+        for refused in refusals:
+            self.assertIsNone(refused["route"])
+            self.assertTrue(refused["remedy"].strip())
+        self.assertIn("--findings-file", refusals[0]["refused"])
+        self.assertIn(review["dispatch_id"], refusals[1]["refused"])
+        self.assertIn("route", architect["retry"])
+
 
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     """The pure routing table: structured evidence in, one routing record out (no I/O)."""
@@ -7086,7 +7180,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
             },
         )
 
-    def test_the_recovery_routes_are_exactly_the_documented_six(self) -> None:
+    def test_the_recovery_routes_are_exactly_the_documented_seven(self) -> None:
         self.assertEqual(
             constants.RECOVERY_ROUTES,
             (
@@ -7096,6 +7190,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "architect-retry",
                 "abandon",
                 "report-completion",
+                "carry-over",
             ),
         )
         for route in constants.RECOVERY_ROUTES:
@@ -7703,6 +7798,16 @@ class CoordinatorCliParserTests(unittest.TestCase):
         self.assertIs(carried.handler, coordinator.decide_batch)
         self.assertEqual(carried.findings_file, "findings.json")
         self.assertIsNone(parse(decide).findings_file)
+
+    def test_batch_decision_packet_previews_a_findings_file(self) -> None:
+        parse = coordinator.parser().parse_args
+        common = ["batch", "decision-packet", "--batch", "batch-1"]
+
+        previewed = parse([*common, "--findings-file", "findings.json"])
+
+        self.assertIs(previewed.handler, coordinator.decision_packet)
+        self.assertEqual(previewed.findings_file, "findings.json")
+        self.assertIsNone(parse(common).findings_file)
 
     def test_batch_carry_over_requires_a_batch_and_a_findings_file(self) -> None:
         parse = coordinator.parser().parse_args
