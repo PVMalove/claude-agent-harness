@@ -106,7 +106,8 @@ chain after a recorded report stops, and the coordinator completes that chain wi
 `report complete --dispatch <dispatch-id>`. `carry-over` is recorded by an `accept` or
 `override-warning` with `--findings-file` and by `batch carry-over`; its routing record names the
 `carried_item_ids` and is never applied to `next_action`, which moves through risk assessment as on
-any developer accept. The coordinator chooses a route by this table:
+any developer accept; `batch carry-over` itself moves a `next_action` of `qa`, set by an earlier
+assessment, to `code-review`. The coordinator chooses a route by this table:
 
 | Situation | Route | Who approves | Evidence |
 | --- | --- | --- | --- |

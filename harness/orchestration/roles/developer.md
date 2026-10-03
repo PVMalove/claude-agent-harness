@@ -43,3 +43,14 @@ item, or `report submit` refuses it; when the mapped work does not complete the 
 A developer-retry report maps each new commit to exactly one distinct plan entry and carries neither
 field. A `not_covered` item is never accepted as clean.
 Do not report the candidate SHA alone when it hides multiple commits.
+
+A developer-retry brief whose `carried_items` is not empty hands the retry obligations an earlier
+decision recorded, keyed by source: each `coordinator-finding` is a defect the coordinator found when
+it accepted a developer report, and each `review-finding` is a Standards or Spec finding of the
+retried code-review; every item has an `item_id`, `summary`, `files` and `expected_evidence`. Close
+every carried item in this retry: its files belong to the working set, and its fix goes into the
+commit of the plan entry whose scope it belongs to. In the completion report's `output`, name each
+`item_id` with the evidence that closes it (commit SHA, `file:line`, test name), as its
+`expected_evidence` asks. An item that cannot be closed inside the zone and the prohibited changes
+is a blocker, never a silent omission: the next code-review carries every open coordinator finding
+again and accounts for it.
