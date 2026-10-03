@@ -6714,6 +6714,44 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self._batch_record(batch["batch_id"])["coordinator_decisions"],
         )
 
+    def test_carry_over_after_a_batch_resume_reaches_the_next_review_brief(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        _, candidate, changed = self._reported_developer(batch["batch_id"])
+        self._decide(batch["batch_id"], "accept")
+        self._assess(batch["batch_id"], candidate, changed)
+        stalled = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+        self._start(stalled["dispatch_id"], checkout=self.worktree)
+        self._age_heartbeat(stalled["dispatch_id"], 7200)
+        event = coordinator.wait_dispatch(
+            self._args(
+                dispatch=stalled["dispatch_id"],
+                timeout=1,
+                poll_interval=1,
+                stale_after=900,
+            )
+        )
+        self.assertEqual(event["event"], "stale")
+        coordinator.resume_batch(
+            self._args(batch=batch["batch_id"], reason="worker timed out")
+        )
+        self.assertEqual(
+            self._batch_record(batch["batch_id"])["dispatches"][-1]["state"],
+            "abandoned",
+        )
+
+        carried = self._carry_over(batch["batch_id"])
+
+        self.assertEqual(carried["carried_item_ids"], ["coordinator-finding-1"])
+        review = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+        self.assertNotEqual(review["dispatch_id"], stalled["dispatch_id"])
+        self.assertEqual(
+            [item["item_id"] for item in self._carried(review["brief"])],
+            ["coordinator-finding-1"],
+        )
+
     def test_carry_over_after_a_decided_review_points_at_the_next_developer_accept(
         self,
     ) -> None:
