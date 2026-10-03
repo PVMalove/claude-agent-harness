@@ -347,11 +347,13 @@ class LifecycleLedger:
 
     @contextmanager
     def lock(self) -> Iterator[None]:
-        """Non-blocking exclusive lock on ``self.root``, mirroring coordinator.py's own
-        ``_state_lock`` technique (same lock path, same mkdir/rmdir mechanism) but raising
-        ``LedgerLockBusy`` on contention so this module never imports an exception type from
-        coordinator.py.  The lock directory records its owner (pid, host, acquired_at) so a lock
-        left behind by a dead process can be judged by ``ledger release-lock``."""
+        """Non-blocking exclusive lock on ``self.root``, raising ``LedgerLockBusy`` on contention
+        so this module never imports an exception type from coordinator.py.
+
+        The lock is held by whoever first creates its owner record, ``owner.json`` (pid, host,
+        acquired_at), exclusively inside the lock directory; creating the directory alone does
+        not hold it.  The record lets ``ledger release-lock`` judge a lock left behind by a dead
+        process.  Release removes the record and then the directory."""
         lock_dir = self._take_lock_directory()
         owner = self._record_lock_owner(lock_dir)
         try:
@@ -410,14 +412,26 @@ class LifecycleLedger:
     def lock_state(self) -> JsonObject | None:
         """The current lock as its owner recorded it, or ``None`` when nothing holds it.
 
-        ``owner`` is ``None`` for a lock without a readable owner record (one taken by an older
-        runtime); its age is then measured from the lock directory itself."""
+        ``owner_record`` says what the owner record is: ``readable``; ``unreadable``, when its
+        owner died before writing the record it created, so ``owner`` is ``None`` and the age is
+        measured from the record's mtime; or ``absent``, for a lock taken by an older runtime,
+        aged from the lock directory.  A readable record without a recorded ``acquired_at`` is
+        aged from the lock directory as well."""
         lock_dir = self.root / LOCK_DIRECTORY
         try:
-            created = lock_dir.stat().st_mtime
+            age_origin = lock_dir.stat().st_mtime
         except FileNotFoundError:
             return None
-        owner = self.read_record_lenient(lock_dir / LOCK_OWNER)
+        record = lock_dir / LOCK_OWNER
+        owner = self.read_record_lenient(record)
+        owner_record = "readable"
+        if owner is None:
+            try:
+                age_origin = record.stat().st_mtime
+            except FileNotFoundError:
+                owner_record = "absent"
+            else:
+                owner_record = "unreadable"
         recorded = owner.get("acquired_at") if owner is not None else None
         try:
             since = (
@@ -426,11 +440,12 @@ class LifecycleLedger:
         except ValueError:
             since = None
         if since is None or since.tzinfo is None:
-            since = datetime.fromtimestamp(created, UTC)
+            since = datetime.fromtimestamp(age_origin, UTC)
         held = (datetime.now(UTC) - since).total_seconds()
         return {
             "path": str(lock_dir),
             "owner": owner,
+            "owner_record": owner_record,
             "acquired_at": since.isoformat(),
             "held_seconds": max(0, int(held)),
         }
@@ -466,9 +481,9 @@ class LifecycleLedger:
         The caller decides whether the lock may go; this only guarantees it removes the lock it
         judged.  Under the release guard the lock is read again and must still be the observed
         one, and nothing else can change it before it goes: a holder only creates an owner record
-        where none exists and removes only its own, and the observed owner was judged gone.  A
-        record that cannot be read is never removed, since its acquirer may be about to hold the
-        lock, and the directory goes by rmdir, which never removes a lock someone recorded."""
+        where none exists and removes only its own, and the observed owner was judged gone.  An
+        unreadable record goes only when it was observed unreadable; a lock observed without a
+        record goes by rmdir, which never removes a record created since."""
         lock_dir = self.root / LOCK_DIRECTORY
         owner = lock_dir / LOCK_OWNER
         changed = LedgerError(
@@ -478,18 +493,12 @@ class LifecycleLedger:
         with self._release_guard():
             current = self.lock_state()
             if current is None or any(
-                current[key] != observed.get(key) for key in ("owner", "acquired_at")
+                current[key] != observed.get(key)
+                for key in ("owner", "owner_record", "acquired_at")
             ):
                 raise changed
-            if current["owner"] is None and owner.exists():
-                raise LedgerError(
-                    "ledger lock has an owner record that cannot be read, so its owner cannot be "
-                    "checked",
-                    remedy="its owner may still be recording itself: run 'coordinator.py ledger "
-                    "release-lock' again; a lock whose owner cannot be checked is never released",
-                )
             try:
-                if current["owner"] is not None:
+                if current["owner_record"] != "absent":
                     owner.unlink()
                 lock_dir.rmdir()
             except OSError as exc:
