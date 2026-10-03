@@ -25,6 +25,8 @@ python .harness/orchestration/coordinator.py --repo . dispatch status
 ```
 
 If the command is unavailable or cannot read its state, stop and tell the developer to run `/fast-implement` instead.
+A `ledger_busy` answer is not unavailability: another coordinator operation holds the ledger lock,
+so repeat the command after its `retry_after_seconds`.
 Do not infer or repair an opt-in capability. Process one ticket to a terminal batch state before
 beginning another.
 
@@ -54,13 +56,17 @@ guess where its report belongs writes it outside the project. The coordinator ne
 evidence, not permission to advance. Architect precedes developer; accepted candidate proceeds
 through the required review/QA/publish gates.
 
-Before every write-role dispatch, record an ordered commit plan in the immutable brief. Each entry
-names one independently reviewable logical change and its expected files; use one entry only when
-the entire approved change is inseparable. A recovery preserves the accepted plan, or replaces it
-with a newly approved plan that explains the changed boundary. The developer's completion report
-maps every created commit to exactly one entry and explains any approved deviation. Do not collapse
-unrelated implementation, tests, documentation, or type-only repairs into a recovery commit merely
-because they are staged together.
+Before every write-role dispatch, the immutable brief carries an ordered commit plan. Each entry
+names one independently reviewable logical change, its expected files and the DoD items it covers;
+use one entry only when the entire approved change is inseparable. The coordinator derives one entry
+per DoD item; to use the architect's plan instead, pin it on the architect accept with
+`batch decide --decision accept --commit-plan-file <path>`. A recovery preserves the accepted plan,
+or replaces it with a newly approved plan that explains the changed boundary. The developer's
+completion report maps every created commit to the entries it closes; a mapping that is not
+one-to-one needs `dod_coverage` and `divergence_justification`, and a report with a `not_covered`
+item can be accepted only by `override-warning` with a note other than `none`, or returned with
+`retry`. Do not collapse unrelated implementation, tests, documentation, or type-only repairs into a
+recovery commit merely because they are staged together.
 
 Follow the configured approval policy. Under `manual_all`, every transition needs explicit approval:
 show the decision packet, ask, and wait. Under `low_risk`, a clean completed report in an eligible
@@ -71,7 +77,18 @@ recorded `next_action` without asking the operator to repeat a policy decision. 
 checks, risk triggers, review findings and publish still require the applicable manual decision.
 Never write `--approved-by` on the operator's behalf or
 narrate a decision they did not make. `human_approval_gate: tty` requires confirmation on the
-operator's terminal for transitions that still require human approval.
+operator's terminal for transitions that still require human approval. When choosing a recovery
+route for `retry` or `abandon`, show the decision packet's `route_preview` (with the
+`--reason-category` or `--retry-role` you intend to pass to `batch decide`) and follow the
+Recovery route table in `.harness/orchestration/playbook.md` (situation → route → who approves →
+evidence).
+
+When you find a defect in a clean developer report whose DoD is met inside its zone, do not retry
+it: accept it with `batch decide --findings-file <path>`, or after a policy auto-accept run
+`batch carry-over --batch <id> --findings-file <path>` before its code-review dispatch exists. The
+finding travels into the code-review brief as a carried item (route `carry-over`), and the one
+developer retry is spent after review. Retry a developer report without accept only for an unmet
+DoD item or an out-of-zone change.
 
 Each worker records a model self-report and is observed by the event-driven watchdog; those facts
 are evidence, never a reason to edit an immutable brief.
@@ -85,6 +102,46 @@ exception to that budget.
 Run `dispatch wait` between send and report. `stale`, model/worktree mismatch, changed harness
 snapshot, and a failed deterministic gate are blockers for the coordinator, not prompts for broad
 LLM recovery. In-process and external transports preserve the same brief and evidence contract.
+
+A busy ledger (`ledger is locked by another operation`, or `ledger_busy` from `dispatch status`) is
+transient: repeat `dispatch wait` or `dispatch status`. When a relayed `report submit` result
+carries `completion`, the report is already recorded: never ask the worker to submit it again. Run
+its `command` (`report complete --dispatch <dispatch-id>`) yourself and repeat it until no step
+fails; it is idempotent. When the failed step needs a human, follow its remedy instead. Never remove
+the ledger lock or any state file by hand; a lock that stays held goes to
+`coordinator.py --repo . ledger release-lock`, which refuses a lock whose owner process is alive.
+
+## Worker prompt
+
+Every worker prompt is this template, filled from the `dispatch send` result. The brief and the
+Context Package already carry the task, so the prompt carries only pointers to them:
+
+```text
+You are the <role> worker for dispatch <dispatch_id>.
+Brief: <brief path from dispatch send>
+Report staging path: <report_staging_path from dispatch send, verbatim>
+Context Package <context_package_id>: start from its starting_files, symbol_graph and
+related_tests. For a starting file with non-empty sections, read only the start_line–end_line
+ranges the task needs.
+Work within the brief; escalate a blocker for anything the brief and the package leave out.
+```
+
+A developer retry adds two lines from the `retry_start` of its `dispatch preflight`:
+
+```text
+Retry handoff: <retry_start.handoff, verbatim JSON>
+Retry starting files: <paths from retry_start.starting_files>
+```
+
+Large documents (the role catalog, `playbook.md`, `backend-orchestration.md`, `git-workflow.md`) and
+prior reports reach a worker only as Context Package section ranges or through the retry handoff.
+The work a prompt asks for is exactly its brief plus, for a retry, the handoff's blocking findings.
+
+A developer retry is always a new session started from its compact handoff, never a continuation of
+the previous developer session's history. The preflight's decision packet carries the retry's
+`retry_context_estimate` and `retry_context_warning` as evidence; they never gate the dispatch. Code-review and QA stay new
+independent sessions; only their prompt follows this template. The playbook's "Developer-retry
+handoff" defines the handoff, the smart-zone threshold and the compact.
 
 ## Authoritative guidance
 

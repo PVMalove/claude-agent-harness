@@ -9,6 +9,7 @@ them may widen scope, re-approve a transition or edit the brief.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import subprocess
 import sys
 import time
@@ -47,6 +48,7 @@ from harness.orchestration.core.workspace import (
     _agent_inbox,
 )
 from harness.orchestration.ledger.ledger_ops import (
+    LedgerBusyError,
     _ledger_lock,
     _load_batch,
     _load_dispatch,
@@ -327,7 +329,10 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
     deadline = time.monotonic() + timeout
     ledger = LifecycleLedger(root)
     while True:
-        with _ledger_lock(ledger):
+        # A ledger busy with another coordinator operation is a missed poll, not a failure: the
+        # next poll retries it until this wait's own timeout.  Only the lock acquisition is
+        # tolerated -- nothing below takes the lock again.
+        with contextlib.suppress(LedgerBusyError), _ledger_lock(ledger):
             dispatch = _load_dispatch(root, args.dispatch)
             status = _load_dispatch_status(root, dispatch["dispatch_id"])
             state = status.get("state")
@@ -393,8 +398,10 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
             remedy="pass --stale-after as a positive number of seconds",
         )
     ledger = LifecycleLedger(root)
-    with _ledger_lock(ledger):
-        entries: list[JsonObject] = []
+    entries: list[JsonObject] | None = None
+    # A busy ledger answers with a structured retry instead of an error: the caller polls again.
+    with contextlib.suppress(LedgerBusyError), _ledger_lock(ledger):
+        entries = []
         for path in sorted(
             (_records_root(root) / DispatchStatusRecord.directory).glob(
                 "dispatch-*.json"
@@ -449,6 +456,17 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                     ),
                 }
             )
+    if entries is None:
+        return {
+            "ledger_busy": True,
+            "retry_after_seconds": _execution_policy(config)[
+                "dispatch_poll_interval_seconds"
+            ],
+            "lock": ledger.lock_state(),
+            "remedy": "repeat dispatch status: another coordinator operation holds the ledger "
+            "lock. If it stays held, run 'coordinator.py ledger release-lock', which refuses a "
+            "lock whose owner process is alive",
+        }
     return {
         "stale_after_seconds": threshold,
         "stale": [entry["dispatch_id"] for entry in entries if entry["stale"]],

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -37,10 +38,12 @@ from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
     _non_empty,
+    _read_object,
     _repo,
     _safe_id,
 )
 from harness.orchestration.core.workspace import (
+    _agent_authored_file,
     _agent_inbox,
     _integration_ref,
 )
@@ -61,6 +64,8 @@ from harness.orchestration.ledger.lifecycle import (
 from harness.orchestration.workflow.approval import (
     _approval,
 )
+from harness.orchestration.workflow import carried_items
+from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.attention import (
     _apply_attention,
     _attention_findings,
@@ -68,6 +73,7 @@ from harness.orchestration.workflow.attention import (
 from harness.orchestration.workflow.history import (
     _latest_developer_candidate,
     _pending_report,
+    _require_route,
     _risk_for_candidate,
     _settled,
     _validate_batch_integrity,
@@ -101,6 +107,10 @@ def _auto_accept_policy(
         or str(report.get("risks", "")).strip().lower() != "none"
         or report.get("risk_triggers")
         or dispatch.get("purpose") == "publish"
+        # A not-covered definition-of-done item is never clean; a justified divergence is.
+        or plan_rules.not_covered(report)
+        # Nor is a review that left a carried item omitted, unverified or open (issue #499).
+        or carried_items.carried_gap(report, dispatch)
     ):
         return None
     if policy == "low_risk" and batch.get("zone") not in config.get(
@@ -191,6 +201,11 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                     core_config._config(repo)
                 ),
                 "needs_attention": bool(batch.get("needs_attention", False)),
+                "route_preview": {
+                    "carry-over": _carry_over_preview(repo, root, batch, None, args)
+                }
+                if getattr(args, "findings_file", None) is not None
+                else None,
                 "approval_reason": "the next immutable dispatch has not been created",
                 "options": ["accept", "block", "full review"],
             }
@@ -211,6 +226,38 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             if isinstance(candidate, str)
             else None
         )
+        resolve = partial(_candidate_commit, repo)
+        coverage, coverage_source = (
+            plan_rules.coverage(report, dispatch, resolve) if report else (None, None)
+        )
+        route_preview: JsonObject | None = None
+        if report is not None and "decision" not in entry:
+            # The same computation ``batch decide`` runs, with the same flags; nothing is written.
+            try:
+                retry_preview = _decide_retry_route(
+                    repo, root, batch, dispatch, report, args
+                )
+            except CoordinatorError as exc:
+                # ``batch decide --decision retry`` refuses with this error; the packet still renders.
+                retry_preview = {
+                    "route": None,
+                    "refused": exc.message,
+                    "remedy": exc.remedy,
+                }
+            route_preview = {"retry": retry_preview, "abandon": {"route": "abandon"}}
+        if getattr(args, "findings_file", None) is not None:
+            route_preview = {
+                **(route_preview or {}),
+                "carry-over": _carry_over_preview(
+                    repo,
+                    root,
+                    batch,
+                    (dispatch, report)
+                    if report is not None and "decision" not in entry
+                    else None,
+                    args,
+                ),
+            }
         return {
             "batch_id": batch["batch_id"],
             "ticket": batch["ticket"],
@@ -231,6 +278,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                 "worker_attestation_required", False
             ),
             "needs_attention": bool(batch.get("needs_attention", False)),
+            "route_preview": route_preview,
             "transition_digest": dispatch.get("transition_digest"),
             "summary": report.get("output") if report else "immutable brief prepared",
             "checks": report.get("checks_run", [])
@@ -243,6 +291,17 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             if report
             else (risk.get("matched_triggers") if risk else "not assessed yet"),
             "blockers": report.get("blockers") if report else "none",
+            "dod_coverage": coverage,
+            "dod_coverage_source": coverage_source,
+            "carried_items": carried_items.packet_items(dispatch, report),
+            "carried_items_gap": carried_items.carried_gap(report, dispatch)
+            if report
+            else [],
+            "commit_plan_divergence": (
+                plan_rules.divergence(report, dispatch, resolve) if report else None
+            )
+            if dispatch["role"] != "code-review"
+            else dispatch.get("commit_plan_divergence"),
             "report": str(_records_root(root) / entry["report"]) if report else None,
             "diff": f"git diff {batch['base_commit']}..{candidate}"
             if candidate
@@ -257,6 +316,44 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                 "delta-review",
             ],
         }
+
+
+def _carry_over_preview(
+    repo: Path,
+    root: Path,
+    batch: JsonObject,
+    pending: tuple[JsonObject, JsonObject] | None,
+    args: argparse.Namespace,
+) -> JsonObject:
+    """The carry-over routing record ``--findings-file`` would record now; nothing is written.
+
+    With a pending report (its brief and report), that is ``batch decide --decision accept
+    --findings-file``; without one, ``batch carry-over``. A refusal renders as the error the command
+    refuses with, like the retry preview.
+    """
+    try:
+        if pending is None:
+            return carried_items.carry_over_preview(
+                repo, root, batch, args.findings_file
+            )
+        dispatch, report = pending
+        if report.get("outcome") != "completed":
+            raise CoordinatorError(
+                "a non-completed role report cannot be accepted or warning-overridden",
+                remedy="only accept or warning-override a completed role report",
+            )
+        findings = _decision_findings(
+            repo,
+            dispatch,
+            report,
+            argparse.Namespace(**{**vars(args), "decision": "accept"}),
+        )
+        return carried_items.carry_over_routing(
+            _candidate_commit(repo, report["commit_sha"]),
+            carried_items.next_item_ids(batch, len(findings)),
+        )
+    except CoordinatorError as exc:
+        return {"route": None, "refused": exc.message, "remedy": exc.remedy}
 
 
 def _developer_retry_count(batch: JsonObject) -> int:
@@ -299,6 +396,8 @@ def _retry_evidence(
                 return (
                     "requirements" if axis == "spec" else "code"
                 ), f"the {axis} axis carries a finding or a warning/blocker severity"
+    if carried_items.marks_open(report):
+        return "code", "the review confirms a carried item is still open"
     checks = report.get("checks_run")
     if isinstance(checks, list) and any(
         isinstance(check, dict) and check.get("result") == "fail" for check in checks
@@ -358,24 +457,52 @@ def _retry_routing(
     else:
         category, basis = "unknown", "no structured evidence classifies the cause"
     if stage == "architect":
-        next_action = "architect"
+        next_action, route = "architect", "architect-retry"
         outcome_sentence = "a new architect dispatch runs; no developer starts before an architect report is accepted"
     elif candidate_bound and category in OPERATIONAL_REASON_CATEGORIES:
-        next_action = stage
+        next_action, route = stage, "same-candidate-rerun"
         outcome_sentence = (
             f"a new independent {stage} dispatch runs on the unchanged candidate; "
             "the earlier brief, report and blocker stay as audit evidence"
         )
     else:
-        next_action = "developer-retry"
+        next_action, route = "developer-retry", "developer-retry"
         outcome_sentence = "a developer retry must produce a new candidate commit, which needs a new risk assessment"
     return {
+        "route": route,
         "previous_role": stage,
         "reason_category": category,
         "next_role": "developer" if next_action == "developer-retry" else next_action,
         "next_action": next_action,
         "rationale": f"{stage} reported outcome={outcome}: {basis}; {outcome_sentence}.",
         "candidate_commit": dispatch_candidate if unchanged else None,
+    }
+
+
+def _reporting_stage(dispatch: JsonObject, report: JsonObject) -> str:
+    """The pipeline stage a report closes: ``publish`` is a purpose of the developer role."""
+    return (
+        "publish" if dispatch.get("purpose") == "publish" else cast(str, report["role"])
+    )
+
+
+def _abandon_routing(stage: str, report: JsonObject, moment: str) -> JsonObject:
+    """The routing record of an ``abandon`` decision (no I/O).
+
+    It has the shape of a retry's record but starts nothing, so it names no reason, role, action or
+    candidate. Its rationale holds structural facts only; the approver's ``--reason`` stays the
+    decision note.
+    """
+    return {
+        "route": _require_route("abandon"),
+        "previous_role": stage,
+        "reason_category": None,
+        "next_role": None,
+        "next_action": None,
+        "candidate_commit": None,
+        "rationale": f"{stage} reported outcome={report.get('outcome')}: the batch is abandoned; "
+        "no next dispatch starts and every brief, report and candidate stays as audit evidence.",
+        "decided_at": moment,
     }
 
 
@@ -447,6 +574,53 @@ def _last_accepted(repo: Path, root: Path, batch: JsonObject) -> JsonObject | No
     }
 
 
+def _pinned_commit_plan(
+    repo: Path, batch: JsonObject, report: JsonObject, args: argparse.Namespace
+) -> list[JsonObject] | None:
+    """The operator-supplied commit plan an architect accept pins on the batch, validated.
+
+    The policy auto-accept builds its own namespace without ``commit_plan_file``, so it never pins.
+    """
+    plan_file = getattr(args, "commit_plan_file", None)
+    if plan_file is None:
+        return None
+    if args.decision != "accept" or report.get("role") != "architect":
+        raise CoordinatorError(
+            "--commit-plan-file is only valid when accepting an architect report",
+            remedy="drop --commit-plan-file, or pass it with --decision accept on the pending architect report",
+        )
+    document = _read_object(
+        _agent_authored_file(repo, plan_file, "a commit plan"), "commit plan"
+    )
+    _reject_sensitive(document, "commit plan")
+    return plan_rules.pinned_plan(document, batch["definition_of_done"])
+
+
+def _decision_findings(
+    repo: Path, dispatch: JsonObject, report: JsonObject, args: argparse.Namespace
+) -> list[JsonObject]:
+    """The coordinator findings an accept of a developer work report carries into review.
+
+    The policy auto-accept builds its own namespace without ``findings_file``, so it never carries
+    any; ``batch carry-over`` attaches them after such an accept.
+    """
+    findings_file = getattr(args, "findings_file", None)
+    if findings_file is None:
+        return []
+    if (
+        args.decision not in {"accept", "override-warning"}
+        or report.get("role") != "developer"
+        or dispatch.get("purpose") != "work"
+    ):
+        raise CoordinatorError(
+            "--findings-file is only valid when accepting a completed developer work report",
+            remedy="drop --findings-file; to carry findings into review after a developer "
+            "report is accepted, run batch carry-over --batch <batch-id> --findings-file <path> "
+            "before its code-review dispatch is created",
+        )
+    return carried_items.read_findings(repo, findings_file)
+
+
 def decide_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -484,8 +658,13 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 "a non-completed role report cannot be accepted or warning-overridden",
                 remedy="only accept or warning-override a completed role report",
             )
+        pinned_plan = _pinned_commit_plan(repo, batch, report, args)
+        findings = _decision_findings(repo, dispatch, report, args)
+        uncovered = plan_rules.not_covered(report)
+        gap = carried_items.carried_gap(report, dispatch)
         if report.get("role") == "code-review":
             severities = _review_severity(report["review"])
+            warned = any(value == "warning" for value in severities.values())
             if any(value == "blocker" for value in severities.values()):
                 if _developer_retry_budget_exhausted(config, batch):
                     if args.decision not in {"block", "fail", "abandon"}:
@@ -498,11 +677,29 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                         "a review blocker requires a new developer retry",
                         remedy="start a new developer retry dispatch to address the review blocker, or abandon (with --reason) this batch",
                     )
-            elif any(value == "warning" for value in severities.values()):
-                if args.decision == "accept":
+            elif warned or gap:
+                if args.decision == "accept" and warned:
                     raise CoordinatorError(
                         "a review warning requires override-warning or retry",
                         remedy="pass --decision override-warning (with --note) or retry for a review warning",
+                    )
+                if args.decision == "accept":
+                    raise CoordinatorError(
+                        f"the review did not close carried items {gap}, so the report is not clean",
+                        remedy="retry the developer, or pass --decision override-warning with a "
+                        "--note explaining why the omitted, unverified or open items may be accepted",
+                    )
+                if (
+                    args.decision == "override-warning"
+                    and gap
+                    and (
+                        not _non_empty(args.note) or args.note.strip().lower() == "none"
+                    )
+                ):
+                    raise CoordinatorError(
+                        "overriding carried items the review did not close requires a recorded note",
+                        remedy="pass --note (other than 'none') explaining why the carried items "
+                        "the review did not close may be accepted",
                     )
                 if args.decision == "override-warning" and not _non_empty(args.note):
                     raise CoordinatorError(
@@ -514,10 +711,25 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     "override-warning requires a review warning",
                     remedy="only use override-warning to resolve a recorded review warning",
                 )
+        elif uncovered:
+            items = [record["dod_item"] for record in uncovered]
+            if args.decision == "accept":
+                raise CoordinatorError(
+                    f"definition-of-done items {items} are not covered, so the report is not clean",
+                    remedy="retry the developer, or pass --decision override-warning with a --note "
+                    "explaining why the uncovered items may be accepted",
+                )
+            if args.decision == "override-warning" and (
+                not _non_empty(args.note) or args.note.strip().lower() == "none"
+            ):
+                raise CoordinatorError(
+                    "overriding not-covered definition-of-done items requires a recorded note",
+                    remedy="pass --note (other than 'none') explaining why the uncovered items may be accepted",
+                )
         elif args.decision == "override-warning":
             raise CoordinatorError(
-                "only a recorded review warning can be overridden",
-                remedy="only override a recorded review warning",
+                "only a recorded review warning or a not-covered definition-of-done item can be overridden",
+                remedy="only override a recorded review warning or a not-covered definition-of-done item",
             )
         routing: JsonObject | None = None
         if args.decision == "retry":
@@ -544,6 +756,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     remedy="block, fail, or abandon (with --reason) this batch, then split or re-plan the work",
                 )
         abandon_reason = ""
+        abandon_routing: JsonObject | None = None
         if args.decision == "abandon":
             abandon_reason = (
                 args.reason.strip() if _non_empty(getattr(args, "reason", None)) else ""
@@ -554,6 +767,9 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     remedy="pass --reason explaining why this batch is abandoned",
                 )
             _reject_sensitive({"reason": abandon_reason}, "abandon reason")
+            abandon_routing = _abandon_routing(
+                _reporting_stage(dispatch, report), report, utils._now()
+            )
         policy_auto_accept = getattr(args, "_policy_auto_accept", False)
         if policy_auto_accept:
             accepted_policy = _auto_accept_policy(config, batch, dispatch, report)
@@ -566,8 +782,10 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 "approved_by": f"policy:{accepted_policy}",
                 "approved_at": utils._now(),
             }
+            approver = {"kind": "policy", "name": accepted_policy}
         else:
             approval = _approval(args)
+            approver = {"kind": "human", "name": approval["approved_by"]}
         decision = {
             "decision": args.decision,
             "approved_by": approval["approved_by"],
@@ -583,6 +801,35 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         }
         if routing is not None:
             decision["routing"] = routing
+        elif abandon_routing is not None:
+            decision["routing"] = abandon_routing
+        if args.decision in {"accept", "override-warning"}:
+            divergence = plan_rules.divergence(
+                report, dispatch, partial(_candidate_commit, repo)
+            )
+            if divergence is not None:
+                decision["commit_plan_divergence"] = divergence
+            if uncovered and args.decision == "override-warning":
+                decision["dod_not_covered"] = uncovered
+            if gap and args.decision == "override-warning":
+                decision["carried_items_gap"] = gap
+        if pinned_plan is not None:
+            batch["commit_plan"] = pinned_plan
+            decision["commit_plan_sha256"] = plan_rules.plan_sha256(pinned_plan)
+        if findings:
+            candidate = _candidate_commit(repo, report["commit_sha"])
+            records = carried_items.attach(
+                batch,
+                findings,
+                source=carried_items.coordinator_source(pending[0], candidate),
+                attached_at=decision["approved_at"],
+                attached_by=decision["approved_by"],
+            )
+            # Recorded for audit only: ``next_action`` moves through risk assessment as on any
+            # developer accept, and the open findings send the candidate to code-review there.
+            decision["routing"] = carried_items.carry_over_routing(
+                candidate, [record["item_id"] for record in records]
+            )
         pending[0]["decision"] = decision
         decision_entry = {"dispatch_id": pending[0]["dispatch_id"], **decision}
         if routing is not None:
@@ -651,10 +898,40 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 "last_accepted": _last_accepted(repo, root, batch),
             }
         _safe_id(batch["batch_id"], "batch")
-        _replace_record(ledger, BatchRecord.from_dict(batch))
+        _replace_record(
+            ledger,
+            BatchRecord.from_dict(batch),
+            decision=_decision_audit(pending[0], decision, approver),
+        )
         if args.decision == "abandon":
             _discard_batch_leftovers(repo, ledger, batch, abandoned)
     return batch
+
+
+def _decision_audit(
+    entry: JsonObject, decision: JsonObject, approver: JsonObject
+) -> JsonObject:
+    """The ``decision`` detail stored on the batch transition audit record (no I/O).
+
+    ``route`` is the recorded recovery route, or ``None`` for a decision that routes nothing. The
+    evidence references the immutable report by its ledger path and integrity hash. ``approver``
+    is ``{"kind": "policy" | "human", "name": ...}``, set by the path that approved the decision.
+    """
+    routing = decision.get("routing")
+    return {
+        "dispatch_id": entry["dispatch_id"],
+        "decision": decision["decision"],
+        "route": _require_route(routing["route"])
+        if isinstance(routing, dict)
+        else None,
+        "evidence": {
+            "dispatch_id": entry["dispatch_id"],
+            "report": entry["report"],
+            "report_sha256": entry["report_sha256"],
+        },
+        "approver": approver,
+        "approved_at": decision["approved_at"],
+    }
 
 
 def _decide_retry_route(
@@ -676,9 +953,7 @@ def _decide_retry_route(
         current_candidate: str | None = _latest_developer_candidate(repo, root, batch)
     except CoordinatorError:
         current_candidate = None
-    stage = (
-        "publish" if dispatch.get("purpose") == "publish" else cast(str, report["role"])
-    )
+    stage = _reporting_stage(dispatch, report)
     explicit_category = getattr(args, "reason_category", None)
     hint = (
         _classifier_hint(core_config._config(repo), dispatch, stage, report)
@@ -705,6 +980,7 @@ def _decide_retry_route(
         candidate = _candidate_commit(repo, report["commit_sha"])
         routing = {
             **routing,
+            "route": "verification",
             "next_role": "verification",
             "next_action": "verification",
             "candidate_commit": candidate,
@@ -718,10 +994,12 @@ def _decide_retry_route(
     if forced == "developer" and routing["next_action"] != "developer-retry":
         routing = {
             **routing,
+            "route": "developer-retry",
             "next_role": "developer",
             "next_action": "developer-retry",
             "rationale": f"{routing['rationale']} The approver forced a developer retry with --retry-role developer.",
         }
+    _require_route(routing["route"])
     return routing
 
 

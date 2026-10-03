@@ -242,9 +242,41 @@ python harness\bin\harness.py init C:\path\to\repository `
 | `--pr-base-branch` | Ветка, от которой создаются integration-ветки эпиков (по умолчанию `--base-branch`) |
 | `--branch-pattern` | Регулярное выражение для имён issue-веток |
 | `--qa-gate-command` | Команда полного гейта качества; повторяем, порядок сохраняется ([раздел 6](#qa-gate-skill-context-fork)) |
+| `--tracker-type`, `--tracker-host`, `--tracker-project` | Поле `tracker`: тип (`github`, `gitlab`, `local`), веб-хост с необязательным портом и полный путь проекта с подгруппами (см. ниже) |
 
-Последние четыре флага читает только `pvmalove-suite`; они пишутся в `.harness/project.json`. Их
-можно опустить — `init` спросит интерактивно.
+Флаги от `--language` до `--tracker-project` читает только `pvmalove-suite`; они пишутся в
+`.harness/project.json`. Их можно опустить — `init` спросит интерактивно.
+
+**Поле `tracker`** в `.harness/project.json` явно задаёт трекер проекта
+([ADR 0011](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0011-explicit-project-tracker.md)).
+Это объект из трёх ключей: `type` — `github`, `gitlab` (включая self-hosted) или `local`;
+`host` — веб-хост с необязательным портом, без схемы, пути и userinfo; `project` — полный путь
+проекта с подгруппами. Для `github` и `gitlab` обязательны `host` и `project`; другие ключи внутри
+`tracker` отклоняются:
+
+```json
+"tracker": {"type": "gitlab", "host": "gitlab.example.test:4443", "project": "group/sub/project"}
+```
+
+- Создавая `project.json` (`init`, а также `adopt`/`update`, если файла ещё нет), харнесс заполняет
+  поле так: флаги `--tracker-*` важнее всего; в терминале остальное спрашивается с дефолтами из
+  `origin` — тип, хост с портом и проект с подгруппами, а без распознанного `origin` предлагается
+  `local`; хост и проект `origin` другого типа (GitHub ↔ GitLab) дефолтом не становятся.
+  Подтверждённый ответ или флаг записывается, в том числе `local`. Без терминала и флагов
+  записывается только GitHub или GitLab с полностью разобранными хостом и путём; для локального
+  трекера, хоста без `gitlab.` в имени и репозитория без `origin` поле не пишется. Некорректный
+  `--tracker-host` или `--tracker-project` отклоняется до записи файлов; неполное поле (например,
+  `gitlab` без хоста) не пишется, о чём `init` сообщает в stderr. Существующий `project.json` —
+  seed-файл проекта — не переписывается ни `init`, ни `adopt`/`update`, даже с флагами `--tracker-*`.
+- Без поля трекер определяется по `origin` с учётом схемы, userinfo, порта и подгрупп, а `harness
+  health` выдаёт warn с готовым сниппетом (см. `tracker.project` в разделе health). Хост без `gitlab.`
+  в имени без поля считается локальным трекером — для self-hosted GitLab поле нужно задать.
+- При SSH-`origin` порт SSH ничего не говорит о веб-интерфейсе: нестандартный веб-порт допишите в
+  `host` вручную.
+- Сертификаты, прокси и учётные данные в поле не пишутся — они остаются в личной конфигурации
+  `gh`/`glab`.
+- `.harness/project.schema.json` в установленном проекте — тоже seed: после обновления харнесса
+  старая копия схемы может не знать о поле `tracker`. Авторитетен валидатор `harness health`.
 
 При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md` и само `.harness/project.json`.
 
@@ -407,10 +439,10 @@ python3 harness/bin/harness.py health /path/to/repository --json     # маши�
 | `files` | Lock, `AGENTS.md`, discovery-ссылки, `project.json`, overlay-локи, интеграции, конфиг оркестрации, маршрутизация verification. Нечитаемый lock — `fail` проверки `files.lock`, а зависящие от него проверки — `skipped` со ссылкой на повреждённый lock |
 | `directories` | `.harness`, `.harness/.sandboxes` и категории `cache`/`logs`/`scratch`/`pr_body`/`runs`/`reports`/`worktrees`, при оркестрации — `.harness/orchestration/state`. Отсутствующий каталог с записываемым родителем — `ok` «будет создан»; незаписываемый — `fail` |
 | `repo_map` | Уровень Repo Map (`full`/`minimal`) с причиной деградации и ремедиа |
-| `environment` | ОС, git и `user.name`/`user.email`, `.gitattributes` и расхождения переводов строк, Python ≥ 3.12, uv, синхронность `.harness/.venv` с `uv.lock` (только в репозитории харнесса), кодировка вывода, длина пути (warn только на Windows при запасе < 160 символов) |
+| `environment` | ОС, git и `user.name`/`user.email`, `.gitattributes` и расхождения переводов строк, Python ≥ 3.12, uv, `glab` ≥ 1.117.0 только для GitLab-трекера проекта (старше — `fail` с подсказкой обновления, нет `glab` — `warn`, иначе — `skipped`), синхронность `.harness/.venv` с `uv.lock` (только в репозитории харнесса), кодировка вывода, длина пути (warn только на Windows при запасе < 160 символов) |
 | `environment` на Windows | `LongPathsEnabled`, владелец и запись `%TEMP%\pytest-of-<user>`, пробный symlink (Developer Mode), `bash` для hooks (`fail`, если это заглушка WSL `System32\bash.exe`) |
 | `orchestration` | Только при `backend-orchestration`, все проверки read-only — см. ниже |
-| `tracker` | Только с `--online` — см. ниже |
+| `tracker` | `tracker.project` — локально, остальные проверки только с `--online` — см. ниже |
 
 **Группа `orchestration`.** Без capability все шесть проверок сразу `skipped` («backend-orchestration
 capability не выбрана»). Проверки читают леджер и `git worktree list --porcelain` и строят только
@@ -432,20 +464,24 @@ dry-run план очистки; `ledger migrate`/`reset`, `git worktree remove`
 Реестр Windows, Developer Mode, глобальный git config, права доступа и worktree `--fix` не трогает —
 для них в отчёте только команда.
 
-**`--online`** включает группу `tracker`, по умолчанию выключенную, чтобы обычный `health` оставался
-локальным. Без флага каждая проверка `tracker.*` — `skipped` «офлайн».
+**`--online`** включает онлайн-проверки группы `tracker`, по умолчанию выключенные, чтобы обычный
+`health` оставался локальным. Без флага каждая проверка `tracker.*`, кроме `tracker.project`, — `skipped` «офлайн».
 
 | Проверка | Как работает |
 |---|---|
-| Определение трекера | По `git remote -v`: GitHub или GitLab по домену origin; локальный трекер — `skipped` |
-| `tracker.auth` | `gh auth status` / `glab auth status`; используется только код возврата — токены health не читает и не печатает |
-| `tracker.permissions` | `gh api repos/{owner}/{repo}` (`push` → PR и комментарии, `triage` и выше → метки) или `glab api projects/:id` (`access_level` ≥ 30 ≈ push, ≥ 20 — метки) |
+| Определение трекера | Единый резолвер трекера проекта: корректное поле `tracker` из `.harness/project.json` побеждает; без него разбирается `origin` из `git remote -v` — `https://`, `ssh://`, SCP-форма, userinfo, порт, подгруппы и точка в имени. `github.com` — GitHub, хост с `gitlab.` в имени — GitLab, иначе локальный трекер: онлайн-проверки для него — `skipped` |
+| `tracker.project` | Работает без `--online` и без сети, никогда не `skipped`: показывает тип, хост, проект и источник (`поле tracker`, `origin` или `нет origin`). Нет поля в существующем `.harness/project.json` — `warn` с готовым к вставке сниппетом `"tracker": {...}` в подсказке; поле расходится с `origin` по типу, хосту или проекту — `warn`, используется поле; некорректное поле — `warn` «поле tracker не применено» вместе с `fail` у `files.project_json`. Без `.harness/project.json` — `ok` |
+| `tracker.auth` | `gh auth status --hostname <host>` / `glab auth status --hostname <host>` для хоста трекера проекта; используется только код возврата — токены health не читает и не печатает |
+| `tracker.permissions` | `gh api --hostname <host> repos/{owner}/{repo}` (`push` → PR и комментарии, `triage` и выше → метки) или `glab api --hostname <host> projects/:id/members/all/:user_id` — эффективный `access_level` с учётом членств, унаследованных от родительских групп и приглашённых групп (≥ 30 ≈ push, ≥ 20 — метки) |
 | `tracker.reachability` | `git ls-remote origin` |
 | `tracker.labels` | Сравнивает метки с таблицами из `docs/agents/triage-labels.md`; отсутствующая метка или другой цвет — `warn`, цвет никогда не перекрашивается |
 
 Каждый внешний вызов ограничен 10 секундами; отсутствующий `gh`/`glab` — `warn`, а не `fail` всего
-прогона. `--online --fix` дополнительно создаёт отсутствующие метки с каноническими цветами (`gh label
-create`/`glab label create`, без `--force`).
+прогона. Каждый вызов `gh`/`glab` адресует проект явно: `api --hostname <host>` (для GitLab — с
+URL-кодированным путём проекта), `-R <host>/<owner>/<repo>` для `gh` и `-R https://<host>/<project>`
+для `glab`. `--online --fix` дополнительно создаёт отсутствующие метки с каноническими цветами (`gh label
+create`/`glab label create` с `-R`, без `--force`) и никогда не пишет `.harness/project.json`, в том
+числе поле `tracker`.
 
 **`--json`** печатает контракт `schema_version: 1`:
 
@@ -641,7 +677,8 @@ MCP/plugin/hook/runtime-конфигов) — в
 | `selected skill names already exist; inspect them or use --replace-conflicts` | `adopt` — под именами capability уже лежат свои скиллы | Проверить конфликты; если замена ожидаема — повторить с `--replace-conflicts` (без backup) |
 | `local skill changes would be overwritten; review them or use --force` | `update` — на диске локальные правки managed-файлов | Изучить diff; для snapshot — `--force-managed-files`, для snapshot и seed — `--force` |
 | `discovery path already exists and is not managed: <path> (...)` | На месте `.agents/skills`/`.claude/skills` что-то постороннее | `init` — убрать вручную или использовать `adopt`; `adopt` — `--replace-conflicts`; `update` — `--force` |
-| `.harness/project.json has unknown field(s): <name>` | Поле вне строгого контракта | Удалить поле либо реализовать его сразу в `project.schema.json`, шаблоне, валидаторе и потребителе; допустимы `language`, `base_branch`, `branch_pattern`, `qa_gate_commands`, `$schema`, `story_points`, `shell`, `memory`, `memory_policy` |
+| `.harness/project.json has unknown field(s): <name>` | Поле вне строгого контракта | Удалить поле либо реализовать его сразу в `project.schema.json`, шаблоне, валидаторе и потребителе; допустимы `language`, `base_branch`, `branch_pattern`, `qa_gate_commands`, `$schema`, `story_points`, `shell`, `memory`, `memory_policy`, `tracker` |
+| `.harness/project.json tracker has unknown field(s): <name>` (и другие `... tracker ...`) | Поле `tracker` вне контракта | Внутри `tracker` допустимы только `type` (`github`, `gitlab`, `local`), `host` (хост с необязательным `:порт`, без схемы, пути и userinfo) и `project` (полный путь с подгруппами); для `github`/`gitlab` обязательны `host` и `project`. Сертификаты, прокси и учётные данные сюда не пишутся — они остаются в личной конфигурации `gh`/`glab` |
 | `install-global.py`: `[CONFLICT] ... (re-run with --replace-conflicts ...)` | Место профиля или симлинка занято | Повторить с `--replace-conflicts` — сначала будет backup |
 | `install-global.py`: `[ERROR] Failed to create symlink: ...` (только Windows) | Нет прав на symlink каталога | Включить Developer Mode (Settings → For developers) или запустить терминал от имени администратора |
 
@@ -1172,7 +1209,8 @@ Warning-ось, а Standards=Clean наследуется. Любое измен
 ### `/to-pull-requests` (skill)
 
 Ручной PR & Wrap-up для уже запушенной issue-ветки: проверяет ветку и push; в orchestration-проекте
-проверяет accepted QA evidence ровно для текущего SHA, иначе запускает `qa-gate`; готовит тело PR,
+проверяет accepted QA evidence ровно для текущего SHA и записывает по нему QA-маркер через
+`record-qa-gate-pass.sh`, иначе запускает `qa-gate`; готовит тело PR,
 получает отдельное согласие на `gh pr create`/`glab mr create`, публикует отчёт
 `task-report::required` и после подтверждённого merge закрывает тикет.
 
@@ -1328,14 +1366,14 @@ status::ready») — в этом случае этап grilling пропуска
 
 | Hook | Событие | Что блокирует |
 |---|---|---|
-| `block-direct-master.sh` | `PreToolUse(Bash)` | `git commit`/`git push` из `base_branch` или `integration/*` и push в эти рефы. |
+| `block-direct-master.sh` | `PreToolUse(Bash)` | `git commit`/`git push` из `base_branch` или `integration/*` и push в эти рефы; пропускает только push, создающий `integration/*`, которой ещё нет на remote, а при недоступном remote блокирует. Ветка берётся из checkout самого вызова (`git -C`/`--work-tree`/`--git-dir`, `cd` раньше в простой цепочке без `$`, скобок, `|` и `||`, `cwd` из payload, корень проекта); упоминание в аргументах других команд, кавычках и heredoc вызовом не считается, а неразобранная команда с commit/push блокируется. |
 | `block-public-attribution.sh` | `PreToolUse(Bash)` | Запрещённые сведения в commit messages, PR/MR titles/bodies и их файлах; push непереданных коммитов с тем же содержимым. |
-| `block-pr-merge.sh` | `PreToolUse(Bash)` | `gh pr merge` — безусловно, мердж только вручную. |
+| `block-pr-merge.sh` | `PreToolUse(Bash)` | `gh pr merge` и `glab mr merge`/`accept` — безусловно, мердж только вручную. Merge-текст в команде блокируется (fail closed), если строгий лексер `pr_commands.py` не принял её целиком или не каждая её simple command инертна по allowlist: `echo`, `printf`, `cat`, `grep`, `head`, `tail`, `wc`, `git commit`, текстовые подкоманды `gh`/`glab`. |
 | `check-branch-name.sh` | `PreToolUse(Bash)` | `git checkout -b`/`git switch -c <имя>`, не соответствующее `branch_pattern`. |
 | `check-worktree-branch-name.sh` | `PreToolUse(EnterWorktree)` | То же правило имени для нативного worktree-инструмента. |
-| `block-scratch-outside-docs-tasks.sh` | `PreToolUse(Write\|Edit)` | Task-артефакты в системных temp-директориях вместо `docs/tasks/`, PR-тела и комментарии вне `.harness/.sandboxes/pr_body/`. |
-| `require-qa-gate.sh` | `PreToolUse(Bash)` | `gh pr create`, если `qa-gate` не запускался или провалился для текущего рабочего дерева. Маркер пишет скилл через `record-qa-gate-pass.sh`; `mark-qa-gate-passed.sh` (`PostToolUse(Bash)`) — fallback для прямого запуска команд. |
-| `require-bounded-check.sh` | `PreToolUse(Bash)` | Полный прогон тестов или одной из `qa_gate_commands` без обёртки `test_summary.py`; точечный тест (`::` node-id) не блокируется. |
+| `block-scratch-outside-docs-tasks.sh` | `PreToolUse(Write\|Edit)` | Запись вне проекта (кроме каталога памяти runtime `<CLAUDE_CONFIG_DIR или ~/.claude>/projects/<slug>/memory/`), task-артефакты в системных temp-директориях вместо `docs/tasks/`, PR-тела и комментарии вне `.harness/.sandboxes/pr_body/`. |
+| `require-qa-gate.sh` | `PreToolUse(Bash)` | `gh pr create` и `glab mr create`, если `qa-gate` не запускался или провалился для checkout публикуемой ветки: gh `--head`, glab `-s`/`--source-branch` (glab `-H` — репозиторий, не ветка), без флага — рабочее дерево из `cwd`. Маркер пишет скилл `qa-gate` или `/to-pull-requests` после accepted QA evidence координатора через `record-qa-gate-pass.sh`; `mark-qa-gate-passed.sh` (`PostToolUse(Bash)`) — fallback для прямого запуска команд, в linked worktree без `.harness/` он берёт `qa_gate_commands` из корня проекта или основного worktree. |
+| `require-bounded-check.sh` | `PreToolUse(Bash)` | Полный прогон тестов или одной из `qa_gate_commands` без обёртки `test_summary.py`; точечный тест (`::` node-id), упоминания в командах чтения (`cat`, `sed`, `grep`, …), комментариях и тексте heredoc не блокируются. |
 | `block-dangerous-git.sh` | `PreToolUse(Bash)` | `git reset --hard`, `git clean -f`/`-fd`, `git branch -D`, `git checkout .`, `git restore .`. В отличие от апстримного `git-guardrails-claude-code` **не** блокирует `git push` целиком — пуш issue-веток нужен. |
 | `count-skill-usage.sh` | `PreToolUse(Skill)` | Ничего — считает частоту вызова скиллов в `.claude/.skill-usage.json`. |
 

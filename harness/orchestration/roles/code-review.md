@@ -34,6 +34,22 @@ the candidate. Reserve a retry for a deviation that changes behaviour, scope or 
 the batch a developer-retry budget and, once the candidate is rebuilt, can land on a larger and
 less reviewable diff than the one it replaced.
 
+A brief whose `commit_plan_divergence` is not `null` records how the accepted initial or rebase
+developer report diverged from its commit plan: merged commits, split entries, unclosed entries, and
+the developer's justification. Check that every commit boundary is still independently reviewable
+and that the justification holds; report a boundary that cannot be reviewed on its own as a
+Standards `warning`.
+
+A brief whose `carried_items` is not empty hands this review obligations an earlier decision
+recorded, keyed by source: each `coordinator-finding` names a defect the coordinator found when it
+accepted the developer report, with its `summary`, `files` and `expected_evidence`. The items'
+files belong to the working set even outside `review_scope`. Account for every carried item, next to
+the two axes, in `review.carried_items` as `{"item_id", "status", "evidence"}`: `closed` when the
+candidate resolves it and the evidence shows that, `open` when the defect is still there, and
+`unverified` when it could not be checked. Do not restate a carried item as an axis finding. An
+omitted, `open` or `unverified` item keeps the report from being clean: it is never accepted
+automatically, and a retry of a report with an `open` item routes to a developer retry.
+
 When the approved verification cannot run at all (unavailable Bash/WSL wrapper, transport failure,
 rate limit, context limit), report `outcome: blocked` with empty `findings` and severity `none` on
 both axes, and state the operational cause in `blockers`. Never invent a finding to explain an

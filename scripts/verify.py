@@ -150,8 +150,29 @@ def _check_documentation() -> None:
     check_no_dispatch_specific_data_in_always_sent_files()
 
 
+def _check_private_terms(test_env: dict[str, str]) -> None:
+    """Проверить staged diff, непубликованные коммиты и ветку по приватному списку терминов (#438).
+
+    Без списка проверка печатает уведомление о пропуске и не падает: так в CI без секрета.
+    """
+    run_ok(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "check_private_terms.py"),
+            "--repo",
+            str(ROOT),
+            "--staged",
+            "--commits",
+            "--branch",
+        ],
+        env=test_env,
+    )
+
+
 def _static_checks(test_env: dict[str, str]) -> None:
-    """Быстрые проверки до тестов: JSON каталога, компиляция, скиллы, реестр и документация."""
+    """Быстрые проверки до тестов: приватные термины, JSON каталога, компиляция, скиллы, реестр
+    и документация."""
+    _check_private_terms(test_env)
     run_ok(
         [
             sys.executable,

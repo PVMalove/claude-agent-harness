@@ -33,6 +33,22 @@ RETRY_REASON_CATEGORIES = (
     *DEVELOPER_REASON_CATEGORIES,
     "unknown",
 )
+# The recovery route a ``retry`` or ``abandon`` decision records in its routing record. Each value
+# names a route the coordinator already computes; a new route adds its value here and its row to
+# the playbook "Recovery route table" in the same change. ``report-completion`` is not a
+# ``batch decide`` route: ``report submit`` names it when the policy chain after a recorded report
+# stops, and the coordinator completes that chain with ``report complete``. ``carry-over`` is
+# recorded by an ``accept`` with ``--findings-file`` and by ``batch carry-over`` (issue #499): a
+# coordinator finding goes into review instead of costing a developer retry before it.
+RECOVERY_ROUTES = (
+    "developer-retry",
+    "same-candidate-rerun",
+    "verification",
+    "architect-retry",
+    "abandon",
+    "report-completion",
+    "carry-over",
+)
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {
     "architect": "architect",
@@ -51,6 +67,10 @@ DEFAULT_PROFILE = "session"
 # heartbeats so an actually lost worker is eventually surfaced.
 DEFAULT_STALE_AFTER_SECONDS = 3_600
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 300
+# `ledger release-lock` releases a lock without an owner record (taken by an older runtime) only
+# once it is this old. `dispatch publish` legitimately holds the lock across `git push`, so the
+# bound stays generous; a lock that records its owner is judged by that owner's process instead.
+LEDGER_LOCK_STALE_SECONDS = 3_600
 DEFAULT_COMMUNICATION_POLICY = {
     "agent_to_agent_language": "en",
     "coordinator_report_language": "ru",
@@ -135,7 +155,30 @@ DISPATCH_FIELDS = {
     "orchestration_policy",
     "liveness",
     "commit_plan",
+    "commit_plan_divergence",
+    "carried_items",
 }
+# The carried-items brief section (issue #499) is one shared channel keyed by the kind of source
+# that raised an item; a later kind adds its value here without changing the section's shape.
+CARRIED_ITEM_SOURCES = ("coordinator-finding", "review-finding")
+# One carried item as a brief hands it to a role.
+CARRIED_ITEM_FIELDS = frozenset(
+    {"item_id", "source", "summary", "files", "expected_evidence"}
+)
+# How a code-review report accounts for one carried item; only ``closed`` settles it as clean.
+CARRIED_ITEM_STATUSES = ("closed", "open", "unverified")
+CARRIED_ITEM_ACCOUNTING_FIELDS = frozenset({"item_id", "status", "evidence"})
+# One coordinator finding as the batch records it, append-only and hash-checked.
+CARRIED_ITEM_RECORD_FIELDS = CARRIED_ITEM_FIELDS | {
+    "attached_at",
+    "attached_by",
+    "record_sha256",
+}
+# One entry of a developer brief's commit plan; ``covers`` names definition-of-done items 1..n.
+COMMIT_PLAN_ENTRY_FIELDS = frozenset({"id", "summary", "expected_paths", "covers"})
+# One record of a developer report's dod_coverage: the covering commits, or why the item is open.
+DOD_COVERED_FIELDS = frozenset({"dod_item", "commits"})
+DOD_NOT_COVERED_FIELDS = frozenset({"dod_item", "not_covered"})
 # The four fields of the transition-bound approval contract (issue #250) are all present or all absent.
 POLICY_BRIEF_FIELDS = frozenset(
     {"transition", "transition_digest", "retry_idempotency_key", "orchestration_policy"}
@@ -159,6 +202,8 @@ REPORT_OPTIONAL_FIELDS = {
     "review",
     "report_language",
     "commit_map",
+    "dod_coverage",
+    "divergence_justification",
     "lessons",
     "used_memory",
 }

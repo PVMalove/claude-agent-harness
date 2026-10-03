@@ -4,7 +4,7 @@
 в [backend-orchestration.md](../../.harness/docs/backend-orchestration.md). Этот документ определяет только правила Git, тикетов и PR.
 
 ### 1. Fundamental Constraints & Tooling
-* **Zero Direct Commits:** `base_branch` and every `integration/*` branch are protected targets. Agents commit and push only from an isolated issue branch matching `branch_pattern`.
+* **Zero Direct Commits:** `base_branch` and every `integration/*` branch are protected targets. Agents commit and push only from an isolated issue branch matching `branch_pattern`. The one exception is `/to-spec` pushing a new `integration/*` branch that is absent on the remote; the hook checks the remote and blocks the push when it cannot.
 * **CLI Only:** Rely exclusively on `git` and your tracker's CLI — GitHub CLI (`gh`) or GitLab CLI (`glab`) — for repository and task operations.
 * **Body via File, Not Inline:** Any multiline body passed to `gh`/`glab` (`issue create`, `pr create`, `pr comment`, or equivalents) MUST go through `--body-file <path>`, never inline `--body "..."` or a shell heredoc — nested quotes, backticks, and PowerShell's escaping rules all break it unpredictably. For an issue or spec, the path is the already-written draft file (see [issue-tracker.md](./issue-tracker.md)). For a PR body or a comment (including a `task-report::required` completion report posted as an issue comment), use repository scratch only: `.harness/.sandboxes/pr_body/pr-body-<issue>-<slug>.md` for a PR body, or `.harness/.sandboxes/pr_body/issue-comment-<issue>-<slug>.md`/`pr-comment-<issue>-<slug>.md` for a comment — the enforcing hook (`block-scratch-outside-docs-tasks.sh`) checks the basename and only allows one containing `pr-body`, `pr-comment`, or `issue-comment`; any other name in that same directory is rejected. Never `docs/tasks/`; delete the file only after the command succeeds, and retain it on failure for retry.
 * **Project-Only Metadata:** Commit messages and PR titles/bodies contain only the project change. Automated-agent attribution, model names, session URLs, and `Co-Authored-By` trailers are forbidden; the local hook and CI check reject them.
@@ -21,18 +21,17 @@ branch is the PR target for child work; `base_branch` is the release target for 
 
 1. **Initialization (Branching):**
    An isolated issue branch is created for each task from the epic's exact integration branch — never from whatever branch happens to already be checked out. If the task has no epic, use `base_branch`.
-   * **Format:** must match `branch_pattern` in `.harness/project.json` (default: `feature/issue-<ID>-<short-slug>`, where `<ID>` is the tracker issue number and `<short-slug>` is a short task description — transliterated per whatever convention this project's `.harness/project.json` documents, words separated by hyphens or underscores).
-   * **Command:** `git fetch origin <integration-branch> && git switch -c feature/issue-<ID>-<slug> --track origin/<integration-branch>`. For an epic-less task, replace `<integration-branch>` with `base_branch` from `.harness/project.json` (default `main`).
+   * **Format:** must match `branch_pattern` in `.harness/project.json` (default: `feature/issue-<ID>-<short-slug>`, where `<ID>` is the tracker issue number and `<short-slug>` is a short task description — transliterated, words separated by hyphens or underscores).
+   * **Command:** `git fetch origin <integration-branch> && git switch -c feature/issue-<ID>-<slug> --track origin/<integration-branch>`. For an epic-less task, replace `<integration-branch>` with the required `base_branch` from `.harness/project.json`.
 2. **Post-branch Push:**
-   * Immediately after creating the branch, push it to GitHub so it exists remotely: `git push -u origin feature/issue-<ID>-<slug>`.
+   * Immediately after creating the branch, push it to the remote (`origin`) so it exists there: `git push -u origin feature/issue-<ID>-<slug>`.
 3. **Implementation & Quality Assurance (TDD):**
-   * Code MUST be written in strict accordance with the **TDD** (Test-Driven Development) methodology.
-   * Local testing is mandatory before committing any changes.
+   * Write code test-first (TDD) and run the local tests before every commit.
 4. **Committing Changes:**
    * Commits are made only to the current issue branch. Before the first edit and before every commit, verify that the current branch matches `branch_pattern` and is not `base_branch` or `integration/*`.
-   * Commit messages **MUST** follow the **Semantic Commit Messages** standard (e.g., `feat: ...`, `fix: ...`, `refactor: ...`).
+   * Commit messages follow the **Semantic Commit Messages** standard (e.g., `feat: ...`, `fix: ...`, `refactor: ...`).
 5. **Continuous Push:**
-   * Push commits to GitHub both while implementing the task and after addressing code-review feedback: `git push origin feature/issue-<ID>-<slug>`. Never leave finished commits sitting only in the local repo.
+   * Push commits to the remote (`origin`) both while implementing the task and after addressing code-review feedback: `git push origin feature/issue-<ID>-<slug>`. Never leave finished commits sitting only in the local repo.
 6. **Integration (Pull Request):** *(local markdown tracker: skip this step and step 7 — see "Issue First" above.)*
    * **Confirm before opening:** before creating the PR, explicitly ask the developer whether the branch is ready to be opened as a pull request. Do not run `gh pr create` just because implementation, tests, and code-review are done — wait for an explicit go-ahead. Silence, or the mere fact that the task is otherwise complete, does not count as consent.
    * Once the developer confirms, run the `qa-gate` skill (see [issue-tracker.md](./issue-tracker.md)'s "When a skill says…" conventions for how tickets are referenced) and only proceed once it passes.

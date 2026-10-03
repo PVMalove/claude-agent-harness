@@ -51,6 +51,13 @@ developer dispatch; review хранит отдельные Standards и Spec evi
 candidate commit; publish отправляет только accepted SHA. Final report предшествует отдельно
 одобренному publish dispatch.
 
+Дефект, найденный в чистом developer report, чей DoD выполнен внутри своей зоны, не повод для retry:
+примите report через `batch decide --findings-file <path>`, а после policy auto-accept выполните
+`batch carry-over --batch <id> --findings-file <path>`, пока code-review dispatch не создан. Находка
+уходит в brief code-review как перенесённый пункт (маршрут `carry-over`), и единственный developer
+retry тратится после review. Retry developer report без accept — только при невыполненном пункте DoD
+или изменении вне зоны.
+
 Каждая dispatched role сначала пишет model self-report относительно immutable brief и посылает
 heartbeat. Между send и report coordinator опрашивает watchdog. Mismatch или stale dispatch —
 blocker; recovery создаёт новый approved dispatch, а не редактирует brief или state.
@@ -69,6 +76,38 @@ Write-роли могут записать checkpoint и продолжить т
 не является completion report и переносит только SHA, changed files, остаточный DoD, проверки, риски,
 blockers и ссылку на package. Read-only роли не могут checkpoint/resume. Rate-limit resume разрешён
 автоматически, остальные planned triggers требуют coordinator decision.
+
+## Промпт воркера
+
+Каждый промпт воркера — этот шаблон, заполненный из результата `dispatch send`. Задачу уже несут
+brief и Context Package, поэтому промпт содержит только указатели на них:
+
+```text
+You are the <role> worker for dispatch <dispatch_id>.
+Brief: <brief path from dispatch send>
+Report staging path: <report_staging_path from dispatch send, verbatim>
+Context Package <context_package_id>: start from its starting_files, symbol_graph and
+related_tests. For a starting file with non-empty sections, read only the start_line–end_line
+ranges the task needs.
+Work within the brief; escalate a blocker for anything the brief and the package leave out.
+```
+
+Developer-retry добавляет две строки из `retry_start` своего `dispatch preflight`:
+
+```text
+Retry handoff: <retry_start.handoff, verbatim JSON>
+Retry starting files: <paths from retry_start.starting_files>
+```
+
+Большие документы (каталог ролей, `playbook.md`, `backend-orchestration.md`, `git-workflow.md`) и
+прежние отчёты попадают к воркеру только диапазонами `sections` Context Package или через retry
+handoff. Промпт поручает ровно свой brief и, для retry, блокирующие findings из handoff.
+
+Developer-retry всегда стартует новой сессией из компактного handoff и не продолжает историю прежней
+developer-сессии. Decision packet preflight-а несёт `retry_context_estimate` и
+`retry_context_warning` как evidence; они никогда не блокируют dispatch. Code-review и QA остаются новыми независимыми сессиями; по шаблону
+меняется только их промпт. Handoff, порог smart zone и компакт определены в разделе
+"Developer-retry handoff" playbook.
 
 ## Авторитетные guidance
 

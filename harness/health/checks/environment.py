@@ -1,7 +1,7 @@
 """Группа 'environment': кроссплатформенные проверки утилит и настроек репозитория (задача #343).
 
-Включает проверку Git и автора коммитов, переводов строк, Python, uv, dev-окружения
-канонического репозитория и кодировки вывода.
+Включает проверку Git и автора коммитов, переводов строк, Python, uv, версии glab для
+GitLab-трекера проекта, dev-окружения канонического репозитория и кодировки вывода.
 
 Каждая внешняя утилита разрешается через `shutil.which` и вызывается по полному пути,
 благодаря чему shim-файлы `.cmd` в Windows PATH находятся так же, как в шелле. Отсутствующая
@@ -14,6 +14,7 @@ import codecs
 import locale
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -22,10 +23,16 @@ from pathlib import Path
 from ..context import HealthContext
 from ..model import CheckResult, Fix
 from ..process import run_tool
+from ..project_tracker import resolve_project_tracker
 
 GROUP = "environment"
 
 MIN_PYTHON: tuple[int, int] = (3, 12)
+# The minimum glab for a GitLab project tracker (docs/adr/0011): older releases miss flags or
+# mishandle a host with a port that delivery relies on.
+MIN_GLAB: tuple[int, int, int] = (1, 117, 0)
+_GLAB_INSTALL_URL = "https://gitlab.com/gitlab-org/cli#installation"
+_VERSION_NUMBER = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 # The canonical harness source repository: the only project whose dev environment health syncs.
 HARNESS_PROJECT_NAME = "claude-agent-harness"
 DEV_VENV_REL = Path(".harness/.venv")
@@ -343,6 +350,52 @@ def check_uv(_context: HealthContext) -> CheckResult:
             fix=_UV_INSTALL_FIX,
         )
     return CheckResult(id="environment.uv", group=GROUP, status="ok", message=version)
+
+
+def check_glab(context: HealthContext) -> CheckResult:
+    """Проверить, что glab не старше MIN_GLAB, если трекер проекта — GitLab; иначе пропустить.
+
+    Проверка локальная: только `glab --version`, без сети и без `--online`.
+    """
+    check_id = "environment.glab"
+    if resolve_project_tracker(context.repo).effective.type != "gitlab":
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="skipped",
+            message="glab: не проверено (трекер проекта не GitLab)",
+        )
+    required = ".".join(str(part) for part in MIN_GLAB)
+    upgrade = Fix(
+        text=f"установите или обновите glab до {required} или новее: {_GLAB_INSTALL_URL}"
+    )
+    version = _tool_version("glab")
+    if version is None:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message="glab не найден в PATH или не запускается: он нужен для GitLab-трекера проекта",
+            fix=upgrade,
+        )
+    match = _VERSION_NUMBER.search(version)
+    if match is None:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message=f"не удалось разобрать версию glab: {version}",
+            fix=upgrade,
+        )
+    if tuple(int(part) for part in match.groups()) < MIN_GLAB:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="fail",
+            message=f"{version}: glab старше минимальной версии {required} для GitLab-трекера проекта",
+            fix=upgrade,
+        )
+    return CheckResult(id=check_id, group=GROUP, status="ok", message=version)
 
 
 def is_harness_source_repo(repo: Path) -> bool:

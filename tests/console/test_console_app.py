@@ -594,7 +594,9 @@ def test_dashboard_summary_lists_problems_and_splits_repo_map_facts() -> None:
     assert text.index("env.git") < text.index("repo_map.tier —")
 
 
-def test_diagnostics_screen_unmount_cancels_workers_without_deadlock(tmp_path: Path) -> None:
+def test_diagnostics_screen_unmount_cancels_workers_without_deadlock(
+    tmp_path: Path,
+) -> None:
     """Проверить, что размонтирование экрана отменяет фоновые воркеры и не приводит к зависанию."""
     import threading
     from textual.app import App
@@ -628,5 +630,3 @@ def test_diagnostics_screen_unmount_cancels_workers_without_deadlock(tmp_path: P
 
     # Must complete cleanly without hanging on loop closure / shutdown_default_executor
     asyncio.run(scenario())
-
-

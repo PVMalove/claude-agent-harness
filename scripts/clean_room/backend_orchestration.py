@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from harness.orchestration.core.constants import RECOVERY_ROUTES
 from harness.storage import storage_path
 from scripts.clean_room.support import (
     HARNESS,
@@ -16,6 +17,55 @@ from scripts.clean_room.support import (
     find_check,
     run_ok,
 )
+
+
+RETRY_ROUTING_HEADING = "## Retry routing and abandon"
+RECOVERY_ROUTE_TABLE_HEADING = "## Recovery route table"
+RECOVERY_ROUTE_TABLE_HEADER = ("Situation", "Route", "Who approves", "Evidence")
+
+
+def _require_recovery_route_table(playbook: str) -> None:
+    """Обязательное правило playbook: таблица маршрутов восстановления (#497).
+
+    Раздел `## Recovery route table` идёт сразу после `## Retry routing and abandon`, содержит
+    таблицу `Situation | Route | Who approves | Evidence` и хотя бы одну строку на каждое значение
+    `RECOVERY_ROUTES` во второй колонке (у маршрута может быть несколько ситуаций); маршрут вне
+    enum в таблице тоже ошибка.
+    """
+    missing = "backend-orchestration playbook missing rule: recovery route table"
+    headings = [
+        line.strip() for line in playbook.splitlines() if line.startswith("## ")
+    ]
+    if RECOVERY_ROUTE_TABLE_HEADING not in headings:
+        sys.exit(f"{missing} ({RECOVERY_ROUTE_TABLE_HEADING})")
+    position = headings.index(RECOVERY_ROUTE_TABLE_HEADING)
+    if position == 0 or headings[position - 1] != RETRY_ROUTING_HEADING:
+        sys.exit(
+            f"{missing}: {RECOVERY_ROUTE_TABLE_HEADING} must directly follow "
+            f"{RETRY_ROUTING_HEADING}"
+        )
+    section = playbook.split(RECOVERY_ROUTE_TABLE_HEADING, 1)[1].split("\n## ", 1)[0]
+    rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in section.splitlines()
+        if line.strip().startswith("|")
+    ]
+    if not rows or tuple(rows[0]) != RECOVERY_ROUTE_TABLE_HEADER:
+        sys.exit(
+            f"{missing}: header must be | {' | '.join(RECOVERY_ROUTE_TABLE_HEADER)} |"
+        )
+    routes = [
+        row[1].strip("`")
+        for row in rows[2:]
+        if len(row) == len(RECOVERY_ROUTE_TABLE_HEADER)
+    ]
+    unknown = sorted(set(routes) - set(RECOVERY_ROUTES))
+    absent = [route for route in RECOVERY_ROUTES if route not in routes]
+    if len(routes) != len(rows) - 2 or unknown or absent:
+        sys.exit(
+            f"{missing}: every row needs four cells and one route of RECOVERY_ROUTES "
+            f"(missing: {absent}, unknown: {unknown})"
+        )
 
 
 def run(ctx: SimpleNamespace) -> None:
@@ -106,6 +156,8 @@ def run(ctx: SimpleNamespace) -> None:
         "module-owned guidance",
         ".harness/orchestration/playbook.md",
         ".harness/orchestration/roles/",
+        "Recovery route table",
+        "route_preview",
     ):
         if required_contract.casefold() not in installed_implement.casefold():
             sys.exit(
@@ -134,10 +186,15 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("installed project is missing the to-pull-requests PR step")
     if (orchestration_project / ".harness" / "skills" / "to-pr").exists():
         sys.exit("installed project retains the removed to-pr PR step")
-    if "qa evidence" not in installed_pr_step.read_text(encoding="utf-8"):
+    installed_pr_text = installed_pr_step.read_text(encoding="utf-8")
+    if "qa evidence" not in installed_pr_text:
         sys.exit(
             "installed to-pull-requests step does not validate accepted QA evidence"
         )
+    if installed_pr_text.find("record-qa-gate-pass.sh") < installed_pr_text.find(
+        "qa evidence"
+    ):
+        sys.exit("installed to-pull-requests step does not record accepted QA evidence")
     orchestration_config = orchestration_project / ".harness" / "orchestration.json"
     if not orchestration_config.is_file():
         sys.exit("backend-orchestration config seed missing")
@@ -379,6 +436,7 @@ def run(ctx: SimpleNamespace) -> None:
     ):
         if required_rule not in normalized_playbook:
             sys.exit(f"backend-orchestration playbook missing rule: {required_rule}")
+    _require_recovery_route_table(playbook)
 
     code_review_role = (
         orchestration_project

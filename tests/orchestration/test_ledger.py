@@ -6,9 +6,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 from harness.errors import HarnessError
@@ -32,6 +35,11 @@ from harness.orchestration.core.constants import (
     LEGACY_CONTEXT_PACKAGE_FIELDS_NO_TOKENS,
 )
 from harness.orchestration.core.utils import CoordinatorError
+from harness.orchestration.ledger.lifecycle import (
+    LEDGER_VERSION,
+    SUPPORTED_LEDGER_VERSIONS,
+    LedgerLockBusy,
+)
 from harness.orchestration.workflow import history
 
 
@@ -294,6 +302,58 @@ class RecordApiTests(unittest.TestCase):
                     )
                 )
 
+    def test_replace_record_writes_a_decision_detail_into_the_transition_audit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            ledger = LifecycleLedger(Path(temporary) / "state")
+            ledger.ensure()
+            ledger.write_record(PlanRecord(batch_id="batch-1"))
+
+            def batch(state: str) -> BatchRecord:
+                return BatchRecord(
+                    batch_id="batch-1",
+                    state=state,
+                    dispatches=[],
+                    coordinator_approval=None,
+                )
+
+            detail: JsonObject = {
+                "dispatch_id": "dispatch-1",
+                "decision": "retry",
+                "route": "developer-retry",
+                "evidence": {
+                    "dispatch_id": "dispatch-1",
+                    "report": "reports/dispatch-1.json",
+                    "report_sha256": "0" * 64,
+                },
+                "approver": {"kind": "human", "name": "Malove"},
+                "approved_at": "2026-09-17T00:00:00+00:00",
+            }
+            ledger.write_record(batch("planned"))
+            ledger.replace_record(batch("planned"), decision=detail)
+            ledger.replace_record(batch("planned"))
+
+            root = ledger.records_root()  # re-validates every audit checksum
+            transitions = sorted(
+                (
+                    record
+                    for record in (
+                        json.loads(path.read_text(encoding="utf-8"))
+                        for path in (root / "audit").glob("*.json")
+                    )
+                    if record["action"] == "transition"
+                ),
+                key=lambda record: record["at"],
+            )
+            self.assertEqual(len(transitions), 2)
+            self.assertEqual(transitions[0]["details"]["decision"], detail)
+            self.assertEqual(
+                (transitions[0]["details"]["from"], transitions[0]["details"]["to"]),
+                ("planned", "planned"),
+            )
+            self.assertNotIn("decision", transitions[1]["details"])
+
     def test_write_record_rejects_a_record_id_that_is_not_a_safe_path_segment(
         self,
     ) -> None:
@@ -346,6 +406,186 @@ class LockTests(unittest.TestCase):
 
             with ledger.lock():
                 pass
+
+    def test_lock_records_its_owner_and_removes_it_on_release(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            lock_dir = state_root / ".coordinator.lock"
+
+            self.assertIsNone(ledger.lock_state())
+            with ledger.lock():
+                owner = json.loads(
+                    (lock_dir / "owner.json").read_text(encoding="utf-8")
+                )
+                state = ledger.lock_state()
+
+            self.assertEqual(owner["pid"], os.getpid())
+            self.assertEqual(owner["host"], socket.gethostname())
+            self.assertIsNotNone(datetime.fromisoformat(owner["acquired_at"]).tzinfo)
+            assert state is not None
+            self.assertEqual(state["owner"], owner)
+            self.assertEqual(state["owner_record"], "readable")
+            self.assertEqual(state["acquired_at"], owner["acquired_at"])
+            self.assertGreaterEqual(cast(int, state["held_seconds"]), 0)
+            self.assertFalse(lock_dir.exists())
+            self.assertIsNone(ledger.lock_state())
+
+    def test_contention_raises_lock_busy_whose_remedy_names_release_lock(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            state_root = Path(temporary) / "state"
+            first = LifecycleLedger(state_root)
+            second = LifecycleLedger(state_root)
+
+            with first.lock():
+                with self.assertRaises(LedgerLockBusy) as raised, second.lock():
+                    pass
+
+            self.assertIsInstance(raised.exception, LedgerError)
+            self.assertEqual(
+                raised.exception.message, "ledger is locked by another operation"
+            )
+            self.assertIn("ledger release-lock", raised.exception.remedy)
+            self.assertNotIn("remove", raised.exception.remedy.lower())
+
+    def test_break_lock_refuses_a_lock_whose_owner_changed(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            lock_dir = state_root / ".coordinator.lock"
+
+            with ledger.lock():
+                state = ledger.lock_state()
+                assert state is not None
+                owner = cast(JsonObject, state["owner"])
+                recorded = (lock_dir / "owner.json").read_bytes()
+                stamped = (lock_dir / "owner.json").stat().st_ctime_ns
+                observed = {**state, "owner": {**owner, "pid": -1}}
+
+                with self.assertRaisesRegex(LedgerError, "changed"):
+                    ledger.break_lock(observed)
+
+                self.assertEqual(sorted(os.listdir(lock_dir)), ["owner.json"])
+                self.assertEqual((lock_dir / "owner.json").read_bytes(), recorded)
+                # Never even moved aside for a moment: a rename would touch its ctime.
+                self.assertEqual((lock_dir / "owner.json").stat().st_ctime_ns, stamped)
+
+            self.assertFalse(lock_dir.exists())
+
+    def test_an_acquirer_whose_directory_was_released_before_it_recorded_itself_is_busy(
+        self,
+    ) -> None:
+        """The interleaving review found (#498): an acquirer has taken the lock directory but not
+        yet recorded itself, a release removes the still-empty directory, and another acquirer
+        takes it again.  Whoever records itself first holds the lock; the other is busy and never
+        writes into a lock it does not hold, whichever of the two records first."""
+        for first_to_record in ("late", "new"):
+            with (
+                self.subTest(first_to_record=first_to_record),
+                tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary,
+            ):
+                state_root = Path(temporary) / "state"
+                late = LifecycleLedger(state_root)
+                new = LifecycleLedger(state_root)
+                lock_dir = late._take_lock_directory()
+                observed = late.lock_state()
+                assert observed is not None
+                late.break_lock(observed)
+                self.assertEqual(new._take_lock_directory(), lock_dir)
+                first, second = (
+                    (late, new) if first_to_record == "late" else (new, late)
+                )
+
+                first._record_lock_owner(lock_dir)
+                recorded = (lock_dir / "owner.json").read_bytes()
+                with self.assertRaises(LedgerLockBusy):
+                    second._record_lock_owner(lock_dir)
+
+                self.assertEqual(sorted(os.listdir(lock_dir)), ["owner.json"])
+                self.assertEqual((lock_dir / "owner.json").read_bytes(), recorded)
+
+    def test_an_acquirer_whose_directory_is_gone_before_it_recorded_itself_is_busy(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            lock_dir = ledger._take_lock_directory()
+            observed = ledger.lock_state()
+            assert observed is not None
+            ledger.break_lock(observed)
+
+            with self.assertRaises(LedgerLockBusy):
+                ledger._record_lock_owner(lock_dir)
+
+            self.assertFalse(lock_dir.exists())
+
+    def test_an_owner_record_that_cannot_be_read_is_aged_by_its_own_mtime(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            lock_dir = state_root / ".coordinator.lock"
+            lock_dir.mkdir(parents=True)
+            (lock_dir / "owner.json").touch()
+            os.utime(lock_dir, (1_000_000, 1_000_000))
+            os.utime(lock_dir / "owner.json", (2_000_000, 2_000_000))
+
+            state = ledger.lock_state()
+
+            assert state is not None
+            self.assertIsNone(state["owner"])
+            self.assertEqual(state["owner_record"], "unreadable")
+            self.assertEqual(
+                state["acquired_at"], datetime.fromtimestamp(2_000_000, UTC).isoformat()
+            )
+
+    def test_break_lock_removes_the_unreadable_owner_record_it_observed(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            state_root = Path(temporary) / "state"
+            ledger = LifecycleLedger(state_root)
+            lock_dir = ledger._take_lock_directory()
+            (lock_dir / "owner.json").touch()
+            observed = ledger.lock_state()
+            assert observed is not None
+
+            ledger.break_lock(observed)
+
+            self.assertFalse(lock_dir.exists())
+            with ledger.lock():
+                pass
+
+    def test_break_lock_never_removes_an_owner_record_written_or_created_since_observed(
+        self,
+    ) -> None:
+        """An acquirer that records itself after the release judged the lock holds it: a record
+        that became readable, or appeared where none was observed, is never removed."""
+        for before, after in ((b"", b'{"pid": 1}'), (None, b"")):
+            with (
+                self.subTest(before=before, after=after),
+                tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary,
+            ):
+                state_root = Path(temporary) / "state"
+                ledger = LifecycleLedger(state_root)
+                lock_dir = ledger._take_lock_directory()
+                owner = lock_dir / "owner.json"
+                if before is not None:
+                    owner.write_bytes(before)
+                    os.utime(owner, (1_000_000, 1_000_000))
+                os.utime(lock_dir, (1_000_000, 1_000_000))
+                observed = ledger.lock_state()
+                assert observed is not None
+                owner.write_bytes(after)
+                os.utime(owner, (1_000_000, 1_000_000))
+
+                with self.assertRaisesRegex(LedgerError, "changed"):
+                    ledger.break_lock(observed)
+
+                self.assertEqual(sorted(os.listdir(lock_dir)), ["owner.json"])
+                self.assertEqual(owner.read_bytes(), after)
 
 
 class StructuralValidationCharacterizationTests(unittest.TestCase):
@@ -596,6 +836,120 @@ class OperationalRecordMigrationTests(unittest.TestCase):
             self.assertFalse(
                 ledger.migrate()["migrated"]
             )  # already current: the schema version did not change
+
+
+class RecoveryRouteVersioningTests(unittest.TestCase):
+    """Issue #497: ``routing.route`` is an optional field under ledger version 3. A decision recorded
+    before it is read verbatim; nothing migrates it or derives a route for it."""
+
+    def _older_batch(self, *, dispatches: bool = True) -> JsonObject:
+        """A batch whose decisions predate the route field; ``dispatches=False`` drops the dispatch
+        entries, whose records a migration's record-graph check would otherwise require."""
+        retry: JsonObject = {
+            "decision": "retry",
+            "approved_by": "Malove",
+            "approved_at": "2026-09-20T00:00:00+00:00",
+            "note": "none",
+            "routing": {
+                "previous_role": "code-review",
+                "reason_category": "transport",
+                "next_role": "code-review",
+                "next_action": "code-review",
+                "rationale": "recorded before the route field existed",
+                "candidate_commit": "c" * 40,
+                "decided_at": "2026-09-20T00:00:00+00:00",
+            },
+        }
+        abandon: JsonObject = {
+            "decision": "abandon",
+            "approved_by": "Malove",
+            "approved_at": "2026-09-20T01:00:00+00:00",
+            "note": "superseded",
+        }
+        return {
+            "batch_id": "batch-1",
+            "state": "abandoned",
+            "dispatches": [
+                {"dispatch_id": "dispatch-1", "state": "reported", "decision": retry},
+                {"dispatch_id": "dispatch-2", "state": "reported", "decision": abandon},
+            ]
+            if dispatches
+            else [],
+            "coordinator_approval": {
+                "approved_by": "Malove",
+                "approved_at": "2026-09-20T00:00:00+00:00",
+            },
+            "coordinator_decisions": [
+                {"dispatch_id": "dispatch-1", **retry, "next_role": "code-review"},
+                {"dispatch_id": "dispatch-2", **abandon},
+            ],
+        }
+
+    def test_an_older_routing_record_migrates_verbatim_and_stays_valid_under_version_3(
+        self,
+    ) -> None:
+        batch = self._older_batch(dispatches=False)
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            root = Path(temporary)
+            for directory, record in (
+                ("batches", batch),
+                ("plans", {"batch_id": "batch-1"}),
+            ):
+                (root / directory).mkdir()
+                (root / directory / "batch-1.json").write_text(
+                    json.dumps(record), encoding="utf-8"
+                )
+            ledger = LifecycleLedger(root)
+
+            self.assertTrue(ledger.migrate()["migrated"])
+
+            stored = json.loads(
+                (ledger.records_root() / "batches" / "batch-1.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(stored, batch, "no route is added or derived")
+            history._validate_operational_batch_fields(stored)
+            self.assertEqual((LEDGER_VERSION, ledger.status()["version"]), (3, 3))
+            self.assertEqual(SUPPORTED_LEDGER_VERSIONS, (1, 2, 3))
+            self.assertFalse(
+                ledger.migrate()["migrated"], "a route field needs no schema upgrade"
+            )
+            self.assertEqual(
+                json.loads(
+                    (ledger.records_root() / "batches" / "batch-1.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+                batch,
+            )
+
+    def test_a_current_generation_reads_an_older_and_a_routed_decision_side_by_side(
+        self,
+    ) -> None:
+        batch = self._older_batch()
+        decisions = cast(list[JsonObject], batch["coordinator_decisions"])
+        routing = cast(JsonObject, decisions[0]["routing"])
+        decisions.append(
+            {**decisions[0], "routing": {**routing, "route": "same-candidate-rerun"}}
+        )
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            ledger = LifecycleLedger(Path(temporary) / "state")
+            ledger.ensure()
+            ledger.write_record(PlanRecord(batch_id="batch-1"))
+            ledger.write_record(BatchRecord.from_dict(batch))
+
+            stored = json.loads(
+                (ledger.records_root() / "batches" / "batch-1.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            self.assertEqual(stored, batch)
+            history._validate_operational_batch_fields(stored)
+            self.assertNotIn("route", stored["coordinator_decisions"][0]["routing"])
+            self.assertNotIn("routing", stored["coordinator_decisions"][1])
+            self.assertFalse(ledger.migrate()["migrated"])
 
 
 _ALL_CONTEXT_PACKAGE_FIELD_VALUES: JsonObject = {
