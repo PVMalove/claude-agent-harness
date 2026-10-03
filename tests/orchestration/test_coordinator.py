@@ -6732,6 +6732,71 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 else:
                     self.assertNotIn("decision", entry)
 
+    def test_a_developer_retry_after_review_carries_both_kinds_for_one_retry(
+        self,
+    ) -> None:
+        candidate = self._carried_review_candidate()
+        self.assertEqual(
+            decisions._developer_retry_count(self._batch_record(self.batch_id)), 0
+        )
+        finding = {
+            "severity": "warning",
+            "summary": "the reset path has no test",
+            "evidence": "tests/test_x.py:1",
+        }
+        review = self._reported_review(
+            self.batch_id,
+            candidate,
+            standards=("warning", [finding]),
+            carried={"coordinator-finding-1": "open"},
+        )
+
+        decided = self._decide(self.batch_id, "retry")
+        retry = self._dispatch(self.batch_id, "developer")["brief"]
+
+        self.assertEqual(self._routing(decided)["route"], "developer-retry")
+        self.assertEqual(decisions._developer_retry_count(decided), 1)
+        section = retry["carried_items"]
+        self.assertEqual(
+            [item["item_id"] for item in section["coordinator-finding"]],
+            ["coordinator-finding-1"],
+        )
+        self.assertEqual(
+            section["review-finding"],
+            [
+                {
+                    "item_id": "review-finding-1",
+                    "source": {
+                        "kind": "review-finding",
+                        "dispatch_id": review["dispatch_id"],
+                        "report_sha256": self._report_evidence(
+                            self.batch_id, review["dispatch_id"]
+                        )["report_sha256"],
+                        "axis": "standards",
+                        "severity": "warning",
+                    },
+                    "summary": "the reset path has no test",
+                    "files": [],
+                    "expected_evidence": "tests/test_x.py:1",
+                }
+            ],
+        )
+        self.assertEqual(
+            retry["transition"]["carried_items_sha256"],
+            operational_guards.carried_items_digest(section),
+        )
+
+    def test_a_developer_retry_before_review_carries_no_review_findings(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        self._retried_developer_candidate(batch["batch_id"], "x")
+
+        retry = self._dispatch(batch["batch_id"], "developer")["brief"]
+
+        self.assertEqual(retry["carried_items"], {})
+
 
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     """The pure routing table: structured evidence in, one routing record out (no I/O)."""

@@ -56,6 +56,7 @@ from harness.orchestration.workflow.history import (
 )
 
 COORDINATOR_FINDING = "coordinator-finding"
+REVIEW_FINDING = "review-finding"
 # ``batch carry-over`` starts no dispatch and moves no candidate, so the coordinator runs it under
 # this policy name, the way ``batch resume`` records ``policy:operational-recovery``.
 CARRY_OVER_POLICY = "carry-over"
@@ -227,10 +228,58 @@ def _brief_item(record: JsonObject) -> JsonObject:
     return {field: record[field] for field in sorted(CARRIED_ITEM_FIELDS)}
 
 
+def _retried_review_findings(root: Path, batch: JsonObject) -> list[JsonObject]:
+    """The Standards and Spec findings of the code-review a pending developer-retry answers.
+
+    They reach only that developer brief: the next review judges the new candidate afresh.
+    """
+    previous = next(
+        (
+            item
+            for item in reversed(batch.get("dispatches", []))
+            if isinstance(item.get("decision"), dict)
+        ),
+        None,
+    )
+    routing = previous["decision"].get("routing") if previous else None
+    if (
+        previous is None
+        or previous.get("role") != "code-review"
+        or previous["decision"].get("decision") != "retry"
+        or not isinstance(routing, dict)
+        or routing.get("next_action") != "developer-retry"
+    ):
+        return []
+    review = _pending_report(root, batch, previous)["review"]
+    findings = [
+        (axis, finding)
+        for axis in ("standards", "spec")
+        for finding in review[axis]["findings"]
+    ]
+    return [
+        {
+            "item_id": f"{REVIEW_FINDING}-{number}",
+            "source": {
+                "kind": REVIEW_FINDING,
+                "dispatch_id": previous["dispatch_id"],
+                "report_sha256": previous["report_sha256"],
+                "axis": axis,
+                "severity": finding["severity"],
+            },
+            "summary": finding["summary"],
+            "files": [],
+            "expected_evidence": finding["evidence"],
+        }
+        for number, (axis, finding) in enumerate(findings, start=1)
+    ]
+
+
 def brief_section(root: Path, batch: JsonObject, role: str, purpose: str) -> JsonObject:
     """The ``carried_items`` section of the brief about to be created; ``{}`` carries nothing.
 
-    A code-review or developer work brief carries every open coordinator finding.
+    A code-review or developer work brief carries every open coordinator finding. A developer
+    brief answering a retried code-review also carries that review's findings, so the one
+    developer-retry closes both.
     """
     if purpose != "work" or role not in {"developer", "code-review"}:
         return {}
@@ -240,6 +289,11 @@ def brief_section(root: Path, batch: JsonObject, role: str, purpose: str) -> Jso
     ]
     if findings:
         section[COORDINATOR_FINDING] = findings
+    review_findings = (
+        _retried_review_findings(root, batch) if role == "developer" else []
+    )
+    if review_findings:
+        section[REVIEW_FINDING] = review_findings
     return section
 
 
