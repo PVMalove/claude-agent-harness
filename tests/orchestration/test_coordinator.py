@@ -6613,6 +6613,26 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self._batch_record(batch["batch_id"])["coordinator_decisions"],
         )
 
+    def test_carry_over_after_a_decided_review_points_at_the_next_developer_accept(
+        self,
+    ) -> None:
+        candidate = self._carried_review_candidate()
+        review = self._reported_review(
+            self.batch_id, candidate, carried={"coordinator-finding-1": "open"}
+        )
+        self._decide(self.batch_id, "retry")
+        before = self._batch_record(self.batch_id)
+
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            self._carry_over(self.batch_id)
+
+        self.assertIn(review["dispatch_id"], refused.exception.message)
+        self.assertIn("batch decide --findings-file", refused.exception.remedy)
+        self.assertIn("next developer report", refused.exception.remedy)
+        self.assertNotIn("deciding that dispatch", refused.exception.remedy)
+        self.assertNotIn("dispatch cancel", refused.exception.remedy)
+        self.assertEqual(self._batch_record(self.batch_id), before)
+
     def test_carry_over_needs_an_accepted_developer_report_and_no_pending_one(
         self,
     ) -> None:

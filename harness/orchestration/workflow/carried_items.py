@@ -427,6 +427,12 @@ def _refuse_after(root: Path, entry: JsonObject) -> CoordinatorError:
             "--approved-by <name> --approved-at <ISO-8601> --reason <why>, then run batch "
             "carry-over again"
         )
+    elif isinstance(entry.get("decision"), dict):
+        remedy = (
+            f"that dispatch's report is already decided "
+            f"({entry['decision'].get('decision')}); attach the finding with batch decide "
+            "--findings-file <path> when accepting the next developer report"
+        )
     else:
         remedy = (
             "report the defect when deciding that dispatch's report: a retry routes a "
