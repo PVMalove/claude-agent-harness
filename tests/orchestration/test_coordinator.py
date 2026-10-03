@@ -6508,6 +6508,48 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         with self.assertRaisesRegex(coordinator.CoordinatorError, "carried items"):
             validate(emptied)
 
+    def test_a_carry_over_after_a_proposal_invalidates_its_approved_digest(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        _, candidate, changed = self._reported_developer(batch["batch_id"])
+        self._decide(batch["batch_id"], "accept")
+        self._assess(batch["batch_id"], candidate, changed)
+        approved = self._propose(batch["batch_id"], "code-review", candidate=candidate)
+        self.assertNotIn("carried_items_sha256", approved["transition"])
+
+        self._carry_over(batch["batch_id"])
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "approval digest does not match"
+        ):
+            self._dispatch(
+                batch["batch_id"],
+                "code-review",
+                candidate=candidate,
+                digest=approved["transition_digest"],
+            )
+        self.assertEqual(
+            [
+                item["role"]
+                for item in self._batch_record(batch["batch_id"])["dispatches"]
+            ],
+            ["architect", "developer"],
+        )
+        brief = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)[
+            "brief"
+        ]
+        self.assertNotEqual(brief["transition_digest"], approved["transition_digest"])
+        self.assertEqual(
+            [item["item_id"] for item in self._carried(brief)],
+            ["coordinator-finding-1"],
+        )
+        self.assertEqual(
+            brief["transition"]["carried_items_sha256"],
+            operational_guards.carried_items_digest(brief["carried_items"]),
+        )
+
     def _carry_over(self, batch_id: str) -> JsonObject:
         return coordinator.carry_over_findings(
             self._args(batch=batch_id, findings_file=self._findings_file())
