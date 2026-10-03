@@ -162,6 +162,9 @@ CARRIED_ITEM_SOURCES = ("coordinator-finding", "review-finding")
 CARRIED_ITEM_FIELDS = frozenset(
     {"item_id", "source", "summary", "files", "expected_evidence"}
 )
+# How a code-review report accounts for one carried item; only ``closed`` settles it as clean.
+CARRIED_ITEM_STATUSES = ("closed", "open", "unverified")
+CARRIED_ITEM_ACCOUNTING_FIELDS = frozenset({"item_id", "status", "evidence"})
 # One coordinator finding as the batch records it, append-only and hash-checked.
 CARRIED_ITEM_RECORD_FIELDS = CARRIED_ITEM_FIELDS | {
     "attached_at",

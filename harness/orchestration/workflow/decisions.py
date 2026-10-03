@@ -109,6 +109,8 @@ def _auto_accept_policy(
         or dispatch.get("purpose") == "publish"
         # A not-covered definition-of-done item is never clean; a justified divergence is.
         or plan_rules.not_covered(report)
+        # Nor is a review that left a carried item omitted, unverified or open (issue #499).
+        or carried_items.carried_gap(report, dispatch)
     ):
         return None
     if policy == "low_risk" and batch.get("zone") not in config.get(
@@ -274,6 +276,10 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             "blockers": report.get("blockers") if report else "none",
             "dod_coverage": coverage,
             "dod_coverage_source": coverage_source,
+            "carried_items": carried_items.packet_items(dispatch, report),
+            "carried_items_gap": carried_items.carried_gap(report, dispatch)
+            if report
+            else [],
             "commit_plan_divergence": (
                 plan_rules.divergence(report, dispatch, resolve) if report else None
             )
@@ -335,6 +341,8 @@ def _retry_evidence(
                 return (
                     "requirements" if axis == "spec" else "code"
                 ), f"the {axis} axis carries a finding or a warning/blocker severity"
+    if carried_items.marks_open(report):
+        return "code", "the review confirms a carried item is still open"
     checks = report.get("checks_run")
     if isinstance(checks, list) and any(
         isinstance(check, dict) and check.get("result") == "fail" for check in checks
@@ -598,8 +606,10 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         pinned_plan = _pinned_commit_plan(repo, batch, report, args)
         findings = _decision_findings(repo, dispatch, report, args)
         uncovered = plan_rules.not_covered(report)
+        gap = carried_items.carried_gap(report, dispatch)
         if report.get("role") == "code-review":
             severities = _review_severity(report["review"])
+            warned = any(value == "warning" for value in severities.values())
             if any(value == "blocker" for value in severities.values()):
                 if _developer_retry_budget_exhausted(config, batch):
                     if args.decision not in {"block", "fail", "abandon"}:
@@ -612,11 +622,29 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                         "a review blocker requires a new developer retry",
                         remedy="start a new developer retry dispatch to address the review blocker, or abandon (with --reason) this batch",
                     )
-            elif any(value == "warning" for value in severities.values()):
-                if args.decision == "accept":
+            elif warned or gap:
+                if args.decision == "accept" and warned:
                     raise CoordinatorError(
                         "a review warning requires override-warning or retry",
                         remedy="pass --decision override-warning (with --note) or retry for a review warning",
+                    )
+                if args.decision == "accept":
+                    raise CoordinatorError(
+                        f"the review did not close carried items {gap}, so the report is not clean",
+                        remedy="retry the developer, or pass --decision override-warning with a "
+                        "--note explaining why the omitted, unverified or open items may be accepted",
+                    )
+                if (
+                    args.decision == "override-warning"
+                    and gap
+                    and (
+                        not _non_empty(args.note) or args.note.strip().lower() == "none"
+                    )
+                ):
+                    raise CoordinatorError(
+                        "overriding carried items the review did not close requires a recorded note",
+                        remedy="pass --note (other than 'none') explaining why the carried items "
+                        "the review did not close may be accepted",
                     )
                 if args.decision == "override-warning" and not _non_empty(args.note):
                     raise CoordinatorError(
@@ -728,6 +756,8 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 decision["commit_plan_divergence"] = divergence
             if uncovered and args.decision == "override-warning":
                 decision["dod_not_covered"] = uncovered
+            if gap and args.decision == "override-warning":
+                decision["carried_items_gap"] = gap
         if pinned_plan is not None:
             batch["commit_plan"] = pinned_plan
             decision["commit_plan_sha256"] = plan_rules.plan_sha256(pinned_plan)

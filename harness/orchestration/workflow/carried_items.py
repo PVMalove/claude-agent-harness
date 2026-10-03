@@ -23,7 +23,11 @@ from typing import cast
 from harness.orchestration import operational_guards
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import _reject_sensitive
-from harness.orchestration.core.constants import CARRIED_ITEM_FIELDS
+from harness.orchestration.core.constants import (
+    CARRIED_ITEM_ACCOUNTING_FIELDS,
+    CARRIED_ITEM_FIELDS,
+    CARRIED_ITEM_STATUSES,
+)
 from harness.orchestration.core.git_utils import _candidate_commit
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -237,6 +241,105 @@ def brief_section(root: Path, batch: JsonObject, role: str, purpose: str) -> Jso
     if findings:
         section[COORDINATOR_FINDING] = findings
     return section
+
+
+def _carried(dispatch: JsonObject) -> list[JsonObject]:
+    """Every item a brief carried, in channel order; a brief before issue #499 carried none."""
+    section = dispatch.get("carried_items") or {}
+    return [item for items in section.values() for item in items]
+
+
+def validate_review_accounting(review: JsonObject, dispatch: JsonObject) -> None:
+    """A code-review report's optional ``review.carried_items`` names only items its brief carried.
+
+    Each named item appears once as ``{item_id, status, evidence}``. Leaving an item out is
+    structurally valid: it is a carried gap the decision has to face, never a refused submission.
+    """
+    accounting = review.get("carried_items", [])
+    known = {item["item_id"] for item in _carried(dispatch)}
+    remedy = (
+        "account for each item of the brief's carried_items once, as {item_id, status: "
+        f"{' | '.join(CARRIED_ITEM_STATUSES)}, evidence}}, and name no other item"
+    )
+    if not isinstance(accounting, list):
+        raise CoordinatorError(
+            "composite review carried_items must be a list", remedy=remedy
+        )
+    seen: set[str] = set()
+    for position, entry in enumerate(accounting, start=1):
+        if not isinstance(entry, dict) or set(entry) != CARRIED_ITEM_ACCOUNTING_FIELDS:
+            raise CoordinatorError(
+                f"composite review carried_items entry {position} has an invalid schema",
+                remedy=remedy,
+            )
+        item_id = entry["item_id"]
+        if item_id not in known or item_id in seen:
+            raise CoordinatorError(
+                f"composite review carried_items entry {position} names {item_id!r}, which "
+                "the brief did not carry or the review already accounted for",
+                remedy=remedy,
+            )
+        if entry["status"] not in CARRIED_ITEM_STATUSES or not _non_empty(
+            entry["evidence"]
+        ):
+            raise CoordinatorError(
+                f"composite review carried_items entry {position} needs a known status and "
+                "non-empty evidence",
+                remedy=remedy,
+            )
+        seen.add(item_id)
+
+
+def packet_items(dispatch: JsonObject, report: JsonObject | None) -> list[JsonObject]:
+    """The carried items a decision packet shows; for a code-review report, with the status the
+    review gave each one (``omitted`` when it named none)."""
+    reviewed = report is not None and report.get("role") == "code-review"
+    review = report.get("review") if reviewed and report is not None else None
+    given = {
+        entry["item_id"]: entry
+        for entry in (
+            review.get("carried_items", []) if isinstance(review, dict) else []
+        )
+    }
+    rows = []
+    for item in _carried(dispatch):
+        entry = given.get(item["item_id"])
+        rows.append(
+            {
+                "item_id": item["item_id"],
+                "source": item["source"],
+                "summary": item["summary"],
+                "status": (entry["status"] if entry else "omitted")
+                if reviewed
+                else None,
+                "evidence": entry["evidence"] if entry else None,
+            }
+        )
+    return rows
+
+
+def carried_gap(report: JsonObject, dispatch: JsonObject) -> list[str]:
+    """The carried items a code-review report did not close: omitted, unverified or open.
+
+    A gap is never clean: no policy accepts it, and a plain ``accept`` is refused.
+    """
+    if report.get("role") != "code-review":
+        return []
+    return [
+        row["item_id"]
+        for row in packet_items(dispatch, report)
+        if row["status"] != "closed"
+    ]
+
+
+def marks_open(report: JsonObject) -> bool:
+    """Whether a review confirms a carried item is still open: structured evidence for a developer."""
+    review = report.get("review")
+    accounting = review.get("carried_items") if isinstance(review, dict) else None
+    return isinstance(accounting, list) and any(
+        isinstance(entry, dict) and entry.get("status") == "open"
+        for entry in accounting
+    )
 
 
 def section_sha256(section: JsonObject) -> str | None:

@@ -2399,11 +2399,24 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         blockers: str = "none",
         standards: tuple[str, list[JsonObject]] = ("clean", []),
         spec: tuple[str, list[JsonObject]] = ("clean", []),
+        carried: object = None,
     ) -> JsonObject:
+        """``carried``, a dict, maps a carried item id to the status the review gives it (issue
+        #499). It is typed ``object`` so the axis keyword dicts other tests unpack still check."""
         brief: JsonObject = self._dispatch(
             batch_id, "code-review", candidate=candidate
         )["brief"]
         self._start(brief["dispatch_id"], checkout=self.worktree)
+        review: JsonObject = {
+            "candidate_commit": candidate,
+            "scope": brief["review_scope"],
+            **self._axes(standards, spec),
+        }
+        if isinstance(carried, dict):
+            review["carried_items"] = [
+                {"item_id": item_id, "status": status, "evidence": "services/x.py:1"}
+                for item_id, status in carried.items()
+            ]
         self._submit(
             brief["dispatch_id"],
             self._base_report(
@@ -2414,11 +2427,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 checks_run=self._checks(
                     brief, "pass" if outcome == "completed" else "not-run"
                 ),
-                review={
-                    "candidate_commit": candidate,
-                    "scope": brief["review_scope"],
-                    **self._axes(standards, spec),
-                },
+                review=review,
             ),
         )
         return brief
@@ -6620,6 +6629,109 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertIn("--findings-file", pending.exception.remedy)
         self.assertNotIn("carried_items", self._batch_record(batch["batch_id"]))
 
+    def _carried_review_candidate(self) -> str:
+        """A developer report accepted by hand with one finding, assessed for review."""
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        _, candidate, changed = self._reported_developer(batch["batch_id"])
+        self._decide(batch["batch_id"], "accept", findings_file=self._findings_file())
+        self._assess(batch["batch_id"], candidate, changed)
+        return candidate
+
+    def test_a_review_that_leaves_a_carried_item_unclosed_is_not_clean(self) -> None:
+        for carried in (
+            None,
+            {"coordinator-finding-1": "unverified"},
+            {"coordinator-finding-1": "open"},
+        ):
+            with self.subTest(carried=carried):
+                self._reset()
+                candidate = self._carried_review_candidate()
+                self._reported_review(self.batch_id, candidate, carried=carried)
+
+                packet = coordinator.decision_packet(
+                    self._args(batch=self.batch_id, dispatch=None)
+                )
+                status = (
+                    "omitted" if carried is None else carried["coordinator-finding-1"]
+                )
+                self.assertEqual(
+                    [
+                        (row["item_id"], row["status"])
+                        for row in packet["carried_items"]
+                    ],
+                    [("coordinator-finding-1", status)],
+                )
+                self.assertEqual(packet["carried_items_gap"], ["coordinator-finding-1"])
+                with self.assertRaises(coordinator.CoordinatorError) as plain:
+                    self._decide(self.batch_id, "accept")
+                self.assertIn("coordinator-finding-1", plain.exception.message)
+                self.assertIn("override-warning", plain.exception.remedy)
+                for note in (None, "none"):
+                    with self.assertRaisesRegex(
+                        coordinator.CoordinatorError, "requires a recorded note"
+                    ):
+                        self._override(note)
+
+                decided = self._override("verified by hand against services/x.py")
+
+                decision = decided["coordinator_decisions"][-1]
+                self.assertEqual(decision["decision"], "override-warning")
+                self.assertEqual(
+                    decision["carried_items_gap"], ["coordinator-finding-1"]
+                )
+                self.assertEqual(decided["next_action"], "qa")
+                root = ledger_ops._state_root(self._args(), self.repo)
+                self.assertEqual(
+                    carried_items.open_coordinator_findings(root, decided), []
+                )
+
+    def test_a_review_closing_every_carried_item_is_clean(self) -> None:
+        candidate = self._carried_review_candidate()
+        self._reported_review(
+            self.batch_id, candidate, carried={"coordinator-finding-1": "closed"}
+        )
+
+        packet = coordinator.decision_packet(
+            self._args(batch=self.batch_id, dispatch=None)
+        )
+        decided = self._decide(self.batch_id, "accept")
+
+        self.assertEqual(packet["carried_items_gap"], [])
+        self.assertEqual(packet["carried_items"][0]["status"], "closed")
+        self.assertEqual(decided["next_action"], "qa")
+        self.assertNotIn("carried_items_gap", decided["coordinator_decisions"][-1])
+
+    def test_only_a_review_closing_every_carried_item_is_auto_accepted(self) -> None:
+        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        for carried, auto in (
+            (None, False),
+            ({"coordinator-finding-1": "unverified"}, False),
+            ({"coordinator-finding-1": "closed"}, True),
+        ):
+            with self.subTest(carried=carried):
+                self._reset()
+                brief = self._auto_developer(["route retries by cause"])
+                candidate, changed = self._developer_commit("x")
+                self._submit(
+                    brief["dispatch_id"],
+                    self._developer_report(brief, candidate, changed),
+                )
+                self._carry_over(self.batch_id)
+
+                review = self._reported_review(
+                    self.batch_id, candidate, carried=carried
+                )
+
+                entry = self._batch_record(self.batch_id)["dispatches"][-1]
+                self.assertEqual(entry["dispatch_id"], review["dispatch_id"])
+                if auto:
+                    self.assertEqual(
+                        entry["decision"]["approved_by"], "policy:low_risk"
+                    )
+                else:
+                    self.assertNotIn("decision", entry)
+
 
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     """The pure routing table: structured evidence in, one routing record out (no I/O)."""
@@ -7123,6 +7235,99 @@ class CarriedItemsFindingsFileTests(unittest.TestCase):
                     carried_items.parse_findings(document)
                 self.assertIn("findings", refused.exception.message)
                 self.assertIn("--findings-file", refused.exception.remedy)
+
+
+class CarriedItemsReviewAccountingTests(unittest.TestCase):
+    """How a code-review report accounts for the items its brief carried (issue #499)."""
+
+    CANDIDATE = "c" * 40
+    ITEM: JsonObject = {
+        "item_id": "coordinator-finding-1",
+        "source": {"kind": "coordinator-finding"},
+        "summary": "the retry counter is never reset",
+        "files": ["services/x.py"],
+        "expected_evidence": "a test that sees the counter at zero",
+    }
+    CLOSED: JsonObject = {
+        "item_id": "coordinator-finding-1",
+        "status": "closed",
+        "evidence": "services/x.py:1",
+    }
+
+    def _brief(self, *, carried: bool = True) -> JsonObject:
+        return {
+            "candidate_commit": self.CANDIDATE,
+            "review_scope": ["services/x.py"],
+            "delta_review_of": None,
+            "delta_review_axis": None,
+            "carried_items": {"coordinator-finding": [self.ITEM]} if carried else {},
+        }
+
+    def _review(self, accounting: object = None) -> JsonObject:
+        axis = {"severity": "none", "findings": [], "risks": "none", "blockers": "none"}
+        review: JsonObject = {
+            "candidate_commit": self.CANDIDATE,
+            "scope": ["services/x.py"],
+            "standards": dict(axis),
+            "spec": dict(axis),
+        }
+        if accounting is not None:
+            review["carried_items"] = accounting
+        return review
+
+    def test_the_accounting_is_checked_against_the_brief(self) -> None:
+        reports._validate_review(self._review([self.CLOSED]), self._brief())
+        reports._validate_review(self._review(), self._brief())
+        reports._validate_review(self._review([]), self._brief(carried=False))
+        cases: dict[str, tuple[object, bool]] = {
+            "not a list": ("closed", True),
+            "an unknown item": ([{**self.CLOSED, "item_id": "x-9"}], True),
+            "a repeated item": ([self.CLOSED, self.CLOSED], True),
+            "an unknown status": ([{**self.CLOSED, "status": "fixed"}], True),
+            "no evidence": ([{**self.CLOSED, "evidence": " "}], True),
+            "an extra field": ([{**self.CLOSED, "severity": "info"}], True),
+            "an item the brief never carried": ([self.CLOSED], False),
+        }
+        for label, (accounting, carried) in cases.items():
+            with self.subTest(label):
+                with self.assertRaises(coordinator.CoordinatorError) as refused:
+                    reports._validate_review(
+                        self._review(accounting), self._brief(carried=carried)
+                    )
+                self.assertIn("carried_items", refused.exception.message)
+
+    def test_only_a_closed_item_closes_the_gap(self) -> None:
+        for accounting, gap in (
+            (None, ["coordinator-finding-1"]),
+            ([{**self.CLOSED, "status": "unverified"}], ["coordinator-finding-1"]),
+            ([{**self.CLOSED, "status": "open"}], ["coordinator-finding-1"]),
+            ([self.CLOSED], []),
+        ):
+            with self.subTest(accounting=accounting):
+                report = {"role": "code-review", "review": self._review(accounting)}
+                self.assertEqual(carried_items.carried_gap(report, self._brief()), gap)
+
+    def test_an_open_carried_item_is_structured_developer_evidence(self) -> None:
+        for status, expected in (
+            ("open", ("code", "developer-retry")),
+            ("unverified", ("transport", "same-candidate-rerun")),
+        ):
+            with self.subTest(status=status):
+                report = {
+                    "outcome": "blocked",
+                    "checks_run": [],
+                    "review": self._review([{**self.CLOSED, "status": status}]),
+                }
+                routing = decisions._retry_routing(
+                    "code-review",
+                    report,
+                    dispatch_candidate=self.CANDIDATE,
+                    current_candidate=self.CANDIDATE,
+                    explicit_category="transport",
+                )
+                self.assertEqual(
+                    (routing["reason_category"], routing["route"]), expected
+                )
 
 
 class CoordinatorGuardHelperTests(unittest.TestCase):
