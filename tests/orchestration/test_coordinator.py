@@ -52,6 +52,7 @@ from harness.orchestration.ledger import (
 )
 from harness.orchestration.workflow import (
     approval,
+    carried_items,
     commit_plan,
     decisions,
     dispatch,
@@ -6280,6 +6281,224 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         ):
             validate(forged)
 
+    # -- carried items (issue #499) -----------------------------------------------------------
+
+    FINDING: JsonObject = {
+        "summary": "the retry counter is never reset after a clean run",
+        "files": ["services/x.py"],
+        "expected_evidence": "a test that runs twice and sees the counter at zero",
+    }
+
+    def _findings_file(self, *findings: JsonObject) -> str:
+        path = (
+            workspace._prepare_agent_inbox(self.repo)
+            / f"findings-{uuid.uuid4().hex[:8]}.json"
+        )
+        document = {"findings": list(findings) or [self.FINDING]}
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return str(path)
+
+    def _reported_developer(
+        self, batch_id: str, name: str = "x"
+    ) -> tuple[JsonObject, str, list[str]]:
+        brief: JsonObject = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit(name)
+        self._submit(
+            brief["dispatch_id"], self._developer_report(brief, candidate, changed)
+        )
+        return brief, candidate, changed
+
+    def _assess_without_triggers(
+        self, batch_id: str, candidate: str, changed: list[str]
+    ) -> None:
+        coordinator.assess_risk(
+            self._args(
+                batch=batch_id,
+                candidate_commit=candidate,
+                base_commit=None,
+                changed_file=changed,
+                developer_trigger=[],
+            )
+        )
+
+    def _carried(self, brief: JsonObject) -> list[JsonObject]:
+        """The flattened items of a brief's carried-items section, in channel order."""
+        return [item for items in brief["carried_items"].values() for item in items]
+
+    def test_accept_with_findings_carries_them_into_the_code_review_brief(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer, candidate, changed = self._reported_developer(batch["batch_id"])
+        report_sha256 = self._report_evidence(
+            batch["batch_id"], developer["dispatch_id"]
+        )["report_sha256"]
+
+        decided = self._decide(
+            batch["batch_id"], "accept", findings_file=self._findings_file()
+        )
+
+        [record] = decided["carried_items"]
+        self.assertEqual(record["item_id"], "coordinator-finding-1")
+        self.assertEqual(
+            record["source"],
+            {
+                "kind": "coordinator-finding",
+                "dispatch_id": developer["dispatch_id"],
+                "report_sha256": report_sha256,
+                "candidate_commit": candidate,
+            },
+        )
+        self.assertEqual(
+            {key: record[key] for key in ("summary", "files", "expected_evidence")},
+            self.FINDING,
+        )
+        self.assertEqual(record["attached_by"], "Malove")
+        self.assertEqual(decided["next_action"], "risk-assessment")
+        self._assess(batch["batch_id"], candidate, changed)
+
+        review = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+
+        item = {
+            "item_id": "coordinator-finding-1",
+            "source": record["source"],
+            **self.FINDING,
+        }
+        brief = review["brief"]
+        self.assertEqual(brief["carried_items"], {"coordinator-finding": [item]})
+        self.assertEqual(
+            brief["transition"]["carried_items_sha256"],
+            operational_guards.carried_items_digest(brief["carried_items"]),
+        )
+        architect = self._batch_record(batch["batch_id"])["dispatches"][0]
+        architect_brief = ledger_ops._load_dispatch(
+            ledger_ops._state_root(self._args(), self.repo), architect["dispatch_id"]
+        )
+        self.assertEqual(architect_brief["carried_items"], {})
+        self.assertNotIn("carried_items_sha256", architect_brief["transition"])
+
+    def test_a_findings_file_is_refused_outside_a_developer_accept(self) -> None:
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        self._submit(brief["dispatch_id"], self._base_report(brief, "architect"))
+
+        with self.assertRaises(coordinator.CoordinatorError) as architect:
+            self._decide(
+                batch["batch_id"], "accept", findings_file=self._findings_file()
+            )
+        self._decide(batch["batch_id"], "accept")
+        self._reported_developer(batch["batch_id"])
+        with self.assertRaises(coordinator.CoordinatorError) as retry:
+            self._decide(
+                batch["batch_id"],
+                "retry",
+                reason_category="code",
+                findings_file=self._findings_file(),
+            )
+
+        for refused in (architect, retry):
+            self.assertIn("--findings-file", refused.exception.message)
+            self.assertIn("batch carry-over", refused.exception.remedy)
+        self.assertNotIn("carried_items", self._batch_record(batch["batch_id"]))
+
+    def test_a_malformed_findings_file_is_refused_before_anything_is_written(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        self._reported_developer(batch["batch_id"])
+        before = self._batch_record(batch["batch_id"])
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "findings file is invalid"
+        ):
+            self._decide(
+                batch["batch_id"],
+                "accept",
+                findings_file=self._findings_file({**self.FINDING, "files": []}),
+            )
+
+        self.assertEqual(self._batch_record(batch["batch_id"]), before)
+
+    def test_an_open_coordinator_finding_sends_a_trigger_free_candidate_to_review(
+        self,
+    ) -> None:
+        for carried in (False, True):
+            with self.subTest(carried=carried):
+                self._reset()
+                batch_id = cast(
+                    str, self._plan_batch(["add simple marker"])["batch_id"]
+                )
+                self._accepted_architect(batch_id)
+                _, candidate, changed = self._reported_developer(batch_id)
+                extra = {"findings_file": self._findings_file()} if carried else {}
+                self._decide(batch_id, "accept", **extra)
+
+                self._assess_without_triggers(batch_id, candidate, changed)
+
+                stored = self._batch_record(batch_id)
+                self.assertFalse(stored["risk_assessments"][-1]["review_required"])
+                self.assertEqual(
+                    stored["next_action"], "code-review" if carried else "qa"
+                )
+
+    def test_a_carried_items_record_edited_after_it_was_attached_is_refused(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        self._reported_developer(batch["batch_id"])
+        self._decide(batch["batch_id"], "accept", findings_file=self._findings_file())
+        stored = self._batch_record(batch["batch_id"])
+        stored["carried_items"][0]["summary"] = "nothing to see"
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "carried_items record failed"
+        ):
+            history._validate_operational_batch_fields(stored)
+
+    def test_a_brief_whose_carried_items_left_its_transition_is_refused(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        _, candidate, changed = self._reported_developer(batch["batch_id"])
+        self._decide(batch["batch_id"], "accept", findings_file=self._findings_file())
+        self._assess(batch["batch_id"], candidate, changed)
+        review = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+        root = ledger_ops._state_root(self._args(), self.repo)
+        stored = ledger_ops._load_dispatch(root, review["dispatch_id"])
+        legacy = {key: value for key, value in stored.items() if key != "carried_items"}
+        legacy["transition"] = {
+            key: value
+            for key, value in stored["transition"].items()
+            if key != "carried_items_sha256"
+        }
+        legacy["transition_digest"] = operational_guards.transition_digest(
+            legacy["transition"]
+        )
+        legacy["coordinator_approval"] = {
+            **stored["coordinator_approval"],
+            "transition_digest": legacy["transition_digest"],
+        }
+        emptied = {**stored, "carried_items": {}}
+
+        def validate(record: JsonObject) -> None:
+            current = ledger_ops._load_batch(root, batch["batch_id"])
+            current["dispatches"][-1]["brief_sha256"] = hashlib.sha256(
+                utils._canonical(record).encode("utf-8")
+            ).hexdigest()
+            coordinator._validate_dispatch(
+                self.repo, coordinator._config(self.repo), root, current, record
+            )
+
+        validate(legacy)
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "carried items"):
+            validate(emptied)
+
 
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     """The pure routing table: structured evidence in, one routing record out (no I/O)."""
@@ -6735,6 +6954,56 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                     self.assertEqual(routing, routes[0])
 
 
+class CarriedItemsFindingsFileTests(unittest.TestCase):
+    """The coordinator findings file (issue #499): validated as plain data, no ledger."""
+
+    FINDING: JsonObject = {
+        "summary": "the retry counter is never reset",
+        "files": ["services/x.py", "tests/test_x.py"],
+        "expected_evidence": "a test that sees the counter at zero",
+    }
+
+    def test_a_well_formed_file_yields_its_findings_in_order(self) -> None:
+        second = {**self.FINDING, "summary": "a second defect"}
+
+        findings = carried_items.parse_findings({"findings": [self.FINDING, second]})
+
+        self.assertEqual(findings, [self.FINDING, second])
+
+    def test_a_malformed_file_is_refused_with_the_file_shape_as_remedy(
+        self,
+    ) -> None:
+        cases: dict[str, object] = {
+            "not an object": ["findings"],
+            "an extra key": {"findings": [self.FINDING], "note": "x"},
+            "no findings": {"findings": []},
+            "a missing field": {"findings": [{"summary": "s", "files": ["a.py"]}]},
+            "an extra field": {"findings": [{**self.FINDING, "severity": "x"}]},
+            "an empty summary": {"findings": [{**self.FINDING, "summary": " "}]},
+            "no expected evidence": {
+                "findings": [{**self.FINDING, "expected_evidence": ""}]
+            },
+            "no files": {"findings": [{**self.FINDING, "files": []}]},
+            "an absolute file": {"findings": [{**self.FINDING, "files": ["/x.py"]}]},
+            "a parent segment": {
+                "findings": [{**self.FINDING, "files": ["a/../../x.py"]}]
+            },
+            "a backslash": {"findings": [{**self.FINDING, "files": ["a\\x.py"]}]},
+            "a repeated file": {
+                "findings": [{**self.FINDING, "files": ["x.py", "x.py"]}]
+            },
+            "non-English text": {
+                "findings": [{**self.FINDING, "summary": "счётчик не сброшен"}]
+            },
+        }
+        for label, document in cases.items():
+            with self.subTest(label):
+                with self.assertRaises(coordinator.CoordinatorError) as refused:
+                    carried_items.parse_findings(document)
+                self.assertIn("findings", refused.exception.message)
+                self.assertIn("--findings-file", refused.exception.remedy)
+
+
 class CoordinatorGuardHelperTests(unittest.TestCase):
     """Direct-call pins for the config/brief guards whose parameters accept arbitrary JSON."""
 
@@ -7022,6 +7291,27 @@ class CoordinatorCliParserTests(unittest.TestCase):
         self.assertIs(pinned.handler, coordinator.decide_batch)
         self.assertEqual(pinned.commit_plan_file, "plan.json")
         self.assertIsNone(parse(decide).commit_plan_file)
+
+    def test_batch_decide_accepts_a_findings_file(self) -> None:
+        decide = [
+            "batch",
+            "decide",
+            "--batch",
+            "batch-1",
+            "--decision",
+            "accept",
+            "--approved-by",
+            "Malove",
+            "--approved-at",
+            "2026-09-17T00:00:00+00:00",
+        ]
+        parse = coordinator.parser().parse_args
+
+        carried = parse([*decide, "--findings-file", "findings.json"])
+
+        self.assertIs(carried.handler, coordinator.decide_batch)
+        self.assertEqual(carried.findings_file, "findings.json")
+        self.assertIsNone(parse(decide).findings_file)
 
     def test_coordinator_parser_wires_the_same_handler(self) -> None:
         args = coordinator.parser().parse_args(["dispatch", "status"])

@@ -29,6 +29,9 @@ TRANSITION_FIELDS = (
     "context_package_id",
     "required_gates",
 )
+# Bound only when a brief carries a non-empty carried-items section (issue #499), so every transition
+# without one keeps the digest it always had.
+OPTIONAL_TRANSITION_FIELDS = ("carried_items_sha256",)
 # A role that only reads (or the publish boundary) is re-run as a new dispatch, never resumed, so it
 # alone carries a retry idempotency key.
 KEYED_READ_ONLY_ROLES = ("architect", "code-review", "qa")
@@ -69,9 +72,10 @@ def build_transition(
     verification_commands: Sequence[str],
     context_package_id: str | None,
     required_gates: Sequence[str],
+    carried_items_sha256: str | None = None,
 ) -> dict[str, object]:
     """Сконструировать словарь перехода между этапами жизненного цикла."""
-    return {
+    transition: dict[str, object] = {
         "batch_id": batch_id,
         "previous_dispatch_id": previous_dispatch_id,
         "previous_role": previous_role,
@@ -86,14 +90,23 @@ def build_transition(
         "context_package_id": context_package_id,
         "required_gates": list(required_gates),
     }
+    if carried_items_sha256 is not None:
+        transition["carried_items_sha256"] = carried_items_sha256
+    return transition
+
+
+def carried_items_digest(section: Mapping[str, object]) -> str:
+    """Дайджест секции carried_items задания, который связывается с переходом (issue #499)."""
+    return _digest(dict(section))
 
 
 def transition_digest(transition: Mapping[str, object]) -> str:
     """Канонический дайджест, с которым связывается подтверждение; порядок ключей не имеет значения."""
-    if set(transition) != set(TRANSITION_FIELDS):
+    if set(transition) - set(OPTIONAL_TRANSITION_FIELDS) != set(TRANSITION_FIELDS):
         raise GuardError(
             "a transition must carry exactly the fields an approval binds",
-            remedy=f"provide exactly: {', '.join(TRANSITION_FIELDS)}",
+            remedy=f"provide exactly: {', '.join(TRANSITION_FIELDS)}, plus "
+            f"{', '.join(OPTIONAL_TRANSITION_FIELDS)} only when the brief carries items",
         )
     return _digest(dict(transition))
 

@@ -64,6 +64,7 @@ from harness.orchestration.ledger.lifecycle import (
 from harness.orchestration.workflow.approval import (
     _approval,
 )
+from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.attention import (
     _apply_attention,
@@ -532,6 +533,31 @@ def _pinned_commit_plan(
     return plan_rules.pinned_plan(document, batch["definition_of_done"])
 
 
+def _decision_findings(
+    repo: Path, dispatch: JsonObject, report: JsonObject, args: argparse.Namespace
+) -> list[JsonObject]:
+    """The coordinator findings an accept of a developer work report carries into review.
+
+    The policy auto-accept builds its own namespace without ``findings_file``, so it never carries
+    any; ``batch carry-over`` attaches them after such an accept.
+    """
+    findings_file = getattr(args, "findings_file", None)
+    if findings_file is None:
+        return []
+    if (
+        args.decision not in {"accept", "override-warning"}
+        or report.get("role") != "developer"
+        or dispatch.get("purpose") != "work"
+    ):
+        raise CoordinatorError(
+            "--findings-file is only valid when accepting a completed developer work report",
+            remedy="drop --findings-file; to carry findings into review after a developer "
+            "report is accepted, run batch carry-over --batch <batch-id> --findings-file <path> "
+            "before its code-review dispatch is created",
+        )
+    return carried_items.read_findings(repo, findings_file)
+
+
 def decide_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -570,6 +596,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 remedy="only accept or warning-override a completed role report",
             )
         pinned_plan = _pinned_commit_plan(repo, batch, report, args)
+        findings = _decision_findings(repo, dispatch, report, args)
         uncovered = plan_rules.not_covered(report)
         if report.get("role") == "code-review":
             severities = _review_severity(report["review"])
@@ -704,6 +731,16 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         if pinned_plan is not None:
             batch["commit_plan"] = pinned_plan
             decision["commit_plan_sha256"] = plan_rules.plan_sha256(pinned_plan)
+        if findings:
+            carried_items.attach(
+                batch,
+                findings,
+                source=carried_items.coordinator_source(
+                    pending[0], _candidate_commit(repo, report["commit_sha"])
+                ),
+                attached_at=decision["approved_at"],
+                attached_by=decision["approved_by"],
+            )
         pending[0]["decision"] = decision
         decision_entry = {"dispatch_id": pending[0]["dispatch_id"], **decision}
         if routing is not None:

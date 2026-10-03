@@ -31,6 +31,11 @@ def _transition(**overrides: object) -> dict[str, object]:
     return fields
 
 
+def _built(**extra: str) -> dict[str, object]:
+    fields = _transition()
+    return guards.build_transition(**fields, **extra)  # type: ignore[arg-type]
+
+
 def _key(**overrides: object) -> str:
     fields: dict[str, object] = {
         "role": "code-review",
@@ -85,6 +90,26 @@ class TransitionDigestTests(unittest.TestCase):
             guards.transition_digest(missing)
         with self.assertRaises(HarnessError):
             guards.transition_digest(_transition(extra="x"))
+
+    def test_a_carried_items_digest_is_bound_only_when_the_brief_carries_items(
+        self,
+    ) -> None:
+        section = {"coordinator-finding": [{"item_id": "coordinator-finding-1"}]}
+        digest = guards.carried_items_digest(section)
+        bound = _transition(carried_items_sha256=digest)
+
+        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        self.assertNotEqual(
+            guards.transition_digest(bound), guards.transition_digest(_transition())
+        )
+        self.assertNotEqual(
+            guards.transition_digest(bound),
+            guards.transition_digest(_transition(carried_items_sha256="0" * 64)),
+        )
+        self.assertNotIn("carried_items_sha256", _built())
+        self.assertEqual(
+            _built(carried_items_sha256=digest)["carried_items_sha256"], digest
+        )
 
 
 class RetryIdempotencyKeyTests(unittest.TestCase):

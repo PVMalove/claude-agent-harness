@@ -153,6 +153,20 @@ DISPATCH_FIELDS = {
     "liveness",
     "commit_plan",
     "commit_plan_divergence",
+    "carried_items",
+}
+# The carried-items brief section (issue #499) is one shared channel keyed by the kind of source
+# that raised an item; a later kind adds its value here without changing the section's shape.
+CARRIED_ITEM_SOURCES = ("coordinator-finding", "review-finding")
+# One carried item as a brief hands it to a role.
+CARRIED_ITEM_FIELDS = frozenset(
+    {"item_id", "source", "summary", "files", "expected_evidence"}
+)
+# One coordinator finding as the batch records it, append-only and hash-checked.
+CARRIED_ITEM_RECORD_FIELDS = CARRIED_ITEM_FIELDS | {
+    "attached_at",
+    "attached_by",
+    "record_sha256",
 }
 # One entry of a developer brief's commit plan; ``covers`` names definition-of-done items 1..n.
 COMMIT_PLAN_ENTRY_FIELDS = frozenset({"id", "summary", "expected_paths", "covers"})

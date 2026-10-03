@@ -204,6 +204,12 @@ def build_parser(
         '{"commit_plan": [{"id", "summary", "expected_paths", "covers"}, ...]} pinned as the '
         "batch's developer commit plan",
     )
+    decide.add_argument(
+        "--findings-file",
+        help="only with --decision accept or override-warning on a developer work report: a "
+        'JSON file {"findings": [{"summary", "files", "expected_evidence"}, ...]} of coordinator '
+        "findings every later code-review brief carries until a review settles them",
+    )
     decide.set_defaults(handler=handlers.decide_batch)
     attention = batch_commands.add_parser(
         "attention", help="operational-loop attention state of a batch"
