@@ -2,7 +2,7 @@
 
 Reads `.harness/project.json`, `.harness/orchestration.json` and the role manifests, and resolves
 every policy a batch or dispatch runs under.  Resolution is deliberately tolerant field by field: a
-project that authored no orchestration config still gets a working zone and the documented
+project that authored no orchestration config still gets a working setup and the documented
 defaults, and a partially specified policy keeps the defaults for the fields it omits.
 
 The module reads configuration only — it never opens the ledger and never advances state.
@@ -35,7 +35,6 @@ from harness.orchestration.core.constants import (
     DEFAULT_PROFILE,
     DEFAULT_RETRY_POLICY,
     DEFAULT_TEST_PATH_PATTERNS,
-    DEFAULT_ZONE,
     SENSITIVE_KEY,
     ZERO_ALLOWED_POLICY_FIELDS,
 )
@@ -75,7 +74,7 @@ def _configured(repo: Path) -> bool:
     """Whether the project actually states an orchestration configuration.
 
     `harness init` seeds an intentionally empty template. A present-but-empty file states nothing,
-    yet taking the configured path on it makes every zone unknown and every role unassigned — a
+    yet taking the configured path on it leaves every role unassigned — a
     freshly initialised project would be unable to start a batch at all, while deleting the file
     would fix it. An empty template therefore means the same as no file: use the documented defaults.
     """
@@ -92,16 +91,15 @@ def _configured(repo: Path) -> bool:
 
 
 def _default_config(repo: Path) -> JsonObject:
-    """Zero-configuration fallback.  A project that has not authored an orchestration config still
-    gets one working zone — the whole repository — and takes the role runtime from the invoking
-    session, so the gated pipeline is available before any assignment plan exists."""
+    """Zero-configuration fallback.  A project that has not authored an orchestration config takes
+    the role runtime from the invoking session and every batch states its own scope, so the gated
+    pipeline is available before any assignment plan exists."""
     commands = _project(repo).get("qa_gate_commands")
     if not isinstance(commands, list) or not all(_non_empty(item) for item in commands):
         commands = []
     return {
         "provider_profiles": {},
         "assignment_plans": {},
-        "backend_zones": {DEFAULT_ZONE: {"paths": ["**"]}},
         "concurrency_budget": 1,
         "developer_verification_commands": list(commands),
         "verification_commands": list(commands),
@@ -375,19 +373,14 @@ def _resolve_assignment(
     repo: Path,
     config: JsonObject,
     role_name: str,
-    zone_name: str,
     runtime_name: str,
     *,
     session_model: object = None,
     session_effort: object = None,
-) -> tuple[JsonObject, JsonObject, str, str, str, str, str]:
+) -> tuple[JsonObject, list[str], str, str, str, str, str]:
+    """Resolve a role's assignment; the second element is the role's write ceiling."""
     role = _role(repo, role_name)
     if not _configured(repo):
-        if zone_name != DEFAULT_ZONE:
-            raise CoordinatorError(
-                f"without .harness/orchestration.json the only backend zone is {DEFAULT_ZONE!r}",
-                remedy=f"create .harness/orchestration.json to declare backend zones other than {DEFAULT_ZONE!r}",
-            )
         if not _non_empty(session_model) or not _non_empty(session_effort):
             raise CoordinatorError(
                 "without .harness/orchestration.json the invoking session must supply --model and --effort",
@@ -396,7 +389,7 @@ def _resolve_assignment(
         # No project-owned provider profile exists; the invoking session handles the role.
         return (
             role,
-            {"paths": ["**"]},
+            ["**"],
             DEFAULT_PROFILE,
             session_model.strip(),
             session_effort.strip(),
@@ -408,14 +401,12 @@ def _resolve_assignment(
         resolved_runtime = (
             resolve_runtime_name(plan, runtime_name) if isinstance(plan, dict) else ""
         )
-        assignment = resolve_assignment(
-            config, role, role_name, zone_name, resolved_runtime
-        )
+        assignment = resolve_assignment(config, role, role_name, resolved_runtime)
     except ContractError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
     return (
         assignment["role"],
-        assignment["zone"],
+        assignment["write_ceiling"],
         assignment["profile_id"],
         assignment["model"],
         assignment["effort"],

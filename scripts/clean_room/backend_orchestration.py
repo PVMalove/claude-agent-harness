@@ -418,7 +418,7 @@ def run(ctx: SimpleNamespace) -> None:
         "failed",
         "## Immutable handoff brief",
         "ticket",
-        "zone IDs",
+        "allowed paths",
         "branch/worktree",
         "Definition of Done",
         "prohibited changes",

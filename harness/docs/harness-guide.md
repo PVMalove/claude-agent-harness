@@ -121,7 +121,7 @@ cd claude-agent-harness
 immutable brief — в [отдельном руководстве](./backend-orchestration.md).
 
 Это строго opt-in маршрут: он включается только при выбранной capability; `.harness/orchestration.json`
-не обязателен — без него zone по умолчанию весь репозиторий, а `model`/`effort` роли берутся из
+не обязателен — без него потолок записи весь репозиторий (границу задаёт `--allowed-path` batch), а `model`/`effort` роли берутся из
 вызывающей сессии. Без capability `/implement` отправляет на `/fast-implement`. Один batch хранит
 ticket, issue-ветку, worktree и history evidence, а каждый его dispatch имеет собственный immutable
 brief, terminal report и новое явное человеческое approval. Developer создаёт candidate commit;
@@ -1096,7 +1096,7 @@ Exit 0 — маршрут доступен. **Команда `harness` для э
 ошибкой, opt-in не восстанавливается и не достраивается — пользователь направляется к
 `/fast-implement`.
 
-**`.harness/orchestration.json` не обязателен**: без него zone — весь репозиторий (`repository`), а
+**`.harness/orchestration.json` не обязателен**: без него потолок записи — весь репозиторий (границу задаёт `--allowed-path` batch), а
 `model`/`effort` роли берутся из сессии и передаются в `dispatch create --model/--effort`. Для
 coordinator и architect рекомендуется `medium` effort; повышение допускается только по явному
 решению разработчика.
@@ -1128,7 +1128,7 @@ python .harness/orchestration/coordinator.py --repo . batch list --open --ticket
 # planned batch, затем отдельное утверждение человеком
 python .harness/orchestration/coordinator.py --repo . batch create \
   --ticket '#102' --branch feature/issue-102-csv-service \
-  --worktree issue-102-csv-service --zone repository \
+  --worktree issue-102-csv-service --allowed-path 'services/csv/**' \
   --definition-of-done 'CSV-сервис форматирует числа по locale проекта' \
   --definition-of-done 'Тесты написаны до реализации (TDD)'
 python .harness/orchestration/coordinator.py --repo . batch approve \

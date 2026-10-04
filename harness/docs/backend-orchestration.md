@@ -39,7 +39,7 @@ Role self-report, completion report и оценка coordinator-а не явля
   сам файл — только фасад: разбор аргументов, роутинг и вывод JSON. Сам lifecycle лежит рядом в
   `core/` (константы, конфигурация, git, workspace), `ledger/` (persistence) и `workflow/`
   (по модулю на стадию batch'а: планирование, бриф, доставка, решение, отчёт);
-- `.harness/orchestration.json` — project-owned конфигурация назначений, зон и проверок.
+- `.harness/orchestration.json` — project-owned конфигурация назначений, потолка записи и проверок.
 
 Coordinator state, immutable briefs/reports и санитизированные QA-артефакты создаются локально в
 `.harness/orchestration/state/`; содержимое этой директории gitignored и не является исходным
@@ -59,7 +59,7 @@ Coordinator state, immutable briefs/reports и санитизированные 
 
 Manifest определяет режим роли (`write` или `read-only`), capability и risk triggers. Проектный
 конфиг выбирает agent/fallback на уровне provider profile, а `model` и `effort` — отдельно для
-каждой роли в её assignment plan, вместе с зоной, бюджетом параллелизма и командами проверки; он не может
+каждой роли в её assignment plan, вместе с потолком записи, бюджетом параллелизма и командами проверки; он не может
 ослабить границы manifest'а. Значения секретов не хранятся ни в конфиге, ни в brief, ни в report.
 
 ## 1. Включение
@@ -99,12 +99,12 @@ python3 harness/bin/harness.py health /path/to/repository
 
 ## 2. Настройка `.harness/orchestration.json`
 
-Конфиг **не обязателен**. Без него coordinator работает на дефолтах: единственная зона `repository`
-покрывает весь репозиторий, `verification_commands` берутся из `qa_gate_commands` в
+Конфиг **не обязателен**. Без него coordinator работает на дефолтах: потолок записи ролей —
+весь репозиторий, границу даёт `--allowed-path` batch, `verification_commands` берутся из `qa_gate_commands` в
 `.harness/project.json`, `concurrency_budget` равен 1, а `model`/`effort` роли приходят из вызывающей
 сессии (`dispatch create --model <model> --effort <effort>`). Транспорт в этом режиме всегда
 `in-process`: provider profile нет, значит и внешний worker запускать нечем. `harness health` такой
-проект принимает. Конфиг нужен, когда проекту нужны настоящие зоны, разные модели по ролям,
+проект принимает. Конфиг нужен, когда проекту нужен более узкий потолок записи, разные модели по ролям,
 внешний транспорт или бюджет параллелизма больше единицы. Справочник всех полей с дефолтами —
 [`.harness/orchestration/README.md`](../orchestration/README.md).
 
@@ -114,13 +114,13 @@ python3 harness/bin/harness.py health /path/to/repository
 
 `init` создаёт конфиг как копию управляемого примера `.harness/orchestration.example.json`:
 provider profiles `claude-profile` и `codex-profile`, назначения architect/developer/code-review/qa на
-двух runtime, зона `repository` на весь репозиторий и `approval_policy: low_risk`. Модели и effort в
+двух runtime, потолок записи на весь репозиторий и `approval_policy: low_risk` с `low_risk_paths: ["**"]`. Модели и effort в
 примере — ориентир, замените их на свои. Списки проверок в примере пустые: впишите реальные project
 checks в `verification_commands` (и при желании в `developer_verification_commands` и
 `review_verification_commands`). У ролей два runtime без `default_runtime`, поэтому
 `dispatch create` требует `--runtime`, пока вы не зададите `default_runtime`. Пример обновляется
 при каждом `update`/`adopt`, а ваш `.harness/orchestration.json` — никогда: новые поля и значения
-переносите из примера вручную. Правьте provider profiles, backend-зоны, назначение для **каждой**
+переносите из примера вручную. Правьте provider profiles, `write_paths` ролей, назначение для **каждой**
 используемой роли и project checks под свой проект. `code-review` следует
 назначить всегда: validator требует его, когда в конфиге есть назначения, поскольку это
 обязательный gate для high-risk работы.
@@ -167,15 +167,12 @@ worktree, branch и SHA; legacy projects могут включить это по
     }
   },
   "assignment_plans": {
-    "architect": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-architect-model", "effort": "medium"}, "claude": {"profiles": ["backend-claude"], "model": "project-architect-claude-model", "effort": "medium"}}},
-    "developer": {"zone": "payments", "write_paths": ["services/payments/**"], "transport": "external", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-developer-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "sonnet", "effort": "xhigh"}}},
-    "database-migrations": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-migration-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "project-migration-claude-model", "effort": "xhigh"}}},
-    "messaging-integration": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-messaging-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-messaging-claude-model", "effort": "high"}}},
-    "qa": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-qa-model", "effort": "medium"}, "claude": {"profiles": ["backend-claude"], "model": "project-qa-claude-model", "effort": "medium"}}},
-    "code-review": {"zone": "payments", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-review-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-review-claude-model", "effort": "high"}}}
-  },
-  "backend_zones": {
-    "payments": {"paths": ["services/payments/**"]}
+    "architect": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-architect-model", "effort": "medium"}, "claude": {"profiles": ["backend-claude"], "model": "project-architect-claude-model", "effort": "medium"}}},
+    "developer": {"write_paths": ["services/payments/**"], "transport": "external", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-developer-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "sonnet", "effort": "xhigh"}}},
+    "database-migrations": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-migration-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "project-migration-claude-model", "effort": "xhigh"}}},
+    "messaging-integration": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-messaging-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-messaging-claude-model", "effort": "high"}}},
+    "qa": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-qa-model", "effort": "medium"}, "claude": {"profiles": ["backend-claude"], "model": "project-qa-claude-model", "effort": "medium"}}},
+    "code-review": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-review-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-review-claude-model", "effort": "high"}}}
   },
   "concurrency_budget": 1,
   "developer_verification_commands": ["python -m pytest tests/unit"],
@@ -203,14 +200,16 @@ immutable brief, обязаны пройти model self-report и вернуть
 запускает каждую полученную команду через `test_summary.py`: в report остаются исходная команда и
 bounded summary, а санитизированный полный лог доступен только для упавшей проверки.
 
-Зона — не подсказка, а граница: write-роль изменяет только разрешённые пути своей зоны. Если роли
-нужен более узкий scope, задайте ей `write_paths`: brief и completion report будут проверяться по
-этому списку, а не по широкому списку зоны. Model должен быть CLI-алиасом или ID без пробелов
-(например, `sonnet`), а не отображаемым названием. Для
-нескольких независимых batch заведите непересекающиеся зоны и увеличьте
-`concurrency_budget` только после явного решения coordinator-а. Сначала прогоните `harness health`:
-он проверит JSON, существование profile/zone, совместимость capability, fallback и режим
-`code-review`.
+Граница записи — не подсказка: write-роль изменяет только пути, явно закреплённые за batch
+(`--allowed-path`, они попадают в `write_paths` brief), и только внутри потолка роли. Потолок задаёт
+`write_paths` роли в assignment plan (по умолчанию весь репозиторий): batch шире потолка не
+создаётся, а brief и completion report проверяются по scope batch. Model должен быть CLI-алиасом
+или ID без пробелов (например, `sonnet`), а не отображаемым названием. Параллельные batch зон не
+требуют: у каждого свои issue-ветка и worktree, а число одновременно активных ограничивает
+`concurrency_budget`; увеличивайте его только после явного решения coordinator-а. Устаревшие
+`backend_zones`, `zone` в плане роли и `low_risk_zones` остаются валидными и отображаются на пути, но
+новому проекту они не нужны. Сначала прогоните `harness health`: он проверит JSON, существование
+profile, совместимость capability, fallback и режим `code-review`.
 
 ### Бюджет контекста и preflight
 
@@ -221,7 +220,7 @@ bounded summary, а санитизированный полный лог дос�
 
 ```bash
 python .harness/orchestration/coordinator.py --repo . batch preflight \
-  --ticket '#123' --zone payments \
+  --ticket '#123' --allowed-path 'services/payments/**' \
   --definition-of-done 'Добавить валидацию платежа' \
   --expected-file services/payments/validation.py \
   --expected-service payments --expected-changed-lines 120
@@ -308,7 +307,7 @@ manifests), а значением — непустой список уникал
   `module:factory` (вызываемая без аргументов фабрика в импортируемом модуле). Неизвестное имя —
   fail-closed. Ни один extension не добавляет model tool и не меняет system prompt.
 
-`harness health` проверяет форму всех трёх разделов. Пока у проекта нет `backend_zones`/
+`harness health` проверяет форму всех трёх разделов. Пока у проекта нет
 `assignment_plans`, coordinator работает на встроенных дефолтах и эти значения не читает.
 
 ### Discovery Context и Context Package
@@ -366,8 +365,9 @@ self-report, heartbeat, review или QA.
 | `code-review` | read-only | Обязателен для listed high-risk triggers; выдаёт отдельные Standards и Spec reports. |
 
 Одна задача может пройти несколько ролей, но handoff внутри одного batch всегда последовательный и
-в нём бывает только один active writer. Не открывайте два batch с пересекающимися service, bounded
-context или infrastructure zone. Тяжёлые integration/quality checks идут в одной
+в нём бывает только один active writer. Batch с пересекающимися файлами могут идти параллельно, каждый в своих issue-ветке и worktree,
+пока хватает `concurrency_budget`; пересечения разбираются при интеграции, а не блокируют запуск.
+Два batch на один и тот же незавершённый тикет, ветку или worktree отклоняются. Тяжёлые integration/quality checks идут в одной
 serialized quality-gate lane.
 
 Для API/public contract, schema/data migration, outbox/queues, transactions,
@@ -387,7 +387,7 @@ finding или failed QA снова проходит оценку риска.
 Runtime-neutral режим не имеет команды «запустить всех». Coordinator CLI ведёт записи по
 `planned → awaiting-approval ↔ active → completed | blocked | failed`. При `manual_all` каждый
 report оставляет dispatch в `reported` до решения человека. При `low_risk` чистый завершённый
-report в разрешённой зоне принимается автоматически с записью решения в ledger. Blockers, failed
+report batch, чей scope целиком лежит в `low_risk_paths`, принимается автоматически с записью решения в ledger. Blockers, failed
 checks, раскрытые risks, risk triggers и findings любой оси review сохраняют ручной gate; publish тоже требует
 отдельного approval. При `milestone` чистый отчёт обычной роли также принимается автоматически,
 но QA, publish и рискованные переходы остаются ручными вехами. При `auto` координатор сам принимает
@@ -400,7 +400,8 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    ```bash
    python .harness/orchestration/coordinator.py --repo . batch create \
      --ticket '#123' --branch feature/issue-123-payment-validation \
-     --worktree issue-123-payment-validation --zone payments \
+     --worktree issue-123-payment-validation \
+     --allowed-path 'services/payments/**' \
      --definition-of-done 'Добавить валидацию платежа' \
      --prohibited-change 'Не менять migration или публичный API'
    python .harness/orchestration/coordinator.py --repo . batch approve \
@@ -415,8 +416,10 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    эту сверку: если `origin/<ref>` с тех пор сдвинулся, dispatch отклоняется, next_action переходит в
    `developer`, а снять блокировку может только новый developer dispatch (rebase) — его commit
    автоматически становится новым `candidate_commit` и заново проходит risk assessment.
-2. Сверить активные batch, пересечения зон, writer и quality-gate lane. При конфликте оставить
-   batch `blocked`, а не запускать параллельную запись.
+2. Сверить активные batch, `concurrency_budget`, writer и quality-gate lane. Пересечение файлов
+   другого batch не повод откладывать запуск; занятая serialized quality-gate lane не мешает
+   параллельной реализации. Если batch упёрся в бюджет, дождитесь завершения активного batch или
+   поднимите `concurrency_budget`.
 3. Создать и отдельно утвердить architect dispatch, принять его отчёт, и только потом — developer
    dispatch. Порядок жёсткий: `dispatch create --role developer` отклоняется, пока для того же batch
    нет architect-отчёта, принятого через `batch decide --decision accept`. Правило живёт в
@@ -552,7 +555,7 @@ checks, раскрытые risks, risk triggers и findings любой оси re
 
    Дефект, который coordinator нашёл в чистом developer report, не тратит developer-retry до review
    (маршрут `carry-over`). Retry developer report без accept — исключение только для невыполненного
-   пункта DoD или изменения вне зоны; в остальных случаях report принимается с находками:
+   пункта DoD или изменения вне scope; в остальных случаях report принимается с находками:
 
    ```bash
    python .harness/orchestration/coordinator.py --repo . batch decide \
@@ -617,13 +620,13 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    `carried_items_gap`.
 
 Минимальный ручной brief хранит ticket и dispatch ID, роль и её access, выбранный profile/model/effort,
-zone и allowed paths, issue-ветку/worktree, DoD, запреты, команды, dependencies, approval. Для
+allowed paths (scope записи), issue-ветку/worktree, DoD, запреты, команды, dependencies, approval. Для
 write-роли completion report обязан включать commit SHA, exact changed files, результаты всех checks,
 risks, blockers и следующее решение coordinator-а. Для read-only роли вместо SHA указывается
 `not applicable — read-only role`.
 
 Новые факты не меняют отправленный brief. Coordinator добавляет отдельное решение с evidence; если
-изменились scope, zone, DoD, assignment или proof, текущий dispatch заканчивается и создаётся новый.
+изменились scope, DoD, assignment или proof, текущий dispatch заканчивается и создаётся новый.
 Повтор после `blocked` или `failed` — тоже новый dispatch с новым ID и brief.
 
 ### Маршрутизация `retry` и решение `abandon`
@@ -1240,7 +1243,7 @@ batch до старта следующего. Ручной запуск по э�
 ```text
 Выступи coordinator-ом backend batch для issue #123. Прочитай .harness/orchestration/roles/
 и .harness/orchestration/playbook.md. Не запускай роль до моего явного approval. Предложи
-непересекающуюся zone, последовательность ролей, immutable brief и требуемые risk gates;
+explicit allowed paths, последовательность ролей, immutable brief и требуемые risk gates;
 не меняй protected или integration branch.
 ```
 
