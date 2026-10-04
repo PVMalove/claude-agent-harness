@@ -91,7 +91,8 @@ _Avoid_: рассинхронизация, устаревание.
 **Проектный конфиг** (`.harness/project.json`):
 Источник проектных значений для `qa-gate`, `pr-composer`, `code-review`, `to-guide` и branch
 hooks: `language`, `base_branch`, `branch_pattern` и `qa_gate_commands`; необязательны `$schema`,
-`story_points` и `shell` (какой шелл `qa-gate` использует для `qa_gate_commands` — `bash` по
+`story_points`, `test_paths` (тестовые пути, единственная зона записи тест-автора; без поля
+тест-автор выключен) и `shell` (какой шелл `qa-gate` использует для `qa_gate_commands` — `bash` по
 умолчанию или `powershell` для native-Windows checkout). Форма описана в
 `harness/project/project.schema.json`, а `harness health` применяет тот же строгий контракт и
 отклоняет неизвестные поля.
@@ -405,6 +406,14 @@ Project-owned выбор в assignment plan роли — исполнять её
 in-process субагент текущей сессии. Оба варианта подчиняются одному brief/report контракту и обязаны
 проходить model self-report.
 _Avoid_: жёсткая привязка роли к одному транспортному механизму.
+
+**Тест-автор** (test author):
+In-session субагент developer, не роль оркестрации: по запросу developer пишет один тест следующего
+шага цикла Red→Green→Refactor только в тестовых путях проекта, сам запускает его и возвращает
+идентификатор теста и санитизированную причину падения. Production-код, включая скелет под тест,
+пишет developer; границы и seams берутся из architect brief (в `/fast-implement` — из заранее
+согласованных seams). Не имеет manifest, dispatch, brief и report и не меняет ledger.
+_Avoid_: QA, write role, независимый reviewer, роль оркестрации.
 
 **Discovery Context**:
 Собранный агентом и выверенный человеком (explicit opt-in) список релевантных путей файлов, передаваемый от Эпика к тикетам для исключения слепого поиска при разработке. В момент `/grilling` сохраняется в `docs/tasks/issue-<N-или-slug>-<slug>/artifacts/` (постоянный локальный архив задач); `/to-spec` дополнительно вписывает тот же список в текст эпика под «## Relevant Files (Discovery Context)».
