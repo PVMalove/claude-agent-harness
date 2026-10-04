@@ -1580,7 +1580,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
                 self.assertIn("--allowed-path", caught.exception.remedy)
 
     def test_create_batch_rejects_a_scope_that_escapes_the_repository(self) -> None:
-        for bad in ("/etc/**", "../other/**"):
+        for bad in ("/etc/**", "../other/**", "./src/**", "src//x/**"):
             with self.subTest(bad=bad):
                 with self.assertRaises(coordinator.CoordinatorError) as caught:
                     coordinator.create_batch(

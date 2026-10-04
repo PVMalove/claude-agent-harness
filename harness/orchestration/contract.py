@@ -175,10 +175,33 @@ def load_role_manifest(path: Path) -> JsonObject:
     return metadata
 
 
+def is_clean_path_pattern(path: str) -> bool:
+    """Whether a path or glob is repo-relative in its canonical form.
+
+    A leading ``/``, a backslash, or an empty, ``.`` or ``..`` segment (``./src``, ``src//x``,
+    ``src/../x``) is never canonical: such a form would be compared literally here and matched
+    differently by the glob that checks reported files.
+    """
+    if not path or path.startswith("/") or "\\" in path:
+        return False
+    return all(segment not in {"", ".", ".."} for segment in path.split("/"))
+
+
 def _inside(path: str, boundary: str) -> bool:
-    """Проверить, находится ли путь внутри границы (с учётом подстановок **)."""
-    prefix = boundary.removesuffix("**")
-    return path == boundary or path.startswith(prefix)
+    """Проверить, находится ли путь внутри границы (по сегментам пути, а не по префиксу строки).
+
+    Граница ``**`` принимает любой путь, ``dir/**`` - всё строго под ``dir``, любая другая граница -
+    только ровно себя. Неканоническая форма пути или границы никогда не считается внутри.
+    """
+    if not is_clean_path_pattern(path) or not is_clean_path_pattern(boundary):
+        return False
+    if boundary == "**":
+        return True
+    if boundary.endswith("/**"):
+        prefix = boundary.removesuffix("/**").split("/")
+        parts = path.split("/")
+        return len(parts) > len(prefix) and parts[: len(prefix)] == prefix
+    return path == boundary
 
 
 def paths_inside(paths: list[str], boundaries: list[str]) -> bool:
@@ -1191,6 +1214,12 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     ):
         problems.append(
             "orchestration low_risk_paths must be a non-empty list of path patterns when provided"
+        )
+    elif string_list(low_risk_paths) and not all(
+        is_clean_path_pattern(pattern) for pattern in low_risk_paths
+    ):
+        problems.append(
+            "orchestration low_risk_paths entries must be repo-relative patterns such as 'src/**' without './', '//' or '..' segments"
         )
     attestation_required = config.get("worker_attestation_required")
     if attestation_required is not None and not isinstance(attestation_required, bool):

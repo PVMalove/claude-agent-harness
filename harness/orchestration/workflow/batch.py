@@ -11,11 +11,12 @@ from __future__ import annotations
 import argparse
 import uuid
 from dataclasses import replace as _vo_replace
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import cast
 
 from harness.orchestration.contract import (
     ContractError,
+    is_clean_path_pattern,
     paths_inside,
     role_write_ceiling,
 )
@@ -190,9 +191,9 @@ def _allowed_paths(args: argparse.Namespace) -> list[str]:
         return []
     paths = _strings(value, "allowed_paths", allow_empty=True)
     for path in paths:
-        if path.startswith("/") or ".." in PurePosixPath(path.replace("\\", "/")).parts:
+        if not is_clean_path_pattern(path):
             raise CoordinatorError(
-                f"allowed_paths must hold relative paths or globs without a leading '/' or a '..' segment (got {path!r})",
+                f"allowed_paths must hold relative paths or globs without a leading '/', a backslash, or a '.', '..' or empty segment (got {path!r})",
                 remedy="pass --allowed-path as a repo-relative path or glob such as 'src/orders/**'",
             )
     return sorted(set(paths))
