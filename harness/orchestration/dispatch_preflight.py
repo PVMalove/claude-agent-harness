@@ -72,6 +72,11 @@ def _text(value: object, label: str) -> str:
     return value.strip()
 
 
+def _optional_text(value: object, label: str) -> str | None:
+    """Вернуть непустую строку из состояния проекта либо None, если поле не задано."""
+    return None if value is None else _text(value, label)
+
+
 def _git(path: Path, *args: str) -> str:
     """Выполнить команду Git в указанном каталоге и вернуть stdout либо возбудить PreflightError."""
     result = subprocess.run(
@@ -247,7 +252,7 @@ def prepare(
 
     ``project_state`` намеренно представляет собой простые данные, чтобы CLI, адаптер или тесты могли
     вызывать одну и ту же детерминированную функцию. Обязательные поля: ``repo``, ``config``, ``branch``,
-    ``worktree``, ``zone`` и ``base_sha``; ``candidate_sha`` требуется только при явной фиксации кандидата.
+    ``worktree`` и ``base_sha``; ``zone`` — необязательная историческая метка, ``candidate_sha`` требуется только при явной фиксации кандидата.
     Для developer-retry ``retry_handoff`` и ``retry_package`` дают компактный старт ``retry_start``.
     """
     ticket = _text(ticket, "ticket")
@@ -327,7 +332,7 @@ def prepare(
         "role": role,
         "branch": branch,
         "worktree": str(worktree),
-        "zone": _text(project_state.get("zone"), "zone"),
+        "zone": _optional_text(project_state.get("zone"), "zone"),
         "resolved_runtime": runtime,
         "base_commit": base_sha,
         "snapshot_commit": expected_sha,
