@@ -53,6 +53,7 @@ from harness.orchestration.core.constants import (
     PLAN_FIELDS,
     POLICY_BRIEF_FIELDS,
     PRE_APPROVAL_LEGACY_PLAN_FIELDS,
+    PRE_SCOPE_PLAN_FIELDS,
     RECOVERY_ROUTES,
     RISK_ASSESSMENT_FIELDS,
 )
@@ -730,13 +731,21 @@ def _validate_batch_integrity(root: Path, batch: JsonObject) -> None:
             "batch goal does not match its immutable plan",
             remedy=INTERNAL_INVARIANT_REMEDY,
         )
-    for field in ("approval_policy", "communication_policy"):
+    for field in ("approval_policy", "communication_policy", "allowed_paths"):
         if (field in batch) != (field in plan):
             raise CoordinatorError(
                 "batch record is incomplete",
                 remedy="restore the batch record so it has every required field, or run 'ledger clean'",
             )
-    for fields in (PLAN_FIELDS, LEGACY_PLAN_FIELDS):
+    # A batch planned before explicit scopes existed has no allowed_paths on either record and was
+    # bounded by its zone; both stay valid. A scope present on both records must be identical.
+    if batch.get("allowed_paths") != plan.get("allowed_paths"):
+        raise CoordinatorError(
+            "batch record does not match its immutable plan",
+            remedy="the batch record diverged from its immutable plan -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    for fields in (PLAN_FIELDS, PRE_SCOPE_PLAN_FIELDS, LEGACY_PLAN_FIELDS):
         if all(field in batch for field in fields) and all(
             field in plan for field in fields
         ):
@@ -1159,7 +1168,7 @@ def _validate_dispatch(
         )
     if _configured(repo):
         try:
-            validate_brief_policy(
+            _, assignment = validate_brief_policy(
                 dispatch,
                 _project(repo),
                 config,
@@ -1167,16 +1176,16 @@ def _validate_dispatch(
             )
         except ContractError as exc:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+        ceiling = assignment["write_ceiling"]
     else:
         _validate_branch(repo, dispatch["branch"])
         # In zero-config mode the brief itself is the only record of the session-supplied runtime,
         # so it is replayed here; brief_sha256 above already protects it from being edited.
-        role, zone, profile_id, model, effort, transport, resolved_runtime = (
+        role, ceiling, profile_id, model, effort, transport, resolved_runtime = (
             _resolve_assignment(
                 repo,
                 config,
                 dispatch["role"],
-                batch["zone"],
                 dispatch["resolved_runtime"],
                 session_model=dispatch["resolved_model"],
                 session_effort=dispatch["resolved_effort"],
@@ -1195,13 +1204,17 @@ def _validate_dispatch(
                 remedy="the dispatch record does not match the role assignment -- "
                 + INTERNAL_INVARIANT_REMEDY,
             )
-        expected_paths = zone["paths"] if role["mode"] == "write" else []
-        if dispatch["write_paths"] != expected_paths:
-            raise CoordinatorError(
-                "dispatch record write paths do not match the role boundary",
-                remedy="the dispatch record write paths do not match the role boundary -- "
-                + INTERNAL_INVARIANT_REMEDY,
-            )
+    # The brief's write scope is the batch's explicit scope; a batch planned before scopes existed
+    # was bounded by the role's own write ceiling, which is what its brief recorded.
+    expected_paths = (
+        batch.get("allowed_paths", ceiling) if dispatch["access"] == "write" else []
+    )
+    if dispatch["write_paths"] != expected_paths:
+        raise CoordinatorError(
+            "dispatch record write paths do not match the batch scope",
+            remedy="the dispatch record write paths do not match the batch scope -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
     # Only the shape is checked: the brief is the immutable record of what was selected at approval,
     # so a later project edit to `tool_policy` or `context_limit` must not invalidate it in flight.
     if "allowed_tools" in dispatch:

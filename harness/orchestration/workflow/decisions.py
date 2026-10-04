@@ -15,6 +15,7 @@ from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import extensions, qa_lane
+from harness.orchestration.contract import low_risk_eligible
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
@@ -116,9 +117,7 @@ def _auto_accept_policy(
         or carried_items.carried_gap(report, dispatch)
     ):
         return None
-    if policy == "low_risk" and batch.get("zone") not in config.get(
-        "low_risk_zones", []
-    ):
+    if policy == "low_risk" and not low_risk_eligible(config, batch):
         return None
     if policy == "milestone":
         if dispatch.get("role") == "qa" or batch.get("risk_reassessment_required"):

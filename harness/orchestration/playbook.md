@@ -13,7 +13,7 @@ Before the first English handoff, the coordinator must read
 The coordinator owns the batch lifecycle, dispatch approval, scope changes, and the decision to
 accept a completion report. The role manifest is authoritative for role mode, write boundary,
 required proof, and risk triggers. Project configuration resolves the provider profile, model,
-fallback, zone, concurrency budget, and verification commands; it cannot weaken the manifest
+fallback, role write ceiling, concurrency budget, and verification commands; it cannot weaken the manifest
 contract.
 
 Every batch has one ticket, one issue branch, and one isolated worktree. The coordinator records
@@ -29,11 +29,11 @@ the gitignored `.harness/orchestration/state/` directory.
 
 | State | Coordinator action and entry condition | Allowed next state |
 | --- | --- | --- |
-| `planned` | Ticket, backend zone, issue branch/worktree, DoD, prohibitions, and verification commands are drafted. | `awaiting-approval`, `blocked`, `failed`, `not-required` |
+| `planned` | Ticket, explicit allowed paths, issue branch/worktree, DoD, prohibitions, and verification commands are drafted. | `awaiting-approval`, `blocked`, `failed`, `not-required` |
 | `awaiting-approval` | The coordinator is waiting for the next explicit human decision: first the role dispatch, and later acceptance of a report. | `active`, `blocked`, `completed`, `failed`, `not-required`, `abandoned` |
 | `active` | An approved dispatch has been handed to the runtime adapter; the role is executing only within its immutable brief. | `awaiting-approval`, `blocked`, `failed`, `not-required` |
 | `completed` | All required role reports, commit proof, verification evidence, and risk gates are accepted. | terminal |
-| `blocked` | An external dependency, missing authority, overlapping zone, or unavailable proof prevents safe continuation. | `awaiting-approval` only through `batch resume --reason` for a startup-blocked or stale batch (a human `block` decision is never resumable); `failed` |
+| `blocked` | An external dependency, missing authority, an exhausted concurrency budget, or unavailable proof prevents safe continuation. | `awaiting-approval` only through `batch resume --reason` for a startup-blocked or stale batch (a human `block` decision is never resumable); `failed` |
 | `not-required` | `batch not-required` recorded, with approval and evidence, that the pinned snapshot already satisfies every DoD item. | terminal |
 | `failed` | The dispatch attempted work but could not produce an acceptable result. | terminal |
 | `abandoned` | A human explicitly gave up on the batch after a completion report, with a recorded reason. | terminal |
@@ -147,7 +147,7 @@ assessment, to `code-review`. The coordinator chooses a route by this table:
 | A finding or a warning/blocker severity, a failed check, a moved candidate, a `code`, `requirements`, `candidate-change` or `unknown` reason, a contradictory reason, or `--retry-role developer` | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, and the axis, check or candidate change that decided it |
 | A hook, the safety classifier or the ledger blocked a legitimate command: a `blocked` report carries `tooling_blocker` (tool, exact command, message), with no finding, no failed check and an unchanged candidate | `tooling-retry` | A human decides the retry after confirming the false positive and filing a bug ticket against the tool; the new dispatch of the same stage (same SHA; a developer continues its last commit) is approved under `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID, `report_sha256`, the `tooling_blocker`, and the `candidate_commit` (for a developer, its last commit) |
 | A code-review, qa or verification role worked around a hook or tool block (another command form, tool, script file, `eval`, interpreter or a split command): the approver names `block-bypass`, and the candidate is unchanged | `bypass-rerun` | A human decides the retry with a `--note` naming the violation and never accepts or warning-overrides the report; the new dispatch of the same stage on the same SHA always needs an explicit approval (`--approved-by`), under every `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID and `report_sha256` (evidence of the violation only, never of its findings or checks), the `--note`, and the unchanged `candidate_commit` |
-| The coordinator finds a defect in a clean developer report whose Definition of Done is met inside its zone | `carry-over` | The approver of the `accept` (`batch decide --findings-file`); after a policy auto-accept the coordinator itself (`batch carry-over`, `policy:carry-over`) while no code-review dispatch exists for the candidate; the code-review dispatch is approved under `approval_policy` | Dispatch ID and `report_sha256` of the accepted developer report, the candidate, and the `carried_items` item IDs. No developer retry is spent before review |
+| The coordinator finds a defect in a clean developer report whose Definition of Done is met inside its allowed paths | `carry-over` | The approver of the `accept` (`batch decide --findings-file`); after a policy auto-accept the coordinator itself (`batch carry-over`, `policy:carry-over`) while no code-review dispatch exists for the candidate; the code-review dispatch is approved under `approval_policy` | Dispatch ID and `report_sha256` of the accepted developer report, the candidate, and the `carried_items` item IDs. No developer retry is spent before review |
 | `batch decide --decision abandon` on any completion report | `abandon` | A human only, with a non-empty `--reason`; never a policy | Dispatch ID, `report_sha256` and `abandoned.last_accepted` |
 | `report submit` recorded the report but its policy chain stopped (`completion.failed_step`: `policy-decide`, `risk-assess` or `next-dispatch`) | `report-completion` | No human approval: the coordinator runs `report complete` itself; it replays only the `auto_accept_policy` decision recorded at submit, and a step that needs a human stops with that step's remedy | Dispatch ID, `report_sha256`, the submit `completion` object and the `report complete` steps |
 | Ledger busy: `ledger is locked by another operation`, or a `ledger_busy` answer from `dispatch status` | `report-completion` | No approval: repeat `dispatch wait`/`dispatch status`, run `report complete` when a recorded report's chain stopped, and never remove the lock by hand; a lock that stays held goes to `ledger release-lock`, which refuses a live owner | Lock owner (`pid`, `host`, `acquired_at`, `held_seconds`) and the `ledger release-lock` verdict |
@@ -170,7 +170,7 @@ decision that routes nothing), the `evidence` (`dispatch_id`, `report`, `report_
 
 A defect the coordinator finds in a clean developer report is a coordinator finding, not a reason
 for a retry before review: retrying a developer report without accepting it is an exception allowed
-only for an unmet Definition of Done item or a change outside the declared zone. A finding file is
+only for an unmet Definition of Done item or a change outside the declared allowed paths. A finding file is
 `{"findings": [{"summary", "files", "expected_evidence"}, ...]}` in English. The batch records each
 finding append-only and hash-checked in `carried_items`; every later code-review brief carries the
 open ones, and an open finding sends the candidate to code-review even when risk assessment matched
@@ -310,7 +310,7 @@ be read; concurrent releases are serialised. Nobody removes the lock or any stat
 When a new fact appears after dispatch, the coordinator appends a new coordinator decision before
 acting on it. The decision records the dispatch ID, fact and evidence, impact on scope or risk,
 chosen action, and author/time. The original brief remains immutable. If the fact changes the
-scope, zone, DoD, assignment, or required proof, the current dispatch is ended and the changed
+scope, DoD, assignment, or required proof, the current dispatch is ended and the changed
 work is planned and approved as a new dispatch.
 
 ## Role order, liveness, and transport
@@ -367,7 +367,8 @@ It must contain, at minimum:
   `context_budget` is `adaptive_continuation_policy.context_limit`. The tool list is the role's
   working set, never a deny-list: a brief does not disable the runtime's global tools. A brief
   without these fields is valid;
-- `zone IDs` and allowed paths: the exact backend zones the role may read or write;
+- `allowed paths`: the explicit scope the role may write, pinned from the batch and never wider than
+  the role's write ceiling; a change outside it is rejected;
 - `branch/worktree`: issue branch and isolated worktree; protected branches and `integration/*`
   are never write targets;
 - `Definition of Done`: observable acceptance criteria and the expected role output;
@@ -405,7 +406,6 @@ A minimal brief can be rendered as:
 - Model: <resolved-model>
 - Allowed tools: <role working set from tool_policy or the mode default>
 - Context budget: <tokens from adaptive_continuation_policy.context_limit>
-- Zone IDs: <zone-id>, ...
 - Allowed paths: <declared paths>
 - Branch/worktree: <issue branch> / <isolated worktree>
 - Definition of Done: <observable acceptance criteria>
@@ -500,8 +500,10 @@ being marked `completed`.
 
 Parallelism is allowed only for independent work that the coordinator has approved:
 
-- separate batches may run concurrently when their service, bounded context, and infrastructure
-  zone IDs do not overlap and the project `concurrency_budget` allows it;
+- separate batches may run concurrently, each in its own issue branch and worktree, even when their
+  allowed paths overlap, as long as the project `concurrency_budget` allows it; overlapping files
+  are reconciled at integration, not by delaying a start. A second batch for the same unfinished
+  ticket, branch, or worktree is rejected;
 - read-only work may run in parallel when it has no overlapping write operation or contradictory
   brief;
 - role handoffs inside one batch are sequential, and there is one active writer at a time;
@@ -509,11 +511,11 @@ Parallelism is allowed only for independent work that the coordinator has approv
   different;
 - heavy integration and verification runs use one serialized quality-gate lane; independent
   implementation work may continue while it waits, but concurrent heavy gates are not started;
-- a conflict, unclear boundary, or unavailable lane is escalated as a blocker rather than resolved
-  by overlapping writes or an unapproved retry.
+- an exhausted budget, unclear boundary, or unavailable lane is escalated as a blocker rather than
+  resolved by overlapping writes or an unapproved retry.
 
-Before dispatch, the coordinator records the zone comparison, active batches, writer, and quality
-gate lane position. After each handoff, the incoming role receives the prior completion report as
+Before dispatch, the coordinator records the active batches against the budget, the writer, and the
+quality gate lane position. After each handoff, the incoming role receives the prior completion report as
 evidence but still receives its own immutable brief.
 
 ## Baseline metrics
@@ -538,7 +540,7 @@ notes, and the same counting rules across the period.
   rate-limit termination, or a planned trigger such as a context limit, TDD-cycle count, or
   failure-log size); a role's own account of why it restarted is not this reason;
 - `review diff scope excess`: the share of a code-review dispatch's diff files that fall outside the
-  write role's declared zone, read from the immutable dispatch and risk-assessment records;
+  write role's declared allowed paths, read from the immutable dispatch and risk-assessment records;
 - `QA failure rate`: the share of a batch's decided QA dispatches whose coordinator decision was not
   `accept`, from the coordinator's recorded decision rather than a QA role's own outcome claim.
 

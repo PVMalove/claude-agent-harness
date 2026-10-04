@@ -308,6 +308,50 @@ def run(ctx: SimpleNamespace) -> None:
             "coordinator rejected a non-English brief without naming the language contract"
         )
 
+    # Historical abandoned plans can share the ticket and branch after a coordinator correction.
+    # They carry no QA report for this candidate and must not make PR evidence ambiguous. A second
+    # batch for unfinished work is refused, so they are planned and closed before the live batch.
+    sync_origin_base()
+    for history_index in range(2):
+        historical = coordinator_run(
+            "batch",
+            "create",
+            "--ticket",
+            "#901",
+            "--branch",
+            "feature/issue-901-coordinator",
+            "--worktree",
+            str(shared_worktree),
+            "--zone",
+            "backend",
+            "--definition-of-done",
+            "superseded planning attempt",
+            "--prohibited-change",
+            "do not merge",
+        )
+        if historical.returncode != 0:
+            sys.exit(
+                "clean-room fixture could not create a historical batch: "
+                + historical.stderr
+            )
+        historical_id = json.loads(historical.stdout)["batch_id"]
+        abandoned_history = coordinator_run(
+            "batch",
+            "abandon",
+            "--batch",
+            historical_id,
+            "--approved-by",
+            "project coordinator",
+            "--approved-at",
+            f"2026-09-09T12:05:{46 + history_index:02d}Z",
+            "--reason",
+            "superseded before any dispatch",
+        )
+        if abandoned_history.returncode != 0:
+            sys.exit(
+                "clean-room fixture could not abandon historical batch: "
+                + abandoned_history.stderr
+            )
     sync_origin_base("integration/test-901")
     planned = coordinator_run(
         "batch",
@@ -1097,49 +1141,6 @@ def run(ctx: SimpleNamespace) -> None:
         )
     if json.loads(accepted_evidence.stdout).get("candidate_commit") != candidate_sha:
         sys.exit("QA evidence validation did not return the accepted candidate SHA")
-    # Historical abandoned plans can share the ticket and branch after a coordinator correction.
-    # They carry no QA report for this candidate and must not make PR evidence ambiguous.
-    sync_origin_base()
-    for history_index in range(2):
-        historical = coordinator_run(
-            "batch",
-            "create",
-            "--ticket",
-            "#901",
-            "--branch",
-            "feature/issue-901-coordinator",
-            "--worktree",
-            str(shared_worktree),
-            "--zone",
-            "backend",
-            "--definition-of-done",
-            "superseded planning attempt",
-            "--prohibited-change",
-            "do not merge",
-        )
-        if historical.returncode != 0:
-            sys.exit(
-                "clean-room fixture could not create a historical batch: "
-                + historical.stderr
-            )
-        historical_id = json.loads(historical.stdout)["batch_id"]
-        abandoned_history = coordinator_run(
-            "batch",
-            "abandon",
-            "--batch",
-            historical_id,
-            "--approved-by",
-            "project coordinator",
-            "--approved-at",
-            f"2026-09-09T12:05:{46 + history_index:02d}Z",
-            "--reason",
-            "superseded before any dispatch",
-        )
-        if abandoned_history.returncode != 0:
-            sys.exit(
-                "clean-room fixture could not abandon historical batch: "
-                + abandoned_history.stderr
-            )
     if coordinator_run(*qa_evidence).returncode != 0:
         sys.exit("QA evidence became ambiguous because of abandoned historical batches")
     state_before_evidence = {

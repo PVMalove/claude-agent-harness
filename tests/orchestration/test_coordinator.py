@@ -48,6 +48,7 @@ from harness.orchestration.ledger import (
     BatchRecord,
     DispatchStatusRecord,
     LifecycleLedger,
+    PlanRecord,
     ledger_admin,
     ledger_ops,
 )
@@ -60,6 +61,7 @@ from harness.orchestration.workflow import (
     history,
     reports,
 )
+from harness.orchestration.workflow import batch as batch_module
 
 ORCHESTRATION_ROOT = Path(__file__).resolve().parents[2] / "harness" / "orchestration"
 # The structured evidence of a tool that blocked a legitimate role action (issue #500).
@@ -218,7 +220,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             goal=goal,
             branch=branch,
             worktree=str(worktree_path),
-            zone="repository",
+            allowed_path=["**"],
             integration_ref="master",
             definition_of_done=["do the thing"],
             prohibited_change=["secrets"],
@@ -1518,7 +1520,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "ticket": "#195",
             "branch": "feature/issue-195-thing",
             "worktree": str(self.tmp / "worktree"),
-            "zone": "repository",
+            "allowed_path": ["**"],
             "integration_ref": "master",
             "definition_of_done": ["do the thing"],
             "prohibited_change": ["secrets"],
@@ -1563,18 +1565,34 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         )
         self.assertEqual(no_worktree.exception.remedy, "pass a non-empty worktree path")
 
-    def test_create_batch_rejects_a_missing_ticket_or_zone(self) -> None:
-        for overrides in ({"ticket": None}, {"zone": ""}):
-            with self.subTest(overrides=overrides):
+    def test_create_batch_rejects_a_missing_ticket(self) -> None:
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator.create_batch(self._create_batch_args(ticket=None))
+        self.assertEqual(caught.exception.message, "ticket must be a non-empty string")
+        self.assertEqual(caught.exception.remedy, "pass a non-empty --ticket")
+
+    def test_create_batch_requires_an_explicit_write_scope(self) -> None:
+        scopes: list[list[str] | None] = [None, []]
+        for allowed in scopes:
+            with self.subTest(allowed=allowed):
                 with self.assertRaises(coordinator.CoordinatorError) as caught:
-                    coordinator.create_batch(self._create_batch_args(**overrides))
+                    coordinator.create_batch(
+                        self._create_batch_args(allowed_path=allowed)
+                    )
                 self.assertEqual(
                     caught.exception.message,
-                    "ticket and zone must be non-empty strings",
+                    "a batch must pin the explicit write scope of its writer",
                 )
-                self.assertEqual(
-                    caught.exception.remedy, "pass a non-empty --ticket and --zone"
-                )
+                self.assertIn("--allowed-path", caught.exception.remedy)
+
+    def test_create_batch_rejects_a_scope_that_escapes_the_repository(self) -> None:
+        for bad in ("/etc/**", "../other/**", "./src/**", "src//x/**"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(coordinator.CoordinatorError) as caught:
+                    coordinator.create_batch(
+                        self._create_batch_args(allowed_path=[bad])
+                    )
+                self.assertIn("relative paths or globs", caught.exception.message)
 
     def test_prior_review_entry_returns_a_retried_code_review_entry(self) -> None:
         entry = {
@@ -1745,7 +1763,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             "ticket": "#244",
             "branch": self.branch,
             "worktree": str(self.worktree),
-            "zone": "repository",
+            "allowed_path": ["**"],
             "integration_ref": "master",
             "definition_of_done": ["route retries by cause"],
             "prohibited_change": ["secrets"],
@@ -2040,7 +2058,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(stored["state"], "awaiting-approval")
 
     def test_low_risk_clean_report_is_accepted_and_routes_to_developer(self) -> None:
-        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
         batch = self._create_batch()
         brief = self._dispatch(batch["batch_id"], "architect")["brief"]
         self._start(brief["dispatch_id"])
@@ -2069,7 +2087,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(stored["dispatches"][-1]["state"], "approved")
 
     def test_low_risk_report_disclosing_risk_waits_for_decision(self) -> None:
-        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
         batch = self._create_batch()
         brief = self._dispatch(batch["batch_id"], "architect")["brief"]
         self._start(brief["dispatch_id"])
@@ -2114,7 +2132,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertNotIn("next_action", stored)
 
     def test_low_risk_developer_report_registers_risk_before_next_role(self) -> None:
-        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
         batch = self._create_batch()
         architect = self._dispatch(batch["batch_id"], "architect")["brief"]
         self._start(architect["dispatch_id"])
@@ -2141,7 +2159,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertIn(stored["next_action"], {"code-review", "qa"})
 
     def test_low_risk_candidate_without_triggers_prepares_qa(self) -> None:
-        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
         plan = self._batch_plan()
         plan["definition_of_done"] = ["add simple marker"]
         _git(
@@ -2210,7 +2228,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(stored["next_action"], "publish")
 
     def test_low_risk_review_with_findings_still_waits_for_decision(self) -> None:
-        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
         batch = self._create_batch()
         architect = self._dispatch(batch["batch_id"], "architect")["brief"]
         self._start(architect["dispatch_id"])
@@ -4282,7 +4300,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
 
     def test_a_policy_auto_accept_audits_a_policy_approver(self) -> None:
-        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
         batch = self._create_batch()
         brief = self._dispatch(batch["batch_id"], "architect")["brief"]
         self._start(brief["dispatch_id"])
@@ -4424,6 +4442,242 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(
             record["abandoned"]["reason"], "worker died before confirming its model"
         )
+
+    # -- parallel batches with explicit scope (issue #531) --------------------------------------
+
+    def _second_batch(
+        self,
+        slug: str,
+        *,
+        ticket: str,
+        allowed: list[str] | None = None,
+        approve: bool = True,
+    ) -> JsonObject:
+        """A second batch in its own issue branch and worktree, planned beside the first."""
+        worktree = self.tmp / slug
+        branch = f"feature/issue-{ticket.lstrip('#')}-{slug}"
+        _git(self.repo, "worktree", "add", "-b", branch, str(worktree), "master")
+        plan = {
+            **self._batch_plan(),
+            "ticket": ticket,
+            "branch": branch,
+            "worktree": str(worktree),
+            "allowed_path": allowed or ["**"],
+        }
+        batch = coordinator.create_batch(self._args(**plan))
+        if approve:
+            coordinator.approve_batch(
+                self._args(batch=batch["batch_id"], **self._approval())
+            )
+        return batch
+
+    def test_a_zone_free_batch_records_its_scope_and_no_zone(self) -> None:
+        batch = self._create_batch()
+        self.assertEqual(batch["allowed_paths"], ["**"])
+        self.assertIsNone(batch["zone"])
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self.assertIsNone(brief["zone"])
+        self.assertEqual(brief["write_paths"], [])
+
+    def test_batches_with_overlapping_scope_run_in_parallel_worktrees(self) -> None:
+        self._patch_config(concurrency_budget=2)
+        first = self._create_batch()
+        second = self._second_batch(
+            "other", ticket="#245", allowed=["services/**", "docs/**"]
+        )
+        first_brief = self._dispatch(first["batch_id"], "architect")["brief"]
+        second_brief = self._dispatch(second["batch_id"], "architect")["brief"]
+        self.assertNotEqual(first_brief["worktree"], second_brief["worktree"])
+        self.assertNotEqual(first_brief["branch"], second_brief["branch"])
+        self.assertEqual(self._batch_record(first["batch_id"])["zone"], None)
+        self.assertEqual(self._batch_record(second["batch_id"])["zone"], None)
+
+    def test_a_writer_brief_pins_the_batch_scope(self) -> None:
+        self._patch_config(concurrency_budget=2)
+        first = self._create_batch()
+        second = self._second_batch("narrow", ticket="#245", allowed=["services/**"])
+        self._accepted_architect(second["batch_id"])
+        brief = self._dispatch(second["batch_id"], "developer")["brief"]
+        self.assertEqual(brief["write_paths"], ["services/**"])
+        self.assertEqual(
+            {path for step in brief["commit_plan"] for path in step["expected_paths"]},
+            {"services/**"},
+        )
+        self.assertEqual(first["allowed_paths"], ["**"])
+
+    def test_a_batch_beyond_the_concurrency_budget_is_rejected_with_a_remedy(
+        self,
+    ) -> None:
+        first = self._create_batch()
+        self._dispatch(first["batch_id"], "architect")
+        second = self._second_batch("over", ticket="#245")
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._dispatch(second["batch_id"], "architect")
+        self.assertIn("concurrency_budget (1)", caught.exception.message)
+        self.assertIn("raise concurrency_budget", caught.exception.remedy)
+
+    def test_a_second_batch_for_unfinished_work_is_rejected(self) -> None:
+        first = self._create_batch()
+        root = ledger_ops._state_root(self._args(), self.repo)
+        for label, ticket, branch, worktree in (
+            ("ticket", "#244", "feature/issue-900-x", str(self.tmp / "unused")),
+            ("branch", "#900", self.branch, str(self.tmp / "unused")),
+            ("worktree", "#900", "feature/issue-900-x", str(self.worktree)),
+        ):
+            with self.subTest(label=label):
+                with self.assertRaises(coordinator.CoordinatorError) as caught:
+                    batch_module._reject_duplicate_work(root, ticket, branch, worktree)
+                self.assertIn(first["batch_id"], caught.exception.message)
+                self.assertIn(f"this {label}", caught.exception.message)
+                self.assertIn("batch abandon", caught.exception.remedy)
+        # Created through the public path, the same ticket is refused before any record exists.
+        twin = self.tmp / "twin"
+        _git(
+            self.repo,
+            "worktree",
+            "add",
+            "-b",
+            "feature/issue-244-twin",
+            str(twin),
+            "master",
+        )
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator.create_batch(
+                self._args(
+                    **{
+                        **self._batch_plan(),
+                        "branch": "feature/issue-244-twin",
+                        "worktree": str(twin),
+                    }
+                )
+            )
+        self.assertIn("this ticket", caught.exception.message)
+
+    def test_a_finished_batch_does_not_block_a_fresh_attempt(self) -> None:
+        first = self._create_batch()
+        coordinator.abandon_batch(
+            self._args(
+                batch=first["batch_id"],
+                reason="requirements withdrawn",
+                **self._approval(),
+            )
+        )
+        retry = self._second_batch("again", ticket="#244")
+        self.assertNotEqual(retry["batch_id"], first["batch_id"])
+
+    def test_a_decision_blocked_batch_does_not_hold_the_ticket_for_ever(self) -> None:
+        first = self._create_batch()
+        self._accepted_architect(first["batch_id"])
+        candidate = self._accepted_candidate(first["batch_id"])
+        self._infra_review(first["batch_id"], candidate)
+        self._decide(
+            first["batch_id"], "block", reason_category="verification-infrastructure"
+        )
+        self.assertEqual(self._batch_record(first["batch_id"])["state"], "blocked")
+        retry = self._second_batch("after-block", ticket="#244")
+        self.assertNotEqual(retry["batch_id"], first["batch_id"])
+
+    def test_a_blocked_batch_with_an_open_dispatch_still_holds_its_work(self) -> None:
+        first = self._create_batch()
+        brief = self._dispatch(first["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        root = ledger_ops._state_root(self._args(), self.repo)
+        record = self._batch_record(first["batch_id"])
+        record["state"] = "blocked"
+        ledger = LifecycleLedger(root)
+        with ledger_ops._ledger_lock(ledger):
+            ledger_ops._replace_record(ledger, BatchRecord.from_dict(record))
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._second_batch("twin", ticket="#244")
+        self.assertIn("unfinished work", caught.exception.message)
+
+    def test_parallel_work_is_allowed_while_the_qa_lane_is_occupied(self) -> None:
+        self._patch_config(concurrency_budget=2)
+        first = self._create_batch()
+        second = self._second_batch("busy", ticket="#245")
+        lease = self._records() / "qa-lane" / "lease.json"
+        lease.parent.mkdir(parents=True, exist_ok=True)
+        lease.write_text(
+            json.dumps(
+                {
+                    "dispatch_id": "dispatch-" + "a" * 8,
+                    "host": "qa-host",
+                    "pid": 1,
+                    "acquired_at": self._later(0),
+                    "expires_at": self._later(3600),
+                }
+            ),
+            encoding="utf-8",
+        )
+        self._accepted_architect(first["batch_id"])
+        brief = self._dispatch(first["batch_id"], "developer")["brief"]
+        other = self._dispatch(second["batch_id"], "architect")["brief"]
+        self.assertEqual(brief["role"], "developer")
+        self.assertEqual(other["role"], "architect")
+
+    def _legacy_twin(self, batch: JsonObject) -> JsonObject:
+        """The same batch as an earlier runtime wrote it: a zone label and no explicit scope."""
+        legacy = {key: value for key, value in batch.items() if key != "allowed_paths"}
+        legacy.update(
+            batch_id=f"batch-{uuid.uuid4()}", ticket="#246", zone="repository"
+        )
+        ledger = LifecycleLedger(ledger_ops._state_root(self._args(), self.repo))
+        with ledger_ops._ledger_lock(ledger):
+            ledger_ops._write_record(
+                ledger,
+                PlanRecord.from_dict(
+                    {
+                        **{
+                            field: legacy[field]
+                            for field in constants.PRE_SCOPE_PLAN_FIELDS
+                        },
+                        "goal": legacy["goal"],
+                    }
+                ),
+            )
+            ledger_ops._write_record(ledger, BatchRecord.from_dict(legacy))
+        coordinator.approve_batch(
+            self._args(batch=legacy["batch_id"], **self._approval())
+        )
+        return legacy
+
+    def test_a_batch_planned_before_scopes_existed_stays_valid(self) -> None:
+        self._patch_config(concurrency_budget=2)
+        legacy = self._legacy_twin(self._create_batch())
+        brief = self._dispatch(legacy["batch_id"], "architect")["brief"]
+        self.assertEqual(brief["zone"], "repository")
+        self._start(brief["dispatch_id"])
+        self._submit(brief["dispatch_id"], self._base_report(brief, "architect"))
+        self._decide(legacy["batch_id"], "accept")
+        developer = self._dispatch(legacy["batch_id"], "developer")["brief"]
+        self.assertEqual(developer["write_paths"], ["**"])
+        self.assertNotIn("allowed_paths", self._batch_record(legacy["batch_id"]))
+
+    def test_a_legacy_zone_batch_keeps_its_low_risk_authority_by_zone(self) -> None:
+        legacy = self._legacy_twin(self._create_batch())
+        zones = {"repository": {"paths": ["**"]}}
+        for extra, expected in (
+            ({"low_risk_zones": ["repository"]}, True),
+            ({"low_risk_paths": ["**"]}, False),
+            ({}, False),
+        ):
+            with self.subTest(extra=extra):
+                self.assertIs(
+                    contract.low_risk_eligible(
+                        {"backend_zones": zones, **extra}, legacy
+                    ),
+                    expected,
+                )
+
+    def test_a_scope_added_to_only_one_record_is_refused(self) -> None:
+        batch = self._create_batch()
+        path = self._records() / "plans" / f"{batch['batch_id']}.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        del record["allowed_paths"]
+        path.write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._dispatch(batch["batch_id"], "architect")
+        self.assertEqual(caught.exception.message, "batch record is incomplete")
 
     def test_abandon_is_valid_before_any_candidate_exists(self) -> None:
         batch = self._create_batch()
@@ -5105,7 +5359,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def _architect_report_under_attention(self) -> tuple[JsonObject, JsonObject]:
         """A low_risk architect report whose batch raised attention before it was submitted:
         the policy decision is recorded, then the next dispatch is refused on attention."""
-        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
         batch = self._create_batch()
         brief = self._live_architect(batch["batch_id"])
         self._age_heartbeat(brief["dispatch_id"], 7200)
@@ -5244,7 +5498,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(self._ledger_files(), before)
 
     def test_a_completed_policy_chain_keeps_the_submit_response(self) -> None:
-        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
         batch = self._create_batch()
         brief = self._live_architect(batch["batch_id"])
 
@@ -5275,7 +5529,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         """A verification report is read-only and has no commit of its own: its policy chain
         assesses the candidate its dispatch pinned and hands that candidate to QA, so the chain
         completes and report complete has nothing left to run."""
-        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
         plan = self._batch_plan()
         plan["definition_of_done"] = ["add simple marker"]
         with mock.patch.object(self, "_batch_plan", return_value=plan):
@@ -6519,7 +6773,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def test_low_risk_divergent_report_with_full_coverage_is_auto_accepted_with_an_audit_record(
         self,
     ) -> None:
-        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
         brief = self._auto_developer(self.FIVE_ITEMS)
         report, commits = self._divergent_report(brief)
 
@@ -6543,7 +6797,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def test_low_risk_report_with_a_not_covered_item_waits_for_a_manual_decision(
         self,
     ) -> None:
-        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
         brief = self._auto_developer(["one", "two", "three"])
 
         result = self._submit(brief["dispatch_id"], self._not_covered_report(brief))
@@ -7096,7 +7350,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def test_carry_over_names_a_chain_created_qa_dispatch_until_it_is_cancelled(
         self,
     ) -> None:
-        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
         batch_id, _, _ = self._auto_accepted_developer()
         qa = self._batch_record(batch_id)["dispatches"][-1]
         self.assertEqual((qa["role"], qa["state"]), ("qa", "approved"))
@@ -7297,7 +7551,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertNotIn("carried_items_gap", decided["coordinator_decisions"][-1])
 
     def test_only_a_review_closing_every_carried_item_is_auto_accepted(self) -> None:
-        self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
+        self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
         for carried, auto in (
             (None, False),
             ({"coordinator-finding-1": "unverified"}, False),
@@ -8934,16 +9188,20 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
     def _create_batch(self, slug: str) -> str:
         branch = f"feature/issue-369-{slug}"
         worktree = self.tmp / slug
+        # One unfinished batch per ticket: every batch of a test plans its own ticket.
+        self._planned = getattr(self, "_planned", 0) + 1
         _git(self.repo, "worktree", "add", "-b", branch, str(worktree), "master")
         batch = self._ok(
             "batch",
             "create",
             "--ticket",
-            "#369",
+            f"#369{self._planned}",
             "--branch",
             branch,
             "--worktree",
             str(worktree),
+            "--allowed-path",
+            "**",
             "--integration-ref",
             "master",
             "--definition-of-done",
