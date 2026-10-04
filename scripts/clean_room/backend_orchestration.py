@@ -24,6 +24,29 @@ RECOVERY_ROUTE_TABLE_HEADING = "## Recovery route table"
 RECOVERY_ROUTE_TABLE_HEADER = ("Situation", "Route", "Who approves", "Evidence")
 
 
+def _require_worker_protocol(skill: str) -> None:
+    """Проверить lifecycle внутри поставленного промпта, а не в соседнем тексте skill."""
+    section = skill.partition("## Worker prompt\n")[2]
+    match = re.search(r"```text\n(.*?)```", section, re.DOTALL)
+    if match is None:
+        sys.exit("installed implement skill is missing the worker prompt template")
+    prompt = match.group(1)
+    positions = []
+    for command in ("dispatch self-report", "dispatch heartbeat", "report submit"):
+        line = re.search(
+            rf"^<coordinator CLI> {re.escape(command)}\b", prompt, re.MULTILINE
+        )
+        if line is None:
+            sys.exit(
+                f"installed worker prompt is missing the protocol command: {command}"
+            )
+        positions.append(line.start())
+    if positions != sorted(positions):
+        sys.exit(
+            "installed worker prompt must attest, heartbeat, then submit its report"
+        )
+
+
 def _require_recovery_route_table(playbook: str) -> None:
     """Обязательное правило playbook: таблица маршрутов восстановления (#497).
 
@@ -144,6 +167,7 @@ def run(ctx: SimpleNamespace) -> None:
     installed_implement = (
         orchestration_project / ".harness" / "skills" / "implement" / "SKILL.md"
     ).read_text(encoding="utf-8")
+    _require_worker_protocol(installed_implement)
     if "This session **is** the coordinator" not in installed_implement:
         sys.exit(
             "opted-in project implement skill does not drive the coordinator pipeline"
