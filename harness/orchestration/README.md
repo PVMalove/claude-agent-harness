@@ -91,7 +91,7 @@ lifecycle — в [playbook.md](./playbook.md), границы ролей — в 
 | `review_verification_commands` | список строк | = `verification_commands` | Проверки code-review. |
 | `test_path_patterns` | список glob | `tests/**`, `**/tests/**`, `**/test_*.py`, `**/*_test.py` | Какие пути считаются тестами (delta-review при изменении только тестов). |
 | `approval_policy` | `manual_all` \| `milestone` \| `low_risk` | `manual_all` | Какие report принимаются без человека (см. ниже). |
-| `low_risk_paths` | список glob | — | Пути, внутри которых при `low_risk` чистые report принимаются автоматически: весь `--allowed-path` batch должен лежать в них. Без списка ничто не считается низкорисковым. |
+| `low_risk_paths` | список glob | — | Пути в форме `dir/**`, `**` или точного файла (без `./`, `//`, `..`; сравнение по сегментам), внутри которых при `low_risk` чистые report принимаются автоматически: весь `--allowed-path` batch должен лежать в них. Без списка ничто не считается низкорисковым. |
 | `low_risk_zones` | список имён зон | — | Устаревшее: зоны из `backend_zones`, отображаются на свои пути как `low_risk_paths`. Batch, запланированный до явного scope, по-прежнему определяется своей зоной. |
 | `human_approval_gate` | `trusted` \| `tty` | `trusted` | `trusted` — approval через `--approved-by/--approved-at`; `tty` — только интерактивное подтверждение в терминале. |
 | `approval_ttl_seconds` | целое ≥ 1 | без срока | Срок жизни `--approved-at`: более старое или датированное будущим approval отклоняется. |
