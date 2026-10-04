@@ -12,8 +12,7 @@ risk_triggers:
 
 # Developer
 
-Use this role for ordinary backend service changes that remain inside the declared service or bounded
-context zone. Do not perform schema/data migration work or outbox, message-schema, routing, retry, or
+Use this role for ordinary backend service changes that remain inside the brief's allowed paths. Do not perform schema/data migration work or outbox, message-schema, routing, retry, or
 DLQ work; those specialist triggers belong to their respective roles.
 
 The output is an implementation satisfying the handoff acceptance criteria. Prove it with focused and
@@ -57,6 +56,6 @@ retried code-review; every item has an `item_id`, `summary`, `files` and `expect
 every carried item in this retry: its files belong to the working set, and its fix goes into the
 commit of the plan entry whose scope it belongs to. In the completion report's `output`, name each
 `item_id` with the evidence that closes it (commit SHA, `file:line`, test name), as its
-`expected_evidence` asks. An item that cannot be closed inside the zone and the prohibited changes
+`expected_evidence` asks. An item that cannot be closed inside the allowed paths and the prohibited changes
 is a blocker, never a silent omission: the next code-review carries every open coordinator finding
 again and accounts for it.

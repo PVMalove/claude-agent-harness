@@ -76,9 +76,13 @@ def build_parser(
     create.add_argument("--branch", required=True)
     create.add_argument("--worktree", required=True)
     create.add_argument(
+        "--allowed-path",
+        action="append",
+        help="repo-relative path or glob the batch's writer may change; repeated; the batch's explicit write scope",
+    )
+    create.add_argument(
         "--zone",
-        default=defaults.DEFAULT_ZONE,
-        help="backend zone; defaults to the whole repository",
+        help="legacy audit label recorded in the batch; it neither locks nor scopes anything",
     )
     create.add_argument(
         "--integration-ref",
@@ -113,7 +117,7 @@ def build_parser(
     )
     _common(batch_preflight)
     batch_preflight.add_argument("--ticket", required=True)
-    batch_preflight.add_argument("--zone", default=defaults.DEFAULT_ZONE)
+    batch_preflight.add_argument("--allowed-path", action="append")
     batch_preflight.add_argument("--definition-of-done", action="append", required=True)
     batch_preflight.add_argument("--dependency", action="append")
     batch_preflight.add_argument("--expected-file", action="append")

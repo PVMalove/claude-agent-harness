@@ -19,6 +19,8 @@ from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import operational_guards
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
+    low_risk_eligible,
+    paths_inside,
     resolve_allowed_tools,
     resolve_min_repo_map_tier,
     role_verification_commands,
@@ -37,9 +39,6 @@ from harness.orchestration.core.config import (
     _test_path_patterns,
     _worker_attestation_required,
 )
-from harness.orchestration.core.constants import (
-    TERMINAL_BATCH_STATES,
-)
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _changed_files_between,
@@ -52,7 +51,6 @@ from harness.orchestration.core.utils import (
     JsonObject,
     _canonical,
     _non_empty,
-    _read_object,
     _repo,
     _safe_id,
 )
@@ -72,7 +70,6 @@ from harness.orchestration.ledger.ledger_ops import (
     _load_batch,
     _load_dispatch,
     _load_dispatch_status,
-    _records_root,
     _replace_record,
     _state_root,
     _write_record,
@@ -244,13 +241,11 @@ def _dispatch_approval_mode(
             "this transition requires --approved-by and --approved-at under its approval policy",
             remedy="pass --approved-by and --approved-at, as required by this project's approval_policy",
         )
-    if policy == "low_risk":
-        zones = config.get("low_risk_zones", [])
-        if batch["zone"] not in zones:
-            raise CoordinatorError(
-                "low_risk continuation requires the batch zone in low_risk_zones",
-                remedy="add the batch's zone to low_risk_zones in the project orchestration config, or use a different approval_policy",
-            )
+    if policy == "low_risk" and not low_risk_eligible(config, batch):
+        raise CoordinatorError(
+            "low_risk continuation requires the batch allowed_paths to lie inside low_risk_paths",
+            remedy="add the batch's paths to low_risk_paths in the project orchestration config, narrow the batch's --allowed-path, or use a different approval_policy",
+        )
     return f"policy:{policy}"
 
 
@@ -324,7 +319,7 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
             "config": config,
             "branch": batch["branch"],
             "worktree": batch["worktree"],
-            "zone": batch["zone"],
+            "zone": batch.get("zone"),
             "base_sha": batch["base_commit"],
             "candidate_sha": candidate,
             "snapshot_sha": snapshot,
@@ -404,25 +399,23 @@ def _proposed_transition(
 
 
 def _reject_active_duplicate(root: Path, batch: JsonObject, key: str) -> None:
-    """At most one active read-only dispatch per idempotency key. A settled dispatch (decided,
-    cancelled or abandoned) never blocks a new one, which always gets a new immutable ID."""
-    for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
-        other = _read_object(path, "batch record")
-        if other.get("batch_id") == batch.get("batch_id"):
-            other = batch
-        elif other.get("state") in TERMINAL_BATCH_STATES:
+    """At most one active read-only dispatch per idempotency key within a batch. A settled dispatch
+    (decided, cancelled or abandoned) never blocks a new one, which always gets a new immutable ID.
+
+    The key names no batch, so another batch at the same base would collide with it by accident.
+    Repeating the work of an unfinished batch is refused at batch creation (ticket, branch and
+    worktree), which is what lets independent batches run in parallel."""
+    for entry in batch.get("dispatches", []):
+        if _settled(entry):
             continue
-        for entry in other.get("dispatches", []):
-            if _settled(entry):
-                continue
-            if (
-                _load_dispatch(root, entry["dispatch_id"]).get("retry_idempotency_key")
-                == key
-            ):
-                raise CoordinatorError(
-                    f"an active dispatch with the same retry idempotency key already exists: {entry['dispatch_id']}",
-                    remedy=f"let {entry['dispatch_id']} settle or cancel it before creating another dispatch for the same role, candidate, base, scope, reason and verification",
-                )
+        if (
+            _load_dispatch(root, entry["dispatch_id"]).get("retry_idempotency_key")
+            == key
+        ):
+            raise CoordinatorError(
+                f"an active dispatch with the same retry idempotency key already exists: {entry['dispatch_id']}",
+                remedy=f"let {entry['dispatch_id']} settle or cancel it before creating another dispatch for the same role, candidate, base, scope, reason and verification",
+            )
 
 
 def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
@@ -668,19 +661,28 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 "a developer dispatch requires an accepted architect report for the same batch",
                 remedy="accept an architect completion report for this batch before dispatching a developer",
             )
-        role, zone, profile_id, model, effort, transport, resolved_runtime = (
+        role, ceiling, profile_id, model, effort, transport, resolved_runtime = (
             _resolve_assignment(
                 repo,
                 config,
                 role_name,
-                batch["zone"],
                 args.runtime,
                 session_model=getattr(args, "model", None),
                 session_effort=getattr(args, "effort", None),
             )
         )
+        # A writer's scope is the batch's explicit scope; a batch planned before scopes existed
+        # was bounded by the role's write ceiling alone.
+        write_paths = (
+            batch.get("allowed_paths", ceiling) if role["mode"] == "write" else []
+        )
+        if not paths_inside(write_paths, ceiling):
+            raise CoordinatorError(
+                f"batch allowed_paths {write_paths} exceed the {role_name} write ceiling {ceiling}",
+                remedy=f"widen assignment_plans[{role_name!r}].write_paths in the project orchestration config, or plan a new batch with a narrower --allowed-path",
+            )
         commit_plan = (
-            _developer_commit_plan(batch, zone["paths"])
+            _developer_commit_plan(batch, write_paths)
             if role_name == "developer" and purpose == "work"
             else []
         )
@@ -935,8 +937,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "ticket": batch["ticket"],
             "role": role_name,
             "access": role["mode"],
-            "zone": batch["zone"],
-            "write_paths": zone["paths"] if role["mode"] == "write" else [],
+            "zone": batch.get("zone"),
+            "write_paths": write_paths,
             "branch": batch["branch"],
             "worktree": batch["worktree"],
             "definition_of_done": batch["definition_of_done"],

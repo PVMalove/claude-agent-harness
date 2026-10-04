@@ -12,7 +12,7 @@ risk_triggers:
 # Messaging integration
 
 Use this role for outbox, message schema or routing, retry, and dead-letter queue boundaries. Its
-write scope is the declared messaging or infrastructure zone; it does not absorb unrelated service
+write scope is the brief's allowed paths for messaging or infrastructure; it does not absorb unrelated service
 implementation.
 
 The output is a compatible messaging change with delivery and failure-handling consequences stated.

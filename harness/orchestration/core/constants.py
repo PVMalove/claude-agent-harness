@@ -19,6 +19,9 @@ SENSITIVE_KEY = re.compile(
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
 DECISIONS = {"accept", "override-warning", "retry", "block", "fail", "abandon"}
 TERMINAL_BATCH_STATES = {"completed", "failed", "blocked", "not-required", "abandoned"}
+# A blocked batch that still has an open dispatch can be resumed or abandoned, so it holds its work
+# until one of those happens; with every dispatch settled it is finished like the other states.
+FINISHED_BATCH_STATES = TERMINAL_BATCH_STATES - {"blocked"}
 # Why a role stopped, as the coordinator records it. Only the first two are operational evidence:
 # they never change what a role would conclude, so they alone may re-run a read-only role (or the
 # publish boundary) on the same candidate. Everything else, or anything unclear, needs a developer.
@@ -79,7 +82,6 @@ NEXT_ACTION_DISPATCH_ROLE = {
 }
 DISPATCH_PURPOSES = {"work", "verification", "publish"}
 ROLE_TRANSPORTS = {"in-process", "external"}
-DEFAULT_ZONE = "repository"
 DEFAULT_PROFILE = "session"
 # A developer can legitimately spend tens of minutes in one build, migration, or test command.
 # Keep the default long enough for that work, while the handoff still requires frequent, explicit
@@ -109,6 +111,7 @@ PLAN_FIELDS = (
     "branch",
     "worktree",
     "zone",
+    "allowed_paths",
     "definition_of_done",
     "prohibited_changes",
     "developer_verification_commands",
@@ -120,11 +123,20 @@ PLAN_FIELDS = (
     "scope_preflight",
     "harness_runtime_sha256",
 )
+# A plan written before batches carried an explicit scope: its zone alone bounded the writer.
+PRE_SCOPE_PLAN_FIELDS = tuple(
+    field for field in PLAN_FIELDS if field != "allowed_paths"
+)
 LEGACY_PLAN_FIELDS = tuple(
     field
     for field in PLAN_FIELDS
     if field
-    not in {"scope_preflight", "harness_runtime_sha256", "communication_policy"}
+    not in {
+        "allowed_paths",
+        "scope_preflight",
+        "harness_runtime_sha256",
+        "communication_policy",
+    }
 )
 PRE_APPROVAL_LEGACY_PLAN_FIELDS = tuple(
     field for field in LEGACY_PLAN_FIELDS if field != "approval_policy"
