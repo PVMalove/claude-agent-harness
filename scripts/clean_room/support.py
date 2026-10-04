@@ -6,7 +6,11 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+from harness.gate_runner.gate_runner import sanitise
+from harness.storage import storage_path
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = [sys.executable, str(ROOT / "harness" / "bin" / "harness.py")]
@@ -38,6 +42,71 @@ def _find_bash() -> str:
 
 
 BASH = _find_bash()
+
+
+def run_health(repo: Path) -> None:
+    """Сохранить полный health-отчёт, вывести счётчики и причины только при ошибке."""
+    command = HARNESS + ["health", str(repo), "--json"]
+    result = subprocess.run(
+        command,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    logs = storage_path(ROOT, "logs")
+    logs.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=logs,
+        prefix=f"clean-room-health-{repo.name}-",
+        suffix=".log",
+        delete=False,
+    ) as log:
+        log.write(
+            sanitise(
+                f"$ {subprocess.list2cmdline(command)}\nexit_code={result.returncode}\n"
+                + result.stdout
+                + ("\nstderr:\n" + result.stderr if result.stderr else "")
+            )
+        )
+        log_path = Path(log.name)
+
+    report = None
+    code = result.returncode
+    try:
+        parsed = json.loads(result.stdout)
+        summary = "ok={ok} warn={warn} fail={fail} skipped={skipped}".format(
+            **parsed["summary"]
+        )
+        report = parsed
+    except (json.JSONDecodeError, KeyError, TypeError):
+        summary = "invalid health JSON report"
+        code = code or 1
+    print(
+        f"[health] {repo.name}: {'FAIL' if code else 'PASS'} {summary}; log: {log_path}",
+        flush=True,
+    )
+    if code:
+        if report is not None:
+            for check in report["checks"]:
+                if check["status"] == "fail":
+                    print(
+                        sanitise(f"{check['id']}: {check['message']}"), file=sys.stderr
+                    )
+        if result.stderr.strip():
+            print(
+                sanitise(result.stderr.strip().splitlines()[-1])[:500], file=sys.stderr
+            )
+        else:
+            print(
+                f"health command exited with code {code}; full report: {log_path}",
+                file=sys.stderr,
+            )
+        raise SystemExit(code)
 
 
 def run_ok(cmd, quiet=False, quiet_all=False):

@@ -15,6 +15,7 @@ from scripts.clean_room.support import (
     capture_json,
     fill_agents,
     find_check,
+    run_health,
     run_ok,
 )
 
@@ -160,7 +161,7 @@ def run(ctx: SimpleNamespace) -> None:
         ]
     )
     fill_agents(orchestration_project)
-    run_ok(HARNESS + ["health", str(orchestration_project)])
+    run_health(orchestration_project)
     orchestration_root = orchestration_project / ".harness" / "orchestration"
     if not (orchestration_root / "orchestration.schema.json").is_file():
         sys.exit("backend-orchestration schema missing")
@@ -590,7 +591,7 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_config.write_text(
         json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8"
     )
-    run_ok(HARNESS + ["health", str(orchestration_project)])
+    run_health(orchestration_project)
     minimal_repo_map_policy = json.loads(json.dumps(valid_orchestration))
     minimal_repo_map_policy["repo_map_policy"] = {"tier": "minimal"}
     orchestration_config.write_text(
