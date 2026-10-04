@@ -29,14 +29,14 @@
           "profiles": [
             "claude-profile"
           ],
-          "model": "claude-sonnet-5",
+          "model": "claude-sonnet-5.5",
           "effort": "medium"
         },
         "codex": {
           "profiles": [
             "codex-profile"
           ],
-          "model": "gpt-6-sol",
+          "model": "gpt-6.1-sol",
           "effort": "medium"
         }
       }
@@ -47,14 +47,14 @@
           "profiles": [
             "claude-profile"
           ],
-          "model": "claude-sonnet-5",
+          "model": "claude-sonnet-5.5",
           "effort": "medium"
         },
         "codex": {
           "profiles": [
             "codex-profile"
           ],
-          "model": "gpt-6-sol",
+          "model": "gpt-6.1-sol",
           "effort": "medium"
         }
       }
@@ -65,14 +65,14 @@
           "profiles": [
             "claude-profile"
           ],
-          "model": "claude-sonnet-5",
+          "model": "claude-sonnet-5.5",
           "effort": "medium"
         },
         "codex": {
           "profiles": [
             "codex-profile"
           ],
-          "model": "gpt-6-sol",
+          "model": "gpt-6.1-sol",
           "effort": "medium"
         }
       }
