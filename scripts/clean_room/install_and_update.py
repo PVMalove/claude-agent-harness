@@ -20,6 +20,7 @@ from scripts.clean_room.support import (
     fill_agents,
     find_check,
     run_fails,
+    run_health,
     run_ok,
 )
 
@@ -54,7 +55,7 @@ def run(ctx: SimpleNamespace) -> None:
     if not run_fails(HARNESS + ["health", str(foundation)], quiet_all=True):
         sys.exit("unresolved AGENTS.md unexpectedly passed health")
     fill_agents(foundation)
-    run_ok(HARNESS + ["health", str(foundation)])
+    run_health(foundation)
     if count_skill_files(foundation / ".harness" / "skills") != 5:
         sys.exit("expected 5 skills in foundation")
     if "- Type: content" not in (foundation / "AGENTS.md").read_text(encoding="utf-8"):
@@ -80,7 +81,7 @@ def run(ctx: SimpleNamespace) -> None:
     fill_agents(project)
 
     run_ok(HARNESS + ["diff", str(project)])
-    run_ok(HARNESS + ["health", str(project)])
+    run_health(project)
 
     if count_skill_files(project / ".harness" / "skills") != 25:
         sys.exit("expected 25 skills in project")
@@ -113,7 +114,7 @@ def run(ctx: SimpleNamespace) -> None:
     if not run_fails(HARNESS + ["update", str(project)], quiet_all=True):
         sys.exit("non-forced update unexpectedly overwrote a local edit")
     run_ok(HARNESS + ["update", str(project), "--force"], quiet=True)
-    run_ok(HARNESS + ["health", str(project)])
+    run_health(project)
 
     (project / ".mcp.json").write_text('{"mcpServers": {}}\n', encoding="utf-8")
     if not run_fails(HARNESS + ["health", str(project)], quiet_all=True):
@@ -137,7 +138,7 @@ def run(ctx: SimpleNamespace) -> None:
     (project / ".harness" / "integrations.json").write_text(
         json.dumps(integrations_payload, indent=2) + "\n", encoding="utf-8"
     )
-    run_ok(HARNESS + ["health", str(project)])
+    run_health(project)
 
     # Selecting a capability together with a second one that overrides the same names by a
     # different source path must fail loudly (docs/adr/0001) instead of picking one silently.
@@ -209,7 +210,7 @@ def run(ctx: SimpleNamespace) -> None:
         if (installed_docs / source.name).read_bytes() != source.read_bytes():
             sys.exit(f"installed guide differs from project template: {source.name}")
     fill_agents(pv_project)
-    run_ok(HARNESS + ["health", str(pv_project)])
+    run_health(pv_project)
     repo_map_health = find_check(
         capture_json(HARNESS + ["health", str(pv_project), "--json"]), "repo_map.tier"
     )
@@ -309,7 +310,7 @@ def run(ctx: SimpleNamespace) -> None:
     run_ok(HARNESS + ["update", str(pv_project), "--force"])
     if retired_skill_dir.exists():
         sys.exit("update did not remove an empty retired skill directory")
-    run_ok(HARNESS + ["health", str(pv_project)])
+    run_health(pv_project)
     check_tracker_field(pv_project)
     check_tracker_from_origin(test_root)
     if not filecmp.cmp(
@@ -500,7 +501,7 @@ def check_tracker_field(pv_project) -> None:
     ):
         sys.exit("health accepted an unknown key inside the tracker field")
     project_json.write_bytes(original)
-    run_ok(HARNESS + ["health", str(pv_project)])
+    run_health(pv_project)
 
 
 def check_tracker_from_origin(test_root) -> None:
