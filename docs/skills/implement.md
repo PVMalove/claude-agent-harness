@@ -51,12 +51,12 @@ developer dispatch; review хранит отдельные Standards и Spec evi
 candidate commit; publish отправляет только accepted SHA. Final report предшествует отдельно
 одобренному publish dispatch.
 
-Дефект, найденный в чистом developer report, чей DoD выполнен внутри своей зоны, не повод для retry:
+Дефект, найденный в чистом developer report, чей DoD выполнен внутри своих allowed paths, не повод для retry:
 примите report через `batch decide --findings-file <path>`, а после policy auto-accept выполните
 `batch carry-over --batch <id> --findings-file <path>`, пока code-review dispatch не создан. Находка
 уходит в brief code-review как перенесённый пункт (маршрут `carry-over`), и единственный developer
 retry тратится после review. Retry developer report без accept — только при невыполненном пункте DoD
-или изменении вне зоны.
+или изменении вне scope.
 
 Каждая dispatched role сначала пишет model self-report относительно immutable brief и посылает
 heartbeat. Между send и report coordinator опрашивает watchdog. Mismatch или stale dispatch —

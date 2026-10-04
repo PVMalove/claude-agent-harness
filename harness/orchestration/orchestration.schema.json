@@ -1,13 +1,12 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "backend orchestration project config",
-  "description": "Конфигурация оркестрации бэкенда проекта: профили провайдеров, планы назначения ролей, зоны доступа и политики согласования.",
+  "description": "Конфигурация оркестрации бэкенда проекта: профили провайдеров, планы назначения ролей, потолок записи ролей и политики согласования.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "provider_profiles",
     "assignment_plans",
-    "backend_zones",
     "concurrency_budget",
     "verification_commands"
   ],
@@ -25,14 +24,14 @@
     },
     "assignment_plans": {
       "type": "object",
-      "description": "Планы назначения ролей ('architect', 'developer', 'code-review', 'qa'). Определяют, какую область кода (zone) обрабатывает роль, какие рантаймы (например, 'claude', 'codex') доступны, с какой моделью, уровнем усилий ('effort') и транспортом ('in-process' или 'external').",
+      "description": "Планы назначения ролей ('architect', 'developer', 'code-review', 'qa'). Определяют потолок записи роли (write_paths), какие рантаймы (например, 'claude', 'codex') доступны, с какой моделью, уровнем усилий ('effort') и транспортом ('in-process' или 'external').",
       "additionalProperties": {
         "$ref": "#/definitions/assignmentPlan"
       }
     },
     "backend_zones": {
       "type": "object",
-      "description": "Именованные зоны доступа к репозиторию. Задают границы чтения и записи (списки glob-шаблонов путей), к которым привязываются роли в assignment_plans.",
+      "description": "Устаревшее: именованные зоны доступа. Больше не нужны и не блокируют параллельные батчи; граница записи — явный allowed_paths батча в пределах write_paths роли. Существующая конфигурация с зонами остаётся валидной.",
       "additionalProperties": {
         "$ref": "#/definitions/backendZone"
       }
@@ -77,17 +76,23 @@
     "approval_policy": {
       "enum": ["manual_all", "milestone", "low_risk"],
       "default": "manual_all",
-      "description": "Цель: контроль безопасности изменений. За что отвечает: политика человеческого согласования шагов оркестрации. Варианты: 'manual_all' (ручной аппрув на КАЖДЫЙ шаг, по умолчанию), 'milestone' (ручной аппрув только на ключевых вехах: QA, публикации, рисках), 'low_risk' (авто-продолжение для предсогласованных безопасных зон из low_risk_zones)."
+      "description": "Цель: контроль безопасности изменений. За что отвечает: политика человеческого согласования шагов оркестрации. Варианты: 'manual_all' (ручной аппрув на КАЖДЫЙ шаг, по умолчанию), 'milestone' (ручной аппрув только на ключевых вехах: QA, публикации, рисках), 'low_risk' (авто-продолжение для батчей, чей allowed_paths целиком лежит в low_risk_paths)."
     },
     "human_approval_gate": {
       "enum": ["trusted", "tty"],
       "default": "trusted",
       "description": "Цель: проверка аутентичности аппрува. За что отвечает: способ валидации согласования человеком. Варианты: 'trusted' (принимает аргументы CLI --approved-by/--approved-at, по умолчанию), 'tty' (требует интерактивный ввод человека в TTY-терминале)."
     },
+    "low_risk_paths": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "description": "Цель: авто-согласование безопасных правок. За что отвечает: glob-шаблоны путей с низким риском в форме 'dir/**', '**' или точного файла, без сегментов '.', '..' и пустых, без ведущего '/' (сравнение по сегментам пути); батч продолжается без ручного аппрува при approval_policy = 'low_risk', только если весь его allowed_paths лежит внутри этих шаблонов. Без шаблонов ничто не считается низкорисковым. Варианты: массив шаблонов путей."
+    },
     "low_risk_zones": {
       "type": "array",
       "items": {"type": "string", "minLength": 1},
-      "description": "Цель: авто-согласование безопасных правок. За что отвечает: список именованных зон из backend_zones с низким риском, для которых разрешено автопродолжение при approval_policy = 'low_risk'. Варианты: массив имён зон."
+      "description": "Устаревшее: имена зон из backend_zones. Отображается на их пути, как если бы они были перечислены в low_risk_paths; батч, запланированный до явных областей, по-прежнему определяется своей зоной."
     },
     "worker_attestation_required": {
       "type": "boolean",
@@ -321,12 +326,12 @@
     "assignmentPlan": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["zone", "runtimes"],
+      "required": ["runtimes"],
       "properties": {
         "zone": {
           "type": "string",
           "minLength": 1,
-          "description": "Имя зоны из backend_zones, за которую отвечает данная роль."
+          "description": "Устаревшее необязательное имя зоны из backend_zones; без него потолок записи роли — весь репозиторий или write_paths."
         },
         "write_paths": {
           "type": "array",
@@ -335,7 +340,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Уточнённый список путей для записи (находящийся внутри выделенной зоны)."
+          "description": "Потолок записи роли: пути, шире которых allowed_paths батча быть не может. По умолчанию — весь репозиторий (или пути зоны устаревшего плана)."
         },
         "transport": {
           "enum": ["in-process", "external"],

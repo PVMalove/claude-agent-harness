@@ -24,7 +24,6 @@
   },
   "assignment_plans": {
     "architect": {
-      "zone": "repository",
       "runtimes": {
         "claude": {
           "profiles": [
@@ -43,7 +42,6 @@
       }
     },
     "developer": {
-      "zone": "repository",
       "runtimes": {
         "claude": {
           "profiles": [
@@ -62,7 +60,6 @@
       }
     },
     "code-review": {
-      "zone": "repository",
       "runtimes": {
         "claude": {
           "profiles": [
@@ -81,7 +78,6 @@
       }
     },
     "qa": {
-      "zone": "repository",
       "runtimes": {
         "claude": {
           "profiles": [
@@ -100,17 +96,10 @@
       }
     }
   },
-  "backend_zones": {
-    "repository": {
-      "paths": [
-        "**"
-      ]
-    }
-  },
   "concurrency_budget": 1,
   "approval_policy": "low_risk",
-  "low_risk_zones": [
-    "repository"
+  "low_risk_paths": [
+    "**"
   ],
   "worker_attestation_required": true,
   "communication_policy": {
