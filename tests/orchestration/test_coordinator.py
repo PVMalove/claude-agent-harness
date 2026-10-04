@@ -4160,6 +4160,32 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         retry = self._second_batch("again", ticket="#244")
         self.assertNotEqual(retry["batch_id"], first["batch_id"])
 
+    def test_a_decision_blocked_batch_does_not_hold_the_ticket_for_ever(self) -> None:
+        first = self._create_batch()
+        self._accepted_architect(first["batch_id"])
+        candidate = self._accepted_candidate(first["batch_id"])
+        self._infra_review(first["batch_id"], candidate)
+        self._decide(
+            first["batch_id"], "block", reason_category="verification-infrastructure"
+        )
+        self.assertEqual(self._batch_record(first["batch_id"])["state"], "blocked")
+        retry = self._second_batch("after-block", ticket="#244")
+        self.assertNotEqual(retry["batch_id"], first["batch_id"])
+
+    def test_a_blocked_batch_with_an_open_dispatch_still_holds_its_work(self) -> None:
+        first = self._create_batch()
+        brief = self._dispatch(first["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        root = ledger_ops._state_root(self._args(), self.repo)
+        record = self._batch_record(first["batch_id"])
+        record["state"] = "blocked"
+        ledger = LifecycleLedger(root)
+        with ledger_ops._ledger_lock(ledger):
+            ledger_ops._replace_record(ledger, BatchRecord.from_dict(record))
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._second_batch("twin", ticket="#244")
+        self.assertIn("unfinished work", caught.exception.message)
+
     def test_parallel_work_is_allowed_while_the_qa_lane_is_occupied(self) -> None:
         self._patch_config(concurrency_budget=2)
         first = self._create_batch()

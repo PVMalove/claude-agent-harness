@@ -19,7 +19,8 @@ SENSITIVE_KEY = re.compile(
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
 DECISIONS = {"accept", "override-warning", "retry", "block", "fail", "abandon"}
 TERMINAL_BATCH_STATES = {"completed", "failed", "blocked", "not-required", "abandoned"}
-# A blocked batch can still be resumed or abandoned, so it holds its work until one of those happens.
+# A blocked batch that still has an open dispatch can be resumed or abandoned, so it holds its work
+# until one of those happens; with every dispatch settled it is finished like the other states.
 FINISHED_BATCH_STATES = TERMINAL_BATCH_STATES - {"blocked"}
 # Why a role stopped, as the coordinator records it. Only the first two are operational evidence:
 # they never change what a role would conclude, so they alone may re-run a read-only role (or the

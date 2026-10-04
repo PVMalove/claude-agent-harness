@@ -121,12 +121,17 @@ def _reject_duplicate_work(root: Path, ticket: str, branch: str, worktree: str) 
 
     The guard is about the same work, not the same files: two tickets that touch one file are
     independent batches, but a second batch for one unfinished ticket would double the writer.
-    Finished batches stay audit evidence and never block a fresh attempt.
+    Finished batches stay audit evidence and never block a fresh attempt. A batch a decision
+    blocked has nothing left to resume or abandon, so it is finished too; a blocked batch that
+    still holds an open dispatch keeps its work until ``batch resume`` or ``batch abandon``.
     """
     mine_worktree = str(Path(worktree).resolve())
     for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
         other = _read_object(path, "batch record")
-        if other.get("state") in FINISHED_BATCH_STATES:
+        if other.get("state") in FINISHED_BATCH_STATES or (
+            other.get("state") == "blocked"
+            and all(_settled(item) for item in other.get("dispatches", []))
+        ):
             continue
         other_worktree = other.get("worktree")
         for label, mine, theirs in (
