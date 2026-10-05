@@ -282,7 +282,11 @@ def _packageable(path: Path) -> bool:
 
 def package_files(names: list[str]) -> dict[str, bytes]:
     """Сформировать словарь относительных целевых путей и байтового содержимого файлов пакета."""
-    result: dict[str, bytes] = {}
+    result: dict[str, bytes] = {
+        ".harness/docs/technical-english.md": (
+            PACKAGE / "docs/technical-english.md"
+        ).read_bytes(),
+    }
     for source in selected_skills(names):
         for path in sorted(source.rglob("*")):
             if not _packageable(path):
