@@ -757,5 +757,161 @@ class IntegrationEvidenceLinkTests(unittest.TestCase):
             )
 
 
+class IntegrationStatusTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.branch = PublishedBranch()
+        self.addCleanup(self.branch.close)
+        self.published = self.branch.publish()
+        self.prepared = self.branch.prepare()
+        self.record_id = self.prepared["integration_record_id"]
+
+    def status(self, **overrides: object) -> JsonObject:
+        values: JsonObject = {
+            "record": self.record_id,
+            "ticket": None,
+            "branch": None,
+            "batch": None,
+        }
+        values.update(overrides)
+        return coordinator.integration_status(self.branch.args(**values))
+
+    def dispatch_ids(self) -> list[str]:
+        batch = coordinator._load_batch(
+            self.branch.state_root(), self.published["batch_id"]
+        )
+        return [item["dispatch_id"] for item in batch["dispatches"]]
+
+    def link(self, **overrides: object) -> JsonObject:
+        values: JsonObject = {
+            "record": self.record_id,
+            "kind": "resolver",
+            "result": "passed",
+            "reference": "resolver-run-1",
+            "artifact_sha256": None,
+            "candidate_commit": "1" * 40,
+            "target_commit": "2" * 40,
+        }
+        values.update(overrides)
+        return coordinator.integration_link_evidence(self.branch.args(**values))
+
+    def test_status_of_an_unmoved_ref_is_current(self) -> None:
+        status = self.status()
+
+        self.assertEqual(status["state"], "current")
+        self.assertFalse(status["refresh_required"])
+        self.assertEqual(status["integration_tip"], self.prepared["target_sha"])
+        self.assertTrue(status["source_evidence"]["applies_to_current_pair"])
+        self.assertEqual(status["pair_checks"], [])
+        self.assertEqual(
+            status["source_evidence"]["pair"], self.prepared["source_evidence"]["pair"]
+        )
+
+    def test_status_by_ticket_and_branch_finds_the_record(self) -> None:
+        status = self.status(
+            record=None, ticket=self.branch.ticket, branch=self.branch.branch
+        )
+        self.assertEqual(status["integration_record_id"], self.record_id)
+        for missing in (
+            {"record": None},
+            {"record": None, "ticket": self.branch.ticket},
+            {"record": None, "ticket": "#1", "branch": self.branch.branch},
+        ):
+            with self.subTest(missing=missing):
+                with self.assertRaises(CoordinatorError) as raised:
+                    self.status(**missing)
+                self.assertTrue(raised.exception.remedy.strip())
+
+    def test_a_moved_ref_is_stale_and_never_inherits_the_old_qa(self) -> None:
+        moved = self.branch.advance_integration_ref()
+        before = self.branch.snapshot()
+        audit = self.branch.audit_paths()
+        dispatches = self.dispatch_ids()
+
+        status = self.status()
+
+        self.assertEqual(status["state"], "stale")
+        self.assertTrue(status["refresh_required"])
+        self.assertEqual(status["integration_tip"], moved)
+        self.assertEqual(status["target_sha"], self.prepared["target_sha"])
+        self.assertFalse(status["source_evidence"]["applies_to_current_pair"])
+        self.assertNotEqual(
+            status["integration_tip"], status["source_evidence"]["pair"]["target_sha"]
+        )
+        self.assertIn("new check", status["notice"])
+        # Observing is not acting: nothing is dispatched, rewritten or even audited.
+        self.assertEqual(self.dispatch_ids(), dispatches)
+        self.assertEqual(self.branch.snapshot(), before)
+        self.assertEqual(self.branch.audit_paths(), audit)
+        self.assertEqual(self.status(), status)
+
+    def test_a_check_of_the_new_pair_applies_only_to_that_pair(self) -> None:
+        moved = self.branch.advance_integration_ref()
+        old_pair = self.link(
+            kind="ci",
+            candidate_commit=self.prepared["candidate_sha"],
+            target_commit=self.prepared["target_sha"],
+            reference="ci-old",
+        )
+        new_pair = self.link(
+            candidate_commit="3" * 40, target_commit=moved, reference="resolver-new"
+        )
+
+        checks = {item["evidence_id"]: item for item in self.status()["pair_checks"]}
+
+        self.assertEqual(len(checks), 2)
+        self.assertFalse(checks[old_pair["evidence_id"]]["applies_to_current_pair"])
+        self.assertTrue(checks[new_pair["evidence_id"]]["applies_to_current_pair"])
+        self.assertEqual(checks[new_pair["evidence_id"]]["verification"], "unverified")
+        self.assertFalse(self.status()["source_evidence"]["applies_to_current_pair"])
+
+    def test_an_unreachable_remote_is_unavailable_not_current(self) -> None:
+        _git(self.branch.repo, "remote", "set-url", "origin", "/nonexistent/origin.git")
+        status = self.status()
+        self.assertEqual(status["state"], "unavailable")
+        self.assertTrue(status["refresh_required"])
+        self.assertIsNone(status["integration_tip"])
+        self.assertFalse(status["source_evidence"]["applies_to_current_pair"])
+
+    def test_status_detects_rewritten_batch_history(self) -> None:
+        batch_path = (
+            self.branch.records() / "batches" / f"{self.published['batch_id']}.json"
+        )
+        batch = json.loads(batch_path.read_text(encoding="utf-8"))
+        for entry in batch["dispatches"]:
+            if (
+                entry["dispatch_id"]
+                == self.prepared["source_evidence"]["qa"]["dispatch_id"]
+            ):
+                entry["report_sha256"] = "0" * 64
+        batch_path.write_text(json.dumps(batch), encoding="utf-8")
+        with self.assertRaises(CoordinatorError):
+            self.status()
+
+    def test_status_never_reaches_the_dispatch_machinery(self) -> None:
+        source = Path(integration.__file__).read_text(encoding="utf-8")
+        for forbidden in (
+            "workflow.dispatch",
+            "_enforce_base_freshness",
+            "create_dispatch",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    def test_the_public_cli_group_reaches_status(self) -> None:
+        parsed = coordinator.parser().parse_args(
+            [
+                "--repo",
+                str(self.branch.repo),
+                "--state-dir",
+                str(self.branch.state_root()),
+                "integration",
+                "status",
+                "--record",
+                self.record_id,
+            ]
+        )
+        self.assertIs(parsed.handler, coordinator.integration_status)
+        self.assertEqual(parsed.handler(parsed)["state"], "current")
+
+
 if __name__ == "__main__":
     unittest.main()

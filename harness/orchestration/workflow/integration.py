@@ -45,6 +45,7 @@ from harness.orchestration.core.utils import (
 from harness.orchestration.core.workspace import _integration_ref
 from harness.orchestration.ledger.ledger_ops import (
     _ledger_lock,
+    _load_batch,
     _load_dispatch,
     _records_root,
     _state_root,
@@ -472,4 +473,135 @@ def integration_link_evidence(args: argparse.Namespace) -> JsonObject:
         "integration_record_id": record["integration_record_id"],
         "linked": True,
         "evidence": document,
+    }
+
+
+def _resolve_record(root: Path, args: argparse.Namespace) -> JsonObject:
+    """The record named by ``--record``, or the only one of ``--ticket`` and ``--branch``."""
+    if getattr(args, "record", None) is not None:
+        return _load_record(root, args.record)
+    ticket, branch = _text(args, "ticket"), _text(args, "branch")
+    if not ticket or not branch:
+        raise CoordinatorError(
+            "integration status needs --record, or both --ticket and --branch",
+            remedy="pass --record with the id 'integration prepare' returned, or --ticket and --branch",
+        )
+    directory = _records_root(root) / IntegrationRecord.directory
+    requested = getattr(args, "batch", None)
+    matches = []
+    for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
+        identity = _read_object(path, "integration record").get("identity") or {}
+        if (
+            identity.get("ticket") == ticket
+            and identity.get("branch") == branch
+            and (requested is None or identity.get("source_batch_id") == requested)
+        ):
+            matches.append(path.stem)
+    if not matches:
+        raise CoordinatorError(
+            "no integration record exists for the ticket branch",
+            remedy="run 'integration prepare' for the published ticket branch first",
+        )
+    if len(matches) > 1:
+        raise CoordinatorError(
+            f"several integration records match the ticket branch ({', '.join(matches)})",
+            remedy="pass --record (or --batch) to name the one to observe",
+        )
+    return _load_record(root, matches[0])
+
+
+def _check_history_unchanged(root: Path, record: JsonObject) -> None:
+    """The batch history the record links is still what it was when the record was written."""
+    batch = _load_batch(root, record["identity"]["source_batch_id"])
+    for key in ("publish", "qa"):
+        recorded = record["source"][key]
+        entry = next(
+            (
+                item
+                for item in batch.get("dispatches", [])
+                if item.get("dispatch_id") == recorded["dispatch_id"]
+            ),
+            None,
+        )
+        if entry is None or any(
+            entry.get(field) != recorded[field]
+            for field in ("brief_sha256", "report_sha256")
+        ):
+            raise CoordinatorError(
+                f"the {key} evidence of the integration record no longer matches the batch history",
+                remedy="the ledger was changed after the record was written -- "
+                + INTERNAL_INVARIANT_REMEDY,
+            )
+        _verified_dispatch(root, entry)
+        history._pending_report(root, batch, entry)
+
+
+def _notice(state: str, record: JsonObject, observed: JsonObject) -> str:
+    target = record["identity"]["target_sha"]
+    if state == "current":
+        return f"The integration ref still points at the recorded target {target}."
+    if state == "stale":
+        return (
+            f"The integration ref moved from {target} to {observed['integration_tip']}. The initial "
+            "evidence covers only the recorded pair; a new check of the new candidate/target pair "
+            "is needed. Nothing was dispatched or changed."
+        )
+    return (
+        f"The integration ref could not be read ({observed['reason']}), so the recorded pair "
+        "cannot be confirmed current. Nothing was dispatched or changed."
+    )
+
+
+def integration_status(args: argparse.Namespace) -> JsonObject:
+    """Observe whether an integration record's pair is still current; strictly read-only.
+
+    A moved integration ref is reported as ``stale`` and asks for a refresh.  Old evidence is never
+    carried over to a new pair: each piece of evidence says which pair it covers and whether that
+    is the pair the integration ref is at now.  Observing creates no dispatch and writes nothing,
+    so repeating it is always safe.
+    """
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
+        record = _resolve_record(root, args)
+        _check_history_unchanged(root, record)
+        links = _evidence_links(root, record["integration_record_id"])
+    identity = record["identity"]
+    observed = _observe(repo, identity)
+    state = observed["state"]
+    tip = observed["integration_tip"]
+    return {
+        "integration_record_id": record["integration_record_id"],
+        "ticket": identity["ticket"],
+        "branch": identity["branch"],
+        "source_batch_id": identity["source_batch_id"],
+        "candidate_sha": identity["candidate_sha"],
+        "integration_ref": identity["integration_ref"],
+        "target_sha": identity["target_sha"],
+        "state": state,
+        "integration_tip": tip,
+        "refresh_required": state != "current",
+        "source_evidence": {
+            "pair": record["source"]["pair"],
+            "applies_to_current_pair": state == "current",
+            "qa": record["source"]["qa"],
+            "publish": record["source"]["publish"],
+        },
+        "pair_checks": [
+            {
+                "evidence_id": link["evidence_id"],
+                "kind": link["kind"],
+                "result": link["result"],
+                "pair": {
+                    "candidate_sha": link["candidate_sha"],
+                    "target_sha": link["target_sha"],
+                },
+                "applies_to_current_pair": tip is not None
+                and link["target_sha"] == tip,
+                "verification": link["verification"],
+            }
+            for link in links
+        ],
+        "notice": _notice(state, record, observed),
     }

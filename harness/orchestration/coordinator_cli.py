@@ -596,6 +596,19 @@ def build_parser(
     )
     integration_prepare.add_argument("--remote", default="origin")
     integration_prepare.set_defaults(handler=handlers.integration_prepare)
+    integration_status = integration_commands.add_parser(
+        "status",
+        help="read-only: observe whether a record's candidate/target pair is still current",
+    )
+    _common(integration_status)
+    integration_status.add_argument("--record", help="integration record ID")
+    integration_status.add_argument("--ticket")
+    integration_status.add_argument("--branch")
+    integration_status.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_status.set_defaults(handler=handlers.integration_status)
     integration_link = integration_commands.add_parser(
         "link-evidence",
         help="register a new CI, local-QA or resolver check of a candidate/target pair; idempotent",
