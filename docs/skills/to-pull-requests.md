@@ -31,6 +31,7 @@ disable-model-invocation: true
    остановитесь и повторите команду с явным `--batch <batch-id>`. Остановитесь, если команда отклоняет
    отсутствующие, непринятые или не совпадающие с SHA доказательства, если только тикет не помечен
    явно `pipeline::fast`. Для тикетов `pipeline::fast` проверку доказательств координатора пропустите.
+   Затем прочитайте integration-запись, только на чтение: `python .harness/orchestration/coordinator.py --repo . integration status --ticket "#<ID>" --branch "<current-issue-branch>"`. Если она сообщает `stale` или `unavailable`, integration ref сдвинулся или не прочитан, и старое QA не покрывает новую пару candidate/target: остановитесь и сообщите разработчику, не создавайте dispatch и не перезапускайте QA сами. Отказ «integration-записи нет» PR не блокирует.
    Не запускайте `/qa-gate` повторно, когда эта проверка успешна; вместо этого из checkout ветки PR,
    проверенного на шаге 2, выполните `bash "$CLAUDE_PROJECT_DIR/.claude/hooks/record-qa-gate-pass.sh"`,
    чтобы PR-hook принял этот SHA. Если проект не является действительным opt-in или тикет помечен

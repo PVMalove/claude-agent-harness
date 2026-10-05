@@ -32,6 +32,25 @@ Coordinator записывает ровно одно текущее состоя
 - **Вход (Input/Brief):** тикет и критерии приёмки; явные allowed paths batch; issue-ветка и изолированный worktree; запреты; команды проверки; доступный бюджет параллелизма и явное approve человека.
 - **Выход (Output/Report):** состояние batch (`completed`, `blocked` или `failed`), журнал решений и принятые completion reports. Для завершения — все обязательные доказательства, SHA write-ролей и следующий безопасный шаг.
 
+## Integration accounting после publish
+
+Завершённый batch не переоткрывается и не переписывается. После accepted publish coordinator
+фиксирует связь тикета, issue-ветки, source batch, опубликованного candidate SHA и target SHA
+отдельной неизменяемой integration-записью:
+
+- `integration prepare --ticket T --branch B [--batch ID] [--candidate-commit SHA]` выбирает
+  единственный завершённый batch с accepted publish, сверяет SHA по принятому отчёту и по remote,
+  берёт accepted green QA того же SHA и идемпотентно пишет запись; другой batch не подставляется,
+  каждый отказ содержит remedy.
+- `integration status` — наблюдение без записи и без dispatch: `current`, `stale` (integration ref
+  ушёл вперёд, нужен новый check пары) или `unavailable`. Старое QA на новую пару не переносится.
+- `integration link-evidence --kind ci|local-qa|resolver` — единственный путь привязать будущие
+  результаты CI, local-QA и resolver; каждая привязка — отдельная запись со своей парой SHA и
+  `verification: unverified`. Сами эти маршруты операция не запускает.
+
+Записи лежат в `reports/integration*` существующего каталога `reports`: схема ledger и
+`ledger migrate` не меняются. Подробности — `harness/docs/backend-orchestration.md`.
+
 ## Память в Context Package
 
 Схема v3 отдельно сохраняет утверждённые `goal` и DoD, ADR-карточки и секцию `memory`.

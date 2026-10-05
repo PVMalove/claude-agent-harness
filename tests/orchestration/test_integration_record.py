@@ -913,5 +913,56 @@ class IntegrationStatusTests(unittest.TestCase):
         self.assertEqual(parsed.handler(parsed)["state"], "current")
 
 
+REPO = Path(__file__).resolve().parents[2]
+
+
+class IntegrationGuidanceTests(unittest.TestCase):
+    """The guide, playbook, skills, their Russian descriptions and the glossary stay consistent
+    with the public command group."""
+
+    MENTIONS = {
+        "harness/docs/backend-orchestration.md": (
+            "integration prepare",
+            "integration status",
+            "integration link-evidence",
+            "reports/integration",
+        ),
+        "harness/orchestration/playbook.md": (
+            "integration prepare",
+            "integration status",
+            "integration link-evidence",
+        ),
+        "harness/orchestration/README.md": (
+            "integration prepare",
+            "integration status",
+        ),
+        "skills/first-party/pvmalove/implement/SKILL.md": ("integration prepare",),
+        "skills/first-party/pvmalove/to-pull-requests/SKILL.md": (
+            "integration status",
+        ),
+        "docs/skills/implement.md": ("integration prepare",),
+        "docs/skills/to-pull-requests.md": ("integration status",),
+        "docs/skills/coordinator.md": (
+            "integration prepare",
+            "integration status",
+            "integration link-evidence",
+        ),
+        "CONTEXT.md": ("**Integration record**", "**Stale integration record**"),
+    }
+
+    def test_every_guidance_file_names_its_integration_commands(self) -> None:
+        for relative, needles in self.MENTIONS.items():
+            text = (REPO / relative).read_text(encoding="utf-8")
+            for needle in needles:
+                with self.subTest(file=relative, needle=needle):
+                    self.assertIn(needle, text)
+
+    def test_the_skills_never_dispatch_or_rewrite_on_stale(self) -> None:
+        text = (
+            REPO / "skills/first-party/pvmalove/to-pull-requests/SKILL.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("do not create a dispatch", text)
+
+
 if __name__ == "__main__":
     unittest.main()

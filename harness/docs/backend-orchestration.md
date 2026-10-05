@@ -1210,6 +1210,53 @@ explicit allowed paths, последовательность ролей, immutab
 не меняй protected или integration branch.
 ```
 
+### Integration accounting после publish
+
+Завершённый batch — история: его не переоткрывают и не переписывают. Связь, нужная следующему
+шагу интеграции (тикет, issue-ветка, source batch, опубликованный candidate SHA и target SHA
+integration ref), фиксирует отдельная immutable запись — Integration record. Её создаёт и читает
+группа `integration`; ни одна из команд не пишет batch, plan, dispatch и reports и не меняет Git:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . integration prepare \
+  --ticket '#123' --branch feature/issue-123-short-name
+python .harness/orchestration/coordinator.py --repo . integration status \
+  --ticket '#123' --branch feature/issue-123-short-name
+python .harness/orchestration/coordinator.py --repo . integration link-evidence \
+  --record <integration_record_id> --kind ci --result passed \
+  --candidate-commit <sha> --target-commit <sha> --reference <run-url> [--artifact-sha256 <hex>]
+```
+
+`prepare` запускают после accepted publish и до merge или удаления ветки. Он выбирает единственный
+завершённый batch с accepted publish для пары ticket+branch и сверяет опубликованный SHA двумя
+независимыми способами: по принятому отчёту publish (digest отчёта и brief) и по `ls-remote`
+(ветка на remote — ровно candidate, integration ref — ровно закреплённый target). Evidence
+берётся из accepted green QA того же SHA. Ответ содержит `integration_record_id`, пару
+`candidate_sha`/`target_sha` и ссылки на исходное QA и publish по digest. Повторный `prepare` не
+создаёт вторую запись и не теряет первую (`created: false`). Отказ всегда содержит remedy:
+не найден batch для тикета и ветки, `--batch` чужой пары, batch не завершён или не опубликован,
+несколько опубликованных batch без `--batch` (подмены одного batch другим нет), `--candidate-commit`
+не равен опубликованному SHA, remote-ветка отсутствует или другая, нет accepted green QA, integration
+ref уже ушёл вперёд, а записи ещё нет, remote недоступен, история batch изменена после записи.
+
+Запись лежит в `reports/integration/`, а evidence — в `reports/integration-evidence/` внутри
+уже проверяемого каталога `reports`: версия схемы ledger и `ledger migrate` не меняются.
+
+`status` — только наблюдение, под тем же read-only контрактом: он не создаёт dispatch, ничего не
+записывает и при повторе даёт тот же ответ. Состояния: `current` (integration ref всё ещё на
+записанном target), `stale` (ref ушёл вперёд; `refresh_required: true`) и `unavailable` (remote не
+ответил; подтвердить пару нельзя). Исходное QA относится только к записанной паре:
+`source_evidence.applies_to_current_pair` равен `false` при `stale`, и старое QA не принимается для
+новой пары кандидат/target. Что делать со `stale`, решает человек или coordinator обычным путём
+(новый developer rebase и новое QA); `status` сам их не запускает.
+
+`link-evidence` — единственный публичный способ привязать к записи будущие результаты CI, local-QA
+или resolver (`--kind ci|local-qa|resolver`). Каждая привязка — отдельная immutable запись со своей
+парой `candidate_sha`/`target_sha` и `verification: unverified`: исходное evidence записи никогда не
+получает новую пару, а проверка новой пары не подменяет старую. Повтор той же привязки идемпотентен
+(`linked: false`). Сами CI, local-QA и resolver эта операция не запускает; в `status` каждая привязка
+показывает, относится ли её пара к текущему tip (`pair_checks[].applies_to_current_pair`).
+
 ### Advisory tool call
 
 `.harness/orchestration/advisory.py` — дешёвый non-role CLI для чисто утилитарных подзадач:

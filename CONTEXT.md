@@ -348,6 +348,22 @@ clean-room QA и publish. Новая версия кода возвращает 
 принятый и проверенный SHA.
 _Avoid_: QA или publish произвольного HEAD, reuse evidence для другого commit.
 
+**Integration record**:
+Неизменяемая запись, которую `coordinator integration prepare` создаёт после accepted publish и
+которая связывает тикет, issue-ветку, source batch, опубликованный candidate SHA и target SHA
+integration ref вместе с ссылками на исходные QA и publish по digest. Лежит в `reports/integration*`
+рядом с историей, не переписывает завершённый batch и его reports; повтор `prepare` идемпотентен.
+Новые проверки пары (CI, local-QA, resolver) привязываются отдельными записями через
+`integration link-evidence` со статусом `unverified`.
+_Avoid_: переоткрытие completed batch, правка batch или reports вручную, перенос старого QA на
+другую пару candidate/target.
+
+**Stale integration record**:
+Состояние, которое `integration status` показывает, когда integration ref ушёл от записанного target
+SHA. Это только наблюдение (`refresh_required`): оно не создаёт dispatch, ничего не записывает и не
+принимает старое QA для новой пары; обновление идёт обычным путём (developer rebase и новое QA).
+_Avoid_: автоматический rebase или dispatch по факту сдвига ref, «QA всё ещё действует».
+
 **Санитизированный QA-артефакт**:
 Полный stdout/stderr clean-room gate, очищенный от secret-shaped значений, сохранённый локально вне
 Git с checksum; canonical JSON report содержит только краткое evidence и ссылку на артефакт.

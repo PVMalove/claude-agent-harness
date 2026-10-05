@@ -149,7 +149,13 @@ module-owned guidance:
 
 ## Завершение
 
-После accepted publish предложите `/to-pull-requests <ticket>`. Не запускайте его автоматически,
+После accepted publish зафиксируйте integration-связь до merge или удаления ветки:
+`python .harness/orchestration/coordinator.py --repo . integration prepare --ticket "#<ID>" --branch "<issue-branch>"`
+(добавьте `--batch <batch-id>`, если ветку опубликовало несколько batch). Команда пишет только
+неизменяемую integration-запись и безопасна для повтора; при отказе передайте разработчику её
+remedy и не обходите его. Завершённый batch и его reports вручную не правьте.
+
+Затем предложите `/to-pull-requests <ticket>`. Не запускайте его автоматически,
 не открывайте и не мержьте PR, не пишите в integration-ветку и не закрывайте тикет этим скилом. Оставьте на тикете
 `status::in-progress`: закрытие и перевод разблокированных зависимых в `status::ready` делает
 `/to-pull-requests` после merge.
