@@ -58,6 +58,20 @@ candidate commit; publish отправляет только accepted SHA. Final 
 retry тратится после review. Retry developer report без accept — только при невыполненном пункте DoD
 или изменении вне зоны.
 
+Воркер, обошедший блокировку hook-а или инструмента (другой формой команды, другим инструментом,
+файлом-скриптом, `eval`, другим интерпретатором или разбиением команды), нарушает протокол: такой
+report нельзя принять или закрыть через override-warning; решение — `retry` с developer-категорией
+(не `tooling`) или `block`, а нарушение записывается в `--note`. Report, который вместо этого
+остановился с `tooling_blocker`, сначала проверяется: его `command` законна по brief (зона и tool
+policy), а `message` её отклоняет. Если это ложное срабатывание, заведите или переиспользуйте
+bug-тикет на инструмент через CLI трекера (инструмент, команда, сообщение, dispatch ID), укажите его
+в `--note` и выполните `batch decide --decision retry`, когда `route_preview.retry.route` равен
+`tooling-retry`: тот же этап повторяется на том же SHA (developer продолжает от своего последнего
+коммита), а `retry_policy.max_developer_retries` не расходуется. Незаконная команда — не ложное
+срабатывание: retry с developer-категорией, которую подтверждает evidence. Attention
+`tooling-retry-repeated`, поднятое третьим подряд tooling-retry на одном candidate, снимается только
+после исправления инструмента.
+
 Каждая dispatched role сначала пишет model self-report относительно immutable brief и посылает
 heartbeat. Между send и report coordinator опрашивает watchdog. Mismatch или stale dispatch —
 blocker; recovery создаёт новый approved dispatch, а не редактирует brief или state.

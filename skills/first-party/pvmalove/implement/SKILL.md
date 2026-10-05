@@ -83,6 +83,20 @@ route for `retry` or `abandon`, show the decision packet's `route_preview` (with
 Recovery route table in `.harness/orchestration/playbook.md` (situation → route → who approves →
 evidence).
 
+A worker that works around a hook or tool block (another command form, tool, script file, `eval`,
+interpreter or a split command) breaks the protocol: never accept or warning-override that report;
+decide `retry` with a developer reason category (not `tooling`) or `block`, and record the
+violation in `--note`. A report that stops with `tooling_blocker` instead is confirmed before its
+retry: check that its `command` is legitimate under the brief (zone and tool policy) and that its
+`message` refuses that command. For a false positive, file or reuse a bug ticket against the tool
+through the tracker CLI (tool, command, message, dispatch ID), name the ticket in `--note`, and run
+`batch decide --decision retry` once `route_preview.retry.route` is `tooling-retry`; it re-runs the
+same stage on the same SHA (a developer continues its last commit) and spends no
+`retry_policy.max_developer_retries`. A command that is not legitimate is no false positive: retry
+with the developer reason category its evidence supports. Resolve the `tooling-retry-repeated`
+attention, raised by the third consecutive tooling retry on one candidate, only once the tool is
+fixed.
+
 When you find a defect in a clean developer report whose DoD is met inside its zone, do not retry
 it: accept it with `batch decide --findings-file <path>`, or after a policy auto-accept run
 `batch carry-over --batch <id> --findings-file <path>` before its code-review dispatch exists. The

@@ -44,6 +44,7 @@ from harness.orchestration.core.constants import (
     REPORT_OUTCOMES,
     REVIEW_SEVERITIES,
     TELEMETRY_FIELDS,
+    TOOLING_BLOCKER_FIELDS,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
@@ -982,6 +983,37 @@ def _rebase_target(batch: JsonObject, dispatch: JsonObject) -> str | None:
     return None
 
 
+def _validate_tooling_blocker(report: JsonObject) -> None:
+    """``tooling_blocker`` is the structured evidence of a tool that blocked a legitimate action
+    (issue #500): exactly ``tool``, ``command`` and ``message``, each a bounded non-empty string, on a
+    ``blocked`` report only. It alone lets the coordinator classify a retry as ``tooling``."""
+    if "tooling_blocker" not in report:
+        return
+    if report["outcome"] != "blocked":
+        raise CoordinatorError(
+            "completion report tooling_blocker is allowed only on a blocked report",
+            remedy="set outcome to blocked for a tool that blocked the role, or drop tooling_blocker",
+        )
+    blocker = report["tooling_blocker"]
+    fields = ", ".join(sorted(TOOLING_BLOCKER_FIELDS))
+    if not isinstance(blocker, dict) or set(blocker) != TOOLING_BLOCKER_FIELDS:
+        raise CoordinatorError(
+            f"completion report tooling_blocker must carry exactly: {fields}",
+            remedy=f"set tooling_blocker to an object with exactly {fields}",
+        )
+    for field in sorted(TOOLING_BLOCKER_FIELDS):
+        if not _non_empty(blocker[field]):
+            raise CoordinatorError(
+                f"completion report tooling_blocker {field} must be a non-empty string",
+                remedy=f"set tooling_blocker {field} to the tool's exact text",
+            )
+        if len(blocker[field]) > MAX_CHECK_EVIDENCE_CHARS:
+            raise CoordinatorError(
+                f"completion report tooling_blocker {field} exceeds the bounded summary limit",
+                remedy=f"truncate tooling_blocker {field} to at most {MAX_CHECK_EVIDENCE_CHARS} characters",
+            )
+
+
 def _validate_report(
     report: JsonObject,
     dispatch: JsonObject,
@@ -1030,6 +1062,7 @@ def _validate_report(
             "completion report outcome is invalid",
             remedy="set outcome to one of the accepted completion-report outcomes",
         )
+    _validate_tooling_blocker(report)
     for field in ("output", "risks", "blockers", "next_coordinator_action"):
         if not _non_empty(report[field]):
             raise CoordinatorError(
@@ -1195,6 +1228,11 @@ def _report_markdown(report: JsonObject) -> str:
         if field in report:
             lines.append(f"- {label}:")
             lines.extend(f"  - {item}" for item in report[field])
+    tooling = report.get("tooling_blocker")
+    if isinstance(tooling, dict):
+        lines.append(
+            f"- Tooling blocker: {tooling['tool']} — `{tooling['command']}`: {tooling['message']}"
+        )
     review = report.get("review")
     if isinstance(review, dict):
         lines.extend(

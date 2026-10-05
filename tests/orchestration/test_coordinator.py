@@ -62,6 +62,12 @@ from harness.orchestration.workflow import (
 )
 
 ORCHESTRATION_ROOT = Path(__file__).resolve().parents[2] / "harness" / "orchestration"
+# The structured evidence of a tool that blocked a legitimate role action (issue #500).
+TOOLING_BLOCKER = {
+    "tool": "PreToolUse:Bash hook block-scratch-outside-docs-tasks.sh",
+    "command": "python -m pytest -q tests/orchestration/test_coordinator.py",
+    "message": "Blocked: writes outside docs/tasks are not allowed",
+}
 
 
 class ImmutableReportPersistenceTests(unittest.TestCase):
@@ -2401,9 +2407,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         standards: tuple[str, list[JsonObject]] = ("clean", []),
         spec: tuple[str, list[JsonObject]] = ("clean", []),
         carried: object = None,
+        tooling_blocker: object = None,
     ) -> JsonObject:
         """``carried``, a dict, maps a carried item id to the status the review gives it (issue
-        #499). It is typed ``object`` so the axis keyword dicts other tests unpack still check."""
+        #499). It is typed ``object`` so the axis keyword dicts other tests unpack still check.
+        ``tooling_blocker``, a dict, is the structured tool evidence of the report (issue #500)."""
         brief: JsonObject = self._dispatch(
             batch_id, "code-review", candidate=candidate
         )["brief"]
@@ -2429,9 +2437,25 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     brief, "pass" if outcome == "completed" else "not-run"
                 ),
                 review=review,
+                **(
+                    {"tooling_blocker": tooling_blocker}
+                    if isinstance(tooling_blocker, dict)
+                    else {}
+                ),
             ),
         )
         return brief
+
+    def _tooling_review(self, batch_id: str, candidate: str) -> JsonObject:
+        return self._reported_review(
+            batch_id,
+            candidate,
+            outcome="blocked",
+            blockers="a hook blocked a legitimate check command",
+            standards=("none", []),
+            spec=("none", []),
+            tooling_blocker=dict(TOOLING_BLOCKER),
+        )
 
     def _infra_review(self, batch_id: str, candidate: str) -> JsonObject:
         return self._reported_review(
@@ -3199,6 +3223,187 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(routing["previous_role"], "developer")
         self.assertTrue(decided["retry_candidate_required"])
 
+    # -- tooling (issue #500) -----------------------------------------------------------------
+
+    def test_a_tooling_blocker_is_validated_and_allowed_only_on_a_blocked_report(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        too_long = {**TOOLING_BLOCKER, "message": "x" * 1_601}
+        for outcome, invalid in (
+            ("completed", dict(TOOLING_BLOCKER)),
+            ("failed", dict(TOOLING_BLOCKER)),
+            ("blocked", None),
+            ("blocked", "a hook blocked it"),
+            ("blocked", {"tool": "hook", "command": "true"}),
+            ("blocked", {**TOOLING_BLOCKER, "exit_code": "2"}),
+            ("blocked", {**TOOLING_BLOCKER, "command": "  "}),
+            ("blocked", {**TOOLING_BLOCKER, "tool": 7}),
+            ("blocked", too_long),
+        ):
+            with self.subTest(outcome=outcome, invalid=invalid):
+                report = self._base_report(
+                    brief, "architect", outcome=outcome, tooling_blocker=invalid
+                )
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError, "tooling_blocker"
+                ):
+                    self._submit(brief["dispatch_id"], report)
+        interrupted = {
+            "tool": "safety-classifier",
+            "command": "git push --force-with-lease origin feature/x",
+            "message": "The action was interrupted by the safety classifier",
+        }
+        submitted = self._submit(
+            brief["dispatch_id"],
+            self._base_report(
+                brief, "architect", outcome="blocked", tooling_blocker=interrupted
+            ),
+        )
+        self.assertEqual(submitted["state"], "reported")
+        stored = json.loads(Path(submitted["report"]).read_text(encoding="utf-8"))
+        self.assertEqual(stored["tooling_blocker"], interrupted)
+        markdown = (
+            Path(submitted["report"]).with_suffix(".md").read_text(encoding="utf-8")
+        )
+        self.assertIn("Tooling blocker: safety-classifier", markdown)
+
+        decided = self._decide(batch["batch_id"], "retry")
+
+        self._assert_route(
+            decided,
+            role="architect",
+            action="architect",
+            category="tooling",
+            candidate=None,
+            route="tooling-retry",
+        )
+        self.assertNotEqual(
+            self._dispatch(batch["batch_id"], "architect")["dispatch_id"],
+            brief["dispatch_id"],
+        )
+
+    def test_a_tooling_blocked_developer_restarts_from_its_last_commit(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("tooled")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers="a hook blocked a legitimate check command",
+                checks_run=self._checks(developer, "not-run"),
+                tooling_blocker=dict(TOOLING_BLOCKER),
+            ),
+        )
+
+        decided = self._decide(batch["batch_id"], "retry")
+
+        self._assert_route(
+            decided,
+            role="developer",
+            action="developer-retry",
+            category="tooling",
+            candidate=candidate,
+            route="tooling-retry",
+        )
+        self.assertNotIn("candidate_registrations", decided)
+        retry = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self.assertNotEqual(retry["dispatch_id"], developer["dispatch_id"])
+        self.assertEqual(retry["snapshot_commit"], candidate)
+        self.assertEqual(retry["transition"]["reason_category"], "tooling")
+        self.assertEqual(retry["transition"]["next_action"], "developer-retry")
+
+    def test_a_tooling_blocked_review_retries_a_new_review_on_the_same_candidate(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        first = self._tooling_review(batch["batch_id"], candidate)
+
+        decided = self._decide(batch["batch_id"], "retry")
+
+        self._assert_route(
+            decided,
+            role="code-review",
+            action="code-review",
+            category="tooling",
+            candidate=candidate,
+            route="tooling-retry",
+        )
+        self.assertFalse(decided.get("retry_candidate_required"))
+        self.assertFalse(decided.get("needs_attention", False))
+        second = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+        self.assertNotEqual(second["dispatch_id"], first["dispatch_id"])
+        self.assertEqual(second["brief"]["candidate_commit"], candidate)
+
+    def test_a_tooling_blocked_verification_reruns_on_the_registered_candidate(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("infrastructure")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers="verification environment unavailable",
+            ),
+        )
+        self._decide(
+            batch["batch_id"], "retry", reason_category="verification-infrastructure"
+        )
+        verification = self._dispatch(
+            batch["batch_id"], "verification", candidate=candidate
+        )["brief"]
+        self._start(verification["dispatch_id"], checkout=self.worktree)
+        self._submit(
+            verification["dispatch_id"],
+            self._base_report(
+                verification,
+                "verification",
+                outcome="blocked",
+                blockers="a hook blocked a legitimate check command",
+                checks_run=self._checks(verification, "not-run"),
+                tooling_blocker=dict(TOOLING_BLOCKER),
+            ),
+        )
+
+        decided = self._decide(batch["batch_id"], "retry")
+
+        routing = self._routing(decided)
+        self.assertEqual(
+            (
+                routing["next_role"],
+                routing["next_action"],
+                routing["reason_category"],
+                routing["route"],
+                routing["candidate_commit"],
+            ),
+            ("verification", "verification", "tooling", "tooling-retry", candidate),
+        )
+        self.assertEqual(
+            len(decided["candidate_registrations"]),
+            1,
+            "a tooling re-run registers no new candidate",
+        )
+        again = self._dispatch(batch["batch_id"], "verification", candidate=candidate)
+        self.assertNotEqual(again["dispatch_id"], verification["dispatch_id"])
+        self.assertEqual(again["brief"]["candidate_commit"], candidate)
+
     def _developer_preflight(self, batch_id: str) -> JsonObject:
         planned = config._config
         with (
@@ -3533,6 +3738,64 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
 
+    def test_a_tooling_retry_spends_no_developer_retry(self) -> None:
+        tooling = {
+            "decision": "retry",
+            "next_role": "developer",
+            "routing": {"route": "tooling-retry"},
+        }
+        spent = {
+            "decision": "retry",
+            "next_role": "developer",
+            "routing": {"route": "developer-retry"},
+        }
+
+        count = decisions._developer_retry_count(
+            {"coordinator_decisions": [tooling, spent, tooling]}
+        )
+
+        self.assertEqual(count, 1)
+
+    def test_an_exhausted_budget_never_refuses_a_developer_tooling_retry(
+        self,
+    ) -> None:
+        for blocker, expected in (
+            (dict(TOOLING_BLOCKER), "tooling-retry"),
+            (None, None),
+        ):
+            with self.subTest(route=expected):
+                self._reset()
+                batch = self._create_batch()
+                self._accepted_architect(batch["batch_id"])
+                developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+                self._start(developer["dispatch_id"])
+                candidate, changed = self._developer_commit("tooled")
+                extra = {} if blocker is None else {"tooling_blocker": blocker}
+                self._submit(
+                    developer["dispatch_id"],
+                    self._developer_report(
+                        developer,
+                        candidate,
+                        changed,
+                        outcome="blocked",
+                        blockers="a hook blocked a legitimate check command",
+                        checks_run=self._checks(developer, "not-run"),
+                        **extra,
+                    ),
+                )
+                budget = {"max_developer_retries": 0}
+                with mock.patch.object(decisions, "_retry_policy", return_value=budget):
+                    if expected is None:
+                        with self.assertRaisesRegex(
+                            coordinator.CoordinatorError, "budget is exhausted"
+                        ):
+                            self._decide(batch["batch_id"], "retry")
+                        continue
+                    decided = self._decide(batch["batch_id"], "retry")
+                self.assertEqual(self._routing(decided)["route"], expected)
+                self.assertEqual(decided["next_action"], "developer-retry")
+                self.assertEqual(decisions._developer_retry_count(decided), 0)
+
     def test_review_blocker_can_be_blocked_only_once_the_developer_retry_budget_is_exhausted(
         self,
     ) -> None:
@@ -3793,6 +4056,25 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         recorded.pop("decided_at")
         self.assertEqual(retry, recorded)
         self.assertIsNone(packet()["route_preview"])
+
+    def test_the_decision_packet_previews_the_tooling_retry_route(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._tooling_review(batch["batch_id"], candidate)
+
+        preview = coordinator.decision_packet(
+            self._args(batch=batch["batch_id"], dispatch=None)
+        )["route_preview"]["retry"]
+
+        self.assertEqual(
+            (preview["route"], preview["reason_category"], preview["next_action"]),
+            ("tooling-retry", "tooling", "code-review"),
+        )
+        decided = self._decide(batch["batch_id"], "retry")
+        recorded = dict(self._routing(decided))
+        recorded.pop("decided_at")
+        self.assertEqual(preview, recorded)
 
     def test_a_failing_classifier_still_renders_the_packet_and_refuses_the_retry(
         self,
@@ -4392,6 +4674,36 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(record["state"], "awaiting-approval")
         with self.assertRaises(coordinator.CoordinatorError):
             self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+
+    def test_the_third_consecutive_tooling_retry_sets_needs_attention(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        for _ in range(2):
+            self._tooling_review(batch["batch_id"], candidate)
+            self._decide(batch["batch_id"], "retry")
+            self.assertFalse(
+                self._batch_record(batch["batch_id"]).get("needs_attention", False)
+            )
+        third = self._tooling_review(batch["batch_id"], candidate)
+
+        self._decide(batch["batch_id"], "retry")
+
+        record = self._batch_record(batch["batch_id"])
+        self.assertTrue(record["needs_attention"])
+        self.assertEqual(record["attention_reason"], "tooling-retry-repeated")
+        self.assertIn(
+            "3 consecutive tooling retries", record["recommended_human_action"]
+        )
+        self.assertEqual(
+            (record["state"], record["next_action"]),
+            ("awaiting-approval", "code-review"),
+        )
+        self.assertEqual(self._routing(record)["route"], "tooling-retry")
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+        self.assertIn("attention", caught.exception.message.lower())
+        self.assertEqual(record["dispatches"][-1]["dispatch_id"], third["dispatch_id"])
 
     def test_an_unknown_retry_reason_sets_needs_attention_and_notifies_the_human_adapter(
         self,
@@ -7140,6 +7452,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
         standards: tuple[str, list[JsonObject]] | None = ("none", []),
         spec: tuple[str, list[JsonObject]] = ("none", []),
         failed_check: bool = False,
+        tooling: bool = False,
     ) -> JsonObject:
         report: JsonObject = {
             "outcome": outcome,
@@ -7152,6 +7465,8 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
             ],
             "blockers": "Bash/WSL wrapper unavailable",
         }
+        if tooling:
+            report["tooling_blocker"] = dict(TOOLING_BLOCKER)
         if standards is not None:
             report["review"] = {
                 "standards": {"severity": standards[0], "findings": standards[1]},
@@ -7183,8 +7498,88 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
         infra, transport = "verification-infrastructure", "transport"
         review = self._report()
         no_review = self._report(standards=None)
+        tooled = self._report(tooling=True)
+        tooled_no_review = self._report(standards=None, tooling=True)
         return [
             # stage, report, explicit category, candidate moved -> (reason category, next role, next action, route)
+            # A blocked report's tooling_blocker re-runs the same stage; a developer continues.
+            *(
+                (
+                    stage,
+                    tooled if stage == "code-review" else tooled_no_review,
+                    category,
+                    False,
+                    ("tooling", role, action, "tooling-retry"),
+                )
+                for stage, role, action in (
+                    ("architect", "architect", "architect"),
+                    ("developer", "developer", "developer-retry"),
+                    ("verification", "verification", "verification"),
+                    ("code-review", "code-review", "code-review"),
+                    ("qa", "qa", "qa"),
+                    ("publish", "publish", "publish"),
+                )
+                for category in (None, "tooling")
+            ),
+            # tooling named without the structured field stays unknown.
+            (
+                "code-review",
+                review,
+                "tooling",
+                False,
+                ("unknown", "developer", "developer-retry", "developer-retry"),
+            ),
+            (
+                "developer",
+                no_review,
+                "tooling",
+                False,
+                ("unknown", "developer", "developer-retry", "developer-retry"),
+            ),
+            (
+                "code-review",
+                self._report("completed", tooling=True),
+                None,
+                False,
+                ("unknown", "developer", "developer-retry", "developer-retry"),
+            ),
+            # Structured evidence and a developer category outrank the tooling blocker.
+            (
+                "qa",
+                self._report(standards=None, failed_check=True, tooling=True),
+                None,
+                False,
+                ("code", "developer", "developer-retry", "developer-retry"),
+            ),
+            (
+                "code-review",
+                self._report(spec=("warning", finding), tooling=True),
+                "tooling",
+                False,
+                ("requirements", "developer", "developer-retry", "developer-retry"),
+            ),
+            (
+                "code-review",
+                tooled,
+                None,
+                True,
+                ("candidate-change", "developer", "developer-retry", "developer-retry"),
+            ),
+            (
+                "code-review",
+                tooled,
+                "code",
+                False,
+                ("code", "developer", "developer-retry", "developer-retry"),
+            ),
+            # Another named operational category keeps its own route.
+            (
+                "code-review",
+                tooled,
+                transport,
+                False,
+                (transport, "code-review", "code-review", "same-candidate-rerun"),
+            ),
             (
                 "code-review",
                 review,
@@ -7402,7 +7797,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                     routing["candidate_commit"], None if moved else self.CANDIDATE
                 )
 
-    def test_the_reason_categories_are_exactly_the_documented_seven(self) -> None:
+    def test_the_reason_categories_are_exactly_the_documented_eight(self) -> None:
         self.assertEqual(
             set(constants.RETRY_REASON_CATEGORIES),
             {
@@ -7412,11 +7807,14 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "verification-infrastructure",
                 "transport",
                 "context-pressure",
+                "tooling",
                 "unknown",
             },
         )
+        # tooling has its own route and attention count, never the operational ones.
+        self.assertNotIn("tooling", constants.OPERATIONAL_REASON_CATEGORIES)
 
-    def test_the_recovery_routes_are_exactly_the_documented_seven(self) -> None:
+    def test_the_recovery_routes_are_exactly_the_documented_eight(self) -> None:
         self.assertEqual(
             constants.RECOVERY_ROUTES,
             (
@@ -7427,6 +7825,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "abandon",
                 "report-completion",
                 "carry-over",
+                "tooling-retry",
             ),
         )
         for route in constants.RECOVERY_ROUTES:
