@@ -911,8 +911,9 @@ integration/reports
 issue — **эпик** с метками `bug`/`enhancement` + `status::specs` (не `status::ready` — декомпозиции
 ещё не было) + `task-report::required` и секцией `## Integration Branch`. `/to-spec` создаёт
 указанную ветку от `base_branch`, если её нет; `/to-tickets` переносит её в дочерние тикеты. Лейбл-
-слаг для эпика не создаётся ([раздел 8](#8-метки-триажа)) — дочерние тикеты связываются с эпиком как
-native GitHub sub-issues.
+слаг для эпика не создаётся ([раздел 8](#8-метки-триажа)) — дочерние тикеты связываются с эпиком
+родительской связью трекера: на GitHub — native sub-issues, на GitLab — секция `## Parent: #<N>` и
+связь `relates_to`.
 
 В конец спецификации `/to-spec` переносит утверждённый список из `Live Artifact` в секцию
 `## Relevant Files (Discovery Context)` с исходными пояснениями. Без artifact publishing источник —
@@ -969,9 +970,10 @@ native GitHub sub-issues.
      модель (`haiku`) одним вызовом на пакет; язык колонки — из `.harness/project.json`.
 
 **В этом репозитории** ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)): дочерние тикеты
-эпика (`status::specs`) линкуются как native GitHub sub-issues, а не лейблом `epic::<slug>`; тикет,
+эпика (`status::specs`) линкуются родительской связью трекера (на GitHub — native sub-issues, на
+GitLab — секция `## Parent: #<N>` и связь `relates_to`), а не лейблом `epic::<slug>`; тикет,
 заблокированный другим открытым тикетом той же декомпозиции, получает `status::blocked`. Фронтир
-ищется тем же native-запросом, что у `wayfinder` (`docs/agents/issue-tracker.md#wayfinding-operations`);
+ищется тем же запросом, что у `wayfinder` (`docs/agents/issue-tracker.md#wayfinding-operations`);
 `/implement`, вызванный для эпика, определяет первый тикет фронтира и назначает его на себя.
 
 **Контекст:** при переполнении контекстного окна историей правок качество работы агента снижается.
@@ -1115,7 +1117,7 @@ python .harness/orchestration/coordinator.py --repo . dispatch status --batch <b
    - Передан конкретный тикет с `hitl` — работа прекращается сразу, пользователь направляется к
      `/to-guide`.
    - Передан эпик — тикет выбирается автоматически, `hitl`-тикеты не выбираются. На GitHub/GitLab — тот же
-     frontier-запрос, что у `/wayfinder`, в границах sub-issues эпика, отфильтрованный по `afk`:
+     frontier-запрос, что у `/wayfinder`, в границах дочерних тикетов эпика, отфильтрованный по `afk`:
      открытые, неблокированные, незанятые, первые по порядку; назначение (`--add-assignee @me`) —
      первой операцией записи. При пустом фронтире работа останавливается с пояснением (остались только `hitl` — назвать их и указать на
      `/to-guide`). Локальный трекер — линейный проход по `.scratch/<feature>/issues/NN-*.md`.
@@ -1327,7 +1329,7 @@ python .harness/reporting/delivery_stats.py --repo . --epic 95 \
 |---|---|
 | `triage` | Namespaced-таксономия `status::*` (`specs`/`ready`/`in-progress`/`blocked`) и отдельная ось `hitl`/`afk`; пара `bug`/`enhancement` без изменений; `wontfix` → `out-of-scope`. См. [ADR 0002](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0002-controlled-delivery.md). |
 | `to-spec` | Ставит `status::specs` на эпик вместо `ready-for-agent` + `epic::<slug>`; согласует и создаёт `integration/<service-or-team>` от `base_branch`; пишет спеку файлом в `docs/tasks/` и публикует через `gh issue create --body-file`. |
-| `to-tickets` | Линкует дочерние тикеты как native GitHub sub-issues вместо `epic::<slug>`; заблокированному тикету ставит `status::blocked`; не переписывает эпик (кроме списка номеров). |
+| `to-tickets` | Линкует дочерние тикеты родительской связью трекера (GitHub — native sub-issues, GitLab — `## Parent: #<N>` и `relates_to`) вместо `epic::<slug>`; заблокированному тикету ставит `status::blocked`; не переписывает эпик (кроме списка номеров). |
 | `implement` | Проверяет блокеры и ставит `status::in-progress` до `batch create`; создаёт issue-ветку от integration-ветки; ведёт coordinator-конвейер architect → developer → code-review → qa → publish с approval на каждом гейте, model self-report и watchdog. После publish предлагает `/to-pull-requests`. Однопроходный upstream-флоу переехал в `fast-implement`. |
 | `ask-matt` | Отражает выбор разработчика: двухосевое ревью либо переход к commit и push. |
 | `code-review` | Отчёт выводится на языке из `.harness/project.json` (`### Communication language`). |
@@ -1379,7 +1381,8 @@ status::ready») — в этом случае этап grilling пропуска
 
 [![Метки status::* по пути тикета](./diagrams/triage-labels.lifecycle.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/triage-labels.lifecycle.html)
 
-Дочерний тикет связывается с эпиком как native GitHub sub-issue
+Дочерний тикет связывается с эпиком родительской связью трекера: на GitHub — native sub-issue, на
+GitLab — секция `## Parent: #<N>` и связь `relates_to`
 (`docs/agents/issue-tracker.md#wayfinding-operations`); тот же механизм `wayfinder` использует для
 своей карты. Цвета и локальный markdown-трекер — в `docs/agents/triage-labels.md`; правила поставки —
 в [ADR 0002](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0002-controlled-delivery.md).
