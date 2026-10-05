@@ -1028,6 +1028,10 @@ def _decide_retry_route(
             **routing,
             "candidate_commit": _candidate_commit(repo, report["commit_sha"]),
         }
+    if stage == "verification" and routing["route"] == "tooling-retry":
+        # Verification re-runs on the registered candidate its brief pinned; no accepted
+        # candidate names it, so record the pin for the audit and the tooling streak.
+        routing = {**routing, "candidate_commit": dispatch.get("candidate_commit")}
     if hint is not None:
         routing["classifier_hint"] = {"category": hint.category, "basis": hint.basis}
     if forced == "developer" and routing["next_action"] != "developer-retry":

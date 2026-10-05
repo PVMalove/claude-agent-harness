@@ -3391,8 +3391,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 routing["next_action"],
                 routing["reason_category"],
                 routing["route"],
+                routing["candidate_commit"],
             ),
-            ("verification", "verification", "tooling", "tooling-retry"),
+            ("verification", "verification", "tooling", "tooling-retry", candidate),
         )
         self.assertEqual(
             len(decided["candidate_registrations"]),
