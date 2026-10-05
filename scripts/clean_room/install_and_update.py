@@ -15,6 +15,7 @@ from scripts.clean_room.support import (
     ROOT,
     capture,
     capture_json,
+    check_technical_english,
     count_skill_files,
     fail_json,
     fill_agents,
@@ -51,6 +52,7 @@ def run(ctx: SimpleNamespace) -> None:
             "main",
         ]
     )
+    check_technical_english(foundation)
     run_ok(HARNESS + ["diff", str(foundation)])
     if not run_fails(HARNESS + ["health", str(foundation)], quiet_all=True):
         sys.exit("unresolved AGENTS.md unexpectedly passed health")
@@ -79,6 +81,7 @@ def run(ctx: SimpleNamespace) -> None:
         ]
     )
     fill_agents(project)
+    check_technical_english(project)
 
     run_ok(HARNESS + ["diff", str(project)])
     run_health(project)
@@ -210,6 +213,7 @@ def run(ctx: SimpleNamespace) -> None:
         if (installed_docs / source.name).read_bytes() != source.read_bytes():
             sys.exit(f"installed guide differs from project template: {source.name}")
     fill_agents(pv_project)
+    check_technical_english(pv_project)
     run_health(pv_project)
     repo_map_health = find_check(
         capture_json(HARNESS + ["health", str(pv_project), "--json"]), "repo_map.tier"

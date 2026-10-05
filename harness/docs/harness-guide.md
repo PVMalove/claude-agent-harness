@@ -18,6 +18,11 @@ Agent Harness — переносимый набор скиллов, правил
 [Archify JSON](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/harness-guide-navigation.workflow.json)
 и [HTML](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/harness-guide-navigation.workflow.html).
 
+Обязательный общий контракт [Technical English](./technical-english.md) устанавливается при любой
+стандартной установке. Он описывает английскую координацию агентов, языковые исключения и проверку
+сохранения условий и точных токенов при review. Новые AGENTS.md и CLAUDE.md ведут к этому источнику; существующий AGENTS.md проекта
+не перезаписывается, и ссылку на контракт в него добавляют вручную.
+
 ## Навигация по разделам
 
 | Задача | Раздел |

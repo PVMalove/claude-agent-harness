@@ -52,6 +52,11 @@ Coordinator state, immutable briefs/reports и санитизированные 
 имена тестов и цитаты исходных требований не переводятся. Это уменьшает двусмысленность между
 разными runtime и оставляет отчёт человеку читаемым.
 
+Перед первым английским handoff coordinator и workers обязаны прочитать общий контракт
+[Technical English](./technical-english.md), доступный также через playbook и `roles/_common.md`.
+Его область, языковые исключения и примеры review описаны в самом источнике; действующие правила
+языка, authority, scope, привязки evidence к candidate SHA и human approval сохраняются.
+
 Manifest определяет режим роли (`write` или `read-only`), capability и risk triggers. Проектный
 конфиг выбирает agent/fallback на уровне provider profile, а `model` и `effort` — отдельно для
 каждой роли в её assignment plan, вместе с зоной, бюджетом параллелизма и командами проверки; он не может

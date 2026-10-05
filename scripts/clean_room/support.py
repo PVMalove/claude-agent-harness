@@ -1,5 +1,6 @@
 """Общие помощники сценариев clean-room: команды harness, запуск процессов и проверка hooks."""
 
+import hashlib
 import json
 import os
 import re
@@ -218,3 +219,40 @@ def run_hook(
         timeout=10,
         check=False,
     )
+
+
+def assert_contract_link(doc: Path, contract: Path, label: str) -> None:
+    """Проверить, что документ ровно один раз ссылается на контракт и требует прочитать его до handoff."""
+    text = doc.read_text(encoding="utf-8")
+    links = re.findall(r"\[[^\]]+\]\(([^)]+technical-english\.md)\)", text)
+    if len(links) != 1 or (doc.parent / links[0]).resolve() != contract.resolve():
+        sys.exit(f"{label} does not reach the shared technical-English contract")
+    paragraph = next(
+        part for part in text.split("\n\n") if "technical-english.md" in part
+    )
+    normalized = " ".join(paragraph.split()).lower()
+    if "must read" not in normalized or "before" not in normalized:
+        sys.exit(f"{label} technical-English reference is not mandatory")
+
+
+def check_technical_english(project: Path) -> None:
+    """Проверить доставку управляемого контракта и достижимость из новых точек входа."""
+    contract = project / ".harness/docs/technical-english.md"
+    if not contract.is_file():
+        sys.exit("standard install did not deliver the technical-English contract")
+    delivered = contract.read_bytes()
+    if delivered != (ROOT / "harness/docs/technical-english.md").read_bytes():
+        sys.exit("installed technical-English contract differs from its shared source")
+    lock = json.loads((project / ".harness/harness.lock").read_text(encoding="utf-8"))
+    if (
+        lock["files"].get(".harness/docs/technical-english.md")
+        != hashlib.sha256(delivered).hexdigest()
+    ):
+        sys.exit("technical-English contract is not managed by the snapshot lock")
+    if list((project / ".harness").rglob("technical-english.md")) != [contract]:
+        sys.exit("installation contains more than one technical-English contract")
+    assert_contract_link(project / "AGENTS.md", contract, "AGENTS.md")
+    if "@AGENTS.md" not in (project / "CLAUDE.md").read_text(encoding="utf-8"):
+        sys.exit(
+            "CLAUDE.md does not reach the technical-English contract through AGENTS.md"
+        )
