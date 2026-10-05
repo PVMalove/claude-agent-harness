@@ -11,31 +11,25 @@
   "effective_date": "не заполнено",
   "source": "не заполнено — укажите, откуда взяты ставки",
   "models": {
-    "claude-opus-5": {
+    "claude-opus-5-5": {
       "input": 0.0,
       "output": 0.0,
       "cache_write_multiplier": 1.25,
       "cache_read_multiplier": 0.1
     },
-    "claude-sonnet-5": {
+    "claude-sonnet-5-5": {
       "input": 0.0,
       "output": 0.0,
       "cache_write_multiplier": 1.25,
       "cache_read_multiplier": 0.1
     },
-    "gpt-5.6-luna": {
+    "gpt-6-luna": {
       "input": 0.0,
       "output": 0.0,
       "cache_write_multiplier": 1.0,
       "cache_read_multiplier": 0.1
     },
-    "gpt-5.6-sol": {
-      "input": 0.0,
-      "output": 0.0,
-      "cache_write_multiplier": 1.0,
-      "cache_read_multiplier": 0.1
-    },
-    "gpt-5.6-terra": {
+    "gpt-6.1-sol": {
       "input": 0.0,
       "output": 0.0,
       "cache_write_multiplier": 1.0,

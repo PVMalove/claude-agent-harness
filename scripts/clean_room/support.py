@@ -1,12 +1,17 @@
 """Общие помощники сценариев clean-room: команды harness, запуск процессов и проверка hooks."""
 
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+from harness.gate_runner.gate_runner import sanitise
+from harness.storage import storage_path
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = [sys.executable, str(ROOT / "harness" / "bin" / "harness.py")]
@@ -40,11 +45,79 @@ def _find_bash() -> str:
 BASH = _find_bash()
 
 
+def run_health(repo: Path) -> None:
+    """Сохранить полный health-отчёт, вывести счётчики и причины только при ошибке."""
+    command = HARNESS + ["health", str(repo), "--json"]
+    result = subprocess.run(
+        command,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    logs = storage_path(ROOT, "logs")
+    logs.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=logs,
+        prefix=f"clean-room-health-{repo.name}-",
+        suffix=".log",
+        delete=False,
+    ) as log:
+        log.write(
+            sanitise(
+                f"$ {subprocess.list2cmdline(command)}\nexit_code={result.returncode}\n"
+                + result.stdout
+                + ("\nstderr:\n" + result.stderr if result.stderr else "")
+            )
+        )
+        log_path = Path(log.name)
+
+    report = None
+    code = result.returncode
+    try:
+        parsed = json.loads(result.stdout)
+        summary = "ok={ok} warn={warn} fail={fail} skipped={skipped}".format(
+            **parsed["summary"]
+        )
+        report = parsed
+    except (json.JSONDecodeError, KeyError, TypeError):
+        summary = "invalid health JSON report"
+        code = code or 1
+    print(
+        f"[health] {repo.name}: {'FAIL' if code else 'PASS'} {summary}; log: {log_path}",
+        flush=True,
+    )
+    if code:
+        if report is not None:
+            for check in report["checks"]:
+                if check["status"] == "fail":
+                    print(
+                        sanitise(f"{check['id']}: {check['message']}"), file=sys.stderr
+                    )
+        if result.stderr.strip():
+            print(
+                sanitise(result.stderr.strip().splitlines()[-1])[:500], file=sys.stderr
+            )
+        else:
+            print(
+                f"health command exited with code {code}; full report: {log_path}",
+                file=sys.stderr,
+            )
+        raise SystemExit(code)
+
+
 def run_ok(cmd, quiet=False, quiet_all=False):
     """Запустить команду, которая обязана пройти; при сбое завершиться её кодом выхода, как `set -e`."""
     stdout = subprocess.DEVNULL if (quiet or quiet_all) else None
     stderr = subprocess.DEVNULL if quiet_all else None
-    result = subprocess.run(cmd, stdout=stdout, stderr=stderr, check=False)
+    # No stdin: started from a terminal, `init` would otherwise prompt for the tracker.
+    result = subprocess.run(
+        cmd, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, check=False
+    )
     if result.returncode != 0:
         sys.exit(result.returncode)
 
@@ -146,3 +219,40 @@ def run_hook(
         timeout=10,
         check=False,
     )
+
+
+def assert_contract_link(doc: Path, contract: Path, label: str) -> None:
+    """Проверить, что документ ровно один раз ссылается на контракт и требует прочитать его до handoff."""
+    text = doc.read_text(encoding="utf-8")
+    links = re.findall(r"\[[^\]]+\]\(([^)]+technical-english\.md)\)", text)
+    if len(links) != 1 or (doc.parent / links[0]).resolve() != contract.resolve():
+        sys.exit(f"{label} does not reach the shared technical-English contract")
+    paragraph = next(
+        part for part in text.split("\n\n") if "technical-english.md" in part
+    )
+    normalized = " ".join(paragraph.split()).lower()
+    if "must read" not in normalized or "before" not in normalized:
+        sys.exit(f"{label} technical-English reference is not mandatory")
+
+
+def check_technical_english(project: Path) -> None:
+    """Проверить доставку управляемого контракта и достижимость из новых точек входа."""
+    contract = project / ".harness/docs/technical-english.md"
+    if not contract.is_file():
+        sys.exit("standard install did not deliver the technical-English contract")
+    delivered = contract.read_bytes()
+    if delivered != (ROOT / "harness/docs/technical-english.md").read_bytes():
+        sys.exit("installed technical-English contract differs from its shared source")
+    lock = json.loads((project / ".harness/harness.lock").read_text(encoding="utf-8"))
+    if (
+        lock["files"].get(".harness/docs/technical-english.md")
+        != hashlib.sha256(delivered).hexdigest()
+    ):
+        sys.exit("technical-English contract is not managed by the snapshot lock")
+    if list((project / ".harness").rglob("technical-english.md")) != [contract]:
+        sys.exit("installation contains more than one technical-English contract")
+    assert_contract_link(project / "AGENTS.md", contract, "AGENTS.md")
+    if "@AGENTS.md" not in (project / "CLAUDE.md").read_text(encoding="utf-8"):
+        sys.exit(
+            "CLAUDE.md does not reach the technical-English contract through AGENTS.md"
+        )

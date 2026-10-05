@@ -5,6 +5,9 @@ declared backend zone, acceptance criteria, prohibited changes, issue branch, wo
 verification commands. A role does not amend the brief; material new information is escalated for a
 new coordinator decision.
 
+Before the first English handoff, every worker must read
+[Technical English](../../docs/technical-english.md).
+
 Use English for all agent-to-agent protocol text: handoff notes, checkpoints, state evidence,
 dependency explanations, and messages to the next worker. Treat `.harness/orchestration/state/` as a
 machine-readable audit trail and keep any free-text coordination fields in English. Completion
@@ -24,9 +27,22 @@ records the selected provider and model separately; manifests never choose eithe
 
 Start with the Context Package and one startup probe: run `git rev-parse --show-toplevel`, `git branch
 --show-current`, and `git rev-parse HEAD` in the runtime's current directory. Report that canonical
-worktree through `dispatch self-report --dispatch <dispatch_id> --model <model> --worktree <top-level>` when the project requires worker
-attestation. This is the only startup discovery needed before role-specific files; after the probe,
+worktree through `dispatch self-report --dispatch <dispatch_id> --model <actual-active-model>
+--worktree <top-level>` before task work in every new or resumed session. Model self-report is always
+required; `worker_attestation_required` controls the additional worktree check. Use the coordinator
+CLI and its absolute repo/state paths from the prompt even when your current directory is another
+worktree. After a successful self-report, send `dispatch heartbeat --dispatch <dispatch_id>`
+immediately and at least every `liveness.heartbeat_every_seconds` from the brief while working.
+Escalate a mismatch or unavailable model identity instead of copying the expected model as evidence.
+This is the only startup discovery needed before role-specific files; after the probe,
 work from the package rather than navigating to a guessed relative repository path.
+
+Before a final reply, submit the JSON completion report with `report submit --file
+<report_staging_path>` and verify that it was recorded. Chat text alone does not complete a dispatch.
+If submission fails before recording, preserve the staged report and relay the command and error as
+a blocker. A result with `completion` means the report is already recorded: relay that result to the
+coordinator for `report complete`, rather than submitting again. A planned checkpoint is the separate
+continuation protocol, not a completion report.
 
 The Context Package's `starting_files`, `symbol_graph`, and `related_tests` are the working set for
 the role's task: read those first. A starting file with non-empty `sections` is a large document
@@ -45,14 +61,14 @@ the missing ADR or precedent to the coordinator instead.
 
 Evidence stays bounded: a command's full output never returns to the model's dialogue, only a
 truncated summary. Read a long log through the existing
-`python harness/orchestration/advisory.py summarize-log --file <log>` rather than in full, read files
+`python .harness/orchestration/advisory.py summarize-log --file <log>` rather than in full, read files
 in ranges, and re-run a failing test only by its specific node id, never the whole suite. A write role
 with iterative TDD (`developer`, `database-migrations`, `messaging-integration`) that exceeds a
 planned trigger (TDD-cycle volume or accumulated log volume) brings the work to a natural boundary,
 commits, and requests a checkpoint instead of continuing in a bloated session. A read-only role
-(`architect`, `qa`, `code-review`) never spans a dispatch across worker sessions this way; it keeps
-its own output bounded by the same means above and, if genuinely exceeded, escalates a blocker
-instead.
+(`architect`, `qa`, `code-review`, `verification`) never spans a dispatch across worker sessions
+this way; it keeps its own output bounded by the same means above and, if genuinely exceeded,
+escalates a blocker instead.
 
 Context pressure is measured by the provider or runtime, never by your own estimate. When the
 coordinator records a `critical` observation for your dispatch, a write role finishes the current TDD
@@ -66,7 +82,20 @@ zone. Protected branches and `integration/*` are never direct write targets. A b
 writer; role handoffs are sequential. A commit is evidence only after the required checks pass and its
 SHA is included in the completion report.
 
+Never work around a hook, the safety classifier, the ledger or another tool that blocks a legitimate
+action: do not repeat the blocked action in another command form, through another tool, a script
+file, `eval` or another interpreter, or by splitting the command. Following the remedy the tool
+itself names (such as the bounded summary wrapper) is not a workaround. Stop instead and return
+`outcome: blocked` with a `tooling_blocker` of exactly three non-empty strings: `tool` (the hook or
+tool that blocked, `safety-classifier` for an interruption by the safety classifier), `command`
+(the exact command or action as it was invoked) and `message` (the tool's verbatim message, bounded
+like check evidence). Only this field lets the coordinator classify the stop as `tooling`; free
+text in `blockers` never does. Report a check the block kept from running as not run, never as
+`fail`.
+
 Escalate instead of guessing when the requested zone is unclear or overlaps another batch, required
 proof cannot be produced, a risk trigger applies without a stated gate, or the work needs credentials,
 an irreversible action, or a policy decision. A blocked or failed attempt is not retried in place: the
-coordinator creates a new dispatch with a new immutable brief.
+coordinator creates a new dispatch with a new immutable brief. A developer retry starts from the
+compact handoff in its prompt, the playbook's "Developer-retry handoff", as its only record of the
+earlier attempt; the previous session's raw history never carries over.

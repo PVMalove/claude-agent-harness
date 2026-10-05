@@ -47,6 +47,7 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
     RiskAssessmentRecord,
 )
+from harness.orchestration.workflow.carried_items import open_coordinator_findings
 from harness.orchestration.workflow.history import (
     _latest_developer_candidate,
     _retry_pinned_candidate,
@@ -119,6 +120,18 @@ def _trigger_patterns(trigger: str) -> tuple[str, ...]:
     return tuple(patterns)
 
 
+def _candidate_changed_files(
+    repo: Path, batch: JsonObject, candidate: str
+) -> list[str]:
+    """The files ``candidate`` changes against the batch base, as a risk assessment measures them."""
+    base = batch.get("integration_base_commit") or batch.get("base_commit")
+    return (
+        _changed_files_between(repo, base, candidate)
+        if base
+        else _commit_changed_files(repo, candidate)
+    )
+
+
 def assess_risk(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -134,6 +147,16 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
+        # `report complete` assesses a recorded report's candidate only while its batch still
+        # awaits that assessment, so a repeated or concurrent completion never records it twice.
+        expected = getattr(args, "_expected_next_action", None)
+        if expected is not None and batch.get("next_action") != expected:
+            raise CoordinatorError(
+                "the batch no longer awaits the risk assessment of this report "
+                f"(next_action is {batch.get('next_action')!r}); it is already recorded or the "
+                "batch has moved on",
+                remedy="run report complete again; it skips a step that is already recorded",
+            )
         if batch.get("state") != "awaiting-approval":
             raise CoordinatorError(
                 "risk assessment requires a batch awaiting coordinator approval",
@@ -153,12 +176,7 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
                 "risk assessment base must be an ancestor of the candidate commit",
                 remedy="pass a risk assessment base that is an ancestor of candidate_commit",
             )
-        actual_files = (
-            _changed_files_between(repo, base, candidate)
-            if base
-            else _commit_changed_files(repo, candidate)
-        )
-        if actual_files != changed_files:
+        if _candidate_changed_files(repo, batch, candidate) != changed_files:
             raise CoordinatorError(
                 "changed_files must exactly match the candidate diff",
                 remedy="regenerate changed_files from the actual diff for candidate_commit",
@@ -234,9 +252,14 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
             batch.pop("risk_reassessment_triggers", None)
         # Assessment is evidence, not a launch instruction.  It makes the one allowed next
         # handoff visible to the coordinator; a later, separately approved dispatch creates the
-        # immutable brief.  A pending developer retry stays the next handoff.
+        # immutable brief.  A pending developer retry stays the next handoff.  An open coordinator
+        # finding (issue #499) is a review obligation of its own: the candidate goes to code-review
+        # even when no trigger matched, and the risk record is left as assessed.
         if pinned is None:
-            batch["next_action"] = "code-review" if risk["review_required"] else "qa"
+            review = risk["review_required"] or bool(
+                open_coordinator_findings(root, batch)
+            )
+            batch["next_action"] = "code-review" if review else "qa"
         _safe_id(batch["batch_id"], "batch")
         _replace_record(ledger, BatchRecord.from_dict(batch))
     return risk

@@ -25,6 +25,8 @@ python .harness/orchestration/coordinator.py --repo . dispatch status
 ```
 
 If the command is unavailable or cannot read its state, stop and tell the developer to run `/fast-implement` instead.
+A `ledger_busy` answer is not unavailability: another coordinator operation holds the ledger lock,
+so repeat the command after its `retry_after_seconds`.
 Do not infer or repair an opt-in capability. Process one ticket to a terminal batch state before
 beginning another.
 
@@ -54,13 +56,17 @@ guess where its report belongs writes it outside the project. The coordinator ne
 evidence, not permission to advance. Architect precedes developer; accepted candidate proceeds
 through the required review/QA/publish gates.
 
-Before every write-role dispatch, record an ordered commit plan in the immutable brief. Each entry
-names one independently reviewable logical change and its expected files; use one entry only when
-the entire approved change is inseparable. A recovery preserves the accepted plan, or replaces it
-with a newly approved plan that explains the changed boundary. The developer's completion report
-maps every created commit to exactly one entry and explains any approved deviation. Do not collapse
-unrelated implementation, tests, documentation, or type-only repairs into a recovery commit merely
-because they are staged together.
+Before every write-role dispatch, the immutable brief carries an ordered commit plan. Each entry
+names one independently reviewable logical change, its expected files and the DoD items it covers;
+use one entry only when the entire approved change is inseparable. The coordinator derives one entry
+per DoD item; to use the architect's plan instead, pin it on the architect accept with
+`batch decide --decision accept --commit-plan-file <path>`. A recovery preserves the accepted plan,
+or replaces it with a newly approved plan that explains the changed boundary. The developer's
+completion report maps every created commit to the entries it closes; a mapping that is not
+one-to-one needs `dod_coverage` and `divergence_justification`, and a report with a `not_covered`
+item can be accepted only by `override-warning` with a note other than `none`, or returned with
+`retry`. Do not collapse unrelated implementation, tests, documentation, or type-only repairs into a
+recovery commit merely because they are staged together.
 
 Follow the configured approval policy. Under `manual_all`, every transition needs explicit approval:
 show the decision packet, ask, and wait. Under `low_risk`, a clean completed report in an eligible
@@ -71,7 +77,36 @@ recorded `next_action` without asking the operator to repeat a policy decision. 
 checks, risk triggers, review findings and publish still require the applicable manual decision.
 Never write `--approved-by` on the operator's behalf or
 narrate a decision they did not make. `human_approval_gate: tty` requires confirmation on the
-operator's terminal for transitions that still require human approval.
+operator's terminal for transitions that still require human approval. When choosing a recovery
+route for `retry` or `abandon`, show the decision packet's `route_preview` (with the
+`--reason-category` or `--retry-role` you intend to pass to `batch decide`) and follow the
+Recovery route table in `.harness/orchestration/playbook.md` (situation → route → who approves →
+evidence).
+
+A worker that works around a hook or tool block (another command form, tool, script file, `eval`,
+interpreter or a split command) breaks the protocol: never accept or warning-override that report,
+and record the violation in `--note`. For an architect or developer (publish included), decide
+`retry` with a developer reason category (not `tooling`) or `block`. For a read-only code-review, qa
+or verification role, pass `--reason-category block-bypass` to `batch decision-packet` and, once its
+`route_preview.retry.route` is `bypass-rerun`, to `batch decide --decision retry`: the same stage
+re-runs on the same SHA with no new candidate and no developer retry spent, and its new dispatch
+always needs explicit approval. A report that stops with `tooling_blocker` instead is confirmed
+before its retry: check that its `command` is legitimate under the brief (zone and tool policy) and
+that its `message` refuses that command. For a false positive, file or reuse a bug ticket against
+the tool through the tracker CLI (tool, command, message, dispatch ID), name the ticket in `--note`,
+and run `batch decide --decision retry` once `route_preview.retry.route` is `tooling-retry`; it
+re-runs the same stage on the same SHA (a developer continues its last commit) and spends no
+`retry_policy.max_developer_retries`. A command that is not legitimate is no false positive: retry
+with the developer reason category its evidence supports. Resolve the `tooling-retry-repeated`
+attention, raised by the third consecutive tooling retry on one candidate, only once the tool is
+fixed.
+
+When you find a defect in a clean developer report whose DoD is met inside its zone, do not retry
+it: accept it with `batch decide --findings-file <path>`, or after a policy auto-accept run
+`batch carry-over --batch <id> --findings-file <path>` before its code-review dispatch exists. The
+finding travels into the code-review brief as a carried item (route `carry-over`), and the one
+developer retry is spent after review. Retry a developer report without accept only for an unmet
+DoD item or an out-of-zone change.
 
 Each worker records a model self-report and is observed by the event-driven watchdog; those facts
 are evidence, never a reason to edit an immutable brief.
@@ -85,6 +120,69 @@ exception to that budget.
 Run `dispatch wait` between send and report. `stale`, model/worktree mismatch, changed harness
 snapshot, and a failed deterministic gate are blockers for the coordinator, not prompts for broad
 LLM recovery. In-process and external transports preserve the same brief and evidence contract.
+
+A busy ledger (`ledger is locked by another operation`, or `ledger_busy` from `dispatch status`) is
+transient: repeat `dispatch wait` or `dispatch status`. When a relayed `report submit` result
+carries `completion`, the report is already recorded: never ask the worker to submit it again. Run
+its `command` (`report complete --dispatch <dispatch-id>`) yourself and repeat it until no step
+fails; it is idempotent. When the failed step needs a human, follow its remedy instead. Never remove
+the ledger lock or any state file by hand; a lock that stays held goes to
+`coordinator.py --repo . ledger release-lock`, which refuses a lock whose owner process is alive.
+
+## Worker prompt
+
+Every worker prompt is this template, filled from the `dispatch send` result and the CLI invocation
+used to send it. The brief and Context Package carry the task; the prompt also carries the mandatory
+lifecycle. Fill `<coordinator CLI>` with the Python executable, absolute `coordinator.py` path and
+absolute `--repo` (plus `--state-dir` when supplied) used for that dispatch. Quote paths for the
+worker's shell. Keep this same ledger address even when the worker runs in another worktree.
+Copy the heartbeat interval from `dispatch send.heartbeat.every_seconds` verbatim.
+
+```text
+You are the <role> worker for dispatch <dispatch_id>.
+Brief: <brief path from dispatch send>
+Report staging path: <report_staging_path from dispatch send, verbatim>
+Coordinator CLI: <coordinator CLI>
+Before task work, run git rev-parse --show-toplevel, git branch --show-current and git rev-parse HEAD
+in your runtime's current directory. Confirm your actually active model and the probed Git top-level:
+<coordinator CLI> dispatch self-report --dispatch <dispatch_id> --model "<actual active model>" --worktree "<probed Git top-level>"
+Proceed only after a successful self-report; escalate a mismatch or unavailable model identity.
+Immediately after self-report and at least every <heartbeat.every_seconds> seconds while working, run:
+<coordinator CLI> dispatch heartbeat --dispatch <dispatch_id>
+Context Package <context_package_id>: start from its starting_files, symbol_graph and
+related_tests. For a starting file with non-empty sections, read only the start_line–end_line
+ranges the task needs.
+Work within the brief; escalate a blocker for anything the brief and the package leave out.
+Before your final reply, write the completion report JSON to the exact report staging path using
+the common and role-specific report contract, with report_language: ru, then run:
+<coordinator CLI> report submit --file "<report_staging_path>"
+Completion means the report is recorded in the ledger. Include the submit result in your final reply.
+If submission fails before recording, return the command and error as a blocker; keep the report file.
+If the result includes completion, relay it to the coordinator for report complete; the report is
+already recorded, so submit it only once. Chat text alone does not complete the dispatch.
+```
+
+A developer retry adds two lines from the `retry_start` of its `dispatch preflight`:
+
+```text
+Retry handoff: <retry_start.handoff, verbatim JSON>
+Retry starting files: <paths from retry_start.starting_files>
+```
+
+Use this lifecycle for every new or resumed worker session, including developer-retry. A continuation
+that stops at a checkpoint follows the checkpoint protocol instead of submitting a completion report.
+The coordinator treats a final reply without recorded completion or a valid checkpoint as an
+unfinished handoff and requests the missing protocol from the same available worker session.
+
+Large documents (the role catalog, `playbook.md`, `backend-orchestration.md`, `git-workflow.md`) and
+prior reports reach a worker only as Context Package section ranges or through the retry handoff.
+The work a prompt asks for is exactly its brief plus, for a retry, the handoff's blocking findings.
+
+A developer retry is always a new session started from its compact handoff, never a continuation of
+the previous developer session's history. The preflight's decision packet carries the retry's
+`retry_context_estimate` and `retry_context_warning` as evidence; they never gate the dispatch. Code-review and QA stay new
+independent sessions; only their prompt follows this template. The playbook's "Developer-retry
+handoff" defines the handoff, the smart-zone threshold and the compact.
 
 ## Authoritative guidance
 

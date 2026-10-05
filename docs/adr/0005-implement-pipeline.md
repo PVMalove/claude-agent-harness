@@ -37,8 +37,9 @@ Model self-report и watchdog выявляют mismatch или потерю жи
 `origin/<integration_ref>`; устаревшая база требует нового developer-dispatch для rebase и нового
 candidate assessment. Стандарты и спецификация проверяются независимыми отчётами. Delta-review
 разрешён только для нового test-only исправления конкретного finding при выполнении условий
-coordinator; иначе проводится полное review. QA запускается в clean-room worktree через
-сериализованную lane и привязывается к точному candidate SHA.
+coordinator; иначе проводится полное review. ADR 0012 сужает оба правила: rebase идёт в том же
+developer-retry, что и исправление, а delta-review допустим после fix-forward. QA запускается
+в clean-room worktree через сериализованную lane и привязывается к точному candidate SHA.
 
 Writer-dispatch может оставить checkpoint на зелёной границе с commit SHA, оставшимся DoD и
 результатами проверок и продолжиться в новой worker session после повторной self-report.

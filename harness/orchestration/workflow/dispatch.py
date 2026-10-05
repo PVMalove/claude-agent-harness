@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import uuid
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -82,6 +83,8 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord,
     LifecycleLedger,
 )
+from harness.orchestration.workflow import carried_items
+from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.approval import (
     _approval,
 )
@@ -110,6 +113,7 @@ from harness.orchestration.workflow.history import (
     _latest_developer_candidate,
     _latest_registered_verification_candidate,
     _pending_report,
+    _retry_handoff,
     _risk_for_candidate,
     _settled,
     _transition_idempotency_key,
@@ -163,20 +167,48 @@ def _enforce_base_freshness(
 def _developer_commit_plan(
     batch: JsonObject, write_paths: list[str]
 ) -> list[JsonObject]:
-    """Turn the approved DoD into a compact, immutable commit-plan interface.
+    """The compact, immutable commit-plan interface of a developer brief.
 
-    The coordinator owns the structure; a worker only supplies the SHA-to-entry evidence.
-    This keeps plan construction out of every runtime adapter while making each logical
-    DoD item independently reviewable.
+    The coordinator owns the structure; a worker only supplies the SHA-to-entry evidence. A plan
+    the operator pinned on the architect accept is used as recorded; otherwise every DoD item gets
+    its own entry, which keeps each logical DoD item independently reviewable.
     """
-    return [
-        {
-            "id": f"step-{index}",
-            "summary": item,
-            "expected_paths": write_paths,
-        }
-        for index, item in enumerate(batch["definition_of_done"], start=1)
-    ]
+    pinned = batch.get("commit_plan")
+    if pinned is None:
+        return plan_rules.default_plan(batch["definition_of_done"], write_paths)
+    if not isinstance(pinned, list) or plan_rules.plan_sha256(
+        pinned
+    ) != plan_rules.accepted_plan_sha256(batch):
+        raise CoordinatorError(
+            "the batch commit plan does not match the plan pinned on the architect accept",
+            remedy="the batch commit_plan diverged from its architect accept -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    return [dict(entry) for entry in pinned]
+
+
+def _accepted_divergence(
+    repo: Path, root: Path, batch: JsonObject
+) -> JsonObject | None:
+    """The commit-plan divergence of the last accepted initial or rebase developer report.
+
+    A developer-retry builds on that history and keeps its strict commit_map, so the commit
+    boundaries a reviewer has to judge are the ones the initial or rebase report recorded.
+    """
+    for item in plan_rules.decided_entries(
+        batch, "developer", {"accept", "override-warning"}
+    ):
+        developer = _load_dispatch(root, item["dispatch_id"])
+        if developer.get("purpose", "work") != "work" or plan_rules.is_developer_retry(
+            developer
+        ):
+            continue
+        return plan_rules.divergence(
+            _pending_report(root, batch, item),
+            developer,
+            partial(_candidate_commit, repo),
+        )
+    return None
 
 
 def _dispatch_approval_mode(
@@ -189,7 +221,8 @@ def _dispatch_approval_mode(
 ) -> str:
     """How this dispatch is approved: ``explicit`` (a human) or ``policy:<name>``.
 
-    A project-approved continuation is allowed only outside the preserved risk milestones.
+    A project-approved continuation is allowed only outside the preserved risk milestones. A
+    re-run after a role worked around a block (``bypass-rerun``) is always one of them.
     """
     if _non_empty(getattr(args, "approved_by", None)) or _non_empty(
         getattr(args, "approved_at", None)
@@ -197,11 +230,14 @@ def _dispatch_approval_mode(
         return "explicit"
     policy = batch.get("approval_policy", _approval_policy(config))
     risk_triggered = bool(risk and risk.get("matched_triggers"))
+    previous = _newest_decided_dispatch(batch)
+    routing = previous["decision"].get("routing") if previous else None
     milestone = (
         purpose == "publish"
         or (role == "qa" and policy != "low_risk")
         or risk_triggered
         or batch.get("risk_reassessment_required")
+        or (isinstance(routing, dict) and routing.get("route") == "bypass-rerun")
     )
     if policy == "manual_all" or milestone:
         raise CoordinatorError(
@@ -301,12 +337,28 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
             "related_tests": package.get("related_tests", []) if package else [],
             "pinned_diff": package.get("diff", "") if package else "",
             "prior_findings": batch.get("prior_findings", []),
+            "retry_handoff": _retry_handoff(root, batch, package)
+            if args.role == "developer" and args.purpose == "work"
+            else None,
+            "retry_package": package,
         }
     try:
         prepared = prepare_dispatch(batch["ticket"], args.role, state)
     except PreflightError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
     return prepared.to_dict()
+
+
+def _newest_decided_dispatch(batch: JsonObject) -> JsonObject | None:
+    """The newest dispatch entry that carries a coordinator decision."""
+    return next(
+        (
+            item
+            for item in reversed(batch.get("dispatches", []))
+            if isinstance(item.get("decision"), dict)
+        ),
+        None,
+    )
 
 
 def _proposed_transition(
@@ -318,19 +370,15 @@ def _proposed_transition(
     risk: JsonObject | None,
     verification_commands: list[str],
     context_package: JsonObject | None,
+    carried: JsonObject,
 ) -> JsonObject:
     """The canonical transition an approval binds: what came before, and exactly what is about to run.
 
     "What came before" is the newest dispatch a human decided on, so a brief that was created but is
-    still unsent (or was cancelled) does not change the transition it was created for."""
-    previous = next(
-        (
-            item
-            for item in reversed(batch.get("dispatches", []))
-            if isinstance(item.get("decision"), dict)
-        ),
-        None,
-    )
+    still unsent (or was cancelled) does not change the transition it was created for. A non-empty
+    carried-items section is bound by its digest, so a finding attached after the proposal needs a
+    new approval."""
+    previous = _newest_decided_dispatch(batch)
     decision = previous.get("decision") if previous else None
     routing = decision.get("routing") if isinstance(decision, dict) else None
     return operational_guards.build_transition(
@@ -351,6 +399,7 @@ def _proposed_transition(
         if context_package
         else None,
         required_gates=batch["required_gates"],
+        carried_items_sha256=carried_items.section_sha256(carried),
     )
 
 
@@ -831,6 +880,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                         )
         dispatch_id = f"dispatch-{uuid.uuid4()}"
         dispatch_commands = _dispatch_verification_commands(batch, role_name, purpose)
+        carried = carried_items.brief_section(root, batch, role_name, purpose)
         transition = _proposed_transition(
             batch,
             next_action,
@@ -840,6 +890,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             risk,
             dispatch_commands,
             context_package,
+            carried,
         )
         digest = operational_guards.transition_digest(transition)
         idempotency_key = _transition_idempotency_key(role_name, purpose, transition)
@@ -936,6 +987,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 "stale_after_seconds": stale_after,
             },
             "commit_plan": commit_plan,
+            "commit_plan_divergence": _accepted_divergence(repo, root, batch)
+            if is_review_work
+            else None,
+            "carried_items": carried,
         }
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the

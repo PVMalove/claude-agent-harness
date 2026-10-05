@@ -3,7 +3,7 @@
 The system-wide workflow and the boundary between interactive delivery and backend orchestration are
 described in [harness-guide.md](../../.harness/docs/harness-guide.md). This guide defines tracker-specific operations.
 
-Detect which section below applies from `git remote -v` (the same check `check-branch-name.sh` uses): a `github.com` remote → GitHub; a `gitlab.`-hosted remote → GitLab; anything else, including no remote at all, → Local markdown. For a different tracker entirely (Jira, Linear, ...), replace this file's content with a description of that workflow instead — see `/setup-matt-pocock-skills`.
+Detect which section below applies from the project tracker, the same resolution `check-branch-name.sh` uses: the `tracker` field of `.harness/project.json` when it is set; otherwise `git remote -v` — a `github.com` remote → GitHub; a `gitlab.`-hosted remote → GitLab; anything else, including no remote at all, → Local markdown. For a different tracker entirely (Jira, Linear, ...), replace this file's content with a description of that workflow instead — see `/setup-matt-pocock-skills`.
 
 This repo's triage label vocabulary is a first-party namespaced taxonomy — `type::*` category, `hitl`/`afk` execution mode, `status::*` pipeline state, optional `priority::*`/`severity::*` context, plus the `task-report::required`/`resolution::wontfix` context labels — see [triage-labels.md](./triage-labels.md) before applying or querying labels, whichever section below applies.
 
@@ -16,7 +16,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Create an issue**: `gh issue create --title "..." --body-file <path>`. Write the body to a file first — inline `--body` heredocs break on nested quotes/backticks (see `/to-spec`, `/to-tickets`).
 - **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
-- **Comment on an issue**: `gh issue comment <number> --body "..."`
+- **Comment on an issue**: `gh issue comment <number> --body-file <path>`, with the path from [git-workflow.md](./git-workflow.md) §1 (`.harness/.sandboxes/pr_body/issue-comment-<issue>-<slug>.md`)
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
 
@@ -48,7 +48,7 @@ Issues and specs for this repo live as GitLab issues. Use the [`glab`](https://g
 
 ### Conventions
 
-- **Create an issue**: `glab issue create --title "..." --description "..."`. Use a heredoc for multi-line descriptions. Pass `--description -` to open an editor.
+- **Create an issue**: `glab issue create --title "..." --description-file <path>`, with the already-written draft file as `<path>` (per [git-workflow.md](./git-workflow.md) §1, "Body via File, Not Inline"); never an inline `--description "..."` or a heredoc.
 - **Read an issue**: `glab issue view <number> --comments`. Use `-F json` for machine-readable output.
 - **List issues**: `glab issue list -F json` with appropriate `--label` filters.
 - **Comment on an issue**: `glab issue note <number> --message "..."`. GitLab calls comments "notes".
@@ -57,6 +57,12 @@ Issues and specs for this repo live as GitLab issues. Use the [`glab`](https://g
 - **Merge requests**: GitLab calls PRs "merge requests". Use `glab mr create`, `glab mr view`, `glab mr note`, etc. — the same shape as `gh pr ...` with `mr` in place of `pr` and `note`/`--message` in place of `comment`/`--body`.
 
 Infer the repo from `git remote -v` — `glab` does this automatically when run inside a clone.
+
+### `glab` setup
+
+- **Minimum version: `glab` 1.117.0.** When the project tracker is GitLab, `harness health` fails its local `environment.glab` check for an older `glab --version`; upgrade by the [installation guide](https://gitlab.com/gitlab-org/cli#installation).
+- **Host with a port.** The tracker host is `tracker.host` in `.harness/project.json`, including the web port when it is not 443 — for example `gitlab.example.test:4443`. Log in to exactly that host with `glab auth login --hostname gitlab.example.test:4443` and check it with `glab auth status --hostname gitlab.example.test:4443`, the same check `harness health --online` runs. Address the project explicitly: `glab <command> -R https://gitlab.example.test:4443/group/sub/project`, and `glab api --hostname gitlab.example.test:4443 projects/group%2Fsub%2Fproject` with the URL-encoded project path.
+- **Personal CA and proxy.** Keep them in your own `glab` configuration and environment, never in `.harness/project.json` or the repository: `glab config set ca_cert /path/to/ca.pem --host gitlab.example.test:4443` for an internal CA, and the standard `HTTPS_PROXY`/`NO_PROXY` environment variables for a proxy. Tokens stay in the storage `glab auth login` uses.
 
 ### Merge requests as a triage surface
 
@@ -107,9 +113,9 @@ Used by `/wayfinder`. The **map** holds the Notes / Decisions-so-far / Fog body;
 - **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. `gh issue create --label wayfinder:map`.
 - **Child ticket**: an issue linked to the map as a GitHub sub-issue (`gh api` on the sub-issues endpoint) — the same mechanism `/to-tickets` uses to link tickets to an epic (see [triage-labels.md](./triage-labels.md)). Where sub-issues aren't enabled, add the child to a task list in the map body and put `Part of #<map>` at the top of the child body. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`) — a separate namespace from this repo's triage labels, don't conflate them. If the map represents a larger epic that other, non-Wayfinder tickets also belong to, link those tickets as sub-issues of the epic issue the same way `/to-tickets` does, rather than a `wayfinder:*` label. Once claimed, the ticket is assigned to the driving dev.
 - **Blocking**: GitHub's **native issue dependencies** — the canonical, UI-visible representation. Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). GitHub reports `issue_dependencies_summary.blocked_by` (open blockers only — the live gate). Where dependencies aren't available, fall back to a `Blocked by: #<n>, #<n>` line at the top of the child body. A ticket is unblocked when every blocker is closed.
-- **Frontier query**: list the parent issue's open children (`gh issue list --state open`, scoped to its sub-issues / task list — the map for `/wayfinder`, the epic for `/to-tickets`), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in parent order wins. `/implement` uses this same query when handed an epic reference instead of a specific ticket, with two additions: it also drops any `hitl`-labeled ticket (see [triage-labels.md](./triage-labels.md)) — that execution mode routes through `/to-guide`, not this auto-pick — and, symmetrically, any `pipeline::fast`-labeled ticket, which routes through `/fast-implement`'s short path instead. A `pipeline::fast`+`afk` ticket named explicitly is still accepted by `/implement` and run through the full gated cycle without refusing — the full cycle is always a safe fallback; the label only narrows auto-pick, never a named ticket.
+- **Frontier query**: list the parent issue's open children (`gh issue list --state open`, scoped to its sub-issues / task list — the map for `/wayfinder`, the epic for `/to-tickets`), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in parent order wins. `/fast-implement` uses this same query when handed an epic reference instead of a specific ticket, with two additions: it also drops any `hitl`-labeled ticket (see [triage-labels.md](./triage-labels.md)) — that execution mode routes through `/to-guide`, not this auto-pick — and, symmetrically, any `pipeline::fast`-labeled ticket, which routes through `/fast-implement`'s short path instead. A `pipeline::fast`+`afk` ticket named explicitly is still accepted by `/implement` and run through the full gated cycle without refusing — the full cycle is always a safe fallback; the label only narrows auto-pick, never a named ticket.
 - **Claim**: `gh issue edit <n> --add-assignee @me` — the session's first write, before any other write. Prevents two concurrent sessions (e.g. parallel worktrees) from picking the same frontier ticket.
-- **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
+- **Resolve**: `gh issue comment <n> --body-file <path>` (path per git-workflow.md §1), then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
 
 **GitLab:**
 

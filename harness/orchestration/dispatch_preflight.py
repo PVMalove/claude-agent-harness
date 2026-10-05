@@ -8,14 +8,30 @@
 
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from ..errors import HarnessError
+from ..token_estimator import estimate_tokens, estimate_tokens_for_bytes
 from .contract import ContractError, resolve_runtime_name, string_list
+from .core.config import _adaptive_continuation_policy
 from .ledger import JsonObject, JsonValue
+
+# Structured handoff fields a compacted developer-retry start keeps: no report prose, no quoted
+# finding evidence or logs.
+_HANDOFF_REPORT_FIELDS = (
+    "dispatch_id",
+    "outcome",
+    "commit_sha",
+    "changed_files",
+    "commit_map",
+)
+_HANDOFF_DECISION_FIELDS = ("dispatch_id", "role", "route", "reason_category")
+_HANDOFF_FINDING_FIELDS = ("axis", "severity", "summary")
 
 
 class PreflightError(HarnessError):
@@ -39,6 +55,7 @@ class PreparedDispatch:
     context_package: JsonObject
     preview_brief: JsonObject
     decision_packet: JsonObject
+    retry_start: JsonObject | None = None
 
     def to_dict(self) -> JsonObject:
         """Преобразовать подготовленные данные диспетчеризации в словарь."""
@@ -110,6 +127,119 @@ def _role_context(
     return included
 
 
+def _tokens(value: JsonValue) -> int:
+    return estimate_tokens(json.dumps(value, ensure_ascii=False, sort_keys=True))
+
+
+def _pick(value: JsonValue, fields: tuple[str, ...]) -> JsonObject:
+    source = value if isinstance(value, dict) else {}
+    return {key: source[key] for key in fields if key in source}
+
+
+def _retry_findings(handoff: JsonObject) -> list[JsonValue]:
+    decision = handoff.get("retry_decision")
+    findings = decision.get("findings") if isinstance(decision, dict) else None
+    return findings if isinstance(findings, list) else []
+
+
+def _structured_handoff(handoff: JsonObject) -> JsonObject:
+    """The handoff reduced to its structured fields: findings lose their quoted evidence."""
+    return {
+        "context_package_id": handoff.get("context_package_id"),
+        "commit_plan": handoff.get("commit_plan"),
+        "developer_report": _pick(
+            handoff.get("developer_report"), _HANDOFF_REPORT_FIELDS
+        ),
+        "retry_decision": {
+            **_pick(handoff.get("retry_decision"), _HANDOFF_DECISION_FIELDS),
+            "findings": [
+                _pick(finding, _HANDOFF_FINDING_FIELDS)
+                for finding in _retry_findings(handoff)
+            ],
+        },
+    }
+
+
+def _named_in(path: str, text: str) -> bool:
+    """Whether ``text`` names ``path`` as a whole path, not as part of a longer one."""
+    return re.search(rf"(?<![\w/.-]){re.escape(path)}(?![\w/.-])", text) is not None
+
+
+def _starting_file_tokens(worktree: Path, item: JsonObject) -> int:
+    """A starting file costs its section index when it is a large document, else its bytes."""
+    sections = item.get("sections")
+    if sections:
+        return _tokens(sections)
+    path = worktree / str(item.get("path", ""))
+    return estimate_tokens_for_bytes(path.stat().st_size) if path.is_file() else 0
+
+
+def _retry_start(
+    config: JsonObject,
+    worktree: Path,
+    brief: JsonObject,
+    package: JsonObject | None,
+    handoff: JsonObject,
+) -> JsonObject:
+    """The starting context of a developer retry, compacted when it leaves the smart zone.
+
+    The estimate covers the brief, the Context Package and the handoff against
+    ``context_warn_ratio × context_limit``. Above it, the handoff keeps only structured fields and
+    the starting files narrow to those a finding names or the developer changed, while a large
+    document stays as its section index. The dispatch is never blocked: a compact that cannot reach
+    the threshold records a warning.
+    """
+    policy = _adaptive_continuation_policy(config)
+    threshold = round(policy["context_limit"] * policy["context_warn_ratio"])
+    seeds = (package or {}).get("starting_files")
+    files = (
+        [item for item in seeds if isinstance(item, dict)]
+        if isinstance(seeds, list)
+        else []
+    )
+    package_tokens = (package or {}).get("estimated_tokens", 0)
+    if not isinstance(package_tokens, int):
+        package_tokens = _tokens(package)
+    brief_tokens = _tokens(brief)
+    before = brief_tokens + package_tokens + _tokens(handoff)
+    after, compacted = before, before > threshold
+    if compacted:
+        report = handoff.get("developer_report")
+        changed = report.get("changed_files") if isinstance(report, dict) else None
+        keep = {
+            path
+            for path in (changed if isinstance(changed, list) else [])
+            if isinstance(path, str)
+        }
+        findings = json.dumps(_retry_findings(handoff), ensure_ascii=False)
+        kept = [
+            item
+            for item in files
+            if item.get("sections")
+            or item.get("path") in keep
+            or _named_in(str(item.get("path")), findings)
+        ]
+        dropped = sum(
+            _starting_file_tokens(worktree, item) for item in files if item not in kept
+        )
+        files, handoff = kept, _structured_handoff(handoff)
+        after = brief_tokens + max(package_tokens - dropped, 0) + _tokens(handoff)
+    return {
+        "handoff": handoff,
+        "starting_files": list(files),
+        "context_estimate": {
+            "threshold": threshold,
+            "before": before,
+            "after": after,
+            "compacted": compacted,
+        },
+        "warning": None
+        if after <= threshold
+        else f"developer-retry starting context estimate {after} tokens stays above the "
+        f"smart-zone threshold {threshold} after the compact; the dispatch proceeds",
+    }
+
+
 def prepare(
     ticket: str, role: str, project_state: Mapping[str, JsonValue]
 ) -> PreparedDispatch:
@@ -118,6 +248,7 @@ def prepare(
     ``project_state`` намеренно представляет собой простые данные, чтобы CLI, адаптер или тесты могли
     вызывать одну и ту же детерминированную функцию. Обязательные поля: ``repo``, ``config``, ``branch``,
     ``worktree``, ``zone`` и ``base_sha``; ``candidate_sha`` требуется только при явной фиксации кандидата.
+    Для developer-retry ``retry_handoff`` и ``retry_package`` дают компактный старт ``retry_start``.
     """
     ticket = _text(ticket, "ticket")
     role = _text(role, "role")
@@ -217,6 +348,23 @@ def prepare(
         "approval_reason": "the immutable brief will bind this exact runtime, worktree and snapshot",
         "options": ["accept", "retry", "block", "full review", "delta-review"],
     }
+    handoff = project_state.get("retry_handoff")
+    retry_package = project_state.get("retry_package")
+    retry_start = (
+        _retry_start(
+            config,
+            worktree,
+            preview,
+            retry_package if isinstance(retry_package, dict) else None,
+            handoff,
+        )
+        if role == "developer" and isinstance(handoff, dict)
+        else None
+    )
+    if retry_start is not None:
+        # The approval packet carries the retry's smart-zone evidence; it never gates the dispatch.
+        packet["retry_context_estimate"] = retry_start["context_estimate"]
+        packet["retry_context_warning"] = retry_start["warning"]
     return PreparedDispatch(
         ticket=ticket,
         role=role,
@@ -231,4 +379,5 @@ def prepare(
         context_package=package,
         preview_brief=preview,
         decision_packet=packet,
+        retry_start=retry_start,
     )
