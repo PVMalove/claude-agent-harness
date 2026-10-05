@@ -253,6 +253,4 @@ def check_technical_english(project: Path) -> None:
         sys.exit("installation contains more than one technical-English contract")
     assert_contract_link(project / "AGENTS.md", contract, "AGENTS.md")
     if "@AGENTS.md" not in (project / "CLAUDE.md").read_text(encoding="utf-8"):
-        sys.exit(
-            "CLAUDE.md does not reach the technical-English contract through AGENTS.md"
-        )
+        assert_contract_link(project / "CLAUDE.md", contract, "CLAUDE.md")

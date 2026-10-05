@@ -57,6 +57,7 @@ from harness.memory import (
     sync as memory_sync,
 )
 from harness.storage import storage_path
+from harness.seed_links import propose_contract_links, print_contract_proposals
 from harness.health import registry as health_registry
 from harness.health import render as health_render
 from harness.health import report_json as health_report_json
@@ -941,10 +942,13 @@ def cmd_diff(args: argparse.Namespace) -> int:
     """Сравнить текущее состояние проекта с эталонным снимком и вывести различия."""
     repo = Path(args.repo).expanduser().resolve()
     result = snapshot_diff(repo, args.capability)
+    proposals = propose_contract_links(repo, PROJECT_TEMPLATE_DIR)
     if args.json:
+        result["seed_link_proposals"] = proposals
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print_diff(result)
+        print_contract_proposals(proposals)
     return 0 if result["state"] == "clean" else 1
 
 
@@ -1035,6 +1039,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         )
     print(f"updated agent-harness to {version()} in {repo}")
     print(f"managed files: {len(written)}")
+    print_contract_proposals(propose_contract_links(repo, PROJECT_TEMPLATE_DIR))
     return 0
 
 
