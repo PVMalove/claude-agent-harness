@@ -571,8 +571,9 @@ def test_tracker_process_failures_preserve_previous_bytes(
 
 
 def test_linked_worktree_reads_main_snapshot_but_cannot_sync(
-    checkouts: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
-) -> None:  # noqa: F811 (pytest fixture injection)
+    checkouts: tuple[Path, Path],  # noqa: F811 (pytest fixture injection)
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from harness.memory import sync
 
     main, linked = checkouts

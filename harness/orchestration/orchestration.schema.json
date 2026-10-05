@@ -368,8 +368,8 @@
           "items": {"type": "string", "minLength": 1},
           "description": "Список используемых профилей провайдеров из provider_profiles."
         },
-        "model": {"type": "string", "minLength": 1, "description": "Имя используемой модели LLM. Варианты: 'claude-sonnet-5', 'gpt-5.6-terra', 'gpt-5.6-luna', 'claude-haiku-4-5-20251001' и др."},
-        "effort": {"type": "string", "minLength": 1, "description": "Уровень усилий рассуждения (reasoning effort). Варианты: 'low', 'medium', 'high', 'max'."}
+        "model": {"type": "string", "minLength": 1, "description": "Имя используемой модели LLM. Варианты: 'claude-opus-5-5', 'claude-sonnet-5-5', 'gpt-6.1-sol', 'gpt-6-luna' и др."},
+        "effort": {"type": "string", "minLength": 1, "description": "Уровень усилий рассуждения (reasoning effort). Варианты: 'low', 'medium', 'high', 'xhigh', 'max'."}
       }
     },
     "toolList": {
