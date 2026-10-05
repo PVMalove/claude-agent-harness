@@ -4674,6 +4674,36 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         with self.assertRaises(coordinator.CoordinatorError):
             self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
 
+    def test_the_third_consecutive_tooling_retry_sets_needs_attention(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        for _ in range(2):
+            self._tooling_review(batch["batch_id"], candidate)
+            self._decide(batch["batch_id"], "retry")
+            self.assertFalse(
+                self._batch_record(batch["batch_id"]).get("needs_attention", False)
+            )
+        third = self._tooling_review(batch["batch_id"], candidate)
+
+        self._decide(batch["batch_id"], "retry")
+
+        record = self._batch_record(batch["batch_id"])
+        self.assertTrue(record["needs_attention"])
+        self.assertEqual(record["attention_reason"], "tooling-retry-repeated")
+        self.assertIn(
+            "3 consecutive tooling retries", record["recommended_human_action"]
+        )
+        self.assertEqual(
+            (record["state"], record["next_action"]),
+            ("awaiting-approval", "code-review"),
+        )
+        self.assertEqual(self._routing(record)["route"], "tooling-retry")
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+        self.assertIn("attention", caught.exception.message.lower())
+        self.assertEqual(record["dispatches"][-1]["dispatch_id"], third["dispatch_id"])
+
     def test_an_unknown_retry_reason_sets_needs_attention_and_notifies_the_human_adapter(
         self,
     ) -> None:
