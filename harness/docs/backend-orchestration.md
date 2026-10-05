@@ -626,8 +626,8 @@ risks, blockers и следующее решение coordinator-а. Для read
 структурированным данным report: outcome, findings, severity осей Standards/Spec, failed checks и
 тому, изменился ли candidate. Свободный текст `blockers`/`output` не классифицируется. Явную причину
 можно передать через `--reason-category` (`code`, `requirements`, `candidate-change`,
-`verification-infrastructure`, `transport`, `context-pressure`, `unknown`), но она не отменяет
-найденный finding. Rate limit, недоступный Bash/WSL wrapper и transport failure — это operational
+`verification-infrastructure`, `transport`, `context-pressure`, `tooling`, `unknown`), но она не
+отменяет найденный finding. Rate limit, недоступный Bash/WSL wrapper и transport failure — это operational
 evidence (`verification-infrastructure` или `transport`), а не code finding. Context limit —
 `context-pressure` только если для отчитавшегося dispatch записано `critical`-наблюдение
 `context_pressure` (см. ниже); голое утверждение даёт `unknown`.
@@ -650,6 +650,17 @@ operational-категории могут повторить read-only стад�
 запускают. `--retry-role developer` принудительно выбирает developer retry там, где coordinator
 иначе повторил бы ту же роль на том же SHA.
 
+`tooling` — отдельная операционная категория: hook, классификатор безопасности или ledger
+заблокировал законное действие роли. Coordinator присваивает её только по структурному полю
+`tooling_blocker` (`tool`, точная `command`, `message`) в report с `outcome: blocked`, если её не
+перекрывают finding, failed check, сдвинутый candidate или developer-категория. Явная
+`--reason-category tooling` без этого поля даёт `unknown`, а другая названная операционная категория
+идёт своим прежним маршрутом. Маршрут `tooling` на любой стадии — `tooling-retry`: новый dispatch той
+же стадии на том же SHA (architect, verification, code-review, qa или publish), а для developer —
+`developer-retry`, который продолжает его последний коммит; этот коммит записывается в
+`candidate_commit` routing record. В таблице выше «три operational-категории» по-прежнему означают
+`verification-infrastructure`, `transport` и `context-pressure`.
+
 Retry непринятого developer report продолжает его историю. Пока batch ждёт этот `developer-retry`,
 coordinator берёт candidate из immutable report (`commit_sha`, сверенный по hash) и пинит на него
 `snapshot_commit` нового developer dispatch. Worktree не откатывается ни к base, ни к более старому
@@ -668,7 +679,10 @@ publish по-прежнему пинит `snapshot_commit` на последни
 Code-review `blocker` никогда не принимается. Пока `retry_policy.max_developer_retries` ещё допускает
 developer retry, для него доступны `retry` или `abandon`; после исчерпания budget `retry`
 отклоняется, а blocker закрывается через `block`, `fail` или `abandon`, после чего работа
-разбивается или перепланируется в новом batch.
+разбивается или перепланируется в новом batch. `tooling-retry` этот budget не расходует и при его
+исчерпании не отклоняется: каждый такой retry по-прежнему решает человек, а серию ограничивает
+attention `tooling-retry-repeated`. `--retry-role developer` на read-only стадии по-прежнему даёт
+`developer-retry` с расходом budget.
 
 Решение `abandon` доступно после любого completion report. Оно требует явного approval и непустого
 `--reason`, переводит batch в терминальный `abandoned` и помечает незакрытые dispatch как
@@ -700,7 +714,8 @@ agent inbox и записи QA-очереди dispatch, которые уже н
 или `override-warning` с `--findings-file` и `batch carry-over` (см. шаг 4): routing record с
 `previous_role: developer`, `next_role` и `next_action` `code-review`, `candidate_commit`,
 `carried_item_ids` и `rationale`, без `reason_category` и `decided_at`. К `next_action` он не
-применяется: тот идёт через risk assessment, как при любом accept developer. Маршрут ставится там же, где `next_action`, по тем же
+применяется: тот идёт через risk assessment, как при любом accept developer. Восьмое,
+`tooling-retry`, записывает `retry` с категорией `tooling` (см. выше). Маршрут ставится там же, где `next_action`, по тем же
 структурированным данным и никогда по свободному тексту. У `abandon` routing record той же формы, но
 `reason_category`, `next_role`, `next_action` и `candidate_commit` равны `null`, а `rationale`
 содержит только структурные факты (`--reason` остаётся в `note`). Нормативная таблица «ситуация →
@@ -804,6 +819,7 @@ candidate и evidence, но запрещает создание следующе
 | --- | --- |
 | `unknown-reason` | retry с причиной `unknown` |
 | `infrastructure-retry-repeated` | operational retry одного candidate больше `max_infrastructure_retries` |
+| `tooling-retry-repeated` | третий подряд `tooling-retry` на одном candidate; снимается после исправления инструмента |
 | `retry-queued-too-long` | принятый retry ждёт dispatch дольше `retry_queue_seconds` |
 | `stale-evidence` | закреплённый в незавершённом dispatch Context Package расходится с base или текущим developer candidate (тем же, что выбирает `snapshot_commit`) |
 | `stale-dispatch` | живой dispatch молчит дольше `stale_dispatch_seconds` |
