@@ -358,12 +358,17 @@ def _carry_over_preview(
 
 
 def _developer_retry_count(batch: JsonObject) -> int:
-    """Count approved retry decisions, not ordinary initial developer dispatches."""
+    """Count approved retry decisions, not ordinary initial developer dispatches. A
+    ``tooling-retry`` re-runs work a tool blocked, so it spends no developer retry (issue #500)."""
     return sum(
         1
         for decision in batch.get("coordinator_decisions", [])
         if decision.get("decision") == "retry"
         and decision.get("next_role") == "developer"
+        and not (
+            isinstance(decision.get("routing"), dict)
+            and decision["routing"].get("route") == "tooling-retry"
+        )
     )
 
 
@@ -478,8 +483,8 @@ def _retry_routing(
             else "repeats the stage on the same SHA"
         )
         outcome_sentence = (
-            f"a new {stage} dispatch {restart}; the earlier brief, report and tooling "
-            "blocker stay as audit evidence"
+            f"a new {stage} dispatch {restart}; it spends no developer retry and the "
+            "earlier brief, report and tooling blocker stay as audit evidence"
         )
     elif stage == "architect":
         next_action, route = "architect", "architect-retry"
@@ -773,9 +778,11 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                         "registered_at": routing["decided_at"],
                     }
                 )
-            if routing[
-                "next_action"
-            ] == "developer-retry" and _developer_retry_budget_exhausted(config, batch):
+            if (
+                routing["next_action"] == "developer-retry"
+                and routing["route"] != "tooling-retry"
+                and _developer_retry_budget_exhausted(config, batch)
+            ):
                 raise CoordinatorError(
                     "developer retry budget is exhausted for this batch; block, fail, or abandon it instead of starting another worker",
                     remedy="block, fail, or abandon (with --reason) this batch, then split or re-plan the work",

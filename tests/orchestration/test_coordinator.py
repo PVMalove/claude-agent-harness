@@ -3737,6 +3737,64 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
 
+    def test_a_tooling_retry_spends_no_developer_retry(self) -> None:
+        tooling = {
+            "decision": "retry",
+            "next_role": "developer",
+            "routing": {"route": "tooling-retry"},
+        }
+        spent = {
+            "decision": "retry",
+            "next_role": "developer",
+            "routing": {"route": "developer-retry"},
+        }
+
+        count = decisions._developer_retry_count(
+            {"coordinator_decisions": [tooling, spent, tooling]}
+        )
+
+        self.assertEqual(count, 1)
+
+    def test_an_exhausted_budget_never_refuses_a_developer_tooling_retry(
+        self,
+    ) -> None:
+        for blocker, expected in (
+            (dict(TOOLING_BLOCKER), "tooling-retry"),
+            (None, None),
+        ):
+            with self.subTest(route=expected):
+                self._reset()
+                batch = self._create_batch()
+                self._accepted_architect(batch["batch_id"])
+                developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+                self._start(developer["dispatch_id"])
+                candidate, changed = self._developer_commit("tooled")
+                extra = {} if blocker is None else {"tooling_blocker": blocker}
+                self._submit(
+                    developer["dispatch_id"],
+                    self._developer_report(
+                        developer,
+                        candidate,
+                        changed,
+                        outcome="blocked",
+                        blockers="a hook blocked a legitimate check command",
+                        checks_run=self._checks(developer, "not-run"),
+                        **extra,
+                    ),
+                )
+                budget = {"max_developer_retries": 0}
+                with mock.patch.object(decisions, "_retry_policy", return_value=budget):
+                    if expected is None:
+                        with self.assertRaisesRegex(
+                            coordinator.CoordinatorError, "budget is exhausted"
+                        ):
+                            self._decide(batch["batch_id"], "retry")
+                        continue
+                    decided = self._decide(batch["batch_id"], "retry")
+                self.assertEqual(self._routing(decided)["route"], expected)
+                self.assertEqual(decided["next_action"], "developer-retry")
+                self.assertEqual(decisions._developer_retry_count(decided), 0)
+
     def test_review_blocker_can_be_blocked_only_once_the_developer_retry_budget_is_exhausted(
         self,
     ) -> None:
