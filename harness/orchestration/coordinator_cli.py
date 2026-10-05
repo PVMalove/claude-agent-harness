@@ -572,6 +572,65 @@ def build_parser(
     qa_clear.add_argument("--reason", required=True)
     qa_clear.set_defaults(handler=handlers.clear_qa_lease)
 
+    integration = commands.add_parser(
+        "integration",
+        help="record and observe the integration link of a published ticket branch",
+    )
+    integration_commands = integration.add_subparsers(
+        dest="integration_command", required=True
+    )
+    integration_prepare = integration_commands.add_parser(
+        "prepare",
+        help="record the link between ticket, branch, source batch, published candidate and target SHA; idempotent",
+    )
+    _common(integration_prepare)
+    integration_prepare.add_argument("--ticket", required=True)
+    integration_prepare.add_argument("--branch", required=True)
+    integration_prepare.add_argument(
+        "--batch",
+        help="source batch ID; required when several batches published the branch",
+    )
+    integration_prepare.add_argument(
+        "--candidate-commit",
+        help="optional published SHA to check against the accepted publish report",
+    )
+    integration_prepare.add_argument("--remote", default="origin")
+    integration_prepare.set_defaults(handler=handlers.integration_prepare)
+    integration_status = integration_commands.add_parser(
+        "status",
+        help="read-only: observe whether a record's candidate/target pair is still current",
+    )
+    _common(integration_status)
+    integration_status.add_argument("--record", help="integration record ID")
+    integration_status.add_argument("--ticket")
+    integration_status.add_argument("--branch")
+    integration_status.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_status.set_defaults(handler=handlers.integration_status)
+    integration_link = integration_commands.add_parser(
+        "link-evidence",
+        help="register a new CI, local-QA or resolver check of a candidate/target pair; idempotent",
+    )
+    _common(integration_link)
+    integration_link.add_argument("--record", required=True)
+    integration_link.add_argument(
+        "--kind", required=True, choices=defaults.INTEGRATION_EVIDENCE_KINDS
+    )
+    integration_link.add_argument("--candidate-commit", required=True)
+    integration_link.add_argument("--target-commit", required=True)
+    integration_link.add_argument(
+        "--result", required=True, choices=defaults.INTEGRATION_EVIDENCE_RESULTS
+    )
+    integration_link.add_argument(
+        "--reference", required=True, help="where the check result can be inspected"
+    )
+    integration_link.add_argument(
+        "--artifact-sha256", help="digest of the artifact the reference points to"
+    )
+    integration_link.set_defaults(handler=handlers.integration_link_evidence)
+
     report = commands.add_parser("report")
     report_commands = report.add_subparsers(dest="report_command", required=True)
     report_submit = report_commands.add_parser("submit", aliases=["record"])
