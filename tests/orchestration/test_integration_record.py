@@ -596,5 +596,166 @@ class IntegrationPrepareTests(unittest.TestCase):
         self.assertEqual(len(self.branch.record_files()), 1)
 
 
+class IntegrationEvidenceLinkTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.branch = PublishedBranch()
+        self.addCleanup(self.branch.close)
+        self.published = self.branch.publish()
+        self.prepared = self.branch.prepare()
+        self.record_id = self.prepared["integration_record_id"]
+        self.pair = {
+            "candidate_commit": self.prepared["candidate_sha"],
+            "target_commit": "c" * 40,
+        }
+
+    def link(self, **overrides: object) -> JsonObject:
+        values: JsonObject = {
+            "record": self.record_id,
+            "kind": "ci",
+            "result": "passed",
+            "reference": "https://ci.example.invalid/runs/7",
+            "artifact_sha256": None,
+            **self.pair,
+        }
+        values.update(overrides)
+        return coordinator.integration_link_evidence(self.branch.args(**values))
+
+    def evidence_files(self) -> list[str]:
+        directory = self.branch.records() / "reports" / "integration-evidence"
+        return sorted(path.name for path in directory.glob("*.json"))
+
+    def test_link_registers_a_pair_check_as_unverified_evidence(self) -> None:
+        linked = self.link()
+
+        self.assertTrue(linked["linked"])
+        evidence = linked["evidence"]
+        self.assertEqual(evidence["integration_record_id"], self.record_id)
+        self.assertEqual(evidence["scope"], "pair-check")
+        self.assertEqual(evidence["kind"], "ci")
+        self.assertEqual(evidence["result"], "passed")
+        self.assertEqual(evidence["candidate_sha"], self.pair["candidate_commit"])
+        self.assertEqual(evidence["target_sha"], self.pair["target_commit"])
+        self.assertEqual(evidence["verification"], "unverified")
+        self.assertEqual(self.evidence_files(), [f"{linked['evidence_id']}.json"])
+        self.assertEqual(
+            self.branch.prepare()["evidence_links"], [linked["evidence_id"]]
+        )
+
+    def test_linking_leaves_the_record_and_its_initial_evidence_untouched(
+        self,
+    ) -> None:
+        record = (
+            self.branch.records() / "reports/integration" / f"{self.record_id}.json"
+        )
+        before_record = record.read_bytes()
+        before = self.branch.snapshot()
+
+        self.link()
+        self.link(kind="resolver", result="failed")
+
+        self.assertEqual(record.read_bytes(), before_record)
+        self.assertEqual(self.branch.snapshot(), before)
+        stored = json.loads(record.read_text(encoding="utf-8"))
+        self.assertEqual(
+            stored["source"]["pair"]["target_sha"], self.prepared["target_sha"]
+        )
+        self.assertNotIn("pair_checks", stored)
+
+    def test_the_same_evidence_is_idempotent_and_new_evidence_is_added(self) -> None:
+        first = self.link()
+        again = self.link()
+
+        self.assertFalse(again["linked"])
+        self.assertEqual(again["evidence_id"], first["evidence_id"])
+        self.assertEqual(again["evidence"], first["evidence"])
+        self.assertEqual(len(self.evidence_files()), 1)
+        for change in (
+            {"kind": "local-qa"},
+            {"result": "failed"},
+            {"reference": "https://ci.example.invalid/runs/8"},
+            {"target_commit": "d" * 40},
+            {"artifact_sha256": "e" * 64},
+        ):
+            with self.subTest(change=change):
+                self.assertTrue(self.link(**change)["linked"])
+        self.assertEqual(len(self.evidence_files()), 6)
+
+    def test_every_future_route_links_through_the_same_operation(self) -> None:
+        for kind in ("ci", "local-qa", "resolver"):
+            with self.subTest(kind=kind):
+                self.assertEqual(self.link(kind=kind)["evidence"]["kind"], kind)
+
+    def test_invalid_input_is_refused_with_a_remedy_and_writes_nothing(self) -> None:
+        invalid: list[JsonObject] = [
+            {"kind": "manual"},
+            {"result": "ok"},
+            {"candidate_commit": "abc123"},
+            {"candidate_commit": "A" * 40},
+            {"target_commit": "g" * 40},
+            {"artifact_sha256": "abc"},
+            {"reference": "   "},
+            {"reference": "x" * 2049},
+            {"record": "integration-nothex"},
+            {"record": "integration-" + "0" * 32},
+        ]
+        for change in invalid:
+            with self.subTest(change=change):
+                with self.assertRaises(CoordinatorError) as raised:
+                    self.link(**change)
+                self.assertTrue(raised.exception.remedy.strip())
+        self.assertEqual(self.evidence_files(), [])
+
+    def test_a_modified_record_is_refused(self) -> None:
+        record = (
+            self.branch.records() / "reports/integration" / f"{self.record_id}.json"
+        )
+        document = json.loads(record.read_text(encoding="utf-8"))
+        document["source"]["qa"]["outcome"] = "rewritten"
+        record.write_text(json.dumps(document), encoding="utf-8")
+        with self.assertRaises(CoordinatorError) as raised:
+            self.link()
+        self.assertIn("integrity", raised.exception.message)
+        self.assertEqual(self.evidence_files(), [])
+
+    def test_the_public_cli_group_reaches_link_evidence(self) -> None:
+        parsed = coordinator.parser().parse_args(
+            [
+                "--repo",
+                str(self.branch.repo),
+                "--state-dir",
+                str(self.branch.state_root()),
+                "integration",
+                "link-evidence",
+                "--record",
+                self.record_id,
+                "--kind",
+                "resolver",
+                "--candidate-commit",
+                self.pair["candidate_commit"],
+                "--target-commit",
+                self.pair["target_commit"],
+                "--result",
+                "passed",
+                "--reference",
+                "resolver-run-1",
+                "--artifact-sha256",
+                "f" * 64,
+            ]
+        )
+        self.assertIs(parsed.handler, coordinator.integration_link_evidence)
+        self.assertTrue(parsed.handler(parsed)["linked"])
+        with self.assertRaises(SystemExit):
+            coordinator.parser().parse_args(
+                [
+                    "integration",
+                    "link-evidence",
+                    "--record",
+                    self.record_id,
+                    "--kind",
+                    "x",
+                ]
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,6 +20,14 @@ from pathlib import Path
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import utils
+from harness.orchestration.core.config import _reject_sensitive
+from harness.orchestration.core.constants import (
+    INTEGRATION_EVIDENCE_KINDS,
+    INTEGRATION_EVIDENCE_RESULTS,
+    INTEGRATION_RECORD_ID_PATTERN,
+    INTEGRATION_REFERENCE_MAX_CHARS,
+    INTEGRATION_SHA_PATTERN,
+)
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _git,
@@ -43,6 +51,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _write_record,
 )
 from harness.orchestration.ledger.lifecycle import (
+    IntegrationEvidenceRecord,
     IntegrationRecord,
     LifecycleLedger,
 )
@@ -347,3 +356,120 @@ def integration_prepare(args: argparse.Namespace) -> JsonObject:
         else _observe(repo, record["identity"])
     )
     return _prepared(record, links, state, created=created)
+
+
+def _load_record(root: Path, record_id: object) -> JsonObject:
+    """An integration record that is still exactly what was written: its id derives from its
+    identity and its source facts match their digest."""
+    if (
+        not isinstance(record_id, str)
+        or INTEGRATION_RECORD_ID_PATTERN.fullmatch(record_id) is None
+    ):
+        raise CoordinatorError(
+            "integration record id is not valid",
+            remedy="pass the integration_record_id that 'integration prepare' returned",
+        )
+    path = _record_path(root, record_id)
+    if not path.is_file():
+        raise CoordinatorError(
+            f"no integration record {record_id}",
+            remedy="run 'integration prepare' for the ticket branch to create the record",
+        )
+    record = _read_object(path, "integration record")
+    if (
+        record.get("integration_record_id") != record_id
+        or record_id != (IntegrationRecord.derive_id(record.get("identity") or {}))
+        or record.get("source_sha256") != _sha256(record.get("source") or {})
+    ):
+        raise CoordinatorError(
+            "the integration record failed its integrity check",
+            remedy="the record was modified after it was written -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    return record
+
+
+def _choice(args: argparse.Namespace, name: str, allowed: tuple[str, ...]) -> str:
+    value = _text(args, name)
+    if value not in allowed:
+        raise CoordinatorError(
+            f"{name} must be one of {', '.join(allowed)}",
+            remedy=f"pass --{name.replace('_', '-')} as one of: {', '.join(allowed)}",
+        )
+    return value
+
+
+def _sha(args: argparse.Namespace, name: str, *, required: bool = True) -> str | None:
+    value = _text(args, name)
+    if not value and not required:
+        return None
+    if INTEGRATION_SHA_PATTERN.fullmatch(value) is None:
+        raise CoordinatorError(
+            f"{name} must be a full lowercase hexadecimal SHA (40 or 64 digits)",
+            remedy=f"pass --{name.replace('_', '-')} as the full SHA of the checked commit",
+        )
+    return value
+
+
+def integration_link_evidence(args: argparse.Namespace) -> JsonObject:
+    """Register a new check of a candidate/target pair against an integration record.
+
+    This is the one public route by which future CI, local-QA and resolver evidence is linked.  It
+    records the link as an immutable event next to the record, never inside it: the record's own
+    initial (source) evidence stays tied to its original pair, and a registered check applies to
+    the pair it names and to no other.  ``verification`` stays ``unverified`` until a later route
+    verifies the artifact; registering is not accepting.
+    """
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    kind = _choice(args, "kind", INTEGRATION_EVIDENCE_KINDS)
+    result = _choice(args, "result", INTEGRATION_EVIDENCE_RESULTS)
+    candidate = _sha(args, "candidate_commit")
+    target = _sha(args, "target_commit")
+    artifact = _sha(args, "artifact_sha256", required=False)
+    reference = _text(args, "reference")
+    if not reference or len(reference) > INTEGRATION_REFERENCE_MAX_CHARS:
+        raise CoordinatorError(
+            f"reference must be a non-empty string of at most {INTEGRATION_REFERENCE_MAX_CHARS} characters",
+            remedy="pass --reference naming where the check result can be inspected (a run URL or an artifact path)",
+        )
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
+        record = _load_record(root, getattr(args, "record", None))
+        members: JsonObject = {
+            "integration_record_id": record["integration_record_id"],
+            "kind": kind,
+            "candidate_sha": candidate,
+            "target_sha": target,
+            "result": result,
+            "reference": reference,
+            "artifact_sha256": artifact,
+        }
+        evidence_id = IntegrationEvidenceRecord.derive_id(members)
+        path = (
+            _records_root(root)
+            / IntegrationEvidenceRecord.directory
+            / f"{evidence_id}.json"
+        )
+        if path.is_file():
+            return {
+                "evidence_id": evidence_id,
+                "integration_record_id": record["integration_record_id"],
+                "linked": False,
+                "evidence": _read_object(path, "integration evidence record"),
+            }
+        document: JsonObject = {
+            "evidence_id": evidence_id,
+            **members,
+            "scope": "pair-check",
+            "recorded_at": utils._now(),
+            "verification": "unverified",
+        }
+        _reject_sensitive(document, "integration evidence")
+        _write_record(ledger, IntegrationEvidenceRecord.from_dict(document))
+    return {
+        "evidence_id": evidence_id,
+        "integration_record_id": record["integration_record_id"],
+        "linked": True,
+        "evidence": document,
+    }

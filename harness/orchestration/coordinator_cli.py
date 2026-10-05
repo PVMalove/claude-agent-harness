@@ -596,6 +596,27 @@ def build_parser(
     )
     integration_prepare.add_argument("--remote", default="origin")
     integration_prepare.set_defaults(handler=handlers.integration_prepare)
+    integration_link = integration_commands.add_parser(
+        "link-evidence",
+        help="register a new CI, local-QA or resolver check of a candidate/target pair; idempotent",
+    )
+    _common(integration_link)
+    integration_link.add_argument("--record", required=True)
+    integration_link.add_argument(
+        "--kind", required=True, choices=defaults.INTEGRATION_EVIDENCE_KINDS
+    )
+    integration_link.add_argument("--candidate-commit", required=True)
+    integration_link.add_argument("--target-commit", required=True)
+    integration_link.add_argument(
+        "--result", required=True, choices=defaults.INTEGRATION_EVIDENCE_RESULTS
+    )
+    integration_link.add_argument(
+        "--reference", required=True, help="where the check result can be inspected"
+    )
+    integration_link.add_argument(
+        "--artifact-sha256", help="digest of the artifact the reference points to"
+    )
+    integration_link.set_defaults(handler=handlers.integration_link_evidence)
 
     report = commands.add_parser("report")
     report_commands = report.add_subparsers(dest="report_command", required=True)
