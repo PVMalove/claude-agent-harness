@@ -32,7 +32,7 @@ class CleanupItem(TypedDict):
 
     kind: str
     path: str
-    branch: NotRequired[str | None]
+    branch: NotRequired[str]
 
 
 class CleanupPlan(TypedDict):
@@ -189,8 +189,12 @@ def _active_worktrees(root: Path) -> set[Path] | None:
         return None
 
 
-def _origin_ref_current(repo: Path, upstream_ref: str) -> bool:
-    """Проверить, что локальный `origin/*` ref совпадает с актуальным состоянием remote."""
+def _branch_recoverable(repo: Path, branch: str) -> bool:
+    """Проверить, что локальная ветка полностью сохранена на remote-репозитории origin."""
+    upstream = _git(repo, "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}")
+    if upstream.returncode != 0 or not upstream.stdout.strip().startswith("origin/"):
+        return False
+    upstream_ref = upstream.stdout.strip()
     tracking = _git(repo, "rev-parse", upstream_ref)
     if tracking.returncode != 0:
         return False
@@ -215,51 +219,18 @@ def _origin_ref_current(repo: Path, upstream_ref: str) -> bool:
         )
     except subprocess.TimeoutExpired:
         return False
-    return (
-        remote.returncode == 0
-        and remote.stdout.split("\t", 1)[0] == tracking.stdout.strip()
-    )
-
-
-def _branch_recoverable(repo: Path, branch: str) -> bool:
-    """Проверить, что локальная ветка полностью сохранена на remote-репозитории origin."""
-    upstream = _git(repo, "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}")
-    if upstream.returncode != 0 or not upstream.stdout.strip().startswith("origin/"):
-        return False
-    upstream_ref = upstream.stdout.strip()
-    if not _origin_ref_current(repo, upstream_ref):
+    if (
+        remote.returncode != 0
+        or remote.stdout.split("\t", 1)[0] != tracking.stdout.strip()
+    ):
         return False
     return (
         _git(repo, "merge-base", "--is-ancestor", branch, upstream_ref).returncode == 0
     )
 
 
-def _worktree_preserved(repo: Path, worktree: Path, branch: str | None) -> bool:
-    """Проверить, что состояние worktree (ветка или detached HEAD) сохранено на origin."""
-    if branch is not None:
-        return _branch_recoverable(repo, branch)
-    head = _git(worktree, "rev-parse", "HEAD")
-    if head.returncode != 0:
-        return False
-    containing = _git(
-        repo,
-        "for-each-ref",
-        "--contains",
-        head.stdout.strip(),
-        "--format=%(refname)",
-        "refs/remotes/origin",
-    )
-    return containing.returncode == 0 and any(
-        _origin_ref_current(repo, ref.removeprefix("refs/remotes/"))
-        for ref in containing.stdout.split()
-        if ref != "refs/remotes/origin/HEAD"
-    )
-
-
 def _branch_allowed(root: Path, branch: str) -> bool:
-    """Проверить, что ветка — интеграционная или соответствует шаблону проекта."""
-    if branch.startswith("integration/"):
-        return True
+    """Проверить, соответствует ли имя ветки разрешённому шаблону проекта."""
     project = root / "project.json"
     try:
         pattern = json.loads(project.read_text(encoding="utf-8"))["branch_pattern"]
@@ -453,8 +424,8 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
                         reason = "not a direct managed worktree"
                     elif path in active:
                         reason = "referenced by an active batch"
-                    elif branch is not None and not _branch_allowed(root, branch):
-                        reason = "unowned local branch"
+                    elif branch is None or not _branch_allowed(root, branch):
+                        reason = "detached or unowned local branch"
                     elif not _old_enough(path, min_age_hours):
                         reason = "worktree newer than minimum age"
                     elif (
@@ -465,11 +436,12 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
                         reason = "worktree status unavailable"
                     elif status.stdout.strip():
                         reason = "worktree has uncommitted changes"
-                    elif not _worktree_preserved(checkout, path, branch):
+                    elif not _branch_recoverable(checkout, branch):
                         reason = "local commits are not preserved on origin"
                     if reason:
                         skipped.append({"path": str(path), "reason": reason})
                     else:
+                        assert branch is not None
                         remove.append(
                             {"kind": "worktree", "path": str(path), "branch": branch}
                         )
@@ -513,20 +485,19 @@ def apply_cleanup(
             continue
         try:
             if item["kind"] == "worktree":
-                if "branch" not in item:
+                branch = item.get("branch")
+                if not branch:
                     raise OSError("worktree item missing branch name")
-                branch = item["branch"]
-                if not _worktree_preserved(checkout, path, branch):
-                    raise OSError("worktree is no longer preserved on origin")
                 result = _git(checkout, "worktree", "remove", str(path))
                 if result.returncode != 0:
                     raise OSError(result.stderr.strip() or "git worktree remove failed")
-                if branch is not None:
-                    result = _git(checkout, "branch", "-D", branch)
-                    if result.returncode != 0:
-                        raise OSError(
-                            result.stderr.strip() or "local branch removal failed"
-                        )
+                if not _branch_recoverable(checkout, branch):
+                    raise OSError("local branch no longer matches its origin upstream")
+                result = _git(checkout, "branch", "-D", branch)
+                if result.returncode != 0:
+                    raise OSError(
+                        result.stderr.strip() or "local branch removal failed"
+                    )
             elif item["kind"] == "directory":
                 # Windows needs an extended-length path for nested test fixtures.
                 target = (
