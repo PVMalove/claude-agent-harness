@@ -777,18 +777,13 @@ def _validate_batch_integrity(root: Path, batch: JsonObject) -> None:
     )
 
 
-def _batch_for_ticket_branch(
-    root: Path,
-    ticket: str,
-    branch: str,
-    candidate: str,
-    requested_batch: object = None,
-) -> JsonObject:
-    """Find the batch whose accepted QA proof is pinned to this candidate.
+def _batches_for_ticket_branch(
+    root: Path, ticket: str, branch: str
+) -> list[JsonObject]:
+    """Every integrity-checked batch recorded for this ticket and issue branch.
 
-    A coordinator can retain abandoned planning attempts for the same ticket and issue branch.
-    Those records are audit evidence, not competing QA proof, so a current SHA selects the batch
-    rather than making PR preparation depend on deleting its history.
+    A coordinator can retain abandoned planning attempts for the same ticket and issue branch;
+    they are audit evidence, so this lists them all and leaves the choice to the caller.
     """
     batches_dir = _records_root(root) / "batches"
     if not batches_dir.is_dir():
@@ -807,6 +802,23 @@ def _batch_for_ticket_branch(
             "no orchestration batch matches the ticket and issue branch",
             remedy="pass a ticket and branch that match an existing orchestration batch",
         )
+    return matches
+
+
+def _batch_for_ticket_branch(
+    root: Path,
+    ticket: str,
+    branch: str,
+    candidate: str,
+    requested_batch: object = None,
+) -> JsonObject:
+    """Find the batch whose accepted QA proof is pinned to this candidate.
+
+    A coordinator can retain abandoned planning attempts for the same ticket and issue branch.
+    Those records are audit evidence, not competing QA proof, so a current SHA selects the batch
+    rather than making PR preparation depend on deleting its history.
+    """
+    matches = _batches_for_ticket_branch(root, ticket, branch)
     if requested_batch is not None:
         batch_id = _safe_id(requested_batch, "batch")
         selected = next(

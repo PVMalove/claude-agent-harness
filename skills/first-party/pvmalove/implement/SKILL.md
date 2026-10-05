@@ -204,7 +204,13 @@ notes.
 
 ## Wrap-up
 
-After an accepted publish, offer `/to-pull-requests <ticket>`. Do not invoke it automatically, open
+After an accepted publish, record the integration link before the branch is merged or deleted:
+`python .harness/orchestration/coordinator.py --repo . integration prepare --ticket "#<ID>" --branch "<issue-branch>"`
+(add `--batch <batch-id>` when several batches published the branch). It writes only an immutable
+integration record and is safe to repeat; if it refuses, report its remedy to the developer and do
+not work around it. Never edit the completed batch or its reports by hand.
+
+Then offer `/to-pull-requests <ticket>`. Do not invoke it automatically, open
 or merge a PR, write to an integration branch, or close the ticket in this skill. Leave
 `status::in-progress` on the ticket: closing it and moving its unblocked dependents to
 `status::ready` belong to `/to-pull-requests` after the merge.

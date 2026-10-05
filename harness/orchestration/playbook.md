@@ -518,6 +518,32 @@ Before dispatch, the coordinator records the active batches against the budget, 
 quality gate lane position. After each handoff, the incoming role receives the prior completion report as
 evidence but still receives its own immutable brief.
 
+## Integration accounting
+
+A `completed` batch is history and is never reopened or rewritten. After an accepted publish the
+coordinator records the link a later integration step needs in a separate immutable Integration
+record, through the public `integration` command group; none of its commands writes a batch, plan,
+dispatch or report, or changes Git:
+
+- `integration prepare --ticket T --branch B [--batch ID] [--candidate-commit SHA]` links ticket,
+  issue branch, source batch, published candidate SHA and the integration (target) SHA, together with
+  the accepted green QA evidence of that candidate. It selects the one completed batch with an
+  accepted publish and never substitutes another: several candidates need an explicit `--batch`.
+  The published SHA is confirmed by the accepted publish report and by the remote branch. It is
+  idempotent: repeating it neither loses nor duplicates the record. Every refusal states a remedy,
+  including an unpublished result, a different ticket or branch, a candidate that is not the
+  published SHA, and an integration ref that already moved while no record exists.
+- `integration status` is a read-only observation: `current`, `stale` (the integration ref moved;
+  `refresh_required`) or `unavailable`. A stale record never lets the old QA stand in for a new
+  candidate/target pair, and observing it never creates a dispatch. A refresh is a new developer
+  rebase and a new QA through the normal route.
+- `integration link-evidence --kind ci|local-qa|resolver` is the only way later CI, local-QA and
+  resolver results are attached. Each is its own immutable record with its own candidate/target pair
+  and `verification: unverified`; the record's initial evidence keeps its original pair.
+
+Records live under `reports/integration/` and `reports/integration-evidence/` in the existing
+`reports` directory, so no ledger schema change or migration is involved.
+
 ## Baseline metrics
 
 The first pilot records observations without importing a provider, runtime, or fixed numerical

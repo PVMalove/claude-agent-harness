@@ -49,6 +49,10 @@ lifecycle — в [playbook.md](./playbook.md), границы ролей — в 
    `approval_policy` `milestone`/`low_risk`/`auto` чистые report без рисков принимаются автоматически.
 5. **QA и publish.** Clean-room QA гоняет `verification_commands` на закреплённом candidate SHA в
    общей очереди. Publish выдаёт принятый SHA; PR открывает человек через `/to-pull-requests`.
+6. **Integration accounting.** После accepted publish `integration prepare` записывает связь
+   тикет, ветка, source batch, опубликованный candidate SHA и target SHA; `integration status`
+   только наблюдает `stale` без dispatch, а `integration link-evidence` принимает будущие CI,
+   local-QA и resolver результаты. Завершённый batch не переписывается.
 
 Состояния batch: `planned → awaiting-approval ↔ active → completed | blocked | failed | abandoned`.
 `needs_attention` — не состояние, а флаг: он останавливает следующий dispatch при зависшем воркере,

@@ -382,6 +382,13 @@ ATTENTION_STATE_FIELDS = (
     "last_safe_action",
     "recommended_human_action",
 )
+# Integration accounting (issue #532): the routes whose evidence may be linked to an integration
+# record, the results a registered check may carry, and the shape of the ids and SHAs involved.
+INTEGRATION_EVIDENCE_KINDS = ("ci", "local-qa", "resolver")
+INTEGRATION_EVIDENCE_RESULTS = ("passed", "failed")
+INTEGRATION_RECORD_ID_PATTERN = re.compile(r"integration-[0-9a-f]{32}")
+INTEGRATION_SHA_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+INTEGRATION_REFERENCE_MAX_CHARS = 2_048
 MAX_CHECK_EVIDENCE_CHARS = 1_600
 CONTINUATION_FACTS_FIELDS = {
     "dispatch_id",
