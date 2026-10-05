@@ -60,6 +60,48 @@ def _fetch_ref_tip(repo: Path, ref: str) -> str:
     return _git(repo, "rev-parse", "--verify", "FETCH_HEAD")
 
 
+def _remote_branch_tip(
+    repo: Path, remote: str, branch: str, *, timeout: int = 60
+) -> str | None:
+    """The commit a remote branch points to right now, or ``None`` when it has no such branch.
+
+    Read-only: ``ls-remote`` never writes a local ref or ``FETCH_HEAD``.  The ref name is compared
+    exactly, because ``ls-remote`` patterns also match deeper names that merely end with it.
+    """
+    for label, value in (("remote", remote), ("branch", branch)):
+        if not isinstance(value, str) or not value.strip() or value.startswith("-"):
+            raise CoordinatorError(
+                f"{label} must be a non-empty string not starting with '-'",
+                remedy=f"pass a valid {label} name",
+            )
+    name = f"refs/heads/{branch}"
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "ls-remote", "--heads", remote, name],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CoordinatorError(
+            f"remote {remote!r} did not answer within {timeout} seconds",
+            remedy=f"check connectivity to {remote!r} and retry",
+        ) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise CoordinatorError(
+            f"cannot read branch {branch!r} from remote {remote!r}: {detail or 'unknown error'}",
+            remedy=f"check that the remote {remote!r} is configured and reachable, then retry",
+        )
+    for line in result.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        if ref.strip() == name:
+            return sha.strip()
+    return None
+
+
 def _commit_changed_files(repo: Path, commit: str) -> list[str]:
     output = _git(
         repo, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", commit, "--"

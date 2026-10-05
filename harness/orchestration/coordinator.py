@@ -191,6 +191,15 @@ from harness.orchestration.workflow.history import (
 from harness.orchestration.workflow.history import (
     _validate_dispatch as _validate_dispatch,
 )
+from harness.orchestration.workflow.integration import (
+    integration_link_evidence as integration_link_evidence,
+)
+from harness.orchestration.workflow.integration import (
+    integration_prepare as integration_prepare,
+)
+from harness.orchestration.workflow.integration import (
+    integration_status as integration_status,
+)
 from harness.orchestration.workflow.qa_integration import (
     clear_qa_lease as clear_qa_lease,
 )

@@ -296,6 +296,96 @@ class CheckpointRecord:
         return cls(checkpoint_id=cast(str, data.get("checkpoint_id")), extra=extra)
 
 
+def _derived_id(prefix: str, members: JsonObject) -> str:
+    """A deterministic record id: the prefix and the first 32 hex digits of the canonical digest."""
+    digest = hashlib.sha256(_canonical(members).encode("utf-8")).hexdigest()
+    return f"{prefix}-{digest[:32]}"
+
+
+@dataclass(frozen=True)
+class IntegrationRecord:
+    """Value Object for a ``reports/integration/*.json`` record.
+
+    The record lives in a subdirectory of the already validated ``reports`` directory, so adding it
+    needs neither a schema bump nor a ``ledger migrate``.  Its id is derived from the identity it
+    links, so repeating a prepare finds the same record instead of writing a second one.
+    """
+
+    directory: ClassVar[str] = "reports/integration"
+    IDENTITY_MEMBERS: ClassVar[tuple[str, ...]] = (
+        "ticket",
+        "branch",
+        "source_batch_id",
+        "candidate_sha",
+        "target_sha",
+    )
+
+    integration_record_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, identity: JsonObject) -> str:
+        return _derived_id(
+            "integration", {key: identity.get(key) for key in cls.IDENTITY_MEMBERS}
+        )
+
+    @property
+    def record_id(self) -> str:
+        return self.integration_record_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "integration_record_id": self.integration_record_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> IntegrationRecord:
+        known = ("integration_record_id",)
+        extra = {key: value for key, value in data.items() if key not in known}
+        return cls(
+            integration_record_id=cast(str, data.get("integration_record_id")),
+            extra=extra,
+        )
+
+
+@dataclass(frozen=True)
+class IntegrationEvidenceRecord:
+    """Value Object for a ``reports/integration-evidence/*.json`` record: one new check of a
+    candidate/target pair linked to an integration record.  The id excludes the recording time, so
+    linking the same evidence twice is idempotent."""
+
+    directory: ClassVar[str] = "reports/integration-evidence"
+    ID_MEMBERS: ClassVar[tuple[str, ...]] = (
+        "integration_record_id",
+        "kind",
+        "candidate_sha",
+        "target_sha",
+        "result",
+        "reference",
+        "artifact_sha256",
+    )
+
+    evidence_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, members: JsonObject) -> str:
+        return _derived_id(
+            "evidence", {key: members.get(key) for key in cls.ID_MEMBERS}
+        )
+
+    @property
+    def record_id(self) -> str:
+        return self.evidence_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "evidence_id": self.evidence_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> IntegrationEvidenceRecord:
+        known = ("evidence_id",)
+        extra = {key: value for key, value in data.items() if key not in known}
+        return cls(evidence_id=cast(str, data.get("evidence_id")), extra=extra)
+
+
 class LedgerRecordVO(Protocol):
     """Structural shape a Value Object must have to be persisted via ``write_record``/
     ``replace_record`` -- satisfied by ``BatchRecord``, ``DispatchRecord``, and the other frozen
