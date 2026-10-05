@@ -914,6 +914,91 @@ class IntegrationStatusTests(unittest.TestCase):
         self.assertEqual(parsed.handler(parsed)["state"], "current")
 
 
+class IntegrationStatusAfterRefreshTests(unittest.TestCase):
+    """After a PR-preparation refresh the new pair needs integration verification, not review."""
+
+    def setUp(self) -> None:
+        self.branch = PublishedBranch()
+        self.addCleanup(self.branch.close)
+        self.published = self.branch.publish()
+        self.prepared = self.branch.prepare()
+        self.record_id = self.prepared["integration_record_id"]
+        self.moved = self.branch.advance_integration_ref()
+        self.refreshed = coordinator.integration_refresh(
+            self.branch.args(
+                record=self.record_id, ticket=None, branch=None, batch=None
+            )
+        )
+
+    def status(self) -> JsonObject:
+        return coordinator.integration_status(
+            self.branch.args(
+                record=self.record_id, ticket=None, branch=None, batch=None
+            )
+        )
+
+    def link(self, **overrides: object) -> JsonObject:
+        values: JsonObject = {
+            "record": self.record_id,
+            "kind": "ci",
+            "result": "passed",
+            "reference": "https://ci.example.invalid/runs/9",
+            "artifact_sha256": None,
+            "candidate_commit": self.refreshed["new_candidate_sha"],
+            "target_commit": self.moved,
+        }
+        values.update(overrides)
+        return coordinator.integration_link_evidence(self.branch.args(**values))
+
+    def test_the_refreshed_pair_is_current_but_unverified_and_old_qa_is_historical(
+        self,
+    ) -> None:
+        status = self.status()
+
+        self.assertEqual(status["state"], "current")
+        self.assertEqual(status["candidate_sha"], self.refreshed["new_candidate_sha"])
+        self.assertEqual(status["original_candidate_sha"], self.published["candidate"])
+        self.assertEqual(status["target_sha"], self.moved)
+        self.assertFalse(status["source_evidence"]["applies_to_current_pair"])
+        self.assertEqual(
+            [item["refresh_id"] for item in status["refreshes"]],
+            [self.refreshed["refresh_id"]],
+        )
+        verification = status["verification"]
+        self.assertTrue(verification["required"])
+        self.assertFalse(verification["satisfied"])
+        self.assertFalse(verification["re_review_required"])
+        self.assertIn("integration", status["notice"])
+
+    def test_only_a_passed_ci_or_local_qa_check_of_the_new_pair_satisfies_it(
+        self,
+    ) -> None:
+        self.link(kind="resolver")
+        self.link(kind="ci", result="failed", reference="ci-failed")
+        self.link(
+            kind="ci", candidate_commit=self.published["candidate"], reference="old"
+        )
+        self.assertFalse(self.status()["verification"]["satisfied"])
+
+        self.link(kind="local-qa", reference="local-qa-run")
+
+        status = self.status()
+        self.assertTrue(status["verification"]["satisfied"])
+        self.assertFalse(status["verification"]["re_review_required"])
+        self.assertIn("No re-review", status["notice"])
+
+    def test_an_unrefreshed_record_needs_no_new_verification(self) -> None:
+        other = PublishedBranch()
+        self.addCleanup(other.close)
+        other.publish()
+        record = other.prepare()["integration_record_id"]
+        status = coordinator.integration_status(
+            other.args(record=record, ticket=None, branch=None, batch=None)
+        )
+        self.assertFalse(status["verification"]["required"])
+        self.assertEqual(status["refreshes"], [])
+
+
 REPO = Path(__file__).resolve().parents[2]
 
 
