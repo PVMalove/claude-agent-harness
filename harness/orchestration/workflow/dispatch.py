@@ -221,7 +221,8 @@ def _dispatch_approval_mode(
 ) -> str:
     """How this dispatch is approved: ``explicit`` (a human) or ``policy:<name>``.
 
-    A project-approved continuation is allowed only outside the preserved risk milestones.
+    A project-approved continuation is allowed only outside the preserved risk milestones. A
+    re-run after a role worked around a block (``bypass-rerun``) is always one of them.
     """
     if _non_empty(getattr(args, "approved_by", None)) or _non_empty(
         getattr(args, "approved_at", None)
@@ -229,11 +230,14 @@ def _dispatch_approval_mode(
         return "explicit"
     policy = batch.get("approval_policy", _approval_policy(config))
     risk_triggered = bool(risk and risk.get("matched_triggers"))
+    previous = _newest_decided_dispatch(batch)
+    routing = previous["decision"].get("routing") if previous else None
     milestone = (
         purpose == "publish"
         or (role == "qa" and policy != "low_risk")
         or risk_triggered
         or batch.get("risk_reassessment_required")
+        or (isinstance(routing, dict) and routing.get("route") == "bypass-rerun")
     )
     if policy == "manual_all" or milestone:
         raise CoordinatorError(
@@ -345,6 +349,18 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
     return prepared.to_dict()
 
 
+def _newest_decided_dispatch(batch: JsonObject) -> JsonObject | None:
+    """The newest dispatch entry that carries a coordinator decision."""
+    return next(
+        (
+            item
+            for item in reversed(batch.get("dispatches", []))
+            if isinstance(item.get("decision"), dict)
+        ),
+        None,
+    )
+
+
 def _proposed_transition(
     batch: JsonObject,
     next_action: object,
@@ -362,14 +378,7 @@ def _proposed_transition(
     still unsent (or was cancelled) does not change the transition it was created for. A non-empty
     carried-items section is bound by its digest, so a finding attached after the proposal needs a
     new approval."""
-    previous = next(
-        (
-            item
-            for item in reversed(batch.get("dispatches", []))
-            if isinstance(item.get("decision"), dict)
-        ),
-        None,
-    )
+    previous = _newest_decided_dispatch(batch)
     decision = previous.get("decision") if previous else None
     routing = decision.get("routing") if isinstance(decision, dict) else None
     return operational_guards.build_transition(

@@ -84,14 +84,18 @@ Recovery route table in `.harness/orchestration/playbook.md` (situation → rout
 evidence).
 
 A worker that works around a hook or tool block (another command form, tool, script file, `eval`,
-interpreter or a split command) breaks the protocol: never accept or warning-override that report;
-decide `retry` with a developer reason category (not `tooling`) or `block`, and record the
-violation in `--note`. A report that stops with `tooling_blocker` instead is confirmed before its
-retry: check that its `command` is legitimate under the brief (zone and tool policy) and that its
-`message` refuses that command. For a false positive, file or reuse a bug ticket against the tool
-through the tracker CLI (tool, command, message, dispatch ID), name the ticket in `--note`, and run
-`batch decide --decision retry` once `route_preview.retry.route` is `tooling-retry`; it re-runs the
-same stage on the same SHA (a developer continues its last commit) and spends no
+interpreter or a split command) breaks the protocol: never accept or warning-override that report,
+and record the violation in `--note`. For an architect or developer (publish included), decide
+`retry` with a developer reason category (not `tooling`) or `block`. For a read-only code-review, qa
+or verification role, pass `--reason-category block-bypass` to `batch decision-packet` and, once its
+`route_preview.retry.route` is `bypass-rerun`, to `batch decide --decision retry`: the same stage
+re-runs on the same SHA with no new candidate and no developer retry spent, and its new dispatch
+always needs explicit approval. A report that stops with `tooling_blocker` instead is confirmed
+before its retry: check that its `command` is legitimate under the brief (zone and tool policy) and
+that its `message` refuses that command. For a false positive, file or reuse a bug ticket against
+the tool through the tracker CLI (tool, command, message, dispatch ID), name the ticket in `--note`,
+and run `batch decide --decision retry` once `route_preview.retry.route` is `tooling-retry`; it
+re-runs the same stage on the same SHA (a developer continues its last commit) and spends no
 `retry_policy.max_developer_retries`. A command that is not legitimate is no false positive: retry
 with the developer reason category its evidence supports. Resolve the `tooling-retry-repeated`
 attention, raised by the third consecutive tooling retry on one candidate, only once the tool is

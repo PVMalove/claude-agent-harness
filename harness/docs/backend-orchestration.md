@@ -626,11 +626,11 @@ risks, blockers и следующее решение coordinator-а. Для read
 структурированным данным report: outcome, findings, severity осей Standards/Spec, failed checks и
 тому, изменился ли candidate. Свободный текст `blockers`/`output` не классифицируется. Явную причину
 можно передать через `--reason-category` (`code`, `requirements`, `candidate-change`,
-`verification-infrastructure`, `transport`, `context-pressure`, `tooling`, `unknown`), но она не
-отменяет найденный finding. Rate limit, недоступный Bash/WSL wrapper и transport failure — это operational
-evidence (`verification-infrastructure` или `transport`), а не code finding. Context limit —
-`context-pressure` только если для отчитавшегося dispatch записано `critical`-наблюдение
-`context_pressure` (см. ниже); голое утверждение даёт `unknown`.
+`verification-infrastructure`, `transport`, `context-pressure`, `tooling`, `block-bypass`,
+`unknown`), но она не отменяет найденный finding. Rate limit, недоступный Bash/WSL wrapper и
+transport failure — это operational evidence (`verification-infrastructure` или `transport`), а не
+code finding. Context limit — `context-pressure` только если для отчитавшегося dispatch записано
+`critical`-наблюдение `context_pressure` (см. ниже); голое утверждение даёт `unknown`.
 
 | Стадия отчёта | `accept` | `retry` | `block` / `fail` | `abandon` |
 | --- | --- | --- | --- | --- |
@@ -660,6 +660,18 @@ operational-категории могут повторить read-only стад�
 `developer-retry`, который продолжает его последний коммит; этот коммит записывается в
 `candidate_commit` routing record. В таблице выше «три operational-категории» по-прежнему означают
 `verification-infrastructure`, `transport` и `context-pressure`.
+
+`block-bypass` — read-only роль (code-review, qa или verification) обошла блокировку hook-а или
+инструмента вместо остановки с `tooling_blocker`. Эту категорию называет только approver, и report с
+нарушением не является evidence: его findings, failed checks и outcome не влияют на маршрут, и лишь
+сдвинутый candidate по-прежнему ведёт в `developer-retry`. Маршрут — `bypass-rerun`: новый dispatch
+той же стадии на том же SHA (verification — на её зарегистрированном candidate) без нового candidate
+commit. `batch decide` требует `--note` с описанием нарушения; report не принимается и не
+закрывается через override-warning, а новый dispatch всегда требует явного approval
+(`--approved-by`) при любой `approval_policy`. `bypass-rerun` не расходует
+`retry_policy.max_developer_retries`. Для architect, developer и publish `block-bypass` отклоняется:
+такой report по-прежнему получает `retry` с developer-категорией (`code`, `requirements`,
+`candidate-change`) или `block`.
 
 Retry непринятого developer report продолжает его историю. Пока batch ждёт этот `developer-retry`,
 coordinator берёт candidate из immutable report (`commit_sha`, сверенный по hash) и пинит на него
@@ -715,12 +727,13 @@ agent inbox и записи QA-очереди dispatch, которые уже н
 `previous_role: developer`, `next_role` и `next_action` `code-review`, `candidate_commit`,
 `carried_item_ids` и `rationale`, без `reason_category` и `decided_at`. К `next_action` он не
 применяется: тот идёт через risk assessment, как при любом accept developer. Восьмое,
-`tooling-retry`, записывает `retry` с категорией `tooling` (см. выше). Маршрут ставится там же, где `next_action`, по тем же
-структурированным данным и никогда по свободному тексту. У `abandon` routing record той же формы, но
-`reason_category`, `next_role`, `next_action` и `candidate_commit` равны `null`, а `rationale`
-содержит только структурные факты (`--reason` остаётся в `note`). Нормативная таблица «ситуация →
-маршрут → кто утверждает → evidence» — раздел «Recovery route table» в
-`.harness/orchestration/playbook.md`.
+`tooling-retry`, записывает `retry` с категорией `tooling` (см. выше). Девятое, `bypass-rerun`,
+записывает `retry` с категорией `block-bypass` (см. выше). Маршрут ставится там же, где
+`next_action`, по тем же структурированным данным и никогда по свободному тексту. У `abandon`
+routing record той же формы, но `reason_category`, `next_role`, `next_action` и `candidate_commit`
+равны `null`, а `rationale` содержит только структурные факты (`--reason` остаётся в `note`).
+Нормативная таблица «ситуация → маршрут → кто утверждает → evidence» — раздел «Recovery route table»
+в `.harness/orchestration/playbook.md`.
 
 `batch decision-packet` показывает маршрут до записи решения: поле `route_preview` содержит
 `retry` — routing record, вычисленный так же, как в `batch decide` (без `decided_at`), и `abandon` —

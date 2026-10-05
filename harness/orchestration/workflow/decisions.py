@@ -25,6 +25,8 @@ from harness.orchestration.core.config import (
     _worker_attestation_required,
 )
 from harness.orchestration.core.constants import (
+    BLOCK_BYPASS_REASON_CATEGORY,
+    BLOCK_BYPASS_STAGES,
     DEVELOPER_REASON_CATEGORIES,
     NEXT_ACTION_DISPATCH_ROLE,
     OPERATIONAL_REASON_CATEGORIES,
@@ -434,6 +436,8 @@ def _retry_routing(
     dispatch (``pressure_recorded``); a claim without that observation is ``unknown``. ``tooling``
     comes only from a blocked report's structured ``tooling_blocker`` (an approver may name it, never
     replace it) and routes ``tooling-retry``: the same stage again, a developer from its last commit.
+    ``block-bypass`` comes only from an approver, for a read-only stage whose role worked around a
+    block: the report is no evidence, so only a moved candidate overrides its ``bypass-rerun``.
     """
     if (
         explicit_category is not None
@@ -443,16 +447,27 @@ def _retry_routing(
             f"unknown retry reason category {explicit_category!r}",
             remedy=f"pass --reason-category as one of: {', '.join(RETRY_REASON_CATEGORIES)}",
         )
+    bypass_named = explicit_category == BLOCK_BYPASS_REASON_CATEGORY
+    if bypass_named and stage not in BLOCK_BYPASS_STAGES:
+        raise CoordinatorError(
+            f"{BLOCK_BYPASS_REASON_CATEGORY} re-runs only a read-only {', '.join(BLOCK_BYPASS_STAGES)} report, not a {stage} report",
+            remedy=f"retry a {stage} that worked around a hook or tool block with a developer reason category ({', '.join(DEVELOPER_REASON_CATEGORIES)}), or block the batch",
+        )
     candidate_bound = stage in {"code-review", "qa", "publish"}
     unchanged = (
         dispatch_candidate is not None and dispatch_candidate == current_candidate
     )
     outcome = report.get("outcome")
-    structured = _retry_evidence(report, candidate_bound and not unchanged)
+    structured = _retry_evidence(
+        {} if bypass_named else report, candidate_bound and not unchanged
+    )
     if explicit_category in DEVELOPER_REASON_CATEGORIES:
         category, basis = explicit_category, "the approver named this reason category"
     elif structured is not None:
         category, basis = structured
+    elif bypass_named:
+        category = BLOCK_BYPASS_REASON_CATEGORY
+        basis = "the approver found that the role worked around a hook or tool block, so its findings, checks and outcome are no evidence"
     elif (
         explicit_category in {None, TOOLING_REASON_CATEGORY}
         and outcome == "blocked"
@@ -485,6 +500,12 @@ def _retry_routing(
         outcome_sentence = (
             f"a new {stage} dispatch {restart}; it spends no developer retry and the "
             "earlier brief, report and tooling blocker stay as audit evidence"
+        )
+    elif category == BLOCK_BYPASS_REASON_CATEGORY:
+        next_action, route = stage, "bypass-rerun"
+        outcome_sentence = (
+            f"a new independent {stage} dispatch runs on the same SHA under an explicit approval; "
+            "the bypassing report is neither accepted nor overridden and stays only as audit evidence"
         )
     elif stage == "architect":
         next_action, route = "architect", "architect-retry"
@@ -764,6 +785,16 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         routing: JsonObject | None = None
         if args.decision == "retry":
             routing = _decide_retry_route(repo, root, batch, dispatch, report, args)
+            bypass_named = (
+                getattr(args, "reason_category", None) == BLOCK_BYPASS_REASON_CATEGORY
+            )
+            if bypass_named and (
+                not _non_empty(args.note) or args.note.strip().lower() == "none"
+            ):
+                raise CoordinatorError(
+                    "a block-bypass retry requires a recorded note naming the violation",
+                    remedy="pass --note (other than 'none') naming the hook or tool block the role worked around and how",
+                )
             routing["decided_at"] = utils._now()
             if routing["route"] == "verification":
                 report_path = _records_root(root) / pending[0]["report"]
@@ -1028,9 +1059,12 @@ def _decide_retry_route(
             **routing,
             "candidate_commit": _candidate_commit(repo, report["commit_sha"]),
         }
-    if stage == "verification" and routing["route"] == "tooling-retry":
+    if stage == "verification" and routing["route"] in {
+        "tooling-retry",
+        "bypass-rerun",
+    }:
         # Verification re-runs on the registered candidate its brief pinned; no accepted
-        # candidate names it, so record the pin for the audit and the tooling streak.
+        # candidate names it, so record the pin for the audit (and the tooling streak).
         routing = {**routing, "candidate_commit": dispatch.get("candidate_commit")}
     if hint is not None:
         routing["classifier_hint"] = {"category": hint.category, "basis": hint.basis}
