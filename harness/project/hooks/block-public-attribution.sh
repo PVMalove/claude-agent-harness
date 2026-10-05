@@ -29,7 +29,7 @@ fi
 
 FORBIDDEN='\bclaude\b|\bopenai\b|\bchatgpt\b|\bgpt[-_ ]?[0-9]|\bcopilot\b|\bgemini\b|\bcodex\b|\bco-authored[- ]by\b|\bai[-_ ]?(agent|assistant|generated)\b'
 
-printf '%s\n' "$COMMAND" | grep -qiE 'git[[:space:]]+(commit|push)|(gh[[:space:]]+pr|glab[[:space:]]+mr)[[:space:]]+(create|edit)' || exit 0
+printf '%s\n' "$COMMAND" | grep -qiE 'git[[:space:]]+(commit|push)|(gh[[:space:]]+pr|glab[[:space:]]+mr)[[:space:]]+(create|new|edit|update)' || exit 0
 
 # Heredoc bodies are stdin data, not shell words: they are cut out before publish commands are
 # detected and tokenized, so a script that only mentions `git commit` publishes nothing. A body
@@ -159,7 +159,7 @@ def cut_heredocs(text):
 
 shell, bodies = cut_heredocs(sys.stdin.read())
 is_commit = re.search(r"git\s+commit", shell, re.IGNORECASE)
-is_pr = re.search(r"(gh\s+pr|glab\s+mr)\s+(create|edit)", shell, re.IGNORECASE)
+is_pr = re.search(r"(gh\s+pr|glab\s+mr)\s+(create|new|edit|update)", shell, re.IGNORECASE)
 is_push = re.search(r"git\s+push", shell, re.IGNORECASE)
 if not (is_commit or is_pr or is_push):
     raise SystemExit(0)
@@ -230,6 +230,60 @@ if (has_sequence("gh", "pr", "create") or has_sequence("gh", "pr", "edit") or
     check_files(values({"--body-file", "--description-file"}))
     for text in values({"--title", "--body", "--description"}):
         check_text(text)
+
+# A short flag means what its own CLI says: gh -d is --draft and glab -b is --target-branch, so
+# each publication command reads only the flags that carry text in it.
+GH = ({"t": "text", "b": "text"}, {"--title": "text", "--body": "text"})
+GLAB = ({"t": "text", "d": "text"}, {"--title": "text", "--description": "text"})
+PUBLICATIONS = (
+    ("gh pr create|new|edit", GH),
+    ("glab mr create|new|edit|update", GLAB),
+)
+
+
+def flag_values(args, shorts, longs):
+    """Return (kind, value) for each text flag in args, in every reading the CLI may take.
+
+    A short flag outside the table counts as a boolean, and a flag value is read again as a
+    flag, so a value-taking flag the table omits cannot hide the text flag that follows it.
+    """
+    found, taken = [], False
+    for index, token in enumerate(args):
+        kind = value = None
+        if token.startswith("--"):
+            name, equals, rest = token.partition("=")
+            kind = longs.get(name)
+            value = rest if equals else None
+        elif token.startswith("-"):
+            for offset, flag in enumerate(token[1:], 2):
+                kind = shorts.get(flag)
+                if kind:
+                    rest = token[offset:]
+                    value = (rest[1:] if rest.startswith("=") else rest) or None
+                    break
+        consumed, taken = taken, False
+        if kind is None:
+            continue
+        if value is None:
+            if index + 1 == len(args):
+                if consumed:
+                    continue
+                fail("Невозможно проверить публичные Git-метаданные: у параметра сообщения нет значения.")
+            value, taken = args[index + 1], True
+        found.append((kind, value))
+    return found
+
+
+programs = [re.split(r"[\\/]", token)[-1] for token in tokens]
+for spec, (shorts, longs) in PUBLICATIONS:
+    *command, verbs = spec.split()
+    for verb in verbs.split("|"):
+        key = [*command, verb]
+        for index in range(len(tokens)):
+            if programs[index] == key[0] and tokens[index + 1 : index + len(key)] == key[1:]:
+                for kind, value in flag_values(tokens[index + len(key) :], shorts, longs):
+                    if kind == "text":
+                        check_text(value)
 
 if is_push or is_pr:
     print(1)
