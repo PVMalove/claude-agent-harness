@@ -5,6 +5,9 @@ This playbook is the runtime-neutral coordination contract for the optional
 dispatch work, select a provider, or require a runtime adapter. An adapter may translate
 these records into its own commands later, but it must preserve the rules below.
 
+Before the first English handoff, the coordinator must read
+[Technical English](../docs/technical-english.md).
+
 ## Authority and invariants
 
 The coordinator owns the batch lifecycle, dispatch approval, scope changes, and the decision to
