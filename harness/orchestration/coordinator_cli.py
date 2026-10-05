@@ -630,6 +630,19 @@ def build_parser(
         "--artifact-sha256", help="digest of the artifact the reference points to"
     )
     integration_link.set_defaults(handler=handlers.integration_link_evidence)
+    integration_refresh = integration_commands.add_parser(
+        "refresh",
+        help="PR preparation: rebase the own issue branch onto the current integration SHA when it moved",
+    )
+    _common(integration_refresh)
+    integration_refresh.add_argument("--record", help="integration record ID")
+    integration_refresh.add_argument("--ticket")
+    integration_refresh.add_argument("--branch")
+    integration_refresh.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_refresh.set_defaults(handler=handlers.integration_refresh)
 
     report = commands.add_parser("report")
     report_commands = report.add_subparsers(dest="report_command", required=True)

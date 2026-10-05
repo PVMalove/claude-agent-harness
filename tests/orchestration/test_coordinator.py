@@ -2757,7 +2757,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         self.assertEqual([path.read_bytes() for path in evidence_files], prior_evidence)
 
-    def test_infrastructure_retry_still_enforces_the_base_commit_gate(self) -> None:
+    def test_infrastructure_retry_is_not_blocked_by_upstream_drift(self) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])
         candidate = self._accepted_candidate(batch["batch_id"])
@@ -2768,10 +2768,12 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         _git(self.repo, "commit", "-m", "later")
         _git(self.repo, "push", "origin", "master")
 
-        with self.assertRaises(coordinator.CoordinatorError) as caught:
-            self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+        dispatch = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
 
-        self.assertIn("base", caught.exception.message.lower())
+        self.assertEqual(dispatch["brief"]["candidate_commit"], candidate)
+        record = self._batch_record(batch["batch_id"])
+        self.assertFalse(record.get("base_rebase_required"))
+        self.assertNotIn("rebase_target_commit", record)
 
     def test_review_code_findings_route_to_developer_retry(self) -> None:
         warning = {"severity": "warning", "summary": "off-by-one", "evidence": "x.py:3"}
@@ -6640,10 +6642,14 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         _git(self.repo, "commit", "-m", "upstream")
         _git(self.repo, "push", "origin", "master")
         upstream = _git(self.repo, "rev-parse", "HEAD")
-        with self.assertRaisesRegex(
-            coordinator.CoordinatorError, "batch base is stale"
-        ):
-            self._dispatch(batch_id, "code-review", candidate=commits[-1])
+        self._edit_batch(
+            batch_id,
+            next_action="developer",
+            required_next_role="developer",
+            retry_candidate_required=True,
+            base_rebase_required=True,
+            rebase_target_commit=upstream,
+        )
 
         rebase = self._dispatch(batch_id, "developer")["brief"]
         self.assertEqual(rebase["transition"]["next_action"], "developer")

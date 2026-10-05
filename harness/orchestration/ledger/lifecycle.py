@@ -386,6 +386,43 @@ class IntegrationEvidenceRecord:
         return cls(evidence_id=cast(str, data.get("evidence_id")), extra=extra)
 
 
+@dataclass(frozen=True)
+class IntegrationRefreshRecord:
+    """Value Object for a ``reports/integration-refresh/*.json`` record (issue #533): one clean
+    rebase of an issue branch onto a new integration SHA, linking the candidate before and after,
+    the target SHA and the resulting history.  The id excludes the recording time, so repeating a
+    refresh that already happened finds the same record."""
+
+    directory: ClassVar[str] = "reports/integration-refresh"
+    ID_MEMBERS: ClassVar[tuple[str, ...]] = (
+        "integration_record_id",
+        "previous_candidate_sha",
+        "previous_target_sha",
+        "new_candidate_sha",
+        "target_sha",
+    )
+
+    refresh_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, members: JsonObject) -> str:
+        return _derived_id("refresh", {key: members.get(key) for key in cls.ID_MEMBERS})
+
+    @property
+    def record_id(self) -> str:
+        return self.refresh_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "refresh_id": self.refresh_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> IntegrationRefreshRecord:
+        known = ("refresh_id",)
+        extra = {key: value for key, value in data.items() if key not in known}
+        return cls(refresh_id=cast(str, data.get("refresh_id")), extra=extra)
+
+
 class LedgerRecordVO(Protocol):
     """Structural shape a Value Object must have to be persisted via ``write_record``/
     ``replace_record`` -- satisfied by ``BatchRecord``, ``DispatchRecord``, and the other frozen

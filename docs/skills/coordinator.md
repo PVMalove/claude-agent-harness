@@ -44,6 +44,12 @@ Coordinator записывает ровно одно текущее состоя
   каждый отказ содержит remedy.
 - `integration status` — наблюдение без записи и без dispatch: `current`, `stale` (integration ref
   ушёл вперёд, нужен новый check пары) или `unavailable`. Старое QA на новую пару не переносится.
+- `integration refresh` — подготовка PR при сдвиге integration base: при неизменном target rebase не
+  запускается, иначе собственная issue-ветка batch перебазируется на точный SHA target и публикуется
+  через `--force-with-lease`. Грязный worktree, чужие коммиты на remote и protected-ветки отклоняются;
+  конфликт возвращает `state: conflict` с данными resolver. Rebase пишет immutable
+  `IntegrationRefreshRecord`; старое QA остаётся историей, новую пару подтверждают CI или local-QA,
+  повторный review не нужен (ADR 0014).
 - `integration link-evidence --kind ci|local-qa|resolver` — единственный путь привязать будущие
   результаты CI, local-QA и resolver; каждая привязка — отдельная запись со своей парой SHA и
   `verification: unverified`. Сами эти маршруты операция не запускает.

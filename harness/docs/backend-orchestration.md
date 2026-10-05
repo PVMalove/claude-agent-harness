@@ -409,10 +409,10 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    `batch create` сначала выполняет `git fetch origin <ref>` — `--integration-ref`, если он передан,
    иначе `base_branch` проекта (для epic-less задач) — и фиксирует полученную вершину как
    `base_commit`/`integration_base_commit`; необновлённый локальный HEAD никогда не используется как
-   замена. Перед созданием `code-review`- или `publish`-dispatch coordinator обязательно повторяет
-   эту сверку: если `origin/<ref>` с тех пор сдвинулся, dispatch отклоняется, next_action переходит в
-   `developer`, а снять блокировку может только новый developer dispatch (rebase) — его commit
-   автоматически становится новым `candidate_commit` и заново проходит risk assessment.
+   замена. Дальше review, QA и publish проверяют закреплённый candidate, даже если `origin/<ref>`
+   ушёл вперёд: обязательной проверки свежести базы и принудительного developer-перезапуска нет, другие
+   batch это не останавливает. Финальное обновление базы выполняет `integration refresh` при подготовке
+   PR (раздел «Integration accounting после publish»).
 2. Сверить активные batch, `concurrency_budget`, writer и quality-gate lane. Пересечение файлов
    другого batch не повод откладывать запуск; занятая serialized quality-gate lane не мешает
    параллельной реализации. Если batch упёрся в бюджет, дождитесь завершения активного batch или
@@ -652,7 +652,7 @@ code finding. Context limit — `context-pressure` только если для 
 operational-категории могут повторить read-only стадию на том же SHA — и лишь при пустых findings,
 неизменном candidate и отсутствии scope/requirement blocker. Противоречивая или неподтверждённая
 причина всегда даёт безопасный маршрут `developer-retry`. Повтор на том же SHA — это новый immutable dispatch: новый dispatch ID, повторная
-проверка base-commit gate и свежести Context Package и собственное явное approval при `manual_all`.
+проверка свежести Context Package и собственное явное approval при `manual_all`.
 Прежние brief, report и blocker остаются audit evidence. Фиктивные и пустые commit не
 используются; новый candidate всегда требует новой risk assessment; `block` и `fail` сами retry не
 запускают. `--retry-role developer` принудительно выбирает developer retry там, где coordinator
@@ -1249,7 +1249,8 @@ explicit allowed paths, последовательность ролей, immutab
 Завершённый batch — история: его не переоткрывают и не переписывают. Связь, нужная следующему
 шагу интеграции (тикет, issue-ветка, source batch, опубликованный candidate SHA и target SHA
 integration ref), фиксирует отдельная immutable запись — Integration record. Её создаёт и читает
-группа `integration`; ни одна из команд не пишет batch, plan, dispatch и reports и не меняет Git:
+группа `integration`; ни одна из команд не пишет batch, plan, dispatch и reports, а Git меняет
+только `refresh` (ниже):
 
 ```bash
 python .harness/orchestration/coordinator.py --repo . integration prepare \
@@ -1281,8 +1282,34 @@ ref уже ушёл вперёд, а записи ещё нет, remote недо
 записанном target), `stale` (ref ушёл вперёд; `refresh_required: true`) и `unavailable` (remote не
 ответил; подтвердить пару нельзя). Исходное QA относится только к записанной паре:
 `source_evidence.applies_to_current_pair` равен `false` при `stale`, и старое QA не принимается для
-новой пары кандидат/target. Что делать со `stale`, решает человек или coordinator обычным путём
-(новый developer rebase и новое QA); `status` сам их не запускает.
+новой пары кандидат/target. `status` сам ничего не запускает; обновить пару при `stale` позволяет
+`integration refresh` (ниже). После refresh `status` показывает текущую пару (`candidate_sha`,
+`target_sha`, исходные значения в `original_candidate_sha`/`original_target_sha`), список `refreshes`
+и блок `verification`: `required: true`, пока нет passed CI или local-QA именно этой пары
+(`resolver` не считается), и всегда `re_review_required: false`.
+
+`refresh` — маршрут подготовки PR вместо обязательного developer-перезапуска из-за сдвига базы:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . integration refresh \
+  --ticket '#123' --branch feature/issue-123-short-name
+```
+
+Он читает текущий SHA integration ref. Если он равен target пары, rebase не запускается
+(`state: unchanged`, ничего не пишется). Иначе в worktree своего batch issue-ветка перебазируется
+на этот точный SHA и публикуется через `--force-with-lease` с ожидаемым старым SHA: чужой коммит на
+remote не теряется. Команда отказывает с remedy, если worktree не на issue-ветке на записанном
+candidate, имеет незакоммиченные изменения или операцию в процессе, либо remote-ветка уже не равна
+записанному candidate; stash, reset и обход не применяются. Protected и `integration/*` ветки целью
+записи не бывают, чужие worktree не затрагиваются. Чистый rebase возвращает `state: rebased`,
+`new_candidate_sha` и `verification_required: true`, не вызывает resolver и не тратит его два цикла.
+Текстовый конфликт возвращает `state: conflict` и `resolver` (`conflicting_files`, `candidate_sha`,
+`target_sha`, `worktree`, `cycles_spent: 0`); rebase отменяется, ветка и worktree остаются как были.
+Rebase пишет immutable `IntegrationRefreshRecord` в `reports/integration-refresh/` (прежний и новый
+candidate, target, коммиты до и после). Старое QA остаётся историческим evidence; новый candidate
+подтверждают CI или local-QA пары через `link-evidence`, повторный review из-за refresh не нужен.
+Конфликт и работу, которой нужен developer, ведёт маршрут rebase из ADR 0012; `refresh` от него не
+зависит.
 
 `link-evidence` — единственный публичный способ привязать к записи будущие результаты CI, local-QA
 или resolver (`--kind ci|local-qa|resolver`). Каждая привязка — отдельная immutable запись со своей

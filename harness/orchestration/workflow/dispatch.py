@@ -43,7 +43,6 @@ from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _changed_files_between,
     _commit_evidence,
-    _fetch_ref_tip,
     _git_is_ancestor,
 )
 from harness.orchestration.core.utils import (
@@ -128,37 +127,6 @@ def _dispatch_verification_commands(
 ) -> list[str]:
     """Вернуть неизменяемый список проверок роли, замороженный в ``batch``."""
     return cast(list[str], role_verification_commands(batch, role_name, purpose))
-
-
-def _enforce_base_freshness(
-    repo: Path, root: Path, ledger: LifecycleLedger, batch: JsonObject
-) -> None:
-    """Mandatory re-check, immediately before a review or publish dispatch: the batch's pinned
-    integration base must still be the integration ref's current tip. A stale base is cleared only
-    by a new developer dispatch (a rebase), never by the coordinator moving this field directly."""
-    recorded = batch.get("integration_base_commit")
-    if not isinstance(recorded, str) or not recorded:
-        raise CoordinatorError(
-            "batch has no recorded integration base commit to check freshness against",
-            remedy="this batch predates integration-base freshness tracking; re-plan it to record one",
-        )
-    ref = _integration_ref(repo, batch)
-    current = _fetch_ref_tip(repo, ref)
-    if current == recorded:
-        return
-    batch["next_action"] = "developer"
-    batch["required_next_role"] = "developer"
-    batch["retry_candidate_required"] = True
-    batch["base_rebase_required"] = True
-    # The tip the rebase must land on: its report is measured from here and accept pins exactly it.
-    batch["rebase_target_commit"] = current
-    _safe_id(batch["batch_id"], "batch")
-    _replace_record(ledger, BatchRecord.from_dict(batch))
-    raise CoordinatorError(
-        f"batch base is stale: origin/{ref} has moved from {recorded} to {current}; "
-        "only a new developer rebase dispatch can clear this block",
-        remedy="run a new developer rebase dispatch to bring the batch base up to date with origin, then retry",
-    )
 
 
 def _developer_commit_plan(
@@ -717,8 +685,6 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 remedy="pass a recognized dispatch purpose",
             )
         is_review_work = role_name == "code-review" and purpose == "work"
-        if is_review_work or purpose == "publish":
-            _enforce_base_freshness(repo, root, ledger, batch)
         if candidate is not None:
             risk = _risk_for_candidate(root, batch, candidate)
         if role_name == "verification":
