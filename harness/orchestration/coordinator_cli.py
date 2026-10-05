@@ -572,6 +572,31 @@ def build_parser(
     qa_clear.add_argument("--reason", required=True)
     qa_clear.set_defaults(handler=handlers.clear_qa_lease)
 
+    integration = commands.add_parser(
+        "integration",
+        help="record and observe the integration link of a published ticket branch",
+    )
+    integration_commands = integration.add_subparsers(
+        dest="integration_command", required=True
+    )
+    integration_prepare = integration_commands.add_parser(
+        "prepare",
+        help="record the link between ticket, branch, source batch, published candidate and target SHA; idempotent",
+    )
+    _common(integration_prepare)
+    integration_prepare.add_argument("--ticket", required=True)
+    integration_prepare.add_argument("--branch", required=True)
+    integration_prepare.add_argument(
+        "--batch",
+        help="source batch ID; required when several batches published the branch",
+    )
+    integration_prepare.add_argument(
+        "--candidate-commit",
+        help="optional published SHA to check against the accepted publish report",
+    )
+    integration_prepare.add_argument("--remote", default="origin")
+    integration_prepare.set_defaults(handler=handlers.integration_prepare)
+
     report = commands.add_parser("report")
     report_commands = report.add_subparsers(dest="report_command", required=True)
     report_submit = report_commands.add_parser("submit", aliases=["record"])

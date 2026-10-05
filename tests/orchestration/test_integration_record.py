@@ -6,6 +6,8 @@ Real ledger and real Git (a local bare remote); no mocks.
 
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -13,14 +15,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from harness.orchestration import coordinator
 from harness.orchestration.core import git_utils
-from harness.orchestration.core.utils import CoordinatorError
+from harness.orchestration.core.utils import CoordinatorError, JsonObject, _canonical
 from harness.orchestration.ledger import (
     IntegrationEvidenceRecord,
     IntegrationRecord,
     LifecycleLedger,
+    ledger_ops,
 )
-from harness.orchestration.workflow import history
+from harness.orchestration.workflow import history, integration
+from tests.orchestration import test_coordinator as coordinator_tests
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
@@ -236,6 +241,359 @@ class BatchesForTicketBranchTests(unittest.TestCase):
             with self.assertRaises(CoordinatorError) as raised:
                 history._batches_for_ticket_branch(root, "#1", "feature/issue-1-x")
             self.assertRegex(raised.exception.message, re.compile("no orchestration"))
+
+
+class PublishedBranch:
+    """A ticket branch taken through architect, developer, review, QA and an accepted publish.
+
+    Composition, not inheritance: ``CoordinatorRetryRoutingTests`` already drives a real ledger and
+    a real local bare remote through every role, and subclassing it would run its whole suite again.
+    """
+
+    def __init__(self) -> None:
+        self.fixture = coordinator_tests.CoordinatorRetryRoutingTests()
+        self.fixture.setUp()
+        self.repo = self.fixture.repo
+        self.branch = self.fixture.branch
+        self.ticket = "#244"
+
+    def close(self) -> None:
+        self.fixture.tearDown()
+
+    def args(self, **values: object) -> argparse.Namespace:
+        return self.fixture._args(**values)
+
+    def state_root(self) -> Path:
+        return ledger_ops._state_root(self.args(), self.repo)
+
+    def records(self) -> Path:
+        return self.fixture._records()
+
+    def publish(self, name: str = "x", *, landed: str | None = None) -> JsonObject:
+        """Run one batch to a completed publish.  ``landed`` is an earlier published candidate:
+        it is merged into the integration ref first, and a second batch is planned for the same
+        ticket and branch (the worktree already exists) on top of it."""
+        fx = self.fixture
+        if landed is None:
+            batch = fx._create_batch()
+        else:
+            _git(self.repo, "push", "origin", f"{landed}:refs/heads/master")
+            batch = coordinator.create_batch(self.args(**fx._batch_plan()))
+            coordinator.approve_batch(
+                self.args(batch=batch["batch_id"], **fx._approval())
+            )
+            fx.batch_id = batch["batch_id"]
+        batch_id = batch["batch_id"]
+        fx._accepted_architect(batch_id)
+        candidate = fx._accepted_candidate(batch_id, name)
+        fx._accepted_review_and_qa(batch_id, candidate)
+        brief = fx._dispatch(
+            batch_id, "developer", purpose="publish", candidate=candidate
+        )["brief"]
+        coordinator.publish_dispatch(
+            self.args(dispatch=brief["dispatch_id"], remote="origin")
+        )
+        fx._decide(batch_id, "accept")
+        return {
+            "batch_id": batch_id,
+            "candidate": candidate,
+            "publish_dispatch_id": brief["dispatch_id"],
+        }
+
+    def prepare(self, **overrides: object) -> JsonObject:
+        values: JsonObject = {
+            "ticket": self.ticket,
+            "branch": self.branch,
+            "batch": None,
+            "candidate_commit": None,
+            "remote": "origin",
+        }
+        values.update(overrides)
+        return coordinator.integration_prepare(self.args(**values))
+
+    def advance_integration_ref(self) -> str:
+        """Another change lands on the integration ref in the remote."""
+        _git(self.repo, "checkout", "-q", "master")
+        (self.repo / "landed.txt").write_text("landed\n", encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-m", "landed")
+        _git(self.repo, "push", "origin", "master")
+        return _git(self.repo, "rev-parse", "HEAD")
+
+    def snapshot(self) -> JsonObject:
+        """Everything the integration operations must leave exactly as it was: the batch, plan,
+        dispatch and report records, and the Git state of the checkout, worktree and remote."""
+        root = self.records()
+        files: JsonObject = {}
+        for path in sorted(root.rglob("*")):
+            relative = path.relative_to(root).as_posix()
+            if not path.is_file() or relative.startswith(
+                ("audit/", "reports/integration")
+            ):
+                continue
+            files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+        git: JsonObject = {
+            "work_head": _git(self.repo, "rev-parse", "HEAD"),
+            "work_status": _git(self.repo, "status", "--porcelain"),
+            "work_refs": _git(self.repo, "for-each-ref"),
+            "tree_head": _git(self.fixture.worktree, "rev-parse", "HEAD"),
+            "tree_status": _git(self.fixture.worktree, "status", "--porcelain"),
+            "remote_refs": _git(self.repo, "ls-remote", "origin"),
+        }
+        return {"ledger_files": files, "git": git}
+
+    def audit_paths(self) -> list[str]:
+        paths = []
+        for path in sorted((self.records() / "audit").glob("*.json")):
+            item = json.loads(path.read_text(encoding="utf-8"))
+            details = item["details"]
+            if details.get("path"):
+                paths.append(f"{item['action']}:{details['path']}")
+        return paths
+
+    def record_files(self) -> list[str]:
+        directory = self.records() / "reports" / "integration"
+        return sorted(path.name for path in directory.glob("*.json"))
+
+
+class IntegrationPrepareTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.branch = PublishedBranch()
+        self.addCleanup(self.branch.close)
+
+    def test_prepare_links_ticket_branch_batch_candidate_and_target(self) -> None:
+        published = self.branch.publish()
+        target = _git(self.branch.repo, "rev-parse", "origin/master")
+
+        result = self.branch.prepare()
+
+        self.assertTrue(result["created"])
+        self.assertEqual(result["ticket"], "#244")
+        self.assertEqual(result["branch"], self.branch.branch)
+        self.assertEqual(result["source_batch_id"], published["batch_id"])
+        self.assertEqual(result["candidate_sha"], published["candidate"])
+        self.assertEqual(result["published_sha"], published["candidate"])
+        self.assertEqual(result["target_sha"], target)
+        self.assertEqual(result["integration_ref"], "master")
+        self.assertEqual(result["status"]["state"], "current")
+        self.assertEqual(result["evidence_links"], [])
+        source = result["source_evidence"]
+        self.assertEqual(
+            source["pair"],
+            {"candidate_sha": published["candidate"], "target_sha": target},
+        )
+        self.assertEqual(source["qa"]["candidate_commit"], published["candidate"])
+        self.assertEqual(source["qa"]["outcome"], "completed")
+        self.assertTrue(source["qa"]["checks_run"])
+        self.assertEqual(
+            source["publish"]["dispatch_id"], published["publish_dispatch_id"]
+        )
+        stored = json.loads(
+            (
+                self.branch.records()
+                / "reports/integration"
+                / f"{result['integration_record_id']}.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(stored["source"], source)
+        self.assertEqual(
+            stored["integration_record_id"],
+            IntegrationRecord.derive_id(stored["identity"]),
+        )
+        for reference in (source["publish"], source["qa"]):
+            report = json.loads(
+                (self.branch.records() / reference["report_path"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                reference["report_sha256"],
+                hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest(),
+            )
+
+    def test_the_public_cli_group_reaches_prepare(self) -> None:
+        published = self.branch.publish()
+        parsed = coordinator.parser().parse_args(
+            [
+                "--repo",
+                str(self.branch.repo),
+                "--state-dir",
+                str(self.branch.state_root()),
+                "integration",
+                "prepare",
+                "--ticket",
+                self.branch.ticket,
+                "--branch",
+                self.branch.branch,
+                "--candidate-commit",
+                published["candidate"],
+            ]
+        )
+        self.assertIs(parsed.handler, coordinator.integration_prepare)
+        self.assertEqual(parsed.remote, "origin")
+        self.assertEqual(
+            parsed.handler(parsed)["source_batch_id"], published["batch_id"]
+        )
+
+    def test_prepare_is_idempotent_and_never_duplicates_work(self) -> None:
+        self.branch.publish()
+        first = self.branch.prepare()
+        files, audit = self.branch.record_files(), self.branch.audit_paths()
+
+        second = self.branch.prepare()
+
+        self.assertFalse(second["created"])
+        self.assertEqual(
+            second["integration_record_id"], first["integration_record_id"]
+        )
+        self.assertEqual(second["source_evidence"], first["source_evidence"])
+        self.assertEqual(self.branch.record_files(), files)
+        self.assertEqual(self.branch.audit_paths(), audit)
+
+    def test_prepare_never_rewrites_history_or_touches_git(self) -> None:
+        self.branch.publish()
+        before = self.branch.snapshot()
+
+        self.branch.prepare()
+        self.branch.prepare()
+
+        self.assertEqual(self.branch.snapshot(), before)
+        written = [
+            item for item in self.branch.audit_paths() if "reports/integration/" in item
+        ]
+        self.assertEqual(len(written), 1)
+        self.assertTrue(written[0].startswith("immutable-record:"))
+
+    def test_a_repeat_after_the_ref_moved_returns_the_record_and_reports_stale(
+        self,
+    ) -> None:
+        self.branch.publish()
+        first = self.branch.prepare()
+        moved = self.branch.advance_integration_ref()
+
+        repeat = self.branch.prepare()
+
+        self.assertFalse(repeat["created"])
+        self.assertEqual(
+            repeat["integration_record_id"], first["integration_record_id"]
+        )
+        self.assertEqual(repeat["status"]["state"], "stale")
+        self.assertEqual(repeat["status"]["integration_tip"], moved)
+        self.assertEqual(repeat["target_sha"], first["target_sha"])
+
+    def _refused(self, expected: str, **overrides: object) -> None:
+        with self.assertRaises(CoordinatorError) as raised:
+            self.branch.prepare(**overrides)
+        self.assertTrue(raised.exception.remedy.strip())
+        self.assertIn(expected, raised.exception.remedy + raised.exception.message)
+
+    def test_prepare_refuses_empty_ticket_and_branch(self) -> None:
+        self.branch.publish()
+        for key in ("ticket", "branch"):
+            with self.subTest(key=key):
+                self._refused("non-empty", **{key: "  "})
+
+    def test_prepare_refuses_a_different_ticket_or_branch(self) -> None:
+        self.branch.publish()
+        self._refused("existing orchestration batch", ticket="#999")
+        self._refused("existing orchestration batch", branch="feature/issue-1-other")
+        self._refused("belongs to this --ticket", batch="batch-0123456789abcdef")
+        self.assertEqual(self.branch.record_files(), [])
+
+    def test_prepare_refuses_a_candidate_that_is_not_the_published_commit(
+        self,
+    ) -> None:
+        self.branch.publish()
+        other = _git(self.branch.repo, "rev-parse", "origin/master")
+        self._refused("accepted publish report", candidate_commit=other)
+        self.assertEqual(self.branch.record_files(), [])
+
+    def test_prepare_refuses_a_branch_that_was_never_published(self) -> None:
+        fixture = self.branch.fixture
+        batch = fixture._create_batch()
+        fixture._accepted_architect(batch["batch_id"])
+        candidate = fixture._accepted_candidate(batch["batch_id"])
+        fixture._accepted_review_and_qa(batch["batch_id"], candidate)
+
+        self._refused("integration prepare publishes nothing")
+        self.assertEqual(self.branch.record_files(), [])
+
+    def test_prepare_refuses_when_the_remote_branch_is_gone_or_different(self) -> None:
+        self.branch.publish()
+        _git(self.branch.repo, "push", "origin", "--delete", self.branch.branch)
+        self._refused("before the branch is merged or deleted")
+        _git(
+            self.branch.repo,
+            "push",
+            "origin",
+            f"master:refs/heads/{self.branch.branch}",
+        )
+        self._refused("re-publish the accepted candidate")
+        self.assertEqual(self.branch.record_files(), [])
+
+    def test_prepare_refuses_a_moved_integration_ref_when_no_record_exists(
+        self,
+    ) -> None:
+        self.branch.publish()
+        self.branch.advance_integration_ref()
+        before = self.branch.snapshot()
+
+        self._refused("new developer rebase dispatch")
+
+        self.assertEqual(self.branch.record_files(), [])
+        self.assertEqual(self.branch.snapshot(), before)
+
+    def test_prepare_refuses_an_unconfigured_remote(self) -> None:
+        self.branch.publish()
+        self._refused("git remote add", remote="elsewhere")
+
+    def test_prepare_detects_a_rewritten_publish_report(self) -> None:
+        published = self.branch.publish()
+        batch = coordinator._load_batch(self.branch.state_root(), published["batch_id"])
+        entry = next(
+            item
+            for item in batch["dispatches"]
+            if item["dispatch_id"] == published["publish_dispatch_id"]
+        )
+        report = self.branch.records() / entry["report"]
+        document = json.loads(report.read_text(encoding="utf-8"))
+        document["output"] = "rewritten"
+        report.write_text(json.dumps(document), encoding="utf-8")
+
+        with self.assertRaises(CoordinatorError):
+            self.branch.prepare()
+        self.assertEqual(self.branch.record_files(), [])
+
+    def test_missing_accepted_qa_is_refused_with_a_remedy(self) -> None:
+        published = self.branch.publish()
+        root = self.branch.state_root()
+        batch = coordinator._load_batch(root, published["batch_id"])
+        proof = integration._accepted_publish(root, batch)
+        assert proof is not None
+        batch["dispatches"] = [
+            item for item in batch["dispatches"] if item.get("role") != "qa"
+        ]
+        with self.assertRaises(CoordinatorError) as raised:
+            integration._source_facts(root, batch, proof, "t" * 40)
+        self.assertIn("accept green QA", raised.exception.remedy)
+
+    def test_two_published_batches_need_an_explicit_batch(self) -> None:
+        first = self.branch.publish("x")
+        second = self.branch.publish("y", landed=first["candidate"])
+        self.assertNotEqual(first["batch_id"], second["batch_id"])
+
+        self._refused("--batch")
+        chosen = self.branch.prepare(batch=second["batch_id"])
+        self.assertEqual(chosen["source_batch_id"], second["batch_id"])
+        self.assertEqual(chosen["candidate_sha"], second["candidate"])
+        # The first batch's candidate is no longer the remote branch: it is refused, and the
+        # second batch is never substituted for it.
+        self._refused("not the published candidate", batch=first["batch_id"])
+        narrowed = self.branch.prepare(candidate_commit=second["candidate"])
+        self.assertEqual(
+            narrowed["integration_record_id"], chosen["integration_record_id"]
+        )
+        self.assertEqual(len(self.branch.record_files()), 1)
 
 
 if __name__ == "__main__":
