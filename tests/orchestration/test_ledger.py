@@ -24,6 +24,7 @@ from harness.orchestration.ledger import (
     DispatchStatusRecord,
     IntegrationEvidenceRecord,
     IntegrationRecord,
+    IntegrationRefreshRecord,
     JsonObject,
     LedgerError,
     LedgerRecordVO,
@@ -248,6 +249,11 @@ class RecordApiTests(unittest.TestCase):
                 IntegrationEvidenceRecord(evidence_id="evidence-1"),
                 "reports/integration-evidence",
                 "evidence-1",
+            ),
+            (
+                IntegrationRefreshRecord(refresh_id="refresh-1"),
+                "reports/integration-refresh",
+                "refresh-1",
             ),
         ]
         for record, directory, record_id in cases:

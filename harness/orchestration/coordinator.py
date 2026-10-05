@@ -200,6 +200,9 @@ from harness.orchestration.workflow.integration import (
 from harness.orchestration.workflow.integration import (
     integration_status as integration_status,
 )
+from harness.orchestration.workflow.pr_refresh import (
+    integration_refresh as integration_refresh,
+)
 from harness.orchestration.workflow.qa_integration import (
     clear_qa_lease as clear_qa_lease,
 )

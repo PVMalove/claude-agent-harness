@@ -43,6 +43,9 @@ from harness.orchestration.ledger.lifecycle import (
     IntegrationRecord as IntegrationRecord,
 )
 from harness.orchestration.ledger.lifecycle import (
+    IntegrationRefreshRecord as IntegrationRefreshRecord,
+)
+from harness.orchestration.ledger.lifecycle import (
     JsonObject as JsonObject,
 )
 from harness.orchestration.ledger.lifecycle import (
