@@ -22,3 +22,21 @@ or possibility as used in the source.
 Keep uncertainty and unknown results explicit.
 If a requirement is ambiguous, escalate the ambiguity to the coordinator or requirement owner.
 Do not choose an interpretation or turn an assumption into authority.
+
+## Exact tokens and source fidelity
+
+Preserve JSON field names, enums, commands, paths, SHA, test names, code, and quotations of
+source evidence verbatim.
+Explain a token in surrounding prose when needed; keep the token itself unchanged.
+A paraphrase must preserve the source's conditions, uncertainty, and limits.
+Do not strengthen a claim, omit a limit, or present a paraphrase as an exact quotation.
+
+Before sending English coordination text, silently check:
+
+- Is the recipient clear, and is the requested action clear?
+- Are the necessary conditions and prohibitions preserved?
+- Are scope, modality, and uncertainty unchanged?
+- Are exact tokens and quoted evidence faithful to the source?
+
+Revise the text until these checks pass.
+This check creates no extra message, JSON field, or mandatory report for a short request.
