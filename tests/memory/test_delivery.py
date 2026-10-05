@@ -82,6 +82,7 @@ def test_installed_memory_uses_shared_contract(tmp_path: Path) -> None:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
     code = """from pathlib import Path
@@ -131,6 +132,7 @@ assert harness.memory.search(Path.cwd(), 'lessonword')['pointers'][0]['status'] 
         env=environment,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert installed.returncode == 0, installed.stderr
     (tmp_path / "AGENTS.md").write_text("# Fixture instructions\n", encoding="utf-8")
@@ -138,6 +140,7 @@ assert harness.memory.search(Path.cwd(), 'lessonword')['pointers'][0]['status'] 
         [sys.executable, str(CLI), "health", str(tmp_path), "--json"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert health.returncode == 0, [
         check["id"]

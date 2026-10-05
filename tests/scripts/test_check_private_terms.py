@@ -752,6 +752,31 @@ class AnalyseCommandTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNone(self._steps(command)[0][1])
 
+    def test_a_named_user_home_is_unknown_even_when_expanduser_does_not_raise(
+        self,
+    ) -> None:
+        # Windows `expanduser` подставляет имя в путь профиля и не проверяет пользователя.
+        def expand(path: Path) -> Path:
+            text = str(path)
+            return Path("/home", text[1:]) if text.startswith("~") else path
+
+        with mock.patch.object(Path, "expanduser", expand):
+            for command in (
+                "cd ~nosuchuser_zz9 && git commit",
+                "git -C ~nosuchuser_zz9/sub commit",
+            ):
+                with self.subTest(command=command):
+                    self.assertIsNone(self._steps(command)[0][1])
+
+    def test_the_current_user_home_is_expanded(self) -> None:
+        home = Path("/home/dev")
+        with mock.patch.object(
+            Path,
+            "expanduser",
+            lambda path: home / str(path)[2:] if str(path).startswith("~") else path,
+        ):
+            self.assertEqual(self._steps("cd ~/sub && git commit")[0][1], home / "sub")
+
     def test_an_unclosed_quote_is_a_parse_error(self) -> None:
         for command in ("git commit -m 'oops", 'echo "$(git push"', "echo `git push"):
             with self.subTest(command=command):
