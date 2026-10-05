@@ -3624,7 +3624,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             ):
                 batch: JsonObject = {
                     "approval_policy": policy,
-                    "zone": "repository",
+                    "allowed_paths": ["**"],
                     "dispatches": [
                         {
                             "dispatch_id": "dispatch-1",
@@ -3636,7 +3636,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                         }
                     ],
                 }
-                config_ = {"low_risk_zones": ["repository"]}
+                config_ = {"low_risk_paths": ["**"]}
                 with self.subTest(policy=policy, route=route):
                     if expected is not None:
                         self.assertEqual(
