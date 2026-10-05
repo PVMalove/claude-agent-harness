@@ -11,8 +11,10 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from harness.orchestration import coordinator
+from harness.orchestration.workflow import pr_refresh
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from tests.orchestration.test_integration_record import PublishedBranch, _git
 
@@ -157,6 +159,65 @@ class CleanRebaseTests(RefreshFixture):
             ]
         )
         self.assertIs(parsed.handler, coordinator.integration_refresh)
+
+
+class RecoveryTests(RefreshFixture):
+    def interrupted_refresh(self) -> str:
+        """The rewrite reaches the remote, then recording the refresh fails."""
+        self.land("landed.txt")
+        with mock.patch.object(
+            pr_refresh, "_write_record", side_effect=OSError("disk full")
+        ):
+            with self.assertRaises(OSError):
+                self.refresh()
+        self.assertEqual(self.refresh_files(), [])
+        pushed = self.remote_tip(self.branch.branch)
+        self.assertNotEqual(pushed, self.published["candidate"])
+        return pushed
+
+    def test_rerun_after_push_before_record_writes_only_the_missing_record(
+        self,
+    ) -> None:
+        pushed = self.interrupted_refresh()
+
+        result = self.refresh()
+
+        self.assertEqual(result["state"], "recovered")
+        self.assertEqual(result["new_candidate_sha"], pushed)
+        self.assertEqual(self.remote_tip(self.branch.branch), pushed)
+        self.assertEqual(_git(self.worktree, "rev-parse", "HEAD"), pushed)
+        self.assertEqual(len(self.refresh_files()), 1)
+        self.assertEqual(self.refresh()["state"], "unchanged")
+
+    def test_recovery_also_finishes_a_detached_checkout(self) -> None:
+        pushed = self.interrupted_refresh()
+        _git(self.worktree, "checkout", "-q", "--detach", self.published["candidate"])
+
+        result = self.refresh()
+
+        self.assertEqual(result["state"], "recovered")
+        self.assertEqual(
+            _git(self.worktree, "rev-parse", "--abbrev-ref", "HEAD"),
+            self.branch.branch,
+        )
+        self.assertEqual(_git(self.worktree, "rev-parse", "HEAD"), pushed)
+
+    def test_a_foreign_commit_on_top_of_the_rewrite_is_still_refused(self) -> None:
+        self.interrupted_refresh()
+        clone, _ = self.foreign_commit("foreign.txt")
+        _git(clone, "fetch", "-q", "origin", self.branch.branch)
+        _git(clone, "reset", "-q", "--hard", "FETCH_HEAD")
+        (clone / "foreign.txt").write_text("foreign\n", encoding="utf-8")
+        _git(clone, "add", "-A")
+        _git(clone, "commit", "-m", "foreign on top")
+        _git(clone, "push", "origin", f"HEAD:refs/heads/{self.branch.branch}")
+        foreign_tip = self.remote_tip(self.branch.branch)
+
+        with self.assertRaisesRegex(CoordinatorError, "foreign commits"):
+            self.refresh()
+
+        self.assertEqual(self.remote_tip(self.branch.branch), foreign_tip)
+        self.assertEqual(self.refresh_files(), [])
 
 
 class ConflictTests(RefreshFixture):

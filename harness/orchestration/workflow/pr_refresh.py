@@ -55,6 +55,7 @@ def refresh_records(root: Path, record_id: str) -> list[JsonObject]:
     identity = integration._load_record(root, record_id)["identity"]
     pair = (identity["candidate_sha"], identity["target_sha"])
     chain: list[JsonObject] = []
+    seen = {pair}
     while True:
         step = next(
             (
@@ -68,6 +69,9 @@ def refresh_records(root: Path, record_id: str) -> list[JsonObject]:
             return chain
         chain.append(step)
         pair = (step["new_candidate_sha"], step["target_sha"])
+        if pair in seen:
+            return chain
+        seen.add(pair)
 
 
 def current_pair(root: Path, record: JsonObject) -> JsonObject:
@@ -95,11 +99,16 @@ def _run_git(worktree: Path, *arguments: str) -> subprocess.CompletedProcess[str
     )
 
 
-def _require_clean_own_branch(worktree: Path, branch: str, candidate: str) -> None:
+def _require_clean_own_branch(
+    worktree: Path, branch: str, candidate: str, recovered: str | None = None
+) -> None:
     """The batch's own worktree is exactly where the record says: on the issue branch, at the
     candidate, with nothing uncommitted and no operation in progress.  Anything else is unfinished
-    work this route must never overwrite, so it stops instead of stashing, resetting or forcing."""
-    if _git(worktree, "rev-parse", "--abbrev-ref", "HEAD") != branch:
+    work this route must never overwrite, so it stops instead of stashing, resetting or forcing.
+    When finishing an interrupted rewrite (``recovered``), the checkout may also already be at the
+    published rewrite, or detached there."""
+    current = _git(worktree, "rev-parse", "--abbrev-ref", "HEAD")
+    if current != branch and not (recovered and current == "HEAD"):
         raise CoordinatorError(
             f"the batch worktree is not on its issue branch {branch!r}",
             remedy="return the batch worktree to its issue branch; refresh never switches a foreign checkout",
@@ -116,23 +125,64 @@ def _require_clean_own_branch(worktree: Path, branch: str, candidate: str) -> No
                 remedy="finish or abort that operation yourself, then retry the refresh",
             )
     head = _git(worktree, "rev-parse", "HEAD")
-    if head != candidate:
+    if head not in (candidate, recovered):
         raise CoordinatorError(
             f"the issue branch is at {head}, not at the recorded candidate {candidate}",
             remedy="the branch has work the record does not know; run a normal developer dispatch for it",
         )
 
 
-def _require_remote_unchanged(
-    repo: Path, remote: str, branch: str, candidate: str
-) -> None:
-    tip = _remote_branch_tip(repo, remote, branch)
-    if tip != candidate:
-        raise CoordinatorError(
-            f"remote branch {branch!r} is {tip or 'missing'}, not the recorded candidate {candidate}; "
-            "foreign commits would be lost by a rewrite",
-            remedy="reconcile the remote branch yourself; refresh never overwrites commits it did not publish",
-        )
+def _own_rewrite(
+    worktree: Path,
+    remote: str,
+    branch: str,
+    pair: JsonObject,
+    integration_tip: str,
+    remote_tip: str | None,
+) -> str | None:
+    """None while the remote branch is the recorded candidate.  Otherwise the remote tip is
+    accepted only as this tool's own earlier rebase that never reached the ledger: it sits on the
+    integration tip and carries the candidate's commits one for one with equal patch-ids.  Any
+    other remote content is foreign and would be lost by a rewrite."""
+    if remote_tip == pair["candidate_sha"]:
+        return None
+    if remote_tip is not None and _is_own_rebase(
+        worktree, remote, branch, pair, integration_tip, remote_tip
+    ):
+        return remote_tip
+    raise CoordinatorError(
+        f"remote branch {branch!r} is {remote_tip or 'missing'}, not the recorded candidate "
+        f"{pair['candidate_sha']}; foreign commits would be lost by a rewrite",
+        remedy="reconcile the remote branch yourself; refresh never overwrites commits it did not publish",
+    )
+
+
+def _is_own_rebase(
+    worktree: Path,
+    remote: str,
+    branch: str,
+    pair: JsonObject,
+    integration_tip: str,
+    remote_tip: str,
+) -> bool:
+    if _run_git(
+        worktree, "fetch", "-q", remote, "--", f"refs/heads/{branch}"
+    ).returncode:
+        return False
+    if _run_git(
+        worktree, "merge-base", "--is-ancestor", integration_tip, remote_tip
+    ).returncode:
+        return False
+    expected = _commits_between(worktree, pair["target_sha"], pair["candidate_sha"])
+    rewritten = _commits_between(worktree, integration_tip, remote_tip)
+    if len(expected) != len(rewritten):
+        return False
+    cherry = _git(
+        worktree, "cherry", pair["candidate_sha"], remote_tip, integration_tip
+    ).splitlines()
+    return len(cherry) == len(expected) and all(
+        line.startswith("- ") for line in cherry
+    )
 
 
 def _conflict(worktree: Path, base: JsonObject, branch: str) -> JsonObject:
@@ -146,6 +196,11 @@ def _conflict(worktree: Path, base: JsonObject, branch: str) -> JsonObject:
     ]
     _git(worktree, "rebase", "--abort")
     _git(worktree, "checkout", "-q", branch)
+    if not files:
+        raise CoordinatorError(
+            "the rebase failed without conflicting files; the worktree was restored",
+            remedy="inspect the rebase failure in the batch worktree, then retry the refresh",
+        )
     return {
         **base,
         "state": "conflict",
@@ -211,23 +266,35 @@ def integration_refresh(args: argparse.Namespace) -> JsonObject:
         _validate_branch(repo, branch)
         batch = _load_batch(root, identity["source_batch_id"])
         worktree = Path(batch["worktree"])
-        _require_clean_own_branch(worktree, branch, pair["candidate_sha"])
-        _require_remote_unchanged(repo, remote, branch, pair["candidate_sha"])
         _git(worktree, "fetch", remote, "--", ref)
         _git(worktree, "cat-file", "-e", f"{tip}^{{commit}}")
-        # Rebase a detached HEAD so the issue branch only moves after the rewrite is published.
-        _git(worktree, "checkout", "-q", "--detach")
-        if _run_git(worktree, "rebase", tip).returncode != 0:
-            return _conflict(worktree, base, branch)
-        new_candidate = _git(worktree, "rev-parse", "HEAD")
-        try:
-            _publish_rewrite(
-                worktree, remote, branch, pair["candidate_sha"], new_candidate
-            )
-        except CoordinatorError:
-            _git(worktree, "checkout", "-q", branch)
-            raise
-        _git(worktree, "checkout", "-q", "-B", branch, new_candidate)
+        published = _own_rewrite(
+            worktree,
+            remote,
+            branch,
+            pair,
+            tip,
+            _remote_branch_tip(repo, remote, branch),
+        )
+        _require_clean_own_branch(worktree, branch, pair["candidate_sha"], published)
+        if published:
+            # An earlier run pushed its own rebase and stopped before the record: finish it.
+            new_candidate = published
+            _git(worktree, "checkout", "-q", "-B", branch, new_candidate)
+        else:
+            # Rebase a detached HEAD so the issue branch only moves after the rewrite is published.
+            _git(worktree, "checkout", "-q", "--detach")
+            if _run_git(worktree, "rebase", tip).returncode != 0:
+                return _conflict(worktree, base, branch)
+            new_candidate = _git(worktree, "rev-parse", "HEAD")
+            try:
+                _publish_rewrite(
+                    worktree, remote, branch, pair["candidate_sha"], new_candidate
+                )
+            except CoordinatorError:
+                _git(worktree, "checkout", "-q", branch)
+                raise
+            _git(worktree, "checkout", "-q", "-B", branch, new_candidate)
         members: JsonObject = {
             "integration_record_id": record["integration_record_id"],
             "previous_candidate_sha": pair["candidate_sha"],
@@ -263,7 +330,7 @@ def integration_refresh(args: argparse.Namespace) -> JsonObject:
         _write_record(ledger, IntegrationRefreshRecord.from_dict(document))
     return {
         **base,
-        "state": "rebased",
+        "state": "recovered" if published else "rebased",
         "rebased": True,
         "new_candidate_sha": new_candidate,
         "refresh_id": document["refresh_id"],
