@@ -136,6 +136,76 @@ def run(ctx: SimpleNamespace) -> None:
     ]:
         sys.exit("approved passive-reference obligation was proposed again")
 
+    # A valid Markdown title does not disconnect an existing mandatory link.
+    titled = (
+        old_agents + "\nBefore the first English handoff, agents must read "
+        '[Technical English](.harness/docs/technical-english.md "Shared contract").\n'
+    )
+    (foundation / "AGENTS.md").write_text(titled, encoding="utf-8")
+    (foundation / "CLAUDE.md").write_text(
+        old_claude + "\n@AGENTS.md\n", encoding="utf-8"
+    )
+    titled_entries = {
+        name: (foundation / name).read_bytes() for name in ("AGENTS.md", "CLAUDE.md")
+    }
+    for _ in range(2):
+        if capture_json(HARNESS + ["diff", str(foundation), "--json"])[
+            "seed_link_proposals"
+        ]:
+            sys.exit(
+                "diff proposed a duplicate for a mandatory link with a Markdown title"
+            )
+        if "diff --git " in capture(HARNESS + ["update", str(foundation)]):
+            sys.exit(
+                "update proposed a duplicate for a mandatory link with a Markdown title"
+            )
+        if any(
+            (foundation / name).read_bytes() != content
+            for name, content in titled_entries.items()
+        ):
+            sys.exit("repeated update changed entry points with a titled contract link")
+
+    # A fenced example cannot supply the obligation for a passive reference.
+    for fence in ("```", "~~~"):
+        fenced = (
+            old_agents
+            + "\nSee [Technical English](.harness/docs/technical-english.md).\n\n"
+            + fence
+            + "\nBefore the first English handoff, agents must read the contract linked above.\n"
+            + fence
+            + "\n"
+        )
+        (foundation / "AGENTS.md").write_text(fenced, encoding="utf-8")
+        before = {
+            name: (foundation / name).read_bytes()
+            for name in ("AGENTS.md", "CLAUDE.md")
+        }
+        proposals = capture_json(HARNESS + ["diff", str(foundation), "--json"])[
+            "seed_link_proposals"
+        ]
+        if [item["path"] for item in proposals] != ["AGENTS.md"]:
+            sys.exit("fenced example suppressed the required reading obligation")
+        output = capture(HARNESS + ["update", str(foundation)])
+        if "no recognized mandatory reading instruction" not in output:
+            sys.exit("update treated a fenced example as an active reading obligation")
+        patch = output[output.index("diff --git ") :]
+        if patch != proposals[0]["diff"]:
+            sys.exit("diff and update disagree on the missing non-fenced obligation")
+        if any(
+            (foundation / name).read_bytes() != content
+            for name, content in before.items()
+        ):
+            sys.exit("update changed the fenced example before approval")
+        subprocess.run(
+            ["git", "apply", "-"], input=patch, text=True, cwd=foundation, check=True
+        )
+        if not (foundation / "AGENTS.md").read_bytes().startswith(before["AGENTS.md"]):
+            sys.exit("approved obligation changed the existing fenced example")
+        if capture_json(HARNESS + ["diff", str(foundation), "--json"])[
+            "seed_link_proposals"
+        ] or "diff --git " in capture(HARNESS + ["update", str(foundation)]):
+            sys.exit("approved non-fenced obligation was proposed again")
+
     for name, content in original_entries.items():
         (foundation / name).write_bytes(content)
 

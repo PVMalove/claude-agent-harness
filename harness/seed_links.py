@@ -41,12 +41,17 @@ def propose_contract_links(repo: Path, templates: Path) -> list[dict[str, str]]:
     connected: set[Path] = set()
     direct: set[Path] = set()
     transitions: dict[Path, set[Path]] = {}
+    paragraphs: dict[Path, list[str]] = {}
     for path, text in texts.items():
         # Examples in fenced code are not active entry-point instructions.
         active = re.sub(r"```.*?```|~~~.*?~~~", "", text, flags=re.DOTALL)
+        paragraphs[path] = active.split("\n\n")
         transitions[path] = set()
-        for paragraph in active.split("\n\n"):
-            for target in re.findall(r"\[[^\]]+\]\(([^\s)]+)\)", paragraph):
+        for paragraph in paragraphs[path]:
+            for target in re.findall(
+                r'\[[^\]]+\]\(([^\s)]+)(?:\s+"[^"]*")?\)',
+                paragraph,
+            ):
                 destination = (
                     path.parent / target.strip("<>").split("#", 1)[0]
                 ).resolve()
@@ -63,7 +68,7 @@ def propose_contract_links(repo: Path, templates: Path) -> list[dict[str, str]]:
     for path in direct:
         if any(
             _mandatory(part) and "contract linked above" in part
-            for part in texts[path].split("\n\n")
+            for part in paragraphs[path]
         ):
             connected.add(path)
     mandatory = _reachable(connected, transitions)
