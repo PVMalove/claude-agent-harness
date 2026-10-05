@@ -27,13 +27,16 @@ You must execute this skill in two distinct phases to ensure the user agrees wit
 1. **Draft the File:** Write the spec using the `<spec-template>` below, at the root of its own folder under `docs/tasks/` — that folder also reserves `tickets/` (one file per child ticket, filled in later by `/to-tickets`) and `artifacts/` (the `/grilling` Live Artifact).
     - *Naming convention:* If the issue ID is known, use it. If not, use a descriptive slug (e.g., `docs/tasks/add-user-auth/add-user-auth.md`) and rename both the folder and file later once the ID is generated — see `docs/agents/artifacts.md` for the full convention, including the epic-folder grouping and the `tickets/`/`artifacts/` subfolders.
     - Take the final Discovery Context file list from that same folder's `artifacts/discovery-context.md` (written by `/grilling`'s Persisted List step); if that file doesn't exist because artifact tracking never ran, take the approved-paths list from the final Trunk summary instead. Append it in the template's final `## Relevant Files (Discovery Context)` section. Preserve every path and any supplied context; do not rediscover or replace that list while drafting.
-2. **Publish to Tracker:** Publish the issue using the CLI: `gh issue create --body-file <path>`.
-    - Do not pass the body inline with `--body` or a heredoc: spec bodies contain nested quotes and backticks that break shell quoting.
+2. **Publish to Tracker:** Publish the issue with the configured tracker's CLI:
+    - **GitHub:** `gh issue create --body-file <path>`.
+    - **GitLab:** `glab issue create -R <project-url> --title '<title>' --description-file <path> --yes`. `<project-url>` and the other GitLab placeholders (`<host>`, `<project-id>`) are defined in `docs/agents/issue-tracker.md` → GitLab → Conventions. The epic's number is the last segment of the issue URL the command prints.
+    - Do not pass the body inline with `--body`/`--description` or a heredoc: spec bodies contain nested quotes and backticks that break shell quoting.
 3. **Apply Labels:** This published issue acts as the feature's **epic**. Apply the following labels (see `docs/agents/triage-labels.md` for the full taxonomy):
     - `type::bug` OR `type::feature`
     - `status::specs` (Do NOT use `status::ready` as it requires decomposition first).
     - `task-report::required` (unless told to skip).
-    - *Note:* Do NOT create ad-hoc `epic::<slug>` labels. `/to-tickets` will handle linking sub-tasks natively later, as GitHub sub-issues — see `docs/agents/issue-tracker.md#wayfinding-operations` for the mechanism.
+    - **GitLab:** `glab issue update <epic> -R <project-url> --label 'type::feature,status::specs,task-report::required'` (`type::bug` for a bug; drop `task-report::required` when told to skip it). A label the project doesn't have yet is silently created with GitLab's default color instead of failing, so run `/setup-labels` before the first epic.
+    - *Note:* Do NOT create ad-hoc `epic::<slug>` labels. `/to-tickets` links the tickets to this epic later through the tracker's parent link — GitHub sub-issues, or on GitLab a `## Parent: #<epic>` section plus a `relates_to` issue link — see `docs/agents/issue-tracker.md#wayfinding-operations` for the mechanism.
 4. **Ensure the selected integration branch exists after the epic issue succeeds:**
     - Read the required `base_branch` from `.harness/project.json`; if it is absent, stop and report
       the invalid project config. This is the release/base branch from which the epic integration
