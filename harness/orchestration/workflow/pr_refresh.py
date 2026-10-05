@@ -10,6 +10,7 @@ new candidate, which needs a new CI or local-QA check of the new pair.
 from __future__ import annotations
 
 import argparse
+import subprocess
 from pathlib import Path
 
 from harness.orchestration.core import utils
@@ -23,7 +24,9 @@ from harness.orchestration.core.utils import (
     JsonObject,
     _read_object,
     _repo,
+    _sanitise,
 )
+from harness.orchestration.core.workspace import _validate_branch
 from harness.orchestration.ledger.ledger_ops import (
     _ledger_lock,
     _load_batch,
@@ -82,6 +85,102 @@ def current_pair(root: Path, record: JsonObject) -> JsonObject:
     }
 
 
+def _run_git(worktree: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(worktree), *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def _require_clean_own_branch(worktree: Path, branch: str, candidate: str) -> None:
+    """The batch's own worktree is exactly where the record says: on the issue branch, at the
+    candidate, with nothing uncommitted and no operation in progress.  Anything else is unfinished
+    work this route must never overwrite, so it stops instead of stashing, resetting or forcing."""
+    if _git(worktree, "rev-parse", "--abbrev-ref", "HEAD") != branch:
+        raise CoordinatorError(
+            f"the batch worktree is not on its issue branch {branch!r}",
+            remedy="return the batch worktree to its issue branch; refresh never switches a foreign checkout",
+        )
+    if _git(worktree, "status", "--porcelain"):
+        raise CoordinatorError(
+            "the batch worktree has uncommitted changes; refresh does not touch unfinished work",
+            remedy="commit or set aside the worktree changes yourself, then retry the refresh",
+        )
+    for marker in ("rebase-merge", "rebase-apply", "MERGE_HEAD"):
+        if (worktree / _git(worktree, "rev-parse", "--git-path", marker)).exists():
+            raise CoordinatorError(
+                "a Git operation is already in progress in the batch worktree",
+                remedy="finish or abort that operation yourself, then retry the refresh",
+            )
+    head = _git(worktree, "rev-parse", "HEAD")
+    if head != candidate:
+        raise CoordinatorError(
+            f"the issue branch is at {head}, not at the recorded candidate {candidate}",
+            remedy="the branch has work the record does not know; run a normal developer dispatch for it",
+        )
+
+
+def _require_remote_unchanged(
+    repo: Path, remote: str, branch: str, candidate: str
+) -> None:
+    tip = _remote_branch_tip(repo, remote, branch)
+    if tip != candidate:
+        raise CoordinatorError(
+            f"remote branch {branch!r} is {tip or 'missing'}, not the recorded candidate {candidate}; "
+            "foreign commits would be lost by a rewrite",
+            remedy="reconcile the remote branch yourself; refresh never overwrites commits it did not publish",
+        )
+
+
+def _conflict(worktree: Path, base: JsonObject, branch: str) -> JsonObject:
+    """A textual conflict: report the resolver data and leave the worktree exactly as it was."""
+    files = [
+        line
+        for line in _git(
+            worktree, "diff", "--name-only", "--diff-filter=U"
+        ).splitlines()
+        if line
+    ]
+    _git(worktree, "rebase", "--abort")
+    _git(worktree, "checkout", "-q", branch)
+    return {
+        **base,
+        "state": "conflict",
+        "rebased": False,
+        "resolver": {
+            "required": True,
+            "cycles_spent": 0,
+            "conflicting_files": files,
+            "worktree": str(worktree),
+            "candidate_sha": base["candidate_sha"],
+            "target_sha": base["integration_tip"],
+        },
+    }
+
+
+def _publish_rewrite(
+    worktree: Path, remote: str, branch: str, old: str, new: str
+) -> None:
+    """Move the remote issue branch from ``old`` to ``new`` only while it still is ``old``, so a
+    concurrent foreign commit makes the push fail instead of being lost."""
+    result = _run_git(
+        worktree,
+        "push",
+        f"--force-with-lease=refs/heads/{branch}:{old}",
+        remote,
+        f"{new}:refs/heads/{branch}",
+    )
+    if result.returncode != 0:
+        detail = _sanitise((result.stderr or result.stdout).strip())
+        raise CoordinatorError(
+            f"the remote branch {branch!r} changed or refused the rewrite: {detail or 'unknown error'}",
+            remedy="the local branch was left at the recorded candidate; inspect the remote change, then retry the refresh",
+        )
+
+
 def integration_refresh(args: argparse.Namespace) -> JsonObject:
     """Rebase the own issue branch onto the current integration SHA when it moved."""
     repo = _repo(args)
@@ -108,12 +207,27 @@ def integration_refresh(args: argparse.Namespace) -> JsonObject:
         }
         if tip == pair["target_sha"]:
             return {**base, "state": "unchanged", "rebased": False}
+        branch = identity["branch"]
+        _validate_branch(repo, branch)
         batch = _load_batch(root, identity["source_batch_id"])
         worktree = Path(batch["worktree"])
+        _require_clean_own_branch(worktree, branch, pair["candidate_sha"])
+        _require_remote_unchanged(repo, remote, branch, pair["candidate_sha"])
         _git(worktree, "fetch", remote, "--", ref)
         _git(worktree, "cat-file", "-e", f"{tip}^{{commit}}")
-        _git(worktree, "rebase", tip)
+        # Rebase a detached HEAD so the issue branch only moves after the rewrite is published.
+        _git(worktree, "checkout", "-q", "--detach")
+        if _run_git(worktree, "rebase", tip).returncode != 0:
+            return _conflict(worktree, base, branch)
         new_candidate = _git(worktree, "rev-parse", "HEAD")
+        try:
+            _publish_rewrite(
+                worktree, remote, branch, pair["candidate_sha"], new_candidate
+            )
+        except CoordinatorError:
+            _git(worktree, "checkout", "-q", branch)
+            raise
+        _git(worktree, "checkout", "-q", "-B", branch, new_candidate)
         members: JsonObject = {
             "integration_record_id": record["integration_record_id"],
             "previous_candidate_sha": pair["candidate_sha"],
