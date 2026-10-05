@@ -43,7 +43,7 @@ disable-model-invocation: true
    - Возьмите итоговый список файлов Discovery Context из `Live Artifact` текущей сессии; если публикация артефактов недоступна, возьмите вместо него утверждённый список путей из финальной Trunk summary. Добавьте его в завершающую секцию шаблона `## Relevant Files (Discovery Context)`. Сохраняйте каждый путь и переданный контекст; при подготовке не ищите и не заменяйте этот список заново.
 2. **Опубликуйте в трекере:** опубликуйте issue через CLI настроенного трекера:
    - **GitHub:** `gh issue create --body-file <path>`.
-   - **GitLab:** `glab issue create -R <project-url> --title '<title>' --description-file <path> --yes`. `<project-url>` и другие плейсхолдеры GitLab (`<host>`, `<project-id>`) определены в `docs/agents/issue-tracker.md` → GitLab → Conventions. Номер эпика — последний сегмент URL issue, который печатает команда.
+   - **GitLab:** `glab issue create -R <project-url> --title '<title>' --description-file <path> --yes`. `<title>` остаётся в одинарных кавычках, каждый апостроф внутри него записывается как `'\''`. `<project-url>` и другие плейсхолдеры GitLab (`<host>`, `<project-id>`) определены в `docs/agents/issue-tracker.md` → GitLab → Conventions. Номер эпика — последний сегмент URL issue, который печатает команда.
    - Не передавайте тело inline через `--body`/`--description` или heredoc: тела спецификаций содержат вложенные кавычки и backticks, которые ломают shell quoting.
 3. **Примените метки:** это опубликованное issue действует как **эпик** функции. Примените следующие метки (полную таксономию смотрите в `docs/agents/triage-labels.md`):
    - `bug` ИЛИ `enhancement`;

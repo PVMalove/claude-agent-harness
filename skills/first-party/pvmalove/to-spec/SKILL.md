@@ -29,7 +29,7 @@ You must execute this skill in two distinct phases to ensure the user agrees wit
     - Take the final Discovery Context file list from that same folder's `artifacts/discovery-context.md` (written by `/grilling`'s Persisted List step); if that file doesn't exist because artifact tracking never ran, take the approved-paths list from the final Trunk summary instead. Append it in the template's final `## Relevant Files (Discovery Context)` section. Preserve every path and any supplied context; do not rediscover or replace that list while drafting.
 2. **Publish to Tracker:** Publish the issue with the configured tracker's CLI:
     - **GitHub:** `gh issue create --body-file <path>`.
-    - **GitLab:** `glab issue create -R <project-url> --title '<title>' --description-file <path> --yes`. `<project-url>` and the other GitLab placeholders (`<host>`, `<project-id>`) are defined in `docs/agents/issue-tracker.md` → GitLab → Conventions. The epic's number is the last segment of the issue URL the command prints.
+    - **GitLab:** `glab issue create -R <project-url> --title '<title>' --description-file <path> --yes`. Keep `<title>` in single quotes and write each apostrophe in it as `'\''`. `<project-url>` and the other GitLab placeholders (`<host>`, `<project-id>`) are defined in `docs/agents/issue-tracker.md` → GitLab → Conventions. The epic's number is the last segment of the issue URL the command prints.
     - Do not pass the body inline with `--body`/`--description` or a heredoc: spec bodies contain nested quotes and backticks that break shell quoting.
 3. **Apply Labels:** This published issue acts as the feature's **epic**. Apply the following labels (see `docs/agents/triage-labels.md` for the full taxonomy):
     - `type::bug` OR `type::feature`
