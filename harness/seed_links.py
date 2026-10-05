@@ -49,7 +49,7 @@ def propose_contract_links(repo: Path, templates: Path) -> list[dict[str, str]]:
         transitions[path] = set()
         for paragraph in paragraphs[path]:
             for target in re.findall(
-                r'\[[^\]]+\]\(([^\s)]+)(?:\s+"[^"]*")?\)',
+                r"""\[[^\]]+\]\(([^\s)]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\)""",
                 paragraph,
             ):
                 destination = (
