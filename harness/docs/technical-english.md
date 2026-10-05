@@ -2,6 +2,9 @@
 
 Agents must read this shared contract before their first English handoff.
 This is the managed source for technical-English coordination in an installed project.
+It is based on the principles of ASD-STE100 and does not claim conformance to that standard.
+A project with its own existing `AGENTS.md` keeps that file unchanged; it must link to this
+contract itself for the rule to apply there.
 
 ## Scope, language, and authority
 
@@ -23,7 +26,7 @@ The immutable brief and the existing role, project, and protocol contracts retai
 Use short sentences as guidance, not a word-count limit.
 Put one instruction in each sentence.
 Use active voice.
-Name the actor when responsibility could be unclear.
+Name the actor in every instruction; omit the actor only when the source makes it unambiguous.
 Put necessary conditions before the action they control.
 Use one established project term for each concept.
 Keep facts, assumptions, and requested actions distinguishable in ordinary prose.
@@ -51,7 +54,7 @@ Before sending English coordination text, silently check:
 - Is the recipient clear, and is the requested action clear?
 - Are the necessary conditions and prohibitions preserved?
 - Are scope, modality, and uncertainty unchanged?
-- Are exact tokens and quoted evidence faithful to the source?
+- Are exact tokens, quoted evidence, and paraphrased conditions faithful to the source?
 
 Revise the text until these checks pass.
 This check creates no extra message, JSON field, or mandatory report for a short request.

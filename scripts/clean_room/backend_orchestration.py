@@ -9,8 +9,9 @@ from types import SimpleNamespace
 
 from harness.orchestration.core.constants import RECOVERY_ROUTES
 from harness.storage import storage_path
-from scripts.clean_room.install_and_update import check_technical_english
 from scripts.clean_room.support import (
+    assert_contract_link,
+    check_technical_english,
     HARNESS,
     ROOT,
     capture_json,
@@ -351,23 +352,9 @@ def run(ctx: SimpleNamespace) -> None:
     if not playbook_path.is_file():
         sys.exit("backend-orchestration playbook missing")
     playbook = playbook_path.read_text(encoding="utf-8")
-    target = orchestration_project / ".harness/docs/technical-english.md"
+    contract = orchestration_project / ".harness/docs/technical-english.md"
     for entry in (playbook_path, orchestration_root / "roles/_common.md"):
-        text = entry.read_text(encoding="utf-8")
-        references = re.findall(r"\[[^\]]+\]\(([^)]+technical-english\.md)\)", text)
-        if (
-            len(references) != 1
-            or (entry.parent / references[0]).resolve() != target.resolve()
-        ):
-            sys.exit(
-                f"{entry.name} does not reach the shared technical-English contract"
-            )
-        paragraph = next(
-            part for part in text.split("\n\n") if "technical-english.md" in part
-        )
-        normalized = " ".join(paragraph.split()).lower()
-        if "must read" not in normalized or "before" not in normalized:
-            sys.exit(f"{entry.name} does not require reading before the first handoff")
+        assert_contract_link(entry, contract, entry.name)
     pilot_path = orchestration_root / "pilot.md"
     if not pilot_path.is_file():
         sys.exit("backend-orchestration pilot guide missing")

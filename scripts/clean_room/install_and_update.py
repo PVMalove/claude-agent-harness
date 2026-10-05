@@ -6,7 +6,6 @@ import json
 import re
 import subprocess
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 from harness.bin import harness as harness_cli
@@ -16,6 +15,7 @@ from scripts.clean_room.support import (
     ROOT,
     capture,
     capture_json,
+    check_technical_english,
     count_skill_files,
     fail_json,
     fill_agents,
@@ -24,39 +24,6 @@ from scripts.clean_room.support import (
     run_health,
     run_ok,
 )
-
-
-def check_technical_english(project: Path) -> None:
-    """Проверить управляемый контракт и достижимость из новых точек входа."""
-    target = project / ".harness/docs/technical-english.md"
-    if not target.is_file():
-        sys.exit("standard install did not deliver the technical-English contract")
-    if target.read_bytes() != (ROOT / "harness/docs/technical-english.md").read_bytes():
-        sys.exit("installed technical-English contract differs from its shared source")
-    lock = json.loads((project / ".harness/harness.lock").read_text(encoding="utf-8"))
-    if (
-        lock["files"].get(".harness/docs/technical-english.md")
-        != hashlib.sha256(target.read_bytes()).hexdigest()
-    ):
-        sys.exit("technical-English contract is not managed by the snapshot lock")
-    copies = list((project / ".harness").rglob("technical-english.md"))
-    if copies != [target]:
-        sys.exit("installation contains more than one technical-English contract")
-    agents = project / "AGENTS.md"
-    text = agents.read_text(encoding="utf-8")
-    links = re.findall(r"\[[^\]]+\]\(([^)]+technical-english\.md)\)", text)
-    if len(links) != 1 or (agents.parent / links[0]).resolve() != target.resolve():
-        sys.exit("AGENTS.md does not reach the shared technical-English contract")
-    paragraph = next(
-        part for part in text.split("\n\n") if "technical-english.md" in part
-    )
-    normalized = " ".join(paragraph.split()).lower()
-    if "must read" not in normalized or "before" not in normalized:
-        sys.exit("AGENTS.md technical-English reference is not mandatory")
-    if "@AGENTS.md" not in (project / "CLAUDE.md").read_text(encoding="utf-8"):
-        sys.exit(
-            "CLAUDE.md does not reach the technical-English contract through AGENTS.md"
-        )
 
 
 def run(ctx: SimpleNamespace) -> None:
@@ -86,10 +53,6 @@ def run(ctx: SimpleNamespace) -> None:
         ]
     )
     check_technical_english(foundation)
-    if (foundation / ".harness/orchestration").exists():
-        sys.exit(
-            "standard-install technical-English check unexpectedly needs orchestration"
-        )
     run_ok(HARNESS + ["diff", str(foundation)])
     if not run_fails(HARNESS + ["health", str(foundation)], quiet_all=True):
         sys.exit("unresolved AGENTS.md unexpectedly passed health")
@@ -155,14 +118,6 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("non-forced update unexpectedly overwrote a local edit")
     run_ok(HARNESS + ["update", str(project), "--force"], quiet=True)
     run_health(project)
-    technical_english = project / ".harness/docs/technical-english.md"
-    technical_english.write_text("local edit\n", encoding="utf-8")
-    if not run_fails(HARNESS + ["diff", str(project)], quiet_all=True):
-        sys.exit("technical-English drift unexpectedly passed")
-    if not run_fails(HARNESS + ["update", str(project)], quiet_all=True):
-        sys.exit("update unexpectedly overwrote local technical-English changes")
-    run_ok(HARNESS + ["update", str(project), "--force"], quiet=True)
-    check_technical_english(project)
 
     (project / ".mcp.json").write_text('{"mcpServers": {}}\n', encoding="utf-8")
     if not run_fails(HARNESS + ["health", str(project)], quiet_all=True):

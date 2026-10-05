@@ -282,6 +282,8 @@ def _packageable(path: Path) -> bool:
 
 def package_files(names: list[str]) -> dict[str, bytes]:
     """Сформировать словарь относительных целевых путей и байтового содержимого файлов пакета."""
+    # Общий контракт технического английского ставится в любую установку, вне каталога capability:
+    # он не зависит от optional backend-orchestration.
     result: dict[str, bytes] = {
         ".harness/docs/technical-english.md": (
             PACKAGE / "docs/technical-english.md"
