@@ -3,8 +3,13 @@
 Agents must read this shared contract before their first English handoff.
 This is the managed source for technical-English coordination in an installed project.
 It is based on the principles of ASD-STE100 and does not claim conformance to that standard.
-A project with its own existing `AGENTS.md` keeps that file unchanged; it must link to this
-contract itself for the rule to apply there.
+Standard `update` delivers this managed source and preserves project-owned entry points.
+For an existing entry point, `diff` and `update` propose missing mandatory reading instructions
+as an additive diff. A human or explicitly authorized agent must review and approve additions
+before applying them by ordinary edit or patch. Once an approved instruction connects the
+entry point to this source, agents must read it before the first English handoff.
+New entry points created with a mandatory reference require reading from their creation.
+An existing import of a connected entry point also reaches this source; it needs no second link.
 
 ## Scope, language, and authority
 
