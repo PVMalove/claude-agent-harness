@@ -91,8 +91,8 @@ record's `candidate_commit`. A `tooling-retry` spends no `retry_policy.max_devel
 is not refused when that budget is exhausted; the human decision on every retry and the
 `tooling-retry-repeated` attention bound it instead. `--retry-role developer` on a read-only stage
 still forces a budgeted `developer-retry`.
-A same-candidate retry is a new immutable dispatch: it gets a new dispatch ID, re-checks the
-base-commit gate and Context Package freshness, and needs its own explicit human approval under
+A same-candidate retry is a new immutable dispatch: it gets a new dispatch ID, re-checks
+Context Package freshness, and needs its own explicit human approval under
 `manual_all`. The earlier brief, report and blocker stay untouched as audit evidence. A retry never
 uses an empty or fictitious commit, a changed candidate always needs a new risk assessment before
 review or QA, and `block` or `fail` never start a retry by themselves. `--retry-role developer`
@@ -535,8 +535,20 @@ dispatch or report, or changes Git:
   published SHA, and an integration ref that already moved while no record exists.
 - `integration status` is a read-only observation: `current`, `stale` (the integration ref moved;
   `refresh_required`) or `unavailable`. A stale record never lets the old QA stand in for a new
-  candidate/target pair, and observing it never creates a dispatch. A refresh is a new developer
-  rebase and a new QA through the normal route.
+  candidate/target pair, and observing it never creates a dispatch. After a refresh it reports the
+  current pair and `verification`: CI or local-QA of that pair is required (resolver evidence does
+  not count), and re-review is never required by the refresh alone.
+- `integration refresh` is the PR-preparation route when the integration base moved after review,
+  QA or publish: those stages keep verifying their pinned candidate, and there is no mandatory
+  base-freshness gate or developer restart. With an unchanged target it runs no rebase. Otherwise it
+  rebases only the batch's own issue branch onto the exact target SHA and publishes it with
+  `--force-with-lease` against the recorded candidate, then writes an immutable refresh record
+  linking the old and new candidate, the target and the resulting history. It refuses a dirty
+  worktree, a worktree off the issue branch, and a changed remote branch, and never writes a
+  protected or `integration/*` branch. A clean rebase does not invoke the resolver or spend its two
+  cycles; a textual conflict returns `state: conflict` with resolver data and leaves the branch and
+  worktree as they were. The old QA stays historical evidence. It does not depend on the
+  developer-retry rebase route of ADR 0012, which still handles conflicts and developer work.
 - `integration link-evidence --kind ci|local-qa|resolver` is the only way later CI, local-QA and
   resolver results are attached. Each is its own immutable record with its own candidate/target pair
   and `verification: unverified`; the record's initial evidence keeps its original pair.
