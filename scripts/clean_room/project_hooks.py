@@ -478,8 +478,10 @@ def run(ctx: SimpleNamespace) -> None:
     # project but is still writable; any other path under the runtime config stays blocked.
     runtime_home = test_root / "runtime-home"
     runtime_config = test_root / "runtime-config"
-    home_env = {"HOME": str(runtime_home), "CLAUDE_CONFIG_DIR": ""}
-    config_env = {"HOME": str(runtime_home), "CLAUDE_CONFIG_DIR": str(runtime_config)}
+    # USERPROFILE: on Windows `Path.home()` ignores HOME.
+    home = {"HOME": str(runtime_home), "USERPROFILE": str(runtime_home)}
+    home_env = {**home, "CLAUDE_CONFIG_DIR": ""}
+    config_env = {**home, "CLAUDE_CONFIG_DIR": str(runtime_config)}
     home_projects = runtime_home / ".claude" / "projects" / "-repo"
     for file_path, env, allowed in (
         (home_projects / "memory" / "feedback.md", home_env, True),
