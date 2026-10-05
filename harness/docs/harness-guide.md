@@ -1372,7 +1372,7 @@ status::ready») — в этом случае этап grilling пропуска
 | Hook | Событие | Что блокирует |
 |---|---|---|
 | `block-direct-master.sh` | `PreToolUse(Bash)` | `git commit`/`git push` из `base_branch` или `integration/*` и push в эти рефы; пропускает только push, создающий `integration/*`, которой ещё нет на remote, а при недоступном remote блокирует. Ветка берётся из checkout самого вызова (`git -C`/`--work-tree`/`--git-dir`, `cd` раньше в простой цепочке без `$`, скобок, `|` и `||`, `cwd` из payload, корень проекта); упоминание в аргументах других команд, кавычках и heredoc вызовом не считается, а неразобранная команда с commit/push блокируется. |
-| `block-public-attribution.sh` | `PreToolUse(Bash)` | Запрещённые сведения в commit messages, PR/MR titles/bodies и их файлах; push непереданных коммитов с тем же содержимым. |
+| `block-public-attribution.sh` | `PreToolUse(Bash)` | Запрещённые сведения в commit messages, PR/MR titles/bodies и их файлах; атрибуцию в title/body issue, комментариях и notes, в том числе через `glab api`; push непереданных коммитов с тем же содержимым. |
 | `block-pr-merge.sh` | `PreToolUse(Bash)` | `gh pr merge` и `glab mr merge`/`accept` — безусловно, мердж только вручную. Merge-текст в команде блокируется (fail closed), если строгий лексер `pr_commands.py` не принял её целиком или не каждая её simple command инертна по allowlist: `echo`, `printf`, `cat`, `grep`, `head`, `tail`, `wc`, `git commit`, текстовые подкоманды `gh`/`glab`. |
 | `check-branch-name.sh` | `PreToolUse(Bash)` | `git checkout -b`/`git switch -c <имя>`, не соответствующее `branch_pattern`. |
 | `check-worktree-branch-name.sh` | `PreToolUse(EnterWorktree)` | То же правило имени для нативного worktree-инструмента. |
@@ -1401,22 +1401,41 @@ Zero Direct Commits: коммит/push в защищённую ветку 'integ
 Hook строго разбирает JSON payload и смотрит только `tool_input.command`:
 
 - `git commit` — `-m`/`--message`/`--trailer` и содержимое `-F`/`--file`;
-- `gh pr` и `glab mr` `create`/`edit` — `--title`, `--body`/`--description` и содержимое
-  `--body-file`/`--description-file`;
+- `gh pr create`/`new`/`edit` — `-t`/`--title`, `-b`/`--body` и содержимое `-F`/`--body-file`;
+- `glab mr create`/`new`/`edit`/`update` — `-t`/`--title`, `-d`/`--description` и содержимое
+  `--description-file`;
+- `gh issue create`/`new`/`edit`/`comment` и `gh pr comment` — те же флаги, что у `gh pr`;
+  `glab issue create`/`new`/`update` — те же, что у `glab mr`;
+- `glab issue note` и `glab mr note` — `-m`/`--message`;
+- `glab api` — `-F`/`--field` и `-f`/`--raw-field` с ключом `body`, `description` или `title`;
+  `-F body=@<path>` проверяется по содержимому файла;
 - `git push` и PR/MR — ещё и непереданные commit messages, достижимые из `HEAD`.
+
+Короткий флаг проверяется только там, где он несёт текст в своём CLI: у gh `-d` — это `--draft`,
+у glab `-b` — `--target-branch`, а `-m` вне notes — milestone.
+
+Проверка работает в два уровня. Commit messages и title/body PR/MR проверяются полным списком
+запрещённых терминов: имена моделей и runtime, атрибуция, session URL. Title/body issue, комментарии
+и notes — текст трекера. В нём имена runtime и пути вроде `.claude/` или `CLAUDE.md` — обычный
+словарь проекта, поэтому hook блокирует там только атрибуцию: trailer `Co-Authored-By`, утверждение
+"generated/written by <ассистент>", пометку AI-generated и ссылки на сессии ассистента.
 
 Тело heredoc — это stdin, а не слова команды: hook вырезает его до поиска операций и разбора
 аргументов. Скрипт `python - <<'EOF'`, который только упоминает `git commit`, проходит. Тело
 проверяется, когда его оператор стоит внутри проверяемого аргумента, например
 `-m "$(cat <<'EOF' ... EOF)"`.
 
-Путь body-файла не сканируется как текст PR. Файл должен быть доступен по **literal-пути**:
-переменная shell, несуществующий путь, некорректный payload или незакрытая кавычка блокируют
-команду. Поэтому файл сообщения пишут отдельным шагом, а коммит — следующей командой:
+Путь body-файла не сканируется как текст PR. Файл `-F`, `--body-file`, `--description-file` или
+`body=@<path>` должен быть доступен по **literal-пути**: переменная shell, `-` или `@-` (stdin),
+несуществующий путь, некорректный payload или незакрытая кавычка блокируют команду. Поэтому файл
+сообщения пишут отдельным шагом, а публикацию — следующей командой:
 
 ```bash
 git commit -F docs/tasks/issue-102-csv-service/commit-message.txt   # допустимо
 git commit -F "$MSG_FILE"                                           # заблокировано
+glab api projects/:id/issues/102/notes \
+  -F body=@.harness/.sandboxes/pr_body/issue-comment-102-csv.md     # допустимо
+glab api projects/:id/issues/102/notes -F body=@"$NOTE_FILE"        # заблокировано
 ```
 
 При блокировке следует исправить метаданные проекта либо передать доступный literal-файл и повторить
