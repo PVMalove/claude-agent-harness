@@ -882,6 +882,48 @@ def run(ctx: SimpleNamespace) -> None:
             "block-dangerous-git.sh allowed destructive command in multiline JSON payload"
         )
 
+    # block-dangerous-git.sh: a destructive command quoted as data (string literal, interpreter
+    # argument, heredoc body) is not a run; the same command executed by a shell still is.
+    mentioned_not_run = (
+        "python -c \"print('git reset --hard')\"",
+        "python3 -c 'assert \"git reset --hard\" in doc'",
+        "echo \"git clean -f\" && grep -r 'git branch -D' docs",
+        "python3 - <<'EOF'\nassert \"git reset --hard\" in doc\nEOF",
+        "cat <<EOF\ngit restore .\nEOF",
+        "git commit -m \"$(cat <<'EOF'\nfix: don't run git checkout . here\nEOF\n)\"",
+        "git status # git reset --hard",
+        "python3 -c $'print(1) # git reset --hard' || echo \"git clean -f\"",
+        "echo \"git reset --hard\" > notes.txt && bash run.sh",
+    )
+    for safe_cmd in mentioned_not_run:
+        if run_hook(dangerous_hook, pv_project, safe_cmd).returncode != 0:
+            sys.exit(f"block-dangerous-git.sh blocked a mention of a command: {safe_cmd!r}")
+    really_run = (
+        "echo ok && git reset --hard",
+        "cd sub; git clean -fd",
+        "(git branch -D old)",
+        "sudo git clean -f",
+        "echo x | xargs git branch -D",
+        "if true; then git checkout .; fi",
+        "sh -c 'git restore .'",
+        "eval \"git reset --hard\"",
+        "echo \"$(git branch -D old)\"",
+        "echo `git checkout .`",
+        "bash <<'EOF'\ngit reset --hard\nEOF",
+        "cat <<EOF\n$(git reset --hard)\nEOF",
+        "cat <<'EOF'\ntext\nEOF\ngit reset --hard",
+        "python -c \"unterminated git reset --hard",
+        "echo \"git reset --hard\" | sh",
+        "sh <<< \"git clean -f\"",
+        "eval $'git branch -D old'",
+        "bash <(echo 'git restore .')",
+    )
+    for destructive_cmd in really_run:
+        if run_hook(dangerous_hook, pv_project, destructive_cmd).returncode == 0:
+            sys.exit(
+                f"block-dangerous-git.sh allowed destructive command: {destructive_cmd!r}"
+            )
+
     # require-qa-gate.sh: blocks gh pr create without marker, allows with valid marker
     if run_hook(qa_gate_hook, pv_project, "git status").returncode != 0:
         sys.exit("require-qa-gate.sh blocked an unrelated git status command")
