@@ -56,10 +56,13 @@ from harness.orchestration.ledger.lifecycle import (
     IntegrationRecord,
     LifecycleLedger,
 )
-from harness.orchestration.workflow import history
+from harness.orchestration.workflow import history, pr_refresh
 
 INTEGRATION_RECORD_CONTRACT = 1
 _ACCEPTED_DECISIONS = {"accept", "override-warning"}
+# A refreshed candidate is confirmed only by a passed CI or local-QA check of its own pair: resolver
+# evidence records a conflict resolution, never the verification of the result.
+_INTEGRATION_VERIFICATION_KINDS = ("ci", "local-qa")
 
 
 def _sha256(value: JsonObject) -> str:
@@ -536,8 +539,29 @@ def _check_history_unchanged(root: Path, record: JsonObject) -> None:
         history._pending_report(root, batch, entry)
 
 
-def _notice(state: str, record: JsonObject, observed: JsonObject) -> str:
-    target = record["identity"]["target_sha"]
+def _notice(
+    state: str,
+    record: JsonObject,
+    observed: JsonObject,
+    pair: JsonObject,
+    verified: bool,
+) -> str:
+    target = pair["target_sha"]
+    if (
+        state == "current"
+        and pair["candidate_sha"] != record["identity"]["candidate_sha"]
+    ):
+        if verified:
+            return (
+                f"The branch was refreshed onto {target}; a passed integration check covers the "
+                f"new candidate {pair['candidate_sha']}. No re-review is required."
+            )
+        return (
+            f"The branch was refreshed onto {target} as candidate {pair['candidate_sha']}. The old "
+            "QA is historical evidence and does not confirm it: CI or local integration QA of the "
+            "new pair is required (register it with 'integration link-evidence'). No re-review is "
+            "required because of the refresh alone."
+        )
     if state == "current":
         return f"The integration ref still points at the recorded target {target}."
     if state == "stale":
@@ -567,26 +591,55 @@ def integration_status(args: argparse.Namespace) -> JsonObject:
         record = _resolve_record(root, args)
         _check_history_unchanged(root, record)
         links = _evidence_links(root, record["integration_record_id"])
+        pair = pr_refresh.current_pair(root, record)
+        refreshes = pr_refresh.refresh_records(root, record["integration_record_id"])
     identity = record["identity"]
-    observed = _observe(repo, identity)
+    observed = _observe(repo, {**identity, "target_sha": pair["target_sha"]})
     state = observed["state"]
     tip = observed["integration_tip"]
+    verified = not refreshes or any(
+        link["kind"] in _INTEGRATION_VERIFICATION_KINDS
+        and link["result"] == "passed"
+        and link["candidate_sha"] == pair["candidate_sha"]
+        and link["target_sha"] == pair["target_sha"]
+        for link in links
+    )
     return {
         "integration_record_id": record["integration_record_id"],
         "ticket": identity["ticket"],
         "branch": identity["branch"],
         "source_batch_id": identity["source_batch_id"],
-        "candidate_sha": identity["candidate_sha"],
+        "candidate_sha": pair["candidate_sha"],
+        "original_candidate_sha": identity["candidate_sha"],
         "integration_ref": identity["integration_ref"],
-        "target_sha": identity["target_sha"],
+        "target_sha": pair["target_sha"],
+        "original_target_sha": identity["target_sha"],
         "state": state,
         "integration_tip": tip,
         "refresh_required": state != "current",
         "source_evidence": {
             "pair": record["source"]["pair"],
-            "applies_to_current_pair": state == "current",
+            "applies_to_current_pair": state == "current" and not refreshes,
             "qa": record["source"]["qa"],
             "publish": record["source"]["publish"],
+        },
+        "refreshes": [
+            {
+                key: item[key]
+                for key in (
+                    "refresh_id",
+                    "previous_candidate_sha",
+                    "new_candidate_sha",
+                    "target_sha",
+                )
+            }
+            for item in refreshes
+        ],
+        "verification": {
+            "required": bool(refreshes),
+            "satisfied": verified,
+            "accepted_kinds": list(_INTEGRATION_VERIFICATION_KINDS),
+            "re_review_required": False,
         },
         "pair_checks": [
             {
@@ -603,5 +656,5 @@ def integration_status(args: argparse.Namespace) -> JsonObject:
             }
             for link in links
         ],
-        "notice": _notice(state, record, observed),
+        "notice": _notice(state, record, observed, pair, verified),
     }
