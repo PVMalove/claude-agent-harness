@@ -71,9 +71,9 @@ table, an operational reason is one of these three categories; `tooling` has its
 | publish | completed | new publish on the same accepted SHA for `verification-infrastructure`, `transport` or `context-pressure`; `developer-retry` when the candidate must change | terminal | `abandoned` |
 
 `code`, `requirements`, `candidate-change` and `unknown` always route to `developer-retry`; only the
-three operational categories may re-run a read-only stage on the same SHA, and only with empty
-findings, an unchanged candidate and no scope or requirement blocker. A contradictory or unsupported
-reason always takes the safe route, `developer-retry`.
+three operational categories, besides `tooling` below, may re-run a read-only stage on the same
+SHA, and only with empty findings, an unchanged candidate and no scope or requirement blocker. A
+contradictory or unsupported reason always takes the safe route, `developer-retry`.
 
 `tooling` means a hook, the safety classifier or the ledger blocked a legitimate role action. The
 coordinator assigns it only from a `blocked` report's structured `tooling_blocker` (`tool`, exact
