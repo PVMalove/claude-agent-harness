@@ -24,19 +24,20 @@ from harness.orchestration.ledger import (
     LifecycleLedger,
     ledger_ops,
 )
+from harness.orchestration.ledger import JsonObject as LedgerObject
 from harness.orchestration.workflow import history, integration
 from tests.orchestration import test_coordinator as coordinator_tests
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
-IDENTITY = {
+IDENTITY: LedgerObject = {
     "ticket": "#532",
     "branch": "feature/issue-532-integration-accounting",
     "source_batch_id": "batch-0123",
     "candidate_sha": SHA_A,
     "target_sha": SHA_B,
 }
-EVIDENCE = {
+EVIDENCE: LedgerObject = {
     "integration_record_id": "integration-" + "0" * 32,
     "kind": "ci",
     "candidate_sha": SHA_A,
@@ -71,7 +72,7 @@ class IntegrationRecordModelTests(unittest.TestCase):
         base = IntegrationRecord.derive_id(IDENTITY)
         for key in IDENTITY:
             with self.subTest(key=key):
-                changed = {**IDENTITY, key: IDENTITY[key] + "x"}
+                changed = {**IDENTITY, key: f"{IDENTITY[key]}x"}
                 self.assertNotEqual(base, IntegrationRecord.derive_id(changed))
 
     def test_evidence_id_is_deterministic_and_pair_sensitive(self) -> None:
