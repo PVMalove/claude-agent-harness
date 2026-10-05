@@ -1871,8 +1871,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self._args(
                 batch=batch_id,
                 decision=decision,
-                note=None,
-                **{**self._approval(), **extra},
+                **{"note": None, **self._approval(), **extra},
             )
         )
 
@@ -3403,6 +3402,130 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         again = self._dispatch(batch["batch_id"], "verification", candidate=candidate)
         self.assertNotEqual(again["dispatch_id"], verification["dispatch_id"])
         self.assertEqual(again["brief"]["candidate_commit"], candidate)
+
+    def test_a_review_that_worked_around_a_block_reruns_without_a_new_candidate(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        finding = [{"severity": "warning", "summary": "s", "evidence": "e"}]
+        first = self._reported_review(
+            batch["batch_id"], candidate, standards=("warning", finding)
+        )
+
+        with self.assertRaises(coordinator.CoordinatorError) as unnoted:
+            self._decide(batch["batch_id"], "retry", reason_category="block-bypass")
+        self.assertIn("--note", unnoted.exception.remedy)
+        decided = self._decide(
+            batch["batch_id"],
+            "retry",
+            reason_category="block-bypass",
+            note="the review ran the blocked check through a script file",
+        )
+
+        self._assert_route(
+            decided,
+            role="code-review",
+            action="code-review",
+            category="block-bypass",
+            candidate=candidate,
+            route="bypass-rerun",
+        )
+        self.assertEqual(
+            decided["dispatches"][-1]["decision"]["decision"],
+            "retry",
+            "the bypassing report is neither accepted nor overridden",
+        )
+        self.assertEqual(decisions._developer_retry_count(decided), 0)
+        second = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)
+        self.assertNotEqual(second["dispatch_id"], first["dispatch_id"])
+        self.assertEqual(second["brief"]["candidate_commit"], candidate)
+        self.assertEqual(
+            second["brief"]["transition"]["reason_category"], "block-bypass"
+        )
+
+    def test_a_verification_that_worked_around_a_block_reruns_on_the_registered_candidate(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("infrastructure")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers="verification environment unavailable",
+            ),
+        )
+        self._decide(
+            batch["batch_id"], "retry", reason_category="verification-infrastructure"
+        )
+        verification = self._dispatch(
+            batch["batch_id"], "verification", candidate=candidate
+        )["brief"]
+        self._start(verification["dispatch_id"], checkout=self.worktree)
+        self._submit(
+            verification["dispatch_id"], self._base_report(verification, "verification")
+        )
+
+        decided = self._decide(
+            batch["batch_id"],
+            "retry",
+            reason_category="block-bypass",
+            note="verification split a blocked command",
+        )
+
+        routing = self._routing(decided)
+        self.assertEqual(
+            (routing["next_action"], routing["route"], routing["candidate_commit"]),
+            ("verification", "bypass-rerun", candidate),
+        )
+        self.assertEqual(len(decided["candidate_registrations"]), 1)
+        again = self._dispatch(batch["batch_id"], "verification", candidate=candidate)
+        self.assertNotEqual(again["dispatch_id"], verification["dispatch_id"])
+
+    def test_a_bypass_rerun_dispatch_always_needs_an_explicit_approval(self) -> None:
+        args = _ns(approved_by=None, approved_at=None)
+        for policy in ("milestone", "low_risk"):
+            for route, expected in (
+                ("tooling-retry", f"policy:{policy}"),
+                ("bypass-rerun", None),
+            ):
+                batch: JsonObject = {
+                    "approval_policy": policy,
+                    "zone": "repository",
+                    "dispatches": [
+                        {
+                            "dispatch_id": "dispatch-1",
+                            "role": "code-review",
+                            "decision": {
+                                "decision": "retry",
+                                "routing": {"route": route},
+                            },
+                        }
+                    ],
+                }
+                config_ = {"low_risk_zones": ["repository"]}
+                with self.subTest(policy=policy, route=route):
+                    if expected is not None:
+                        self.assertEqual(
+                            dispatch._dispatch_approval_mode(
+                                args, batch, config_, "code-review", "work", None
+                            ),
+                            expected,
+                        )
+                        continue
+                    with self.assertRaises(coordinator.CoordinatorError) as raised:
+                        dispatch._dispatch_approval_mode(
+                            args, batch, config_, "code-review", "work", None
+                        )
+                    self.assertIn("--approved-by", raised.exception.remedy)
 
     def _developer_preflight(self, batch_id: str) -> JsonObject:
         planned = config._config
@@ -7521,6 +7644,32 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 )
                 for category in (None, "tooling")
             ),
+            # A read-only role that worked around a block re-runs on the same SHA: its findings,
+            # failed checks and outcome are no evidence, only a moved candidate still counts.
+            *(
+                (
+                    stage,
+                    report,
+                    "block-bypass",
+                    False,
+                    ("block-bypass", stage, stage, "bypass-rerun"),
+                )
+                for stage, report in (
+                    (
+                        "code-review",
+                        self._report("completed", standards=("warning", finding)),
+                    ),
+                    ("qa", self._report("failed", standards=None, failed_check=True)),
+                    ("verification", self._report("completed", standards=None)),
+                )
+            ),
+            (
+                "code-review",
+                review,
+                "block-bypass",
+                True,
+                ("candidate-change", "developer", "developer-retry", "developer-retry"),
+            ),
             # tooling named without the structured field stays unknown.
             (
                 "code-review",
@@ -7797,7 +7946,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                     routing["candidate_commit"], None if moved else self.CANDIDATE
                 )
 
-    def test_the_reason_categories_are_exactly_the_documented_eight(self) -> None:
+    def test_the_reason_categories_are_exactly_the_documented_nine(self) -> None:
         self.assertEqual(
             set(constants.RETRY_REASON_CATEGORIES),
             {
@@ -7808,13 +7957,22 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "transport",
                 "context-pressure",
                 "tooling",
+                "block-bypass",
                 "unknown",
             },
         )
-        # tooling has its own route and attention count, never the operational ones.
+        # tooling and block-bypass have their own routes, never the operational ones.
         self.assertNotIn("tooling", constants.OPERATIONAL_REASON_CATEGORIES)
+        self.assertNotIn("block-bypass", constants.OPERATIONAL_REASON_CATEGORIES)
 
-    def test_the_recovery_routes_are_exactly_the_documented_eight(self) -> None:
+    def test_block_bypass_is_refused_for_a_writing_role(self) -> None:
+        for stage in ("architect", "developer", "publish"):
+            with self.subTest(stage=stage):
+                with self.assertRaises(coordinator.CoordinatorError) as raised:
+                    self._route(stage, self._report(standards=None), "block-bypass")
+                self.assertIn("developer reason category", raised.exception.remedy)
+
+    def test_the_recovery_routes_are_exactly_the_documented_nine(self) -> None:
         self.assertEqual(
             constants.RECOVERY_ROUTES,
             (
@@ -7826,6 +7984,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "report-completion",
                 "carry-over",
                 "tooling-retry",
+                "bypass-rerun",
             ),
         )
         for route in constants.RECOVERY_ROUTES:
