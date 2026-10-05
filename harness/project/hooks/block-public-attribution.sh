@@ -29,16 +29,13 @@ fi
 
 FORBIDDEN='\bclaude\b|\bopenai\b|\bchatgpt\b|\bgpt[-_ ]?[0-9]|\bcopilot\b|\bgemini\b|\bcodex\b|\bco-authored[- ]by\b|\bai[-_ ]?(agent|assistant|generated)\b'
 
-is_commit=0
-is_pr=0
-is_push=0
-printf '%s\n' "$COMMAND" | grep -qiE 'git[[:space:]]+commit' && is_commit=1
-printf '%s\n' "$COMMAND" | grep -qiE '(gh[[:space:]]+pr|glab[[:space:]]+mr)[[:space:]]+(create|edit)' && is_pr=1
-printf '%s\n' "$COMMAND" | grep -qiE 'git[[:space:]]+push' && is_push=1
+printf '%s\n' "$COMMAND" | grep -qiE 'git[[:space:]]+(commit|push)|(gh[[:space:]]+pr|glab[[:space:]]+mr)[[:space:]]+(create|edit)' || exit 0
 
-[ "$is_commit" -eq 0 ] && [ "$is_pr" -eq 0 ] && [ "$is_push" -eq 0 ] && exit 0
-
-validate_command_metadata() {
+# Heredoc bodies are stdin data, not shell words: they are cut out before publish commands are
+# detected and tokenized, so a script that only mentions `git commit` publishes nothing. A body
+# is checked only through the argument that holds its operator, as in -m "$(cat <<'EOF' ...)".
+# Prints 1 when the command pushes or creates/edits a PR/MR, so unpushed messages need a check.
+check_command_metadata() {
   printf '%s' "$COMMAND" | FORBIDDEN="$FORBIDDEN" "$PY" -c '
 import os
 import re
@@ -51,8 +48,124 @@ def fail(message):
     raise SystemExit(2)
 
 
+QUOTE = "\x27"
+METACHARACTERS = " \t\n|&;()<>"
+MARKER = re.compile("\0([0-9]+)\0")
+
+
+def read_word(text, index):
+    word = []
+    while index < len(text) and text[index] not in METACHARACTERS:
+        char = text[index]
+        if char in (QUOTE, "\""):
+            end = text.find(char, index + 1)
+            if end < 0:
+                return "", index
+            word.append(text[index + 1 : end])
+            index = end + 1
+        elif char == "\\":
+            word.append(text[index + 1 : index + 2])
+            index += 2
+        else:
+            word.append(char)
+            index += 1
+    return "".join(word), index
+
+
+def read_body(text, index, delimiter, strip_tabs):
+    lines = []
+    while index < len(text):
+        end = text.find("\n", index)
+        end = len(text) if end < 0 else end
+        line = text[index:end]
+        index = end + 1
+        if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+            break
+        lines.append(line)
+    return "\n".join(lines), index
+
+
+def cut_heredocs(text):
+    """Replace each heredoc operator with a marker and cut its body out of the shell text."""
+    shell, bodies, pending, stack = [], [], [], []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        top = stack[-1] if stack else ""
+        step = 1
+        if top == QUOTE:
+            if char == QUOTE:
+                stack.pop()
+        elif char == "\\":
+            step = 2
+        elif top == "((":
+            if text.startswith("))", index):
+                stack.pop()
+                step = 2
+        elif text.startswith("$((", index):
+            stack.append("((")
+            step = 3
+        elif text.startswith("$(", index):
+            stack.append("(")
+            step = 2
+        elif char == "`":
+            if top == "`":
+                stack.pop()
+            else:
+                stack.append(char)
+        elif top == "\"":
+            if char == "\"":
+                stack.pop()
+        elif char in (QUOTE, "\""):
+            stack.append(char)
+        elif char == "#" and (index == 0 or text[index - 1] in " \t\n;&|()"):
+            end = text.find("\n", index)
+            step = (len(text) if end < 0 else end) - index
+        elif text.startswith("((", index):
+            stack.append("((")
+            step = 2
+        elif char == "(":
+            stack.append(char)
+        elif char == ")" and top == "(":
+            stack.pop()
+        elif text.startswith("<<<", index):
+            step = 3
+        elif text.startswith("<<", index):
+            start = index + 2
+            strip_tabs = text.startswith("-", start)
+            start += strip_tabs
+            while text[start : start + 1] in (" ", "\t"):
+                start += 1
+            delimiter, end = read_word(text, start)
+            if delimiter:
+                shell.append("\0%d\0" % (len(bodies) + len(pending)))
+                pending.append((delimiter, strip_tabs))
+                index = end
+                continue
+            step = 2
+        elif char == "\n" and pending:
+            shell.append(char)
+            index += 1
+            for delimiter, strip_tabs in pending:
+                body, index = read_body(text, index, delimiter, strip_tabs)
+                bodies.append(body)
+            pending = []
+            continue
+        shell.append(text[index : index + step])
+        index += step
+    bodies.extend("" for _ in pending)
+    return "".join(shell), bodies
+
+
+shell, bodies = cut_heredocs(sys.stdin.read())
+is_commit = re.search(r"git\s+commit", shell, re.IGNORECASE)
+is_pr = re.search(r"(gh\s+pr|glab\s+mr)\s+(create|edit)", shell, re.IGNORECASE)
+is_push = re.search(r"git\s+push", shell, re.IGNORECASE)
+if not (is_commit or is_pr or is_push):
+    raise SystemExit(0)
+
 try:
-    lexer = shlex.shlex(sys.stdin.read(), posix=True)
+    lexer = shlex.shlex(shell, posix=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
     lexer.escape = ""
@@ -90,6 +203,7 @@ def values(options):
 
 
 def check_text(text):
+    text = MARKER.sub(lambda match: bodies[int(match.group(1))], text)
     if forbidden.search(text):
         fail("Публичные Git-метаданные должны содержать только сведения об изменении проекта: автоматическая атрибуция, имена моделей и session URL запрещены.")
 
@@ -116,16 +230,16 @@ if (has_sequence("gh", "pr", "create") or has_sequence("gh", "pr", "edit") or
     check_files(values({"--body-file", "--description-file"}))
     for text in values({"--title", "--body", "--description"}):
         check_text(text)
+
+if is_push or is_pr:
+    print(1)
 '
 }
 
-validate_command_metadata
-if [ $? -ne 0 ]; then
-  exit 2
-fi
+PUBLISHES="$(check_command_metadata)" || exit 2
 
-if [ "$is_push" -eq 1 ] || [ "$is_pr" -eq 1 ]; then
-  LOCAL_MESSAGES="$(git -C "${CLAUDE_PROJECT_DIR:-.}" log --format=%B --no-merges --not --remotes 2>/dev/null)"
+if [ "$PUBLISHES" = 1 ]; then
+  LOCAL_MESSAGES="$(git -C "${CLAUDE_PROJECT_DIR:-.}" log --format=%B --no-merges HEAD --not --remotes 2>/dev/null)"
   if printf '%s\n' "$LOCAL_MESSAGES" | grep -qiE "$FORBIDDEN"; then
     echo "Публикация заблокирована: непереданный commit message содержит запрещённую автоматическую атрибуцию или ссылку на сессию." >&2
     exit 2
