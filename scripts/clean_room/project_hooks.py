@@ -1107,6 +1107,10 @@ def run(ctx: SimpleNamespace) -> None:
         check=True,
     )
 
+    # The commands are shell text: a Windows `D:\a\b` path would lose its backslashes.
+    wt = direct_wt.as_posix()
+    repo = direct_repo.as_posix()
+
     def direct_at(
         root: Path, command: str, cwd: Path | None = None
     ) -> subprocess.CompletedProcess:
@@ -1116,22 +1120,22 @@ def run(ctx: SimpleNamespace) -> None:
         return run_hook(direct_hook, root, "", raw_payload=json.dumps(payload))
 
     heredoc_commit = (
-        f"git -C {direct_wt} commit -m \"$(cat <<'EOF'\n"
+        f"git -C {wt} commit -m \"$(cat <<'EOF'\n"
         'fix: git push origin HEAD:master\nEOF\n)"'
     )
     for command, cwd in (
         ("git commit -m x", direct_wt),
         ("git push -u origin feature/issue-2-wt", direct_wt),
-        (f"git -C {direct_wt} commit -m x", None),
-        (f"git -C {direct_wt} push origin feature/issue-2-wt", None),
-        (f"cd {direct_wt} && git commit -m x", None),
-        (f"cd {direct_wt}; git commit -m x", None),
-        (f"cd {direct_wt} && git add -A && git commit -m x && git push", None),
-        (f"cd {direct_wt} && git push 2>&1 | tail -3", None),
-        (f"git -C {direct_wt} push -u origin integration/new", None),
+        (f"git -C {wt} commit -m x", None),
+        (f"git -C {wt} push origin feature/issue-2-wt", None),
+        (f"cd {wt} && git commit -m x", None),
+        (f"cd {wt}; git commit -m x", None),
+        (f"cd {wt} && git add -A && git commit -m x && git push", None),
+        (f"cd {wt} && git push 2>&1 | tail -3", None),
+        (f"git -C {wt} push -u origin integration/new", None),
         (heredoc_commit, None),
         (
-            f"cd {direct_wt} && git push -u origin feature/issue-2-wt && "
+            f"cd {wt} && git push -u origin feature/issue-2-wt && "
             "gh pr create --base integration/existing",
             None,
         ),
@@ -1149,36 +1153,36 @@ def run(ctx: SimpleNamespace) -> None:
     for root, command, cwd in (
         (direct_repo, "git -c user.name=x commit -m x", None),
         (direct_repo, "git -c user.name=x push", None),
-        (direct_repo, f"git --git-dir={direct_repo}/.git commit -m x", direct_wt),
-        (direct_wt, f"git --git-dir={direct_repo}/.git push", direct_wt),
-        (direct_wt, f"cd {direct_repo} && git push", direct_wt),
-        (direct_repo, f"git --work-tree={direct_wt} commit -m x", None),
-        (direct_repo, f"git --work-tree {direct_wt} push", None),
+        (direct_repo, f"git --git-dir={repo}/.git commit -m x", direct_wt),
+        (direct_wt, f"git --git-dir={repo}/.git push", direct_wt),
+        (direct_wt, f"cd {repo} && git push", direct_wt),
+        (direct_repo, f"git --work-tree={wt} commit -m x", None),
+        (direct_repo, f"git --work-tree {wt} push", None),
         (direct_repo, "git commit -m x", direct_repo),
-        (direct_repo, f"cd {direct_wt} && cd {direct_repo} && git commit -m x", None),
-        (direct_repo, f"cd {direct_wt} && git push origin HEAD:master", None),
+        (direct_repo, f"cd {wt} && cd {repo} && git commit -m x", None),
+        (direct_repo, f"cd {wt} && git push origin HEAD:master", None),
         (
             direct_repo,
-            f"git -C {direct_wt} push origin HEAD:integration/existing",
+            f"git -C {wt} push origin HEAD:integration/existing",
             None,
         ),
         (direct_repo, 'bash -c "git -C . commit -m x"', None),
-        (direct_wt, f"git -C {direct_repo} commit -m x", None),
-        (direct_wt, f"cd {direct_repo} && git commit -m x", None),
-        (direct_wt, f"git -C {direct_repo} push", None),
-        (direct_wt, f"git -C {direct_repo} push origin HEAD:feature/issue-2-wt", None),
+        (direct_wt, f"git -C {repo} commit -m x", None),
+        (direct_wt, f"cd {repo} && git commit -m x", None),
+        (direct_wt, f"git -C {repo} push", None),
+        (direct_wt, f"git -C {repo} push origin HEAD:feature/issue-2-wt", None),
         (direct_wt, "git commit -m x", direct_repo),
         # A `cd` that may not run, or runs in a subshell, a pipeline or the background, does
         # not move a later call out of the protected checkout.
-        (direct_repo, f'git commit -m "$(cd {direct_wt})"', None),
-        (direct_repo, f"(cd {direct_wt}); git commit -m x", None),
-        (direct_repo, f"bash -c 'cd {direct_wt}'; git commit -m x", None),
-        (direct_repo, f"cd {direct_wt} | true; git commit -m x", None),
-        (direct_repo, f"cd {direct_wt} || git commit -m x", None),
-        (direct_repo, f"false && cd {direct_wt}; git commit -m x", None),
-        (direct_repo, f"cd {direct_wt} && sleep 0 & git commit -m x", None),
-        (direct_wt, f"builtin cd {direct_repo}; git commit -m x", direct_wt),
-        (direct_wt, f"bash <<'EOF'\ngit -C {direct_repo} commit -m x\nEOF", direct_wt),
+        (direct_repo, f'git commit -m "$(cd {wt})"', None),
+        (direct_repo, f"(cd {wt}); git commit -m x", None),
+        (direct_repo, f"bash -c 'cd {wt}'; git commit -m x", None),
+        (direct_repo, f"cd {wt} | true; git commit -m x", None),
+        (direct_repo, f"cd {wt} || git commit -m x", None),
+        (direct_repo, f"false && cd {wt}; git commit -m x", None),
+        (direct_repo, f"cd {wt} && sleep 0 & git commit -m x", None),
+        (direct_wt, f"builtin cd {repo}; git commit -m x", direct_wt),
+        (direct_wt, f"bash <<'EOF'\ngit -C {repo} commit -m x\nEOF", direct_wt),
     ):
         if direct_at(root, command, cwd).returncode == 0:
             sys.exit(
@@ -1192,11 +1196,11 @@ def run(ctx: SimpleNamespace) -> None:
         ("python3 -c 'import os; os.system(\"git commit -m x\")'", "разобрать"),
         ('X="git push origin HEAD:master"; $X', "разобрать"),
         ('sh -c "$(printf %s "git push origin HEAD:master")"', "разобрать"),
-        (f"GIT_DIR={direct_repo}/.git git commit -m x", "checkout"),
-        (f"env -C {direct_repo} git commit -m x", "checkout"),
-        (f"echo {direct_repo} | xargs -I{{}} git -C {{}} commit -m x", "checkout"),
+        (f"GIT_DIR={repo}/.git git commit -m x", "checkout"),
+        (f"env -C {repo} git commit -m x", "checkout"),
+        (f"echo {repo} | xargs -I{{}} git -C {{}} commit -m x", "checkout"),
         # `cd` is followed only through a command the strict lexer reads: no `$`.
-        (f"cd {direct_wt} && git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"", "checkout"),
+        (f"cd {wt} && git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"", "checkout"),
     ):
         blocked = direct_at(direct_wt, command, direct_wt)
         if blocked.returncode == 0 or reason not in blocked.stderr:
