@@ -38,10 +38,14 @@ KEYED_READ_ONLY_ROLES = ("architect", "code-review", "qa")
 ATTENTION_REASONS = (
     "unknown-reason",
     "infrastructure-retry-repeated",
+    "tooling-retry-repeated",
     "retry-queued-too-long",
     "stale-evidence",
     "stale-dispatch",
 )
+# A tool that blocks the same candidate a third time in a row needs a fixed tool, not another re-run
+# (issue #500).
+MAX_CONSECUTIVE_TOOLING_RETRIES = 2
 CONTEXT_PRESSURE_LEVELS = ("ok", "warning", "critical")
 
 
@@ -176,6 +180,25 @@ def attention_finding(
         "last_safe_action": last_safe_action,
         "recommended_human_action": recommended_human_action,
     }
+
+
+def tooling_retry_streak(decisions: Sequence[Mapping[str, object]]) -> int:
+    """Число подряд идущих последних решений с маршрутом ``tooling-retry`` на одном candidate.
+
+    Серию обрывает первое другое решение (accept, другой маршрут) или другой ``candidate_commit``
+    в routing record; ``None`` равен ``None`` (у architect candidate нет).
+    """
+    streak = 0
+    candidate: object = None
+    for decision in reversed(decisions):
+        routing = decision.get("routing")
+        if not isinstance(routing, Mapping) or routing.get("route") != "tooling-retry":
+            break
+        if streak and routing.get("candidate_commit") != candidate:
+            break
+        candidate = routing.get("candidate_commit")
+        streak += 1
+    return streak
 
 
 def top_finding(findings: Sequence[dict[str, str]]) -> dict[str, str]:

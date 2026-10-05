@@ -79,6 +79,17 @@ zone. Protected branches and `integration/*` are never direct write targets. A b
 writer; role handoffs are sequential. A commit is evidence only after the required checks pass and its
 SHA is included in the completion report.
 
+Never work around a hook, the safety classifier, the ledger or another tool that blocks a legitimate
+action: do not repeat the blocked action in another command form, through another tool, a script
+file, `eval` or another interpreter, or by splitting the command. Following the remedy the tool
+itself names (such as the bounded summary wrapper) is not a workaround. Stop instead and return
+`outcome: blocked` with a `tooling_blocker` of exactly three non-empty strings: `tool` (the hook or
+tool that blocked, `safety-classifier` for an interruption by the safety classifier), `command`
+(the exact command or action as it was invoked) and `message` (the tool's verbatim message, bounded
+like check evidence). Only this field lets the coordinator classify the stop as `tooling`; free
+text in `blockers` never does. Report a check the block kept from running as not run, never as
+`fail`.
+
 Escalate instead of guessing when the requested zone is unclear or overlaps another batch, required
 proof cannot be produced, a risk trigger applies without a stated gate, or the work needs credentials,
 an irreversible action, or a policy decision. A blocked or failed attempt is not retried in place: the

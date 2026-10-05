@@ -29,6 +29,7 @@ from harness.orchestration.core.constants import (
     NEXT_ACTION_DISPATCH_ROLE,
     OPERATIONAL_REASON_CATEGORIES,
     RETRY_REASON_CATEGORIES,
+    TOOLING_REASON_CATEGORY,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
@@ -357,12 +358,17 @@ def _carry_over_preview(
 
 
 def _developer_retry_count(batch: JsonObject) -> int:
-    """Count approved retry decisions, not ordinary initial developer dispatches."""
+    """Count approved retry decisions, not ordinary initial developer dispatches. A
+    ``tooling-retry`` re-runs work a tool blocked, so it spends no developer retry (issue #500)."""
     return sum(
         1
         for decision in batch.get("coordinator_decisions", [])
         if decision.get("decision") == "retry"
         and decision.get("next_role") == "developer"
+        and not (
+            isinstance(decision.get("routing"), dict)
+            and decision["routing"].get("route") == "tooling-retry"
+        )
     )
 
 
@@ -425,7 +431,9 @@ def _retry_routing(
     infrastructure or transport -- explains it. Any finding, failed check, moved candidate or
     unclear reason routes to a developer retry, which is always the safe route. ``context-pressure``
     is operational only when a critical ``context_pressure`` observation was recorded for the reported
-    dispatch (``pressure_recorded``); a claim without that observation is ``unknown``.
+    dispatch (``pressure_recorded``); a claim without that observation is ``unknown``. ``tooling``
+    comes only from a blocked report's structured ``tooling_blocker`` (an approver may name it, never
+    replace it) and routes ``tooling-retry``: the same stage again, a developer from its last commit.
     """
     if (
         explicit_category is not None
@@ -445,6 +453,16 @@ def _retry_routing(
         category, basis = explicit_category, "the approver named this reason category"
     elif structured is not None:
         category, basis = structured
+    elif (
+        explicit_category in {None, TOOLING_REASON_CATEGORY}
+        and outcome == "blocked"
+        and "tooling_blocker" in report
+    ):
+        category = TOOLING_REASON_CATEGORY
+        basis = "the blocked report carries a structured tooling_blocker (tool, command, message)"
+    elif explicit_category == TOOLING_REASON_CATEGORY:
+        category = "unknown"
+        basis = f"the approver named tooling, but outcome={outcome} carries no structured tooling_blocker"
     elif explicit_category == "context-pressure" and not pressure_recorded:
         category = "unknown"
         basis = "context-pressure was named, but no critical context_pressure observation exists for the reported dispatch"
@@ -456,7 +474,19 @@ def _retry_routing(
         basis = f"the approver named {explicit_category}, but outcome={outcome} does not show a blocked run"
     else:
         category, basis = "unknown", "no structured evidence classifies the cause"
-    if stage == "architect":
+    if category == TOOLING_REASON_CATEGORY:
+        next_action = "developer-retry" if stage == "developer" else stage
+        route = "tooling-retry"
+        restart = (
+            "continues from the developer's last commit"
+            if stage == "developer"
+            else "repeats the stage on the same SHA"
+        )
+        outcome_sentence = (
+            f"a new {stage} dispatch {restart}; it spends no developer retry and the "
+            "earlier brief, report and tooling blocker stay as audit evidence"
+        )
+    elif stage == "architect":
         next_action, route = "architect", "architect-retry"
         outcome_sentence = "a new architect dispatch runs; no developer starts before an architect report is accepted"
     elif candidate_bound and category in OPERATIONAL_REASON_CATEGORIES:
@@ -735,7 +765,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         if args.decision == "retry":
             routing = _decide_retry_route(repo, root, batch, dispatch, report, args)
             routing["decided_at"] = utils._now()
-            if routing["next_action"] == "verification":
+            if routing["route"] == "verification":
                 report_path = _records_root(root) / pending[0]["report"]
                 batch.setdefault("candidate_registrations", []).append(
                     {
@@ -748,9 +778,11 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                         "registered_at": routing["decided_at"],
                     }
                 )
-            if routing[
-                "next_action"
-            ] == "developer-retry" and _developer_retry_budget_exhausted(config, batch):
+            if (
+                routing["next_action"] == "developer-retry"
+                and routing["route"] != "tooling-retry"
+                and _developer_retry_budget_exhausted(config, batch)
+            ):
                 raise CoordinatorError(
                     "developer retry budget is exhausted for this batch; block, fail, or abandon it instead of starting another worker",
                     remedy="block, fail, or abandon (with --reason) this batch, then split or re-plan the work",
@@ -989,6 +1021,17 @@ def _decide_retry_route(
                 "append-only and must pass a new read-only verification dispatch before risk assessment."
             ),
         }
+    if stage == "developer" and routing["route"] == "tooling-retry":
+        # The developer restarts from its last commit: record it, so the audit and the tooling
+        # streak name the candidate the retry continues.
+        routing = {
+            **routing,
+            "candidate_commit": _candidate_commit(repo, report["commit_sha"]),
+        }
+    if stage == "verification" and routing["route"] == "tooling-retry":
+        # Verification re-runs on the registered candidate its brief pinned; no accepted
+        # candidate names it, so record the pin for the audit and the tooling streak.
+        routing = {**routing, "candidate_commit": dispatch.get("candidate_commit")}
     if hint is not None:
         routing["classifier_hint"] = {"category": hint.category, "basis": hint.basis}
     if forced == "developer" and routing["next_action"] != "developer-retry":
