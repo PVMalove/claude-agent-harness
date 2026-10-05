@@ -436,9 +436,11 @@ def _join(cwd: Path | None, value: str) -> Path | None:
     """Каталог после `cd` или `git -C`; None, если shell-текст его не определяет."""
     if value == "-" or DYNAMIC.search(value):
         return None
+    if value.startswith("~") and value[1:2] not in ("", "/", "\\"):
+        return None  # `~user`: Windows `expanduser` не проверяет пользователя и подставляет имя
     try:
         target = Path(value).expanduser()
-    except RuntimeError:  # `~user` of an unknown user
+    except RuntimeError:  # home directory cannot be determined
         return None
     if target.is_absolute():
         return target
