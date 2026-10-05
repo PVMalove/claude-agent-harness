@@ -28,8 +28,16 @@ OPERATIONAL_REASON_CATEGORIES = (
     "context-pressure",
 )
 DEVELOPER_REASON_CATEGORIES = ("code", "requirements", "candidate-change")
+# A tool (a hook, the safety classifier, the ledger) blocked a legitimate role action (issue #500).
+# It is operational too, but only a blocked report's structured ``tooling_blocker`` proves it, and it
+# has a route of its own (``tooling-retry``): the same stage on the same SHA, a developer from its
+# last commit, without spending ``retry_policy.max_developer_retries``. It is deliberately not one
+# of ``OPERATIONAL_REASON_CATEGORIES``, whose routes and attention count it must not join.
+TOOLING_REASON_CATEGORY = "tooling"
+TOOLING_BLOCKER_FIELDS = frozenset({"tool", "command", "message"})
 RETRY_REASON_CATEGORIES = (
     *OPERATIONAL_REASON_CATEGORIES,
+    TOOLING_REASON_CATEGORY,
     *DEVELOPER_REASON_CATEGORIES,
     "unknown",
 )
@@ -40,6 +48,7 @@ RETRY_REASON_CATEGORIES = (
 # stops, and the coordinator completes that chain with ``report complete``. ``carry-over`` is
 # recorded by an ``accept`` with ``--findings-file`` and by ``batch carry-over`` (issue #499): a
 # coordinator finding goes into review instead of costing a developer retry before it.
+# ``tooling-retry`` (issue #500) re-runs the stage a tool blocked, for the ``tooling`` category only.
 RECOVERY_ROUTES = (
     "developer-retry",
     "same-candidate-rerun",
@@ -48,6 +57,7 @@ RECOVERY_ROUTES = (
     "abandon",
     "report-completion",
     "carry-over",
+    "tooling-retry",
 )
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {
@@ -206,6 +216,7 @@ REPORT_OPTIONAL_FIELDS = {
     "divergence_justification",
     "lessons",
     "used_memory",
+    "tooling_blocker",
 }
 RISK_ASSESSMENT_FIELDS = {
     "risk_assessment_id",
