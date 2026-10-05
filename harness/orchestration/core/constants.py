@@ -35,9 +35,16 @@ DEVELOPER_REASON_CATEGORIES = ("code", "requirements", "candidate-change")
 # of ``OPERATIONAL_REASON_CATEGORIES``, whose routes and attention count it must not join.
 TOOLING_REASON_CATEGORY = "tooling"
 TOOLING_BLOCKER_FIELDS = frozenset({"tool", "command", "message"})
+# A read-only role worked around a hook or tool block (issue #560). Only an approver names it, and
+# none of that report is evidence: the same stage re-runs on the same SHA (``bypass-rerun``) under an
+# explicit approval, since there is nothing for a developer to fix. A writing role that worked around
+# a block is still retried with a developer category or blocked.
+BLOCK_BYPASS_REASON_CATEGORY = "block-bypass"
+BLOCK_BYPASS_STAGES = ("code-review", "qa", "verification")
 RETRY_REASON_CATEGORIES = (
     *OPERATIONAL_REASON_CATEGORIES,
     TOOLING_REASON_CATEGORY,
+    BLOCK_BYPASS_REASON_CATEGORY,
     *DEVELOPER_REASON_CATEGORIES,
     "unknown",
 )
@@ -49,6 +56,7 @@ RETRY_REASON_CATEGORIES = (
 # recorded by an ``accept`` with ``--findings-file`` and by ``batch carry-over`` (issue #499): a
 # coordinator finding goes into review instead of costing a developer retry before it.
 # ``tooling-retry`` (issue #500) re-runs the stage a tool blocked, for the ``tooling`` category only.
+# ``bypass-rerun`` (issue #560) re-runs a read-only stage whose role worked around a block.
 RECOVERY_ROUTES = (
     "developer-retry",
     "same-candidate-rerun",
@@ -58,6 +66,7 @@ RECOVERY_ROUTES = (
     "report-completion",
     "carry-over",
     "tooling-retry",
+    "bypass-rerun",
 )
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {

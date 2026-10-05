@@ -60,10 +60,14 @@ retry тратится после review. Retry developer report без accept �
 
 Воркер, обошедший блокировку hook-а или инструмента (другой формой команды, другим инструментом,
 файлом-скриптом, `eval`, другим интерпретатором или разбиением команды), нарушает протокол: такой
-report нельзя принять или закрыть через override-warning; решение — `retry` с developer-категорией
-(не `tooling`) или `block`, а нарушение записывается в `--note`. Report, который вместо этого
-остановился с `tooling_blocker`, сначала проверяется: его `command` законна по brief (зона и tool
-policy), а `message` её отклоняет. Если это ложное срабатывание, заведите или переиспользуйте
+report нельзя принять или закрыть через override-warning, а нарушение записывается в `--note`. Для
+architect и developer (включая publish) решение — `retry` с developer-категорией (не `tooling`) или
+`block`. Для read-only роли code-review, qa или verification `--reason-category block-bypass`
+передаётся в `batch decision-packet`, а когда его `route_preview.retry.route` равен `bypass-rerun`,
+— в `batch decide --decision retry`: та же стадия повторяется на том же SHA без нового candidate и
+без расхода developer retry, а новый dispatch всегда требует явного approval. Report, который вместо
+этого остановился с `tooling_blocker`, сначала проверяется: его `command` законна по brief (зона и
+tool policy), а `message` её отклоняет. Если это ложное срабатывание, заведите или переиспользуйте
 bug-тикет на инструмент через CLI трекера (инструмент, команда, сообщение, dispatch ID), укажите его
 в `--note` и выполните `batch decide --decision retry`, когда `route_preview.retry.route` равен
 `tooling-retry`: тот же этап повторяется на том же SHA (developer продолжает от своего последнего
