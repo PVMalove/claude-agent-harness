@@ -44,7 +44,7 @@ lifecycle — в [playbook.md](./playbook.md), границы ролей — в 
    worktree/ветку/SHA (attestation), шлёт heartbeat и сдаёт completion report на русском.
 4. **Решение.** Coordinator принимает report (`batch decide --decision accept`), отправляет на
    retry с маршрутизацией по структурным данным report, блокирует или завершает batch. При
-   `approval_policy` `milestone`/`low_risk` чистые report без рисков принимаются автоматически.
+   `approval_policy` `milestone`/`low_risk`/`auto` чистые report без рисков принимаются автоматически.
 5. **QA и publish.** Clean-room QA гоняет `verification_commands` на закреплённом candidate SHA в
    общей очереди. Publish выдаёт принятый SHA; PR открывает человек через `/to-pull-requests`.
 
@@ -88,7 +88,7 @@ lifecycle — в [playbook.md](./playbook.md), границы ролей — в 
 | `developer_verification_commands` | список строк | = `verification_commands` | Быстрые проверки developer. Без поля developer гоняет полный gate, `harness health` предупреждает. |
 | `review_verification_commands` | список строк | = `verification_commands` | Проверки code-review. |
 | `test_path_patterns` | список glob | `tests/**`, `**/tests/**`, `**/test_*.py`, `**/*_test.py` | Какие пути считаются тестами (delta-review при изменении только тестов). |
-| `approval_policy` | `manual_all` \| `milestone` \| `low_risk` | `manual_all` | Какие report принимаются без человека (см. ниже). |
+| `approval_policy` | `manual_all` \| `milestone` \| `low_risk` \| `auto` | `manual_all` | Какие report принимаются без человека (см. ниже). |
 | `low_risk_zones` | список имён зон | — | Зоны, где при `low_risk` чистые report принимаются автоматически. Должны быть в `backend_zones`. |
 | `human_approval_gate` | `trusted` \| `tty` | `trusted` | `trusted` — approval через `--approved-by/--approved-at`; `tty` — только интерактивное подтверждение в терминале. |
 | `approval_ttl_seconds` | целое ≥ 1 | без срока | Срок жизни `--approved-at`: более старое или датированное будущим approval отклоняется. |
@@ -133,6 +133,7 @@ lifecycle — в [playbook.md](./playbook.md), границы ролей — в 
 | `manual_all` | Каждый report принимает человек. |
 | `milestone` | Чистый report (`completed`, без рисков, блокеров, risk triggers и упавших проверок) принимается автоматически, кроме QA, publish и batch с совпавшими risk triggers. |
 | `low_risk` | То же, но только для batch в зонах из `low_risk_zones`. |
+| `auto` | Координатор сам принимает чистый report любого batch, включая чистый QA, и готовит следующий dispatch; `low_risk_zones` не применяются. Решение пишется как `policy:auto`. Ручными остаются publish, PR, batch с совпавшими risk triggers, findings, упавшие проверки и report с блокерами или рисками. |
 
 Политика фиксируется в batch при создании; её смена не влияет на уже созданные batch.
 
