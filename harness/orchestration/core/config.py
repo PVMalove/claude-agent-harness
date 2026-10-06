@@ -363,10 +363,10 @@ def _human_approval_gate(config: JsonObject) -> str:
 
 def _approval_policy(config: JsonObject) -> str:
     policy = config.get("approval_policy", "manual_all")
-    if policy not in {"manual_all", "milestone", "low_risk"}:
+    if policy not in {"manual_all", "milestone", "low_risk", "auto"}:
         raise CoordinatorError(
-            "approval_policy must be manual_all, milestone or low_risk",
-            remedy="set approval_policy to 'manual_all', 'milestone' or 'low_risk' in the project orchestration config",
+            "approval_policy must be manual_all, milestone, low_risk or auto",
+            remedy="set approval_policy to 'manual_all', 'milestone', 'low_risk' or 'auto' in the project orchestration config",
         )
     return cast(str, policy)
 

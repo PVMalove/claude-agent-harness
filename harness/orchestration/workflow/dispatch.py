@@ -234,7 +234,7 @@ def _dispatch_approval_mode(
     routing = previous["decision"].get("routing") if previous else None
     milestone = (
         purpose == "publish"
-        or (role == "qa" and policy != "low_risk")
+        or (role == "qa" and policy not in {"low_risk", "auto"})
         or risk_triggered
         or batch.get("risk_reassessment_required")
         or (isinstance(routing, dict) and routing.get("route") == "bypass-rerun")

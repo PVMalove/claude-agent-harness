@@ -48,10 +48,10 @@ def run_qa(args: argparse.Namespace) -> JsonObject:
     dispatch = _load_dispatch(root, args.dispatch)
     batch = _load_batch(root, dispatch["batch_id"])
     report = _read_object(Path(result["report"]), "QA completion report")
-    if (
-        _auto_accept_policy(core_config._config(repo), batch, dispatch, report)
-        != "low_risk"
-    ):
+    if _auto_accept_policy(core_config._config(repo), batch, dispatch, report) not in {
+        "low_risk",
+        "auto",
+    }:
         return result
     decided = decide_batch(
         argparse.Namespace(
