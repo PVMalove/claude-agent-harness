@@ -826,8 +826,8 @@ def integration_collect_ci(args: argparse.Namespace) -> JsonObject:
     """
     repo = _repo(args)
     root = _state_root(args, repo)
-    number = getattr(args, "pull_request", None)
-    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+    number = _pull_request_number(args)
+    if number is None:
         raise CoordinatorError(
             "collect-ci requires a positive pull request number",
             remedy="pass --pull-request with the number of the pull request",
@@ -966,6 +966,20 @@ def _verified_source(status: JsonObject) -> tuple[str, JsonObject]:
     return "local-qa", {"evidence_id": local[-1]["evidence_id"]}
 
 
+def _has_passed_check(links: list[JsonObject], status: JsonObject) -> bool:
+    """A passed, verified check of the current pair, original or refreshed: it supersedes an
+    earlier failed one.  ``verification.satisfied`` cannot say it, because it is true for any
+    pair that was never refreshed."""
+    usable = {
+        check["evidence_id"]
+        for check in status["pair_checks"]
+        if check["applies_to_current_pair"] and check["verification"] != "unverified"
+    }
+    return any(
+        link["evidence_id"] in usable and _satisfies(link, status) for link in links
+    )
+
+
 def _route_failure(
     repo: Path,
     root: Path,
@@ -992,13 +1006,10 @@ def _route_failure(
     from harness.orchestration.core import config as core_config
     from harness.orchestration.workflow import resolver_state
 
-    target = pair["target_sha"]
-    current = resolver_state.budget(root, core_config._config(repo), record_id)
-    fixes = resolver_state.same_target_fixes(root, record_id, target)
-    if target in current["spent_targets"]:
-        exhausted = fixes >= current["internal_fix_budget"]
-    else:
-        exhausted = current["remaining"] == 0
+    current, fixes, reason = resolver_state.exhaustion(
+        root, core_config._config(repo), record_id, pair["target_sha"]
+    )
+    exhausted = reason is not None
     result: JsonObject = {
         "step": "human-decision" if exhausted else "route-failure",
         "route": "resolver",
@@ -1056,7 +1067,7 @@ def integration_next(args: argparse.Namespace) -> JsonObject:
             ],
         }
     with _ledger_lock(LifecycleLedger(root)):
-        open_batch = resolver._open_batch(resolver._resolver_batches(root, record_id))
+        open_batch = resolver.open_resolver_batch(root, record_id)
         links = _evidence_links(root, record_id)
     if open_batch is not None:
         return {
@@ -1079,7 +1090,7 @@ def integration_next(args: argparse.Namespace) -> JsonObject:
         }
     satisfied = status["verification"]["satisfied"]
     failed = _failed_pair_checks(links, status)
-    if failed and not (refreshed and satisfied):
+    if failed and not _has_passed_check(links, status):
         return {
             **result,
             **_route_failure(repo, root, record_id, status, failed, refreshed),

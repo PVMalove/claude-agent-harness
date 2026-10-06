@@ -349,6 +349,19 @@ class RouteFailureTests(NextFixture):
 
         self.assertEqual(self.next(PR)["step"], "handoff")
 
+    def test_a_passed_check_supersedes_an_earlier_failed_one_of_the_original_pair(
+        self,
+    ) -> None:
+        self.failed_ci()
+        self.assertEqual(self.next(PR)["step"], "route-failure")
+        result = self.collect(self.observation(self.pair()))
+        self.assertEqual(result["outcome"], "accepted")
+
+        after = self.next(PR)
+
+        self.assertEqual(after["step"], "handoff")
+        self.assertEqual(after["handoff"]["qa_source"], "original-qa")
+
 
 class OpenResolverTests(NextFixture):
     def test_an_open_resolver_batch_keeps_the_pr_session_waiting(self) -> None:
