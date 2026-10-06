@@ -103,6 +103,7 @@ REVIEW_SEVERITIES = {"none", "clean", "warning", "blocker"}
 FINDING_SEVERITIES = {"info", "warning", "blocker"}
 QA_LEASE_FIELDS = {"dispatch_id", "host", "pid", "acquired_at", "expires_at"}
 QA_QUEUE_FIELDS = {"dispatch_id", "sequence", "queued_at"}
+QA_OWNER_FIELDS = {"owner_kind", "owner_id"}
 PLAN_FIELDS = (
     "batch_id",
     "created_at",

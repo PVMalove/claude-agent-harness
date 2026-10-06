@@ -14,6 +14,7 @@ from unittest import mock
 
 from harness.gate_runner.gate_runner import GateResult, GateRunnerError
 from harness.orchestration import coordinator, qa_lane
+from harness.orchestration.core.utils import CoordinatorError
 from harness.orchestration.ledger import (
     BatchRecord,
     DispatchRecord,
@@ -48,6 +49,58 @@ class _Ops:
 
 
 class QaLaneBootstrapTests(unittest.TestCase):
+    def test_local_requests_and_dispatches_share_fifo_and_exact_owner_release(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            ledger = LifecycleLedger(Path(temporary) / "state")
+            ledger.ensure()
+            with ledger.lock():
+                first = qa_lane.acquire(
+                    ledger,
+                    "local-qa-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    coordinator,
+                    owner_kind="local-qa",
+                    lease_seconds=1800,
+                )
+                ordinary = qa_lane.acquire(
+                    ledger, DISPATCH_ID, coordinator, lease_seconds=1800
+                )
+                second = qa_lane.acquire(
+                    ledger,
+                    "local-qa-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    coordinator,
+                    owner_kind="local-qa",
+                    lease_seconds=1800,
+                )
+                self.assertEqual(first["state"], "acquired")
+                self.assertEqual(ordinary["position"], 2)
+                self.assertEqual(second["position"], 3)
+                self.assertEqual(
+                    qa_lane.acquire(
+                        ledger, DISPATCH_ID, coordinator, lease_seconds=1800
+                    )["position"],
+                    2,
+                )
+                with self.assertRaises(CoordinatorError):
+                    qa_lane.release(ledger, {**first["lease"], "pid": -1}, coordinator)
+                qa_lane.release(ledger, first["lease"], coordinator)
+                self.assertEqual(
+                    qa_lane.acquire(
+                        ledger,
+                        "local-qa-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        coordinator,
+                        owner_kind="local-qa",
+                        lease_seconds=1800,
+                    )["state"],
+                    "queued",
+                )
+                admitted = qa_lane.acquire(
+                    ledger, DISPATCH_ID, coordinator, lease_seconds=1800
+                )
+                self.assertEqual(admitted["state"], "acquired")
+                qa_lane.release(ledger, admitted["lease"], coordinator)
+
     def test_first_enqueue_creates_the_ledger_sequence_record(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             state_root = Path(temporary) / "state"

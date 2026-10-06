@@ -5,10 +5,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 from pathlib import Path
+from typing import cast
 
 from harness.gate_runner.gate_runner import CleanRoomPolicy, run_gate, sanitise
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import _config, _verification_commands
+from harness.orchestration.core.config import _execution_policy
+from harness.orchestration import qa_lane
 from harness.orchestration.core.constants import LOCAL_QA_CI_CONDITIONS, STATE_REL
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
@@ -135,11 +138,28 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
         if result_path.exists():
             return _read_object(result_path, "local QA result")
         _observe_pair(repo, root, record, pair)
-    gate = run_gate(
-        [command for command in commands],
-        CleanRoomPolicy(repo, pair["candidate_sha"]),
-        stop_on_failure=True,
-    )
+        from harness.orchestration import coordinator
+
+        ops = cast(qa_lane.CoordinatorOps, coordinator)
+        seconds = getattr(args, "lease_seconds", None)
+        if seconds is None:
+            seconds = _execution_policy(_config(repo))["qa_lease_seconds"]
+        admission = qa_lane.acquire(
+            ledger, request_id, ops, owner_kind="local-qa", lease_seconds=seconds
+        )
+        if admission["state"] == "queued":
+            return {"request_id": request_id, **members, **admission}
+        claimed = admission["lease"]
+    try:
+        gate = run_gate(
+            [command for command in commands],
+            CleanRoomPolicy(repo, pair["candidate_sha"]),
+            stop_on_failure=True,
+        )
+    except Exception:
+        with _ledger_lock(ledger):
+            qa_lane.release(ledger, claimed, ops)
+        raise
     checksum = hashlib.sha256(gate.artifact.encode("utf-8")).hexdigest()
     artifact = _records_root(root) / "qa-artifacts" / f"{checksum}.log"
     ledger.write_artifact(artifact, gate.artifact)
@@ -158,4 +178,5 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
     }
     with _ledger_lock(ledger):
         _write_record(ledger, IntegrationLocalQaRecord.from_dict(result))
+        qa_lane.release(ledger, claimed, ops)
     return result

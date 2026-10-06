@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import socket
 import uuid
 from collections.abc import Iterator
@@ -21,6 +22,7 @@ from typing import Protocol, TypeGuard
 
 from ..errors import HarnessError
 from .core.config import _execution_policy
+from .core.constants import QA_OWNER_FIELDS
 from ..gate_runner.gate_runner import CleanRoomPolicy, GateRunnerError, run_gate
 from .contract import JsonObject
 from .ledger import (
@@ -200,7 +202,7 @@ def _queue_entries(
     for path in _queue_root(ledger, ops).glob("*.json"):
         entry = ops._read_object(path, "QA queue entry")
         if (
-            set(entry) != ops.QA_QUEUE_FIELDS
+            not _valid_owner_schema(entry, ops.QA_QUEUE_FIELDS)
             or not isinstance(entry["sequence"], int)
             or entry["sequence"] < 1
         ):
@@ -208,7 +210,7 @@ def _queue_entries(
                 "QA queue entry has an invalid schema",
                 remedy=f"fix {path}: it must hold exactly dispatch_id, sequence (an integer >= 1) and queued_at",
             )
-        ops._safe_id(entry["dispatch_id"], "QA queue dispatch")
+        _validate_owner(entry, ops)
         if not ops._non_empty(entry["queued_at"]):
             raise ops.CoordinatorError(
                 "QA queue entry has an invalid queued_at value",
@@ -218,11 +220,119 @@ def _queue_entries(
     return sorted(entries, key=lambda item: item[1]["sequence"])
 
 
+def _owner(value: JsonObject) -> tuple[str, str]:
+    """Normalize legacy dispatch records without rewriting their history."""
+    return (
+        str(value.get("owner_kind", "dispatch")),
+        str(value.get("owner_id", value.get("dispatch_id"))),
+    )
+
+
+def _owner_document(kind: str, identity: str) -> JsonObject:
+    return (
+        {"dispatch_id": identity}
+        if kind == "dispatch"
+        else {"owner_kind": kind, "owner_id": identity}
+    )
+
+
+def _valid_owner_schema(value: JsonObject, legacy_fields: set[str]) -> bool:
+    return (
+        set(value) == legacy_fields
+        or set(value) == (legacy_fields - {"dispatch_id"}) | QA_OWNER_FIELDS
+    )
+
+
+def _validate_owner(value: JsonObject, ops: CoordinatorOps) -> None:
+    kind, identity = _owner(value)
+    if kind not in {"dispatch", "local-qa"}:
+        raise ops.CoordinatorError(
+            "QA owner kind is invalid", remedy="use a dispatch or local-qa owner"
+        )
+    if kind == "dispatch":
+        ops._safe_id(identity, "QA owner")
+    elif re.fullmatch(r"local-qa-[0-9a-f]{32}", identity) is None:
+        raise ops.CoordinatorError(
+            "local QA owner ID is invalid",
+            remedy="use the request_id returned by integration local-qa",
+        )
+
+
+def acquire(
+    ledger: LifecycleLedger,
+    owner_id: str,
+    ops: CoordinatorOps,
+    *,
+    owner_kind: str = "dispatch",
+    lease_seconds: int,
+) -> JsonObject:
+    """Enqueue and acquire the one FIFO lane. Caller holds the short ledger lock."""
+    if (
+        isinstance(lease_seconds, bool)
+        or not isinstance(lease_seconds, int)
+        or lease_seconds < 1
+    ):
+        raise ops.CoordinatorError(
+            "QA lease-seconds must be a positive integer",
+            remedy="pass --lease-seconds as an integer >= 1",
+        )
+    _validate_owner(_owner_document(owner_kind, owner_id), ops)
+    queue_path, _ = _enqueue(ledger, owner_id, ops, owner_kind=owner_kind)
+    queue = _queue_entries(ledger, ops)
+    position = next(
+        index
+        for index, (_, entry) in enumerate(queue, start=1)
+        if _owner(entry) == (owner_kind, owner_id)
+    )
+    lease = _lease(ledger, ops)
+    if lease and _lease_expired(lease, ops):
+        raise ops.CoordinatorError(
+            "QA lease is stale; a coordinator must clear it explicitly before another gate runs",
+            remedy="have a coordinator run 'qa clear-stale-lease' for the expired lease, then run the QA runner again",
+        )
+    if lease or position != 1:
+        return {"state": "queued", "position": position}
+    lease = {
+        **_owner_document(owner_kind, owner_id),
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "acquired_at": ops._now(),
+        "expires_at": (
+            datetime.now(UTC) + timedelta(seconds=lease_seconds)
+        ).isoformat(),
+    }
+    _write_immutable(ledger, ops, _lane_path(ledger, ops), lease)
+    return {
+        "state": "acquired",
+        "position": position,
+        "lease": lease,
+        "queue_path": str(queue_path),
+    }
+
+
+def release(ledger: LifecycleLedger, claimed: JsonObject, ops: CoordinatorOps) -> None:
+    """Release exactly the acquired lease and its queue entry. Caller holds the lock."""
+    current = _lease(ledger, ops)
+    if current != claimed:
+        raise ops.CoordinatorError(
+            "QA lease owner changed; refusing release",
+            remedy="inspect 'qa status' and retain the current owner's lease",
+        )
+    for path, entry in _queue_entries(ledger, ops):
+        if _owner(entry) == _owner(claimed):
+            _delete_record(ledger, ops, path, reason="complete QA queue entry")
+    _delete_record(ledger, ops, _lane_path(ledger, ops), reason="complete QA lease")
+
+
 def _enqueue(
-    ledger: LifecycleLedger, dispatch_id: str, ops: CoordinatorOps
+    ledger: LifecycleLedger,
+    dispatch_id: str,
+    ops: CoordinatorOps,
+    *,
+    owner_kind: str = "dispatch",
 ) -> tuple[Path, JsonObject]:
     for path, entry in _queue_entries(ledger, ops):
-        if entry["dispatch_id"] == dispatch_id:
+        if _owner(entry) == (owner_kind, dispatch_id):
             return path, entry
     counter_path = _counter_path(ledger, ops)
     counter = (
@@ -240,7 +350,7 @@ def _enqueue(
             remedy=f"fix {counter_path}: it must be a JSON object holding only an integer 'next' >= 1",
         )
     entry = {
-        "dispatch_id": dispatch_id,
+        **_owner_document(owner_kind, dispatch_id),
         "sequence": counter["next"],
         "queued_at": ops._now(),
     }
@@ -265,7 +375,7 @@ def release_queue(
     """
     released = []
     for path, entry in _queue_entries(ledger, ops):
-        if entry["dispatch_id"] in dispatch_ids:
+        if _owner(entry)[0] == "dispatch" and _owner(entry)[1] in dispatch_ids:
             _delete_record(ledger, ops, path, reason="release abandoned QA queue entry")
             released.append(entry["dispatch_id"])
     return released
@@ -277,7 +387,7 @@ def _lease(ledger: LifecycleLedger, ops: CoordinatorOps) -> JsonObject | None:
         return None
     lease = ops._read_object(path, "QA lease")
     if (
-        set(lease) != ops.QA_LEASE_FIELDS
+        not _valid_owner_schema(lease, ops.QA_LEASE_FIELDS)
         or not ops._non_empty(lease.get("host"))
         or not isinstance(lease.get("pid"), int)
     ):
@@ -285,7 +395,7 @@ def _lease(ledger: LifecycleLedger, ops: CoordinatorOps) -> JsonObject | None:
             "QA lease has an invalid schema",
             remedy=f"fix {path}: it must hold exactly dispatch_id, host, pid (an integer), acquired_at and expires_at",
         )
-    ops._safe_id(lease.get("dispatch_id"), "QA lease dispatch")
+    _validate_owner(lease, ops)
     for field in ("acquired_at", "expires_at"):
         if not ops._non_empty(lease.get(field)):
             raise ops.CoordinatorError(
@@ -492,41 +602,13 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
                 "QA runner requires an approved, unsent dispatch",
                 remedy="approve the QA dispatch and run the QA runner before sending it to any agent",
             )
-        queue_path, _ = _enqueue(ledger, dispatch["dispatch_id"], ops)
-        queue = _queue_entries(ledger, ops)
-        position = next(
-            index
-            for index, (_, item) in enumerate(queue, start=1)
-            if item["dispatch_id"] == dispatch["dispatch_id"]
+        admission = acquire(
+            ledger, dispatch["dispatch_id"], ops, lease_seconds=lease_seconds
         )
-        lease = _lease(ledger, ops)
-        if lease is not None:
-            if _lease_expired(lease, ops):
-                raise ops.CoordinatorError(
-                    "QA lease is stale; a coordinator must clear it explicitly before another gate runs",
-                    remedy="have a coordinator run 'qa clear-stale-lease' for the expired lease, then run the QA runner again",
-                )
-            return {
-                "dispatch_id": dispatch["dispatch_id"],
-                "state": "queued",
-                "position": position,
-            }
-        if position != 1:
-            return {
-                "dispatch_id": dispatch["dispatch_id"],
-                "state": "queued",
-                "position": position,
-            }
-        lease = {
-            "dispatch_id": dispatch["dispatch_id"],
-            "host": socket.gethostname(),
-            "pid": os.getpid(),
-            "acquired_at": ops._now(),
-            "expires_at": (
-                datetime.now(UTC) + timedelta(seconds=lease_seconds)
-            ).isoformat(),
-        }
-        _write_immutable(ledger, ops, _lane_path(ledger, ops), lease)
+        if admission["state"] == "queued":
+            return {"dispatch_id": dispatch["dispatch_id"], **admission}
+        queue_path = Path(admission["queue_path"])
+        lease = admission["lease"]
         entry["state"] = "dispatched"
         ops._safe_id(dispatch["dispatch_id"], "dispatch")
         _replace_record(
@@ -580,13 +662,7 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
         )
         raise
     with _lock(ledger, ops):
-        _queue_entries(ledger, ops)
-        if queue_path.exists():
-            _delete_record(ledger, ops, queue_path, reason="complete QA queue entry")
-        lease_path = _lane_path(ledger, ops)
-        current = _lease(ledger, ops)
-        if current and current["dispatch_id"] == dispatch["dispatch_id"]:
-            _delete_record(ledger, ops, lease_path, reason="complete QA lease")
+        release(ledger, lease, ops)
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",
@@ -636,7 +712,7 @@ def clear_stale_lease(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObje
                 remedy="run 'qa status' and pass the current lease's host, pid and expiry as --expected-host, --expected-pid and --expected-expiry",
             )
         recovery = {
-            "cleared_dispatch_id": lease["dispatch_id"],
+            "cleared_dispatch_id": _owner(lease)[1],
             "lease": lease,
             "approval": ops._approval(args),
             "reason": args.reason.strip(),
@@ -655,7 +731,7 @@ def clear_stale_lease(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObje
             (
                 (path, entry)
                 for path, entry in _queue_entries(ledger, ops)
-                if entry["dispatch_id"] == lease["dispatch_id"]
+                if _owner(entry) == _owner(lease)
             ),
             None,
         )
@@ -666,4 +742,4 @@ def clear_stale_lease(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObje
         _delete_record(
             ledger, ops, _lane_path(ledger, ops), reason="clear stale QA lease"
         )
-    return {"state": "cleared", "dispatch_id": lease["dispatch_id"]}
+    return {"state": "cleared", **_owner_document(*_owner(lease))}

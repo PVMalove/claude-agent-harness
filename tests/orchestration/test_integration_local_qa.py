@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import unittest
+from unittest import mock
 
-from harness.orchestration import coordinator
+from harness.gate_runner.gate_runner import GateResult
+
+from harness.orchestration import coordinator, qa_lane
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
+from harness.orchestration.ledger import LifecycleLedger
 from tests.orchestration.test_integration_record import PublishedBranch
 
 
@@ -82,6 +87,60 @@ class LocalQaContractTests(unittest.TestCase):
         for changes in ({"reason": " "}, {"ci_condition": "available"}):
             with self.subTest(changes=changes), self.assertRaises(CoordinatorError):
                 coordinator.integration_local_qa(self.args(**changes))
+
+    def test_blocked_gate_releases_ledger_lock_and_excludes_other_qa_owners(
+        self,
+    ) -> None:
+        entered, finish = threading.Event(), threading.Event()
+        results: list[JsonObject] = []
+        errors: list[BaseException] = []
+
+        def gate(*args: object, **kwargs: object) -> GateResult:
+            entered.set()
+            if not finish.wait(10):
+                raise RuntimeError("test gate was not released")
+            return GateResult(
+                [{"command": "true", "result": "pass", "evidence": "exit 0"}],
+                "$ true\nexit_code=0\n",
+                0.0,
+            )
+
+        def run() -> None:
+            try:
+                results.append(coordinator.integration_local_qa(self.args()))
+            except BaseException as exc:
+                errors.append(exc)
+
+        with mock.patch(
+            "harness.orchestration.workflow.local_qa.run_gate", side_effect=gate
+        ) as runner:
+            thread = threading.Thread(target=run)
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(10))
+                # Ordinary ledger operations can proceed while the heavy gate is blocked.
+                status = coordinator.integration_status(
+                    self.branch.args(record=self.record)
+                )
+                self.assertEqual(status["state"], "current")
+                queued = coordinator.integration_local_qa(
+                    self.args(reason="CI unavailable for another request")
+                )
+                self.assertEqual(queued["state"], "queued")
+                ledger = LifecycleLedger(self.branch.state_root())
+                with ledger.lock():
+                    ordinary = qa_lane.acquire(
+                        ledger, "dispatch-abc123", coordinator, lease_seconds=1800
+                    )
+                self.assertEqual(ordinary["state"], "queued")
+                self.assertEqual(ordinary["position"], 3)
+                self.assertEqual(runner.call_count, 1)
+            finally:
+                finish.set()
+                thread.join(10)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(results[0]["state"], "completed")
 
     def test_public_cli_requires_ci_assertion_and_has_no_partial_command_option(
         self,
