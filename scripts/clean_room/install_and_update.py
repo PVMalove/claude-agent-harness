@@ -564,6 +564,14 @@ def run(ctx: SimpleNamespace) -> None:
     ):
         if "accepted QA" not in rule_file.read_text(encoding="utf-8"):
             sys.exit(f"blocker release rule is missing from {rule_file.name}")
+    # Issue #537: the PR step installed without the orchestration capability keeps the plain
+    # /qa-gate route and still carries the whole PR continuation for an opt-in project.
+    pr_step_text = (
+        pv_project / ".harness" / "skills" / "to-pull-requests" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    for required_text in ("integration next", "separate confirmation", "/qa-gate"):
+        if required_text not in pr_step_text:
+            sys.exit(f"installed to-pull-requests step lacks: {required_text}")
     for name in ("grill-me", "grill-with-docs", "diagnosing-bugs", "architect"):
         if not filecmp.cmp(
             ROOT / "skills" / "first-party" / "pvmalove" / name / "SKILL.md",
