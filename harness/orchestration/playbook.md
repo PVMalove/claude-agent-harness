@@ -225,7 +225,7 @@ approval must pass that digest as `--transition-digest`; the coordinator recompu
 from the ledger and refuses on any difference, so a changed scope, candidate, role, verification
 command, reason category or Context Package needs a new proposal and a new approval. The digest is
 stored in the approval and in the immutable brief, together with the transition itself, and ledger
-validation re-derives it. A policy approval (`milestone`, `low_risk`) is derived from the transition
+validation re-derives it. A policy approval (`milestone`, `low_risk`, `auto`) is derived from the transition
 being created and binds to its own digest.
 
 With `approval_ttl_seconds` set, an `--approved-at` older than that (or dated in the future) is

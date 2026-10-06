@@ -66,7 +66,7 @@ DEFAULT_ALLOWED_TOOLS = {
     "write": ("Read", "Grep", "Glob", "Bash", "Edit", "Write"),
 }
 TOOL_POLICY_SECTIONS = ("modes", "roles")
-APPROVAL_POLICIES = {"manual_all", "milestone", "low_risk"}
+APPROVAL_POLICIES = {"manual_all", "milestone", "low_risk", "auto"}
 HUMAN_APPROVAL_GATES = {"trusted", "tty"}
 COMMUNICATION_POLICY_FIELDS = frozenset(
     {"agent_to_agent_language", "coordinator_report_language"}

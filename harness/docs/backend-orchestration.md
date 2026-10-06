@@ -390,7 +390,10 @@ report оставляет dispatch в `reported` до решения челов�
 report в разрешённой зоне принимается автоматически с записью решения в ledger. Blockers, failed
 checks, раскрытые risks, risk triggers и findings любой оси review сохраняют ручной gate; publish тоже требует
 отдельного approval. При `milestone` чистый отчёт обычной роли также принимается автоматически,
-но QA, publish и рискованные переходы остаются ручными вехами.
+но QA, publish и рискованные переходы остаются ручными вехами. При `auto` координатор сам принимает
+чистые отчёты любого batch, включая чистый QA, и готовит следующий dispatch без `low_risk_paths`;
+решение записывается как `policy:auto`. Ручными остаются publish, открытие PR и merge, batch с
+совпавшими risk triggers, findings review, упавшие проверки, blockers и раскрытые risks.
 
 1. Создать planned batch и затем отдельно утвердить его:
 
@@ -765,7 +768,7 @@ developer report, а без такого report — `batch carry-over`, либо
 `dispatch_id`, `decision`, `route` (`carry-over` у `accept` и `override-warning` с
 `--findings-file`, `null` у решения без маршрута — остальных `accept`, `override-warning`,
 `block`, `fail`), `evidence` (`dispatch_id`, путь `report` и `report_sha256` immutable report),
-`approver` и `approved_at`. `approver` — `{"kind": "policy", "name": "low_risk" | "milestone"}` для
+`approver` и `approved_at`. `approver` — `{"kind": "policy", "name": "low_risk" | "milestone" | "auto"}` для
 policy auto-accept или `{"kind": "human", "name": <--approved-by>}` для явного решения; решение
 `batch carry-over` пишет ту же деталь с `route: "carry-over"` и
 `{"kind": "policy", "name": "carry-over"}`; вид

@@ -92,6 +92,9 @@ AUTO_ACCEPT_RATIONALE = "Auto-accepted due to low_risk policy and clean report"
 MILESTONE_AUTO_ACCEPT_RATIONALE = (
     "Auto-accepted due to milestone policy and clean non-milestone report"
 )
+AUTO_POLICY_ACCEPT_RATIONALE = (
+    "Auto-accepted due to auto policy and clean report without risk triggers"
+)
 
 
 def _auto_accept_policy(
@@ -102,6 +105,7 @@ def _auto_accept_policy(
     if policy != batch.get("approval_policy") or policy not in {
         "low_risk",
         "milestone",
+        "auto",
     }:
         return None
     if (
@@ -120,8 +124,11 @@ def _auto_accept_policy(
         "low_risk_zones", []
     ):
         return None
-    if policy == "milestone":
-        if dispatch.get("role") == "qa" or batch.get("risk_reassessment_required"):
+    if policy in {"milestone", "auto"}:
+        # `auto` also decides a clean QA report; both keep a risk milestone for a human.
+        if (policy == "milestone" and dispatch.get("role") == "qa") or batch.get(
+            "risk_reassessment_required"
+        ):
             return None
         candidate = dispatch.get("candidate_commit")
         if isinstance(candidate, str) and any(
@@ -856,6 +863,8 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             "note": (
                 AUTO_ACCEPT_RATIONALE
                 if accepted_policy == "low_risk"
+                else AUTO_POLICY_ACCEPT_RATIONALE
+                if accepted_policy == "auto"
                 else MILESTONE_AUTO_ACCEPT_RATIONALE
             )
             if policy_auto_accept

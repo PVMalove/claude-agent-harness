@@ -2209,6 +2209,113 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(stored["dispatches"][-1]["decision"]["decision"], "accept")
         self.assertEqual(stored["next_action"], "publish")
 
+    def test_auto_clean_report_is_accepted_outside_the_low_risk_zones(self) -> None:
+        self._patch_config(approval_policy="auto")
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+
+        result = self._submit(
+            brief["dispatch_id"], self._base_report(brief, "architect")
+        )
+
+        stored = self._batch_record(batch["batch_id"])
+        self.assertTrue(result["auto_accepted"])
+        self.assertEqual(
+            stored["coordinator_decisions"][-1]["approved_by"], "policy:auto"
+        )
+        self.assertEqual(stored["next_action"], "developer")
+        self.assertEqual(stored["dispatches"][-1]["state"], "approved")
+
+    def test_low_risk_report_outside_the_low_risk_zones_waits_for_decision(
+        self,
+    ) -> None:
+        self._patch_config(approval_policy="low_risk")
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+
+        result = self._submit(
+            brief["dispatch_id"], self._base_report(brief, "architect")
+        )
+
+        self.assertNotIn("auto_accepted", result)
+        self.assertNotIn(
+            "decision", self._batch_record(batch["batch_id"])["dispatches"][0]
+        )
+
+    def test_auto_accepts_a_clean_qa_report_outside_the_low_risk_zones(self) -> None:
+        self._patch_config(approval_policy="auto")
+        plan = self._batch_plan()
+        plan["definition_of_done"] = ["add simple marker"]
+        _git(
+            self.repo,
+            "worktree",
+            "add",
+            "-b",
+            self.branch,
+            str(self.worktree),
+            "master",
+        )
+        batch = coordinator.create_batch(self._args(**plan))
+        coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], **self._approval())
+        )
+        self.batch_id = batch["batch_id"]
+        architect = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1][
+            "dispatch_id"
+        ]
+        developer = coordinator._read_object(
+            self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
+        )
+        self._start(developer_id)
+        candidate, changed = self._developer_commit("x")
+
+        self._submit(
+            developer_id, self._developer_report(developer, candidate, changed)
+        )
+
+        stored = self._batch_record(batch["batch_id"])
+        self.assertEqual(stored["risk_assessments"][0]["review_required"], False)
+        self.assertEqual(stored["dispatches"][-1]["role"], "qa")
+        self.assertEqual(stored["dispatches"][-1]["state"], "approved")
+
+        qa_id = stored["dispatches"][-1]["dispatch_id"]
+        qa = coordinator._read_object(
+            self._records() / "dispatches" / f"{qa_id}.json", "dispatch"
+        )
+        self._stage_report(
+            batch["batch_id"],
+            qa_id,
+            self._base_report(
+                qa,
+                "qa",
+                checks_run=self._checks(qa, "pass"),
+                blockers="none",
+            ),
+            via_qa_lane=True,
+        )
+        report_path = self._records() / "reports" / f"{qa_id}.json"
+        with mock.patch.object(
+            qa_lane,
+            "run",
+            return_value={"state": "reported", "report": str(report_path)},
+        ):
+            result = coordinator.run_qa(self._args(dispatch=qa_id))
+
+        stored = self._batch_record(batch["batch_id"])
+        self.assertTrue(result["auto_accepted"])
+        self.assertEqual(stored["dispatches"][-1]["decision"]["decision"], "accept")
+        self.assertEqual(stored["next_action"], "publish")
+        self.assertEqual(
+            stored["dispatches"][-1]["decision"]["approved_by"], "policy:auto"
+        )
+
     def test_low_risk_review_with_findings_still_waits_for_decision(self) -> None:
         self._patch_config(approval_policy="low_risk", low_risk_zones=["repository"])
         batch = self._create_batch()
