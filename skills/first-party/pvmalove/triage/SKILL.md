@@ -67,10 +67,10 @@ State transitions: analyze an unlabeled issue to determine its `type::*` label a
 
 Read and list issues (and PRs/MRs when they are in scope) with the commands in `docs/agents/issue-tracker.md` for the configured tracker. On GitLab, `<host>`, `<project-url>` and `<project-id>` are defined in that guide's GitLab → Conventions. Write every comment body to a file first, at the path from `docs/agents/git-workflow.md` §1 (`.harness/.sandboxes/pr_body/issue-comment-<issue>-<slug>.md`, or `pr-comment-<issue>-<slug>.md` for a PR/MR).
 
-- **Comment:** GitHub `gh issue comment <n> --body-file <path>`; GitLab `glab api --hostname <host> projects/<project-id>/issues/<n>/notes -F body=@<path>` (GitLab calls comments notes).
+- **Comment:** GitHub `gh issue comment <n> --body-file <path>`; GitLab `GITLAB_HOST=<host> glab api projects/<project-id>/issues/<n>/notes -F body=@<path>` (GitLab calls comments notes).
 - **Replace a label:** one command that adds the new label and removes the previous label with the same `key::` prefix — GitHub `gh issue edit <n> --remove-label <old> --add-label <new>`; GitLab `glab issue update <n> -R <project-url> --unlabel <old> --label <new>`. On GitLab Free a `key::value` label is an ordinary label (mutually exclusive scoped labels are a Premium feature), so a bare `--label` leaves both `status::*` labels on the issue and breaks the exactly-one-`status::*` invariant in [Roles](#roles).
 - **Close:** post the comment first, then GitHub `gh issue close <n>`; GitLab `glab issue close <n> -R <project-url>`.
-- **For a PR/MR:** GitHub uses the `gh pr` equivalents with the same flags. GitLab comments through `glab api --hostname <host> projects/<project-id>/merge_requests/<n>/notes -F body=@<path>`, replaces a label with `glab mr update <n> -R <project-url> --unlabel <old> --label <new>` and closes with `glab mr close <n> -R <project-url>`.
+- **For a PR/MR:** GitHub uses the `gh pr` equivalents with the same flags. GitLab comments through `GITLAB_HOST=<host> glab api projects/<project-id>/merge_requests/<n>/notes -F body=@<path>`, replaces a label with `glab mr update <n> -R <project-url> --unlabel <old> --label <new>` and closes with `glab mr close <n> -R <project-url>`.
 
 ## Invocation
 

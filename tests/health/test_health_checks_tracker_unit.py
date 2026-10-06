@@ -151,24 +151,22 @@ def _many_labels(count: int) -> list[dict[str, str]]:
 
 
 @pytest.mark.parametrize(
-    "target,tool,api_args",
+    "target,tool,api_args,api_host",
     [
         (
             _GITHUB,
             "gh",
             ["--hostname", "github.com", "--paginate", "repos/acme/widgets/labels"],
+            None,
         ),
         (
             ProjectTracker(
                 "gitlab", "gitlab.example.test:4443", "acme/widgets", "origin"
             ),
             "glab",
-            [
-                "--hostname",
-                "gitlab.example.test:4443",
-                "--paginate",
-                "projects/acme%2Fwidgets/labels",
-            ],
+            ["--paginate", "projects/acme%2Fwidgets/labels"],
+            # glab rejects a port in `api --hostname`; GITLAB_HOST carries it.
+            "gitlab.example.test:4443",
         ),
     ],
 )
@@ -176,6 +174,7 @@ def test_list_repo_labels_reads_every_page_past_the_default_cap(
     target: ProjectTracker,
     tool: str,
     api_args: list[str],
+    api_host: str | None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -189,12 +188,12 @@ def test_list_repo_labels_reads_every_page_past_the_default_cap(
     bin_dir.mkdir()
     calls_log = tmp_path / "calls.log"
     fake_script = f"""
-import json, sys
+import json, os, sys
 args = sys.argv[1:]
 with open({str(calls_log)!r}, "a", encoding="utf-8") as log:
     log.write(" ".join(args) + "\\n")
 if args[:1] == ["api"]:
-    if args[1:] != {api_args!r}:
+    if args[1:] != {api_args!r} or os.environ.get("GITLAB_HOST") != {api_host!r}:
         sys.stderr.write("unexpected api arguments: " + " ".join(args[1:]) + "\\n")
         sys.exit(1)
     sys.stdout.write({json.dumps(all_labels)!r})
@@ -206,6 +205,7 @@ sys.exit(1)
 """
     _write_fake_tool(bin_dir, tool, fake_script)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.delenv("GITLAB_HOST", raising=False)
     executable = shutil.which(tool)
     assert executable is not None
 
