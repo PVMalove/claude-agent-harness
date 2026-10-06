@@ -69,6 +69,8 @@ REGISTRY: list[tuple[str, CheckFn]] = [
     ("environment.output_encoding", environment_checks.check_output_encoding),
     ("environment.codex_sandbox", runtime_sandbox_checks.check_codex_sandbox),
     ("environment.claude_sandbox", runtime_sandbox_checks.check_claude_sandbox),
+    ("environment.codex_uv_cache", runtime_sandbox_checks.check_codex_uv_cache),
+    ("environment.claude_uv_cache", runtime_sandbox_checks.check_claude_uv_cache),
     ("environment.long_paths", windows_checks.check_long_paths),
     ("environment.path_length", windows_checks.check_path_length),
     ("environment.pytest_temp", windows_checks.check_pytest_temp),
