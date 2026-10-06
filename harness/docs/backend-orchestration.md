@@ -1372,6 +1372,27 @@ python .harness/orchestration/coordinator.py --repo . dispatch resume \
 Принятая резолюция идёт узким маршрутом: повторный code-review пропускается, но QA и CI либо local-QA
 новой пары candidate/target обязательны (`integration status` держит `verification.required`).
 
+`collect-ci` собирает CI-доказательство для комбинированного результата PR (ADR 0016):
+
+```bash
+python .harness/orchestration/coordinator.py --repo . integration collect-ci \
+  --ticket '#123' --branch feature/issue-123-short-name --pull-request 45
+```
+
+Команда работает только с трекером `github` и списком `ci_required_checks` из `.harness/project.json`.
+CI принимается, если проверки шли на merge commit PR, родители которого — ровно текущие candidate и
+target, а все обязательные проверки прошли; тогда пишется immutable запись с
+`verification: collector-accepted`, а `integration status` показывает блок `qa_replacement` (источник,
+репозиторий, PR, SHA пары, merge commit, id check run). Если integration ref ушёл вперёд,
+`qa_replacement.applies` становится `false`, `re_refresh_required` — `true`: нужен новый refresh и
+новый сбор. Запасной путь — полный локальный QA: он нужен при `fallback` с причиной
+`unsupported_tracker`, `not_configured`, `unavailable`, `unknown_checkout`, `head_only`,
+`stale_candidate`, `stale_target`, `missing_check`, `pending_check` или `inconclusive_check`;
+при этом ничего не записывается, а недоступность CI не считается ни находкой в коде, ни успехом.
+Завершённый `failure` на подтверждённой паре записывается как `collector-failed`. Вручную привязанный
+через `link-evidence` CI остаётся `unverified` и проверку пары не закрывает. Исходные QA-отчёты CI
+не заменяет.
+
 `link-evidence` — единственный публичный способ привязать к записи будущие результаты CI, local-QA
 или resolver (`--kind ci|local-qa|resolver`). Каждая привязка — отдельная immutable запись со своей
 парой `candidate_sha`/`target_sha` и `verification: unverified`: исходное evidence записи никогда не

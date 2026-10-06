@@ -283,6 +283,17 @@ python harness\bin\harness.py init C:\path\to\repository `
 - `.harness/project.schema.json` в установленном проекте — тоже seed: после обновления харнесса
   старая копия схемы может не знать о поле `tracker`. Авторитетен валидатор `harness health`.
 
+**Поле `ci_required_checks`** (необязательное) — список уникальных непустых имён CI-проверок, которые
+должны пройти на комбинированном результате pull request, чтобы `integration collect-ci` принял
+CI-доказательство вместо повторного полного локального QA. Пустой список или отсутствие поля
+означает «не настроено»: действует запасной путь с локальным QA.
+
+Команда `integration collect-ci --record <id> --pull-request <n>` (backend-оркестрация, ADR 0016)
+принимает CI только для трекера `github` и только если все проверки из `ci_required_checks` прошли
+на комбинированном результате PR (merge commit с родителями candidate и target). Иначе она ничего не
+записывает и возвращает `local_qa_required: true` — тогда выполняется полный локальный QA
+(запасной путь). Подробности — в `.harness/docs/backend-orchestration.md`.
+
 При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md` и само `.harness/project.json`.
 
 - Этот справочник, руководство по backend-оркестрации и контракт интерактивного поиска памяти —
@@ -780,7 +791,7 @@ MCP/plugin/hook/runtime-конфигов) — в
 | `selected skill names already exist; inspect them or use --replace-conflicts` | `adopt` — под именами capability уже лежат свои скиллы | Проверить конфликты; если замена ожидаема — повторить с `--replace-conflicts` (без backup) |
 | `local skill changes would be overwritten; review them or use --force` | `update` — на диске локальные правки managed-файлов | Изучить diff; для snapshot — `--force-managed-files`, для snapshot и seed — `--force` |
 | `discovery path already exists and is not managed: <path> (...)` | На месте `.agents/skills`/`.claude/skills` что-то постороннее | `init` — убрать вручную или использовать `adopt`; `adopt` — `--replace-conflicts`; `update` — `--force` |
-| `.harness/project.json has unknown field(s): <name>` | Поле вне строгого контракта | Удалить поле либо реализовать его сразу в `project.schema.json`, шаблоне, валидаторе и потребителе; допустимы `language`, `base_branch`, `branch_pattern`, `qa_gate_commands`, `$schema`, `story_points`, `shell`, `memory`, `memory_policy`, `tracker` |
+| `.harness/project.json has unknown field(s): <name>` | Поле вне строгого контракта | Удалить поле либо реализовать его сразу в `project.schema.json`, шаблоне, валидаторе и потребителе; допустимы `language`, `base_branch`, `branch_pattern`, `qa_gate_commands`, `$schema`, `story_points`, `shell`, `memory`, `memory_policy`, `tracker`, `ci_required_checks` |
 | `.harness/project.json tracker has unknown field(s): <name>` (и другие `... tracker ...`) | Поле `tracker` вне контракта | Внутри `tracker` допустимы только `type` (`github`, `gitlab`, `local`), `host` (хост с необязательным `:порт`, без схемы, пути и userinfo) и `project` (полный путь с подгруппами); для `github`/`gitlab` обязательны `host` и `project`. Сертификаты, прокси и учётные данные сюда не пишутся — они остаются в личной конфигурации `gh`/`glab` |
 | `install-global.py`: `[CONFLICT] ... (re-run with --replace-conflicts ...)` | Место профиля или симлинка занято | Повторить с `--replace-conflicts` — сначала будет backup |
 | `install-global.py`: `[ERROR] Failed to create symlink: ...` (только Windows) | Нет прав на symlink каталога | Включить Developer Mode (Settings → For developers) или запустить терминал от имени администратора |
