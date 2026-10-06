@@ -66,7 +66,7 @@ Each ticket carries a `wayfinder:<type>` label — one of `research`, `prototype
 
 A session **claims** a ticket by assigning it to the dev driving the map, **first**, before any work, so concurrent sessions skip it. That assignee _is_ the claim: an open, unassigned ticket is unclaimed.
 
-Blocking uses the tracker's **native** dependency relationship — essential because it renders the frontier _visually_ in the tracker's own UI, so the human sees what's takeable without opening the map. Only a tracker that lacks native blocking falls back to a body convention. A ticket is **unblocked** when every ticket blocking it is closed; the **frontier** is the open, unblocked, unclaimed children — the edge of the known.
+Blocking uses the tracker's **native** dependency relationship where the tracker doc uses one — essential because it renders the frontier _visually_ in the tracker's own UI, so the human sees what's takeable without opening the map. Otherwise — local markdown, or GitLab, whose blocking links are a Premium feature — it uses the body convention the tracker doc names. A ticket is **unblocked** when every ticket blocking it is closed; the **frontier** is the open, unblocked, unclaimed children — the edge of the known.
 
 The answer isn't part of the body — it's recorded on resolution (see [Work through the map](#work-through-the-map)). Assets created while resolving a ticket are linked from the issue, not pasted in.
 

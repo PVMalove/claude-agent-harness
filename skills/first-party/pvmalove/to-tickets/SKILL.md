@@ -44,14 +44,16 @@ Run this skill in two phases: publish nothing to the issue tracker and create no
       any child ticket. Copy its exact branch name into every child ticket; if the epic has no
       integration branch, stop and report the missing prerequisite instead of inferring one.
     - **Local files:** Write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md` (01, 02...). Use `<local-ticket-template>`. Include the finished per-ticket `Relevant Files (Discovery Context)` list when Discovery Context was present. Set `**Workflow:**` to `status::blocked` if it has blockers, otherwise `status::ready`. Set `**Execution:**` to `hitl` or `afk` per your best judgment of the ticket (see `docs/agents/triage-labels.md`). For `afk` tickets, set `**Story Points:**` to the final score from step 3 and `**Pipeline:**` to the label approved on the STOP-AND-ASK gate — the derived label, or the user's override if they changed it there; the score itself never changes. Omit both lines entirely for `hitl` tickets. Add `**Task report:** required` unless told to skip it (omit the line entirely if not required). `/fast-implement` finds the next ticket by reading each file's `**Workflow:**` field — a purely linear chain resolves top to bottom.
-    - **GitHub / Real Tracker:**
-        - Publish one issue per ticket in dependency order using `gh issue create --body-file <path>`. Do not pass the body inline with `--body` or a heredoc — it breaks shell quoting (see `docs/agents/git-workflow.md` §1).
+    - **GitHub / GitLab:** `<project-url>`, `<host>` and `<project-id>` in the GitLab commands are defined in `docs/agents/issue-tracker.md` → GitLab → Conventions.
+        - Publish one issue per ticket in dependency order, using `<issue-template>`. GitHub: `gh issue create --body-file <path>`. GitLab: `glab issue create -R <project-url> --title '<title>' --description-file <path> --yes`, with `<title>` in single quotes and each apostrophe in it written as `'\''`; the ticket's number is the last segment of the issue URL it prints. Do not pass the body inline with `--body`/`--description` or a heredoc — it breaks shell quoting (see `docs/agents/git-workflow.md` §1).
         - Include the finished per-ticket `## Relevant Files (Discovery Context)` section when Discovery Context was present. Preserve the exact paths and their reasons; it is the implementation ticket's curated starting context.
         - Include the finished `## Story Points` section (the approved score) for `afk` tickets; omit the section entirely for `hitl` tickets.
-        - Apply labels (see `docs/agents/triage-labels.md` for the full taxonomy): `type::*`, `status::ready` (or `status::blocked` if gated by another ticket in this batch), `hitl`/`afk`, `pipeline::fast` or `pipeline::full` for `afk` tickets — the label approved on the STOP-AND-ASK gate, the derived label or the user's override, never applied to `hitl` tickets — and `task-report::required` unless told to skip it.
-        - *Grouping:* Link every ticket to the parent epic as a **native sub-issue**. Do NOT use `epic::<slug>` labels.
+        - Apply labels (see `docs/agents/triage-labels.md` for the full taxonomy): `type::*`, `status::ready` (or `status::blocked` if gated by another ticket in this batch), `hitl`/`afk`, `pipeline::fast` or `pipeline::full` for `afk` tickets — the label approved on the STOP-AND-ASK gate, the derived label or the user's override, never applied to `hitl` tickets — and `task-report::required` unless told to skip it. GitLab: `glab issue update <n> -R <project-url> --label '<label>,<label>'`; a label the project doesn't have yet is silently created with GitLab's default color, so `/setup-labels` must have run first.
+        - *Grouping:* Link every ticket to the parent epic through the tracker's parent link. Do NOT use `epic::<slug>` labels.
+            - GitHub: link the ticket as a **native sub-issue** of the epic.
+            - GitLab: the ticket's `## Parent: #<epic>` section plus exactly one `relates_to` link from the ticket to the epic, created right after the ticket: `glab api --hostname <host> --method POST projects/<project-id>/issues/<n>/links -F target_project_id=<numeric-project-id> -F target_issue_iid=<epic> -F link_type=relates_to`. `<numeric-project-id>` is the `id` field of `glab api --hostname <host> projects/<project-id>`; read it once per batch. Blocking edges stay in the `Blocked by #<M>` lines; no link is created between tickets. Epics, `blocks` links and native issue hierarchy are GitLab Premium features and are not used.
         - *Local Mirror:* The epic spec already lives in its own folder under `docs/tasks/` (per `docs/agents/artifacts.md`) — rename that folder to `issue-<epic-id>-<epic-slug>/` first if it was still slug-only. Save each published ticket's issue body into that folder's `tickets/` subfolder, as `tickets/issue-<ID>-<slug>.md` — not flat alongside the spec.
-        - *Frontier:* Don't trace `Blocked by` by hand to find what's takeable — query it, the same fields and mechanism as `/wayfinder`'s frontier query (`docs/agents/issue-tracker.md#wayfinding-operations`), scoped to the epic's sub-issues instead of the map's children. `/fast-implement` runs this same query itself when handed the epic instead of a specific ticket.
+        - *Frontier:* Don't trace `Blocked by` by hand to find what's takeable — query it, the same fields and mechanism as `/wayfinder`'s frontier query for the configured tracker (`docs/agents/issue-tracker.md#wayfinding-operations`), scoped to the epic's children instead of the map's: its GitHub sub-issues, or on GitLab the issues linked to the epic whose description carries `## Parent: #<epic>`. `/fast-implement` runs this same query itself when handed the epic instead of a specific ticket.
         - Do NOT close or rewrite the parent epic issue, except to append a short list of the subtask numbers you created.
 2. **Summarize the Batch:**
     - Read `language` from `.harness/project.json` (default `ru` if the file or field is absent) — this decides only the "What to build" column below, not the ticket titles/bodies you publish, which stay in whatever language you drafted them in.
@@ -86,8 +88,8 @@ Run this skill in two phases: publish nothing to the issue tracker and create no
   </local-ticket-template>
 
 <issue-template>
-## Parent
-A reference to the parent issue on the tracker (if applicable).
+## Parent: #<epic>
+The heading line itself carries the parent epic's number and is a fixed marker read by the frontier query: keep it exactly in this form and never translate it. Omit the section when the ticket has no parent epic.
 
 ## Integration Branch
 
@@ -109,7 +111,7 @@ derived pipeline::fast/pipeline::full label is applied on the tracker, not writt
 - [ ] Criterion 2
 
 ## Blocked by
-- A reference to each blocking ticket, or "None — can start immediately".
+- Blocked by #<M> — one such line per blocking ticket, or "None — can start immediately".
   </issue-template>
 
 *Note for both templates: `Relevant Files (Discovery Context)` is the sole file-path section; keep only the assigned paths and their short reasons. Avoid paths and code snippets everywhere else unless it is a vital prototype snippet (trim to decision-rich parts only).*
@@ -137,8 +139,8 @@ derived pipeline::fast/pipeline::full label is applied on the tracker, not writt
   </local-ticket-template>
 
 <issue-template>
-## Parent
-Ссылка на родительскую задачу в трекере (если применимо).
+## Parent: #<epic>
+Сама строка заголовка несёт номер родительского эпика и служит фиксированным маркером для frontier-запроса: сохраняйте её ровно в этой форме и никогда не переводите. Пропустите секцию, если у задачи нет родительского эпика.
 
 ## Integration Branch
 
@@ -160,7 +162,7 @@ derived pipeline::fast/pipeline::full label is applied on the tracker, not writt
 - [ ] Критерий 2
 
 ## Blocked by
-- Ссылка на каждую блокирующую задачу, или "None — can start immediately".
+- Blocked by #<M> — по одной такой строке на каждую блокирующую задачу, или "None — can start immediately".
   </issue-template>
 
 *Примечание к обоим шаблонам: `Relevant Files (Discovery Context)` — единственная секция с путями; оставляйте в ней только назначенные файлы и краткие причины. В остальных секциях избегайте путей и фрагментов кода, кроме жизненно важного фрагмента прототипа (оставьте только части, насыщенные решением).*
