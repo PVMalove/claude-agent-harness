@@ -15,7 +15,7 @@ disable-model-invocation: true
 3. **Apply.**
     - **GitHub:** For each label, run `gh label create "<name>" --color "<hex>" --force`. `--force` makes this idempotent — it updates the color of a label that already exists instead of erroring, and touches nothing else about it (issues already carrying it are unaffected).
     - **GitLab:** the CLI has no `--force` for label creation, so compare against the existing labels first. `<host>`, `<project-url>` and `<project-id>` are defined in `docs/agents/issue-tracker.md` → GitLab → Conventions.
-        - Read the existing labels once: `glab api --hostname <host> --paginate projects/<project-id>/labels` — the paginated API, because the CLI's own label listing returns a single page. Each entry carries `id`, `name` and `color`.
+        - Read the existing labels once: `GITLAB_HOST=<host> glab api --paginate projects/<project-id>/labels` — the paginated API, because the CLI's own label listing returns a single page. Each entry carries `id`, `name` and `color`.
         - Missing label: `glab label create -R <project-url> -n '<name>' -c '<hex>' -d '<description>'`. `<description>` is the first sentence of the `Meaning` column as plain text, with its backticks and quotes dropped: inside double quotes the shell would run a backticked word as a command, and a single-quoted value can't contain a quote.
         - Existing label with another color (compare hex case-insensitively): `glab label edit -R <project-url> --label-id <id> -c '<hex>'`, with `<id>` from the listing. Only the color changes; issues already carrying the label are unaffected.
         - Existing label with the same color: no-op.

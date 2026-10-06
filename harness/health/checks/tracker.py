@@ -16,8 +16,9 @@ budget checks/environment.py gives local tool invocations. A missing `gh`/`glab`
 
 Every `gh`/`glab` call addresses the resolved tracker explicitly, so neither another remote nor
 credentials for another host can redirect it: `auth status --hostname <host>`,
-`api --hostname <host>` with a URL-encoded GitLab project path, and `-R <host>/<owner>/<repo>`
-(gh) or `-R https://<host>/<project>` (glab) for label creation.
+`gh api --hostname <host>`, `GITLAB_HOST=<host> glab api` with a URL-encoded GitLab project path
+(glab rejects a port in `api --hostname`), and `-R <host>/<owner>/<repo>` (gh) or
+`-R https://<host>/<project>` (glab) for label creation.
 
 The tracker itself is resolved only through the project tracker resolver
 (health/project_tracker.py, docs/adr/0011): an explicit `tracker` field in .harness/project.json
@@ -27,6 +28,7 @@ wins, otherwise the origin URL is parsed.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -60,11 +62,23 @@ Tracker = TrackerType
 
 
 def _run(
-    argv: list[str], *, cwd: Path | None = None
+    argv: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str] | None:
     """Run one tracker CLI/git call with the tracker-check timeout; None when it cannot be
     started or does not finish in time."""
-    return run_tool(argv, timeout=_ONLINE_TIMEOUT_SECONDS, cwd=cwd)
+    return run_tool(argv, timeout=_ONLINE_TIMEOUT_SECONDS, cwd=cwd, env=env)
+
+
+def _run_api(
+    executable: str, host: str, args: tuple[str, ...], cwd: Path
+) -> subprocess.CompletedProcess[str] | None:
+    """`<gh|glab> api <args>` addressed to `host`. glab rejects a port in `--hostname` ("invalid
+    hostname") and sends a host without one to port 443, so glab gets the host through
+    GITLAB_HOST, which keeps the port and wins over the remote of the working directory."""
+    if Path(executable).stem.lower() == "glab":
+        env = {**os.environ, "GITLAB_HOST": host}
+        return _run([executable, "api", *args], cwd=cwd, env=env)
+    return _run([executable, "api", "--hostname", host, *args], cwd=cwd)
 
 
 def detect_tracker(context: HealthContext) -> ProjectTracker:
@@ -130,9 +144,9 @@ def _offline_or_local(check_id: str, context: HealthContext) -> _Target | CheckR
 
 
 def _api_json(executable: str, host: str, *args: str, cwd: Path) -> object | None:
-    """Parsed JSON output of `<gh|glab> api --hostname <host> <args>`, or None on any failure to
-    run or parse it."""
-    result = _run([executable, "api", "--hostname", host, *args], cwd=cwd)
+    """Parsed JSON output of `<gh|glab> api <args>` addressed to `host`, or None on any failure
+    to run or parse it."""
+    result = _run_api(executable, host, args, cwd)
     if result is None or result.returncode != 0:
         return None
     try:
@@ -149,7 +163,7 @@ def _api_json_pages(
 
     `--paginate` without `--slurp` prints one JSON array per page, back to back, which
     `json.loads` rejects; this reads each array in turn and concatenates them."""
-    result = _run([executable, "api", "--hostname", host, *args], cwd=cwd)
+    result = _run_api(executable, host, args, cwd)
     if result is None or result.returncode != 0 or not result.stdout.strip():
         return None
     decoder = json.JSONDecoder()

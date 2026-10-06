@@ -1833,6 +1833,8 @@ def check_publication_forms(metadata_hook: Path, project: Path) -> None:
         f"glab issue create -t Notes --description-file {vocabulary_file}",
         f"glab issue update 1 --description-file {vocabulary_file}",
         f"glab api {notes} -F body=@{vocabulary_file}",
+        # The documented form names the host through GITLAB_HOST: glab rejects a port in --hostname.
+        f"GITLAB_HOST=gitlab.example.test:4443 glab api {notes} -F body=@{vocabulary_file}",
         f"glab api {mr_notes} --field body=@{vocabulary_file}",
         f"glab api --method POST {notes} -F internal=true --field=body=@{clean_file}",
         f'glab api {notes} -f body="/blocked_by #2"',
@@ -1897,6 +1899,7 @@ def check_publication_forms(metadata_hook: Path, project: Path) -> None:
         f"glab issue create -t Notes --description-file {attributed_file}",
         f"glab issue update 1 --description-file {attributed_file}",
         f"glab api {notes} -F body=@{attributed_file}",
+        f"GITLAB_HOST=gitlab.example.test:4443 glab api {notes} -F body=@{attributed_file}",
         f"glab api {mr_notes} --field body=@{attributed_file}",
         f"glab api {notes} --field=body=@{attributed_file}",
         f"glab api --method PUT projects/:id/issues/1 -F description=@{attributed_file}",

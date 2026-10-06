@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -108,12 +109,15 @@ ORCHESTRATION_STATE_REL = Path(".harness/orchestration/state")
 CONTINUATION_DECISIONS = {"continue", "continue-automatic"}
 
 
-def _run(command: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
+def _run(
+    command: list[str], cwd: Path | None = None, env: dict[str, str] | None = None
+) -> tuple[int, str, str]:
     """Выполнить внешнюю команду в подпроцессе и вернуть код завершения, stdout и stderr."""
     try:
         result = subprocess.run(
             command,
             cwd=str(cwd) if cwd else None,
+            env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -241,7 +245,7 @@ class GitLabProject(NamedTuple):
     host: str
     # The `-R` value of every glab command.
     url: str
-    # `projects/<URL-encoded project path>`, the REST path prefix of `glab api --hostname`.
+    # `projects/<URL-encoded project path>`, the REST path prefix of `GITLAB_HOST=<host> glab api`.
     api_prefix: str
 
 
@@ -262,7 +266,16 @@ def _gitlab_project(tracker: ProjectTracker) -> GitLabProject:
 def _glab(repo: Path, gitlab: GitLabProject, *arguments: str) -> object:
     """Выполнить команду glab и распарсить её JSON-вывод; страницы `--paginate`, напечатанные
     подряд, склеиваются в один список."""
-    code, out, err = _run(["glab", *arguments], cwd=repo)
+    # glab rejects a port in `api --hostname` ("invalid hostname"); GITLAB_HOST keeps the port
+    # and wins over the remote of the working directory.
+    env = (
+        {**os.environ, "GITLAB_HOST": gitlab.host}
+        if arguments[:1] == ("api",)
+        else None
+    )
+    prefix = f"GITLAB_HOST={gitlab.host} " if env else ""
+    command_text = f"{prefix}glab {' '.join(arguments)}"
+    code, out, err = _run(["glab", *arguments], cwd=repo, env=env)
     if code == 127:
         raise StatsError(
             "the glab CLI is required for a GitLab project and is not available",
@@ -275,8 +288,8 @@ def _glab(repo: Path, gitlab: GitLabProject, *arguments: str) -> object:
         )
     if code != 0:
         raise StatsError(
-            f"glab {' '.join(arguments)} failed: {err or out or 'unknown error'}",
-            remedy=f"fix the cause named in the glab error (project access, host, glab version) before retrying 'glab {' '.join(arguments)}', or pass --tickets to run offline",
+            f"{command_text} failed: {err or out or 'unknown error'}",
+            remedy=f"fix the cause named in the glab error (project access, host, glab version) before retrying '{command_text}', or pass --tickets to run offline",
         )
     decoder = json.JSONDecoder()
     values: list[object] = []
@@ -289,7 +302,7 @@ def _glab(repo: Path, gitlab: GitLabProject, *arguments: str) -> object:
     except ValueError as exc:
         raise StatsError(
             "glab returned output that is not valid JSON",
-            remedy=f"retry 'glab {' '.join(arguments)}'; if it keeps failing, check the glab CLI version",
+            remedy=f"retry '{command_text}'; if it keeps failing, check the glab CLI version",
         ) from exc
     if len(values) <= 1:
         return values[0] if values else None
@@ -323,8 +336,6 @@ def _glab_api_list(repo: Path, gitlab: GitLabProject, path: str) -> list[JsonObj
             repo,
             gitlab,
             "api",
-            "--hostname",
-            gitlab.host,
             "--paginate",
             f"{gitlab.api_prefix}/{path}",
         )

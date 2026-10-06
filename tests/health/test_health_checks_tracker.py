@@ -15,11 +15,20 @@ HARNESS = Path(__file__).resolve().parents[2] / "harness" / "bin" / "harness.py"
 REAL_GIT = shutil.which("git")
 
 _FAKE_TOOL = """
-import json, subprocess, sys
+import json, os, subprocess, sys
 from pathlib import Path
 
 spec = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 args = sys.argv[2:]
+if spec["glab"] and args[:1] == ["api"]:
+    # Like glab 1.120.0: a port in --hostname is rejected before any request, while GITLAB_HOST
+    # names the host (with its port) and is recorded as the shell prefix it stands for.
+    hostname = args[args.index("--hostname") + 1:][:1] if "--hostname" in args else []
+    if hostname and ":" in hostname[0]:
+        sys.stderr.write("ERROR Error parsing --hostname: invalid hostname.\\n")
+        sys.exit(1)
+    if os.environ.get("GITLAB_HOST"):
+        args = ["GITLAB_HOST=" + os.environ["GITLAB_HOST"], *args]
 with open(spec["log"], "a", encoding="utf-8") as log:
     log.write(json.dumps(args) + "\\n")
 key = list(args)
@@ -49,7 +58,12 @@ def _fake_tool(
     spec = bin_dir / f"{name}.json"
     spec.write_text(
         json.dumps(
-            {"responses": responses, "passthrough": passthrough, "log": str(log)}
+            {
+                "responses": responses,
+                "passthrough": passthrough,
+                "log": str(log),
+                "glab": name == "glab",
+            }
         ),
         encoding="utf-8",
     )
@@ -106,12 +120,12 @@ def _fake_glab(
 def _gitlab_access(host: str, encoded_project: str, access_level: int) -> Responses:
     """Ответы glab api: текущий пользователь и его эффективный уровень доступа в проекте."""
     return {
-        f"api --hostname {host} user": (
+        f"GITLAB_HOST={host} api user": (
             0,
             json.dumps({"id": 7, "username": "dev"}),
             "",
         ),
-        f"api --hostname {host} projects/{encoded_project}/members/all/7": (
+        f"GITLAB_HOST={host} api projects/{encoded_project}/members/all/7": (
             0,
             json.dumps({"id": 7, "username": "dev", "access_level": access_level}),
             "",
@@ -164,7 +178,14 @@ def _health_full(
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in ("PYTHONIOENCODING", "PYTHONUTF8", "GIT_DIR", "GIT_WORK_TREE")
+        if key
+        not in (
+            "PYTHONIOENCODING",
+            "PYTHONUTF8",
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GITLAB_HOST",
+        )
     }
     env["PATH"] = os.pathsep.join(str(path) for path in bin_dirs)
     env["PYTHONUTF8"] = "1"
@@ -383,7 +404,7 @@ def test_online_gitlab_developer_through_a_parent_group_has_push_permissions(
     _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
     host = "gitlab.example.test:4443"
     responses = _gitlab_access(host, "group%2Fsub%2Fproject", 30)
-    responses[f"api --hostname {host} projects/group%2Fsub%2Fproject"] = (
+    responses[f"GITLAB_HOST={host} api projects/group%2Fsub%2Fproject"] = (
         0,
         json.dumps({"permissions": {"project_access": None, "group_access": None}}),
         "",
@@ -394,9 +415,8 @@ def test_online_gitlab_developer_through_a_parent_group_has_push_permissions(
 
     assert checks["tracker.permissions"]["status"] == "ok"
     assert [
+        f"GITLAB_HOST={host}",
         "api",
-        "--hostname",
-        host,
         "projects/group%2Fsub%2Fproject/members/all/7",
     ] in _invocations(glab_log)
 
@@ -457,7 +477,7 @@ def test_online_gitlab_origin_forms_address_the_full_project_path(
     tmp_path: Path, remote: str, host: str, encoded_project: str
 ) -> None:
     """Проверить, что HTTPS с портом, ssh:// с портом, SCP-форма, точка в имени и userinfo дают
-    GitLab, glab api с --hostname хоста трекера и полный путь проекта с подгруппами."""
+    GitLab, glab api с хостом трекера в GITLAB_HOST и полный путь проекта с подгруппами."""
     repo = _repo(tmp_path / "repo", remote=remote)
     bin_dir = tmp_path / "bin"
     _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
@@ -470,9 +490,8 @@ def test_online_gitlab_origin_forms_address_the_full_project_path(
     invocations = _invocations(glab_log)
     assert ["auth", "status", "--hostname", host] in invocations
     assert [
+        f"GITLAB_HOST={host}",
         "api",
-        "--hostname",
-        host,
         f"projects/{encoded_project}/members/all/7",
     ] in invocations
     assert "ci-user" not in json.dumps(data, ensure_ascii=False)
@@ -539,9 +558,8 @@ def test_online_host_without_gitlab_in_its_name_with_field_is_gitlab(
     assert checks["tracker.auth"]["status"] == "ok"
     assert checks["tracker.permissions"]["status"] == "ok"
     assert [
+        f"GITLAB_HOST={host}",
         "api",
-        "--hostname",
-        host,
         "projects/group%2Fsub%2Fproject/members/all/7",
     ] in _invocations(glab_log)
 
@@ -787,9 +805,8 @@ def test_project_field_disagreeing_with_origin_warns_and_the_field_wins(
     assert checks["tracker.permissions"]["status"] == "ok"
     invocations = _invocations(glab_log)
     assert [
+        f"GITLAB_HOST={host}",
         "api",
-        "--hostname",
-        host,
         "projects/group%2Fsub%2Fproject/members/all/7",
     ] in invocations
     assert not any("group%2Fother" in arg for call in invocations for arg in call)
@@ -952,7 +969,7 @@ def test_gitlab_labels_fix_addresses_the_project_and_leaves_project_json_untouch
     tmp_path: Path, tracker_field: dict[str, str] | None, remote: str
 ) -> None:
     """Проверить, что health --fix создаёт метки GitLab с явным -R https://<host>/<project> из
-    резолвера (поле tracker побеждает origin) и --hostname для glab api и не меняет
+    резолвера (поле tracker побеждает origin) и GITLAB_HOST для glab api и не меняет
     .harness/project.json — в том числе не пишет поле tracker."""
     repo = _repo(tmp_path / "repo", remote=remote)
     _project_json(repo, tracker_field)
@@ -966,7 +983,7 @@ def test_gitlab_labels_fix_addresses_the_project_and_leaves_project_json_untouch
     responses = _gitlab_access(host, "group%2Fsub%2Fproject", 30)
     responses.update(
         {
-            f"api --hostname {host} --paginate projects/group%2Fsub%2Fproject/labels": (
+            f"GITLAB_HOST={host} api --paginate projects/group%2Fsub%2Fproject/labels": (
                 0,
                 json.dumps([{"name": "hitl", "color": "#fbca04"}]),
                 "",
@@ -1121,7 +1138,7 @@ def test_unreachable_origin_fails_reachability(tmp_path: Path) -> None:
 
 _GH_ISSUES = "api --hostname github.com --paginate repos/acme/widgets/issues?state=open"
 _GL_ISSUES = (
-    "api --hostname gitlab.example.com --paginate "
+    "GITLAB_HOST=gitlab.example.com api --paginate "
     "projects/acme%2Fwidgets/issues?state=opened"
 )
 
