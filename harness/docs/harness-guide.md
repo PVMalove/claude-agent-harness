@@ -292,7 +292,7 @@ CI-доказательство вместо повторного полного
 принимает CI только для трекера `github` и только если все проверки из `ci_required_checks` прошли
 на комбинированном результате PR (merge commit с родителями candidate и target). Иначе она ничего не
 записывает и возвращает `local_qa_required: true` — тогда выполняется полный локальный QA
-(запасной путь). Подробности — в `.harness/docs/backend-orchestration.md`.
+(запасной путь, команда `integration local-qa`). Подробности — в `.harness/docs/backend-orchestration.md`.
 
 При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md` и само `.harness/project.json`.
 

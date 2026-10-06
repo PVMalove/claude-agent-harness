@@ -203,6 +203,9 @@ from harness.orchestration.workflow.integration import (
 from harness.orchestration.workflow.integration import (
     integration_status as integration_status,
 )
+from harness.orchestration.workflow.local_qa import (
+    integration_local_qa as integration_local_qa,
+)
 from harness.orchestration.workflow.pr_refresh import (
     integration_refresh as integration_refresh,
 )

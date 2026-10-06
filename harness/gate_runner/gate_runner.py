@@ -38,6 +38,8 @@ SENSITIVE_OUTPUT: tuple[
 class GateRunnerError(HarnessError):
     """Политика не смогла безопасно подготовить запрошенный checkout."""
 
+    partial_result: GateResult | None = None
+
 
 class ExecutionPolicy(Protocol):
     """Выбор checkout и границы изоляции для одного выполнения проверок качества."""
@@ -289,16 +291,26 @@ def run_gate(
                 if isinstance(command, str)
                 else subprocess.list2cmdline(command)
             )
-            result: subprocess.CompletedProcess[str] = subprocess.run(
-                prepared,
-                cwd=checkout,
-                shell=shell,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-            )
+            try:
+                result: subprocess.CompletedProcess[str] = subprocess.run(
+                    prepared,
+                    cwd=checkout,
+                    shell=shell,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=False,
+                )
+            except OSError as exc:
+                failure = GateRunnerError(
+                    f"could not launch QA command: {sanitise(str(exc))}",
+                    remedy="restore the command execution environment before an explicit retry",
+                )
+                failure.partial_result = GateResult(
+                    checks, "\n".join(outputs), time.monotonic() - started
+                )
+                raise failure from exc
             combined: str = sanitise(
                 (result.stdout or "")
                 + ("\n" if result.stdout and result.stderr else "")

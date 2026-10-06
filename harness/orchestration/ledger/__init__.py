@@ -40,6 +40,9 @@ from harness.orchestration.ledger.lifecycle import (
     IntegrationEvidenceRecord as IntegrationEvidenceRecord,
 )
 from harness.orchestration.ledger.lifecycle import (
+    IntegrationLocalQaRecord as IntegrationLocalQaRecord,
+)
+from harness.orchestration.ledger.lifecycle import (
     IntegrationRecord as IntegrationRecord,
 )
 from harness.orchestration.ledger.lifecycle import (

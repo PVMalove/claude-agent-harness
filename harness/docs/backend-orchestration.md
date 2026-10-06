@@ -1401,6 +1401,27 @@ target, а все обязательные проверки прошли; тог
 через `link-evidence` CI остаётся `unverified` и проверку пары не закрывает. Исходные QA-отчёты CI
 не заменяет.
 
+`local-qa` — запасной путь, когда CI комбинированного результата отсутствует, недоступен или непригоден
+(`--ci-condition absent|unavailable|unusable`, обязательные `--reason` и `--record`):
+
+```bash
+python .harness/orchestration/coordinator.py --repo . integration local-qa \
+  --record <integration-record-id> --ci-condition absent --reason 'CI не настроен для ветки'
+```
+
+Команда закрепляет immutable запрос (пара candidate/target, причина, полный список
+`verification_commands`) и запускает существующий gate runner в изолированном clean-room checkout
+точного candidate; ветка задачи, terminal source batch и принятые отчёты не меняются, код не
+чинится. Запуск идёт через общую FIFO-очередь QA (`qa status`): два тяжёлых QA не работают
+одновременно, остальные batch продолжают реализацию. Результат пишется отдельной immutable записью
+с командами, санитизированным артефактом и checksum, затем привязывается как evidence
+`kind: local-qa` с `verification: verified` — только если пара и remote-ветка не сдвинулись.
+Другой SHA или движение target прежним результатом не подтверждаются. Провал проверки — finding с
+`state: failed`, он остаётся для маршрутизации PR-сессией. Недоступность инфраструктуры — отдельный
+`state: unavailable` без findings: повтор только явным `--retry` и не более
+`max_infrastructure_retries`, затем `state: exhausted`. Вручную привязанный `local-qa` остаётся
+`unverified` и проверку пары не закрывает.
+
 `link-evidence` — единственный публичный способ привязать к записи будущие результаты CI, local-QA
 или resolver (`--kind ci|local-qa|resolver`). Каждая привязка — отдельная immutable запись со своей
 парой `candidate_sha`/`target_sha` и `verification: unverified`: исходное evidence записи никогда не
