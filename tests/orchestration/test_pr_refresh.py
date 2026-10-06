@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +18,7 @@ from unittest import mock
 from harness.orchestration import coordinator
 from harness.orchestration.workflow import pr_refresh
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
+from harness.orchestration.ledger import IntegrationRefreshRecord, LifecycleLedger
 from tests.orchestration.test_integration_record import PublishedBranch, _git
 
 
@@ -145,6 +148,56 @@ class CleanRebaseTests(RefreshFixture):
         self.assertEqual(second["integration_tip"], second_tip)
         self.assertEqual(len(self.refresh_files()), 2)
 
+    def test_cyclic_refresh_chain_finishes_under_ledger_lock(self) -> None:
+        tip = self.land("landed.txt")
+        first = self.refresh()
+        # Model a malformed record that closes the chain back to its original pair.
+        members: JsonObject = {
+            "integration_record_id": self.record_id,
+            "previous_candidate_sha": first["new_candidate_sha"],
+            "previous_target_sha": tip,
+            "new_candidate_sha": self.published["candidate"],
+            "target_sha": self.prepared["target_sha"],
+        }
+        closing_id = IntegrationRefreshRecord.derive_id(members)
+        LifecycleLedger(self.branch.state_root()).write_record(
+            IntegrationRefreshRecord.from_dict({**members, "refresh_id": closing_id})
+        )
+        before = self.branch.snapshot()
+        command = [
+            sys.executable,
+            str(Path(coordinator.__file__).resolve()),
+            "--repo",
+            str(self.branch.repo),
+            "--state-dir",
+            str(self.branch.fixture.state_dir),
+            "integration",
+            "status",
+            "--record",
+            self.record_id,
+        ]
+
+        # A second call also proves the first operation released the ledger lock.
+        for _ in range(2):
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+                timeout=15,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            status = json.loads(result.stdout)
+            self.assertEqual(
+                [item["refresh_id"] for item in status["refreshes"]],
+                [first["refresh_id"], closing_id],
+            )
+            self.assertEqual(status["candidate_sha"], self.published["candidate"])
+            self.assertEqual(status["target_sha"], self.prepared["target_sha"])
+            self.assertEqual(status["state"], "stale")
+        self.assertEqual(self.branch.snapshot(), before)
+
     def test_the_public_cli_group_reaches_refresh(self) -> None:
         parsed = coordinator.parser().parse_args(
             [
@@ -221,6 +274,49 @@ class RecoveryTests(RefreshFixture):
 
 
 class ConflictTests(RefreshFixture):
+    def test_rebase_failure_without_conflicts_restores_worktree_and_raises(
+        self,
+    ) -> None:
+        self.land("landed.txt")
+        # Git starts the rebase but cannot create its rewritten commit. No GPG
+        # installation is needed: the configured signing executable does not exist.
+        _git(self.worktree, "config", "gpg.format", "openpgp")
+        _git(
+            self.worktree,
+            "config",
+            "gpg.program",
+            str(self.branch.fixture.state_dir / "missing-gpg"),
+        )
+        _git(self.worktree, "config", "user.signingkey", "test-key")
+        _git(self.worktree, "config", "commit.gpgSign", "true")
+        before = self.branch.snapshot()
+
+        with self.assertRaisesRegex(
+            CoordinatorError,
+            "the rebase failed without conflicting files; the worktree was restored",
+        ) as raised:
+            self.refresh()
+
+        self.assertIn("retry the refresh", raised.exception.remedy)
+        self.assertEqual(
+            _git(self.worktree, "rev-parse", "--abbrev-ref", "HEAD"),
+            self.branch.branch,
+        )
+        self.assertEqual(self.branch.snapshot(), before)
+        self.assertEqual(self.refresh_files(), [])
+        for marker in ("rebase-merge", "rebase-apply", "MERGE_HEAD"):
+            self.assertFalse(
+                (
+                    self.worktree
+                    / _git(self.worktree, "rev-parse", "--git-path", marker)
+                ).exists(),
+                marker,
+            )
+
+        # The failed operation released its lock and left a usable checkout.
+        _git(self.worktree, "config", "commit.gpgSign", "false")
+        self.assertEqual(self.refresh()["state"], "rebased")
+
     def test_textual_conflict_returns_resolver_data_and_loses_nothing(self) -> None:
         self.land("services/x.py", "VALUE = 'upstream'\n")
         main_head = _git(self.branch.repo, "rev-parse", "HEAD")
