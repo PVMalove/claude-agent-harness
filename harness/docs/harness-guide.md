@@ -407,10 +407,46 @@ python3 harness/bin/harness.py health /path/to/repository --json     # маши�
 | `files` | Lock, `AGENTS.md`, discovery-ссылки, `project.json`, overlay-локи, интеграции, конфиг оркестрации, маршрутизация verification. Нечитаемый lock — `fail` проверки `files.lock`, а зависящие от него проверки — `skipped` со ссылкой на повреждённый lock |
 | `directories` | `.harness`, `.harness/.sandboxes` и категории `cache`/`logs`/`scratch`/`pr_body`/`runs`/`reports`/`worktrees`, при оркестрации — `.harness/orchestration/state`. Отсутствующий каталог с записываемым родителем — `ok` «будет создан»; незаписываемый — `fail` |
 | `repo_map` | Уровень Repo Map (`full`/`minimal`) с причиной деградации и ремедиа |
-| `environment` | ОС, git и `user.name`/`user.email`, `.gitattributes` и расхождения переводов строк, Python ≥ 3.12, uv, синхронность `.harness/.venv` с `uv.lock` (только в репозитории харнесса), кодировка вывода, длина пути (warn только на Windows при запасе < 160 символов) |
+| `environment` | ОС, git и `user.name`/`user.email`, `.gitattributes` и расхождения переводов строк, Python ≥ 3.12, uv, синхронность `.harness/.venv` с `uv.lock` (только в репозитории харнесса), кодировка вывода, пользовательские настройки песочниц Codex и Claude Code, длина пути (warn только на Windows при запасе < 160 символов) |
 | `environment` на Windows | `LongPathsEnabled`, владелец и запись `%TEMP%\pytest-of-<user>`, пробный symlink (Developer Mode), `bash` для hooks (`fail`, если это заглушка WSL `System32\bash.exe`) |
 | `orchestration` | Только при `backend-orchestration`, все проверки read-only — см. ниже |
 | `tracker` | Только с `--online` — см. ниже |
+
+**Песочницы агентов.** `environment.codex_sandbox` читает `$CODEX_HOME/config.toml` или
+`~/.codex/config.toml` и проверяет:
+
+```toml
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true
+```
+
+`environment.claude_sandbox` читает `$CLAUDE_CONFIG_DIR/settings.json` или
+`~/.claude/settings.json` и проверяет:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "network": { "allowAllUnixSockets": true }
+  }
+}
+```
+
+Если у Claude задано `sandbox.filesystem.disabled`, оно должно быть `false`. Эти настройки
+разрешают локальные сокеты, нужные в том числе для пробуждения event loop Python asyncio.
+У Codex `network_access = true` разрешает также внешнюю сеть; у Claude `allowAllUnixSockets`
+разрешает все Unix-сокеты, сохраняя правила внешних доменов. Параметры описаны в
+[документации Codex](https://developers.openai.com/codex/config-reference) и
+[документации Claude Code](https://code.claude.com/docs/en/settings-reference#sandbox-network-allowallunixsockets).
+
+Отсутствующие, неверные, повреждённые или нечитаемые настройки дают `warn` с путём и фрагментом
+конфига. Измените соответствующие поля, сохранив остальные, начните новую сессию агента и повторите
+`harness health`. Если нет ни CLI агента, ни его конфига, проверка даёт `skipped`. Проверки не
+запускают агента и не обращаются к сети: `ok` подтверждает только пользовательский конфиг.
+Настройки проекта, профиля, аргументы запуска и управляемые политики могут его переопределить.
+`health --fix` не изменяет эти глобальные файлы и не печатает их содержимое.
 
 **Группа `orchestration`.** Без capability все шесть проверок сразу `skipped` («backend-orchestration
 capability не выбрана»). Проверки читают леджер и `git worktree list --porcelain` и строят только

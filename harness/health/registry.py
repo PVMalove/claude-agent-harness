@@ -27,6 +27,7 @@ from .checks import files as files_checks
 from .checks import memory as memory_checks
 from .checks import orchestration as orchestration_checks
 from .checks import repo_map as repo_map_checks
+from .checks import runtime_sandbox as runtime_sandbox_checks
 from .checks import tracker as tracker_checks
 from .checks import windows as windows_checks
 from .context import HealthContext
@@ -65,6 +66,8 @@ REGISTRY: list[tuple[str, CheckFn]] = [
     ("environment.uv", environment_checks.check_uv),
     ("environment.dev_env", environment_checks.check_dev_environment),
     ("environment.output_encoding", environment_checks.check_output_encoding),
+    ("environment.codex_sandbox", runtime_sandbox_checks.check_codex_sandbox),
+    ("environment.claude_sandbox", runtime_sandbox_checks.check_claude_sandbox),
     ("environment.long_paths", windows_checks.check_long_paths),
     ("environment.path_length", windows_checks.check_path_length),
     ("environment.pytest_temp", windows_checks.check_pytest_temp),
