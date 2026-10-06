@@ -387,6 +387,33 @@ class IntegrationEvidenceRecord:
 
 
 @dataclass(frozen=True)
+class IntegrationLocalQaRecord:
+    """Append-only request, attempt or result in the existing reports contract."""
+
+    directory: ClassVar[str] = "reports/integration-local-qa"
+    local_qa_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, members: JsonObject) -> str:
+        return _derived_id("local-qa", members)
+
+    @property
+    def record_id(self) -> str:
+        return self.local_qa_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "local_qa_id": self.local_qa_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> IntegrationLocalQaRecord:
+        return cls(
+            local_qa_id=cast(str, data.get("local_qa_id")),
+            extra={key: value for key, value in data.items() if key != "local_qa_id"},
+        )
+
+
+@dataclass(frozen=True)
 class IntegrationRefreshRecord:
     """Value Object for a ``reports/integration-refresh/*.json`` record (issue #533): one clean
     rebase of an issue branch onto a new integration SHA, linking the candidate before and after,

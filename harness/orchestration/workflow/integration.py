@@ -679,7 +679,26 @@ def integration_status(args: argparse.Namespace) -> JsonObject:
     observed = _observe(repo, {**identity, "target_sha": pair["target_sha"]})
     state = observed["state"]
     tip = observed["integration_tip"]
-    verified = not refreshes or any(_satisfies(link, pair) for link in links)
+    from harness.orchestration.workflow.local_qa import verified_evidence
+
+    local_pair_current = False
+    if any(link["kind"] == "local-qa" for link in links) and state == "current":
+        try:
+            local_pair_current = (
+                _remote_branch_tip(repo, identity["remote"], identity["branch"])
+                == pair["candidate_sha"]
+            )
+        except CoordinatorError:
+            pass
+    verified = not refreshes or any(
+        _satisfies(link, pair)
+        and (
+            link["kind"] != "local-qa"
+            or local_pair_current
+            and verified_evidence(root, link)
+        )
+        for link in links
+    )
     return {
         "integration_record_id": record["integration_record_id"],
         "ticket": identity["ticket"],
@@ -728,8 +747,17 @@ def integration_status(args: argparse.Namespace) -> JsonObject:
                     "target_sha": link["target_sha"],
                 },
                 "applies_to_current_pair": tip is not None
-                and link["target_sha"] == tip,
-                "verification": link["verification"],
+                and link["target_sha"] == tip
+                and (
+                    link["kind"] != "local-qa"
+                    or local_pair_current
+                    and link["candidate_sha"] == pair["candidate_sha"]
+                ),
+                "verification": "verified"
+                if link["kind"] == "local-qa" and verified_evidence(root, link)
+                else "unverified"
+                if link["kind"] == "local-qa"
+                else link["verification"],
             }
             for link in links
         ],

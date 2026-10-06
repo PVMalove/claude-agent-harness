@@ -399,10 +399,10 @@ class ResolutionFlowTests(ResolverFixture):
         self.assertFalse(self.status()["verification"]["satisfied"])
         self.link(resolved, tip, "ci")
         # A CI result linked by hand is unverified evidence (issue #535): only 'collect-ci'
-        # acceptance or a local-QA check of the new pair closes the verification.
+        # acceptance or generated local QA of the new pair (issue #536) closes the verification.
         self.assertFalse(self.status()["verification"]["satisfied"])
         self.link(resolved, tip, "local-qa")
-        self.assertTrue(self.status()["verification"]["satisfied"])
+        self.assertFalse(self.status()["verification"]["satisfied"])
         refresh = json.loads(
             next(
                 (self.branch.records() / "reports/integration-refresh").glob("*.json")
