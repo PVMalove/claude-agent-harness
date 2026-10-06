@@ -964,6 +964,23 @@ class VerificationFailureTests(ResolverFixture):
         self.assertIn("failed_evidence_ids", " ".join(batch["definition_of_done"]))
         self.assertIn("failed verification", summary)
 
+    def test_a_verification_failure_batch_carries_both_sides_without_widening_scope(
+        self,
+    ) -> None:
+        self.collect("failure")
+
+        batch = self.batch_record(self.resolve()["batch_id"])
+
+        sides = batch["resolver"]["sides"]
+        self.assertEqual(sides["target"]["tickets"], ["#901"])
+        self.assertEqual(
+            sides["target"]["requirements"], ["feat: land landed.txt (#901)"]
+        )
+        self.assertTrue(sides["candidate"]["requirements"])
+        # The scope is not widened by the target's files: that is a scope-change dispatch.
+        self.assertEqual(batch["resolver"]["scope"], [CONFLICT_FILE])
+        self.assertEqual(batch["allowed_paths"], [CONFLICT_FILE])
+
     def test_a_conflict_batch_names_its_trigger_too(self) -> None:
         self.land(CONFLICT_FILE, TARGET_TEXT)
         created = self.resolve()

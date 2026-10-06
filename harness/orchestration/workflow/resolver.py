@@ -42,7 +42,7 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
     ResolverRecord,
 )
-from harness.orchestration.workflow import integration, local_qa, pr_refresh
+from harness.orchestration.workflow import integration, pr_refresh
 from harness.orchestration.workflow.batch import create_batch
 from harness.orchestration.workflow.history import _validate_batch_integrity
 from harness.orchestration.workflow.resolver_state import (
@@ -117,7 +117,9 @@ def open_resolver_batch(root: Path, record_id: str) -> JsonObject | None:
     return _open_batch(_resolver_batches(root, record_id))
 
 
-def _failed_verification(root: Path, record: JsonObject, pair: JsonObject) -> list[str]:
+def _failed_verification(
+    repo: Path, root: Path, record: JsonObject, pair: JsonObject
+) -> list[str]:
     """The failed checks that make a refreshed pair a resolver task although the branch is already
     on the integration tip (issue #537): a CI failure recorded by the collector or a failed
     generated local-QA gate of exactly this pair, with no passed check of it.  The never-refreshed
@@ -126,11 +128,7 @@ def _failed_verification(root: Path, record: JsonObject, pair: JsonObject) -> li
     if not pr_refresh.refresh_records(root, record_id):
         return []
     links = integration._evidence_links(root, record_id)
-    if any(
-        integration._satisfies(link, pair)
-        and (link["kind"] != "local-qa" or local_qa.verified_evidence(root, link))
-        for link in links
-    ):
+    if integration.pair_has_passed_check(repo, root, record, links, pair):
         return []
     return integration._failed_pair_checks(links, pair)
 
@@ -277,7 +275,7 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
             )
         failed: list[str] = []
         if tip == pair["target_sha"]:
-            failed = _failed_verification(root, record, pair)
+            failed = _failed_verification(repo, root, record, pair)
             if not failed:
                 raise CoordinatorError(
                     "the branch already is at the integration tip: there is no conflict to resolve",
@@ -308,6 +306,11 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
         if spent is not None:
             raise _exhaust(ledger, root, record, tip, spent, None)
         merge_base = _git(worktree, "merge-base", pair["candidate_sha"], tip)
+        # After a clean refresh the candidate already contains the tip, so the merge base is the
+        # tip itself and counts nothing as landed.  The requirements the target landed are counted
+        # from the target the task was built on; the scope stays the task's own files, because a
+        # change outside it is a newly approved scope-change dispatch, never a widening here.
+        landed_base = identity["target_sha"] if failed else merge_base
         scope = _conflict_scope(
             worktree, merge_base, pair["candidate_sha"], tip, conflicting
         )
@@ -326,7 +329,7 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
                     "ticket": identity["ticket"],
                     "requirements": list(source["definition_of_done"]),
                 },
-                "target": _target_side(root, worktree, merge_base, tip),
+                "target": _target_side(root, worktree, landed_base, tip),
             },
             "scope": scope,
             "prohibitions": list(PROHIBITIONS),

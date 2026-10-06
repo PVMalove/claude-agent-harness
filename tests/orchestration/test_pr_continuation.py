@@ -378,6 +378,38 @@ class RouteFailureTests(NextFixture):
 
         self.assertEqual(self.next(PR)["step"], "handoff")
 
+    def test_next_and_resolve_agree_on_a_local_qa_that_no_longer_covers_the_branch(
+        self,
+    ) -> None:
+        """A passed local QA supersedes a failed check only while the remote branch is the
+        candidate it verified; 'integration next' and 'integration resolve' share that rule."""
+        self.refresh()
+        self.failed_ci()
+        self.local_qa("true")
+        self.assertEqual(self.next(PR)["step"], "handoff")
+        # The remote branch moves off the verified candidate; the integration ref stays.
+        _git(
+            self.branch.repo,
+            "push",
+            "--force",
+            "origin",
+            f"{self.published['candidate']}:refs/heads/{self.branch.branch}",
+        )
+
+        routed = self.next(PR)
+        try:
+            coordinator.integration_resolve(
+                self.branch.args(
+                    record=self.record_id, ticket=None, branch=None, batch=None
+                )
+            )
+        except CoordinatorError as exc:
+            self.assertNotIn("no conflict", exc.message)
+
+        self.assertEqual(
+            (routed["step"], routed["route"]), ("route-failure", "resolver")
+        )
+
     def test_a_passed_check_supersedes_an_earlier_failed_one_of_the_original_pair(
         self,
     ) -> None:
