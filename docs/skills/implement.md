@@ -41,15 +41,9 @@ python .harness/orchestration/coordinator.py --repo . dispatch status
 pre-flight, до `batch create` и до создания issue-ветки: проверьте блокеры при любой текущей метке
 (есть открытые → стоп, назовите их, убедитесь, что стоит `status::blocked`); иначе замените метку
 `status::*` на `status::in-progress` так же, как шаги 2–3 фазы 1 `/fast-implement`, и проверьте, что
-она единственная `status::*`. Неудачная запись метки — блокер, а не предупреждение. Используйте isolated
-issue-ветку и worktree; protected и `integration/*` — не write targets. Открытый batch — evidence,
-которое показывают разработчику, а не запись для повторного использования или замены.
+она единственная `status::*`. Неудачная запись метки — блокер, а не предупреждение. До `batch create` запустите preflight объёма с ограниченным числом файлов и строк; при отказе разделите тикет через `/to-tickets`. При вызове `batch create` явно задайте `--required-gate review --required-gate qa`: полный маршрут реализации требует независимых проверок Standards/Spec и чистой serialized QA. До запуска write-role (`developer`) worker координатор сверяет наличие этих обязательных gates в `required_gates`; при их отсутствии останавливается до dispatch, предотвращая тупик при проверке risk triggers. Используйте isolated issue-ветку и worktree; protected и `integration/*` — не write targets. Открытый batch — evidence, которое показывают разработчику, а не запись для повторного использования или замены.
 
-Предлагайте каждый handoff и останавливайтесь до явного approval разработчика перед созданием или
-отправкой dispatch. Report — evidence, а не authority продвигать batch. Architect обязателен перед
-developer dispatch; review хранит отдельные Standards и Spec evidence; независимый QA проверяет
-candidate commit; publish отправляет только accepted SHA. Final report предшествует отдельно
-одобренному publish dispatch.
+Предлагайте каждый handoff и останавливайтесь до явного approval разработчика перед созданием или отправкой dispatch. Report — evidence, а не authority продвигать batch. Architect обязателен перед developer dispatch; review хранит отдельные Standards и Spec evidence; независимый QA проверяет candidate commit; publish отправляет только accepted SHA. Final report предшествует отдельно одобренному publish dispatch. Write-role worker, остановившийся до изменений, возвращает честный отчёт с `outcome: blocked`, привязанный к проверенному checkout с пустыми `changed_files` и незапущенными проверками; coordinator возвращает явный recovery route (`retry`, `block`, `abandon`) без регистрации кандидата и без ослабления правил для completed reports.
 
 Дефект, найденный в чистом developer report, чей DoD выполнен внутри своих allowed paths, не повод для retry:
 примите report через `batch decide --findings-file <path>`, а после policy auto-accept выполните
