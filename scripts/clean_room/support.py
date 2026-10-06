@@ -235,6 +235,13 @@ def assert_contract_link(doc: Path, contract: Path, label: str) -> None:
         sys.exit(f"{label} technical-English reference is not mandatory")
 
 
+def starts_with_text(data: bytes, text: str) -> bool:
+    """True when `data` starts with `text`, whatever line ending the platform wrote it with.
+
+    A fixture written with `write_text` carries CRLF on Windows, while the expected text is LF."""
+    return data.replace(b"\r\n", b"\n").startswith(text.encode("utf-8"))
+
+
 def check_technical_english(project: Path) -> None:
     """Проверить доставку управляемого контракта и достижимость из новых точек входа."""
     contract = project / ".harness/docs/technical-english.md"

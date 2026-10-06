@@ -24,6 +24,7 @@ from scripts.clean_room.support import (
     run_fails,
     run_health,
     run_ok,
+    starts_with_text,
 )
 
 
@@ -92,7 +93,7 @@ def run(ctx: SimpleNamespace) -> None:
         name: (foundation / name).read_bytes() for name in ("AGENTS.md", "CLAUDE.md")
     }
     for name, original in (("AGENTS.md", old_agents), ("CLAUDE.md", old_claude)):
-        if not approved[name].startswith(original.encode("utf-8")):
+        if not starts_with_text(approved[name], original):
             sys.exit("approved additions lost local instructions")
     repeated = capture(HARNESS + ["update", str(foundation)])
     repeated += capture(HARNESS + ["diff", str(foundation)])
