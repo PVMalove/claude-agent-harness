@@ -491,7 +491,8 @@ def check_output_encoding(context: HealthContext) -> CheckResult:
         stream = getattr(sys.stdout, "encoding", None)
     preferred = locale.getpreferredencoding(False)
     shown = f"вывод: {stream or 'неизвестна'}, локаль: {preferred or 'неизвестна'}"
-    if _is_utf8(stream) and _is_utf8(preferred):
+    # Неизвестная кодировка потока не доказывает проблему: харнесс сам форсирует UTF-8 на выводе.
+    if (stream is None or _is_utf8(stream)) and _is_utf8(preferred):
         return CheckResult(
             id="environment.output_encoding",
             group=GROUP,
