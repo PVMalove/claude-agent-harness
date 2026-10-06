@@ -16,12 +16,17 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 from pathlib import Path
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
+from harness.health.project_tracker import resolve_project_tracker
+from harness.orchestration.core import ci_source
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import _reject_sensitive
 from harness.orchestration.core.constants import (
+    INTEGRATION_CI_COLLECTED,
+    INTEGRATION_CI_COLLECTED_FAILURE,
     INTEGRATION_EVIDENCE_KINDS,
     INTEGRATION_EVIDENCE_RESULTS,
     INTEGRATION_RECORD_ID_PATTERN,
@@ -449,31 +454,44 @@ def integration_link_evidence(args: argparse.Namespace) -> JsonObject:
             "reference": reference,
             "artifact_sha256": artifact,
         }
-        evidence_id = IntegrationEvidenceRecord.derive_id(members)
-        path = (
-            _records_root(root)
-            / IntegrationEvidenceRecord.directory
-            / f"{evidence_id}.json"
-        )
-        if path.is_file():
-            return {
-                "evidence_id": evidence_id,
-                "integration_record_id": record["integration_record_id"],
-                "linked": False,
-                "evidence": _read_object(path, "integration evidence record"),
-            }
-        document: JsonObject = {
+        return _store_evidence(root, ledger, members, "unverified", {})
+
+
+def _store_evidence(
+    root: Path,
+    ledger: LifecycleLedger,
+    members: JsonObject,
+    verification: str,
+    extra: JsonObject,
+) -> JsonObject:
+    """Write one immutable pair-check record (the caller holds the ledger lock); the same members
+    find the existing record instead of writing another."""
+    evidence_id = IntegrationEvidenceRecord.derive_id(members)
+    path = (
+        _records_root(root)
+        / IntegrationEvidenceRecord.directory
+        / f"{evidence_id}.json"
+    )
+    if path.is_file():
+        return {
             "evidence_id": evidence_id,
-            **members,
-            "scope": "pair-check",
-            "recorded_at": utils._now(),
-            "verification": "unverified",
+            "integration_record_id": members["integration_record_id"],
+            "linked": False,
+            "evidence": _read_object(path, "integration evidence record"),
         }
-        _reject_sensitive(document, "integration evidence")
-        _write_record(ledger, IntegrationEvidenceRecord.from_dict(document))
+    document: JsonObject = {
+        "evidence_id": evidence_id,
+        **members,
+        "scope": "pair-check",
+        "recorded_at": utils._now(),
+        "verification": verification,
+        **extra,
+    }
+    _reject_sensitive(document, "integration evidence")
+    _write_record(ledger, IntegrationEvidenceRecord.from_dict(document))
     return {
         "evidence_id": evidence_id,
-        "integration_record_id": record["integration_record_id"],
+        "integration_record_id": members["integration_record_id"],
         "linked": True,
         "evidence": document,
     }
@@ -657,4 +675,116 @@ def integration_status(args: argparse.Namespace) -> JsonObject:
             for link in links
         ],
         "notice": _notice(state, record, observed, pair, verified),
+    }
+
+
+def _required_checks(repo: Path) -> list[str]:
+    """``ci_required_checks`` of .harness/project.json; anything unusable means not configured."""
+    try:
+        data = json.loads((repo / ".harness/project.json").read_text(encoding="utf-8"))
+        value = data.get("ci_required_checks") if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return []
+    if (
+        isinstance(value, list)
+        and all(isinstance(item, str) and item.strip() for item in value)
+        and len(set(value)) == len(value)
+    ):
+        return list(value)
+    return []
+
+
+def _collected(outcome: str, reason: str | None, detail: str, **extra: object) -> JsonObject:
+    return {
+        "outcome": outcome,
+        "reason": reason,
+        "detail": detail,
+        "recorded": False,
+        "local_qa_required": outcome != "accepted",
+        **extra,
+    }
+
+
+def integration_collect_ci(args: argparse.Namespace) -> JsonObject:
+    """Collect CI evidence for the combined result of a pull request into the integration record.
+
+    Read-only towards the tracker: it never opens or merges a pull request and never touches branch
+    protection.  Only a verdict of ``accepted`` or ``failed`` is recorded; every ``fallback``
+    (unsupported tracker, unavailable or unusable CI, unknown checkout, stale or foreign pair,
+    missing or pending check) records nothing and says that local QA is still needed.
+    """
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    number = getattr(args, "pull_request", None)
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        raise CoordinatorError(
+            "collect-ci requires a positive pull request number",
+            remedy="pass --pull-request with the number of the pull request",
+        )
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
+        record = _resolve_record(root, args)
+        pair = pr_refresh.current_pair(root, record)
+    tracker = resolve_project_tracker(repo).effective
+    if tracker.type != "github" or not tracker.host or not tracker.project:
+        return _collected(
+            "fallback",
+            "unsupported_tracker",
+            "CI evidence is collected only for a GitHub tracker; use local integration QA",
+            integration_record_id=record["integration_record_id"],
+        )
+    required = _required_checks(repo)
+    source = getattr(args, "ci_source", None) or ci_source.GitHubCiSource(host=tracker.host)
+    observation = source.observe(tracker.project, number)
+    verdict = ci_source.evaluate(
+        observation,
+        repository=tracker.project,
+        pull_request=number,
+        candidate_sha=pair["candidate_sha"],
+        target_sha=pair["target_sha"],
+        required_checks=required,
+    )
+    result = _collected(
+        verdict.outcome,
+        verdict.reason,
+        verdict.detail,
+        integration_record_id=record["integration_record_id"],
+        pair={"candidate_sha": pair["candidate_sha"], "target_sha": pair["target_sha"]},
+    )
+    verified = verdict.verified
+    if verdict.outcome == "fallback" or verified is None:
+        return result
+    with _ledger_lock(ledger):
+        record = _load_record(root, record["integration_record_id"])
+        if pr_refresh.current_pair(root, record) != pair:
+            return _collected(
+                "fallback",
+                "stale_candidate",
+                "the integration pair moved while CI was collected",
+                integration_record_id=record["integration_record_id"],
+            )
+        accepted = verdict.outcome == "accepted"
+        members: JsonObject = {
+            "integration_record_id": record["integration_record_id"],
+            "kind": "ci",
+            "candidate_sha": pair["candidate_sha"],
+            "target_sha": pair["target_sha"],
+            "result": "passed" if accepted else "failed",
+            "reference": f"{verified['source']}:{verified['repository']}/pull/{number}"
+            f"@{verified['merge_commit_sha']}",
+            "artifact_sha256": _sha256(verified),
+        }
+        stored = _store_evidence(
+            root,
+            ledger,
+            members,
+            INTEGRATION_CI_COLLECTED if accepted else INTEGRATION_CI_COLLECTED_FAILURE,
+            {"collector": verified},
+        )
+    return {
+        **result,
+        "recorded": True,
+        "evidence_id": stored["evidence_id"],
+        "linked": stored["linked"],
+        "verified": verified,
     }
