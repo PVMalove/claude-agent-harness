@@ -57,6 +57,8 @@ RETRY_REASON_CATEGORIES = (
 # coordinator finding goes into review instead of costing a developer retry before it.
 # ``tooling-retry`` (issue #500) re-runs the stage a tool blocked, for the ``tooling`` category only.
 # ``bypass-rerun`` (issue #560) re-runs a read-only stage whose role worked around a block.
+# ``narrowed-retry`` (issue #501) re-runs a read-only stage on the incomplete items its report
+# listed, and only on them; an item a tool kept the role from makes that retry ``tooling-retry``.
 RECOVERY_ROUTES = (
     "developer-retry",
     "same-candidate-rerun",
@@ -67,6 +69,7 @@ RECOVERY_ROUTES = (
     "carry-over",
     "tooling-retry",
     "bypass-rerun",
+    "narrowed-retry",
 )
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {

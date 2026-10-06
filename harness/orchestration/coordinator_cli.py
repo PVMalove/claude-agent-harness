@@ -217,6 +217,12 @@ def build_parser(
         "incomplete_items: carry each item into the work brief of its target role until an "
         "accepted dispatch of that role carried it",
     )
+    decide.add_argument(
+        "--narrowed",
+        action="store_true",
+        help="only with --decision retry on a read-only report that lists incomplete_items: "
+        "re-run the same role on the same SHA with a brief that carries only those items",
+    )
     decide.set_defaults(handler=handlers.decide_batch)
     carry_over = batch_commands.add_parser(
         "carry-over",
@@ -278,6 +284,11 @@ def build_parser(
         "--findings-file",
         help="preview the carry-over route that batch decide --findings-file on the pending "
         "developer report, or else batch carry-over, records with this findings file",
+    )
+    packet.add_argument(
+        "--narrowed",
+        action="store_true",
+        help="preview the retry route as batch decide --decision retry --narrowed computes it",
     )
     packet.set_defaults(handler=handlers.decision_packet)
 

@@ -2520,10 +2520,12 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         spec: tuple[str, list[JsonObject]] = ("clean", []),
         carried: object = None,
         tooling_blocker: object = None,
+        incomplete_items: object = None,
     ) -> JsonObject:
         """``carried``, a dict, maps a carried item id to the status the review gives it (issue
         #499). It is typed ``object`` so the axis keyword dicts other tests unpack still check.
-        ``tooling_blocker``, a dict, is the structured tool evidence of the report (issue #500)."""
+        ``tooling_blocker``, a dict, is the structured tool evidence of the report (issue #500).
+        ``incomplete_items``, a list, names the brief items the review left undone (issue #501)."""
         brief: JsonObject = self._dispatch(
             batch_id, "code-review", candidate=candidate
         )["brief"]
@@ -2552,6 +2554,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 **(
                     {"tooling_blocker": tooling_blocker}
                     if isinstance(tooling_blocker, dict)
+                    else {}
+                ),
+                **(
+                    {"incomplete_items": incomplete_items}
+                    if isinstance(incomplete_items, list)
                     else {}
                 ),
             ),
@@ -8030,6 +8037,215 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertIn("target the architect role itself", refused["refused"])
         self.assertIn("--narrowed", refused["remedy"])
 
+    def test_a_narrowed_review_retry_reruns_on_the_same_candidate_with_its_items_only(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        review = self._reported_review(
+            batch["batch_id"],
+            candidate,
+            incomplete_items=[{**INCOMPLETE_ITEM, "target_role": "code-review"}],
+        )
+        before = self._batch_record(self.batch_id)
+
+        plain = self._packet()["route_preview"]["retry"]
+        preview = self._packet(narrowed=True)["route_preview"]["retry"]
+        self.assertEqual(self._batch_record(self.batch_id), before)
+
+        decided = self._decide(self.batch_id, "retry", narrowed=True)
+
+        self.assertEqual(plain["route"], "developer-retry", "unflagged, as before")
+        routing = self._routing(decided)
+        self.assertEqual(
+            (
+                routing["next_role"],
+                routing["next_action"],
+                routing["reason_category"],
+                routing["candidate_commit"],
+                routing["route"],
+                routing["carried_item_ids"],
+            ),
+            (
+                "code-review",
+                "code-review",
+                None,
+                candidate,
+                "narrowed-retry",
+                ["incomplete-item-1"],
+            ),
+        )
+        self.assertEqual(decided["next_action"], "code-review")
+        recorded = dict(routing)
+        recorded.pop("decided_at")
+        self.assertEqual(recorded, preview)
+        self.assertEqual(decisions._developer_retry_count(decided), 0)
+        self.assertFalse(decided.get("needs_attention", False))
+        expected = self._incomplete(
+            review,
+            {
+                "item_id": "incomplete-item-1",
+                "target_role": "code-review",
+                "route": "narrowed-retry",
+            },
+        )
+        narrowed = self._reported_review(
+            self.batch_id, candidate, carried={"incomplete-item-1": "closed"}
+        )
+        self.assertEqual(narrowed["candidate_commit"], candidate)
+        self.assertEqual(narrowed["carried_items"], expected)
+
+        done = self._decide(self.batch_id, "accept")
+
+        self.assertEqual(done["next_action"], "qa")
+        self.assertEqual(
+            carried_items.brief_section(self._root(), done, "code-review", "work"),
+            {},
+            "the narrowed items reach only the retry's brief",
+        )
+
+    def test_a_narrowed_verification_retry_reruns_on_the_registered_candidate(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("infrastructure")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers="verification environment unavailable",
+            ),
+        )
+        self._decide(
+            batch["batch_id"], "retry", reason_category="verification-infrastructure"
+        )
+        verification = self._dispatch(
+            batch["batch_id"], "verification", candidate=candidate
+        )["brief"]
+        self._start(verification["dispatch_id"], checkout=self.worktree)
+        self._submit(
+            verification["dispatch_id"],
+            self._base_report(
+                verification,
+                "verification",
+                incomplete_items=[{**INCOMPLETE_ITEM, "target_role": "verification"}],
+            ),
+        )
+
+        decided = self._decide(batch["batch_id"], "retry", narrowed=True)
+
+        routing = self._routing(decided)
+        self.assertEqual(
+            (
+                routing["next_action"],
+                routing["reason_category"],
+                routing["route"],
+                routing["candidate_commit"],
+            ),
+            ("verification", None, "narrowed-retry", candidate),
+        )
+        self.assertEqual(len(decided["candidate_registrations"]), 1)
+        again = self._dispatch(batch["batch_id"], "verification", candidate=candidate)
+        self.assertEqual(again["brief"]["candidate_commit"], candidate)
+        self.assertEqual(
+            [item["item_id"] for item in self._carried(again["brief"])],
+            ["incomplete-item-1"],
+        )
+
+    def test_narrowed_needs_a_retry_of_a_report_with_items_and_no_other_route_flag(
+        self,
+    ) -> None:
+        self._reported_architect_with_items()
+        before = self._batch_record(self.batch_id)
+        refusals = []
+        for decision, extra in (
+            ("accept", {"narrowed": True}),
+            ("retry", {"narrowed": True, "retry_role": "developer"}),
+            ("retry", {"narrowed": True, "reason_category": "transport"}),
+        ):
+            with self.assertRaises(coordinator.CoordinatorError) as raised:
+                self._decide(self.batch_id, decision, **extra)
+            refusals.append(raised.exception)
+        self.assertIn("only valid with --decision retry", refusals[0].message)
+        self.assertIn("cannot force a developer retry", refusals[1].message)
+        self.assertIn("takes no --reason-category", refusals[2].message)
+        for refused in refusals:
+            self.assertTrue(refused.remedy.strip())
+        self.assertEqual(self._batch_record(self.batch_id), before)
+        self._reset()
+        batch_id = cast(str, self._create_batch()["batch_id"])
+        self._reported_architect(batch_id)
+
+        with self.assertRaises(coordinator.CoordinatorError) as clean:
+            self._decide(batch_id, "retry", narrowed=True)
+
+        self.assertIn("lists incomplete_items", clean.exception.message)
+
+    def test_issue_443_an_architect_that_left_one_item_undone_reruns_on_that_item_only(
+        self,
+    ) -> None:
+        """Regression for #443 (situation 6 of #479): the safety classifier interrupted the
+        architect on one brief item, and the only way forward was to re-run the whole architect
+        assignment. Now the report lists that item, a narrowed retry re-runs the architect on it
+        alone as a tooling-retry, and no developer retry is spent."""
+        interrupted = {
+            **INCOMPLETE_ITEM,
+            "target_role": "architect",
+            "tooling_blocker": {
+                "tool": "safety-classifier",
+                "command": "rg -n rollback services/",
+                "message": "The action was interrupted by the safety classifier",
+            },
+        }
+        first = self._reported_architect_with_items(interrupted)
+
+        retried = self._decide(self.batch_id, "retry", narrowed=True)
+
+        routing = self._assert_route(
+            retried,
+            role="architect",
+            action="architect",
+            category="tooling",
+            candidate=None,
+            route="tooling-retry",
+        )
+        self.assertEqual(routing["carried_item_ids"], ["incomplete-item-1"])
+        self.assertEqual(decisions._developer_retry_count(retried), 0)
+        self.assertFalse(retried.get("needs_attention", False))
+        narrowed = self._dispatch(self.batch_id, "architect")["brief"]
+        self.assertEqual(
+            narrowed["carried_items"],
+            self._incomplete(
+                first,
+                {
+                    "item_id": "incomplete-item-1",
+                    "target_role": "architect",
+                    "route": "tooling-retry",
+                    "reason_category": "tooling",
+                },
+            ),
+        )
+        self.assertEqual(narrowed["definition_of_done"], first["definition_of_done"])
+        self._start(narrowed["dispatch_id"])
+        self._submit(narrowed["dispatch_id"], self._base_report(narrowed, "architect"))
+
+        accepted = self._decide(self.batch_id, "accept")
+
+        self.assertEqual(accepted["next_action"], "developer")
+        self.assertEqual(
+            [entry["role"] for entry in accepted["dispatches"]],
+            ["architect", "architect"],
+        )
+        developer = self._dispatch(self.batch_id, "developer")["brief"]
+        self.assertEqual(developer["carried_items"], {})
+
 
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     """The pure routing table: structured evidence in, one routing record out (no I/O)."""
@@ -8440,7 +8656,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                     self._route(stage, self._report(standards=None), "block-bypass")
                 self.assertIn("developer reason category", raised.exception.remedy)
 
-    def test_the_recovery_routes_are_exactly_the_documented_nine(self) -> None:
+    def test_the_recovery_routes_are_exactly_the_documented_ten(self) -> None:
         self.assertEqual(
             constants.RECOVERY_ROUTES,
             (
@@ -8453,6 +8669,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "carry-over",
                 "tooling-retry",
                 "bypass-rerun",
+                "narrowed-retry",
             ),
         )
         for route in constants.RECOVERY_ROUTES:
@@ -8607,6 +8824,142 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 self.assertEqual(routes[0]["route"], expected[3])
                 for routing in routes[1:]:
                     self.assertEqual(routing, routes[0])
+
+    def _narrowed(
+        self,
+        stage: str,
+        report: JsonObject,
+        category: str | None = None,
+        *,
+        moved: bool = False,
+    ) -> JsonObject:
+        return decisions._retry_routing(
+            stage,
+            report,
+            dispatch_candidate=self.CANDIDATE,
+            current_candidate="d" * 40 if moved else self.CANDIDATE,
+            explicit_category=category,
+            narrowed=True,
+        )
+
+    def _itemised(self, stage: str, *items: JsonObject, **report: object) -> JsonObject:
+        """A completed ``stage`` report (a clean review for code-review) listing ``items``."""
+        base = self._report(
+            "completed",
+            standards=("clean", []) if stage == "code-review" else None,
+            spec=("clean", []),
+        )
+        return {**base, "incomplete_items": list(items), **report}
+
+    def test_a_narrowed_retry_reruns_the_read_only_stage_on_its_items(self) -> None:
+        tooled = {**INCOMPLETE_ITEM, "tooling_blocker": dict(TOOLING_BLOCKER)}
+        for stage in ("architect", "verification", "code-review", "qa"):
+            for items, (category, route) in (
+                ([INCOMPLETE_ITEM], (None, "narrowed-retry")),
+                ([INCOMPLETE_ITEM, tooled], ("tooling", "tooling-retry")),
+            ):
+                with self.subTest(stage=stage, route=route):
+                    routing = self._narrowed(stage, self._itemised(stage, *items))
+                    self.assertEqual(
+                        (
+                            routing["route"],
+                            routing["reason_category"],
+                            routing["previous_role"],
+                            routing["next_role"],
+                            routing["next_action"],
+                            routing["candidate_commit"],
+                        ),
+                        (route, category, stage, stage, stage, self.CANDIDATE),
+                    )
+                    self.assertTrue(routing["rationale"].strip())
+
+    def test_a_narrowed_retry_never_sets_aside_a_route_or_structured_evidence(
+        self,
+    ) -> None:
+        finding = [{"severity": "warning", "summary": "s", "evidence": "e"}]
+        failed = [{"command": "true", "result": "fail", "evidence": "e"}]
+        open_item = {
+            "candidate_commit": self.CANDIDATE,
+            "standards": {"severity": "clean", "findings": []},
+            "spec": {"severity": "clean", "findings": []},
+            "carried_items": [
+                {"item_id": "coordinator-finding-1", "status": "open", "evidence": "e"}
+            ],
+        }
+        for label, stage, report, category, moved, fragment in (
+            (
+                "developer",
+                "developer",
+                self._itemised("developer", INCOMPLETE_ITEM),
+                None,
+                False,
+                "re-runs only",
+            ),
+            (
+                "publish",
+                "publish",
+                self._itemised("publish", INCOMPLETE_ITEM),
+                None,
+                False,
+                "re-runs only",
+            ),
+            (
+                "no items",
+                "architect",
+                self._itemised("architect"),
+                None,
+                False,
+                "lists",
+            ),
+            (
+                "category",
+                "qa",
+                self._itemised("qa", INCOMPLETE_ITEM),
+                "transport",
+                False,
+                "takes no --reason-category",
+            ),
+            (
+                "finding",
+                "code-review",
+                {
+                    **self._report("completed", standards=("warning", finding)),
+                    "incomplete_items": [INCOMPLETE_ITEM],
+                },
+                None,
+                False,
+                "standards axis",
+            ),
+            (
+                "open carried item",
+                "code-review",
+                self._itemised("code-review", INCOMPLETE_ITEM, review=open_item),
+                None,
+                False,
+                "carried item is still open",
+            ),
+            (
+                "failed check",
+                "qa",
+                self._itemised("qa", INCOMPLETE_ITEM, checks_run=failed),
+                None,
+                False,
+                "check failed",
+            ),
+            (
+                "moved candidate",
+                "qa",
+                self._itemised("qa", INCOMPLETE_ITEM),
+                None,
+                True,
+                "candidate changed",
+            ),
+        ):
+            with self.subTest(label):
+                with self.assertRaises(coordinator.CoordinatorError) as raised:
+                    self._narrowed(stage, report, category, moved=moved)
+                self.assertIn(fragment, raised.exception.message)
+                self.assertIn("drop", raised.exception.remedy)
 
 
 class CarriedItemsFindingsFileTests(unittest.TestCase):
@@ -9152,6 +9505,30 @@ class CoordinatorCliParserTests(unittest.TestCase):
         self.assertIs(carried.handler, coordinator.decide_batch)
         self.assertTrue(carried.carry_incomplete)
         self.assertFalse(parse(decide).carry_incomplete)
+
+    def test_batch_decide_and_decision_packet_accept_narrowed(self) -> None:
+        decide = [
+            "batch",
+            "decide",
+            "--batch",
+            "batch-1",
+            "--decision",
+            "retry",
+            "--approved-by",
+            "Malove",
+            "--approved-at",
+            "2026-09-17T00:00:00+00:00",
+        ]
+        packet = ["batch", "decision-packet", "--batch", "batch-1"]
+        parse = coordinator.parser().parse_args
+
+        narrowed = parse([*decide, "--narrowed"])
+        previewed = parse([*packet, "--narrowed"])
+
+        self.assertIs(narrowed.handler, coordinator.decide_batch)
+        self.assertIs(previewed.handler, coordinator.decision_packet)
+        self.assertTrue(narrowed.narrowed and previewed.narrowed)
+        self.assertFalse(parse(decide).narrowed or parse(packet).narrowed)
 
     def test_batch_decision_packet_previews_a_findings_file(self) -> None:
         parse = coordinator.parser().parse_args

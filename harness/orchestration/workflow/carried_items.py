@@ -65,8 +65,10 @@ from harness.orchestration.workflow.history import (
 COORDINATOR_FINDING = "coordinator-finding"
 REVIEW_FINDING = "review-finding"
 INCOMPLETE_ITEM = "incomplete-item"
-# The routes whose routing record hands a read-only report's incomplete items to later briefs.
-INCOMPLETE_ITEM_ROUTES = ("carry-over",)
+# The routes whose routing record hands a read-only report's incomplete items to later briefs: an
+# accept carries them over, and a narrowed retry (``tooling-retry`` when a tool blocked an item)
+# hands them to the same stage again.
+INCOMPLETE_ITEM_ROUTES = ("carry-over", "narrowed-retry", "tooling-retry")
 # The next role and action ``batch decide --decision accept`` moves a batch to after each read-only
 # stage; risk assessment runs before any role.
 ACCEPT_NEXT_STEP: dict[str, tuple[str | None, str]] = {
@@ -423,13 +425,36 @@ def open_incomplete_items(root: Path, batch: JsonObject, role: str) -> list[Json
     ]
 
 
+def _narrowed_items(root: Path, batch: JsonObject, role: str) -> list[JsonObject]:
+    """The incomplete items of the read-only report a pending narrowed retry of ``role`` answers.
+
+    They reach only that retry's brief: any later dispatch of the stage runs its whole assignment.
+    """
+    previous = next(
+        (
+            item
+            for item in reversed(batch.get("dispatches", []))
+            if isinstance(item.get("decision"), dict)
+        ),
+        None,
+    )
+    if (
+        previous is None
+        or previous["decision"].get("decision") != "retry"
+        or not _hands_incomplete_items(previous)
+        or previous["decision"]["routing"].get("next_role") != role
+    ):
+        return []
+    return _incomplete_brief_items(root, batch, previous)
+
+
 def brief_section(root: Path, batch: JsonObject, role: str, purpose: str) -> JsonObject:
     """The ``carried_items`` section of the brief about to be created; ``{}`` carries nothing.
 
     A code-review or developer work brief carries every open coordinator finding. A developer
     brief answering a retried code-review also carries that review's findings, so the one
     developer-retry closes both. Any work brief carries the open incomplete items a read-only
-    report handed to its role (issue #501).
+    report handed to its role, and a narrowed retry's brief the items it re-runs (issue #501).
     """
     if purpose != "work":
         return {}
@@ -445,7 +470,10 @@ def brief_section(root: Path, batch: JsonObject, role: str, purpose: str) -> Jso
         )
         if review_findings:
             section[REVIEW_FINDING] = review_findings
-    incomplete = open_incomplete_items(root, batch, role)
+    incomplete = [
+        *_narrowed_items(root, batch, role),
+        *open_incomplete_items(root, batch, role),
+    ]
     if incomplete:
         section[INCOMPLETE_ITEM] = incomplete
     return section
