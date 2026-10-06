@@ -16,6 +16,7 @@ from unittest import mock
 from harness.errors import HarnessError
 from harness.orchestration.ledger import LifecycleLedger
 from harness.reporting import delivery_stats
+from harness.reporting.common import JsonObject
 
 ORCHESTRATION_ROOT = Path(__file__).resolve().parents[2] / "harness" / "orchestration"
 
@@ -822,6 +823,326 @@ class StatsErrorRemedyTests(unittest.TestCase):
             delivery_stats.build_report(args)
         self._assert_stats_error(
             raised.exception, "epic #7: no pull request", "--tickets"
+        )
+
+
+GL_HOST = "gitlab.example.test:4443"
+GL_URL = f"https://{GL_HOST}/group/sub/project"
+GL_API = f"api --hostname {GL_HOST} --paginate projects/group%2Fsub%2Fproject"
+TrackerResponses = dict[str, tuple[int, str, str]]
+
+
+class FakeTrackerCli:
+    """Подмена `delivery_stats._run` для gh/glab: пишет argv и отдаёт синтетические ответы,
+    git выполняется по-настоящему."""
+
+    def __init__(self, responses: TrackerResponses) -> None:
+        self.responses = responses
+        self.calls: list[list[str]] = []
+        self._real_run = delivery_stats._run
+
+    def __call__(
+        self, command: list[str], cwd: Path | None = None
+    ) -> tuple[int, str, str]:
+        if command[0] not in ("gh", "glab"):
+            return self._real_run(command, cwd)
+        self.calls.append(command)
+        key = " ".join(command[1:])
+        return self.responses.get(key, (2, "", f"fake: unexpected {key}"))
+
+
+def _ok(value: object) -> tuple[int, str, str]:
+    return 0, json.dumps(value), ""
+
+
+class TrackerDeliveryStatsTests(unittest.TestCase):
+    """build_report на синтетических ответах трекера: GitLab по `relates_to` и `## Parent`, GitHub
+    без изменений."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        self._git("init", "-q", "-b", "main")
+        self._git("config", "user.email", "test@example.invalid")
+        self._git("config", "user.name", "Test")
+        (self.repo / "app.py").write_text("base\n", encoding="utf-8")
+        self._git("add", ".")
+        self._git("commit", "-qm", "chore: base")
+        self._git("checkout", "-q", "-b", "feature/issue-11-widget")
+        (self.repo / "app.py").write_text("base\nwidget\n", encoding="utf-8")
+        self._git("commit", "-qam", "feat: widget")
+        self._git("checkout", "-q", "main")
+        home = self.tmp / "home"
+        home.mkdir()
+        self.args = argparse.Namespace(
+            repo=str(self.repo),
+            epic=10,
+            tickets=None,
+            base=None,
+            home=str(home),
+            claude_projects=None,
+            codex_sessions=None,
+            rates=None,
+            orchestration_state_dir=None,
+            baseline=None,
+        )
+
+    def _git(self, *arguments: str) -> None:
+        delivery_stats._git(self.repo, *arguments)
+
+    def _project(self, tracker: dict[str, str]) -> None:
+        (self.repo / ".harness").mkdir(exist_ok=True)
+        (self.repo / ".harness" / "project.json").write_text(
+            json.dumps({"base_branch": "main", "tracker": tracker}), encoding="utf-8"
+        )
+
+    def _gitlab(self, extra: TrackerResponses | None = None) -> FakeTrackerCli:
+        self._project(
+            {"type": "gitlab", "host": GL_HOST, "project": "group/sub/project"}
+        )
+        responses: TrackerResponses = {
+            f"issue view 10 -R {GL_URL} --output json": _ok(
+                {
+                    "iid": 10,
+                    "project_id": 42,
+                    "title": "Эпик",
+                    "state": "opened",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "closed_at": None,
+                    "web_url": f"{GL_URL}/-/issues/10",
+                    "description": "Спека",
+                }
+            ),
+            # Two pages back to back, as `glab api --paginate` prints them.
+            f"{GL_API}/issues/10/links": (
+                0,
+                json.dumps(
+                    [{"iid": 11, "project_id": 42}, {"iid": 12, "project_id": 42}]
+                )
+                + json.dumps(
+                    [{"iid": 13, "project_id": 99}, {"iid": 14, "project_id": 42}]
+                ),
+                "",
+            ),
+            f"issue view 11 -R {GL_URL} --output json": _ok(
+                {
+                    "iid": 11,
+                    "title": "Виджет",
+                    "state": "closed",
+                    "description": "## Parent: #10\n\n## What to build\n",
+                }
+            ),
+            f"issue view 12 -R {GL_URL} --output json": _ok(
+                {
+                    "iid": 12,
+                    "title": "Кнопка",
+                    "state": "opened",
+                    "description": "## Parent: #10",
+                }
+            ),
+            f"issue view 14 -R {GL_URL} --output json": _ok(
+                {
+                    "iid": 14,
+                    "title": "Чужой",
+                    "state": "opened",
+                    "description": "## Parent: #100",
+                }
+            ),
+            f"mr list -R {GL_URL} --all --per-page 100 --output json": _ok([]),
+        }
+        responses.update(extra or {})
+        return FakeTrackerCli(responses)
+
+    def _build(self, fake: FakeTrackerCli) -> JsonObject:
+        with mock.patch.object(delivery_stats, "_run", fake):
+            return delivery_stats.build_report(self.args)
+
+    def test_gitlab_epic_tree_follows_relates_to_links_with_a_parent_marker(
+        self,
+    ) -> None:
+        fake = self._gitlab()
+
+        report = self._build(fake)
+
+        self.assertEqual(report["epic"]["title"], "Эпик")
+        self.assertEqual(report["epic"]["url"], f"{GL_URL}/-/issues/10")
+        self.assertEqual(
+            [(t["number"], t["title"], t["role"]) for t in report["tickets"]],
+            [(10, "Эпик", "epic"), (11, "Виджет", "child"), (12, "Кнопка", "child")],
+        )
+        self.assertEqual((report["tickets_closed"], report["tickets_total"]), (1, 3))
+        self.assertEqual(report["tickets"][1]["branches"], ["feature/issue-11-widget"])
+        self.assertNotIn(
+            ["glab", "issue", "view", "13", "-R", GL_URL, "--output", "json"],
+            fake.calls,
+        )
+
+    def test_gitlab_merge_request_volume_comes_from_explicitly_addressed_glab(
+        self,
+    ) -> None:
+        mr = f"{GL_API}/merge_requests/5"
+        fake = self._gitlab(
+            {
+                f"mr list -R {GL_URL} --all --per-page 100 --output json": _ok(
+                    [
+                        {
+                            "iid": 5,
+                            "source_branch": "feature/issue-11-widget",
+                            "state": "merged",
+                            "merged_at": "2026-01-02T00:00:00Z",
+                            "web_url": f"{GL_URL}/-/merge_requests/5",
+                        },
+                        {"iid": 6, "source_branch": "feature/issue-99-other"},
+                    ]
+                ),
+                f"{mr}/commits": _ok([{"id": "a1"}, {"id": "b2"}]),
+                f"{mr}/diffs": _ok(
+                    [
+                        {
+                            "new_path": "app.py",
+                            "diff": "@@ -1 +1,2 @@\n base\n+widget\n",
+                        },
+                        {
+                            "new_path": "docs/adr/0002-widget.md",
+                            "new_file": True,
+                            "diff": "@@ -0,0 +1,2 @@\n+# Widget\n+--- not a header\n",
+                        },
+                        {"new_path": "old.py", "diff": "@@ -1 +0,0 @@\n-gone\n"},
+                    ]
+                ),
+            }
+        )
+
+        report = self._build(fake)
+
+        [entry] = report["volume"]["entries"]
+        self.assertEqual(
+            {
+                k: entry[k]
+                for k in ("source", "pull_request", "branch", "state", "ticket")
+            },
+            {
+                "source": "pull-request",
+                "pull_request": 5,
+                "branch": "feature/issue-11-widget",
+                "state": "merged",
+                "ticket": 11,
+            },
+        )
+        self.assertEqual(
+            report["volume"]["totals"],
+            {
+                "commits": 2,
+                "insertions": 3,
+                "deletions": 1,
+                "files": 3,
+                "pull_requests": 1,
+            },
+        )
+        self.assertEqual(report["volume"]["adr_added"], ["docs/adr/0002-widget.md"])
+        for call in fake.calls:
+            with self.subTest(call=call):
+                self.assertEqual(call[0], "glab")
+                self.assertTrue(
+                    call[call.index("-R") + 1] == GL_URL
+                    if "-R" in call
+                    else call[1:3] == ["api", "--hostname"] and call[3] == GL_HOST
+                )
+
+    def test_gitlab_report_names_a_missing_or_unauthenticated_glab(self) -> None:
+        epic = f"issue view 10 -R {GL_URL} --output json"
+        for outcome, message, remedy in (
+            (
+                (127, "", "No such file or directory: 'glab'"),
+                "glab CLI is required",
+                "--tickets",
+            ),
+            (
+                (
+                    1,
+                    "",
+                    "GET https://x/api/v4/projects/1: 401 {message: 401 Unauthorized}",
+                ),
+                f"glab is not authenticated on {GL_HOST}",
+                f"glab auth login --hostname {GL_HOST}",
+            ),
+            (
+                (1, "", "Run `glab auth login` to authenticate."),
+                f"glab is not authenticated on {GL_HOST}",
+                "--tickets",
+            ),
+            (
+                (1, "", "404 Project Not Found"),
+                "failed: 404 Project Not Found",
+                "--tickets",
+            ),
+            ((0, "not json", ""), "not valid JSON", "glab issue view 10"),
+        ):
+            with self.subTest(message=message, stderr=outcome[2]):
+                with self.assertRaises(delivery_stats.StatsError) as raised:
+                    self._build(self._gitlab({epic: outcome}))
+                self.assertIn(message, raised.exception.message)
+                self.assertIn(remedy, raised.exception.remedy)
+
+    def test_github_report_keeps_its_gh_calls(self) -> None:
+        self._project({"type": "github", "host": "github.com", "project": "owner/repo"})
+        widget = delivery_stats._git(self.repo, "rev-parse", "feature/issue-11-widget")
+        calls = [
+            "issue view 10 --json number,title,state,createdAt,closedAt,url",
+            "issue view 10 --json subIssues",
+            "pr list --state all --limit 200 --json "
+            "number,headRefName,state,additions,deletions,changedFiles,mergedAt,url",
+            "pr view 5 --json commits,files",
+        ]
+        fake = FakeTrackerCli(
+            {
+                calls[0]: _ok(
+                    {"number": 10, "title": "Эпик", "state": "OPEN", "url": "u"}
+                ),
+                calls[1]: _ok(
+                    {
+                        "subIssues": {
+                            "nodes": [
+                                {"number": 11, "title": "Виджет", "state": "CLOSED"}
+                            ]
+                        }
+                    }
+                ),
+                calls[2]: _ok(
+                    [
+                        {
+                            "number": 5,
+                            "headRefName": "feature/issue-11-widget",
+                            "state": "MERGED",
+                            "additions": 1,
+                            "deletions": 0,
+                            "changedFiles": 1,
+                        }
+                    ]
+                ),
+                calls[3]: _ok(
+                    {"commits": [{"oid": widget}], "files": [{"path": "app.py"}]}
+                ),
+            }
+        )
+
+        report = self._build(fake)
+
+        self.assertEqual([" ".join(call[1:]) for call in fake.calls], calls)
+        self.assertEqual({call[0] for call in fake.calls}, {"gh"})
+        self.assertEqual([t["number"] for t in report["tickets"]], [10, 11])
+        self.assertEqual(
+            report["volume"]["totals"],
+            {
+                "commits": 1,
+                "insertions": 1,
+                "deletions": 0,
+                "files": 1,
+                "pull_requests": 1,
+            },
         )
 
 
