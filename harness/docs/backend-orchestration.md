@@ -1438,6 +1438,48 @@ python .harness/orchestration/coordinator.py --repo . integration local-qa \
 `max_infrastructure_retries`, затем `state: exhausted`. Вручную привязанный `local-qa` остаётся
 `unverified` и проверку пары не закрывает.
 
+`next` — read-only шаг продолжения PR (ADR 0017): он ничего не пишет в Git, ledger, dispatch и PR и
+не обращается к трекеру, а классифицирует `status`, evidence, открытые resolver batch и события
+бюджета:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . integration next \
+  --ticket '#123' --branch feature/issue-123-short-name [--pull-request 45]
+```
+
+Шаги (`step`): `unavailable` (integration ref не читается — операционная остановка, не дефект кода),
+`resolver-open` (открыт resolver batch; PR-сессия ждёт, цикл не тратится), `refresh`, `route-failure`
+(провал проверки текущей пары), `human-decision` (бюджет resolver исчерпан), `confirm-pr` (до PR),
+`verify` (с `--pull-request`: обновлённой паре нужны CI либо local-QA) и `handoff` (пара актуальна и
+проверена: `candidate_sha`, `target_sha`, `qa_source` `original-qa|ci|local-qa`, `reference`,
+`refreshed`). Старое evidence допускает вход в подготовку PR (`confirm-pr`), но не считается QA
+нового candidate: `verify` и `handoff` требуют проверки именно обновлённой пары.
+
+Правило маршрута провала: провалом считается только `collector-failed` CI или `failed` сгенерированного
+local-QA текущей пары без более позднего passed. Если пара прошла refresh или resolver, маршрут —
+`resolver` (поведенческая несовместимость после чистого rebase, следствие правки resolver; бюджет
+`cycles_total`/`cycles_spent`/`remaining`/`internal_fix_budget` и `fixes_on_target` в ответе; при
+исчерпании — `human-decision` с `integration resolver-event --extends-budget`). Если пара исходная,
+маршрут — `developer`: собственный дефект задачи идёт обычному developer с review и QA (ADR 0012).
+Операционный fallback CI и `unavailable`/`exhausted` local-QA failed-evidence не создают и провалом
+кода не становятся. Для провала обновлённой пары `integration resolve` создаёт resolver batch с
+`resolver.trigger: verification-failure` (`failed_evidence_ids`, пустые `conflicting_files`) даже при
+`tip == target`; бюджет и лимит правок на том же target те же, что у конфликта, ответ человека и
+ожидание CI бюджет не сбрасывают и не тратят.
+
+Подсказка `next` в результате `collect-ci`: `pending_check` — `{action: wait}`; `not_configured` и
+`unsupported_tracker` — `{action: local-qa, ci_condition: absent}`; `unavailable` — `local-qa` с
+`unavailable`; остальные fallback — `local-qa` с `unusable`; `failed` — `{action: route}`. При `accepted`
+подсказки нет: полный локальный QA пропускается (`qa_replacement.applies`).
+
+`/to-pull-requests` ведёт этот процесс: до PR — отдельное подтверждение человека, привязанное к
+точной паре `candidate_sha`/`target_sha` (смена пары перед открытием делает его недействительным);
+после открытия или обновления PR — ожидание CI, при непригодном CI запасной `local-qa`, затем
+`handoff` для ручного merge. Перед merge показываются проверенные пары SHA и источник QA; handoff не
+обещает неизменность до merge, а новый target повторяет актуализацию и проверку. Server branch
+protection и merge queue автоматически не включаются, merge остаётся ручным, тикет закрывается только
+после подтверждённого merge.
+
 `link-evidence` — единственный публичный способ привязать к записи будущие результаты CI, local-QA
 или resolver (`--kind ci|local-qa|resolver`). Каждая привязка — отдельная immutable запись со своей
 парой `candidate_sha`/`target_sha` и `verification: unverified`: исходное evidence записи никогда не

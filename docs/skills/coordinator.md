@@ -63,6 +63,13 @@ Coordinator записывает ровно одно текущее состоя
   результаты CI, local-QA и resolver; каждая привязка — отдельная запись со своей парой SHA и
   `verification: unverified`. Сами эти маршруты операция не запускает.
 
+- `integration next --ticket T --branch B [--pull-request N]` — read-only шаг продолжения PR
+  (ADR 0017): `unavailable`, `resolver-open`, `refresh`, `route-failure`, `human-decision`,
+  `confirm-pr`, `verify` или `handoff`. Провал проверки обновлённой пары идёт тому же resolver в
+  пределах бюджета (`integration resolve` принимает такой провал, `resolver.trigger:
+  verification-failure`), провал исходной пары — обычному developer; операционные сбои провалом кода
+  не считаются. Результат `collect-ci` несёт подсказку `next` (`wait` либо `local-qa`).
+
 Записи лежат в `reports/integration*` существующего каталога `reports`: схема ledger и
 `ledger migrate` не меняются. Подробности — `harness/docs/backend-orchestration.md`.
 

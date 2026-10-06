@@ -1015,11 +1015,14 @@ class IntegrationGuidanceTests(unittest.TestCase):
             "integration status",
             "integration link-evidence",
             "reports/integration",
+            "integration next",
+            "verification-failure",
         ),
         "harness/orchestration/playbook.md": (
             "integration prepare",
             "integration status",
             "integration link-evidence",
+            "integration next",
         ),
         "harness/orchestration/README.md": (
             "integration prepare",
@@ -1028,13 +1031,31 @@ class IntegrationGuidanceTests(unittest.TestCase):
         "skills/first-party/pvmalove/implement/SKILL.md": ("integration prepare",),
         "skills/first-party/pvmalove/to-pull-requests/SKILL.md": (
             "integration status",
+            "integration next",
+            "integration collect-ci",
+            "integration local-qa",
+            "candidate_sha",
+            "target_sha",
+            "qa_source",
         ),
         "docs/skills/implement.md": ("integration prepare",),
-        "docs/skills/to-pull-requests.md": ("integration status",),
+        "docs/skills/to-pull-requests.md": (
+            "integration status",
+            "integration next",
+            "integration collect-ci",
+            "integration local-qa",
+            "qa_source",
+        ),
+        "docs/adr/0017-pr-continuation-routing.md": (
+            "integration next",
+            "verification-failure",
+            "collector-failed",
+        ),
         "docs/skills/coordinator.md": (
             "integration prepare",
             "integration status",
             "integration link-evidence",
+            "integration next",
         ),
         "CONTEXT.md": ("**Integration record**", "**Stale integration record**"),
     }
@@ -1051,6 +1072,23 @@ class IntegrationGuidanceTests(unittest.TestCase):
             REPO / "skills/first-party/pvmalove/to-pull-requests/SKILL.md"
         ).read_text(encoding="utf-8")
         self.assertIn("do not create a dispatch", text)
+
+    def test_the_pr_skill_binds_confirmation_to_the_pair_and_never_merges(self) -> None:
+        text = (
+            REPO / "skills/first-party/pvmalove/to-pull-requests/SKILL.md"
+        ).read_text(encoding="utf-8")
+        confirmation = text.index("separate confirmation")
+        opening = text.index("gh pr create")
+        verification = text.index("6a.")
+        handoff = text.index("`handoff`", verification)
+        self.assertLess(confirmation, opening)
+        self.assertLess(opening, verification)
+        self.assertLess(verification, handoff)
+        self.assertIn("Never merge it", text)
+        self.assertIn("merge queue", text)
+        # The old QA only permits entering PR preparation; a project without the opt-in keeps /qa-gate.
+        self.assertIn("is not QA of the new candidate", text)
+        self.assertIn("run `/qa-gate`", text)
 
 
 if __name__ == "__main__":

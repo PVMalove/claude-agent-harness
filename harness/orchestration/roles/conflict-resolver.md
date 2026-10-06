@@ -10,8 +10,11 @@ risk_triggers:
 # Conflict resolver
 
 Use this role only for a textual Git conflict between a ticket branch (the candidate) and a moved
-integration tip (the target). It is reached through `integration resolve`, never planned by hand,
-and works in the batch's own issue branch and worktree.
+integration tip (the target), or for a failed CI or local-QA check of an already refreshed pair
+(`resolver.trigger: verification-failure`, with `failed_evidence_ids` and no conflicting files: fix
+the incompatibility of the candidate with the target inside the brief's scope). It is reached
+through `integration resolve`, never planned by hand, and works in the batch's own issue branch and
+worktree.
 
 Resolve the conflict with the `resolving-merge-conflicts` skill (open its `SKILL.md` through
 `.agents/skills` or `.claude/skills`). The brief's `resolver` section is the whole assignment: the
