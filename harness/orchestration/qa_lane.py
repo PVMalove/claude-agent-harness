@@ -324,6 +324,38 @@ def release(ledger: LifecycleLedger, claimed: JsonObject, ops: CoordinatorOps) -
     _delete_record(ledger, ops, _lane_path(ledger, ops), reason="complete QA lease")
 
 
+def withdraw(
+    ledger: LifecycleLedger, owner_id: str, ops: CoordinatorOps, *, owner_kind: str
+) -> None:
+    """Remove a waiting request whose pair became unusable; never remove a lease."""
+    current = _lease(ledger, ops)
+    if current and _owner(current) == (owner_kind, owner_id):
+        return
+    for path, entry in _queue_entries(ledger, ops):
+        if _owner(entry) == (owner_kind, owner_id):
+            _delete_record(ledger, ops, path, reason="withdraw unavailable QA request")
+
+
+def running_owner(
+    ledger: LifecycleLedger, owner_id: str, ops: CoordinatorOps, *, owner_kind: str
+) -> JsonObject | None:
+    """Observe an already running owner without changing its admission or retry budget."""
+    current = _lease(ledger, ops)
+    if not current or _owner(current) != (owner_kind, owner_id):
+        return None
+    if _lease_expired(current, ops):
+        raise ops.CoordinatorError(
+            "QA lease is stale; a coordinator must clear it explicitly before another gate runs",
+            remedy="have a coordinator run 'qa clear-stale-lease' for the expired lease",
+        )
+    position = next(
+        index
+        for index, (_, entry) in enumerate(_queue_entries(ledger, ops), start=1)
+        if _owner(entry) == (owner_kind, owner_id)
+    )
+    return {"state": "queued", "position": position, "running": True}
+
+
 def _enqueue(
     ledger: LifecycleLedger,
     dispatch_id: str,

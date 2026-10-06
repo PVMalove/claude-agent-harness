@@ -9,13 +9,19 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness.gate_runner.gate_runner import ExecutionPolicy, GateResult, run_gate
+from harness.gate_runner.gate_runner import (
+    ExecutionPolicy,
+    GateResult,
+    GateRunnerError,
+    LocalPolicy,
+    run_gate,
+)
 
 from harness.orchestration import coordinator, qa_lane
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from harness.orchestration.ledger import LifecycleLedger
-from harness.orchestration.workflow import local_qa
-from tests.orchestration.test_integration_record import PublishedBranch
+from harness.orchestration.workflow import integration, local_qa
+from tests.orchestration.test_integration_record import PublishedBranch, _git
 
 
 class LocalQaContractTests(unittest.TestCase):
@@ -206,6 +212,123 @@ class LocalQaContractTests(unittest.TestCase):
             )["applies_to_current_pair"]
         )
 
+    def test_failures_are_retained_and_operational_retries_are_explicit_and_bounded(
+        self,
+    ) -> None:
+        failure = GateRunnerError(
+            "checkout unavailable password=private", remedy="restore checkout"
+        )
+        with mock.patch.object(local_qa, "run_gate", side_effect=failure) as runner:
+            first = coordinator.integration_local_qa(self.args())
+            self.assertEqual(first["state"], "unavailable")
+            self.assertEqual(first["findings"], [])
+            repeated = coordinator.integration_local_qa(self.args())
+            self.assertEqual(repeated["state"], "unavailable")
+            self.assertEqual(runner.call_count, 1)
+            for _ in range(2):
+                self.assertEqual(
+                    coordinator.integration_local_qa(self.args(retry=True))["state"],
+                    "unavailable",
+                )
+            self.assertEqual(
+                coordinator.integration_local_qa(self.args(retry=True))["state"],
+                "exhausted",
+            )
+            self.assertEqual(runner.call_count, 3)
+        config = self.branch.repo / ".harness/project.json"
+        value = json.loads(config.read_text(encoding="utf-8"))
+        value["qa_gate_commands"] = ["printf 'password=private'; exit 1"]
+        config.write_text(json.dumps(value), encoding="utf-8")
+        failed = coordinator.integration_local_qa(self.args())
+        self.assertEqual(failed["state"], "failed")
+        self.assertEqual(len(failed["findings"]), 1)
+        self.assertEqual(failed["findings"][0]["command"], value["qa_gate_commands"][0])
+        self.assertNotIn(
+            "private", Path(failed["artifact"]).read_text(encoding="utf-8")
+        )
+        with mock.patch.object(
+            local_qa, "run_gate", side_effect=AssertionError("failed gate retried")
+        ):
+            self.assertEqual(
+                coordinator.integration_local_qa(self.args(retry=True))["state"],
+                "failed",
+            )
+        self.assertIsNone(
+            coordinator.qa_status(
+                argparse.Namespace(repo=str(self.branch.repo), state_dir=None)
+            )["lease"]
+        )
+
+    def test_finalization_persistence_failure_resumes_without_rerunning_gate(
+        self,
+    ) -> None:
+        with mock.patch.object(
+            integration,
+            "_link_evidence",
+            side_effect=CoordinatorError(
+                "link persistence unavailable", remedy="restore ledger"
+            ),
+        ):
+            first = coordinator.integration_local_qa(self.args())
+        self.assertEqual(first["state"], "unavailable")
+        self.assertEqual(first["checks_run"][0]["result"], "pass")
+        self.assertTrue(Path(first["artifact"]).exists())
+        with mock.patch.object(
+            local_qa,
+            "run_gate",
+            side_effect=AssertionError("gate reran after finalization"),
+        ):
+            finished = coordinator.integration_local_qa(self.args())
+        self.assertEqual(finished["verification"], "verified")
+        self.assertIsNone(
+            coordinator.qa_status(
+                argparse.Namespace(repo=str(self.branch.repo), state_dir=None)
+            )["lease"]
+        )
+
+    def test_command_launch_unavailability_preserves_completed_checks(self) -> None:
+        with self.assertRaises(GateRunnerError) as caught:
+            run_gate(
+                [["git", "--version"], ["harness-test-command-does-not-exist"]],
+                LocalPolicy(self.branch.repo),
+                stop_on_failure=True,
+            )
+        failure = caught.exception
+        self.assertIsNotNone(failure.partial_result)
+        with mock.patch.object(local_qa, "run_gate", side_effect=failure):
+            result = coordinator.integration_local_qa(self.args())
+        self.assertEqual(result["state"], "unavailable")
+        self.assertEqual(result["checks_run"][0]["result"], "pass")
+        self.assertEqual(result["findings"], [])
+        self.assertTrue(Path(result["artifact"]).exists())
+
+    def test_remote_unavailability_does_not_execute_or_report_a_failed_check(
+        self,
+    ) -> None:
+        remote = _git(self.branch.repo, "remote", "get-url", "origin")
+        _git(
+            self.branch.repo,
+            "remote",
+            "set-url",
+            "origin",
+            "/nonexistent/local-qa-test-origin.git",
+        )
+        with mock.patch.object(
+            local_qa,
+            "run_gate",
+            side_effect=AssertionError("gate ran without pair observation"),
+        ):
+            result = coordinator.integration_local_qa(self.args())
+        self.assertEqual(result["state"], "unavailable")
+        self.assertEqual(result["stage"], "pair-observation")
+        self.assertEqual(result["checks_run"], [])
+        self.assertEqual(result["findings"], [])
+        _git(self.branch.repo, "remote", "set-url", "origin", remote)
+        self.assertEqual(
+            coordinator.integration_local_qa(self.args(retry=True))["verification"],
+            "verified",
+        )
+
     def test_blocked_gate_releases_ledger_lock_and_excludes_other_qa_owners(
         self,
     ) -> None:
@@ -236,6 +359,9 @@ class LocalQaContractTests(unittest.TestCase):
             thread.start()
             try:
                 self.assertTrue(entered.wait(10))
+                self.assertTrue(
+                    coordinator.integration_local_qa(self.args())["running"]
+                )
                 # Ordinary ledger operations can proceed while the heavy gate is blocked.
                 status = coordinator.integration_status(
                     self.branch.args(record=self.record)
