@@ -1364,7 +1364,7 @@ python .harness/orchestration/coordinator.py --repo . dispatch resume \
 дефект тикета (`resolver.cause: task-defect`) возвращается обычному developer-у.
 
 Отчёт resolver-а несёт верхнеуровневый блок `resolver`: `preserved_requirements` (каждое требование
-обеих сторон дословно из brief), `human_decisions` (id событий этого dispatch), `target_sha`,
+обеих сторон дословно из brief), `human_decisions` (id только тех событий human-decision, что отвечают на checkpoint этого dispatch; автономный `human-decision --extends-budget` без checkpoint фиксируется лишь событием ledger, в отчёт не попадает и, кроме ещё одного автоматического target-цикла, даёт ещё `max_developer_retries` попыток исправления того же target), `target_sha`,
 `resolved_candidate_sha`, `cause`, `changed_files` и `commits` с записью плана для каждого коммита.
 Принятая резолюция идёт узким маршрутом: повторный code-review пропускается, но QA и CI либо local-QA
 новой пары candidate/target обязательны (`integration status` держит `verification.required`).

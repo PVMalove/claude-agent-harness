@@ -47,7 +47,7 @@
   `next_action: resolve-conflict`; новых значений в `RECOVERY_ROUTES` нет.
 - **Отчёт.** Верхнеуровневое необязательное поле `resolver` (его проверяет `report submit` и
   `batch decide`): `preserved_requirements` по обеим сторонам, `human_decisions` (id событий
-  этого dispatch), `target_sha`, `resolved_candidate_sha`, `cause`, точные `changed_files` и `commits` с
+  human-decision, отвечающих на checkpoint этого dispatch), `target_sha`, `resolved_candidate_sha`, `cause`, точные `changed_files` и `commits` с
   записью плана. Policy auto-accept resolver-отчёт не принимает: резолюцию меняет код, который target
   не ревьюил.
 - **Узкий маршрут.** После принятого отчёта запись интеграции получает refresh-запись с

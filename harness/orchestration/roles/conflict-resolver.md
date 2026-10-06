@@ -31,7 +31,7 @@ approved commands (pass each through the installed bounded summary wrapper) and 
 
 - `preserved_requirements`: one `{side, requirement, preserved_by}` entry for every requirement of
   `sides.candidate` and `sides.target`, copied verbatim from the brief, with how the resolution keeps it.
-- `human_decisions`: the ids of the human-decision events this dispatch received (an empty list when none).
+- `human_decisions`: the ids of only the human-decision events that answer a checkpoint of this dispatch (an empty list when none). An autonomous `human-decision --extends-budget` without a checkpoint is recorded only as a ledger event and is not listed; besides one more automatic target cycle, it grants `max_developer_retries` more same-target fix attempts.
 - `target_sha`: the brief's target; `resolved_candidate_sha`: the final commit, equal to `commit_sha`
   and containing the target.
 - `cause`: `resolved` on success; `integration-incompatibility` or `task-defect` on a `blocked` report.
