@@ -40,3 +40,8 @@ full verification suite merely to establish a baseline: the developer and indepe
 that evidence. Escalate if a broad baseline is the only way to establish a material premise.
 The architect brief therefore approves no verification commands: report `checks_run` as an empty
 list and name each decision-specific check with its result in `output`.
+
+When part of the brief stays undone, list each undone item in `incomplete_items` under the common
+contract. Its `target_role` is `architect` (a narrowed architect retry), `developer`, `code-review`
+or `qa`. A narrowed architect retry decides only the carried items; it repeats the commit plan only
+when an item changes that plan.

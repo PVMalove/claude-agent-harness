@@ -17,3 +17,8 @@ and any defect or remaining risk. Proof is independent execution through the pro
 
 Work from the Context Package's `related_tests`; only widen beyond them when that set cannot exercise
 the acceptance criteria.
+
+When part of the brief stays undone, list each undone item in `incomplete_items` under the common
+contract; its `target_role` is always `qa`, so only a narrowed QA retry finishes it. A narrowed QA
+retry still runs every approved verification command. An incomplete item never replaces a failed
+or not-run check in `checks_run`.
