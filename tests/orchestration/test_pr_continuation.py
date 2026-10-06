@@ -306,8 +306,37 @@ class RouteFailureTests(NextFixture):
 
         self.assertEqual(result["step"], "route-failure")
         self.assertEqual(result["route"], "developer")
-        self.assertIn("batch decide", " ".join(result["next"]))
+        hint = " ".join(result["next"])
+        self.assertIn("batch create", hint)
+        self.assertIn("integration prepare", hint)
+        self.assertNotIn("batch decide", hint)
         self.assertNotIn("budget", result)
+
+    def test_the_developer_route_of_the_original_pair_is_executable(self) -> None:
+        """The hinted route is not a refused command: the completed batch is terminal, so a new
+        batch of the same ticket and issue branch goes through the ordinary pipeline, its publish
+        updates the branch, and 'integration prepare --batch' links the new pair."""
+        self.failed_ci()
+        source = self.published["batch_id"]
+        with self.assertRaises(CoordinatorError):
+            # What the earlier hint prescribed: the completed batch awaits no decision.
+            coordinator.decide_batch(
+                self.branch.args(
+                    batch=source,
+                    decision="retry",
+                    **self.branch.fixture._approval(),
+                )
+            )
+
+        follow_up = self.branch.publish("y", again=True)
+        prepared = self.branch.prepare(batch=follow_up["batch_id"])
+        self.record_id = prepared["integration_record_id"]
+        result = self.next()
+
+        self.assertNotEqual(follow_up["batch_id"], source)
+        self.assertEqual(prepared["candidate_sha"], follow_up["candidate"])
+        self.assertEqual(result["step"], "confirm-pr")
+        self.assertEqual(result["candidate_sha"], follow_up["candidate"])
 
     def test_spent_cycles_stop_at_a_human_decision(self) -> None:
         self.refresh()

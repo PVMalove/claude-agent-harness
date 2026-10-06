@@ -23,7 +23,7 @@ from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.health.project_tracker import resolve_project_tracker
 from harness.orchestration.core import ci_source
 from harness.orchestration.core import utils
-from harness.orchestration.core.config import _reject_sensitive
+from harness.orchestration.core.config import _config, _reject_sensitive
 from harness.orchestration.core.constants import (
     INTEGRATION_CI_COLLECTED,
     INTEGRATION_CI_COLLECTED_FAILURE,
@@ -658,6 +658,61 @@ def _notice(
     )
 
 
+def _local_pair_current(
+    repo: Path,
+    identity: JsonObject,
+    links: list[JsonObject],
+    pair: JsonObject,
+    state: str,
+) -> bool:
+    """Whether the remote issue branch still is the candidate of the pair: only then does a local
+    QA of that candidate say anything about what a pull request carries."""
+    if not any(link["kind"] == "local-qa" for link in links) or state != "current":
+        return False
+    try:
+        return bool(
+            _remote_branch_tip(repo, identity["remote"], identity["branch"])
+            == pair["candidate_sha"]
+        )
+    except CoordinatorError:
+        return False
+
+
+def _pair_checks(
+    root: Path,
+    links: list[JsonObject],
+    pair: JsonObject,
+    tip: str | None,
+    local_pair_current: bool,
+) -> list[JsonObject]:
+    from harness.orchestration.workflow.local_qa import verified_evidence
+
+    return [
+        {
+            "evidence_id": link["evidence_id"],
+            "kind": link["kind"],
+            "result": link["result"],
+            "pair": {
+                "candidate_sha": link["candidate_sha"],
+                "target_sha": link["target_sha"],
+            },
+            "applies_to_current_pair": tip is not None
+            and link["target_sha"] == tip
+            and (
+                link["kind"] != "local-qa"
+                or local_pair_current
+                and link["candidate_sha"] == pair["candidate_sha"]
+            ),
+            "verification": "verified"
+            if link["kind"] == "local-qa" and verified_evidence(root, link)
+            else "unverified"
+            if link["kind"] == "local-qa"
+            else link["verification"],
+        }
+        for link in links
+    ]
+
+
 def integration_status(args: argparse.Namespace) -> JsonObject:
     """Observe whether an integration record's pair is still current; strictly read-only.
 
@@ -681,15 +736,7 @@ def integration_status(args: argparse.Namespace) -> JsonObject:
     tip = observed["integration_tip"]
     from harness.orchestration.workflow.local_qa import verified_evidence
 
-    local_pair_current = False
-    if any(link["kind"] == "local-qa" for link in links) and state == "current":
-        try:
-            local_pair_current = (
-                _remote_branch_tip(repo, identity["remote"], identity["branch"])
-                == pair["candidate_sha"]
-            )
-        except CoordinatorError:
-            pass
+    local_pair_current = _local_pair_current(repo, identity, links, pair, state)
     verified = not refreshes or any(
         _satisfies(link, pair)
         and (
@@ -737,30 +784,7 @@ def integration_status(args: argparse.Namespace) -> JsonObject:
             "re_review_required": False,
         },
         "qa_replacement": _qa_replacement(links, pair, state),
-        "pair_checks": [
-            {
-                "evidence_id": link["evidence_id"],
-                "kind": link["kind"],
-                "result": link["result"],
-                "pair": {
-                    "candidate_sha": link["candidate_sha"],
-                    "target_sha": link["target_sha"],
-                },
-                "applies_to_current_pair": tip is not None
-                and link["target_sha"] == tip
-                and (
-                    link["kind"] != "local-qa"
-                    or local_pair_current
-                    and link["candidate_sha"] == pair["candidate_sha"]
-                ),
-                "verification": "verified"
-                if link["kind"] == "local-qa" and verified_evidence(root, link)
-                else "unverified"
-                if link["kind"] == "local-qa"
-                else link["verification"],
-            }
-            for link in links
-        ],
+        "pair_checks": _pair_checks(root, links, pair, tip, local_pair_current),
         "notice": _notice(state, record, observed, pair, verified),
     }
 
@@ -966,18 +990,36 @@ def _verified_source(status: JsonObject) -> tuple[str, JsonObject]:
     return "local-qa", {"evidence_id": local[-1]["evidence_id"]}
 
 
-def _has_passed_check(links: list[JsonObject], status: JsonObject) -> bool:
+def _has_passed_check(
+    links: list[JsonObject], pair: JsonObject, pair_checks: list[JsonObject]
+) -> bool:
     """A passed, verified check of the current pair, original or refreshed: it supersedes an
     earlier failed one.  ``verification.satisfied`` cannot say it, because it is true for any
     pair that was never refreshed."""
     usable = {
         check["evidence_id"]
-        for check in status["pair_checks"]
+        for check in pair_checks
         if check["applies_to_current_pair"] and check["verification"] != "unverified"
     }
     return any(
-        link["evidence_id"] in usable and _satisfies(link, status) for link in links
+        link["evidence_id"] in usable and _satisfies(link, pair) for link in links
     )
+
+
+def pair_has_passed_check(
+    repo: Path,
+    root: Path,
+    record: JsonObject,
+    links: list[JsonObject],
+    pair: JsonObject,
+) -> bool:
+    """The rule of ``_has_passed_check`` for a record whose status is not at hand: the one rule
+    both ``integration next`` and ``integration resolve`` use to tell a failed check superseded."""
+    identity = record["identity"]
+    observed = _observe(repo, {**identity, "target_sha": pair["target_sha"]})
+    current = _local_pair_current(repo, identity, links, pair, observed["state"])
+    checks = _pair_checks(root, links, pair, observed["integration_tip"], current)
+    return _has_passed_check(links, pair, checks)
 
 
 def _route_failure(
@@ -999,15 +1041,20 @@ def _route_failure(
             "route": "developer",
             "failed_evidence": failed,
             "next": [
-                "batch decide --batch <source batch> --decision retry (a regular developer dispatch "
-                "with its review and QA; the integration record and its evidence stay)"
+                f"batch create --ticket {pair['ticket']} --branch {pair['branch']} --worktree <worktree of "
+                f"the issue branch> --integration-ref {pair['integration_ref']} ... (the ordinary /implement "
+                "route: its own architect, developer, code-review, QA and publish; the completed source "
+                "batch is terminal, never decided again and does not block a new batch of the same ticket "
+                "and branch)",
+                f"after its accepted publish: integration prepare --ticket {pair['ticket']} --branch "
+                f"{pair['branch']} --batch <new batch>, then integration next --record <new record> "
+                "--pull-request <number> (the failed evidence of this record stays history)",
             ],
         }
-    from harness.orchestration.core import config as core_config
     from harness.orchestration.workflow import resolver_state
 
     current, fixes, reason = resolver_state.exhaustion(
-        root, core_config._config(repo), record_id, pair["target_sha"]
+        root, _config(repo), record_id, pair["target_sha"]
     )
     exhausted = reason is not None
     result: JsonObject = {
@@ -1090,7 +1137,7 @@ def integration_next(args: argparse.Namespace) -> JsonObject:
         }
     satisfied = status["verification"]["satisfied"]
     failed = _failed_pair_checks(links, status)
-    if failed and not _has_passed_check(links, status):
+    if failed and not _has_passed_check(links, status, status["pair_checks"]):
         return {
             **result,
             **_route_failure(repo, root, record_id, status, failed, refreshed),
