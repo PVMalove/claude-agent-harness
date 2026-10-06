@@ -147,6 +147,8 @@ def test_registry_runs_without_crashing_even_with_a_lock_file_present(
         "environment.glab",
         "environment.dev_env",
         "environment.output_encoding",
+        "environment.codex_sandbox",
+        "environment.claude_sandbox",
         "environment.long_paths",
         "environment.path_length",
         "environment.pytest_temp",
