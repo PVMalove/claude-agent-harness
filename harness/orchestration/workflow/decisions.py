@@ -28,6 +28,7 @@ from harness.orchestration.core.constants import (
     BLOCK_BYPASS_REASON_CATEGORY,
     BLOCK_BYPASS_STAGES,
     DEVELOPER_REASON_CATEGORIES,
+    INCOMPLETE_ITEM_TARGET_ROLES,
     NEXT_ACTION_DISPATCH_ROLE,
     OPERATIONAL_REASON_CATEGORIES,
     RETRY_REASON_CATEGORIES,
@@ -118,6 +119,9 @@ def _auto_accept_policy(
         or plan_rules.not_covered(report)
         # Nor is a review that left a carried item omitted, unverified or open (issue #499).
         or carried_items.carried_gap(report, dispatch)
+        # Nor is a read-only report that left brief items undone (issue #501): only a human
+        # carries them forward or narrows a retry to them.
+        or report.get("incomplete_items")
     ):
         return None
     if policy == "low_risk" and batch.get("zone") not in config.get(
@@ -268,6 +272,16 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                     args,
                 ),
             }
+        elif (
+            report is not None
+            and "decision" not in entry
+            and report.get("incomplete_items")
+        ):
+            # What ``batch decide --decision accept --carry-incomplete`` would record (issue #501).
+            route_preview = {
+                **(route_preview or {}),
+                "carry-over": _incomplete_carry_preview(batch, dispatch, report),
+            }
         return {
             "batch_id": batch["batch_id"],
             "ticket": batch["ticket"],
@@ -307,6 +321,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             "carried_items_gap": carried_items.carried_gap(report, dispatch)
             if report
             else [],
+            "incomplete_items": report.get("incomplete_items", []) if report else [],
             "commit_plan_divergence": (
                 plan_rules.divergence(report, dispatch, resolve) if report else None
             )
@@ -431,6 +446,7 @@ def _retry_routing(
     current_candidate: str | None,
     explicit_category: str | None,
     pressure_recorded: bool = False,
+    narrowed: bool = False,
 ) -> JsonObject:
     """Decide where a ``retry`` goes, from structured report data only (no I/O).
 
@@ -445,6 +461,7 @@ def _retry_routing(
     replace it) and routes ``tooling-retry``: the same stage again, a developer from its last commit.
     ``block-bypass`` comes only from an approver, for a read-only stage whose role worked around a
     block: the report is no evidence, so only a moved candidate overrides its ``bypass-rerun``.
+    ``narrowed`` (``--narrowed``) re-runs a read-only stage on its report's incomplete items only.
     """
     if (
         explicit_category is not None
@@ -453,6 +470,14 @@ def _retry_routing(
         raise CoordinatorError(
             f"unknown retry reason category {explicit_category!r}",
             remedy=f"pass --reason-category as one of: {', '.join(RETRY_REASON_CATEGORIES)}",
+        )
+    if narrowed:
+        return _narrowed_routing(
+            stage,
+            report,
+            dispatch_candidate=dispatch_candidate,
+            current_candidate=current_candidate,
+            explicit_category=explicit_category,
         )
     bypass_named = explicit_category == BLOCK_BYPASS_REASON_CATEGORY
     if bypass_named and stage not in BLOCK_BYPASS_STAGES:
@@ -533,6 +558,72 @@ def _retry_routing(
         "next_role": "developer" if next_action == "developer-retry" else next_action,
         "next_action": next_action,
         "rationale": f"{stage} reported outcome={outcome}: {basis}; {outcome_sentence}.",
+        "candidate_commit": dispatch_candidate if unchanged else None,
+    }
+
+
+def _narrowed_routing(
+    stage: str,
+    report: JsonObject,
+    *,
+    dispatch_candidate: str | None,
+    current_candidate: str | None,
+    explicit_category: str | None,
+) -> JsonObject:
+    """A retry of the same read-only stage on the incomplete items its report listed (issue #501).
+
+    The items alone decide the route: ``narrowed-retry``, or ``tooling-retry`` (category
+    ``tooling``) when any item carries a ``tooling_blocker``. Structured evidence that the work
+    itself must change (a finding, a warning/blocker severity, an open carried item, a failed
+    check, a moved candidate) is never set aside by narrowing. No developer retry is spent.
+    """
+    if stage not in INCOMPLETE_ITEM_TARGET_ROLES:
+        raise CoordinatorError(
+            f"--narrowed re-runs only a {', '.join(INCOMPLETE_ITEM_TARGET_ROLES)} report, "
+            f"not a {stage} report",
+            remedy="drop --narrowed; the retry then routes by the report's structured evidence",
+        )
+    items = report.get("incomplete_items") or []
+    if not items:
+        raise CoordinatorError(
+            f"--narrowed needs a {stage} report that lists incomplete_items",
+            remedy="drop --narrowed; the retry then routes by the report's structured evidence",
+        )
+    if explicit_category is not None:
+        raise CoordinatorError(
+            "--narrowed takes no --reason-category: the incomplete items decide the route",
+            remedy="drop --reason-category; an item's tooling_blocker makes the narrowed retry "
+            "a tooling-retry",
+        )
+    unchanged = (
+        dispatch_candidate is not None and dispatch_candidate == current_candidate
+    )
+    structured = _retry_evidence(
+        report, stage in {"code-review", "qa"} and not unchanged
+    )
+    if structured is not None:
+        raise CoordinatorError(
+            f"a narrowed retry cannot set aside structured evidence: {structured[1]}",
+            remedy=f"drop --narrowed; the retry then routes by that evidence "
+            f"(reason category {structured[0]})",
+        )
+    tooled = sum(1 for item in items if "tooling_blocker" in item)
+    if tooled:
+        category: str | None = TOOLING_REASON_CATEGORY
+        route = "tooling-retry"
+        basis = f"{tooled} of its {len(items)} incomplete items carry a tooling_blocker"
+    else:
+        category, route = None, "narrowed-retry"
+        basis = f"it lists {len(items)} incomplete items"
+    return {
+        "route": route,
+        "previous_role": stage,
+        "reason_category": category,
+        "next_role": stage,
+        "next_action": stage,
+        "rationale": f"{stage} reported outcome={report.get('outcome')}: {basis}; a new {stage} "
+        "dispatch on the same SHA carries only those items and spends no developer retry; the "
+        "earlier brief and report stay as audit evidence.",
         "candidate_commit": dispatch_candidate if unchanged else None,
     }
 
@@ -679,6 +770,82 @@ def _decision_findings(
     return carried_items.read_findings(repo, findings_file)
 
 
+def _incomplete_carry(
+    batch: JsonObject,
+    dispatch: JsonObject,
+    report: JsonObject,
+    args: argparse.Namespace,
+) -> JsonObject | None:
+    """The carry-over routing record an accept with ``--carry-incomplete`` records (issue #501).
+
+    A read-only report that left brief items undone is never accepted as if it were whole: a plain
+    accept or override-warning is refused, and the items go either into their target roles'
+    briefs (``--carry-incomplete``) or into a narrowed retry of the same stage. ``None`` means the
+    decision carries nothing.
+    """
+    items = report.get("incomplete_items") or []
+    carry = bool(getattr(args, "carry_incomplete", False))
+    accepting = args.decision in {"accept", "override-warning"}
+    if carry and (not accepting or not items):
+        raise CoordinatorError(
+            "--carry-incomplete is only valid when accepting a report that lists incomplete_items",
+            remedy="drop --carry-incomplete; it carries the incomplete items of a pending "
+            "read-only report into later briefs with --decision accept or override-warning",
+        )
+    if not accepting or not items:
+        return None
+    stage = _reporting_stage(dispatch, report)
+    if not carry:
+        raise CoordinatorError(
+            f"the {stage} report left {len(items)} brief item(s) undone, so a plain "
+            f"{args.decision} would drop them",
+            remedy="pass --carry-incomplete to carry the items into the briefs of their target "
+            "roles, or retry the same role on these items only with --decision retry --narrowed",
+        )
+    own = [
+        position
+        for position, item in enumerate(items, start=1)
+        if item["target_role"] == stage
+    ]
+    if own:
+        raise CoordinatorError(
+            f"incomplete items {own} target the {stage} role itself, so no later brief can "
+            "carry them",
+            remedy=f"retry the {stage} on its incomplete items with --decision retry --narrowed",
+        )
+    candidate = dispatch.get("candidate_commit")
+    return carried_items.incomplete_carry_routing(
+        stage,
+        candidate if isinstance(candidate, str) else None,
+        items,
+        carried_items.next_incomplete_item_ids(batch, len(items)),
+    )
+
+
+def _incomplete_carry_preview(
+    batch: JsonObject, dispatch: JsonObject, report: JsonObject
+) -> JsonObject:
+    """The carry-over record ``batch decide --decision accept --carry-incomplete`` would record
+    now, or the refusal it would raise; nothing is written."""
+    try:
+        if report.get("outcome") != "completed":
+            raise CoordinatorError(
+                "a non-completed role report cannot be accepted or warning-overridden",
+                remedy="only accept or warning-override a completed role report",
+            )
+        return cast(
+            JsonObject,
+            _incomplete_carry(
+                batch,
+                dispatch,
+                report,
+                argparse.Namespace(decision="accept", carry_incomplete=True),
+            ),
+        )
+    except CoordinatorError as exc:
+        return {"route": None, "refused": exc.message, "remedy": exc.remedy}
+
+
 def decide_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -716,8 +883,15 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 "a non-completed role report cannot be accepted or warning-overridden",
                 remedy="only accept or warning-override a completed role report",
             )
+        if getattr(args, "narrowed", False) and args.decision != "retry":
+            raise CoordinatorError(
+                "--narrowed is only valid with --decision retry",
+                remedy="drop --narrowed, or pass it with --decision retry to re-run the same "
+                "read-only role on its incomplete items only",
+            )
         pinned_plan = _pinned_commit_plan(repo, batch, report, args)
         findings = _decision_findings(repo, dispatch, report, args)
+        incomplete_carry = _incomplete_carry(batch, dispatch, report, args)
         uncovered = plan_rules.not_covered(report)
         gap = carried_items.carried_gap(report, dispatch)
         if report.get("role") == "code-review":
@@ -902,6 +1076,10 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             decision["routing"] = carried_items.carry_over_routing(
                 candidate, [record["item_id"] for record in records]
             )
+        if incomplete_carry is not None:
+            # Recorded, not applied: ``next_action`` moves as on any accept of this stage, and
+            # each target role's brief reads the items back from the report.
+            decision["routing"] = incomplete_carry
         pending[0]["decision"] = decision
         decision_entry = {"dispatch_id": pending[0]["dispatch_id"], **decision}
         if routing is not None:
@@ -1021,15 +1199,23 @@ def _decide_retry_route(
             "--retry-role only accepts developer",
             remedy="omit --retry-role to let the coordinator route the retry, or pass developer to force a developer retry",
         )
+    narrowed = bool(getattr(args, "narrowed", False))
+    if narrowed and forced is not None:
+        raise CoordinatorError(
+            "--narrowed re-runs the same stage, so it cannot force a developer retry",
+            remedy="drop --retry-role to retry the stage on its incomplete items only, or drop "
+            "--narrowed to force a developer retry",
+        )
     try:
         current_candidate: str | None = _latest_developer_candidate(repo, root, batch)
     except CoordinatorError:
         current_candidate = None
     stage = _reporting_stage(dispatch, report)
     explicit_category = getattr(args, "reason_category", None)
+    # A narrowed retry is routed by its incomplete items alone, so no classifier is asked.
     hint = (
         _classifier_hint(core_config._config(repo), dispatch, stage, report)
-        if explicit_category is None
+        if explicit_category is None and not narrowed
         else None
     )
     routing = _retry_routing(
@@ -1043,7 +1229,16 @@ def _decide_retry_route(
             and item.get("level") == "critical"
             for item in batch.get("context_pressure", [])
         ),
+        narrowed=narrowed,
     )
+    if narrowed:
+        # The ids the new brief carries the items under; the items stay in the immutable report.
+        routing = {
+            **routing,
+            "carried_item_ids": carried_items.next_incomplete_item_ids(
+                batch, len(report["incomplete_items"])
+            ),
+        }
     if (
         stage == "developer"
         and routing["reason_category"] in OPERATIONAL_REASON_CATEGORIES
@@ -1071,6 +1266,7 @@ def _decide_retry_route(
     if stage == "verification" and routing["route"] in {
         "tooling-retry",
         "bypass-rerun",
+        "narrowed-retry",
     }:
         # Verification re-runs on the registered candidate its brief pinned; no accepted
         # candidate names it, so record the pin for the audit (and the tooling streak).

@@ -50,6 +50,14 @@ candidate resolves it and the evidence shows that, `open` when the defect is sti
 omitted, `open` or `unverified` item keeps the report from being clean: it is never accepted
 automatically, and a retry of a report with an `open` item routes to a developer retry.
 
+An `incomplete-item` entry of `carried_items` is a brief item an earlier read-only role left
+undone. Account for it in `review.carried_items` like any carried item: `closed` when this review
+did the item, and `unverified` when it did not, with the item listed again in `incomplete_items`.
+Do not mark it `open`: `open` claims a code defect and routes the retry to a developer. A defect
+the item reveals is an ordinary finding on its axis. When part of this review's own brief stays
+undone, list each undone item in `incomplete_items` under the common contract; its `target_role`
+is `code-review` (a narrowed review on the same candidate) or `qa`.
+
 When the approved verification cannot run at all (unavailable Bash/WSL wrapper, transport failure,
 rate limit, context limit), report `outcome: blocked` with empty `findings` and severity `none` on
 both axes, and state the operational cause in `blockers`. Never invent a finding to explain an
