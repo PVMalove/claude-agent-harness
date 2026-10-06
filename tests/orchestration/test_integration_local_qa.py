@@ -264,7 +264,7 @@ class LocalQaContractTests(unittest.TestCase):
     ) -> None:
         with mock.patch.object(
             integration,
-            "_link_evidence",
+            "_store_evidence",
             side_effect=CoordinatorError(
                 "link persistence unavailable", remedy="restore ledger"
             ),

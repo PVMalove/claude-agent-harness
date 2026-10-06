@@ -550,6 +550,15 @@ dispatch or report, or changes Git:
   cycles; a textual conflict returns `state: conflict` with resolver data and leaves the branch and
   worktree as they were. The old QA stays historical evidence. It does not depend on the
   developer-retry rebase route of ADR 0012, which still handles conflicts and developer work.
+- `integration local-qa --record <id> --ci-condition absent|unavailable|unusable --reason <text>`
+  (issue #536) is the fallback when combined-result CI cannot verify the pair. It pins an immutable
+  request (pair, reason, full `verification_commands`), runs the gate runner in an isolated
+  clean-room checkout of the exact candidate through the shared FIFO QA lane, and links
+  `local-qa` evidence with `verification: verified` only while the pair is still current. It never
+  edits the issue branch, the terminal source batch or accepted reports and never fixes code. A
+  failed check is a retained finding (`state: failed`); infrastructure trouble is a separate
+  `state: unavailable` that needs an explicit `--retry` and stops at `max_infrastructure_retries`
+  (`state: exhausted`). Hand-linked `local-qa` stays `unverified`.
 - `integration link-evidence --kind ci|local-qa|resolver` is the only way later CI, local-QA and
   resolver results are attached. Each is its own immutable record with its own candidate/target pair
   and `verification: unverified`; the record's initial evidence keeps its original pair.

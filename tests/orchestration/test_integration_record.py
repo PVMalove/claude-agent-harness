@@ -980,13 +980,13 @@ class IntegrationStatusAfterRefreshTests(unittest.TestCase):
         )
         self.assertFalse(self.status()["verification"]["satisfied"])
 
+        # Hand-linked CI or local QA stays unverified evidence (issues #535, #536): only
+        # collected CI or generated local QA closes the verification.
         self.link(kind="local-qa", reference="local-qa-run")
-
-        self.assertFalse(self.status()["verification"]["satisfied"])
-        self.link(kind="ci", reference="verified-ci-run")
+        self.link(kind="ci", reference="manual-ci-run")
 
         status = self.status()
-        self.assertTrue(status["verification"]["satisfied"])
+        self.assertFalse(status["verification"]["satisfied"])
         self.assertFalse(status["verification"]["re_review_required"])
         self.assertIn("No re-review", status["notice"])
 
