@@ -1115,15 +1115,18 @@ python .harness/orchestration/coordinator.py --repo . dispatch status --batch <b
 
 1. **Разрешить тикет.**
    - Передан конкретный тикет с `hitl` — работа прекращается сразу, пользователь направляется к
-     `/to-guide`.
+     `/to-guide`. `afk`-тикет без `pipeline::fast` (метки или поля `**Pipeline:**` нет, либо там
+     `pipeline::full`) — работа прекращается, пользователь направляется к `/implement`.
    - Передан эпик — тикет выбирается автоматически, `hitl`-тикеты не выбираются. На GitHub/GitLab — тот же
-     frontier-запрос, что у `/wayfinder`, в границах дочерних тикетов эпика, отфильтрованный по `afk`:
-     открытые, неблокированные, незанятые, первые по порядку; назначение
+     frontier-запрос, что у `/wayfinder`, в границах дочерних тикетов эпика, отфильтрованный по
+     `pipeline::fast` + `afk`: открытые, неблокированные, незанятые, первые по порядку; назначение
      (`gh issue edit <n> --add-assignee @me` на GitHub, `glab issue update <n> -R <project-url> --assignee @me`
      на GitLab) — первой операцией записи. На GitLab каждая команда `glab` адресует проект явно
      через `-R <project-url>`; плейсхолдеры определены в `docs/agents/issue-tracker.md` → GitLab →
      Conventions. При пустом фронтире работа останавливается с пояснением (остались только `hitl` — назвать их и указать на
-     `/to-guide`). Локальный трекер — линейный проход по `.scratch/<feature>/issues/NN-*.md`.
+     `/to-guide`; остались `afk` без `pipeline::fast` — указать на `/implement`). Локальный трекер —
+     линейный проход по `.scratch/<feature>/issues/NN-*.md` с тем же фильтром по
+     `**Execution:** afk` и `**Pipeline:** pipeline::fast`.
    - Тикет не указан, и в проекте действует правило Issue First — работа останавливается:
      запрашивается тикет либо запуск `/to-spec`/`/to-tickets`.
 2. **Проверить блокеры** при любой метке `status::*`: при наличии открытого блокера работа
@@ -1276,9 +1279,10 @@ merge request, а не issue: спецификация берётся из ти�
   `integration/*` или в другую ветку ничего не закрывает, `Related to #N` — не closing pattern.
   Проект может отключить автозакрытие настройкой «Auto-close referenced issues on default branch»,
   а сам шаблон меняет только администратор self-managed инстанса.
-- **После подтверждённого merge** сначала проверяется merge: `gh pr view <n> --json state,baseRefName`
-  (`MERGED`) или `glab mr view <iid> -R <project-url> -F json` (`state: merged`). Для `Related to #N`
-  тикет закрывается явно: `gh issue close N --reason completed` или
+- **После подтверждённого merge** сначала проверяется merge в целевую ветку:
+  `gh pr view <n> --json state,baseRefName` (`MERGED`, `baseRefName` — целевая ветка) или
+  `glab mr view <iid> -R <project-url> -F json` (`state: merged`, `target_branch` — целевая ветка).
+  Для `Related to #N` тикет закрывается явно: `gh issue close N --reason completed` или
   `glab issue close N -R <project-url>`. Для `Closes #N` закрытие проверяется: `gh issue view N --json state`
   (`CLOSED`) или `glab issue view N -R <project-url> -F json` (`state: closed`); GitLab закрывает
   асинхронно, поэтому при `opened` тикет перечитывается один раз и затем закрывается явно с
@@ -1301,7 +1305,8 @@ Chat), а `/to-guide` подготавливает для него пошаго�
 2. **Исследует кодовую базу** — определяет конкретные файлы по коду, а не по тексту тикета.
 3. **Назначает тикет на себя** (`gh issue edit <n> --add-assignee @me` или
    `glab issue update <n> -R <project-url> --assignee @me`) первой операцией записи.
-4. **Ставит `status::in-progress`.**
+4. **Ставит `status::in-progress`** вместо текущей `status::*` (`ready`, `blocked` или `specs`) и
+   проверяет, что эта метка `status::*` единственная; неудачная запись — стоп.
 5. **Пишет гайд** в `docs/tasks/` (в папку эпика, если тикет из декомпозиции), целиком на языке из
    `.harness/project.json`.
 
