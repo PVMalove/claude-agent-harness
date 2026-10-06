@@ -51,13 +51,20 @@ only `status::*` label. A failed label write is a blocker, not a warning. Before
 diff size. Pin the writer's explicit scope with `--allowed-path` (repeat it; a path or glob inside
 the developer's write ceiling): batches with overlapping files run in parallel in their own
 worktrees, and a change outside the scope is rejected. If it rejects the ticket, split it with `/to-tickets`; never ask an architect to discover
-whether an oversized ticket should have been split.
+whether an oversized ticket should have been split. When creating the batch with `batch create`,
+specify `--required-gate review --required-gate qa`: the full implement pipeline explicitly sets
+both independent Standards/Spec review and serialized clean-room QA gates. Before dispatching the
+write-role (`developer`) worker, verify that these mandatory gates are recorded in the batch's
+`required_gates`; halt early if missing rather than sending a worker into a risk-gate omission.
 
 For each handoff, run `dispatch preflight`, show `batch decision-packet`, then create an approved
 immutable brief. Pass the brief's `report_staging_path` to the worker verbatim; a role that has to
 guess where its report belongs writes it outside the project. The coordinator never writes feature code or repairs state by hand. A report is
 evidence, not permission to advance. Architect precedes developer; accepted candidate proceeds
-through the required review/QA/publish gates.
+through the required review/QA/publish gates. A write-role worker stopped early before making changes
+returns a truthful `outcome: blocked` report bound to the verified checkout commit with empty
+`changed_files` and unrun checks; the coordinator decision packet returns an explicit recovery route
+(`retry`, `block`, `abandon`) without registering a candidate or weakening `completed` report validation.
 
 Before every write-role dispatch, the immutable brief carries an ordered commit plan. Each entry
 names one independently reviewable logical change, its expected files and the DoD items it covers;

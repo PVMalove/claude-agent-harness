@@ -2797,6 +2797,92 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         self.assertNotIn("candidate_registrations", decided)
 
+    def test_early_blocked_developer_report_without_commits_accepted_and_retried_with_approval(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        snapshot = developer["snapshot_commit"]
+        report = self._developer_report(
+            developer,
+            snapshot,
+            [],
+            outcome="blocked",
+            output="stopped early because risk trigger requires gate",
+            blockers="missing mandatory risk review gate",
+            checks_run=self._checks(developer, "not_run"),
+            commit_map=[],
+        )
+        submitted = self._submit(developer["dispatch_id"], report)
+        self.assertEqual(submitted["state"], "reported")
+        self.assertIn("decision_packet", submitted)
+        packet = submitted["decision_packet"]
+        self.assertEqual(packet["options"], ["retry", "block", "abandon"])
+        self.assertNotIn("accept", packet["options"])
+        self.assertIn("recovery_route", packet)
+        self.assertEqual(
+            packet["recovery_route"]["options"], ["retry", "block", "abandon"]
+        )
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._decide(batch["batch_id"], "accept")
+        self.assertIn("non-completed", caught.exception.message)
+
+        decided = self._decide(
+            batch["batch_id"], "retry", reason_category="requirements"
+        )
+        self._assert_route(
+            decided,
+            role="developer",
+            action="developer-retry",
+            category="requirements",
+            candidate=None,
+            route="developer-retry",
+        )
+        self.assertNotIn("candidate_registrations", decided)
+
+    def test_completed_write_role_report_without_changes_rejected(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        snapshot = developer["snapshot_commit"]
+        report = self._developer_report(
+            developer,
+            snapshot,
+            [],
+            outcome="completed",
+            output="falsely claiming completion",
+            checks_run=self._checks(developer, "pass"),
+        )
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._submit(developer["dispatch_id"], report)
+        self.assertIn("require commit_sha and changed_files", caught.exception.message)
+
+    def test_early_blocked_developer_report_with_mismatched_commit_rejected(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        wrong_commit = "f" * 40
+        report = self._developer_report(
+            developer,
+            wrong_commit,
+            [],
+            outcome="blocked",
+            output="wrong checkout commit reported",
+            blockers="some blocker",
+            checks_run=self._checks(developer, "not_run"),
+            commit_map=[],
+        )
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._submit(developer["dispatch_id"], report)
+        self.assertIn("commit_sha", caught.exception.message)
+
     def test_infrastructure_blocked_review_retries_a_new_review_on_the_same_candidate(
         self,
     ) -> None:
