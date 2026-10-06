@@ -203,6 +203,12 @@ from harness.orchestration.workflow.integration import (
 from harness.orchestration.workflow.pr_refresh import (
     integration_refresh as integration_refresh,
 )
+from harness.orchestration.workflow.resolver import (
+    integration_resolve as integration_resolve,
+)
+from harness.orchestration.workflow.resolver import (
+    resolver_event as resolver_event,
+)
 from harness.orchestration.workflow.qa_integration import (
     clear_qa_lease as clear_qa_lease,
 )

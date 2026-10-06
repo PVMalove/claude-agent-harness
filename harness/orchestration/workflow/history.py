@@ -1013,6 +1013,38 @@ def _validate_carried_section(dispatch: JsonObject) -> None:
         )
 
 
+def _validate_resolver_section(dispatch: JsonObject) -> None:
+    """A conflict-resolver brief carries its complete ``resolver`` section (issue #534); every
+    other brief carries none."""
+    section = dispatch.get("resolver")
+    if dispatch.get("role") != "conflict-resolver":
+        if "resolver" in dispatch:
+            raise CoordinatorError(
+                "only a conflict-resolver brief may carry a resolver section",
+                remedy="the dispatch record's resolver section is malformed -- "
+                + INTERNAL_INVARIANT_REMEDY,
+            )
+        return
+    needed = (
+        "ticket",
+        "sides",
+        "candidate_sha",
+        "target_sha",
+        "scope",
+        "prohibitions",
+        "commit_plan",
+        "checks",
+        "budget",
+        "report_staging_path",
+    )
+    if not isinstance(section, dict) or any(key not in section for key in needed):
+        raise CoordinatorError(
+            "a conflict-resolver brief must carry the complete resolver section",
+            remedy="the dispatch record's resolver section is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+
+
 def _validate_dispatch(
     repo: Path, config: JsonObject, root: Path, batch: JsonObject, dispatch: JsonObject
 ) -> None:
@@ -1046,6 +1078,8 @@ def _validate_dispatch(
     accepted |= {fields - {"commit_plan_divergence"} for fields in set(accepted)}
     # The carried-items section (issue #499) came after that.
     accepted |= {fields - {"carried_items"} for fields in set(accepted)}
+    # The conflict-resolver brief's resolver section (issue #534) is the one field added on top.
+    accepted |= {fields | {"resolver"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError(
             "dispatch record schema mismatch",
@@ -1063,6 +1097,7 @@ def _validate_dispatch(
         )
     if "carried_items" in dispatch:
         _validate_carried_section(dispatch)
+    _validate_resolver_section(dispatch)
     if dispatch.get("state") != "approved":
         raise CoordinatorError(
             "dispatch record is not an approved immutable brief",

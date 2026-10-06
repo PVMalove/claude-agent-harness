@@ -91,7 +91,7 @@ def attest(repo: Path, dispatch: Mapping[str, object], worktree: str) -> dict[st
         )
     role = dispatch.get("role")
     branch = _git(checkout, "branch", "--show-current")
-    if role in {"architect", "developer"}:
+    if role in {"architect", "developer", "conflict-resolver"}:
         expected_branch = dispatch.get("branch")
         if not isinstance(expected_branch, str):
             raise AttestationError(

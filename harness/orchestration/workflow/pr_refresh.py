@@ -185,6 +185,27 @@ def _is_own_rebase(
     )
 
 
+def conflicting_files(worktree: Path, branch: str, tip: str) -> list[str]:
+    """The files a rebase of the issue branch onto ``tip`` would conflict in; empty for a clean
+    rebase.  The trial runs on a detached HEAD and never publishes: the worktree ends on ``branch``
+    at its recorded commit either way."""
+    _git(worktree, "checkout", "-q", "--detach")
+    try:
+        if _run_git(worktree, "rebase", tip).returncode == 0:
+            return []
+        files = [
+            line
+            for line in _git(
+                worktree, "diff", "--name-only", "--diff-filter=U"
+            ).splitlines()
+            if line
+        ]
+        _git(worktree, "rebase", "--abort")
+        return files
+    finally:
+        _git(worktree, "checkout", "-q", branch)
+
+
 def _conflict(worktree: Path, base: JsonObject, branch: str) -> JsonObject:
     """A textual conflict: report the resolver data and leave the worktree exactly as it was."""
     files = [
@@ -234,6 +255,56 @@ def _publish_rewrite(
             f"the remote branch {branch!r} changed or refused the rewrite: {detail or 'unknown error'}",
             remedy="the local branch was left at the recorded candidate; inspect the remote change, then retry the refresh",
         )
+
+
+def write_refresh_record(
+    ledger: LifecycleLedger,
+    repo: Path,
+    record: JsonObject,
+    pair: JsonObject,
+    tip: str,
+    new_candidate: str,
+    resolver: JsonObject,
+) -> JsonObject:
+    """Record that the candidate moved from ``pair`` to ``new_candidate`` on the target ``tip``.
+
+    A clean rebase records ``resolver`` as not invoked; a resolved conflict (issue #534) records
+    the cycles it spent.  Either way the old QA stays historical evidence."""
+    identity = record["identity"]
+    members: JsonObject = {
+        "integration_record_id": record["integration_record_id"],
+        "previous_candidate_sha": pair["candidate_sha"],
+        "previous_target_sha": pair["target_sha"],
+        "new_candidate_sha": new_candidate,
+        "target_sha": tip,
+    }
+    document: JsonObject = {
+        "refresh_id": IntegrationRefreshRecord.derive_id(members),
+        "contract": REFRESH_RECORD_CONTRACT,
+        **members,
+        "ticket": identity["ticket"],
+        "branch": identity["branch"],
+        "source_batch_id": identity["source_batch_id"],
+        "remote": identity["remote"],
+        "integration_ref": identity["integration_ref"],
+        "original_candidate_sha": identity["candidate_sha"],
+        "history": {
+            "previous_commits": _commits_between(
+                repo, pair["target_sha"], pair["candidate_sha"]
+            ),
+            "commits": _commits_between(repo, tip, new_candidate),
+        },
+        "resolver": resolver,
+        "evidence": {
+            "historical_qa": record["source"]["qa"],
+            "confirms_new_candidate": False,
+            "verification_required": ["ci", "local-qa"],
+        },
+        "re_review_required": False,
+        "recorded_at": utils._now(),
+    }
+    _write_record(ledger, IntegrationRefreshRecord.from_dict(document))
+    return document
 
 
 def integration_refresh(args: argparse.Namespace) -> JsonObject:
@@ -295,39 +366,15 @@ def integration_refresh(args: argparse.Namespace) -> JsonObject:
                 _git(worktree, "checkout", "-q", branch)
                 raise
             _git(worktree, "checkout", "-q", "-B", branch, new_candidate)
-        members: JsonObject = {
-            "integration_record_id": record["integration_record_id"],
-            "previous_candidate_sha": pair["candidate_sha"],
-            "previous_target_sha": pair["target_sha"],
-            "new_candidate_sha": new_candidate,
-            "target_sha": tip,
-        }
-        document: JsonObject = {
-            "refresh_id": IntegrationRefreshRecord.derive_id(members),
-            "contract": REFRESH_RECORD_CONTRACT,
-            **members,
-            "ticket": identity["ticket"],
-            "branch": identity["branch"],
-            "source_batch_id": identity["source_batch_id"],
-            "remote": remote,
-            "integration_ref": ref,
-            "original_candidate_sha": identity["candidate_sha"],
-            "history": {
-                "previous_commits": _commits_between(
-                    repo, pair["target_sha"], pair["candidate_sha"]
-                ),
-                "commits": _commits_between(repo, tip, new_candidate),
-            },
-            "resolver": {"invoked": False, "cycles_spent": 0},
-            "evidence": {
-                "historical_qa": record["source"]["qa"],
-                "confirms_new_candidate": False,
-                "verification_required": ["ci", "local-qa"],
-            },
-            "re_review_required": False,
-            "recorded_at": utils._now(),
-        }
-        _write_record(ledger, IntegrationRefreshRecord.from_dict(document))
+        document = write_refresh_record(
+            ledger,
+            repo,
+            record,
+            pair,
+            tip,
+            new_candidate,
+            {"invoked": False, "cycles_spent": 0},
+        )
     return {
         **base,
         "state": "recovered" if published else "rebased",
