@@ -144,6 +144,7 @@ def test_registry_runs_without_crashing_even_with_a_lock_file_present(
         "environment.line_endings",
         "environment.python",
         "environment.uv",
+        "environment.glab",
         "environment.dev_env",
         "environment.output_encoding",
         "environment.codex_sandbox",
@@ -153,6 +154,7 @@ def test_registry_runs_without_crashing_even_with_a_lock_file_present(
         "environment.pytest_temp",
         "environment.symlinks",
         "environment.hook_bash",
+        "tracker.project",
         "tracker.auth",
         "tracker.reachability",
         "tracker.permissions",
@@ -164,3 +166,6 @@ def test_registry_runs_without_crashing_even_with_a_lock_file_present(
         "orchestration.orphaned_worktrees",
         "orchestration.disposable_data",
     }
+    # The project tracker resolver ships inside .harness/health/ and runs from the copied tree.
+    project = next(check for check in report.checks if check.id == "tracker.project")
+    assert project.status == "ok", project.message

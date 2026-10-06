@@ -50,6 +50,11 @@ def build_parser(
             handlers.clean_ledger,
             "Safely remove orphaned dispatch evidence to fix migration errors",
         ),
+        (
+            "release-lock",
+            handlers.release_ledger_lock,
+            "Release a stuck ledger lock after checking its owner; a live owner is refused",
+        ),
     ):
         command = ledger_commands.add_parser(name, help=help_text)
         _common(command)
@@ -193,7 +198,32 @@ def build_parser(
         choices=["developer"],
         help="force a developer retry where the coordinator would re-run the same candidate",
     )
+    decide.add_argument(
+        "--commit-plan-file",
+        help="only with --decision accept on an architect report: a JSON file "
+        '{"commit_plan": [{"id", "summary", "expected_paths", "covers"}, ...]} pinned as the '
+        "batch's developer commit plan",
+    )
+    decide.add_argument(
+        "--findings-file",
+        help="only with --decision accept or override-warning on a developer work report: a "
+        'JSON file {"findings": [{"summary", "files", "expected_evidence"}, ...]} of coordinator '
+        "findings every later code-review brief carries until a review settles them",
+    )
     decide.set_defaults(handler=handlers.decide_batch)
+    carry_over = batch_commands.add_parser(
+        "carry-over",
+        help="carry coordinator findings into review after the developer report was accepted, "
+        "before its code-review dispatch is created",
+    )
+    _common(carry_over)
+    carry_over.add_argument("--batch", required=True)
+    carry_over.add_argument(
+        "--findings-file",
+        required=True,
+        help='a JSON file {"findings": [{"summary", "files", "expected_evidence"}, ...]}',
+    )
+    carry_over.set_defaults(handler=handlers.carry_over_findings)
     attention = batch_commands.add_parser(
         "attention", help="operational-loop attention state of a batch"
     )
@@ -226,6 +256,21 @@ def build_parser(
     packet.add_argument("--batch", required=True)
     packet.add_argument(
         "--dispatch", help="approved or reported dispatch in this batch"
+    )
+    packet.add_argument(
+        "--reason-category",
+        choices=defaults.RETRY_REASON_CATEGORIES,
+        help="preview the retry route as batch decide computes it with this --reason-category; the preview does not check the developer-retry budget",
+    )
+    packet.add_argument(
+        "--retry-role",
+        choices=["developer"],
+        help="preview the retry route as batch decide computes it with --retry-role developer; the preview does not check the developer-retry budget",
+    )
+    packet.add_argument(
+        "--findings-file",
+        help="preview the carry-over route that batch decide --findings-file on the pending "
+        "developer report, or else batch carry-over, records with this findings file",
     )
     packet.set_defaults(handler=handlers.decision_packet)
 
@@ -529,4 +574,11 @@ def build_parser(
     _common(report_submit)
     report_submit.add_argument("--file", required=True)
     report_submit.set_defaults(handler=handlers.submit_report)
+    report_complete = report_commands.add_parser(
+        "complete",
+        help="run the pending steps of a recorded report's policy chain; idempotent",
+    )
+    _common(report_complete)
+    report_complete.add_argument("--dispatch", required=True)
+    report_complete.set_defaults(handler=handlers.complete_report)
     return root

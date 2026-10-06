@@ -12,13 +12,17 @@ from harness.bin import harness as harness_cli
 
 from scripts.clean_room.support import (
     HARNESS,
+    assert_contract_link,
     ROOT,
     capture,
     capture_json,
+    check_technical_english,
     count_skill_files,
+    fail_json,
     fill_agents,
     find_check,
     run_fails,
+    run_health,
     run_ok,
 )
 
@@ -49,11 +53,171 @@ def run(ctx: SimpleNamespace) -> None:
             "main",
         ]
     )
+    check_technical_english(foundation)
+    # Model an older standard installation with project-owned entry points.
+    original_entries = {
+        name: (foundation / name).read_bytes() for name in ("AGENTS.md", "CLAUDE.md")
+    }
+    old_agents = "# Local instructions\n\nKeep the project glossary in Russian.\n"
+    old_claude = "# Local Claude instructions\n\nRun the focused checks first.\n"
+    (foundation / "AGENTS.md").write_text(old_agents, encoding="utf-8")
+    (foundation / "CLAUDE.md").write_text(old_claude, encoding="utf-8")
+    contract = foundation / ".harness/docs/technical-english.md"
+    contract.unlink()
+    old_lock_path = foundation / ".harness/harness.lock"
+    old_lock = json.loads(old_lock_path.read_text(encoding="utf-8"))
+    old_lock["files"].pop(".harness/docs/technical-english.md")
+    old_lock_path.write_text(json.dumps(old_lock), encoding="utf-8")
+    update_output = capture(HARNESS + ["update", str(foundation)])
+    if (
+        contract.read_bytes()
+        != (ROOT / "harness/docs/technical-english.md").read_bytes()
+    ):
+        sys.exit("standard update did not deliver the managed contract")
+    for name, original in (("AGENTS.md", old_agents), ("CLAUDE.md", old_claude)):
+        if (foundation / name).read_text(encoding="utf-8") != original:
+            sys.exit("update changed project-owned instructions before approval")
+        if f"--- a/{name}" not in update_output or f"+++ b/{name}" not in update_output:
+            sys.exit("update did not show a reviewable entry-point addition")
+    diff_output = capture(HARNESS + ["diff", str(foundation)])
+    patch = diff_output[diff_output.index("diff --git ") :]
+    if patch != update_output[update_output.index("diff --git ") :]:
+        sys.exit("diff and update proposed different seed adaptations")
+    # Approval is an ordinary edit/patch after review; the CLI never applies seeds.
+    subprocess.run(
+        ["git", "apply", "-"], input=patch, text=True, cwd=foundation, check=True
+    )
+    check_technical_english(foundation)
+    approved = {
+        name: (foundation / name).read_bytes() for name in ("AGENTS.md", "CLAUDE.md")
+    }
+    for name, original in (("AGENTS.md", old_agents), ("CLAUDE.md", old_claude)):
+        if not approved[name].startswith(original.encode("utf-8")):
+            sys.exit("approved additions lost local instructions")
+    repeated = capture(HARNESS + ["update", str(foundation)])
+    repeated += capture(HARNESS + ["diff", str(foundation)])
+    if "diff --git " in repeated:
+        sys.exit("repeat update proposed an already connected contract link")
+    if any(
+        (foundation / name).read_bytes() != content
+        for name, content in approved.items()
+    ):
+        sys.exit("repeat update changed approved project instructions")
+    check_technical_english(foundation)
+
+    # An existing import in either direction already reaches a mandatory source.
+    (foundation / "AGENTS.md").write_text(
+        old_agents + "\n@CLAUDE.md\n", encoding="utf-8"
+    )
+    if capture_json(HARNESS + ["diff", str(foundation), "--json"])[
+        "seed_link_proposals"
+    ]:
+        sys.exit("diff proposed a duplicate for an existing entry-point transition")
+    # A passive reference needs an explicit obligation, without a second link.
+    passive = (
+        old_claude + "\nSee [Technical English](.harness/docs/technical-english.md).\n"
+    )
+    (foundation / "CLAUDE.md").write_text(passive, encoding="utf-8")
+    proposal_output = capture(HARNESS + ["update", str(foundation)])
+    if "no recognized mandatory reading instruction" not in proposal_output:
+        sys.exit("ambiguous reference did not explain the proposed obligation")
+    patch = proposal_output[proposal_output.index("diff --git ") :]
+    if "technical-english.md" in "\n".join(
+        line
+        for line in patch.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    ):
+        sys.exit("passive reference proposal duplicated an existing contract link")
+    subprocess.run(
+        ["git", "apply", "-"], input=patch, text=True, cwd=foundation, check=True
+    )
+    if capture_json(HARNESS + ["diff", str(foundation), "--json"])[
+        "seed_link_proposals"
+    ]:
+        sys.exit("approved passive-reference obligation was proposed again")
+
+    # A valid Markdown title does not disconnect an existing mandatory link.
+    for title in ('"Shared contract"', "'Shared contract'", "(Shared contract)"):
+        titled = (
+            old_agents + "\nBefore the first English handoff, agents must read "
+            f"[Technical English](.harness/docs/technical-english.md {title}).\n"
+        )
+        (foundation / "AGENTS.md").write_text(titled, encoding="utf-8")
+        (foundation / "CLAUDE.md").write_text(
+            old_claude + "\n@AGENTS.md\n", encoding="utf-8"
+        )
+        titled_entries = {
+            name: (foundation / name).read_bytes()
+            for name in ("AGENTS.md", "CLAUDE.md")
+        }
+        for _ in range(2):
+            if capture_json(HARNESS + ["diff", str(foundation), "--json"])[
+                "seed_link_proposals"
+            ]:
+                sys.exit(
+                    f"diff proposed a duplicate for a mandatory link with title {title}"
+                )
+            if "diff --git " in capture(HARNESS + ["update", str(foundation)]):
+                sys.exit(
+                    f"update proposed a duplicate for a mandatory link with title {title}"
+                )
+            if any(
+                (foundation / name).read_bytes() != content
+                for name, content in titled_entries.items()
+            ):
+                sys.exit(
+                    "repeated update changed entry points with a titled contract link"
+                )
+
+    # A fenced example cannot supply the obligation for a passive reference.
+    for fence in ("```", "~~~"):
+        fenced = (
+            old_agents
+            + "\nSee [Technical English](.harness/docs/technical-english.md).\n\n"
+            + fence
+            + "\nBefore the first English handoff, agents must read the contract linked above.\n"
+            + fence
+            + "\n"
+        )
+        (foundation / "AGENTS.md").write_text(fenced, encoding="utf-8")
+        before = {
+            name: (foundation / name).read_bytes()
+            for name in ("AGENTS.md", "CLAUDE.md")
+        }
+        proposals = capture_json(HARNESS + ["diff", str(foundation), "--json"])[
+            "seed_link_proposals"
+        ]
+        if [item["path"] for item in proposals] != ["AGENTS.md"]:
+            sys.exit("fenced example suppressed the required reading obligation")
+        output = capture(HARNESS + ["update", str(foundation)])
+        if "no recognized mandatory reading instruction" not in output:
+            sys.exit("update treated a fenced example as an active reading obligation")
+        patch = output[output.index("diff --git ") :]
+        if patch != proposals[0]["diff"]:
+            sys.exit("diff and update disagree on the missing non-fenced obligation")
+        if any(
+            (foundation / name).read_bytes() != content
+            for name, content in before.items()
+        ):
+            sys.exit("update changed the fenced example before approval")
+        subprocess.run(
+            ["git", "apply", "-"], input=patch, text=True, cwd=foundation, check=True
+        )
+        if not (foundation / "AGENTS.md").read_bytes().startswith(before["AGENTS.md"]):
+            sys.exit("approved obligation changed the existing fenced example")
+        if capture_json(HARNESS + ["diff", str(foundation), "--json"])[
+            "seed_link_proposals"
+        ] or "diff --git " in capture(HARNESS + ["update", str(foundation)]):
+            sys.exit("approved non-fenced obligation was proposed again")
+
+    for name, content in original_entries.items():
+        (foundation / name).write_bytes(content)
+
     run_ok(HARNESS + ["diff", str(foundation)])
     if not run_fails(HARNESS + ["health", str(foundation)], quiet_all=True):
         sys.exit("unresolved AGENTS.md unexpectedly passed health")
     fill_agents(foundation)
-    run_ok(HARNESS + ["health", str(foundation)])
+    run_health(foundation)
     if count_skill_files(foundation / ".harness" / "skills") != 5:
         sys.exit("expected 5 skills in foundation")
     if "- Type: content" not in (foundation / "AGENTS.md").read_text(encoding="utf-8"):
@@ -77,9 +241,10 @@ def run(ctx: SimpleNamespace) -> None:
         ]
     )
     fill_agents(project)
+    check_technical_english(project)
 
     run_ok(HARNESS + ["diff", str(project)])
-    run_ok(HARNESS + ["health", str(project)])
+    run_health(project)
 
     if count_skill_files(project / ".harness" / "skills") != 25:
         sys.exit("expected 25 skills in project")
@@ -112,7 +277,7 @@ def run(ctx: SimpleNamespace) -> None:
     if not run_fails(HARNESS + ["update", str(project)], quiet_all=True):
         sys.exit("non-forced update unexpectedly overwrote a local edit")
     run_ok(HARNESS + ["update", str(project), "--force"], quiet=True)
-    run_ok(HARNESS + ["health", str(project)])
+    run_health(project)
 
     (project / ".mcp.json").write_text('{"mcpServers": {}}\n', encoding="utf-8")
     if not run_fails(HARNESS + ["health", str(project)], quiet_all=True):
@@ -136,7 +301,7 @@ def run(ctx: SimpleNamespace) -> None:
     (project / ".harness" / "integrations.json").write_text(
         json.dumps(integrations_payload, indent=2) + "\n", encoding="utf-8"
     )
-    run_ok(HARNESS + ["health", str(project)])
+    run_health(project)
 
     # Selecting a capability together with a second one that overrides the same names by a
     # different source path must fail loudly (docs/adr/0001) instead of picking one silently.
@@ -208,7 +373,69 @@ def run(ctx: SimpleNamespace) -> None:
         if (installed_docs / source.name).read_bytes() != source.read_bytes():
             sys.exit(f"installed guide differs from project template: {source.name}")
     fill_agents(pv_project)
-    run_ok(HARNESS + ["health", str(pv_project)])
+    check_technical_english(pv_project)
+    # Existing root entry points are already connected; only the older agent seed
+    # needs adaptation. A missing final newline must survive the reviewed patch.
+    for name in ("code-review-spec.md", "code-review-standards.md"):
+        entry = pv_project / ".claude/agents" / name
+        entry.write_text(
+            entry.read_text(encoding="utf-8") + "\n@../../AGENTS.md\n", encoding="utf-8"
+        )
+    agent = pv_project / ".claude/agents/pr-composer.md"
+    original_agent = (
+        agent.read_bytes() + b"\nLocal review instructions without final newline"
+    )
+    agent.write_bytes(original_agent)
+    untouched = pv_project / "docs/local-agent-notes.md"
+    untouched.write_text(
+        "Local notes are not a harness entry point.\n", encoding="utf-8"
+    )
+    seed_snapshot = {
+        path: path.read_bytes()
+        for path in (
+            pv_project / "AGENTS.md",
+            pv_project / "CLAUDE.md",
+            agent,
+            untouched,
+        )
+    }
+    output = capture(HARNESS + ["update", str(pv_project)])
+    if any(path.read_bytes() != content for path, content in seed_snapshot.items()):
+        sys.exit("pvmalove update modified an unapproved seed")
+    proposal = capture_json(HARNESS + ["diff", str(pv_project), "--json"])[
+        "seed_link_proposals"
+    ]
+    if [item["path"] for item in proposal] != [".claude/agents/pr-composer.md"]:
+        sys.exit(
+            "update proposed links for already connected or unrelated entry points"
+        )
+    patch = output[output.index("diff --git ") :]
+    if patch != proposal[0]["diff"]:
+        sys.exit("JSON diff differs from the visible update proposal")
+    subprocess.run(
+        ["git", "apply", "-"], input=patch, text=True, cwd=pv_project, check=True
+    )
+    assert_contract_link(
+        agent, pv_project / ".harness/docs/technical-english.md", "installed agent seed"
+    )
+    if not agent.read_bytes().startswith(original_agent):
+        sys.exit("approved agent addition lost local instructions")
+    approved_agent = agent.read_bytes()
+    if "diff --git " in capture(HARNESS + ["update", str(pv_project)]):
+        sys.exit("repeat pvmalove update proposed duplicate links")
+    if capture_json(HARNESS + ["diff", str(pv_project), "--json"])[
+        "seed_link_proposals"
+    ]:
+        sys.exit("repeat JSON diff proposed duplicate links")
+    if (
+        agent.read_bytes() != approved_agent
+        or untouched.read_bytes() != seed_snapshot[untouched]
+    ):
+        sys.exit("repeat pvmalove update changed local instructions")
+    # Keep subsequent installer baseline checks independent of approved seed edits.
+    agent.write_bytes(original_agent)
+
+    run_health(pv_project)
     repo_map_health = find_check(
         capture_json(HARNESS + ["health", str(pv_project), "--json"]), "repo_map.tier"
     )
@@ -308,7 +535,9 @@ def run(ctx: SimpleNamespace) -> None:
     run_ok(HARNESS + ["update", str(pv_project), "--force"])
     if retired_skill_dir.exists():
         sys.exit("update did not remove an empty retired skill directory")
-    run_ok(HARNESS + ["health", str(pv_project)])
+    run_health(pv_project)
+    check_tracker_field(pv_project)
+    check_tracker_from_origin(test_root)
     if not filecmp.cmp(
         ROOT / "skills" / "first-party" / "pvmalove" / "to-spec" / "SKILL.md",
         pv_project / ".harness" / "skills" / "to-spec" / "SKILL.md",
@@ -443,3 +672,118 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("pytest summary wrapper did not save a sanitized failure log")
     ctx.pv_project = pv_project
     ctx.target_home = target_home
+
+
+def check_tracker_field(pv_project) -> None:
+    """Поле tracker в установленном проекте (docs/adr/0011): discovery обоих runtime и health.
+
+    Проект без origin получает при установке project.json без поля tracker. С добавленным полем
+    discovery-ссылки (`.agents/skills` для Codex и `.claude/skills`), `AGENTS.md`, реестр навыков и
+    `files.project_json` остаются ok, а `tracker.project` берёт трекер из поля; неизвестный ключ
+    внутри tracker роняет health. Исходные байты project.json восстанавливаются: по нему дальше
+    работают сценарии hooks.
+    """
+    project_json = pv_project / ".harness" / "project.json"
+    original = project_json.read_bytes()
+    data = json.loads(original)
+    if "tracker" in data:
+        sys.exit("install wrote a tracker field into a project without origin")
+    if not (pv_project / ".harness" / "health" / "project_tracker.py").is_file():
+        sys.exit(
+            "pvmalove-suite health resource is missing the project tracker resolver"
+        )
+    if not (pv_project / ".agents" / "skills" / "qa-gate" / "SKILL.md").is_file():
+        sys.exit("Codex discovery path .agents/skills does not expose installed skills")
+    data["tracker"] = {
+        "type": "gitlab",
+        "host": "git.example.test:4443",
+        "project": "group/sub/project",
+    }
+    project_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    report = capture_json(HARNESS + ["health", str(pv_project), "--json"])
+    for check_id in (
+        "files.project_json",
+        "files.discovery_links",
+        "files.agents_md",
+        "files.skill_registry",
+    ):
+        if find_check(report, check_id)["status"] != "ok":
+            sys.exit(f"health with a tracker field did not keep {check_id} ok")
+    tracker = find_check(report, "tracker.project")
+    if tracker["status"] != "ok" or tracker["message"] != (
+        "трекер проекта: gitlab, хост git.example.test:4443, проект group/sub/project "
+        "(источник: поле tracker)"
+    ):
+        sys.exit("health did not resolve the project tracker from the tracker field")
+    data["tracker"]["unexpected"] = True
+    project_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    invalid = find_check(
+        fail_json(HARNESS + ["health", str(pv_project), "--json"]), "files.project_json"
+    )
+    if (
+        invalid["status"] != "fail"
+        or "tracker has unknown field(s): unexpected" not in invalid["message"]
+    ):
+        sys.exit("health accepted an unknown key inside the tracker field")
+    project_json.write_bytes(original)
+    run_health(pv_project)
+
+
+def check_tracker_from_origin(test_root) -> None:
+    """Поле tracker из GitLab- и GitHub-origin при установке (docs/adr/0011).
+
+    Install без терминала и флагов трекера выводит тип, хост с портом и проект с подгруппами из
+    origin; userinfo в project.json не попадает, `files.project_json` ok, а `tracker.project` берёт
+    трекер из записанного поля.
+    """
+    remotes = {
+        "gitlab": (
+            "https://ci-user@gitlab.example.test:4443/group/sub/project.git",
+            {
+                "type": "gitlab",
+                "host": "gitlab.example.test:4443",
+                "project": "group/sub/project",
+            },
+        ),
+        "github": (
+            "git@github.com:acme/widgets.git",
+            {"type": "github", "host": "github.com", "project": "acme/widgets"},
+        ),
+    }
+    for name, (remote, expected) in remotes.items():
+        project = test_root / f"tracker_{name}_project"
+        project.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", remote], cwd=project, check=True
+        )
+        run_ok(
+            HARNESS
+            + [
+                "init",
+                str(project),
+                "--capability",
+                "pvmalove-suite",
+                "--language",
+                "ru",
+                "--pr-base-branch",
+                "main",
+                "--branch-pattern",
+                "^feature/issue-[0-9]+-.+",
+                "--qa-gate-command",
+                "echo test",
+            ],
+            quiet=True,
+        )
+        text = (project / ".harness" / "project.json").read_text(encoding="utf-8")
+        if json.loads(text).get("tracker") != expected or "ci-user" in text:
+            sys.exit(f"install did not write the {name} tracker derived from origin")
+        fill_agents(project)
+        report = capture_json(HARNESS + ["health", str(project), "--json"])
+        if find_check(report, "files.project_json")["status"] != "ok":
+            sys.exit(f"the {name} tracker field written by install failed health")
+        tracker = find_check(report, "tracker.project")
+        if tracker["status"] != "ok" or not tracker["message"].endswith(
+            "(источник: поле tracker)"
+        ):
+            sys.exit(f"health did not resolve the {name} tracker from the field")

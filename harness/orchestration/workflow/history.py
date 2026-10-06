@@ -35,6 +35,10 @@ from harness.orchestration.core.config import (
 from harness.orchestration.core.constants import (
     ATTENTION_EVENT_KINDS,
     ATTENTION_STATE_FIELDS,
+    CARRIED_ITEM_FIELDS,
+    CARRIED_ITEM_RECORD_FIELDS,
+    CARRIED_ITEM_SOURCES,
+    CHECKPOINT_NO_CONTEXT_PACKAGE,
     CONTEXT_PACKAGE_FIELDS,
     V2_CONTEXT_PACKAGE_FIELDS,
     CONTEXT_PRESSURE_FIELDS,
@@ -49,6 +53,7 @@ from harness.orchestration.core.constants import (
     PLAN_FIELDS,
     POLICY_BRIEF_FIELDS,
     PRE_APPROVAL_LEGACY_PLAN_FIELDS,
+    RECOVERY_ROUTES,
     RISK_ASSESSMENT_FIELDS,
 )
 from harness.orchestration.core.git_utils import (
@@ -66,6 +71,7 @@ from harness.orchestration.core.workspace import (
     _validate_branch,
     _validate_harness_runtime_snapshot,
 )
+from harness.orchestration.ledger import JsonValue
 from harness.orchestration.ledger.ledger_ops import (
     _load_checkpoint,
     _load_context_package,
@@ -449,6 +455,59 @@ def _retry_pinned_candidate(repo: Path, root: Path, batch: JsonObject) -> str | 
     return _candidate_commit(repo, report["commit_sha"])
 
 
+def _retry_handoff(
+    root: Path, batch: JsonObject, package: JsonObject | None
+) -> JsonObject | None:
+    """The compact handoff a pending developer retry starts from, or ``None`` for any other dispatch.
+
+    Shaped like a checkpoint, not a session: the last developer work report (accepted or returned),
+    the retry decision with its review findings, the commit plan that developer worked against and
+    the Context Package ID. No chat history and no logs of failed attempts reach the retry."""
+    if batch.get("next_action") != "developer-retry":
+        return None
+    entries = batch.get("dispatches", [])
+    retried = next(
+        (item for item in reversed(entries) if isinstance(item.get("decision"), dict)),
+        None,
+    )
+    if retried is None or retried["decision"].get("decision") != "retry":
+        return None
+    developer_report: JsonObject | None = None
+    commit_plan: JsonValue = None
+    for item in reversed(entries):
+        if item.get("role") != "developer" or not isinstance(item.get("report"), str):
+            continue
+        developer_brief = _load_dispatch(root, item["dispatch_id"])
+        if developer_brief.get("purpose", "work") == "work":
+            developer_report = _pending_report(root, batch, item)
+            commit_plan = developer_brief.get("commit_plan")
+            break
+    review = _pending_report(root, batch, retried).get("review")
+    findings = [
+        {"axis": axis, **finding}
+        for axis in ("standards", "spec")
+        if isinstance(review, dict) and isinstance(review.get(axis), dict)
+        for finding in review[axis].get("findings", [])
+    ]
+    routing = retried["decision"].get("routing") or {}
+    return {
+        "context_package_id": package["context_package_id"]
+        if package
+        else CHECKPOINT_NO_CONTEXT_PACKAGE,
+        "commit_plan": commit_plan,
+        "developer_report": developer_report,
+        "retry_decision": {
+            "dispatch_id": retried["dispatch_id"],
+            "role": retried.get("role"),
+            "route": routing.get("route"),
+            "reason_category": routing.get("reason_category"),
+            "rationale": routing.get("rationale"),
+            "note": retried["decision"].get("note"),
+            "findings": findings,
+        },
+    }
+
+
 def _current_developer_candidate(
     repo: Path, root: Path, batch: JsonObject
 ) -> str | None:
@@ -525,9 +584,39 @@ def _settled(entry: JsonObject) -> bool:
     return entry.get("state") == "reported" and isinstance(entry.get("decision"), dict)
 
 
+def _require_route(value: object, *, recorded: bool = False) -> str:
+    """Return ``value`` when it is one of ``RECOVERY_ROUTES``; refuse anything else.
+
+    ``recorded`` marks a route read back from a batch record rather than one about to be written.
+    """
+    if isinstance(value, str) and value in RECOVERY_ROUTES:
+        return value
+    allowed = ", ".join(RECOVERY_ROUTES)
+    if recorded:
+        raise CoordinatorError(
+            f"batch routing record carries an unknown recovery route {value!r}",
+            remedy=f"a recorded route is one of: {allowed}; restore routing.route to the value "
+            "the coordinator recorded for that decision -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    raise CoordinatorError(
+        f"the coordinator computed an unknown recovery route {value!r}",
+        remedy=f"a route must be one of: {allowed} -- " + INTERNAL_INVARIANT_REMEDY,
+    )
+
+
 def _validate_operational_batch_fields(batch: JsonObject) -> None:
     """Shape and integrity of the batch-level records issue #250 added. Every field is optional, so a
     batch written before them stays valid; one that carries them must carry them well-formed."""
+    decided = [
+        entry.get("decision")
+        for entry in batch.get("dispatches", [])
+        if isinstance(entry, dict)
+    ]
+    for decision in [*decided, *batch.get("coordinator_decisions", [])]:
+        routing = decision.get("routing") if isinstance(decision, dict) else None
+        if isinstance(routing, dict) and "route" in routing:
+            _require_route(routing["route"], recorded=True)
     for entry in batch.get("context_pressure", []):
         if not isinstance(entry, dict) or set(entry) != CONTEXT_PRESSURE_FIELDS:
             raise CoordinatorError(
@@ -569,6 +658,23 @@ def _validate_operational_batch_fields(batch: JsonObject) -> None:
             raise CoordinatorError(
                 "batch context_pressure level or source does not match its record",
                 remedy="the context_pressure level or source is inconsistent -- "
+                + INTERNAL_INVARIANT_REMEDY,
+            )
+    for entry in batch.get("carried_items", []):
+        if not isinstance(entry, dict) or set(entry) != CARRIED_ITEM_RECORD_FIELDS:
+            raise CoordinatorError(
+                "batch carried_items record schema mismatch",
+                remedy="the batch carried_items record is malformed -- "
+                + INTERNAL_INVARIANT_REMEDY,
+            )
+        body = {key: value for key, value in entry.items() if key != "record_sha256"}
+        if (
+            entry["record_sha256"]
+            != hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest()
+        ):
+            raise CoordinatorError(
+                "batch carried_items record failed immutable integrity check",
+                remedy="a carried_items record was modified after its hash was recorded -- "
                 + INTERNAL_INVARIANT_REMEDY,
             )
     if "needs_attention" in batch:
@@ -767,9 +873,9 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
     """The brief's transition, digest, approval, idempotency key and policy agree with one another
     and with the brief's own fields; the brief hash already proves none of them was edited alone."""
     transition = dispatch["transition"]
-    if not isinstance(transition, dict) or set(transition) != set(
-        operational_guards.TRANSITION_FIELDS
-    ):
+    if not isinstance(transition, dict) or set(transition) - set(
+        operational_guards.OPTIONAL_TRANSITION_FIELDS
+    ) != set(operational_guards.TRANSITION_FIELDS):
         raise CoordinatorError(
             "dispatch transition schema mismatch",
             remedy="the dispatch transition is malformed -- "
@@ -800,6 +906,18 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
         raise CoordinatorError(
             "dispatch transition does not match its brief",
             remedy="the dispatch transition diverged from its brief -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    # A non-empty carried-items section is part of what was approved (issue #499); an empty or
+    # absent one binds nothing, so every earlier transition keeps its digest.
+    carried = dispatch.get("carried_items")
+    expected_carried = (
+        operational_guards.carried_items_digest(carried) if carried else None
+    )
+    if transition.get("carried_items_sha256") != expected_carried:
+        raise CoordinatorError(
+            "dispatch transition does not match its carried items",
+            remedy="the dispatch transition diverged from its carried items -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
     if dispatch["retry_idempotency_key"] != _transition_idempotency_key(
@@ -839,6 +957,41 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
         )
 
 
+def _validate_carried_section(dispatch: JsonObject) -> None:
+    """A brief's carried-items section: one list of items per known source kind, only on a
+    developer or code-review work brief, each item id carried once (issue #499)."""
+    section = dispatch["carried_items"]
+    items = (
+        [item for kind in section.values() if isinstance(kind, list) for item in kind]
+        if isinstance(section, dict)
+        else []
+    )
+    ids = [item.get("item_id") for item in items if isinstance(item, dict)]
+    if (
+        not isinstance(section, dict)
+        or not set(section) <= set(CARRIED_ITEM_SOURCES)
+        or any(not isinstance(kind, list) or not kind for kind in section.values())
+        or any(
+            not isinstance(item, dict) or set(item) != CARRIED_ITEM_FIELDS
+            for item in items
+        )
+        or len(set(ids)) != len(items)
+        or (
+            section
+            and (
+                dispatch.get("role") not in {"developer", "code-review"}
+                or dispatch.get("purpose") != "work"
+            )
+        )
+    ):
+        raise CoordinatorError(
+            "dispatch carried_items must map known source kinds to their items, on a developer "
+            "or code-review work brief only",
+            remedy="the dispatch record's carried_items is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+
+
 def _validate_dispatch(
     repo: Path, config: JsonObject, root: Path, batch: JsonObject, dispatch: JsonObject
 ) -> None:
@@ -868,12 +1021,27 @@ def _validate_dispatch(
     }
     # The transition-bound approval contract (issue #250) was added as one group as well.
     accepted |= {fields - POLICY_BRIEF_FIELDS for fields in set(accepted)}
+    # The code-review brief's commit-plan divergence (issue #478) came later than all of them.
+    accepted |= {fields - {"commit_plan_divergence"} for fields in set(accepted)}
+    # The carried-items section (issue #499) came after that.
+    accepted |= {fields - {"carried_items"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError(
             "dispatch record schema mismatch",
             remedy="the dispatch record schema is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
+    divergence = dispatch.get("commit_plan_divergence")
+    if divergence is not None and (
+        dispatch.get("role") != "code-review" or not isinstance(divergence, dict)
+    ):
+        raise CoordinatorError(
+            "dispatch commit_plan_divergence must be null or, on a code-review brief, an object",
+            remedy="the dispatch record's commit_plan_divergence is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    if "carried_items" in dispatch:
+        _validate_carried_section(dispatch)
     if dispatch.get("state") != "approved":
         raise CoordinatorError(
             "dispatch record is not an approved immutable brief",

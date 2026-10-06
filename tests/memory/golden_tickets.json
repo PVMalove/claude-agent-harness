@@ -15,7 +15,7 @@
         "relevance": "Контракт полного и короткого маршрутов реализации, допуска fast и независимых QA/review гейтов."
       },
       "CONTEXT.md": {
-        "excerpt": "**Проектный конфиг** (`.harness/project.json`):\nИсточник проектных значений для `qa-gate`, `pr-composer`, `code-review`, `to-guide` и branch\nhooks: `language`, `base_branch`, `branch_pattern` и `qa_gate_commands`; необязательны `$schema`,\n`story_points` и `shell` (какой шелл `qa-gate` использует для `qa_gate_commands` — `bash` по\nумолчанию или `powershell` для native-Windows checkout). Форма описана в\n`harness/project/project.schema.json`, а `harness health` применяет тот же строгий контракт и\nотклоняет неизвестные поля.\n_Avoid_: конфигурация проекта, settings.",
+        "excerpt": "**Проектный конфиг** (`.harness/project.json`):\nИсточник проектных значений для `qa-gate`, `pr-composer`, `code-review`, `to-guide` и branch\nhooks: `language`, `base_branch`, `branch_pattern` и `qa_gate_commands`; необязательны `$schema`,\n`story_points`, `shell` (какой шелл `qa-gate` использует для `qa_gate_commands` — `bash` по\nумолчанию или `powershell` для native-Windows checkout) и `tracker` (явный трекер проекта:\n`type`, `host`, `project`). Форма описана в\n`harness/project/project.schema.json`, а `harness health` применяет тот же строгий контракт и\nотклоняет неизвестные поля.\n_Avoid_: конфигурация проекта, settings.",
         "relevance": "Проектный конфиг содержит story_points и читается интерактивными workflow-скиллами; это место настройки шкалы и порогов."
       }
     }

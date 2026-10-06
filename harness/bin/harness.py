@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 # Captured before the forced UTF-8 below so `harness health` can still warn about the console's
@@ -55,6 +57,7 @@ from harness.memory import (
     sync as memory_sync,
 )
 from harness.storage import storage_path
+from harness.seed_links import propose_contract_links, print_contract_proposals
 from harness.health import registry as health_registry
 from harness.health import render as health_render
 from harness.health import report_json as health_report_json
@@ -65,6 +68,13 @@ from harness.health.project_files import (
     INTEGRATIONS_REL,
     LOCK_REL,
     REGISTRY_REL,
+    TRACKER_FIELDS,
+    TRACKER_HOST_PATTERN,
+    TRACKER_HOST_RULE,
+    TRACKER_HOSTED_TYPES,
+    TRACKER_PROJECT_PATTERN,
+    TRACKER_PROJECT_RULE,
+    TRACKER_TYPES,
     digest,
     fail,
     file_digest,
@@ -74,7 +84,9 @@ from harness.health.project_files import (
     project_skill_files,
     public_skill_names,
     skill_inventory,
+    tracker_field_problems,
 )
+from harness.health.project_tracker import resolve_project_tracker
 
 CAPABILITIES_FILE = PACKAGE / "CAPABILITIES.json"
 VERSION_FILE = PACKAGE / "VERSION"
@@ -271,7 +283,13 @@ def _packageable(path: Path) -> bool:
 
 def package_files(names: list[str]) -> dict[str, bytes]:
     """Сформировать словарь относительных целевых путей и байтового содержимого файлов пакета."""
-    result: dict[str, bytes] = {}
+    # Общий контракт технического английского ставится в любую установку, вне каталога capability:
+    # он не зависит от optional backend-orchestration.
+    result: dict[str, bytes] = {
+        ".harness/docs/technical-english.md": (
+            PACKAGE / "docs/technical-english.md"
+        ).read_bytes(),
+    }
     for source in selected_skills(names):
         for path in sorted(source.rglob("*")):
             if not _packageable(path):
@@ -579,15 +597,87 @@ def missing_runtime_gitignore_lines(content: str) -> list[str]:
     ]
 
 
+def _stdin_is_terminal() -> bool:
+    """Определить, подключён ли stdin к терминалу пользователя.
+
+    На Windows `isatty()` истинен для любого символьного устройства, включая NUL, поэтому
+    терминалом считается только дескриптор консоли.
+    """
+    if not sys.stdin.isatty():
+        return False
+    if sys.platform != "win32":
+        return True
+    import ctypes
+    import msvcrt
+
+    mode = ctypes.c_ulong()
+    handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+    return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+
+
 def _prompt(label: str, default: str) -> str:
     """Запросить строковое значение у пользователя с дефолтным вариантом."""
-    if not sys.stdin.isatty():
+    if not _stdin_is_terminal():
         return default
     try:
         answer = input(f"{label} [{default}]: ").strip()
     except EOFError:
         return default
     return answer or default
+
+
+def _seed_tracker_field(repo: Path, args: argparse.Namespace) -> str:
+    """Собрать запись `tracker` нового project.json для шаблона; "" — поле не пишется.
+
+    Флаги --tracker-* важнее всего; в терминале остальное спрашивается с дефолтами из origin
+    (docs/adr/0011). Ответ или флаг — явный выбор, он пишется даже как `local`; без них пишется
+    только полностью выведенный трекер GitHub/GitLab.
+    """
+    origin = resolve_project_tracker(repo).from_origin
+    flags = {name: getattr(args, f"tracker_{name}", None) for name in TRACKER_FIELDS}
+    explicit = _stdin_is_terminal() or any(flags.values())
+    tracker_type = flags["type"] or _prompt(
+        "tracker type (github/gitlab/local)", origin.type
+    )
+    field = {"type": tracker_type}
+    for name, label in (
+        ("host", "tracker host[:port]"),
+        ("project", "tracker project (group/sub/project)"),
+    ):
+        value = flags[name]
+        if value is None and tracker_type in TRACKER_HOSTED_TYPES:
+            # The host and project of origin are no default for a tracker of another hosted type.
+            default = (
+                getattr(origin, name)
+                if origin.type in (tracker_type, "local")
+                else None
+            )
+            value = _prompt(label, default or "")
+        if value:
+            field[name] = value
+    problems = tracker_field_problems(field)
+    if problems:
+        # The problems never quote a value: a pasted URL can carry credentials.
+        if explicit:
+            print(
+                f"harness: tracker field left out: {'; '.join(problems)}",
+                file=sys.stderr,
+            )
+        return ""
+    if tracker_type not in TRACKER_HOSTED_TYPES and not explicit:
+        return ""
+    return '\n  "tracker": ' + json.dumps(field, ensure_ascii=False) + ","
+
+
+def _matching_arg(pattern: str, rule: str) -> Callable[[str], str]:
+    """Создать argparse-тип, принимающий значение по `pattern`; ошибка не цитирует значение."""
+
+    def parse(value: str) -> str:
+        if not re.fullmatch(pattern, value):
+            raise argparse.ArgumentTypeError(rule)
+        return value
+
+    return parse
 
 
 def _copy_if_absent(
@@ -726,7 +816,7 @@ def scaffold_pvmalove_extras(
             "branch_pattern (regex)", "^feature/issue-[0-9]+-.+"
         )
         commands = list(getattr(args, "qa_gate_command", None) or [])
-        if not commands and sys.stdin.isatty():
+        if not commands and _stdin_is_terminal():
             print(
                 "qa_gate_commands (по одной команде на строку, пустая строка — конец):"
             )
@@ -735,6 +825,7 @@ def scaffold_pvmalove_extras(
                 if not line:
                     break
                 commands.append(line)
+        tracker_field = _seed_tracker_field(repo, args)
         template = (PROJECT_TEMPLATE_DIR / "project.json.tmpl").read_text(
             encoding="utf-8"
         )
@@ -745,6 +836,7 @@ def scaffold_pvmalove_extras(
                 "PR_BASE_BRANCH": base_branch,
                 "BRANCH_PATTERN": branch_pattern,
                 "QA_GATE_COMMANDS": json.dumps(commands, ensure_ascii=False),
+                "TRACKER_FIELD": tracker_field,
             },
         )
         project_json.parent.mkdir(parents=True, exist_ok=True)
@@ -850,10 +942,13 @@ def cmd_diff(args: argparse.Namespace) -> int:
     """Сравнить текущее состояние проекта с эталонным снимком и вывести различия."""
     repo = Path(args.repo).expanduser().resolve()
     result = snapshot_diff(repo, args.capability)
+    proposals = propose_contract_links(repo, PROJECT_TEMPLATE_DIR)
     if args.json:
+        result["seed_link_proposals"] = proposals
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print_diff(result)
+        print_contract_proposals(proposals)
     return 0 if result["state"] == "clean" else 1
 
 
@@ -944,6 +1039,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         )
     print(f"updated agent-harness to {version()} in {repo}")
     print(f"managed files: {len(written)}")
+    print_contract_proposals(propose_contract_links(repo, PROJECT_TEMPLATE_DIR))
     return 0
 
 
@@ -1065,6 +1161,24 @@ def _add_pvmalove_args(sub: argparse.ArgumentParser) -> None:
         action="append",
         default=None,
         help="pvmalove-suite: repeatable, in run order",
+    )
+    sub.add_argument(
+        "--tracker-type",
+        choices=TRACKER_TYPES,
+        default=None,
+        help="pvmalove-suite: .harness/project.json tracker type (default: derived from origin)",
+    )
+    sub.add_argument(
+        "--tracker-host",
+        type=_matching_arg(TRACKER_HOST_PATTERN, TRACKER_HOST_RULE),
+        default=None,
+        help="pvmalove-suite: tracker web host with an optional :port (default: from origin)",
+    )
+    sub.add_argument(
+        "--tracker-project",
+        type=_matching_arg(TRACKER_PROJECT_PATTERN, TRACKER_PROJECT_RULE),
+        default=None,
+        help="pvmalove-suite: full tracker project path with subgroups (default: from origin)",
     )
 
 

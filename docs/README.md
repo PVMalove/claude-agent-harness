@@ -13,11 +13,14 @@
 | [Диаграммы](./diagrams/README.md) | Archify JSON, интерактивные HTML и PNG. |
 | [Справочник харнесса](../harness/docs/harness-guide.md) | Установка, команды CLI, `health`, `console`, скилы и hooks. |
 | [Backend-оркестрация](../harness/docs/backend-orchestration.md) | Конфиг, coordinator, роли и lifecycle batch. |
+| [Technical English](../harness/docs/technical-english.md) | Общий контракт английской координации агентов, доставляемый в каждую установку. |
 | [Руководства и агенты](./agents/README.md) | Git, тикеты, артефакты, worktrees, релизы и русские описания агентов code-review-spec, code-review-standards и pr-composer. |
 | [Skills](./skills/README.md) | Русские описания first-party, global, role и vendor skills. |
 | [Hooks](./hooks/) | Русские описания двенадцати проектных hooks. |
 | [Runtime discovery](./runtime-discovery.md) | Обнаружение skills в Claude Code и Codex. |
 
-Порядок выпуска версии описан в [releases.md](./agents/releases.md). Операционные правила
+Порядок выпуска версии описан в [releases.md](./agents/releases.md). Там же описана проверка
+приватных терминов мейнтейнера: локальный файл `.private-terms.txt` и секрет репозитория
+`HARNESS_PRIVATE_TERMS`. Операционные правила
 целевого проекта — в [harness-guide.md](../harness/docs/harness-guide.md) и
 [git-workflow.md](./agents/git-workflow.md).

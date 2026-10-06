@@ -7,15 +7,91 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from harness.orchestration.core.constants import RECOVERY_ROUTES
 from harness.storage import storage_path
 from scripts.clean_room.support import (
+    assert_contract_link,
+    check_technical_english,
     HARNESS,
     ROOT,
     capture_json,
     fill_agents,
     find_check,
+    run_health,
     run_ok,
 )
+
+
+RETRY_ROUTING_HEADING = "## Retry routing and abandon"
+RECOVERY_ROUTE_TABLE_HEADING = "## Recovery route table"
+RECOVERY_ROUTE_TABLE_HEADER = ("Situation", "Route", "Who approves", "Evidence")
+
+
+def _require_worker_protocol(skill: str) -> None:
+    """Проверить lifecycle внутри поставленного промпта, а не в соседнем тексте skill."""
+    section = skill.partition("## Worker prompt\n")[2]
+    match = re.search(r"```text\n(.*?)```", section, re.DOTALL)
+    if match is None:
+        sys.exit("installed implement skill is missing the worker prompt template")
+    prompt = match.group(1)
+    positions = []
+    for command in ("dispatch self-report", "dispatch heartbeat", "report submit"):
+        line = re.search(
+            rf"^<coordinator CLI> {re.escape(command)}\b", prompt, re.MULTILINE
+        )
+        if line is None:
+            sys.exit(
+                f"installed worker prompt is missing the protocol command: {command}"
+            )
+        positions.append(line.start())
+    if positions != sorted(positions):
+        sys.exit(
+            "installed worker prompt must attest, heartbeat, then submit its report"
+        )
+
+
+def _require_recovery_route_table(playbook: str) -> None:
+    """Обязательное правило playbook: таблица маршрутов восстановления (#497).
+
+    Раздел `## Recovery route table` идёт сразу после `## Retry routing and abandon`, содержит
+    таблицу `Situation | Route | Who approves | Evidence` и хотя бы одну строку на каждое значение
+    `RECOVERY_ROUTES` во второй колонке (у маршрута может быть несколько ситуаций); маршрут вне
+    enum в таблице тоже ошибка.
+    """
+    missing = "backend-orchestration playbook missing rule: recovery route table"
+    headings = [
+        line.strip() for line in playbook.splitlines() if line.startswith("## ")
+    ]
+    if RECOVERY_ROUTE_TABLE_HEADING not in headings:
+        sys.exit(f"{missing} ({RECOVERY_ROUTE_TABLE_HEADING})")
+    position = headings.index(RECOVERY_ROUTE_TABLE_HEADING)
+    if position == 0 or headings[position - 1] != RETRY_ROUTING_HEADING:
+        sys.exit(
+            f"{missing}: {RECOVERY_ROUTE_TABLE_HEADING} must directly follow "
+            f"{RETRY_ROUTING_HEADING}"
+        )
+    section = playbook.split(RECOVERY_ROUTE_TABLE_HEADING, 1)[1].split("\n## ", 1)[0]
+    rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in section.splitlines()
+        if line.strip().startswith("|")
+    ]
+    if not rows or tuple(rows[0]) != RECOVERY_ROUTE_TABLE_HEADER:
+        sys.exit(
+            f"{missing}: header must be | {' | '.join(RECOVERY_ROUTE_TABLE_HEADER)} |"
+        )
+    routes = [
+        row[1].strip("`")
+        for row in rows[2:]
+        if len(row) == len(RECOVERY_ROUTE_TABLE_HEADER)
+    ]
+    unknown = sorted(set(routes) - set(RECOVERY_ROUTES))
+    absent = [route for route in RECOVERY_ROUTES if route not in routes]
+    if len(routes) != len(rows) - 2 or unknown or absent:
+        sys.exit(
+            f"{missing}: every row needs four cells and one route of RECOVERY_ROUTES "
+            f"(missing: {absent}, unknown: {unknown})"
+        )
 
 
 def run(ctx: SimpleNamespace) -> None:
@@ -87,13 +163,15 @@ def run(ctx: SimpleNamespace) -> None:
         ]
     )
     fill_agents(orchestration_project)
-    run_ok(HARNESS + ["health", str(orchestration_project)])
+    check_technical_english(orchestration_project)
+    run_health(orchestration_project)
     orchestration_root = orchestration_project / ".harness" / "orchestration"
     if not (orchestration_root / "orchestration.schema.json").is_file():
         sys.exit("backend-orchestration schema missing")
     installed_implement = (
         orchestration_project / ".harness" / "skills" / "implement" / "SKILL.md"
     ).read_text(encoding="utf-8")
+    _require_worker_protocol(installed_implement)
     if "This session **is** the coordinator" not in installed_implement:
         sys.exit(
             "opted-in project implement skill does not drive the coordinator pipeline"
@@ -106,6 +184,8 @@ def run(ctx: SimpleNamespace) -> None:
         "module-owned guidance",
         ".harness/orchestration/playbook.md",
         ".harness/orchestration/roles/",
+        "Recovery route table",
+        "route_preview",
     ):
         if required_contract.casefold() not in installed_implement.casefold():
             sys.exit(
@@ -134,10 +214,15 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("installed project is missing the to-pull-requests PR step")
     if (orchestration_project / ".harness" / "skills" / "to-pr").exists():
         sys.exit("installed project retains the removed to-pr PR step")
-    if "qa evidence" not in installed_pr_step.read_text(encoding="utf-8"):
+    installed_pr_text = installed_pr_step.read_text(encoding="utf-8")
+    if "qa evidence" not in installed_pr_text:
         sys.exit(
             "installed to-pull-requests step does not validate accepted QA evidence"
         )
+    if installed_pr_text.find("record-qa-gate-pass.sh") < installed_pr_text.find(
+        "qa evidence"
+    ):
+        sys.exit("installed to-pull-requests step does not record accepted QA evidence")
     orchestration_config = orchestration_project / ".harness" / "orchestration.json"
     if not orchestration_config.is_file():
         sys.exit("backend-orchestration config seed missing")
@@ -267,6 +352,9 @@ def run(ctx: SimpleNamespace) -> None:
     if not playbook_path.is_file():
         sys.exit("backend-orchestration playbook missing")
     playbook = playbook_path.read_text(encoding="utf-8")
+    contract = orchestration_project / ".harness/docs/technical-english.md"
+    for entry in (playbook_path, orchestration_root / "roles/_common.md"):
+        assert_contract_link(entry, contract, entry.name)
     pilot_path = orchestration_root / "pilot.md"
     if not pilot_path.is_file():
         sys.exit("backend-orchestration pilot guide missing")
@@ -379,6 +467,7 @@ def run(ctx: SimpleNamespace) -> None:
     ):
         if required_rule not in normalized_playbook:
             sys.exit(f"backend-orchestration playbook missing rule: {required_rule}")
+    _require_recovery_route_table(playbook)
 
     code_review_role = (
         orchestration_project
@@ -508,7 +597,7 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_config.write_text(
         json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8"
     )
-    run_ok(HARNESS + ["health", str(orchestration_project)])
+    run_health(orchestration_project)
     minimal_repo_map_policy = json.loads(json.dumps(valid_orchestration))
     minimal_repo_map_policy["repo_map_policy"] = {"tier": "minimal"}
     orchestration_config.write_text(

@@ -18,6 +18,11 @@ Agent Harness — переносимый набор скиллов, правил
 [Archify JSON](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/harness-guide-navigation.workflow.json)
 и [HTML](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/harness-guide-navigation.workflow.html).
 
+Обязательный общий контракт [Technical English](./technical-english.md) устанавливается при любой
+стандартной установке. Он описывает английскую координацию агентов, языковые исключения и проверку
+сохранения условий и точных токенов при review. Новые AGENTS.md и CLAUDE.md ведут к этому источнику; существующий AGENTS.md проекта
+не перезаписывается, и ссылку на контракт в него добавляют вручную.
+
 ## Навигация по разделам
 
 | Задача | Раздел |
@@ -242,9 +247,41 @@ python harness\bin\harness.py init C:\path\to\repository `
 | `--pr-base-branch` | Ветка, от которой создаются integration-ветки эпиков (по умолчанию `--base-branch`) |
 | `--branch-pattern` | Регулярное выражение для имён issue-веток |
 | `--qa-gate-command` | Команда полного гейта качества; повторяем, порядок сохраняется ([раздел 6](#qa-gate-skill-context-fork)) |
+| `--tracker-type`, `--tracker-host`, `--tracker-project` | Поле `tracker`: тип (`github`, `gitlab`, `local`), веб-хост с необязательным портом и полный путь проекта с подгруппами (см. ниже) |
 
-Последние четыре флага читает только `pvmalove-suite`; они пишутся в `.harness/project.json`. Их
-можно опустить — `init` спросит интерактивно.
+Флаги от `--language` до `--tracker-project` читает только `pvmalove-suite`; они пишутся в
+`.harness/project.json`. Их можно опустить — `init` спросит интерактивно.
+
+**Поле `tracker`** в `.harness/project.json` явно задаёт трекер проекта
+([ADR 0011](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0011-explicit-project-tracker.md)).
+Это объект из трёх ключей: `type` — `github`, `gitlab` (включая self-hosted) или `local`;
+`host` — веб-хост с необязательным портом, без схемы, пути и userinfo; `project` — полный путь
+проекта с подгруппами. Для `github` и `gitlab` обязательны `host` и `project`; другие ключи внутри
+`tracker` отклоняются:
+
+```json
+"tracker": {"type": "gitlab", "host": "gitlab.example.test:4443", "project": "group/sub/project"}
+```
+
+- Создавая `project.json` (`init`, а также `adopt`/`update`, если файла ещё нет), харнесс заполняет
+  поле так: флаги `--tracker-*` важнее всего; в терминале остальное спрашивается с дефолтами из
+  `origin` — тип, хост с портом и проект с подгруппами, а без распознанного `origin` предлагается
+  `local`; хост и проект `origin` другого типа (GitHub ↔ GitLab) дефолтом не становятся.
+  Подтверждённый ответ или флаг записывается, в том числе `local`. Без терминала и флагов
+  записывается только GitHub или GitLab с полностью разобранными хостом и путём; для локального
+  трекера, хоста без `gitlab.` в имени и репозитория без `origin` поле не пишется. Некорректный
+  `--tracker-host` или `--tracker-project` отклоняется до записи файлов; неполное поле (например,
+  `gitlab` без хоста) не пишется, о чём `init` сообщает в stderr. Существующий `project.json` —
+  seed-файл проекта — не переписывается ни `init`, ни `adopt`/`update`, даже с флагами `--tracker-*`.
+- Без поля трекер определяется по `origin` с учётом схемы, userinfo, порта и подгрупп, а `harness
+  health` выдаёт warn с готовым сниппетом (см. `tracker.project` в разделе health). Хост без `gitlab.`
+  в имени без поля считается локальным трекером — для self-hosted GitLab поле нужно задать.
+- При SSH-`origin` порт SSH ничего не говорит о веб-интерфейсе: нестандартный веб-порт допишите в
+  `host` вручную.
+- Сертификаты, прокси и учётные данные в поле не пишутся — они остаются в личной конфигурации
+  `gh`/`glab`.
+- `.harness/project.schema.json` в установленном проекте — тоже seed: после обновления харнесса
+  старая копия схемы может не знать о поле `tracker`. Авторитетен валидатор `harness health`.
 
 При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md` и само `.harness/project.json`.
 
@@ -295,6 +332,28 @@ python3 harness/bin/harness.py update /path/to/repository --force-seed-files    
   Существующий `.harness/project.json` сохраняется даже с force-флагами: новые поля добавляются вручную.
 - `.harness/overlays/project-local.lock` и `.harness/integrations.json` `update` не проверяет и не
   трогает — это отдельная подсистема.
+
+Общий контракт `.harness/docs/technical-english.md` входит в managed snapshot всех capability,
+включая установки без `backend-orchestration`. Стандартный `update` доставляет текущую версию
+контракта отдельно от адаптации проектных инструкций.
+
+`diff` и `update` показывают предложения для `AGENTS.md`, `CLAUDE.md` и уже установленных
+agent seeds из `.claude/agents/`: короткий обязательный абзац с относительной ссылкой на контракт.
+Предложение — отдельный unified diff; CLI сохраняет содержимое этих файлов. `diff --json`
+возвращает предложения в `seed_link_proposals` с полями `path`, `reason`, `diff`; состояние и код
+выхода managed diff остаются независимыми от этих предложений.
+Уже подключённые прямые ссылки и переходы между известными входами, например `@AGENTS.md`,
+не требуют второй ссылки. Если существующая ссылка не содержит распознанного обязательства,
+вывод объясняет необходимость согласовать обязательный абзац без дублирования ссылки.
+Распознавание ограничено явными локальными ссылками и инструкцией `must read` до English handoff;
+нестандартную формулировку нужно проверить при просмотре предложения.
+
+Просмотрите diff и явно согласуйте нужные добавления. Затем человек или уполномоченный агент
+применяет только согласованные добавления обычным редактированием или patch; полная замена seed
+через `--force-seed-files` для этого не нужна. После применения подключённый вход требует читать
+общий контракт до первого English handoff. Повторные `update` и `diff` сохраняют пользовательские
+инструкции и не предлагают уже подключённые пути. Действующие язык ответов, русский язык
+completion reports и правила полномочий проекта остаются прежними.
 
 #### Обновление существующего проекта и включение памяти
 
@@ -407,10 +466,10 @@ python3 harness/bin/harness.py health /path/to/repository --json     # маши�
 | `files` | Lock, `AGENTS.md`, discovery-ссылки, `project.json`, overlay-локи, интеграции, конфиг оркестрации, маршрутизация verification. Нечитаемый lock — `fail` проверки `files.lock`, а зависящие от него проверки — `skipped` со ссылкой на повреждённый lock |
 | `directories` | `.harness`, `.harness/.sandboxes` и категории `cache`/`logs`/`scratch`/`pr_body`/`runs`/`reports`/`worktrees`, при оркестрации — `.harness/orchestration/state`. Отсутствующий каталог с записываемым родителем — `ok` «будет создан»; незаписываемый — `fail` |
 | `repo_map` | Уровень Repo Map (`full`/`minimal`) с причиной деградации и ремедиа |
-| `environment` | ОС, git и `user.name`/`user.email`, `.gitattributes` и расхождения переводов строк, Python ≥ 3.12, uv, синхронность `.harness/.venv` с `uv.lock` (только в репозитории харнесса), кодировка вывода, пользовательские настройки песочниц Codex и Claude Code, длина пути (warn только на Windows при запасе < 160 символов) |
+| `environment` | ОС, git и `user.name`/`user.email`, `.gitattributes` и расхождения переводов строк, Python ≥ 3.12, uv, `glab` ≥ 1.117.0 только для GitLab-трекера проекта (старше — `fail` с подсказкой обновления, нет `glab` — `warn`, иначе — `skipped`), синхронность `.harness/.venv` с `uv.lock` (только в репозитории харнесса), кодировка вывода, пользовательские настройки песочниц Codex и Claude Code, длина пути (warn только на Windows при запасе < 160 символов) |
 | `environment` на Windows | `LongPathsEnabled`, владелец и запись `%TEMP%\pytest-of-<user>`, пробный symlink (Developer Mode), `bash` для hooks (`fail`, если это заглушка WSL `System32\bash.exe`) |
 | `orchestration` | Только при `backend-orchestration`, все проверки read-only — см. ниже |
-| `tracker` | Только с `--online` — см. ниже |
+| `tracker` | `tracker.project` — локально, остальные проверки только с `--online` — см. ниже |
 
 **Песочницы агентов.** `environment.codex_sandbox` читает `$CODEX_HOME/config.toml` или
 `~/.codex/config.toml` и проверяет:
@@ -468,20 +527,24 @@ dry-run план очистки; `ledger migrate`/`reset`, `git worktree remove`
 Реестр Windows, Developer Mode, глобальный git config, права доступа и worktree `--fix` не трогает —
 для них в отчёте только команда.
 
-**`--online`** включает группу `tracker`, по умолчанию выключенную, чтобы обычный `health` оставался
-локальным. Без флага каждая проверка `tracker.*` — `skipped` «офлайн».
+**`--online`** включает онлайн-проверки группы `tracker`, по умолчанию выключенные, чтобы обычный
+`health` оставался локальным. Без флага каждая проверка `tracker.*`, кроме `tracker.project`, — `skipped` «офлайн».
 
 | Проверка | Как работает |
 |---|---|
-| Определение трекера | По `git remote -v`: GitHub или GitLab по домену origin; локальный трекер — `skipped` |
-| `tracker.auth` | `gh auth status` / `glab auth status`; используется только код возврата — токены health не читает и не печатает |
-| `tracker.permissions` | `gh api repos/{owner}/{repo}` (`push` → PR и комментарии, `triage` и выше → метки) или `glab api projects/:id` (`access_level` ≥ 30 ≈ push, ≥ 20 — метки) |
+| Определение трекера | Единый резолвер трекера проекта: корректное поле `tracker` из `.harness/project.json` побеждает; без него разбирается `origin` из `git remote -v` — `https://`, `ssh://`, SCP-форма, userinfo, порт, подгруппы и точка в имени. `github.com` — GitHub, хост с `gitlab.` в имени — GitLab, иначе локальный трекер: онлайн-проверки для него — `skipped` |
+| `tracker.project` | Работает без `--online` и без сети, никогда не `skipped`: показывает тип, хост, проект и источник (`поле tracker`, `origin` или `нет origin`). Нет поля в существующем `.harness/project.json` — `warn` с готовым к вставке сниппетом `"tracker": {...}` в подсказке; поле расходится с `origin` по типу, хосту или проекту — `warn`, используется поле; некорректное поле — `warn` «поле tracker не применено» вместе с `fail` у `files.project_json`. Без `.harness/project.json` — `ok` |
+| `tracker.auth` | `gh auth status --hostname <host>` / `glab auth status --hostname <host>` для хоста трекера проекта; используется только код возврата — токены health не читает и не печатает |
+| `tracker.permissions` | `gh api --hostname <host> repos/{owner}/{repo}` (`push` → PR и комментарии, `triage` и выше → метки) или `glab api --hostname <host> projects/:id/members/all/:user_id` — эффективный `access_level` с учётом членств, унаследованных от родительских групп и приглашённых групп (≥ 30 ≈ push, ≥ 20 — метки) |
 | `tracker.reachability` | `git ls-remote origin` |
 | `tracker.labels` | Сравнивает метки с таблицами из `docs/agents/triage-labels.md`; отсутствующая метка или другой цвет — `warn`, цвет никогда не перекрашивается |
 
 Каждый внешний вызов ограничен 10 секундами; отсутствующий `gh`/`glab` — `warn`, а не `fail` всего
-прогона. `--online --fix` дополнительно создаёт отсутствующие метки с каноническими цветами (`gh label
-create`/`glab label create`, без `--force`).
+прогона. Каждый вызов `gh`/`glab` адресует проект явно: `api --hostname <host>` (для GitLab — с
+URL-кодированным путём проекта), `-R <host>/<owner>/<repo>` для `gh` и `-R https://<host>/<project>`
+для `glab`. `--online --fix` дополнительно создаёт отсутствующие метки с каноническими цветами (`gh label
+create`/`glab label create` с `-R`, без `--force`) и никогда не пишет `.harness/project.json`, в том
+числе поле `tracker`.
 
 **`--json`** печатает контракт `schema_version: 1`:
 
@@ -677,7 +740,8 @@ MCP/plugin/hook/runtime-конфигов) — в
 | `selected skill names already exist; inspect them or use --replace-conflicts` | `adopt` — под именами capability уже лежат свои скиллы | Проверить конфликты; если замена ожидаема — повторить с `--replace-conflicts` (без backup) |
 | `local skill changes would be overwritten; review them or use --force` | `update` — на диске локальные правки managed-файлов | Изучить diff; для snapshot — `--force-managed-files`, для snapshot и seed — `--force` |
 | `discovery path already exists and is not managed: <path> (...)` | На месте `.agents/skills`/`.claude/skills` что-то постороннее | `init` — убрать вручную или использовать `adopt`; `adopt` — `--replace-conflicts`; `update` — `--force` |
-| `.harness/project.json has unknown field(s): <name>` | Поле вне строгого контракта | Удалить поле либо реализовать его сразу в `project.schema.json`, шаблоне, валидаторе и потребителе; допустимы `language`, `base_branch`, `branch_pattern`, `qa_gate_commands`, `$schema`, `story_points`, `shell`, `memory`, `memory_policy` |
+| `.harness/project.json has unknown field(s): <name>` | Поле вне строгого контракта | Удалить поле либо реализовать его сразу в `project.schema.json`, шаблоне, валидаторе и потребителе; допустимы `language`, `base_branch`, `branch_pattern`, `qa_gate_commands`, `$schema`, `story_points`, `shell`, `memory`, `memory_policy`, `tracker` |
+| `.harness/project.json tracker has unknown field(s): <name>` (и другие `... tracker ...`) | Поле `tracker` вне контракта | Внутри `tracker` допустимы только `type` (`github`, `gitlab`, `local`), `host` (хост с необязательным `:порт`, без схемы, пути и userinfo) и `project` (полный путь с подгруппами); для `github`/`gitlab` обязательны `host` и `project`. Сертификаты, прокси и учётные данные сюда не пишутся — они остаются в личной конфигурации `gh`/`glab` |
 | `install-global.py`: `[CONFLICT] ... (re-run with --replace-conflicts ...)` | Место профиля или симлинка занято | Повторить с `--replace-conflicts` — сначала будет backup |
 | `install-global.py`: `[ERROR] Failed to create symlink: ...` (только Windows) | Нет прав на symlink каталога | Включить Developer Mode (Settings → For developers) или запустить терминал от имени администратора |
 
@@ -883,8 +947,9 @@ integration/reports
 issue — **эпик** с метками `bug`/`enhancement` + `status::specs` (не `status::ready` — декомпозиции
 ещё не было) + `task-report::required` и секцией `## Integration Branch`. `/to-spec` создаёт
 указанную ветку от `base_branch`, если её нет; `/to-tickets` переносит её в дочерние тикеты. Лейбл-
-слаг для эпика не создаётся ([раздел 8](#8-метки-триажа)) — дочерние тикеты связываются с эпиком как
-native GitHub sub-issues.
+слаг для эпика не создаётся ([раздел 8](#8-метки-триажа)) — дочерние тикеты связываются с эпиком
+родительской связью трекера: на GitHub — native sub-issues, на GitLab — секция `## Parent: #<N>` и
+связь `relates_to`.
 
 В конец спецификации `/to-spec` переносит утверждённый список из `Live Artifact` в секцию
 `## Relevant Files (Discovery Context)` с исходными пояснениями. Без artifact publishing источник —
@@ -941,9 +1006,10 @@ native GitHub sub-issues.
      модель (`haiku`) одним вызовом на пакет; язык колонки — из `.harness/project.json`.
 
 **В этом репозитории** ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)): дочерние тикеты
-эпика (`status::specs`) линкуются как native GitHub sub-issues, а не лейблом `epic::<slug>`; тикет,
+эпика (`status::specs`) линкуются родительской связью трекера (на GitHub — native sub-issues, на
+GitLab — секция `## Parent: #<N>` и связь `relates_to`), а не лейблом `epic::<slug>`; тикет,
 заблокированный другим открытым тикетом той же декомпозиции, получает `status::blocked`. Фронтир
-ищется тем же native-запросом, что у `wayfinder` (`docs/agents/issue-tracker.md#wayfinding-operations`);
+ищется тем же запросом, что у `wayfinder` (`docs/agents/issue-tracker.md#wayfinding-operations`);
 `/implement`, вызванный для эпика, определяет первый тикет фронтира и назначает его на себя.
 
 **Контекст:** при переполнении контекстного окна историей правок качество работы агента снижается.
@@ -1085,12 +1151,18 @@ python .harness/orchestration/coordinator.py --repo . dispatch status --batch <b
 
 1. **Разрешить тикет.**
    - Передан конкретный тикет с `hitl` — работа прекращается сразу, пользователь направляется к
-     `/to-guide`.
+     `/to-guide`. `afk`-тикет без `pipeline::fast` (метки или поля `**Pipeline:**` нет, либо там
+     `pipeline::full`) — работа прекращается, пользователь направляется к `/implement`.
    - Передан эпик — тикет выбирается автоматически, `hitl`-тикеты не выбираются. На GitHub/GitLab — тот же
-     frontier-запрос, что у `/wayfinder`, в границах sub-issues эпика, отфильтрованный по `afk`:
-     открытые, неблокированные, незанятые, первые по порядку; назначение (`--add-assignee @me`) —
-     первой операцией записи. При пустом фронтире работа останавливается с пояснением (остались только `hitl` — назвать их и указать на
-     `/to-guide`). Локальный трекер — линейный проход по `.scratch/<feature>/issues/NN-*.md`.
+     frontier-запрос, что у `/wayfinder`, в границах дочерних тикетов эпика, отфильтрованный по
+     `pipeline::fast` + `afk`: открытые, неблокированные, незанятые, первые по порядку; назначение
+     (`gh issue edit <n> --add-assignee @me` на GitHub, `glab issue update <n> -R <project-url> --assignee @me`
+     на GitLab) — первой операцией записи. На GitLab каждая команда `glab` адресует проект явно
+     через `-R <project-url>`; плейсхолдеры определены в `docs/agents/issue-tracker.md` → GitLab →
+     Conventions. При пустом фронтире работа останавливается с пояснением (остались только `hitl` — назвать их и указать на
+     `/to-guide`; остались `afk` без `pipeline::fast` — указать на `/implement`). Локальный трекер —
+     линейный проход по `.scratch/<feature>/issues/NN-*.md` с тем же фильтром по
+     `**Execution:** afk` и `**Pipeline:** pipeline::fast`.
    - Тикет не указан, и в проекте действует правило Issue First — работа останавливается:
      запрашивается тикет либо запуск `/to-spec`/`/to-tickets`.
 2. **Проверить блокеры** при любой метке `status::*`: при наличии открытого блокера работа
@@ -1099,9 +1171,13 @@ python .harness/orchestration/coordinator.py --repo . dispatch status --batch <b
 
    ```bash
    gh issue edit 102 --remove-label status::ready --remove-label status::blocked --add-label status::in-progress
+   # GitLab
+   glab issue update 102 -R https://gitlab.example.com/group/project --unlabel status::ready,status::blocked --label status::in-progress
    ```
 
-   Проверить, что `status::in-progress` — единственная `status::*`. Неудачная запись — стоп.
+   Проверить, что `status::in-progress` — единственная `status::*`: `gh issue view 102 --json labels`
+   или `glab issue view 102 -R https://gitlab.example.com/group/project -F json` (поле `labels`).
+   Неудачная запись — стоп.
 
 **Phase 2 — Coding:** `/tdd` на согласованных швах → регулярный тайпчек и тесты, полный набор один
 раз в конце → спросить, проводить ли `/code-review`. «Да» — две оси Standards и Spec через вручную
@@ -1160,6 +1236,11 @@ Warning-ось, а Standards=Clean наследуется. Любое измен
 
 **В этом репозитории:** язык отчёта — `language` из `.harness/project.json`.
 
+Если назван PR/MR, фиксированная точка — его целевая ветка: `gh pr view <n> --json baseRefName,headRefName`
+или `glab mr view <iid> -R <project-url> -F json` (поля `target_branch`, `source_branch`), затем
+`git fetch origin <target>` и diff от `origin/<target>`; checkout не переключается. На GitLab `!N` —
+merge request, а не issue: спецификация берётся из тикета в его footer `Closes #N`/`Related to #N`.
+
 ---
 
 ## 6. Проектные надстройки поверх апстрима
@@ -1201,16 +1282,47 @@ Warning-ось, а Standards=Clean наследуется. Любое измен
 - **Назначение:** заполняет PR-шаблон из `docs/agents/git-workflow.md` §3 (язык — из
   `.harness/project.json`) в изолированном контексте. PR не открывает: сохраняет тело только в
   `.harness/.sandboxes/pr_body/pr-body-<issue>-<slug>.md` и возвращает путь; сессия передаёт его в
-  `gh pr create --body-file` и удаляет файл после успешной публикации.
+  `gh pr create --body-file` (на GitLab — в `glab mr create --description-file`) и удаляет файл после
+  успешной публикации.
 - **Вход:** номер issue, точная целевая ветка (integration-ветка эпика или `base_branch`), путь к
   файлу и результат последнего `qa-gate`, если он выполнялся; в противном случае это указывается в разделе рисков.
 
 ### `/to-pull-requests` (skill)
 
 Ручной PR & Wrap-up для уже запушенной issue-ветки: проверяет ветку и push; в orchestration-проекте
-проверяет accepted QA evidence ровно для текущего SHA, иначе запускает `qa-gate`; готовит тело PR,
+проверяет accepted QA evidence ровно для текущего SHA и записывает по нему QA-маркер через
+`record-qa-gate-pass.sh`, иначе запускает `qa-gate`; готовит тело PR/MR,
 получает отдельное согласие на `gh pr create`/`glab mr create`, публикует отчёт
-`task-report::required` и после подтверждённого merge закрывает тикет.
+`task-report::required` и после подтверждённого merge закрывает тикет или проверяет его закрытие.
+
+- **Default branch** определяется явной командой: `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`
+  на GitHub, поле `default_branch` из `glab api --hostname <host> projects/<project-id>` на GitLab.
+  `Closes #N` ставится только для PR/MR в default branch, иначе `Related to #N`.
+- **Целевая ветка задаётся явно**, иначе оба CLI открывают PR/MR в default branch. Тело передаётся
+  только файлом:
+
+  ```bash
+  gh pr create --base integration/reports --title 'CSV-сервис форматирования' --body-file .harness/.sandboxes/pr_body/pr-body-102-csv-service.md
+  glab mr create -R https://gitlab.example.com/group/project --target-branch integration/reports --title 'CSV-сервис форматирования' --description-file .harness/.sandboxes/pr_body/pr-body-102-csv-service.md --yes
+  ```
+
+  На GitLab каждая команда `glab` получает `-R <project-url>`, а `glab api` — `--hostname <host>` и
+  путь `projects/<project-id>/...` (плейсхолдеры — `docs/agents/issue-tracker.md` → GitLab →
+  Conventions). MR обозначается `!<iid>` (последний сегмент URL `.../-/merge_requests/<iid>`),
+  тикет — `#<iid>`.
+- **Closing patterns GitLab.** GitLab закрывает issue по closing pattern (шаблон по умолчанию
+  принимает `Closes #N`) только когда MR или коммит попадает в default branch проекта. MR в
+  `integration/*` или в другую ветку ничего не закрывает, `Related to #N` — не closing pattern.
+  Проект может отключить автозакрытие настройкой «Auto-close referenced issues on default branch»,
+  а сам шаблон меняет только администратор self-managed инстанса.
+- **После подтверждённого merge** сначала проверяется merge в целевую ветку:
+  `gh pr view <n> --json state,baseRefName` (`MERGED`, `baseRefName` — целевая ветка) или
+  `glab mr view <iid> -R <project-url> -F json` (`state: merged`, `target_branch` — целевая ветка).
+  Для `Related to #N` тикет закрывается явно: `gh issue close N --reason completed` или
+  `glab issue close N -R <project-url>`. Для `Closes #N` закрытие проверяется: `gh issue view N --json state`
+  (`CLOSED`) или `glab issue view N -R <project-url> -F json` (`state: closed`); GitLab закрывает
+  асинхронно, поэтому при `opened` тикет перечитывается один раз и затем закрывается явно с
+  объяснением. Без merge тикет не закрывается.
 
 Пример диалога:
 
@@ -1227,15 +1339,19 @@ Chat), а `/to-guide` подготавливает для него пошаго�
 1. **Читает источник** — issue, URL или файл тикета. `status::blocked` — проверяет блокеры. Не
    `status::ready`/`hitl` — предупреждает и просит подтверждения.
 2. **Исследует кодовую базу** — определяет конкретные файлы по коду, а не по тексту тикета.
-3. **Назначает тикет на себя** (`--add-assignee @me`) первой операцией записи.
-4. **Ставит `status::in-progress`.**
+3. **Назначает тикет на себя** (`gh issue edit <n> --add-assignee @me` или
+   `glab issue update <n> -R <project-url> --assignee @me`) первой операцией записи.
+4. **Ставит `status::in-progress`** вместо текущей `status::*` (`ready`, `blocked` или `specs`) и
+   проверяет, что эта метка `status::*` единственная; неудачная запись — стоп.
 5. **Пишет гайд** в `docs/tasks/` (в папку эпика, если тикет из декомпозиции), целиком на языке из
    `.harness/project.json`.
 
 **Шаблон гайда:** Context & Constraints → File Map (`[Create]`/`[Update]`) → Steps & Prompts (каждый
 шаг — самодостаточный промпт для AI IDE с TDD-first текстом) → Verification → **When you're done**
-(ручной чек-лист: `/code-review` → commit + push → `/qa-gate` → PR; `Closes #ID` только в default
-branch, иначе `Related to #ID`).
+(ручной чек-лист: `/code-review` → commit + push → `/qa-gate` → PR/MR; `Closes #ID` только в default
+branch, иначе `Related to #ID`; после merge — явное закрытие тикета или проверка закрытия). В этом
+разделе гайд оставляет команды только трекера проекта, с подставленными `<project-url>`, целевой
+веткой и номером тикета.
 
 ```markdown
 ### Шаг 1 — тест на чтение TOML
@@ -1249,10 +1365,14 @@ branch, иначе `Related to #ID`).
 
 ### `/setup-labels` (skill)
 
-- Разово создаёт или обновляет GitHub-лейблы (`status::*`, `hitl`/`afk`, `task-report::required`,
-  `out-of-scope`, `wayfinder:*`) по таблицам `docs/agents/triage-labels.md` — иначе
-  `gh label create`/`gh issue --add-label` падают на несуществующем лейбле.
-- Показывает план и ждёт подтверждения; идемпотентен (`gh label create --force`).
+- Разово создаёт или обновляет метки GitHub или GitLab (`status::*`, `hitl`/`afk`, `task-report::required`,
+  `out-of-scope`, `wayfinder:*`) по таблицам `docs/agents/triage-labels.md`. Без них на GitHub
+  `gh issue edit --add-label` падает на несуществующей метке, а GitLab молча создаёт её с цветом по
+  умолчанию.
+- Показывает план и ждёт подтверждения; идемпотентен: на GitHub — `gh label create --force`, на
+  GitLab — сверка со списком `glab api --hostname <host> --paginate projects/<project-id>/labels`,
+  затем `glab label create -R <project-url>` для отсутствующей метки и
+  `glab label edit -R <project-url> --label-id <id>` для метки с другим цветом.
 - Запускать один раз перед первым `triage`/`to-spec`/`to-tickets`/`implement`/`to-guide`/`wayfinder`.
 
 ### `/delivery-stats <номер эпика>` (skill)
@@ -1298,7 +1418,7 @@ python .harness/reporting/delivery_stats.py --repo . --epic 95 \
 |---|---|
 | `triage` | Namespaced-таксономия `status::*` (`specs`/`ready`/`in-progress`/`blocked`) и отдельная ось `hitl`/`afk`; пара `bug`/`enhancement` без изменений; `wontfix` → `out-of-scope`. См. [ADR 0002](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0002-controlled-delivery.md). |
 | `to-spec` | Ставит `status::specs` на эпик вместо `ready-for-agent` + `epic::<slug>`; согласует и создаёт `integration/<service-or-team>` от `base_branch`; пишет спеку файлом в `docs/tasks/` и публикует через `gh issue create --body-file`. |
-| `to-tickets` | Линкует дочерние тикеты как native GitHub sub-issues вместо `epic::<slug>`; заблокированному тикету ставит `status::blocked`; не переписывает эпик (кроме списка номеров). |
+| `to-tickets` | Линкует дочерние тикеты родительской связью трекера (GitHub — native sub-issues, GitLab — `## Parent: #<N>` и `relates_to`) вместо `epic::<slug>`; заблокированному тикету ставит `status::blocked`; не переписывает эпик (кроме списка номеров). |
 | `implement` | Проверяет блокеры и ставит `status::in-progress` до `batch create`; создаёт issue-ветку от integration-ветки; ведёт coordinator-конвейер architect → developer → code-review → qa → publish с approval на каждом гейте, model self-report и watchdog. После publish предлагает `/to-pull-requests`. Однопроходный upstream-флоу переехал в `fast-implement`. |
 | `ask-matt` | Отражает выбор разработчика: двухосевое ревью либо переход к commit и push. |
 | `code-review` | Отчёт выводится на языке из `.harness/project.json` (`### Communication language`). |
@@ -1350,7 +1470,8 @@ status::ready») — в этом случае этап grilling пропуска
 
 [![Метки status::* по пути тикета](./diagrams/triage-labels.lifecycle.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/triage-labels.lifecycle.html)
 
-Дочерний тикет связывается с эпиком как native GitHub sub-issue
+Дочерний тикет связывается с эпиком родительской связью трекера: на GitHub — native sub-issue, на
+GitLab — секция `## Parent: #<N>` и связь `relates_to`
 (`docs/agents/issue-tracker.md#wayfinding-operations`); тот же механизм `wayfinder` использует для
 своей карты. Цвета и локальный markdown-трекер — в `docs/agents/triage-labels.md`; правила поставки —
 в [ADR 0002](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0002-controlled-delivery.md).
@@ -1364,15 +1485,15 @@ status::ready») — в этом случае этап grilling пропуска
 
 | Hook | Событие | Что блокирует |
 |---|---|---|
-| `block-direct-master.sh` | `PreToolUse(Bash)` | `git commit`/`git push` из `base_branch` или `integration/*` и push в эти рефы. |
-| `block-public-attribution.sh` | `PreToolUse(Bash)` | Запрещённые сведения в commit messages, PR/MR titles/bodies и их файлах; push непереданных коммитов с тем же содержимым. |
-| `block-pr-merge.sh` | `PreToolUse(Bash)` | `gh pr merge` — безусловно, мердж только вручную. |
+| `block-direct-master.sh` | `PreToolUse(Bash)` | `git commit`/`git push` из `base_branch` или `integration/*` и push в эти рефы; пропускает только push, создающий `integration/*`, которой ещё нет на remote, а при недоступном remote блокирует. Ветка берётся из checkout самого вызова (`git -C`/`--work-tree`/`--git-dir`, `cd` раньше в простой цепочке без `$`, скобок, `|` и `||`, `cwd` из payload, корень проекта); упоминание в аргументах других команд, кавычках и heredoc вызовом не считается, а неразобранная команда с commit/push блокируется. |
+| `block-public-attribution.sh` | `PreToolUse(Bash)` | Запрещённые сведения в commit messages, PR/MR titles/bodies и их файлах; атрибуцию в title/body issue, комментариях и notes, в том числе через `glab api`; push непереданных коммитов с тем же содержимым. |
+| `block-pr-merge.sh` | `PreToolUse(Bash)` | `gh pr merge` и `glab mr merge`/`accept` — безусловно, мердж только вручную. Merge-текст в команде блокируется (fail closed), если строгий лексер `pr_commands.py` не принял её целиком или не каждая её simple command инертна по allowlist: `echo`, `printf`, `cat`, `grep`, `head`, `tail`, `wc`, `git commit`, текстовые подкоманды `gh`/`glab`. |
 | `check-branch-name.sh` | `PreToolUse(Bash)` | `git checkout -b`/`git switch -c <имя>`, не соответствующее `branch_pattern`. |
 | `check-worktree-branch-name.sh` | `PreToolUse(EnterWorktree)` | То же правило имени для нативного worktree-инструмента. |
 | `block-scratch-outside-docs-tasks.sh` | `PreToolUse(Write\|Edit)` | Task-артефакты в системных temp-директориях вместо `docs/tasks/`, PR-тела и комментарии вне `.harness/.sandboxes/pr_body/`. |
-| `require-qa-gate.sh` | `PreToolUse(Bash)` | `gh pr create`, если `qa-gate` не запускался или провалился для текущего рабочего дерева. Маркер пишет скилл через `record-qa-gate-pass.sh`; `mark-qa-gate-passed.sh` (`PostToolUse(Bash)`) — fallback для прямого запуска команд. |
+| `require-qa-gate.sh` | `PreToolUse(Bash)` | `gh pr create`/`glab mr create`, если `qa-gate` не запускался или провалился для текущего рабочего дерева. Маркер пишет скилл через `record-qa-gate-pass.sh`; `mark-qa-gate-passed.sh` (`PostToolUse(Bash)`) — fallback для прямого запуска команд. |
 | `require-bounded-check.sh` | `PreToolUse(Bash)` | Полный прогон тестов или одной из `qa_gate_commands` без обёртки `test_summary.py`; точечный тест (`::` node-id) не блокируется. |
-| `block-dangerous-git.sh` | `PreToolUse(Bash)` | `git reset --hard`, `git clean -f`/`-fd`, `git branch -D`, `git checkout .`, `git restore .`. В отличие от апстримного `git-guardrails-claude-code` **не** блокирует `git push` целиком — пуш issue-веток нужен. |
+| `block-dangerous-git.sh` | `PreToolUse(Bash)` | `git reset --hard`, `git clean -f`/`-fd`, `git branch -D`, `git checkout .`, `git restore .`, когда shell реально запускает `git`. Упоминание в кавычках, в `python -c` или в heredoc для не-оболочки не блокируется. В отличие от апстримного `git-guardrails-claude-code` **не** блокирует `git push` целиком — пуш issue-веток нужен. |
 | `count-skill-usage.sh` | `PreToolUse(Skill)` | Ничего — считает частоту вызова скиллов в `.claude/.skill-usage.json`. |
 
 Пример блокировки:
@@ -1382,29 +1503,56 @@ $ git commit -m "wip"        # текущая ветка — integration/reports
 Zero Direct Commits: коммит/push в защищённую ветку 'integration/reports' запрещён — работай на issue-ветке (docs/agents/git-workflow.md).
 ```
 
-Файл `.claude/settings.local.json` личный (в `.gitignore`): hooks защищают локальные сессии, CI
-защищает PR до merge.
+Файл `.claude/settings.local.json` личный (в `.gitignore`): hooks защищают только локальные сессии.
+Харнесс не устанавливает в целевой проект CI-проверку PR/MR; серверную проверку до merge проект
+добавляет сам.
 
 ### Атрибуция коммитов
 
 `.claude/settings.local.json` оставляет встроенную атрибуцию пустой. Это дополнительный слой;
-фактический запрет обеспечивают `block-public-attribution.sh` до команды и
-`scripts/check_public_metadata.py` в CI.
+фактический запрет в целевом проекте обеспечивает `block-public-attribution.sh` до команды.
+`scripts/check_public_metadata.py` проверяет только сам репозиторий харнесса и в целевой проект не
+устанавливается.
 
 Hook строго разбирает JSON payload и смотрит только `tool_input.command`:
 
 - `git commit` — `-m`/`--message`/`--trailer` и содержимое `-F`/`--file`;
-- `gh pr` и `glab mr` `create`/`edit` — `--title`, `--body`/`--description` и содержимое
-  `--body-file`/`--description-file`;
-- `git push` и PR/MR — ещё и непереданные commit messages.
+- `gh pr create`/`new`/`edit` — `-t`/`--title`, `-b`/`--body` и содержимое `-F`/`--body-file`;
+- `glab mr create`/`new`/`edit`/`update` — `-t`/`--title`, `-d`/`--description` и содержимое
+  `--description-file`;
+- `gh issue create`/`new`/`edit`/`comment` и `gh pr comment` — те же флаги, что у `gh pr`;
+  `glab issue create`/`new`/`update` — те же, что у `glab mr`;
+- `glab issue note` и `glab mr note` — `-m`/`--message`;
+- `glab api` — `-F`/`--field` и `-f`/`--raw-field` с ключом `body`, `description` или `title`;
+  `-F body=@<path>` проверяется по содержимому файла;
+- `git push` и PR/MR — ещё и непереданные commit messages, достижимые из `HEAD`.
 
-Путь body-файла не сканируется как текст PR. Файл должен быть доступен по **literal-пути**:
-переменная shell, несуществующий путь, некорректный payload или незакрытая кавычка блокируют
-команду. Поэтому файл сообщения пишут отдельным шагом, а коммит — следующей командой:
+Короткий флаг проверяется только там, где он несёт текст в своём CLI: у gh `-d` — это `--draft`,
+у glab `-b` — `--target-branch`, а `-m` вне notes — milestone.
+
+Проверка работает в два уровня. Commit messages и title/body PR/MR проверяются полным списком
+запрещённых терминов: имена моделей и runtime, атрибуция, session URL. Title/body issue, комментарии
+и notes — текст трекера. В нём имена runtime и пути вроде `.claude/` или `CLAUDE.md` — обычный
+словарь проекта, поэтому hook блокирует там только атрибуцию: trailer `Co-Authored-By`, утверждение
+"generated/written by <ассистент>", пометку AI-generated и ссылки на сессии ассистента.
+
+Тело heredoc — это stdin, а не слова команды: hook вырезает его до поиска операций и разбора
+аргументов. Скрипт `python - <<'EOF'`, который только упоминает `git commit`, проходит. Тело
+проверяется, когда его оператор стоит внутри проверяемого аргумента, например
+`-m "$(cat <<'EOF' ... EOF)"`.
+
+Путь body-файла не сканируется как текст PR. Файл `-F`, `--body-file`, `--description-file` или
+`body=@<path>` должен быть доступен по **literal-пути**: переменная shell, `-` или `@-` (stdin),
+несуществующий путь, некорректный payload или незакрытая кавычка блокируют команду. Поэтому файл
+сообщения пишут отдельным шагом, а публикацию — следующей командой:
 
 ```bash
 git commit -F docs/tasks/issue-102-csv-service/commit-message.txt   # допустимо
 git commit -F "$MSG_FILE"                                           # заблокировано
+glab api --hostname gitlab.example.com projects/group%2Fproject/issues/102/notes \
+  -F body=@.harness/.sandboxes/pr_body/issue-comment-102-csv.md     # допустимо
+glab api --hostname gitlab.example.com projects/group%2Fproject/issues/102/notes \
+  -F body=@"$NOTE_FILE"                                             # заблокировано
 ```
 
 При блокировке следует исправить метаданные проекта либо передать доступный literal-файл и повторить
@@ -1480,7 +1628,7 @@ git commit -F "$MSG_FILE"                                           # забло
 | `qa-gate` (skill) | `qa_gate_commands` из `.harness/project.json` в изолированном форке перед PR ([раздел 6](#qa-gate-skill-context-fork)). |
 | `pr-composer` (subagent) | Заполняет структурированный PR-шаблон и возвращает путь к файлу ([раздел 6](#pr-composer-subagent-claudeagentspr-composermd)). |
 | `to-guide` (skill) | `hitl`-аналог `/implement` — гайд с промптами для ручного кодинга ([раздел 6](#to-guide-skill)). |
-| `setup-labels` (skill) | Разово создаёт/обновляет GitHub-лейблы по `docs/agents/triage-labels.md` перед первым использованием пайплайна ([раздел 6](#setup-labels-skill)). |
+| `setup-labels` (skill) | Разово создаёт/обновляет метки GitHub или GitLab по `docs/agents/triage-labels.md` перед первым использованием пайплайна ([раздел 6](#setup-labels-skill)). |
 | `to-pull-requests` (skill) | Ручной PR & Wrap-up после `/implement` или `/fast-implement` ([раздел 6](#to-pull-requests-skill)). |
 | `fast-implement` (skill) | Однопроходный путь без coordinator, architect, QA и approval-гейтов для мелких задач ([раздел 4](#fast-implement-ссылка_или_номер_тикета)). |
 | `delivery-stats` (skill) | Токены по моделям, эффективность кеша, стоимость, окно подписки и объём кода по закрытому эпику ([раздел 6](#delivery-stats-номер-эпика-skill)). |
@@ -1586,7 +1734,8 @@ git commit -F "$MSG_FILE"                                           # забло
    `pytest tests/config/`.
 5. **Далее работа выполняется вручную** по чек-листу «When you're done»: кодинг в Cursor → `/code-review` → commit
    `fix: migrate export config to TOML (#105)` и push → `/qa-gate` → PR в `integration/*` с
-   `Related to #105` → ревью и merge разработчиком → `gh issue close 105 --reason completed`.
+   `Related to #105` → ревью и merge разработчиком → `gh issue close 105 --reason completed`
+   (на GitLab — `glab issue close 105 -R https://gitlab.example.com/group/project`).
 6. Эпик #104 остаётся открытым со списком sub-issues.
 
 ### Точка входа 3 — крупный неопределённый объём через `/wayfinder`

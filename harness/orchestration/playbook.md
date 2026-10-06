@@ -5,6 +5,9 @@ This playbook is the runtime-neutral coordination contract for the optional
 dispatch work, select a provider, or require a runtime adapter. An adapter may translate
 these records into its own commands later, but it must preserve the rules below.
 
+Before the first English handoff, the coordinator must read
+[Technical English](../docs/technical-english.md).
+
 ## Authority and invariants
 
 The coordinator owns the batch lifecycle, dispatch approval, scope changes, and the decision to
@@ -21,16 +24,17 @@ brief, project configuration, or reports.
 
 The coordinator records exactly one current state for each batch. A role may report progress or a
 blocker, but it cannot transition its own batch or silently widen its brief. The installed
-`coordinator.py` implements the first public slice of this contract and keeps its local state under
+`coordinator.py` implements this contract's lifecycle and keeps its local state under
 the gitignored `.harness/orchestration/state/` directory.
 
 | State | Coordinator action and entry condition | Allowed next state |
 | --- | --- | --- |
-| `planned` | Ticket, backend zone, issue branch/worktree, DoD, prohibitions, and verification commands are drafted. | `awaiting-approval`, `blocked` |
-| `awaiting-approval` | The coordinator is waiting for the next explicit human decision: first the role dispatch, and later acceptance of a report. | `active`, `blocked`, `completed`, `failed`, `abandoned` |
-| `active` | An approved dispatch has been handed to the runtime adapter; the role is executing only within its immutable brief. | `awaiting-approval`, `blocked`, `failed` |
+| `planned` | Ticket, backend zone, issue branch/worktree, DoD, prohibitions, and verification commands are drafted. | `awaiting-approval`, `blocked`, `failed`, `not-required` |
+| `awaiting-approval` | The coordinator is waiting for the next explicit human decision: first the role dispatch, and later acceptance of a report. | `active`, `blocked`, `completed`, `failed`, `not-required`, `abandoned` |
+| `active` | An approved dispatch has been handed to the runtime adapter; the role is executing only within its immutable brief. | `awaiting-approval`, `blocked`, `failed`, `not-required` |
 | `completed` | All required role reports, commit proof, verification evidence, and risk gates are accepted. | terminal |
-| `blocked` | An external dependency, missing authority, overlapping zone, or unavailable proof prevents safe continuation. | terminal |
+| `blocked` | An external dependency, missing authority, overlapping zone, or unavailable proof prevents safe continuation. | `awaiting-approval` only through `batch resume --reason` for a startup-blocked or stale batch (a human `block` decision is never resumable); `failed` |
+| `not-required` | `batch not-required` recorded, with approval and evidence, that the pinned snapshot already satisfies every DoD item. | terminal |
 | `failed` | The dispatch attempted work but could not produce an acceptable result. | terminal |
 | `abandoned` | A human explicitly gave up on the batch after a completion report, with a recorded reason. | terminal |
 
@@ -47,30 +51,46 @@ any evidence.
 ## Retry routing and abandon
 
 `batch decide --decision retry` does not always mean "ask a developer again". The coordinator
-stores a routing record on the decision (`previous_role`, `reason_category`, `next_role`,
+stores a routing record on the decision (`route`, `previous_role`, `reason_category`, `next_role`,
 `next_action`, `rationale`, and the `candidate_commit` when it has not changed) and derives the
 reason from structured report data only: outcome, review findings, Standards/Spec severity, failed
 checks, and whether the candidate moved. Free text in `blockers` or `output` is never classified. An
 approver may pass `--reason-category` (`code`, `requirements`, `candidate-change`,
-`verification-infrastructure`, `transport`, `context-pressure`, `unknown`); it can only narrow a
-route toward a same-candidate re-run when the structured data agrees, and it never overrides a
-finding. Rate limits, an unavailable Bash/WSL wrapper and transport failures are operational
-evidence: record them as `verification-infrastructure` or `transport`, never as a code finding. A
-context limit is `context-pressure` only when a critical `context_pressure` observation was recorded
-for the reported dispatch; the claim alone is `unknown`.
+`verification-infrastructure`, `transport`, `context-pressure`, `tooling`, `block-bypass`,
+`unknown`); it can only narrow a route toward a same-candidate re-run when the structured data
+agrees, and it never overrides a finding. Rate limits, an unavailable Bash/WSL wrapper and transport
+failures are operational evidence: record them as `verification-infrastructure` or `transport`,
+never as a code finding. A context limit is `context-pressure` only when a critical
+`context_pressure` observation was recorded for the reported dispatch; the claim alone is `unknown`.
+In this table and the Recovery route table, an operational reason is one of these three categories;
+`tooling` and `block-bypass` have their own routes.
 
 | Reporting stage | `accept` | `retry` | `block` / `fail` | `abandon` |
 | --- | --- | --- | --- | --- |
 | architect | developer | new architect | terminal | `abandoned` |
-| developer | risk assessment | `developer-retry` (new candidate, then a new risk assessment) | terminal | `abandoned` |
+| developer | risk assessment | `verification` on the registered candidate when the report is `blocked` with an operational reason; otherwise `developer-retry` (new candidate, then a new risk assessment) | terminal | `abandoned` |
+| verification | risk assessment | `developer-retry` | terminal | `abandoned` |
 | code-review | qa | new code-review on the same candidate only if the report is `blocked`, the reason is `verification-infrastructure`, `transport` or `context-pressure`, there is no finding on either axis, no failed check and the candidate is unchanged; otherwise `developer-retry` | terminal | `abandoned` |
 | qa | publish | new qa on the same candidate under the same conditions (QA stays read-only); a defect or a new candidate means `developer-retry` | terminal | `abandoned` |
 | publish | completed | new publish on the same accepted SHA for `verification-infrastructure`, `transport` or `context-pressure`; `developer-retry` when the candidate must change | terminal | `abandoned` |
 
 `code`, `requirements`, `candidate-change` and `unknown` always route to `developer-retry`; only the
-three operational categories may re-run a read-only stage on the same SHA, and only with empty
-findings, an unchanged candidate and no scope or requirement blocker. A contradictory or unsupported
-reason always takes the safe route, `developer-retry`.
+three operational categories, besides `tooling` and `block-bypass` below, may re-run a read-only
+stage on the same SHA, and only with empty findings, an unchanged candidate and no scope or
+requirement blocker. A contradictory or unsupported reason always takes the safe route,
+`developer-retry`.
+
+`tooling` means a hook, the safety classifier or the ledger blocked a legitimate role action. The
+coordinator assigns it only from a `blocked` report's structured `tooling_blocker` (`tool`, exact
+`command`, `message`), when no finding, failed check, moved candidate or developer category
+outranks it; `--reason-category tooling` without that field is `unknown`, and another named
+operational category keeps its own route. Its route is `tooling-retry` at every stage: a new
+dispatch of the same stage on the same SHA (architect, verification, code-review, qa or publish),
+and for a developer a `developer-retry` that continues its last commit, recorded as the routing
+record's `candidate_commit`. A `tooling-retry` spends no `retry_policy.max_developer_retries` and
+is not refused when that budget is exhausted; the human decision on every retry and the
+`tooling-retry-repeated` attention bound it instead. `--retry-role developer` on a read-only stage
+still forces a budgeted `developer-retry`.
 A same-candidate retry is a new immutable dispatch: it gets a new dispatch ID, re-checks the
 base-commit gate and Context Package freshness, and needs its own explicit human approval under
 `manual_all`. The earlier brief, report and blocker stay untouched as audit evidence. A retry never
@@ -78,12 +98,24 @@ uses an empty or fictitious commit, a changed candidate always needs a new risk 
 review or QA, and `block` or `fail` never start a retry by themselves. `--retry-role developer`
 forces a developer retry where a same-candidate re-run would otherwise be routed.
 
+`block-bypass` means a read-only role (code-review, qa or verification) worked around a hook or tool
+block instead of stopping with `tooling_blocker`. Only an approver names it, and none of that report
+is evidence: its findings, failed checks and outcome do not route the retry, and only a moved
+candidate still sends it to `developer-retry`. Its route is `bypass-rerun`: a new dispatch of the
+same stage on the same SHA (verification on its registered candidate) with no new candidate commit.
+`batch decide` requires a `--note` naming the violation, the report is never accepted or
+warning-overridden, and the re-run dispatch always needs an explicit approval, under every
+`approval_policy`. A `bypass-rerun` spends no `retry_policy.max_developer_retries`. `block-bypass`
+is refused for an architect, developer or publish report, which is still retried with a developer
+reason category (`code`, `requirements`, `candidate-change`) or blocked.
+
 A code-review `blocker` can never be accepted. While `retry_policy.max_developer_retries` still
 allows a developer retry, it takes `retry` or `abandon`; once that budget is exhausted, `retry` is
 refused and the blocker takes `block`, `fail` or `abandon`, after which the work is split or
-re-planned in a new batch.
+re-planned in a new batch. A `tooling-retry` neither spends this budget nor is refused by it.
 
-`abandon` is a fifth decision on a completion report. It needs explicit approval and a non-empty
+`abandon` is a decision on a completion report, alongside `accept`, `override-warning`, `retry`,
+`block` and `fail`. It needs explicit approval and a non-empty
 `--reason`, moves the batch to the terminal `abandoned` state and marks unfinished dispatches
 `abandoned`. It keeps the worktree, candidate, briefs, reports, Context Packages and audit records,
 closes no issue and opens no PR. It removes only leftovers that are not evidence: the staged
@@ -91,6 +123,96 @@ copies of reports in the agent inbox and the QA queue entries of dispatches that
 The batch records `abandoned.last_accepted` (the newest accepted stage and candidate), so a fresh
 batch can be created on the same branch and candidate. It is never a fallback for `block`, `fail`
 or `retry`.
+
+## Recovery route table
+
+Every `retry` and `abandon` decision of `batch decide` records its recovery route as
+`routing.route`, one value of the closed set `RECOVERY_ROUTES`. The route is set in the same step
+that sets `next_action`, from the same structured evidence, and never from free text. `batch abandon`
+(a batch that will never have a report) and `batch resume` record no route. `report-completion` is
+not recorded by `batch decide`: `report submit` names it in its `completion` object when the policy
+chain after a recorded report stops, and the coordinator completes that chain with
+`report complete --dispatch <dispatch-id>`. `carry-over` is recorded by an `accept` or
+`override-warning` with `--findings-file` and by `batch carry-over`; its routing record names the
+`carried_item_ids` and is never applied to `next_action`, which moves through risk assessment as on
+any developer accept; `batch carry-over` itself moves a `next_action` of `qa`, set by an earlier
+assessment, to `code-review`. The coordinator chooses a route by this table:
+
+| Situation | Route | Who approves | Evidence |
+| --- | --- | --- | --- |
+| An architect report is retried, whatever the reason category except `tooling` | `architect-retry` | A human decides the retry with `batch decide`; the new architect dispatch is approved under `approval_policy` | Dispatch ID and `report_sha256` of the architect report. Not `same-candidate-rerun`: it is not conditioned on a reason category and pins no candidate |
+| A developer report is `blocked` with an operational reason, no finding and no failed check | `verification` | A human decides the retry; the read-only verification dispatch is approved under `approval_policy` | Dispatch ID, `report_sha256`, the `candidate_registrations` entry with its `source_report_sha256`, and for `context-pressure` the critical `context_pressure` record |
+| A code-review, qa or publish report is `blocked` with an operational reason, no finding on either axis, no failed check and an unchanged candidate | `same-candidate-rerun` | A human decides the retry; the new dispatch on the same SHA needs its own approval under `approval_policy` | Dispatch ID, `report_sha256`, the unchanged `candidate_commit`, and for `context-pressure` the critical `context_pressure` record |
+| A verification report is retried, whatever its outcome or reason category except `tooling` and `block-bypass` | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID and `report_sha256` of the verification report. A verification report is never re-run on the same SHA, except by `tooling-retry` or `bypass-rerun` |
+| A finding or a warning/blocker severity, a failed check, a moved candidate, a `code`, `requirements`, `candidate-change` or `unknown` reason, a contradictory reason, or `--retry-role developer` | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, and the axis, check or candidate change that decided it |
+| A hook, the safety classifier or the ledger blocked a legitimate command: a `blocked` report carries `tooling_blocker` (tool, exact command, message), with no finding, no failed check and an unchanged candidate | `tooling-retry` | A human decides the retry after confirming the false positive and filing a bug ticket against the tool; the new dispatch of the same stage (same SHA; a developer continues its last commit) is approved under `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID, `report_sha256`, the `tooling_blocker`, and the `candidate_commit` (for a developer, its last commit) |
+| A code-review, qa or verification role worked around a hook or tool block (another command form, tool, script file, `eval`, interpreter or a split command): the approver names `block-bypass`, and the candidate is unchanged | `bypass-rerun` | A human decides the retry with a `--note` naming the violation and never accepts or warning-overrides the report; the new dispatch of the same stage on the same SHA always needs an explicit approval (`--approved-by`), under every `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID and `report_sha256` (evidence of the violation only, never of its findings or checks), the `--note`, and the unchanged `candidate_commit` |
+| The coordinator finds a defect in a clean developer report whose Definition of Done is met inside its zone | `carry-over` | The approver of the `accept` (`batch decide --findings-file`); after a policy auto-accept the coordinator itself (`batch carry-over`, `policy:carry-over`) while no code-review dispatch exists for the candidate; the code-review dispatch is approved under `approval_policy` | Dispatch ID and `report_sha256` of the accepted developer report, the candidate, and the `carried_items` item IDs. No developer retry is spent before review |
+| `batch decide --decision abandon` on any completion report | `abandon` | A human only, with a non-empty `--reason`; never a policy | Dispatch ID, `report_sha256` and `abandoned.last_accepted` |
+| `report submit` recorded the report but its policy chain stopped (`completion.failed_step`: `policy-decide`, `risk-assess` or `next-dispatch`) | `report-completion` | No human approval: the coordinator runs `report complete` itself; it replays only the `auto_accept_policy` decision recorded at submit, and a step that needs a human stops with that step's remedy | Dispatch ID, `report_sha256`, the submit `completion` object and the `report complete` steps |
+| Ledger busy: `ledger is locked by another operation`, or a `ledger_busy` answer from `dispatch status` | `report-completion` | No approval: repeat `dispatch wait`/`dispatch status`, run `report complete` when a recorded report's chain stopped, and never remove the lock by hand; a lock that stays held goes to `ledger release-lock`, which refuses a live owner | Lock owner (`pid`, `host`, `acquired_at`, `held_seconds`) and the `ledger release-lock` verdict |
+
+`batch decision-packet` shows the route before the decision is recorded: its `route_preview` holds
+the `retry` routing record computed as `batch decide` computes it (it takes the same
+`--reason-category` and `--retry-role` flags) and the `abandon` route; it writes nothing. The preview
+does not check `retry_policy.max_developer_retries`: once that budget is exhausted it still shows a
+`developer-retry` route, which `batch decide --decision retry` then refuses. When the retry route
+cannot be computed, for example because the configured retry-reason classifier extension fails, the
+packet still renders and `route_preview.retry` is `{"route": null, "refused": ..., "remedy": ...}`
+with the error `batch decide --decision retry` refuses with. With `--findings-file`,
+`route_preview["carry-over"]` holds the carry-over record that `batch decide --findings-file` on the
+pending developer report, or else `batch carry-over`, would record, or the same
+`{"route": null, "refused": ..., "remedy": ...}` refusal. Every `batch decide`
+decision stores a `decision` detail on its batch transition audit record: the `route` (`null` for a
+decision that routes nothing), the `evidence` (`dispatch_id`, `report`, `report_sha256`) and the
+`approver` (`{"kind": "policy" | "human", "name": ...}`, set by the path that approved it). A route outside
+`RECOVERY_ROUTES` is refused when it is written and when a batch is read back.
+
+A defect the coordinator finds in a clean developer report is a coordinator finding, not a reason
+for a retry before review: retrying a developer report without accepting it is an exception allowed
+only for an unmet Definition of Done item or a change outside the declared zone. A finding file is
+`{"findings": [{"summary", "files", "expected_evidence"}, ...]}` in English. The batch records each
+finding append-only and hash-checked in `carried_items`; every later code-review brief carries the
+open ones, and an open finding sends the candidate to code-review even when risk assessment matched
+no trigger. A finding is settled once a code-review whose brief carried it is accepted or
+warning-overridden; a retried review leaves it open, and the developer-retry that follows carries it
+together with the review's findings, so `retry_policy.max_developer_retries` is spent once.
+`batch carry-over` refuses once a dispatch other than a cancelled or abandoned one follows the
+accepted developer report, and names it: an unsent one is cancelled with `dispatch cancel` first, a
+sent one leaves the defect to the decision on its report, and one whose report is already decided
+takes the finding through `batch decide --findings-file` when the next developer report is accepted.
+
+A later recovery route adds its `RECOVERY_ROUTES` value and its row here in the same change.
+
+## Developer-retry handoff
+
+A developer retry starts a new worker session from a compact handoff; it never resumes the previous
+developer session or replays its history. The handoff has the shape of a checkpoint, structured
+evidence without chat history or logs of failed attempts:
+
+- `developer_report`: the last developer work report, accepted or returned with `retry`;
+- `retry_decision`: the retried dispatch, its role, `route`, `reason_category`, rationale and note,
+  and every review finding with its axis;
+- `commit_plan`: the plan that developer brief carried;
+- `context_package_id`: the batch's latest registered Context Package, or the no-package sentinel.
+
+`dispatch preflight` for a developer retry returns this handoff as `retry_start` and estimates the
+retry's starting context (the preview brief, the Context Package and the handoff) with the same
+byte-based token estimate a Context Package uses. The smart-zone threshold is
+`adaptive_continuation_policy.context_warn_ratio × context_limit`. Above it, the preflight compacts:
+
+- the handoff keeps only structured fields: the report's dispatch ID, outcome, commit, changed
+  files and `commit_map`; the decision's dispatch, role, route and reason category; each finding's
+  axis, severity and summary, without its quoted evidence;
+- the starting files narrow to the files a finding names or the developer report lists in
+  `changed_files`;
+- a large document stays only as its `sections` index.
+
+`retry_start.context_estimate` records the threshold and the estimates before and after the compact,
+and the preflight's decision packet repeats it as `retry_context_estimate` with
+`retry_context_warning`. The preflight writes nothing and never blocks the dispatch: when the compact
+cannot reach the threshold, the warning names both numbers and the dispatch proceeds. Read-only roles
+(code-review, QA) always start new independent sessions.
 
 ## Approvals bound to the transition digest
 
@@ -136,7 +258,8 @@ model again. A `context-pressure` retry needs a critical record for the reported
 The coordinator sets `needs_attention` (with `attention_reason`, `attention_since`,
 `last_safe_action`, `recommended_human_action`) when: a retry has waited longer than
 `attention_policy.retry_queue_seconds`; operational retries of one candidate exceed
-`max_infrastructure_retries`; a retry's reason is `unknown`; a dispatch's pinned Context Package no
+`max_infrastructure_retries`; a third consecutive `tooling-retry` on one candidate is decided
+(`tooling-retry-repeated`); a retry's reason is `unknown`; a dispatch's pinned Context Package no
 longer matches the batch base or accepted candidate; or a live dispatch is silent past
 `stale_dispatch_seconds`. It is evaluated by `batch attention check`, by `batch decide --decision
 retry` and by `dispatch wait`. While it is set no next dispatch is created; nothing is deleted and
@@ -154,9 +277,14 @@ that still passes the routing rules above. A failing notification adapter is rec
 the attention state. None of them adds a model tool or edits a prompt, and the selected names, the
 attention thresholds and the approval TTL are frozen in each brief as `orchestration_policy`.
 
-Records written before these fields existed stay valid: every new batch field and the four brief
-fields (`transition`, `transition_digest`, `retry_idempotency_key`, `orchestration_policy`, all
-present or all absent) are optional, and no ledger migration is required.
+These batch fields and the four brief fields (`transition`, `transition_digest`,
+`retry_idempotency_key`, `orchestration_policy`, all present or all absent) are optional; a record
+without them needs no ledger migration.
+
+A routing record's `route` and the `decision` detail of a batch transition audit record are optional
+under ledger version 3 in the same way. A decision recorded before them is read verbatim and stays
+valid; `ledger migrate` neither adds nor derives a route for it, and only a new `batch decide`
+decision records one. A recorded `route` outside the closed route set is rejected on read-back.
 
 ## Versioned lifecycle ledger
 
@@ -170,6 +298,14 @@ audit checksums, then switches the pointer only after that validation succeeds. 
 remain untouched as migration evidence. `ledger reset --confirm RESET` selects a fresh generation
 only after the literal confirmation, and refuses while any batch is `active`; prior generations
 remain immutable audit history.
+
+Every coordinator command holds the exclusive ledger lock, which records its owner (`pid`, `host`,
+`acquired_at`). A busy lock fails a write command with a remedy to repeat it; `dispatch wait` and
+`dispatch status` keep polling instead (`dispatch status` answers `ledger_busy`). A lock that stays
+held is released only by `coordinator.py --repo . ledger release-lock`, which refuses a lock whose
+owner process is alive or runs on another host, releases a dead owner's lock, releases a lock
+without an owner record only once it is stale, and never releases a lock whose owner record cannot
+be read; concurrent releases are serialised. Nobody removes the lock or any state file by hand.
 
 When a new fact appears after dispatch, the coordinator appends a new coordinator decision before
 acting on it. The decision records the dispatch ID, fact and evidence, impact on scope or risk,
@@ -230,7 +366,7 @@ It must contain, at minimum:
   mode (read-only roles get no edit tools) and a project may override it with `tool_policy`;
   `context_budget` is `adaptive_continuation_policy.context_limit`. The tool list is the role's
   working set, never a deny-list: a brief does not disable the runtime's global tools. A brief
-  created before these fields existed stays valid;
+  without these fields is valid;
 - `zone IDs` and allowed paths: the exact backend zones the role may read or write;
 - `branch/worktree`: issue branch and isolated worktree; protected branches and `integration/*`
   are never write targets;
@@ -240,7 +376,18 @@ It must contain, at minimum:
   work dispatch may use focused developer commands; clean-room QA always uses the full verification
   commands;
 - `dependencies and assumptions`: known blockers, required inputs, and their owner;
-- `coordinator approval`: approving person, timestamp, and the approved concurrency decision.
+- `coordinator approval`: approving person, timestamp, and the approved concurrency decision;
+- `commit plan` (developer work): ordered entries `{id, summary, expected_paths, covers}`, where
+  `covers` names the Definition of Done items an entry implements. It is one entry per item unless
+  the operator pinned the architect's plan with `batch decide --decision accept --commit-plan-file`;
+- `commit plan divergence` (code-review): how the last accepted initial or rebase developer report
+  diverged from its plan, or `null`;
+- `carried items`: one shared channel keyed by the kind of source,
+  `{"coordinator-finding": [...], "review-finding": [...]}`, each item
+  `{item_id, source, summary, files, expected_evidence}`, or `{}`. A code-review or developer work
+  brief carries every open coordinator finding; a developer brief answering a retried code-review
+  also carries that review's Standards and Spec findings. A non-empty section is bound into the
+  transition as `carried_items_sha256`.
 
 The brief is a starting contract, not a conversation buffer. A role must escalate an ambiguity,
 overlap, credential request, irreversible action, policy decision, or missing proof. It must not
@@ -285,7 +432,22 @@ The report must include:
   check result;
 - residual `risks`, including unverified edge cases and deferred decisions;
 - `blockers`, or an explicit `none`;
-- the next coordinator action, including the required independent gate when applicable.
+- the next coordinator action, including the required independent gate when applicable;
+- for a developer brief with a `commit_plan`: a `commit_map` of `{commit_sha, plan_entry_id}` pairs
+  covering every created commit. An initial or rebase report may map one commit to several entries
+  and one entry to several commits; when that mapping is not one-to-one it also carries
+  `dod_coverage` (one record per Definition of Done item, either its covering commits or
+  `not_covered` with a reason) and a `divergence_justification` naming what was merged, split or
+  added and why. A developer-retry report maps each new commit to one distinct entry and carries
+  neither field;
+- for a code-review brief with carried items: `review.carried_items`, one
+  `{item_id, status: closed | open | unverified, evidence}` per item the brief carried. An omitted,
+  `unverified` or `open` item is a carried gap: the report is never clean, no policy accepts it, plain
+  `accept` is refused, and only `override-warning` with a note other than `none` (recorded as
+  `carried_items_gap`) or `retry` decides it. An `open` item is `code` evidence for the retry route;
+- for a role a tool blocked: `outcome: blocked` and `tooling_blocker`, exactly the non-empty strings
+  `tool`, `command` (as invoked) and `message` (verbatim), each at most 1600 characters. It is valid
+  only on a `blocked` report and is the only evidence of the `tooling` reason category.
 
 Optional `lessons` and `used_memory` are lists of non-empty strings; empty lists and omission are
 valid. `lessons` records historical observations, never confirmed truth: memory indexes them only
@@ -318,6 +480,17 @@ Use this shape so missing proof is visible:
 
 In JSON, represent the optional fields as `"lessons": ["<observation>"]` and
 `"used_memory": ["<hit identifier>"]`; omit them when there is nothing to record.
+
+Report submission rejects structural commit-plan errors, each with a remedy, such as an
+unmapped created commit, an unknown plan entry, an uncovered item without a reason, or a divergence
+without a justification. It also checks `dod_coverage` against `commit_map` and the plan's `covers`:
+an item claimed by commits none of which `commit_map` maps to an entry covering that item is
+refused, and the remedy names the item, the claimed commits, and the entries that cover it. A
+`not_covered` item that the mapping formally covers stays valid and needs a manual decision like any
+other `not_covered` item. A justified divergence with full coverage does not by itself make a report
+unclean, and the decision records it as `commit_plan_divergence`. Any `not_covered` item is never
+clean: no policy accepts it automatically, plain `accept` is refused, and the report can be
+accepted only by `override-warning` with a note other than `none`, or returned with `retry`.
 
 The coordinator does not rewrite a report to make it pass. A missing commit SHA, changed-file
 list, check result, risk statement, or blocker statement is a proof gap and keeps the batch from

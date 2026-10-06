@@ -14,6 +14,9 @@ import pytest
 
 from harness.health.checks import tracker
 from harness.health.context import HealthContext
+from harness.health.project_tracker import ProjectTracker
+
+_GITHUB = ProjectTracker("github", "github.com", "acme/widgets", "origin")
 
 
 def _online_context(tmp_path: Path) -> HealthContext:
@@ -77,9 +80,7 @@ def test_missing_tracker_tool_warns_instead_of_failing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Проверить, что отсутствие утилиты трекера приводит к предупреждению вместо ошибки."""
-    monkeypatch.setattr(
-        tracker, "detect_tracker", lambda _context: ("github", "acme/widgets")
-    )
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
     monkeypatch.setattr(shutil, "which", lambda _name: None)
     context = _online_context(tmp_path)
 
@@ -93,9 +94,7 @@ def test_missing_git_warns_reachability_instead_of_failing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Проверить, что отсутствие git приводит к предупреждению в проверке доступности."""
-    monkeypatch.setattr(
-        tracker, "detect_tracker", lambda _context: ("github", "acme/widgets")
-    )
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
     monkeypatch.setattr(shutil, "which", lambda _name: None)
     context = _online_context(tmp_path)
 
@@ -108,9 +107,7 @@ def test_a_stalled_git_call_fails_reachability(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Проверить, что зависший вызов git приводит к ошибке проверки доступности."""
-    monkeypatch.setattr(
-        tracker, "detect_tracker", lambda _context: ("github", "acme/widgets")
-    )
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
     monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/git")
     monkeypatch.setattr(tracker, "_run", lambda *_args, **_kwargs: None)
     context = _online_context(tmp_path)
@@ -153,16 +150,31 @@ def _many_labels(count: int) -> list[dict[str, str]]:
 
 
 @pytest.mark.parametrize(
-    "tracker_name,tool,api_path",
+    "target,tool,api_args",
     [
-        ("github", "gh", "repos/acme/widgets/labels"),
-        ("gitlab", "glab", "projects/acme%2Fwidgets/labels"),
+        (
+            _GITHUB,
+            "gh",
+            ["--hostname", "github.com", "--paginate", "repos/acme/widgets/labels"],
+        ),
+        (
+            ProjectTracker(
+                "gitlab", "gitlab.example.test:4443", "acme/widgets", "origin"
+            ),
+            "glab",
+            [
+                "--hostname",
+                "gitlab.example.test:4443",
+                "--paginate",
+                "projects/acme%2Fwidgets/labels",
+            ],
+        ),
     ],
 )
 def test_list_repo_labels_reads_every_page_past_the_default_cap(
-    tracker_name: tracker.Tracker,
+    target: ProjectTracker,
     tool: str,
-    api_path: str,
+    api_args: list[str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -181,8 +193,8 @@ args = sys.argv[1:]
 with open({str(calls_log)!r}, "a", encoding="utf-8") as log:
     log.write(" ".join(args) + "\\n")
 if args[:1] == ["api"]:
-    if args[2:3] != [{api_path!r}]:
-        sys.stderr.write("unexpected api path: " + " ".join(args[2:3]) + "\\n")
+    if args[1:] != {api_args!r}:
+        sys.stderr.write("unexpected api arguments: " + " ".join(args[1:]) + "\\n")
         sys.exit(1)
     sys.stdout.write({json.dumps(all_labels)!r})
     sys.exit(0)
@@ -196,8 +208,10 @@ sys.exit(1)
     executable = shutil.which(tool)
     assert executable is not None
 
+    online_target = tracker._hosted(target)
+    assert online_target is not None
     labels = tracker._list_repo_labels(
-        tracker_name, executable, "acme/widgets", tmp_path
+        online_target, executable, "acme/widgets", tmp_path
     )
 
     assert labels is not None
@@ -217,9 +231,7 @@ sys.exit(1)
         encoding="utf-8",
     )
     context = HealthContext(repo=tmp_path, lock=None, online=True)
-    monkeypatch.setattr(
-        tracker, "detect_tracker", lambda _context: (tracker_name, "acme/widgets")
-    )
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: target)
 
     result = tracker.check_labels(context)
 
