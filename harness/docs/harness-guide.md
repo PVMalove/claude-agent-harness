@@ -507,6 +507,24 @@ network_access = true
 Настройки проекта, профиля, аргументы запуска и управляемые политики могут его переопределить.
 `health --fix` не изменяет эти глобальные файлы и не печатает их содержимое.
 
+**Кеш `uv` в песочнице.** `environment.codex_uv_cache` и `environment.claude_uv_cache` проверяют в тех
+же пользовательских конфигах, что песочница разрешает запись в каталог кеша `uv`. Без этого
+`uv sync` (в том числе в `make verify`) падает с `Read-only file system`. Каталог берётся из
+`UV_CACHE_DIR`, иначе `$XDG_CACHE_HOME/uv`, иначе `~/.cache/uv`; ведущий `~` в путях конфига
+раскрывается в домашний каталог пользователя.
+
+- Codex при `sandbox_mode = "workspace-write"`: каталог должен лежать в
+  `[sandbox_workspace_write] writable_roots` или под одним из его путей. Другой `sandbox_mode`
+  не ограничивает запись этой проверкой.
+- Claude Code при `sandbox.enabled = true`: каталог должен лежать в `sandbox.filesystem.allowWrite`
+  или под одним из его абсолютных путей; `sandbox.filesystem.disabled = true` или выключенная
+  песочница ограничений записи не создают.
+
+Недостающий путь, повреждённый или нечитаемый конфиг дают `warn` с готовым фрагментом, если нет ни
+CLI агента, ни конфига, проверка даёт `skipped`. Разрешение записи действует на все команды
+песочницы, а не только на `uv`; если это нежелательно, задайте `UV_CACHE_DIR` внутри проекта.
+Проверки статические: не запускают `uv` и агента, не пишут на диск, `health --fix` конфиги не меняет.
+
 **Группа `orchestration`.** Без capability все шесть проверок сразу `skipped` («backend-orchestration
 capability не выбрана»). Проверки читают леджер и `git worktree list --porcelain` и строят только
 dry-run план очистки; `ledger migrate`/`reset`, `git worktree remove`/`prune` и `apply_cleanup`
