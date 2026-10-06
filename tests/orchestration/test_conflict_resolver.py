@@ -950,14 +950,32 @@ class VerificationFailureTests(ResolverFixture):
         # Asking for a resolver spends no cycle: only a recorded resolver report does.
         self.assertEqual(self.events(), [])
 
+    def test_a_verification_failure_batch_describes_no_conflict_or_rebase(self) -> None:
+        self.collect("failure")
+
+        batch = self.batch_record(self.resolve()["batch_id"])
+
+        summary = batch["resolver"]["commit_plan"][0]["summary"]
+        for text in [batch["goal"], *batch["definition_of_done"], summary]:
+            self.assertNotRegex(
+                text.lower(), r"textual conflict|rebase the|every conflict"
+            )
+        self.assertIn("failed verification", batch["goal"])
+        self.assertIn("failed_evidence_ids", " ".join(batch["definition_of_done"]))
+        self.assertIn("failed verification", summary)
+
     def test_a_conflict_batch_names_its_trigger_too(self) -> None:
         self.land(CONFLICT_FILE, TARGET_TEXT)
         created = self.resolve()
         self.assertEqual(created["trigger"], "conflict")
         self.assertEqual(created["conflicting_files"], [CONFLICT_FILE])
+        batch = self.batch_record(created["batch_id"])
+        self.assertEqual(batch["resolver"]["failed_evidence_ids"], [])
+        self.assertTrue(batch["goal"].startswith("Resolve the textual conflict of"))
+        self.assertIn("resolve every conflict", batch["definition_of_done"][0])
         self.assertEqual(
-            self.batch_record(created["batch_id"])["resolver"]["failed_evidence_ids"],
-            [],
+            batch["resolver"]["commit_plan"][0]["summary"],
+            "Resolve the conflict preserving both sides and commit the result",
         )
 
     def test_repeating_the_route_returns_the_open_batch(self) -> None:

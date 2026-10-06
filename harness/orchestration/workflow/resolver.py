@@ -51,11 +51,38 @@ from harness.orchestration.workflow.resolver_state import (
     RESOLVER_BATCH_KIND,
     RESOLVER_NEXT_ACTION,
     budget,
+    exhaustion,
     is_resolver_brief,
     last_cause,
-    same_target_fixes,
     write_event,
 )
+
+
+def _batch_text(trigger: str, ticket: str, tip: str) -> tuple[str, list[str], str]:
+    """The goal, the definition of done and the commit-plan summary of a resolver batch.  A failed
+    verification of a refreshed pair has no conflict and no rebase to describe (issue #537)."""
+    if trigger == "verification-failure":
+        return (
+            f"Fix the failed verification of {ticket} on the refreshed pair at the integration tip {tip}",
+            [
+                "Fix the behavioural incompatibility behind the failed evidence (failed_evidence_ids) "
+                f"on top of the exact target {tip}; the branch already is at that target, so there "
+                "is no conflict and no rebase",
+                "Preserve the requirements of both sides and add no behaviour outside them",
+                "Commit the fix and pass the approved verification commands",
+            ],
+            "Fix the failed verification of the refreshed pair preserving both sides and commit the result",
+        )
+    return (
+        f"Resolve the textual conflict of {ticket} with the integration tip {tip}",
+        [
+            f"Rebase the issue branch onto the exact target {tip} and resolve every conflict",
+            "Preserve the requirements of both sides and add no behaviour outside them",
+            "Commit the resolution and pass the approved verification commands",
+        ],
+        "Resolve the conflict preserving both sides and commit the result",
+    )
+
 
 _FINISHED_STATES = {"completed", "failed", "blocked", "not-required", "abandoned"}
 _TICKET_IN_SUBJECT = re.compile(r"\(#(\d+)\)")
@@ -83,6 +110,11 @@ def _open_batch(batches: list[JsonObject]) -> JsonObject | None:
         if item.get("state") not in _FINISHED_STATES:
             return item
     return None
+
+
+def open_resolver_batch(root: Path, record_id: str) -> JsonObject | None:
+    """The open resolver batch of an integration record, if any (read-only)."""
+    return _open_batch(_resolver_batches(root, record_id))
 
 
 def _failed_verification(root: Path, record: JsonObject, pair: JsonObject) -> list[str]:
@@ -268,17 +300,13 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
                 "the rebase onto the integration tip is clean: nothing for a resolver to do",
                 remedy="run 'integration refresh'; a clean rebase spends no resolver cycle",
             )
-        current = budget(root, config, record_id)
-        fixes = same_target_fixes(root, record_id, tip)
-        if tip in current["spent_targets"]:
-            if fixes >= current["internal_fix_budget"]:
-                raise _exhaust(
-                    ledger, root, record, tip, "internal fix budget is spent", None
-                )
-        elif current["remaining"] == 0:
-            raise _exhaust(
-                ledger, root, record, tip, "automatic cycles are spent", None
-            )
+        trigger = "verification-failure" if failed else "conflict"
+        goal, definition_of_done, summary = _batch_text(
+            trigger, identity["ticket"], tip
+        )
+        _, _, spent = exhaustion(root, config, record_id, tip)
+        if spent is not None:
+            raise _exhaust(ledger, root, record, tip, spent, None)
         merge_base = _git(worktree, "merge-base", pair["candidate_sha"], tip)
         scope = _conflict_scope(
             worktree, merge_base, pair["candidate_sha"], tip, conflicting
@@ -290,7 +318,7 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
             "candidate_sha": pair["candidate_sha"],
             "target_sha": tip,
             "merge_base": merge_base,
-            "trigger": "verification-failure" if failed else "conflict",
+            "trigger": trigger,
             "failed_evidence_ids": failed,
             "conflicting_files": conflicting,
             "sides": {
@@ -305,7 +333,7 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
             "commit_plan": [
                 {
                     "id": COMMIT_PLAN_ENTRY_ID,
-                    "summary": "Resolve the conflict preserving both sides and commit the result",
+                    "summary": summary,
                     "expected_paths": scope,
                     "covers": [1, 2, 3],
                 }
@@ -320,12 +348,8 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
             worktree=str(worktree),
             zone=None,
             integration_ref=ref,
-            goal=f"Resolve the textual conflict of {identity['ticket']} with the integration tip {tip}",
-            definition_of_done=[
-                f"Rebase the issue branch onto the exact target {tip} and resolve every conflict",
-                "Preserve the requirements of both sides and add no behaviour outside them",
-                "Commit the resolution and pass the approved verification commands",
-            ],
+            goal=goal,
+            definition_of_done=definition_of_done,
             prohibited_change=list(PROHIBITIONS),
             dependency=None,
             required_gate=None,
