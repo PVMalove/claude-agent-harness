@@ -50,10 +50,10 @@ from harness.orchestration.workflow.resolver_state import (
     PROHIBITIONS,
     RESOLVER_BATCH_KIND,
     RESOLVER_NEXT_ACTION,
-    same_target_fixes,
-    last_cause,
     budget,
     is_resolver_brief,
+    last_cause,
+    same_target_fixes,
     write_event,
 )
 
@@ -80,9 +80,7 @@ def _resolver_batches(root: Path, record_id: str) -> list[JsonObject]:
 
 def _open_batch(batches: list[JsonObject]) -> JsonObject | None:
     for item in batches:
-        if item.get("state") not in _FINISHED_STATES and not (
-            item.get("state") == "blocked"
-        ):
+        if item.get("state") not in _FINISHED_STATES:
             return item
     return None
 
@@ -181,9 +179,9 @@ def _exhaust(
     else:
         remedy = (
             "the integration is incompatible with the ticket: a human records the decision "
-            "('integration resolver-event --kind human-decision --extends-budget') and "
-            "'integration resolve' continues with the same resolver role; the branch and the "
-            "evidence are preserved"
+            "('integration resolver-event --kind human-decision --extends-budget', which also grants "
+            "one more round of same-target fixes) and the same resolver role continues ('integration "
+            "resolve' or 'batch decide --decision retry'); the branch and the evidence are preserved"
         )
     return CoordinatorError(
         f"the conflict-resolver {reason} for target {target}; only this task stops",

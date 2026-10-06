@@ -112,7 +112,8 @@ def write_event(
 def budget(root: Path, config: JsonObject, record_id: str) -> JsonObject:
     """The cycle budget of a record.  A cycle is one target SHA with a recorded resolver report;
     a clean rebase, a human answer and a fix on the same target spend none.  Everything is derived
-    from the events, so no session can reset it."""
+    from the events, so no session can reset it.  A human decision with ``--extends-budget`` also
+    grants one more ``retry_policy.max_developer_retries`` of same-target fixes."""
     recorded = events(root, record_id)
     spent = sorted(
         {item["target_sha"] for item in recorded if item["kind"] == "cycle-spent"}
@@ -132,7 +133,8 @@ def budget(root: Path, config: JsonObject, record_id: str) -> JsonObject:
         "spent_targets": spent,
         "internal_fix_budget": core_config._retry_policy(config)[
             "max_developer_retries"
-        ],
+        ]
+        * (1 + extended),
     }
 
 
@@ -287,6 +289,9 @@ def validate_report(
         for item in events(root, batch["resolver"]["integration_record_id"])
         if item["kind"] == "human-decision"
         and item["dispatch_id"] == dispatch["dispatch_id"]
+        and item.get(
+            "checkpoint_id"
+        )  # a standalone extension is no answer to the report
     )
     if sorted(_strings_of(block["human_decisions"], "human_decisions")) != recorded:
         raise CoordinatorError(

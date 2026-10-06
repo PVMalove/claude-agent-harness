@@ -751,6 +751,49 @@ class BudgetTests(ResolverFixture):
         with self.assertRaisesRegex(CoordinatorError, "max_developer_retries"):
             self.fx._decide(created["batch_id"], "retry", reason_category="code")
 
+    def test_a_human_decision_extending_the_budget_allows_another_fix_on_the_same_target(
+        self,
+    ) -> None:
+        tip = self.land()
+        created = self.resolve()
+        first = self.approved_resolver_dispatch(created)["brief"]
+        self.start(first)
+        resolved = self.resolve_in_worktree(tip)
+        self.submit(first, self.report(first, resolved))
+        self.fx._decide(created["batch_id"], "retry", reason_category="code")
+        second = self.fx._dispatch(created["batch_id"], "conflict-resolver")["brief"]
+        self.start(second)
+        (self.worktree / CONFLICT_FILE).write_text(
+            "VALUE = 'fixed'\n", encoding="utf-8"
+        )
+        _git(self.worktree, "commit", "-am", "fix the resolution")
+        self.submit(
+            second, self.report(second, _git(self.worktree, "rev-parse", "HEAD"))
+        )
+        with self.assertRaisesRegex(CoordinatorError, "max_developer_retries"):
+            self.fx._decide(created["batch_id"], "retry", reason_category="code")
+
+        coordinator.resolver_event(
+            self.branch.args(
+                record=self.record_id,
+                ticket=None,
+                branch=None,
+                batch=None,
+                kind="human-decision",
+                dispatch=second["dispatch_id"],
+                decided_by="Malove",
+                note="one more fix is worth it",
+                option=None,
+                extends_budget=True,
+            )
+        )
+
+        self.assertEqual(self.budget()["internal_fix_budget"], 2)
+        self.fx._decide(created["batch_id"], "retry", reason_category="code")
+        self.assertEqual(
+            self.batch_record(created["batch_id"])["next_action"], "resolve-conflict"
+        )
+
 
 class CauseRoutingTests(ResolverFixture):
     def retried(self, cause: str) -> JsonObject:
