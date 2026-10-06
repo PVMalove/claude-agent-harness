@@ -112,14 +112,14 @@ lifecycle — в [playbook.md](./playbook.md), границы ролей — в 
 
 | Поле | Назначение |
 | --- | --- |
-| `capabilities` | Непустой список возможностей: `architecture-analysis`, `backend-development`, `code-review`, `independent-verification`, `database-migrations`, `messaging-integration`. Профиль роли должен покрывать `required_capabilities` её manifest'а. |
+| `capabilities` | Непустой список возможностей: `architecture-analysis`, `backend-development`, `code-review`, `independent-verification`, `database-migrations`, `messaging-integration`, `conflict-resolution`. Профиль роли должен покрывать `required_capabilities` её manifest'а. |
 | `fallback` | Упорядоченные имена резервных профилей при безопасном отказе основного. Runtime brief при failover не меняется. |
 | `known_limitations` | Известные ограничения профиля (текст). |
 
 ### `assignment_plans.<роль>`
 
 Роли — имена manifest'ов: `architect`, `developer`, `code-review`, `qa`, `verification`,
-`database-migrations`, `messaging-integration`. Если назначения заданы, `code-review` обязателен.
+`database-migrations`, `messaging-integration`, `conflict-resolver`. Если назначения заданы, `code-review` обязателен.
 
 | Поле | Назначение |
 | --- | --- |

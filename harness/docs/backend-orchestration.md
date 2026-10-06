@@ -148,6 +148,7 @@ worktree, branch и SHA; legacy projects могут включить это по
         "independent-verification",
         "database-migrations",
         "messaging-integration",
+        "conflict-resolution",
         "code-review"
       ],
       "fallback": ["backend-fallback"],
@@ -160,6 +161,7 @@ worktree, branch и SHA; legacy projects могут включить это по
         "independent-verification",
         "database-migrations",
         "messaging-integration",
+        "conflict-resolution",
         "code-review"
       ],
       "fallback": [],
@@ -171,6 +173,7 @@ worktree, branch и SHA; legacy projects могут включить это по
     "developer": {"write_paths": ["services/payments/**"], "transport": "external", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-developer-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "sonnet", "effort": "xhigh"}}},
     "database-migrations": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-migration-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "project-migration-claude-model", "effort": "xhigh"}}},
     "messaging-integration": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-messaging-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-messaging-claude-model", "effort": "high"}}},
+    "conflict-resolver": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-resolver-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-resolver-claude-model", "effort": "high"}}},
     "qa": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-qa-model", "effort": "medium"}, "claude": {"profiles": ["backend-claude"], "model": "project-qa-claude-model", "effort": "medium"}}},
     "code-review": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-review-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-review-claude-model", "effort": "high"}}}
   },
@@ -353,13 +356,14 @@ self-report, heartbeat, review или QA.
 
 ## 3. Выбрать роли и спланировать batch
 
-В базовом наборе есть три write-роли и три read-only роли.
+В базовом наборе есть четыре write-роли и три read-only роли.
 
 | Роль | Режим | Когда назначать |
 | --- | --- | --- |
 | `developer` | write | Обычное backend-изменение внутри service или bounded context. |
 | `database-migrations` | write | Schema/data migration и её rollout/rollback. |
 | `messaging-integration` | write | Outbox, routing, message schema, retry или DLQ. |
+| `conflict-resolver` | write | Текстовый конфликт ветки тикета с сдвинувшимся integration SHA; назначается только маршрутом `integration resolve`. |
 | `architect` | read-only | Труднообратимое граничное решение. |
 | `qa` | read-only | Нужна независимая проверка через project-facing interface. |
 | `code-review` | read-only | Обязателен для listed high-risk triggers; выдаёт отдельные Standards и Spec reports. |
@@ -1125,7 +1129,7 @@ provider-поле остаётся `null`, а не оценочным нулём
 
 ### Checkpoint и новая worker session
 
-Write-роль (developer, database-migrations, messaging-integration) может растянуть один dispatch на
+Write-роль (developer, database-migrations, messaging-integration, conflict-resolver) может растянуть один dispatch на
 несколько worker session, если весь TDD-цикл в одну сессию раздувает её контекст. Read-only роль
 (architect, qa, code-review) — не может: попытка checkpoint для неё отклоняется сразу.
 
