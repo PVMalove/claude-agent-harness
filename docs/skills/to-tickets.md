@@ -55,12 +55,14 @@ disable-model-invocation: true
 1. **Опубликуйте в трекере:** метод зависит от настроенного трекера:
    - **Integration-ветка:** прочитайте раздел родительского эпика `## Integration Branch` до записи любого дочернего тикета. Скопируйте его точное имя ветки в каждый дочерний тикет; если у эпика нет integration-ветки, остановитесь и сообщите об отсутствующем prerequisite вместо вывода ветки.
    - **Локальные файлы:** запишите один файл на тикет под `.scratch/<feature-slug>/issues/<NN>-<slug>.md` (01, 02...). Используйте `<local-ticket-template>`. Установите `**Workflow:**` в `status::blocked`, если есть блокеры, иначе в `status::ready`. Установите `**Execution:**` в `hitl` или `afk` по лучшему суждению о тикете (см. `docs/agents/triage-labels.md`). Добавьте `**Task report:** required`, если не сказано пропустить (полностью опустите строку, если не требуется). `/fast-implement` находит следующий тикет, читая поле `**Workflow:**` каждого файла — исключительно линейная цепочка разрешается сверху вниз.
-   - **GitHub / реальный трекер:**
-     - Опубликуйте один issue на тикет в порядке зависимостей через `gh issue create --body-file <path>`. Не передавайте тело inline через `--body` или heredoc — это ломает shell quoting (см. `docs/agents/git-workflow.md` §1).
-     - Примените метки (полную таксономию смотрите в `docs/agents/triage-labels.md`): `bug`/`enhancement`, `status::ready` (или `status::blocked`, если тикет ограничен другим тикетом в этом batch), `hitl`/`afk` и `task-report::required`, если не сказано пропустить.
-     - *Группировка:* свяжите каждый тикет с родительским эпиком как **нативную подзадачу**. НЕ используйте метки `epic::<slug>`.
+   - **GitHub / GitLab:** `<project-url>`, `<host>` и `<project-id>` в командах GitLab определены в `docs/agents/issue-tracker.md` → GitLab → Conventions.
+     - Опубликуйте один issue на тикет в порядке зависимостей по `<issue-template>`. GitHub: `gh issue create --body-file <path>`. GitLab: `glab issue create -R <project-url> --title '<title>' --description-file <path> --yes`, где `<title>` стоит в одинарных кавычках, а каждый апостроф внутри него записан как `'\''`; номер тикета — последний сегмент URL issue, который печатает команда. Не передавайте тело inline через `--body`/`--description` или heredoc — это ломает shell quoting (см. `docs/agents/git-workflow.md` §1).
+     - Примените метки (полную таксономию смотрите в `docs/agents/triage-labels.md`): `bug`/`enhancement`, `status::ready` (или `status::blocked`, если тикет ограничен другим тикетом в этом batch), `hitl`/`afk` и `task-report::required`, если не сказано пропустить. GitLab: `glab issue update <n> -R <project-url> --label '<label>,<label>'`; метку, которой ещё нет в проекте, GitLab молча создаёт с цветом по умолчанию, поэтому `/setup-labels` должен быть выполнен заранее.
+     - *Группировка:* свяжите каждый тикет с родительским эпиком через родительскую связь трекера. НЕ используйте метки `epic::<slug>`.
+       - GitHub: свяжите тикет с эпиком как **нативную подзадачу** (sub-issue).
+       - GitLab: секция `## Parent: #<epic>` в тикете плюс ровно одна связь `relates_to` от тикета к эпику, созданная сразу после тикета: `glab api --hostname <host> --method POST projects/<project-id>/issues/<n>/links -F target_project_id=<numeric-project-id> -F target_issue_iid=<epic> -F link_type=relates_to`. `<numeric-project-id>` — поле `id` из `glab api --hostname <host> projects/<project-id>`; получите его один раз на batch. Блокирующие рёбра остаются в строках `Blocked by #<M>`; связи между тикетами не создаются. Epics, связи `blocks` и нативная иерархия issue — возможности GitLab Premium, и они не используются.
      - *Локальное зеркало:* спецификация эпика уже находится в собственной папке под `docs/tasks/` (согласно `docs/agents/artifacts.md`) — сначала переименуйте эту папку в `issue-<epic-id>-<epic-slug>/`, если она всё ещё содержит только slug. Сохраните тело issue каждого опубликованного тикета в той же папке как `issue-<ID>-<slug>.md`.
-     - *Frontier:* не прослеживайте `Blocked by` вручную, чтобы узнать, что можно взять, — запросите его: те же поля и механизм, что у frontier-запроса `/wayfinder` (`docs/agents/issue-tracker.md#wayfinding-operations`), но ограниченный подзадачами эпика вместо дочерних элементов карты. `/fast-implement` выполняет этот же запрос сам, когда ему передан эпик вместо конкретного тикета.
+     - *Frontier:* не прослеживайте `Blocked by` вручную, чтобы узнать, что можно взять, — запросите его: те же поля и механизм, что у frontier-запроса `/wayfinder` для настроенного трекера (`docs/agents/issue-tracker.md#wayfinding-operations`), но ограниченный дочерними тикетами эпика вместо дочерних элементов карты: его GitHub sub-issues, а на GitLab связанными с эпиком issue, в описании которых есть `## Parent: #<epic>`. `/fast-implement` выполняет этот же запрос сам, когда ему передан эпик вместо конкретного тикета.
      - Не закрывайте и не переписывайте родительское issue эпика, кроме добавления короткого списка созданных номеров подзадач.
 2. **Сделайте резюме batch:**
    - Прочитайте `language` из `.harness/project.json` (по умолчанию `ru`, если файла или поля нет) — это определяет только колонку «Что построить» ниже, а не названия/тела публикуемых тикетов, которые остаются на том языке, на котором вы их подготовили.
@@ -90,8 +92,8 @@ disable-model-invocation: true
 </local-ticket-template>
 
 <issue-template>
-## Родитель
-Ссылка на родительское issue в трекере (если применимо).
+## Parent: #<epic>
+Сама строка заголовка несёт номер родительского эпика и служит фиксированным маркером для frontier-запроса: сохраняйте её ровно в этой форме и никогда не переводите. Опустите секцию, если у тикета нет родительского эпика.
 
 ## Integration-ветка
 
@@ -105,7 +107,7 @@ disable-model-invocation: true
 - [ ] Критерий 2
 
 ## Заблокирован
-- Ссылка на каждый блокирующий тикет либо «Нет — можно начать немедленно».
+- Blocked by #<M> — по одной такой строке на каждый блокирующий тикет, либо «None — can start immediately».
 
 ## Relevant Files (Discovery Context)
 - `<path>` — зачем этот файл нужен задаче; опустите секцию, если у родителя нет Discovery Context.

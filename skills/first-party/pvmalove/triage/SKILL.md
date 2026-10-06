@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Move issues on the project issue tracker through a small state machine of triage roles.
 
-If this repo treats external pull requests as a request surface (see the issue-tracker config), triage covers them too: **a PR is an issue with attached code** — same roles, same states, same machine, with a few deltas marked "for a PR" below. Resolve a bare `#42` to an issue or PR per the tracker config.
+If this repo treats external pull requests (merge requests on GitLab) as a request surface (see the issue-tracker config), triage covers them too: **a PR is an issue with attached code** — same roles, same states, same machine, with a few deltas marked "for a PR" below. Resolve a bare `#42` to an issue or PR per the tracker config.
 
 Every comment or issue posted to the issue tracker during triage **must** start with this disclaimer:
 
@@ -59,9 +59,18 @@ For a PR, the same labels read against the attached code: `status::ready` + `afk
 
 These are the actual label strings for this repo. See `docs/agents/triage-labels.md`.
 
-Never apply upstream canonical labels (`ready-for-agent`, `ready-for-human`, `needs-triage`, `needs-info`, `wontfix`) or an `epic::<slug>` label. This repo groups a ticket under an epic with a tracker-native link — GitHub sub-issues, GitLab's `Part of #<map>` convention, or the local-markdown folder structure (see `docs/agents/issue-tracker.md#wayfinding-operations`); explain that if the maintainer asks for an epic label.
+Never apply upstream canonical labels (`ready-for-agent`, `ready-for-human`, `needs-triage`, `needs-info`, `wontfix`) or an `epic::<slug>` label. This repo groups a ticket under an epic with the tracker's parent link — a GitHub sub-issue, on GitLab a `## Parent: #<epic>` section plus a `relates_to` issue link, or the local-markdown folder structure (see `docs/agents/issue-tracker.md#wayfinding-operations`); explain that if the maintainer asks for an epic label.
 
 State transitions: analyze an unlabeled issue to determine its `type::*` label and whether it's `hitl` or `afk`, then place it in `status::ready` or `status::blocked` (dependency or missing info) — or, if it's too large to specify in one triage pass, `status::specs` and point the maintainer at `/to-spec`. `status::blocked` returns to `status::ready` once the blocker clears or the reporter replies — `/to-pull-requests` sweeps a closed ticket's dependents, and `/implement`/`/fast-implement` re-check blockers in pre-flight; `triage` does not run that sweep on its own initiative. The maintainer can override at any time — flag transitions that look unusual and ask before proceeding.
+
+## Tracker commands
+
+Read and list issues (and PRs/MRs when they are in scope) with the commands in `docs/agents/issue-tracker.md` for the configured tracker. On GitLab, `<host>`, `<project-url>` and `<project-id>` are defined in that guide's GitLab → Conventions. Write every comment body to a file first, at the path from `docs/agents/git-workflow.md` §1 (`.harness/.sandboxes/pr_body/issue-comment-<issue>-<slug>.md`, or `pr-comment-<issue>-<slug>.md` for a PR/MR).
+
+- **Comment:** GitHub `gh issue comment <n> --body-file <path>`; GitLab `glab api --hostname <host> projects/<project-id>/issues/<n>/notes -F body=@<path>` (GitLab calls comments notes).
+- **Replace a label:** one command that adds the new label and removes the previous label with the same `key::` prefix — GitHub `gh issue edit <n> --remove-label <old> --add-label <new>`; GitLab `glab issue update <n> -R <project-url> --unlabel <old> --label <new>`. On GitLab Free a `key::value` label is an ordinary label (mutually exclusive scoped labels are a Premium feature), so a bare `--label` leaves both `status::*` labels on the issue and breaks the exactly-one-`status::*` invariant in [Roles](#roles).
+- **Close:** post the comment first, then GitHub `gh issue close <n>`; GitLab `glab issue close <n> -R <project-url>`.
+- **For a PR/MR:** GitHub uses the `gh pr` equivalents with the same flags. GitLab comments through `glab api --hostname <host> projects/<project-id>/merge_requests/<n>/notes -F body=@<path>`, replaces a label with `glab mr update <n> -R <project-url> --unlabel <old> --label <new>` and closes with `glab mr close <n> -R <project-url>`.
 
 ## Invocation
 

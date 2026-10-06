@@ -41,13 +41,16 @@ disable-model-invocation: true
 1. **Подготовьте файл:** напишите спецификацию по `<spec-template>` ниже в собственной папке под `docs/tasks/`.
    - *Соглашение об именовании:* если ID issue известен, используйте его. Если нет, используйте описательный slug (например, `docs/tasks/add-user-auth/add-user-auth.md`) и позже переименуйте и папку, и файл, когда ID будет создан — полное соглашение, включая группировку в папке эпика, смотрите в `docs/agents/artifacts.md`.
    - Возьмите итоговый список файлов Discovery Context из `Live Artifact` текущей сессии; если публикация артефактов недоступна, возьмите вместо него утверждённый список путей из финальной Trunk summary. Добавьте его в завершающую секцию шаблона `## Relevant Files (Discovery Context)`. Сохраняйте каждый путь и переданный контекст; при подготовке не ищите и не заменяйте этот список заново.
-2. **Опубликуйте в трекере:** опубликуйте issue через CLI: `gh issue create --body-file <path>`.
-   - Не передавайте тело inline через `--body` или heredoc: тела спецификаций содержат вложенные кавычки и backticks, которые ломают shell quoting.
+2. **Опубликуйте в трекере:** опубликуйте issue через CLI настроенного трекера:
+   - **GitHub:** `gh issue create --body-file <path>`.
+   - **GitLab:** `glab issue create -R <project-url> --title '<title>' --description-file <path> --yes`. `<title>` остаётся в одинарных кавычках, каждый апостроф внутри него записывается как `'\''`. `<project-url>` и другие плейсхолдеры GitLab (`<host>`, `<project-id>`) определены в `docs/agents/issue-tracker.md` → GitLab → Conventions. Номер эпика — последний сегмент URL issue, который печатает команда.
+   - Не передавайте тело inline через `--body`/`--description` или heredoc: тела спецификаций содержат вложенные кавычки и backticks, которые ломают shell quoting.
 3. **Примените метки:** это опубликованное issue действует как **эпик** функции. Примените следующие метки (полную таксономию смотрите в `docs/agents/triage-labels.md`):
    - `bug` ИЛИ `enhancement`;
    - `status::specs` (НЕ используйте `status::ready`, потому что сначала требуется декомпозиция);
    - `task-report::required` (если не сказано пропустить).
-   - *Примечание:* НЕ создавайте произвольные метки `epic::<slug>`. Позже `/to-tickets` сам создаст нативные связи подзадач — GitHub sub-issues; механизм см. в `docs/agents/issue-tracker.md#wayfinding-operations`.
+   - **GitLab:** `glab issue update <epic> -R <project-url> --label 'type::feature,status::specs,task-report::required'` (`type::bug` для бага; уберите `task-report::required`, если сказано пропустить). Метку, которой ещё нет в проекте, GitLab молча создаёт с цветом по умолчанию вместо ошибки, поэтому запустите `/setup-labels` до первого эпика.
+   - *Примечание:* НЕ создавайте произвольные метки `epic::<slug>`. Позже `/to-tickets` свяжет тикеты с этим эпиком через родительскую связь трекера — GitHub sub-issues, а на GitLab секцию `## Parent: #<epic>` плюс связь issue `relates_to`; механизм см. в `docs/agents/issue-tracker.md#wayfinding-operations`.
 4. **Убедитесь, что выбранная integration-ветка существует после успешного создания issue эпика:**
    - Прочитайте обязательное поле `base_branch` из `.harness/project.json`; если его нет, остановитесь и сообщите о некорректной конфигурации проекта. Это ветка релиза/базы, от которой начинается integration-ветка эпика.
    - Получите base ref. Создайте `integration/<service-or-team>` от `origin/<base_branch>`, когда есть remote, иначе от локальной base branch. Не переключайте текущий worktree: в нём могут быть несвязанные изменения.

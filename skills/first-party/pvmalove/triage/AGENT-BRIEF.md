@@ -1,8 +1,8 @@
 # Writing Agent Briefs
 
-An agent brief is a structured comment posted on an issue or PR on the project tracker when it moves to `status::ready` + `afk`. It is the authoritative specification that an AFK agent will work from. The original body and discussion are context — the agent brief is the contract.
+An agent brief is a structured comment posted on an issue or PR (merge request on GitLab) on the project tracker when it moves to `status::ready` + `afk`; on GitLab the comment is a note. Post it with the comment command for the configured tracker from the triage skill's "Tracker commands". It is the authoritative specification that an AFK agent will work from. The original body and discussion are context — the agent brief is the contract.
 
-The brief states **what the agent should do**, which stretches to both surfaces: for an issue, that's building the change from nothing; for a PR, it's what's left to do *to the existing diff* — finish it, close gaps, address review points. Same principles either way; the PR example below shows the difference.
+The brief states **what the agent should do**, which stretches to both surfaces: for an issue, that's building the change from nothing; for a PR or MR, it's what's left to do *to the existing diff* — finish it, close gaps, address review points. Same principles either way; the PR example below shows the difference.
 
 ## Principles
 
@@ -29,7 +29,7 @@ Describe **what** the system should do, not **how** to implement it. The agent w
 
 The agent needs to know when it's done. Every agent brief must have concrete, testable acceptance criteria. Each criterion should be independently verifiable.
 
-- **Good:** "Running `gh issue list --label status::ready` returns issues that have completed triage classification"
+- **Good:** "Running `gh issue list --label status::ready` (on GitLab, `glab issue list -R <project-url> --label status::ready`) returns issues that have completed triage classification"
 - **Bad:** "Triage should work correctly"
 
 ### Explicit scope boundaries
@@ -145,9 +145,9 @@ checked for matches.
 - Bug reports (only feature rejections go to `.out-of-scope/`)
 ```
 
-### Good agent brief (PR)
+### Good agent brief (PR or MR)
 
-For a PR, "Current behavior" describes the state of the diff, and the brief asks the agent to finish or fix it rather than build from scratch.
+For a PR or MR, "Current behavior" describes the state of the diff, and the brief asks the agent to finish or fix it rather than build from scratch.
 
 ```markdown
 ## Agent Brief
