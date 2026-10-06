@@ -70,6 +70,68 @@ _ACCEPTED_DECISIONS = {"accept", "override-warning"}
 _INTEGRATION_VERIFICATION_KINDS = ("ci", "local-qa")
 
 
+def _satisfies(link: JsonObject, pair: JsonObject) -> bool:
+    """A passed check of exactly this pair.  CI counts only when 'integration collect-ci' accepted
+    it (issue #535): a CI result linked by hand stays unverified evidence."""
+    if (
+        link["result"] != "passed"
+        or link["candidate_sha"] != pair["candidate_sha"]
+        or link["target_sha"] != pair["target_sha"]
+    ):
+        return False
+    if link["kind"] == "ci":
+        return link.get("verification") == INTEGRATION_CI_COLLECTED
+    return link["kind"] == "local-qa"
+
+
+def _qa_replacement(links: list[JsonObject], pair: JsonObject, state: str) -> JsonObject:
+    """Whether collector-accepted CI stands in for a repeat of full local QA of the current pair.
+    The original QA reports are never touched; this block only reports the replacement."""
+    collected = [
+        link
+        for link in links
+        if link["kind"] == "ci" and link.get("verification") == INTEGRATION_CI_COLLECTED
+    ]
+    current = [link for link in collected if _satisfies(link, pair)]
+    if current and state == "current":
+        verified = current[-1]["collector"]
+        return {
+            "applies": True,
+            "reason": None,
+            "re_refresh_required": False,
+            "evidence_id": current[-1]["evidence_id"],
+            **{
+                key: verified[key]
+                for key in (
+                    "source",
+                    "repository",
+                    "pull_request",
+                    "candidate_sha",
+                    "target_sha",
+                    "merge_commit_sha",
+                    "checks",
+                )
+            },
+        }
+    if current:
+        reason = "integration_moved" if state == "stale" else "integration_unreadable"
+        verified = current[-1]["collector"]
+        return {
+            "applies": False,
+            "reason": reason,
+            "re_refresh_required": True,
+            "evidence_id": current[-1]["evidence_id"],
+            "candidate_sha": verified["candidate_sha"],
+            "target_sha": verified["target_sha"],
+            "merge_commit_sha": verified["merge_commit_sha"],
+        }
+    return {
+        "applies": False,
+        "reason": "no_collected_ci" if not collected else "pair_changed",
+        "re_refresh_required": False,
+    }
+
+
 def _sha256(value: JsonObject) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
 
@@ -576,8 +638,8 @@ def _notice(
             )
         return (
             f"The branch was refreshed onto {target} as candidate {pair['candidate_sha']}. The old "
-            "QA is historical evidence and does not confirm it: CI or local integration QA of the "
-            "new pair is required (register it with 'integration link-evidence'). No re-review is "
+            "QA is historical evidence and does not confirm it: CI collected by 'integration collect-ci' or local "
+            "integration QA (register it with 'integration link-evidence') of the new pair is required. No re-review is "
             "required because of the refresh alone."
         )
     if state == "current":
@@ -615,13 +677,7 @@ def integration_status(args: argparse.Namespace) -> JsonObject:
     observed = _observe(repo, {**identity, "target_sha": pair["target_sha"]})
     state = observed["state"]
     tip = observed["integration_tip"]
-    verified = not refreshes or any(
-        link["kind"] in _INTEGRATION_VERIFICATION_KINDS
-        and link["result"] == "passed"
-        and link["candidate_sha"] == pair["candidate_sha"]
-        and link["target_sha"] == pair["target_sha"]
-        for link in links
-    )
+    verified = not refreshes or any(_satisfies(link, pair) for link in links)
     return {
         "integration_record_id": record["integration_record_id"],
         "ticket": identity["ticket"],
@@ -659,6 +715,7 @@ def integration_status(args: argparse.Namespace) -> JsonObject:
             "accepted_kinds": list(_INTEGRATION_VERIFICATION_KINDS),
             "re_review_required": False,
         },
+        "qa_replacement": _qa_replacement(links, pair, state),
         "pair_checks": [
             {
                 "evidence_id": link["evidence_id"],
