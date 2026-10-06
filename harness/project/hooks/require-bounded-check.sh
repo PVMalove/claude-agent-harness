@@ -5,34 +5,34 @@
 # (skills/first-party/pvmalove/qa-gate/scripts/test_summary.py), which redacts and truncates output
 # instead of dumping a raw multi-thousand-line run into the transcript. A point run of a single test
 # (a pytest node-id containing "::", or a fully-qualified unittest test path) is never blocked.
-# The command is split into simple commands: a read command (cat, sed, grep, ...), heredoc text
-# and comments never fire, so a name they merely mention is not mistaken for a run.
+# The shared shell parser keeps argv boundaries: literal text arguments, comments and inert
+# heredoc bodies do not fire; executable substitutions and nested shell commands still do.
 # Absent .harness/project.json this hook is inactive, so it never fires on an unharnessed project.
 INPUT=$(cat)
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"
 PROJECT_JSON="$PROJECT_DIR/.harness/project.json"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ -f "$PROJECT_JSON" ] || exit 0
 
 PY="$(command -v python3 || command -v python)"
 if [ -z "$PY" ]; then
-  echo "Невозможно проверить ограниченный прогон проверок: Python 3.9+ не найден." >&2
+  echo "Невозможно проверить ограниченный прогон проверок: Python 3.10+ не найден." >&2
   exit 2
 fi
 
-printf '%s' "$INPUT" | PROJECT_JSON="$PROJECT_JSON" "$PY" -c '
-import io
+printf '%s' "$INPUT" | PROJECT_JSON="$PROJECT_JSON" HOOK_DIR="$SCRIPT_DIR" "$PY" -c '
 import json
 import os
 import re
-import shlex
 import sys
 
-SEPARATORS = "();<>|&\n"
-READERS = {"cat", "diff", "egrep", "fgrep", "grep", "head", "jq", "ls", "rg", "sed", "tail", "wc"}
-SHELLS = {"bash", "dash", "sh", "zsh"}
-ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
-HEREDOC = re.compile(r"(?<!<)<<(-?)[ \t]*([\x27\"]?)([A-Za-z_][A-Za-z0-9_.-]*)\2")
+# Share the shell parser with the other project hooks; do not write runtime bytecode.
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.environ["HOOK_DIR"])
+import pr_commands
+
+PYTHON = re.compile(r"python[0-9.]*")
 PYTEST = re.compile(r"(?<![A-Za-z0-9_])pytest(?![A-Za-z0-9_])")
 UNITTEST = re.compile(r"(?<![A-Za-z0-9_])python[0-9.]*\s+-m\s+unittest(?![A-Za-z0-9_])")
 UNITTEST_TEST = re.compile(
@@ -40,60 +40,17 @@ UNITTEST_TEST = re.compile(
 )
 
 
-class Source(io.StringIO):
-    """Ends a comment before its newline, so the newline still separates commands."""
-
-    def readline(self, size=-1):
-        line = super().readline(size)
-        if line.endswith("\n"):
-            self.seek(self.tell() - 1)
-            return line[:-1]
-        return line
-
-
-def without_heredocs(text):
-    """Drop heredoc bodies, except one fed to a shell, which runs as commands."""
-    kept, pending = [], []
-    for line in text.split("\n"):
-        if pending:
-            strip_tabs, word = pending[0]
-            if (line.lstrip("\t") if strip_tabs else line) == word:
-                pending.pop(0)
-            continue
-        kept.append(line)
-        pending = [
-            (match.group(1), match.group(3))
-            for match in HEREDOC.finditer(line)
-            if not SHELLS & {os.path.basename(word) for word in line[: match.start()].split()}
-        ]
-    return "\n".join(kept)
-
-
-def simple_commands(text):
-    """Words of each simple command, without leading VAR=value assignments."""
-    text = without_heredocs(text)
-    lexer = shlex.shlex(Source(text.replace("\\\n", " ")), posix=True, punctuation_chars=SEPARATORS)
-    lexer.whitespace = " \t\r"
-    lexer.whitespace_split = True
-    commands, words = [], []
-    try:
-        for token in lexer:
-            if token and set(token) <= set(SEPARATORS):
-                commands.append(words)
-                words = []
-            elif words or not ASSIGNMENT.fullmatch(token):
-                words.append(token)
-    except ValueError:
-        # An unbalanced quote defeats the parser: fall back to plain words per line.
-        return [line.split() for line in text.split("\n") if line.split()]
-    commands.append(words)
-    return [words for words in commands if words]
-
-
-def reads_only(words):
-    return os.path.basename(words[0]) in READERS and not any(
-        "$(" in word or "`" in word for word in words
-    )
+def candidates(argv):
+    """Command argv, including programs started by wrappers, but never split text arguments."""
+    for start in pr_commands.positions(argv):
+        part = [pr_commands.program(argv[start]), *argv[start + 1 :]]
+        yield part
+        if (
+            part[0] in pr_commands.PRINTERS
+            or tuple(part[:2]) in pr_commands.TEXT_COMMANDS
+            or tuple(part[:3]) in pr_commands.TEXT_COMMANDS
+        ):
+            break
 
 
 try:
@@ -108,18 +65,46 @@ try:
 except (OSError, ValueError, AttributeError):
     gates = []
 
-runnable = [" ".join(words) for words in simple_commands(command) if not reads_only(words)]
+parsed = pr_commands.parse(command)
+runnable = [part for argv in parsed.commands for part in candidates(argv)]
 for gate in gates:
-    parts = [" ".join(words) for words in simple_commands(gate)] if isinstance(gate, str) else []
-    if parts and all(any(part in text for text in runnable) for part in parts):
+    parts = pr_commands.parse(gate).commands if isinstance(gate, str) else []
+    if parts and all(
+        any(
+            text[: len(part)] == [pr_commands.program(part[0]), *part[1:]]
+            for text in runnable
+        )
+        or any(" ".join(part) in fragment for fragment in parsed.opaque)
+        for part in parts
+    ):
         raise SystemExit(2)
-for text in runnable:
+for argv in runnable:
+    text = " ".join(argv)
+    pytest = argv[0] == "pytest" or (
+        PYTHON.fullmatch(argv[0]) and argv[1:3] == ["-m", "pytest"]
+    )
+    if pytest and "::" not in text:
+        raise SystemExit(2)
+    if (
+        PYTHON.fullmatch(argv[0])
+        and argv[1:3] == ["-m", "unittest"]
+        and not UNITTEST_TEST.search(text)
+    ):
+        raise SystemExit(2)
+# Interpreter code, an incomplete shell command or dynamic shell stdin cannot be classified
+# as literal text: keep the conservative full-run check for these opaque fragments.
+for text in parsed.opaque:
     if PYTEST.search(text) and "::" not in text:
         raise SystemExit(2)
     if UNITTEST.search(text) and not UNITTEST_TEST.search(text):
         raise SystemExit(2)
 '
-if [ $? -eq 2 ]; then
+STATUS=$?
+if [ "$STATUS" -ne 0 ] && [ "$STATUS" -ne 2 ]; then
+  echo "Невозможно проверить ограниченный прогон: ошибка Python или общего shell-парсера pr_commands.py." >&2
+  exit 2
+fi
+if [ "$STATUS" -eq 2 ]; then
   echo "Заблокировано: полносьютный тестовый/quality-gate прогон без bounded-враппера раздувает историю dispatch-сессии. Оберни вызов:" >&2
   echo "  python .harness/skills/qa-gate/scripts/test_summary.py -- bash -lc '<исходная команда>'" >&2
   echo "(PowerShell-эквивалент — skills/first-party/pvmalove/qa-gate/SKILL.md). Точечный прогон одного теста (node-id с '::', либо полный dotted-путь unittest) не блокируется." >&2

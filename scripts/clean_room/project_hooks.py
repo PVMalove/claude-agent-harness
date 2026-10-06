@@ -572,6 +572,10 @@ def run(ctx: SimpleNamespace) -> None:
 
     # pv_project's qa_gate_commands (.harness/project.json) is ["echo test"] (--qa-gate-command
     # above), so that literal command is the project's own full-suite gate for this hook.
+    bounded_config = project_json.read_bytes()
+    config = json.loads(bounded_config)
+    config["qa_gate_commands"].append("make verify")
+    project_json.write_text(json.dumps(config), encoding="utf-8")
     if run_hook(bounded_hook, pv_project, "echo test").returncode == 0:
         sys.exit(
             "require-bounded-check.sh allowed a bare qa_gate_commands run without the bounded wrapper"
@@ -625,6 +629,21 @@ def run(ctx: SimpleNamespace) -> None:
         "head -20 pytest.ini",
         "cat pytest.ini # don't run it here",
         "cat > notes.md <<'EOF'\nRun pytest before the PR; don't skip it.\nEOF",
+        'gh issue create --body "DoD: echo test passes"',
+        'glab issue create --description "DoD: echo test passes"',
+        'git commit -m "docs: describe echo test and pytest"',
+        'printf "%s\\n" "DoD: echo test passes; run pytest"',
+        'echo "DoD: echo test passes"',
+        'gh issue edit 1 --body "DoD: pytest passes"',
+        'gh issue create --body "DoD: python -m unittest passes"',
+        'echo "$(date) mentions pytest"',
+        "echo '$(pytest) is literal text'",
+        'gh issue create --body "DoD: make verify passes"',
+        'gh issue create --body "DoD: make verify"',
+        'git commit -m "docs: describe make verify"',
+        'printf "%s" "make verify"',
+        'env FOO=1 gh issue create --body "pytest"',
+        'timeout 60 printf "%s" "pytest"',
     ):
         if run_hook(bounded_hook, pv_project, command).returncode != 0:
             sys.exit(
@@ -644,6 +663,18 @@ def run(ctx: SimpleNamespace) -> None:
         'echo "$(pytest)"',
         "eval 'pytest -q'",
         "bash <<'EOF'\npytest\nEOF",
+        'gh issue create --body "DoD: $(pytest) passes"',
+        'printf "%s" "$(echo test)"',
+        'echo "`pytest`"',
+        "cat <(pytest)",
+        "cat <<EOF\n$(pytest)\nEOF",
+        "bash -c 'printf hello; echo test'",
+        "env FOO=1 echo test",
+        """python -c 'import os; os.system("pytest")'""",
+        "make verify",
+        "timeout 600 make verify",
+        "bash -lc 'make verify'",
+        'gh issue create --body "DoD: $(make verify) passes"',
     ):
         if run_hook(bounded_hook, pv_project, command).returncode == 0:
             sys.exit(
@@ -655,6 +686,19 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit(
             "require-bounded-check.sh fired in a project with no .harness/project.json"
         )
+    project_json.write_bytes(bounded_config)
+
+    broken_hooks = test_root / "bounded-broken-helper"
+    broken_hooks.mkdir()
+    broken_hook = broken_hooks / bounded_hook.name
+    shutil.copy2(bounded_hook, broken_hook)
+    for helper_exists in (False, True):
+        if helper_exists:
+            (broken_hooks / "pr_commands.py").write_text("", encoding="utf-8")
+        if run_hook(broken_hook, pv_project, "pytest").returncode != 2:
+            sys.exit(
+                "require-bounded-check.sh allowed a run with a missing or partial shell parser"
+            )
 
     if (
         run_hook(
