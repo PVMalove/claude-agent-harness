@@ -136,14 +136,32 @@ def _expand(value: str) -> Path:
     return Path(value)
 
 
-def _uv_cache_dir() -> Path:
-    """The directory `uv` writes its cache to: UV_CACHE_DIR, XDG_CACHE_HOME/uv or ~/.cache/uv."""
-    configured = os.environ.get("UV_CACHE_DIR")
+def _project_cache(repo: Path) -> str | None:
+    """`[tool.uv] cache-dir` of the project's pyproject.toml, when it is a string."""
+    try:
+        data = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    tool = data.get("tool")
+    uv = tool.get("uv") if isinstance(tool, dict) else None
+    value = uv.get("cache-dir") if isinstance(uv, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _uv_cache_dir(repo: Path) -> Path:
+    """The directory `uv` writes its cache to: UV_CACHE_DIR, else `[tool.uv] cache-dir` of the project,
+    else XDG_CACHE_HOME/uv or ~/.cache/uv. A relative path is relative to the project."""
+    configured = os.environ.get("UV_CACHE_DIR") or _project_cache(repo)
     if configured:
-        return _expand(configured)
+        return Path(os.path.abspath(repo / _expand(configured)))
     xdg = os.environ.get("XDG_CACHE_HOME")
     base = _expand(xdg) if xdg else Path.home() / ".cache"
     return base / "uv"
+
+
+def _inside(cache: Path, repo: Path) -> bool:
+    """True when the cache lies under the project, which a sandbox may write by default."""
+    return Path(os.path.abspath(repo)) in Path(os.path.abspath(cache)).parents
 
 
 def _covers(entries: object, cache: Path) -> bool:
@@ -219,7 +237,7 @@ def _uv_cache_result(
 
 
 def _uv_cache_check(
-    runtime: str, path: Path, judge: Callable[[JsonObject, Path], str]
+    runtime: str, path: Path, judge: Callable[[JsonObject, Path], str], repo: Path
 ) -> CheckResult:
     if shutil.which(runtime) is None and not path.exists():
         return CheckResult(
@@ -228,7 +246,15 @@ def _uv_cache_check(
             status="skipped",
             message=f"{runtime}: утилита и пользовательский конфиг отсутствуют",
         )
-    cache = _uv_cache_dir()
+    cache = _uv_cache_dir(repo)
+    if _inside(cache, repo):
+        label = "Codex" if runtime == "codex" else "Claude Code"
+        return CheckResult(
+            id=f"environment.{runtime}_uv_cache",
+            group="environment",
+            status="ok",
+            message=f"{label}: кеш uv {cache} внутри проекта, песочница разрешает запись в рабочий каталог",
+        )
     settings = _read_settings(path)
     verdict = judge(settings, cache) if isinstance(settings, dict) else "missing"
     return _uv_cache_result(runtime, path, settings, cache, verdict)
@@ -237,10 +263,10 @@ def _uv_cache_check(
 def check_codex_uv_cache(context: HealthContext) -> CheckResult:
     """Check that the Codex workspace-write sandbox may write the `uv` cache."""
     path = _config_path("CODEX_HOME", ".codex", "config.toml")
-    return _uv_cache_check("codex", path, _codex_cache_verdict)
+    return _uv_cache_check("codex", path, _codex_cache_verdict, context.repo)
 
 
 def check_claude_uv_cache(context: HealthContext) -> CheckResult:
     """Check that the Claude Code filesystem sandbox may write the `uv` cache."""
     path = _config_path("CLAUDE_CONFIG_DIR", ".claude", "settings.json")
-    return _uv_cache_check("claude", path, _claude_cache_verdict)
+    return _uv_cache_check("claude", path, _claude_cache_verdict, context.repo)

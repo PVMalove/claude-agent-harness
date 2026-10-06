@@ -22,6 +22,11 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          cache-local-path: ${{ runner.temp }}/setup-uv-cache
+      - name: Keep the uv cache where setup-uv restores it
+        shell: bash
+        run: echo "UV_CACHE_DIR=$RUNNER_TEMP/setup-uv-cache" >> "$GITHUB_ENV"
       - name: Bootstrap harness environment
         run: make bootstrap
       - name: Make script executable
@@ -59,6 +64,11 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          cache-local-path: ${{ runner.temp }}/setup-uv-cache
+      - name: Keep the uv cache where setup-uv restores it
+        shell: bash
+        run: echo "UV_CACHE_DIR=$RUNNER_TEMP/setup-uv-cache" >> "$GITHUB_ENV"
       - name: Bootstrap harness environment
         run: make bootstrap
       - name: Verify harness and clean-room install
@@ -171,6 +181,11 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          cache-local-path: ${{ runner.temp }}/setup-uv-cache
+      - name: Keep the uv cache where setup-uv restores it
+        shell: bash
+        run: echo "UV_CACHE_DIR=$RUNNER_TEMP/setup-uv-cache" >> "$GITHUB_ENV"
       - name: Bootstrap harness environment
         run: make bootstrap
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
