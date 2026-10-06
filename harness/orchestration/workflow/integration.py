@@ -806,6 +806,7 @@ def integration_collect_ci(args: argparse.Namespace) -> JsonObject:
         candidate_sha=pair["candidate_sha"],
         target_sha=pair["target_sha"],
         required_checks=required,
+        base_ref=record["identity"]["integration_ref"],
     )
     result = _collected(
         verdict.outcome,

@@ -176,6 +176,10 @@ class CollectCiTests(unittest.TestCase):
             with self.subTest(reason):
                 self.assert_nothing_recorded(self.collect(observation), reason)
 
+    def test_a_pull_request_against_another_base_is_a_wrong_base_fallback(self) -> None:
+        result = self.collect(self.observation(base_ref="release"))
+        self.assert_nothing_recorded(result, "wrong_base")
+
     def test_unsupported_tracker_is_a_fallback_without_calling_ci(self) -> None:
         for tracker in (
             {"type": "gitlab", "host": "gitlab.example.test", "project": "g/p"},
