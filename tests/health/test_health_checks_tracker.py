@@ -187,6 +187,7 @@ TRACKER_IDS = (
     "tracker.reachability",
     "tracker.permissions",
     "tracker.labels",
+    "tracker.git_base",
 )
 
 
@@ -1114,3 +1115,163 @@ def test_unreachable_origin_fails_reachability(tmp_path: Path) -> None:
     _, checks = _health(repo, bin_dir, online=True)
 
     assert checks["tracker.reachability"]["status"] == "fail"
+
+
+# --- tracker.git_base ----------------------------------------------------------------------------
+
+_GH_ISSUES = "api --hostname github.com --paginate repos/acme/widgets/issues?state=open&per_page=100"
+_GL_ISSUES = (
+    "api --hostname gitlab.example.com --paginate "
+    "projects/acme%2Fwidgets/issues?state=opened&per_page=100"
+)
+
+
+def _base_branch(repo: Path, branch: str | None = "master") -> None:
+    """Записать base_branch проекта в .harness/project.json."""
+    (repo / ".harness").mkdir(exist_ok=True)
+    data = {} if branch is None else {"base_branch": branch}
+    (repo / ".harness" / "project.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def _body(integration: str | None, git_base: str | None) -> str:
+    parts = []
+    if integration is not None:
+        parts.append(f"## Integration Branch\n\n`{integration}`. Ветка от неё.\n")
+    parts.append("## What to build\n\nSECRET-текст задачи.\n")
+    if git_base is not None:
+        parts.append(f"## Git base\n\nВетка начинается от `{git_base}`.\n")
+    return "\n".join(parts)
+
+
+def _gh_issue(
+    number: int, labels: list[str], body: str, *, pull_request: bool = False
+) -> dict[str, object]:
+    issue: dict[str, object] = {
+        "number": number,
+        "labels": [{"name": name} for name in labels],
+        "body": body,
+    }
+    if pull_request:
+        issue["pull_request"] = {"url": "x"}
+    return issue
+
+
+def _git_base_health(
+    tmp_path: Path,
+    issues_response: tuple[int, str, str],
+    *,
+    branch: str | None = "master",
+) -> dict[str, object]:
+    repo = _repo(tmp_path / "repo", remote="git@github.com:acme/widgets.git")
+    _base_branch(repo, branch)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
+    _fake_gh(bin_dir, {_GH_ISSUES: issues_response})
+    _, checks = _health(repo, bin_dir, online=True)
+    return checks["tracker.git_base"]
+
+
+def _ok(issues: list[dict[str, object]]) -> tuple[int, str, str]:
+    return 0, json.dumps(issues), ""
+
+
+def test_git_base_consistent_tickets_are_ok(tmp_path: Path) -> None:
+    issues = [
+        _gh_issue(1, ["status::ready"], _body("integration/x", "origin/integration/x")),
+        _gh_issue(2, ["status::in-progress"], _body(None, "origin/master")),
+    ]
+    result = _git_base_health(tmp_path, _ok(issues))
+    assert result["status"] == "ok"
+
+
+def test_git_base_mismatches_warn_with_ticket_numbers_and_no_body_leak(
+    tmp_path: Path,
+) -> None:
+    issues = [
+        _gh_issue(3, ["status::ready"], _body("integration/x", "origin/master")),
+        _gh_issue(4, ["status::in-progress"], _body(None, None)),
+        _gh_issue(5, ["status::in-progress"], _body(None, "origin/integration/y")),
+        _gh_issue(6, ["status::ready"], _body("integration/x", "origin/integration/x")),
+        _gh_issue(7, ["status::backlog"], _body("integration/x", "origin/master")),
+        _gh_issue(
+            8,
+            ["status::ready"],
+            _body("integration/x", "origin/master"),
+            pull_request=True,
+        ),
+    ]
+    result = _git_base_health(tmp_path, _ok(issues))
+    message = str(result["message"])
+    assert result["status"] == "warn"
+    for number in ("#3", "#4", "#5"):
+        assert number in message
+    for number in ("#6", "#7", "#8"):
+        assert number not in message
+    assert "integration/x" in message
+    assert "SECRET" not in json.dumps(result, ensure_ascii=False)
+    assert result["fix"] is not None
+
+
+def test_git_base_epic_less_ticket_is_not_judged_without_base_branch(
+    tmp_path: Path,
+) -> None:
+    issues = [_gh_issue(4, ["status::ready"], _body(None, "origin/integration/y"))]
+    result = _git_base_health(tmp_path, _ok(issues), branch=None)
+    assert result["status"] == "ok"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [(1, "", "SECRET boom"), (0, "not json SECRET", ""), (0, '{"a": 1}', "")],
+)
+def test_git_base_tracker_errors_warn_without_leaking(
+    tmp_path: Path, response: tuple[int, str, str]
+) -> None:
+    result = _git_base_health(tmp_path, response)
+    assert result["status"] == "warn"
+    assert "SECRET" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_git_base_is_read_only_with_fix(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", remote="git@github.com:acme/widgets.git")
+    _base_branch(repo)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
+    issues = [_gh_issue(3, ["status::ready"], _body("integration/x", "origin/master"))]
+    log = _fake_gh(bin_dir, {_GH_ISSUES: _ok(issues)})
+
+    _health(repo, bin_dir, online=True, fix=True)
+
+    writes = [
+        call
+        for call in _invocations(log)
+        if call[:1] == ["issue"] or "--method" in call or "-X" in call
+    ]
+    assert writes == []
+
+
+def test_git_base_gitlab_reads_description_and_label_names(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo", remote="git@gitlab.example.com:acme/widgets.git")
+    _base_branch(repo)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir, {"ls-remote origin": (0, "abc\tHEAD\n", "")})
+    issues = [
+        {
+            "iid": 9,
+            "labels": ["status::ready"],
+            "description": _body("integration/x", "origin/master"),
+        },
+        {
+            "iid": 10,
+            "labels": ["status::ready"],
+            "description": _body("integration/x", "origin/integration/x"),
+        },
+    ]
+    _fake_glab(bin_dir, {_GL_ISSUES: _ok(issues)})
+
+    _, checks = _health(repo, bin_dir, online=True)
+
+    result = checks["tracker.git_base"]
+    assert result["status"] == "warn"
+    assert "#9" in str(result["message"])
+    assert "#10" not in str(result["message"])

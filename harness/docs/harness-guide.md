@@ -556,6 +556,7 @@ dry-run план очистки; `ledger migrate`/`reset`, `git worktree remove`
 | `tracker.permissions` | `gh api --hostname <host> repos/{owner}/{repo}` (`push` → PR и комментарии, `triage` и выше → метки) или `glab api --hostname <host> projects/:id/members/all/:user_id` — эффективный `access_level` с учётом членств, унаследованных от родительских групп и приглашённых групп (≥ 30 ≈ push, ≥ 20 — метки) |
 | `tracker.reachability` | `git ls-remote origin` |
 | `tracker.labels` | Сравнивает метки с таблицами из `docs/agents/triage-labels.md`; отсутствующая метка или другой цвет — `warn`, цвет никогда не перекрашивается |
+| `tracker.git_base` | Для открытых тикетов со `status::ready` и `status::in-progress` (`gh api repos/{owner}/{repo}/issues` / `glab api projects/:id/issues`, pull request и merge request не учитываются) секция `## Git base` должна называть integration-ветку из секции `## Integration Branch`, а у тикета без неё — `base_branch` из `.harness/project.json`. Расхождение и отсутствие секции — `warn` со списком тикетов; тела тикетов в вывод не попадают, тикеты проверка не меняет. `/to-tickets` и `/fast-implement` берут базу ветки из секции `## Integration Branch`; проверка следит, чтобы `## Git base` ей не противоречила |
 
 Каждый внешний вызов ограничен 10 секундами; отсутствующий `gh`/`glab` — `warn`, а не `fail` всего
 прогона. Каждый вызов `gh`/`glab` адресует проект явно: `api --hostname <host>` (для GitLab — с

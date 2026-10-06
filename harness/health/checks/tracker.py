@@ -27,6 +27,7 @@ wins, otherwise the origin URL is parsed.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -106,6 +107,7 @@ _SUBJECTS: dict[str, str] = {
     "tracker.reachability": "достижимость origin",
     "tracker.permissions": "права в репозитории",
     "tracker.labels": "лейблы трекера",
+    "tracker.git_base": "Git base тикетов",
 }
 
 
@@ -225,6 +227,8 @@ class _Host:
     # (executable, host, project, cwd) -> (push, labels), or None.
     permissions: Callable[[str, str, str, Path], tuple[bool, bool] | None]
     labels_endpoint: Callable[[str], str]
+    # The first page of the project's open issues; `_api_json` follows every page.
+    issues_endpoint: Callable[[str], str]
     # `gh label create <name>` takes the name positionally, `glab label create --name <name>`.
     label_name_args: Callable[[str], list[str]]
     # The `-R` value from (host, project): `gh` takes host/owner/repo, `glab` a full project URL.
@@ -417,6 +421,7 @@ _HOSTS: dict[str, _Host] = {
         tool="gh",
         permissions=_github_permissions,
         labels_endpoint=lambda slug: f"repos/{slug}/labels",
+        issues_endpoint=lambda slug: f"repos/{slug}/issues?state=open&per_page=100",
         label_name_args=lambda name: [name],
         repo_flag=lambda host, slug: f"{host}/{slug}",
     ),
@@ -424,6 +429,7 @@ _HOSTS: dict[str, _Host] = {
         tool="glab",
         permissions=_gitlab_permissions,
         labels_endpoint=lambda slug: f"projects/{quote(slug, safe='')}/labels",
+        issues_endpoint=lambda slug: f"projects/{quote(slug, safe='')}/issues?state=opened&per_page=100",
         label_name_args=lambda name: ["--name", name],
         repo_flag=lambda host, slug: f"https://{host}/{slug}",
     ),
@@ -586,3 +592,141 @@ def fix_labels(context: HealthContext, result: CheckResult) -> str | None:
     if not created:
         return None
     return "созданы метки: " + ", ".join(created)
+
+
+# --- tracker.git_base ------------------------------------------------------------------------------
+
+_IN_WORK_LABELS = frozenset({"status::ready", "status::in-progress"})
+_INTEGRATION_RE = re.compile(r"integration/[^\s`'\")]+")
+
+
+def _section(body: str, heading: str) -> str | None:
+    """The text under `## <heading>` up to the next `## ` heading, or None when absent."""
+    match = re.search(
+        rf"^##[ \t]+{re.escape(heading)}[ \t]*\n(.*?)(?=^##[ \t]|\Z)",
+        body,
+        re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    )
+    return match.group(1) if match else None
+
+
+def _names_branch(text: str, branch: str) -> bool:
+    """True when `text` names `branch`, with or without an `origin/` prefix, as a whole token."""
+    pattern = rf"(?<![\w./-])(?:origin/)?{re.escape(branch)}(?![\w./-])"
+    return re.search(pattern, text) is not None
+
+
+def _in_work_issues(data: object) -> list[tuple[int, str]] | None:
+    """(number, body) of open issues in work (never pull requests) from a raw issues listing, or
+    None when the listing is not a list. Reads GitHub (`number`, `body`, label objects) and
+    GitLab (`iid`, `description`, label names)."""
+    if not isinstance(data, list):
+        return None
+    found: list[tuple[int, str]] = []
+    for item in data:
+        if not isinstance(item, dict) or "pull_request" in item:
+            continue
+        number = item.get("number", item.get("iid"))
+        raw_labels = item.get("labels")
+        if not isinstance(number, int) or not isinstance(raw_labels, list):
+            continue
+        names = {
+            label.get("name") if isinstance(label, dict) else label
+            for label in raw_labels
+        }
+        if names & _IN_WORK_LABELS:
+            body = item.get("body", item.get("description"))
+            found.append((number, body if isinstance(body, str) else ""))
+    return sorted(found)
+
+
+def _base_branch(repo: Path) -> str | None:
+    """`base_branch` of .harness/project.json, or None when it is absent or unreadable."""
+    try:
+        data = json.loads(
+            (repo / ".harness" / "project.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None
+    value = data.get("base_branch") if isinstance(data, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _git_base_problem(body: str, base_branch: str | None) -> str | None:
+    """Why the ticket's `## Git base` disagrees with its integration branch; None when it agrees
+    (or cannot be judged)."""
+    integration = _section(body, "Integration Branch")
+    expected: str | None
+    if integration is not None:
+        found = _INTEGRATION_RE.search(integration)
+        expected = found.group(0) if found else None
+    else:
+        expected = base_branch
+    if expected is None:
+        return None
+    git_base = _section(body, "Git base")
+    if git_base is None:
+        return f"нет секции Git base (ожидалась {expected})"
+    if not _names_branch(git_base, expected):
+        return f"Git base не называет {expected}"
+    return None
+
+
+def check_git_base(context: HealthContext) -> CheckResult:
+    """Open tickets in work: `## Git base` must name the ticket's integration branch, or the
+    project's `base_branch` for a ticket without an epic. Read-only; ticket bodies never reach the
+    output."""
+    check_id = "tracker.git_base"
+    target = _offline_or_local(check_id, context)
+    if isinstance(target, CheckResult):
+        return target
+    tool = _tracker_tool(target.tracker)
+    executable = shutil.which(tool)
+    if executable is None:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message=f"{tool} не найден в PATH: Git base тикетов не проверен",
+        )
+    if target.project is None:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message="не удалось разобрать owner/repo из git remote -v: Git base тикетов не проверен",
+        )
+    endpoint = _HOSTS[target.tracker].issues_endpoint(target.project)
+    issues = _in_work_issues(
+        _api_json(executable, target.host, "--paginate", endpoint, cwd=context.repo)
+    )
+    if issues is None:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message=f"не удалось получить список тикетов через {tool}: Git base не проверен",
+        )
+    base_branch = _base_branch(context.repo)
+    problems = [
+        f"#{number}: {problem}"
+        for number, body in issues
+        if (problem := _git_base_problem(body, base_branch)) is not None
+    ]
+    if not problems:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="ok",
+            message=f"Git base согласован у {len(issues)} тикетов в работе",
+        )
+    return CheckResult(
+        id=check_id,
+        group=GROUP,
+        status="warn",
+        message="расхождение Git base с integration-веткой: " + "; ".join(problems),
+        fix=Fix(
+            text="в каждом тикете из списка приведите секцию `## Git base` к его integration-ветке "
+            "(или к base_branch проекта для тикета без эпика); проверка не меняет тикеты"
+        ),
+    )
