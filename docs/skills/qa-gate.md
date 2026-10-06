@@ -21,12 +21,19 @@ background: false
 
 Запустите гейт качества этого проекта и сообщите результат. Ничего больше — не повторяйте команды и не добавляйте несвязанные комментарии.
 
-1. Прочитайте `qa_gate_commands` из `.harness/project.json` — упорядоченный список shell-команд (например, `["make check", "make test"]` или `["ruff check .", "mypy .", "pytest"]`). Если файл или поле отсутствует, скажите пользователю заполнить его (снова запустить `harness init`/`update` или отредактировать `.harness/project.json` напрямую) и остановитесь.
+1. Найдите корень харнесса. Это текущий checkout, если в нём есть `.harness/project.json`. В linked worktree
+   нет игнорируемого Git каталога `.harness/`: если файла там нет, корнем считается основной worktree —
+   первая запись `worktree` в выводе `git worktree list --porcelain`. Берите оттуда только
+   `.harness/project.json` и `.harness/skills/qa-gate/scripts/test_summary.py`; каждую команду
+   выполняйте с рабочим каталогом текущего checkout, а не основного worktree.
+   Прочитайте `qa_gate_commands` из этого `.harness/project.json` — упорядоченный список shell-команд (например, `["make check", "make test"]` или `["ruff check .", "mypy .", "pytest"]`). Если файл или поле отсутствует, скажите пользователю заполнить его (снова запустить `harness init`/`update` или отредактировать `.harness/project.json` напрямую) и остановитесь.
 2. Запустите каждую команду по порядку через установленную агентскую обёртку:
 
    ```bash
-   python .harness/skills/qa-gate/scripts/test_summary.py -- bash -lc '<точная команда из qa_gate_commands>'
+   python <корень-харнесса>/.harness/skills/qa-gate/scripts/test_summary.py -- bash -lc '<точная команда из qa_gate_commands>'
    ```
+
+   `<корень-харнесса>` — это `.` в обычном checkout и абсолютный путь основного worktree в linked worktree.
 
    На первой ошибке остановитесь. Верните ограниченную сводку обёртки — статус, итоги pytest, ID упавших узлов и санитизированный локальный путь к логу — вместо вывода команды. Не запускайте оставшиеся команды. Читайте лог ошибки только когда разработчику нужно именно это диагностическое доказательство.
 3. Если каждая команда успешна, сами запишите маркер прохождения: выполните `bash "$CLAUDE_PROJECT_DIR/.claude/hooks/record-qa-gate-pass.sh"`. Не полагайтесь только на PostToolUse-хук `mark-qa-gate-passed.sh`: этот навык запускается в fork (см. `context: fork` выше), и хук не гарантированно сработает для Bash-вызовов из этого fork.
