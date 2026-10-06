@@ -198,6 +198,9 @@ from harness.orchestration.workflow.integration import (
     integration_link_evidence as integration_link_evidence,
 )
 from harness.orchestration.workflow.integration import (
+    integration_next as integration_next,
+)
+from harness.orchestration.workflow.integration import (
     integration_prepare as integration_prepare,
 )
 from harness.orchestration.workflow.integration import (

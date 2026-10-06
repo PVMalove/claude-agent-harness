@@ -625,6 +625,24 @@ def build_parser(
         help="source batch ID when --ticket and --branch match several records",
     )
     integration_status.set_defaults(handler=handlers.integration_status)
+    integration_next = integration_commands.add_parser(
+        "next",
+        help="read-only: the next step of a PR continuation (refresh, resolver, route a failed check, confirm, verify, hand over)",
+    )
+    _common(integration_next)
+    integration_next.add_argument("--record", help="integration record ID")
+    integration_next.add_argument("--ticket")
+    integration_next.add_argument("--branch")
+    integration_next.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_next.add_argument(
+        "--pull-request",
+        type=int,
+        help="the opened pull request; without it the step is the one before the pull request",
+    )
+    integration_next.set_defaults(handler=handlers.integration_next)
     integration_link = integration_commands.add_parser(
         "link-evidence",
         help="register a new CI, local-QA or resolver check of a candidate/target pair; idempotent",
