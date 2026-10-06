@@ -303,7 +303,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Поддерживаемые возможности провайдера. Варианты: 'architecture-analysis', 'backend-development', 'code-review', 'independent-verification'."
+          "description": "Поддерживаемые возможности провайдера. Варианты: 'architecture-analysis', 'backend-development', 'code-review', 'independent-verification', 'database-migrations', 'messaging-integration', 'conflict-resolution'."
         },
         "fallback": {
           "type": "array",

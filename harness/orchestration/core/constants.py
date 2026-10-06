@@ -79,6 +79,8 @@ NEXT_ACTION_DISPATCH_ROLE = {
     "code-review": "code-review",
     "qa": "qa",
     "publish": "developer",
+    # Issue #534: a textual integration conflict is handed to the conflict-resolver writer.
+    "resolve-conflict": "conflict-resolver",
 }
 DISPATCH_PURPOSES = {"work", "verification", "publish"}
 ROLE_TRANSPORTS = {"in-process", "external"}
@@ -238,6 +240,7 @@ REPORT_OPTIONAL_FIELDS = {
     "lessons",
     "used_memory",
     "tooling_blocker",
+    "resolver",
 }
 RISK_ASSESSMENT_FIELDS = {
     "risk_assessment_id",
@@ -307,7 +310,13 @@ CHECKPOINT_FIELDS = CHECKPOINT_INPUT_FIELDS | {
 # Fixed runtime-adapter termination vocabulary, not a project policy value -- a rate-limit signal
 # always authorizes a continuation automatically, whatever project a batch belongs to.
 RATE_LIMIT_TERMINATION_REASONS = {"rate_limit", "rate-limit", "429"}
-PLANNED_TRIGGER_KINDS = {"context-limit", "tdd-cycles", "failure-log", "vertical-slice"}
+PLANNED_TRIGGER_KINDS = {
+    "context-limit",
+    "tdd-cycles",
+    "failure-log",
+    "vertical-slice",
+    "human-decision",
+}
 PLANNED_TRIGGER_THRESHOLD_KEY = {
     "context-limit": "context_limit",
     "tdd-cycles": "tdd_cycle_count",

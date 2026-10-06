@@ -38,7 +38,7 @@ from harness.orchestration.workflow.risk import _candidate_changed_files, assess
 POLICY_CHAIN_STEPS = ("policy-decide", "risk-assess", "next-dispatch")
 COMPLETION_ROUTE = "report-completion"
 # An accepted report of these roles moves its batch to `risk-assessment` of the reported candidate.
-RISK_ASSESSED_ROLES = {"developer", "verification"}
+RISK_ASSESSED_ROLES = {"developer", "verification", "conflict-resolver"}
 
 
 def _completion_command(dispatch_id: str, state_dir: str | None) -> str:

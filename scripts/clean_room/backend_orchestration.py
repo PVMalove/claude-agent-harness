@@ -324,6 +324,7 @@ def run(ctx: SimpleNamespace) -> None:
     expected_role_files = {
         "architect.md",
         "code-review.md",
+        "conflict-resolver.md",
         "database-migrations.md",
         "developer.md",
         "messaging-integration.md",
@@ -342,6 +343,25 @@ def run(ctx: SimpleNamespace) -> None:
             "backend-orchestration role set changed: "
             f"expected {sorted(expected_role_files)}, found {sorted(actual_role_files)}"
         )
+    installed_resolver = (
+        orchestration_project
+        / ".harness"
+        / "orchestration"
+        / "roles"
+        / "conflict-resolver.md"
+    ).read_text(encoding="utf-8")
+    if "resolving-merge-conflicts" not in installed_resolver:
+        sys.exit(
+            "conflict-resolver role lacks its resolving-merge-conflicts skill pointer"
+        )
+    if not (
+        orchestration_project
+        / ".harness"
+        / "skills"
+        / "resolving-merge-conflicts"
+        / "SKILL.md"
+    ).is_file():
+        sys.exit("the skill the conflict-resolver role points to is not installed")
     for name in ("_common.md", *sorted(expected_role_files)):
         if not (
             orchestration_project / ".harness" / "orchestration" / "roles" / name
@@ -557,6 +577,7 @@ def run(ctx: SimpleNamespace) -> None:
         "qa",
         "database-migrations",
         "messaging-integration",
+        "conflict-resolver",
         "code-review",
     )
     valid_orchestration = {
@@ -569,6 +590,7 @@ def run(ctx: SimpleNamespace) -> None:
                     "independent-verification",
                     "database-migrations",
                     "messaging-integration",
+                    "conflict-resolution",
                     "code-review",
                 ],
                 "fallback": [],

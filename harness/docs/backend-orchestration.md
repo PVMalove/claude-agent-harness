@@ -148,6 +148,7 @@ worktree, branch и SHA; legacy projects могут включить это по
         "independent-verification",
         "database-migrations",
         "messaging-integration",
+        "conflict-resolution",
         "code-review"
       ],
       "fallback": ["backend-fallback"],
@@ -160,6 +161,7 @@ worktree, branch и SHA; legacy projects могут включить это по
         "independent-verification",
         "database-migrations",
         "messaging-integration",
+        "conflict-resolution",
         "code-review"
       ],
       "fallback": [],
@@ -171,6 +173,7 @@ worktree, branch и SHA; legacy projects могут включить это по
     "developer": {"write_paths": ["services/payments/**"], "transport": "external", "runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-developer-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "sonnet", "effort": "xhigh"}}},
     "database-migrations": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-migration-model", "effort": "xhigh"}, "claude": {"profiles": ["backend-claude"], "model": "project-migration-claude-model", "effort": "xhigh"}}},
     "messaging-integration": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-messaging-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-messaging-claude-model", "effort": "high"}}},
+    "conflict-resolver": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-resolver-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-resolver-claude-model", "effort": "high"}}},
     "qa": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-qa-model", "effort": "medium"}, "claude": {"profiles": ["backend-claude"], "model": "project-qa-claude-model", "effort": "medium"}}},
     "code-review": {"runtimes": {"codex": {"profiles": ["backend-primary"], "model": "project-review-model", "effort": "high"}, "claude": {"profiles": ["backend-claude"], "model": "project-review-claude-model", "effort": "high"}}}
   },
@@ -353,13 +356,14 @@ self-report, heartbeat, review или QA.
 
 ## 3. Выбрать роли и спланировать batch
 
-В базовом наборе есть три write-роли и три read-only роли.
+В базовом наборе есть четыре write-роли и три read-only роли.
 
 | Роль | Режим | Когда назначать |
 | --- | --- | --- |
 | `developer` | write | Обычное backend-изменение внутри service или bounded context. |
 | `database-migrations` | write | Schema/data migration и её rollout/rollback. |
 | `messaging-integration` | write | Outbox, routing, message schema, retry или DLQ. |
+| `conflict-resolver` | write | Текстовый конфликт ветки тикета с сдвинувшимся integration SHA; назначается только маршрутом `integration resolve`. |
 | `architect` | read-only | Труднообратимое граничное решение. |
 | `qa` | read-only | Нужна независимая проверка через project-facing interface. |
 | `code-review` | read-only | Обязателен для listed high-risk triggers; выдаёт отдельные Standards и Spec reports. |
@@ -1128,7 +1132,7 @@ provider-поле остаётся `null`, а не оценочным нулём
 
 ### Checkpoint и новая worker session
 
-Write-роль (developer, database-migrations, messaging-integration) может растянуть один dispatch на
+Write-роль (developer, database-migrations, messaging-integration, conflict-resolver) может растянуть один dispatch на
 несколько worker session, если весь TDD-цикл в одну сессию раздувает её контекст. Read-only роль
 (architect, qa, code-review) — не может: попытка checkpoint для неё отклоняется сразу.
 
@@ -1313,6 +1317,60 @@ candidate, target, коммиты до и после). Старое QA оста�
 подтверждают CI или local-QA пары через `link-evidence`, повторный review из-за refresh не нужен.
 Конфликт и работу, которой нужен developer, ведёт маршрут rebase из ADR 0012; `refresh` от него не
 зависит.
+
+`resolve` — маршрут текстового конфликта (роль `conflict-resolver`, ADR 0015). Он ничего не пишет в
+Git: чистый rebase отклоняется (это работа `refresh`), а конфликт превращается в новый batch вида
+`resolver` рядом с завершённым batch тикета (его brief, отчёты и история не меняются):
+
+```bash
+python .harness/orchestration/coordinator.py --repo . integration resolve \
+  --ticket '#123' --branch feature/issue-123-short-name
+```
+
+Ответ содержит `batch_id`, конфликтные файлы, candidate и target SHA, scope и остаток бюджета;
+`next_action` batch — `resolve-conflict`. Дальше идёт обычный путь: `batch approve`, затем
+`dispatch create --role conflict-resolver --purpose work` (сначала `--propose`). Brief несёт
+неизменяемую секцию `resolver`: тикет, требования обеих сторон (`sides.candidate` — DoD исходного
+batch; `sides.target` — plan-записи тикетов `(#N)` из subject коммитов цели, иначе subject и тело
+коммита), SHA candidate и target, scope, запреты, план коммита, проверки, остаток бюджета и
+`report_staging_path`. Роль открывает skill `resolving-merge-conflicts`, сохраняет требования обеих
+сторон и не добавляет функциональность вне них.
+
+Бюджет — два автоматических target SHA; третий требует решения человека. Цикл тратит только
+зафиксированный отчёт resolver-а по новому target SHA; чистый rebase, ответ человека и правка на том
+же target цикл не тратят, а правки на одном target ограничены `retry_policy.max_developer_retries`.
+Бюджет выводится из append-only событий `reports/resolver-events/` (`cycle-spent`,
+`same-target-fix`, `human-decision`, `scope-change`, `exhausted`), поэтому потеря сессии или resume
+его не сбрасывают.
+
+Несовместимые требования resolver не угадывает: он пишет checkpoint (`blockers` — конкретное описание
+и варианты) и завершает сессию. Ответ человека фиксируется отдельным событием до resume:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . integration resolver-event \
+  --record <id> --kind human-decision --dispatch <dispatch-id> \
+  --decided-by <имя> --option <вариант> --note '<решение>' [--extends-budget]
+python .harness/orchestration/coordinator.py --repo . dispatch resume \
+  --dispatch <dispatch-id> --trigger human-decision --file <facts.json> \
+  --approved-by <имя> --approved-at <время>
+```
+
+Та же сессия продолжает тот же dispatch: новый developer не создаётся, соседние batch не
+останавливаются. `--extends-budget` даёт ещё один автоматический target после двух потраченных.
+Изменение scope — обычное approval нового dispatch (`--kind scope-change` лишь фиксирует его):
+исходный brief не переписывается, а resume с изменившимися фактами отклоняется существующей
+проверкой. Потерянная runtime-сессия возобновляется через существующие checkpoint/resume или
+`batch resume`; счётчики берутся из событий.
+
+После исчерпания бюджета (`exhausted`) останавливается только эта задача: ветка и evidence
+сохраняются. Несовместимость интеграции продолжает тот же resolver после решения человека; собственный
+дефект тикета (`resolver.cause: task-defect`) возвращается обычному developer-у.
+
+Отчёт resolver-а несёт верхнеуровневый блок `resolver`: `preserved_requirements` (каждое требование
+обеих сторон дословно из brief), `human_decisions` (id только тех событий human-decision, что отвечают на checkpoint этого dispatch; автономный `human-decision --extends-budget` без checkpoint фиксируется лишь событием ledger, в отчёт не попадает и, кроме ещё одного автоматического target-цикла, даёт ещё `max_developer_retries` попыток исправления того же target), `target_sha`,
+`resolved_candidate_sha`, `cause`, `changed_files` и `commits` с записью плана для каждого коммита.
+Принятая резолюция идёт узким маршрутом: повторный code-review пропускается, но QA и CI либо local-QA
+новой пары candidate/target обязательны (`integration status` держит `verification.required`).
 
 `link-evidence` — единственный публичный способ привязать к записи будущие результаты CI, local-QA
 или resolver (`--kind ci|local-qa|resolver`). Каждая привязка — отдельная immutable запись со своей

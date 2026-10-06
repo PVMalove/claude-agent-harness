@@ -643,6 +643,41 @@ def build_parser(
         help="source batch ID when --ticket and --branch match several records",
     )
     integration_refresh.set_defaults(handler=handlers.integration_refresh)
+    integration_resolve = integration_commands.add_parser(
+        "resolve",
+        help="a textual conflict with the integration tip: create the conflict-resolver batch (nothing is written to Git)",
+    )
+    _common(integration_resolve)
+    integration_resolve.add_argument("--record", help="integration record ID")
+    integration_resolve.add_argument("--ticket")
+    integration_resolve.add_argument("--branch")
+    integration_resolve.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_resolve.set_defaults(handler=handlers.integration_resolve)
+    resolver_event = integration_commands.add_parser(
+        "resolver-event",
+        help="record a human decision or a scope change of a conflict-resolver dispatch as its own audit event",
+    )
+    _common(resolver_event)
+    resolver_event.add_argument("--record", help="integration record ID")
+    resolver_event.add_argument("--ticket")
+    resolver_event.add_argument("--branch")
+    resolver_event.add_argument("--batch", help="source batch ID")
+    resolver_event.add_argument(
+        "--kind", required=True, choices=["human-decision", "scope-change"]
+    )
+    resolver_event.add_argument("--dispatch", required=True)
+    resolver_event.add_argument("--decided-by", required=True)
+    resolver_event.add_argument("--note", required=True)
+    resolver_event.add_argument("--option", help="the option id a human chose")
+    resolver_event.add_argument(
+        "--extends-budget",
+        action="store_true",
+        help="grant one more automatic resolver target after the two spent ones",
+    )
+    resolver_event.set_defaults(handler=handlers.resolver_event)
 
     report = commands.add_parser("report")
     report_commands = report.add_subparsers(dest="report_command", required=True)

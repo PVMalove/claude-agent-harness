@@ -81,6 +81,8 @@ from harness.orchestration.ledger.lifecycle import (
 )
 from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
+from harness.orchestration.workflow import resolver as resolver_route
+from harness.orchestration.workflow import resolver_state
 from harness.orchestration.workflow.approval import (
     _approval,
 )
@@ -607,6 +609,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "verification": {("verification", "work")},
             # A retried architect report gets a new architect, never a developer.
             "architect": {("architect", "work")},
+            # Issue #534: the conflict-resolver is reached only through `integration resolve`.
+            resolver_state.RESOLVER_NEXT_ACTION: {
+                (resolver_state.RESOLVER_ROLE, "work")
+            },
         }
         if next_action == "risk-assessment":
             raise CoordinatorError(
@@ -779,6 +785,9 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         # snapshot to that candidate too, so the worker keeps the ordered commit history instead
         # of rewinding HEAD and staging the whole diff.
         snapshot_commit = candidate or batch["base_commit"]
+        if role_name == resolver_state.RESOLVER_ROLE:
+            # The resolver starts where the conflicting candidate is, never at the target.
+            snapshot_commit = batch["resolver"]["candidate_sha"]
         if role_name in {"architect", "developer", "verification", "code-review"}:
             snapshot_commit = (
                 candidate
@@ -960,6 +969,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             else None,
             "carried_items": carried,
         }
+        if role_name == resolver_state.RESOLVER_ROLE:
+            brief["resolver"] = resolver_route.brief_section(
+                root, config, batch, dispatch_commands, brief["report_staging_path"]
+            )
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the
         # top level lets any runtime-neutral adapter consume exactly the reviewed contract.
