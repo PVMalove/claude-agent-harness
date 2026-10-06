@@ -7,7 +7,14 @@ import unittest
 from harness.orchestration import coordinator
 from harness.orchestration.core.ci_source import CheckRun, CiObservation
 from harness.orchestration.core.utils import JsonObject
-from tests.orchestration.test_ci_collect import GITHUB, MERGE, PR, REPO, FakeSource, write_project
+from tests.orchestration.test_ci_collect import (
+    GITHUB,
+    MERGE,
+    PR,
+    REPO,
+    FakeSource,
+    write_project,
+)
 from tests.orchestration.test_integration_record import PublishedBranch
 
 
@@ -22,7 +29,9 @@ class CiStatusTests(unittest.TestCase):
 
     def status(self) -> JsonObject:
         return coordinator.integration_status(
-            self.branch.args(record=self.record_id, ticket=None, branch=None, batch=None)
+            self.branch.args(
+                record=self.record_id, ticket=None, branch=None, batch=None
+            )
         )
 
     def collect(self, candidate: str, target: str) -> JsonObject:
@@ -34,20 +43,38 @@ class CiStatusTests(unittest.TestCase):
             checkout="combined",
             merge_commit_sha=MERGE,
             merge_parents=(candidate, target),
-            checks=(CheckRun("lint", MERGE, "completed", "success", "10", f"https://github.com/{REPO}/runs/10"),),
+            checks=(
+                CheckRun(
+                    "lint",
+                    MERGE,
+                    "completed",
+                    "success",
+                    "10",
+                    f"https://github.com/{REPO}/runs/10",
+                ),
+            ),
         )
         return coordinator.integration_collect_ci(
             self.branch.args(
-                record=self.record_id, ticket=None, branch=None, batch=None,
-                pull_request=PR, ci_source=FakeSource(observation),
+                record=self.record_id,
+                ticket=None,
+                branch=None,
+                batch=None,
+                pull_request=PR,
+                ci_source=FakeSource(observation),
             )
         )
 
     def link_manual_ci(self, candidate: str, target: str) -> None:
         coordinator.integration_link_evidence(
             self.branch.args(
-                record=self.record_id, kind="ci", result="passed", reference="manual-run",
-                artifact_sha256=None, candidate_commit=candidate, target_commit=target,
+                record=self.record_id,
+                kind="ci",
+                result="passed",
+                reference="manual-run",
+                artifact_sha256=None,
+                candidate_commit=candidate,
+                target_commit=target,
             )
         )
 
@@ -57,7 +84,9 @@ class CiStatusTests(unittest.TestCase):
         self.assertEqual(block["reason"], "no_collected_ci")
         self.assertTrue(self.status()["verification"]["accepted_kinds"])
 
-    def test_collected_ci_replaces_qa_for_the_verified_pair_and_shows_identity(self) -> None:
+    def test_collected_ci_replaces_qa_for_the_verified_pair_and_shows_identity(
+        self,
+    ) -> None:
         candidate, target = self.prepared["candidate_sha"], self.prepared["target_sha"]
         self.collect(candidate, target)
 
@@ -73,7 +102,10 @@ class CiStatusTests(unittest.TestCase):
         self.assertEqual(block["repository"], REPO)
         self.assertEqual(block["pull_request"], PR)
         self.assertEqual(block["checks"][0]["run_id"], "10")
-        self.assertEqual(status["source_evidence"]["qa"]["outcome"], self.prepared["source_evidence"]["qa"]["outcome"])
+        self.assertEqual(
+            status["source_evidence"]["qa"]["outcome"],
+            self.prepared["source_evidence"]["qa"]["outcome"],
+        )
 
     def test_manually_linked_ci_never_satisfies_or_replaces(self) -> None:
         candidate, target = self.prepared["candidate_sha"], self.prepared["target_sha"]
@@ -95,10 +127,14 @@ class CiStatusTests(unittest.TestCase):
         self.assertEqual(status["integration_tip"], moved)
         self.assertTrue(status["refresh_required"])
 
-    def test_after_a_refresh_only_collected_ci_of_the_new_pair_satisfies_verification(self) -> None:
+    def test_after_a_refresh_only_collected_ci_of_the_new_pair_satisfies_verification(
+        self,
+    ) -> None:
         moved = self.branch.advance_integration_ref()
         refreshed = coordinator.integration_refresh(
-            self.branch.args(record=self.record_id, ticket=None, branch=None, batch=None)
+            self.branch.args(
+                record=self.record_id, ticket=None, branch=None, batch=None
+            )
         )
         new = refreshed["new_candidate_sha"]
         self.link_manual_ci(new, moved)

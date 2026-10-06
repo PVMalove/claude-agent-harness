@@ -64,7 +64,14 @@ class CollectCiTests(unittest.TestCase):
 
     def observation(self, **changes: object) -> CiObservation:
         runs = tuple(
-            CheckRun(name, MERGE, "completed", "success", str(index), f"https://github.com/{REPO}/runs/{index}")
+            CheckRun(
+                name,
+                MERGE,
+                "completed",
+                "success",
+                str(index),
+                f"https://github.com/{REPO}/runs/{index}",
+            )
             for index, name in enumerate(("lint", "tests"), start=10)
         )
         base = CiObservation(
@@ -110,7 +117,9 @@ class CollectCiTests(unittest.TestCase):
         self.assertEqual(document["candidate_sha"], self.candidate)
         self.assertEqual(document["target_sha"], self.target)
         self.assertEqual(document["collector"]["merge_commit_sha"], MERGE)
-        self.assertEqual([c["name"] for c in document["collector"]["checks"]], ["lint", "tests"])
+        self.assertEqual(
+            [c["name"] for c in document["collector"]["checks"]], ["lint", "tests"]
+        )
 
     def test_collecting_again_is_idempotent(self) -> None:
         first = self.collect(self.observation())
@@ -151,7 +160,9 @@ class CollectCiTests(unittest.TestCase):
             "head_only": self.observation(
                 checks=(
                     CheckRun("lint", self.candidate, "completed", "success", "1", None),
-                    CheckRun("tests", self.candidate, "completed", "success", "2", None),
+                    CheckRun(
+                        "tests", self.candidate, "completed", "success", "2", None
+                    ),
                 )
             ),
             "pending_check": self.observation(
@@ -173,8 +184,12 @@ class CollectCiTests(unittest.TestCase):
             write_project(self.branch.repo, tracker, ["lint", "tests"])
             source = FakeSource(self.observation())
             args = self.branch.args(
-                record=self.record_id, ticket=None, branch=None, batch=None,
-                pull_request=PR, ci_source=source,
+                record=self.record_id,
+                ticket=None,
+                branch=None,
+                batch=None,
+                pull_request=PR,
+                ci_source=source,
             )
             result = coordinator.integration_collect_ci(args)
             self.assert_nothing_recorded(result, "unsupported_tracker")
@@ -183,7 +198,9 @@ class CollectCiTests(unittest.TestCase):
     def test_unconfigured_required_checks_fall_back(self) -> None:
         for checks in (None, [], ["lint", "lint"], [""]):
             write_project(self.branch.repo, GITHUB, checks)
-            self.assert_nothing_recorded(self.collect(self.observation()), "not_configured")
+            self.assert_nothing_recorded(
+                self.collect(self.observation()), "not_configured"
+            )
 
     def test_collect_changes_nothing_but_the_evidence_record(self) -> None:
         before = self.branch.snapshot()
@@ -192,22 +209,41 @@ class CollectCiTests(unittest.TestCase):
 
     def test_invalid_pull_request_number_is_refused(self) -> None:
         args = self.branch.args(
-            record=self.record_id, ticket=None, branch=None, batch=None,
-            pull_request=0, ci_source=FakeSource(self.observation()),
+            record=self.record_id,
+            ticket=None,
+            branch=None,
+            batch=None,
+            pull_request=0,
+            ci_source=FakeSource(self.observation()),
         )
         with self.assertRaises(CoordinatorError):
             coordinator.integration_collect_ci(args)
 
     def test_the_public_cli_reaches_collect_ci(self) -> None:
         parsed = coordinator.parser().parse_args(
-            ["integration", "collect-ci", "--record", self.record_id, "--pull-request", "7"]
+            [
+                "integration",
+                "collect-ci",
+                "--record",
+                self.record_id,
+                "--pull-request",
+                "7",
+            ]
         )
         self.assertIs(parsed.handler, coordinator.integration_collect_ci)
         self.assertEqual(parsed.pull_request, 7)
 
     def test_the_module_is_read_only_towards_the_tracker(self) -> None:
         text = Path(ci_source.__file__).read_text(encoding="utf-8")
-        for forbidden in ("pr create", "pr merge", "-X POST", "-X PUT", "-X PATCH", "-X DELETE", "protection"):
+        for forbidden in (
+            "pr create",
+            "pr merge",
+            "-X POST",
+            "-X PUT",
+            "-X PATCH",
+            "-X DELETE",
+            "protection",
+        ):
             self.assertNotIn(forbidden, text.replace("branch protection", ""))
 
 

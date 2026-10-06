@@ -26,7 +26,9 @@ import re
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol, cast
+
+from harness.orchestration.core.utils import JsonObject
 
 Checkout = Literal["combined", "unknown"]
 Outcome = Literal["accepted", "failed", "fallback"]
@@ -87,7 +89,7 @@ class CiVerdict:
     outcome: Outcome
     reason: str | None
     detail: str
-    verified: dict[str, Any] | None = None
+    verified: JsonObject | None = None
 
 
 class CiSource(Protocol):
@@ -126,7 +128,9 @@ def evaluate(
     if observation.repository.lower() != repository.lower():
         return _fallback("wrong_repository", "the observation is of another repository")
     if observation.pull_request != pull_request:
-        return _fallback("wrong_pull_request", "the observation is of another pull request")
+        return _fallback(
+            "wrong_pull_request", "the observation is of another pull request"
+        )
     if base_ref is not None and observation.base_ref != base_ref:
         return _fallback("wrong_base", "the pull request targets another branch")
     if observation.candidate_sha != candidate_sha:
@@ -151,7 +155,9 @@ def evaluate(
     selected: list[CheckRun] = []
     for name in required_checks:
         on_merge = [
-            run for run in observation.checks if run.name == name and run.head_sha == merge
+            run
+            for run in observation.checks
+            if run.name == name and run.head_sha == merge
         ]
         if not on_merge:
             on_head = any(
@@ -167,7 +173,9 @@ def evaluate(
         selected.append(_latest(on_merge))
     for run in selected:
         if run.status != "completed":
-            return _fallback("pending_check", f"required check {run.name!r} is not finished")
+            return _fallback(
+                "pending_check", f"required check {run.name!r} is not finished"
+            )
     for run in selected:
         if run.conclusion == "failure":
             return CiVerdict(
@@ -183,10 +191,12 @@ def evaluate(
                 f"required check {run.name!r} ended as {run.conclusion or 'unknown'}, "
                 "which is not a verdict on the code",
             )
-    return CiVerdict("accepted", None, "all required checks passed", _verified(observation, selected))
+    return CiVerdict(
+        "accepted", None, "all required checks passed", _verified(observation, selected)
+    )
 
 
-def _verified(observation: CiObservation, selected: list[CheckRun]) -> dict[str, Any]:
+def _verified(observation: CiObservation, selected: list[CheckRun]) -> JsonObject:
     return {
         "source": observation.source,
         "repository": observation.repository,
@@ -226,16 +236,19 @@ def default_runner(arguments: Sequence[str]) -> str:
 class GitHubCiSource:
     """Read-only GitHub adapter: three GET calls through an injectable ``runner``."""
 
-    def __init__(self, runner: Runner = default_runner, host: str = "github.com") -> None:
+    def __init__(
+        self, runner: Runner = default_runner, host: str = "github.com"
+    ) -> None:
         self._runner = runner
         self._host = host
 
-    def _get(self, path: str) -> Any:
-        return json.loads(
-            self._runner(["api", "--hostname", self._host, "-X", "GET", path])
-        )
+    def _get(self, path: str) -> JsonObject:
+        text = self._runner(["api", "--hostname", self._host, "-X", "GET", path])
+        return cast(JsonObject, json.loads(text))
 
-    def _unavailable(self, repository: str, pull_request: int, reason: str) -> CiObservation:
+    def _unavailable(
+        self, repository: str, pull_request: int, reason: str
+    ) -> CiObservation:
         return CiObservation(
             repository=repository,
             pull_request=pull_request,
@@ -252,7 +265,9 @@ class GitHubCiSource:
         try:
             return self._observe(repository, pull_request)
         except (OSError, RuntimeError, subprocess.SubprocessError):
-            return self._unavailable(repository, pull_request, "the CI service did not answer")
+            return self._unavailable(
+                repository, pull_request, "the CI service did not answer"
+            )
         except (ValueError, KeyError, TypeError, AttributeError):
             return self._unavailable(
                 repository, pull_request, "the CI service answer is not usable"
@@ -277,12 +292,20 @@ class GitHubCiSource:
             and _SHA.fullmatch(merge)
         ):
             return CiObservation(
-                **base, checkout="unknown", merge_commit_sha=None, merge_parents=(), checks=()
+                **base,
+                checkout="unknown",
+                merge_commit_sha=None,
+                merge_parents=(),
+                checks=(),
             )
         commit = self._get(f"repos/{actual_repo}/commits/{merge}")
         if commit.get("sha") != merge:
             return CiObservation(
-                **base, checkout="unknown", merge_commit_sha=None, merge_parents=(), checks=()
+                **base,
+                checkout="unknown",
+                merge_commit_sha=None,
+                merge_parents=(),
+                checks=(),
             )
         parents = tuple(item["sha"] for item in commit["parents"])
         runs = self._get(
@@ -295,7 +318,8 @@ class GitHubCiSource:
             if int(page["total_count"]) > len(page["check_runs"]):
                 raise ValueError("incomplete check-run listing")
         checks = tuple(
-            self._check(item) for item in (*runs["check_runs"], *head_runs["check_runs"])
+            self._check(item)
+            for item in (*runs["check_runs"], *head_runs["check_runs"])
         )
         return CiObservation(
             **base,
@@ -306,7 +330,7 @@ class GitHubCiSource:
         )
 
     @staticmethod
-    def _check(item: dict[str, Any]) -> CheckRun:
+    def _check(item: JsonObject) -> CheckRun:
         url = item.get("html_url")
         return CheckRun(
             name=str(item["name"]),

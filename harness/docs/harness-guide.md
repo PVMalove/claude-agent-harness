@@ -283,6 +283,17 @@ python harness\bin\harness.py init C:\path\to\repository `
 - `.harness/project.schema.json` в установленном проекте — тоже seed: после обновления харнесса
   старая копия схемы может не знать о поле `tracker`. Авторитетен валидатор `harness health`.
 
+**Поле `ci_required_checks`** (необязательное) — список уникальных непустых имён CI-проверок, которые
+должны пройти на комбинированном результате pull request, чтобы `integration collect-ci` принял
+CI-доказательство вместо повторного полного локального QA. Пустой список или отсутствие поля
+означает «не настроено»: действует запасной путь с локальным QA.
+
+Команда `integration collect-ci --record <id> --pull-request <n>` (backend-оркестрация, ADR 0016)
+принимает CI только для трекера `github` и только если все проверки из `ci_required_checks` прошли
+на комбинированном результате PR (merge commit с родителями candidate и target). Иначе она ничего не
+записывает и возвращает `local_qa_required: true` — тогда выполняется полный локальный QA
+(запасной путь). Подробности — в `.harness/docs/backend-orchestration.md`.
+
 При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md` и само `.harness/project.json`.
 
 - Этот справочник, руководство по backend-оркестрации и контракт интерактивного поиска памяти —

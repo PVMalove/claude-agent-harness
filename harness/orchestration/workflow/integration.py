@@ -81,10 +81,12 @@ def _satisfies(link: JsonObject, pair: JsonObject) -> bool:
         return False
     if link["kind"] == "ci":
         return link.get("verification") == INTEGRATION_CI_COLLECTED
-    return link["kind"] == "local-qa"
+    return bool(link["kind"] == "local-qa")
 
 
-def _qa_replacement(links: list[JsonObject], pair: JsonObject, state: str) -> JsonObject:
+def _qa_replacement(
+    links: list[JsonObject], pair: JsonObject, state: str
+) -> JsonObject:
     """Whether collector-accepted CI stands in for a repeat of full local QA of the current pair.
     The original QA reports are never touched; this block only reports the replacement."""
     collected = [
@@ -751,7 +753,9 @@ def _required_checks(repo: Path) -> list[str]:
     return []
 
 
-def _collected(outcome: str, reason: str | None, detail: str, **extra: object) -> JsonObject:
+def _collected(
+    outcome: str, reason: str | None, detail: str, **extra: object
+) -> JsonObject:
     return {
         "outcome": outcome,
         "reason": reason,
@@ -791,7 +795,9 @@ def integration_collect_ci(args: argparse.Namespace) -> JsonObject:
             integration_record_id=record["integration_record_id"],
         )
     required = _required_checks(repo)
-    source = getattr(args, "ci_source", None) or ci_source.GitHubCiSource(host=tracker.host)
+    source = getattr(args, "ci_source", None) or ci_source.GitHubCiSource(
+        host=tracker.host
+    )
     observation = source.observe(tracker.project, number)
     verdict = ci_source.evaluate(
         observation,

@@ -9,7 +9,11 @@ import pytest
 
 from harness.health import project_files
 
-_SCHEMA = Path(project_files.__file__).resolve().parents[1] / "project" / "project.schema.json"
+_SCHEMA = (
+    Path(project_files.__file__).resolve().parents[1]
+    / "project"
+    / "project.schema.json"
+)
 _BASE = {
     "language": "ru",
     "base_branch": "master",

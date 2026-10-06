@@ -22,7 +22,12 @@ def run(
     run_id: str = "10",
 ) -> CheckRun:
     return CheckRun(
-        name, sha, status, conclusion, run_id, f"https://github.com/{REPO}/runs/{run_id}"
+        name,
+        sha,
+        status,
+        conclusion,
+        run_id,
+        f"https://github.com/{REPO}/runs/{run_id}",
     )
 
 
@@ -77,9 +82,7 @@ class EvaluateTests(unittest.TestCase):
 
     def test_other_repository_or_pull_request_or_base(self) -> None:
         self.assert_fallback(verdict(observation(repository="x/y")), "wrong_repository")
-        self.assert_fallback(
-            verdict(observation(pull_request=8)), "wrong_pull_request"
-        )
+        self.assert_fallback(verdict(observation(pull_request=8)), "wrong_pull_request")
         self.assert_fallback(verdict(observation(base_ref="master")), "wrong_base")
 
     def test_stale_candidate_and_target(self) -> None:

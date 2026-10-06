@@ -15,7 +15,9 @@ MERGE_RUNS = f"repos/{REPO}/commits/{MERGE}/check-runs?per_page=100"
 HEAD_RUNS = f"repos/{REPO}/commits/{CANDIDATE}/check-runs?per_page=100"
 
 
-def check(name: str, sha: str, rid: int, conclusion: str | None = "success") -> dict[str, object]:
+def check(
+    name: str, sha: str, rid: int, conclusion: str | None = "success"
+) -> dict[str, object]:
     return {
         "name": name,
         "head_sha": sha,
