@@ -226,6 +226,21 @@ REPORT_OPTIONAL_FIELDS = {
     "lessons",
     "used_memory",
     "tooling_blocker",
+    "incomplete_items",
+}
+# One brief item a read-only role left undone (issue #501): what it was, why, and the role it can be
+# handed to. ``tooling_blocker`` (the report field's shape) is optional per item: a tool, such as the
+# safety classifier, kept the role from it.
+INCOMPLETE_ITEM_FIELDS = frozenset({"brief_item", "reason", "target_role"})
+INCOMPLETE_ITEM_OPTIONAL_FIELDS = frozenset({"tooling_blocker"})
+# The roles an incomplete item of each read-only stage may target: the stage itself (a narrowed
+# retry) or a later pipeline role. Verification is a target of no other stage: it runs only on a
+# registered blocked developer candidate.
+INCOMPLETE_ITEM_TARGET_ROLES = {
+    "architect": ("architect", "developer", "code-review", "qa"),
+    "verification": ("verification", "code-review", "qa"),
+    "code-review": ("code-review", "qa"),
+    "qa": ("qa",),
 }
 RISK_ASSESSMENT_FIELDS = {
     "risk_assessment_id",

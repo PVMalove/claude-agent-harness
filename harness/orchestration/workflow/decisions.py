@@ -118,6 +118,9 @@ def _auto_accept_policy(
         or plan_rules.not_covered(report)
         # Nor is a review that left a carried item omitted, unverified or open (issue #499).
         or carried_items.carried_gap(report, dispatch)
+        # Nor is a read-only report that left brief items undone (issue #501): only a human
+        # carries them forward or narrows a retry to them.
+        or report.get("incomplete_items")
     ):
         return None
     if policy == "low_risk" and batch.get("zone") not in config.get(

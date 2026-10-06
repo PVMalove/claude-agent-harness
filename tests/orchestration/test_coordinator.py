@@ -68,6 +68,12 @@ TOOLING_BLOCKER = {
     "command": "python -m pytest -q tests/orchestration/test_coordinator.py",
     "message": "Blocked: writes outside docs/tasks are not allowed",
 }
+# One brief item a read-only role left undone (issue #501).
+INCOMPLETE_ITEM = {
+    "brief_item": "Map the rollback path into the commit plan",
+    "reason": "The rollback module was out of the Context Package",
+    "target_role": "developer",
+}
 
 
 class ImmutableReportPersistenceTests(unittest.TestCase):
@@ -7668,6 +7674,155 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(decisions._developer_retry_count(done), 1)
         root = ledger_ops._state_root(self._args(), self.repo)
         self.assertEqual(carried_items.open_coordinator_findings(root, done), [])
+
+    # -- incomplete items of a read-only role (issue #501) -------------------------------------
+
+    def _reported_architect_with_items(
+        self, *items: JsonObject, batch_id: str | None = None
+    ) -> JsonObject:
+        """An architect report that left ``items`` (default: one developer item) undone."""
+        if batch_id is None:
+            batch_id = cast(str, self._create_batch()["batch_id"])
+        brief: JsonObject = self._dispatch(batch_id, "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        self._submit(
+            brief["dispatch_id"],
+            self._base_report(
+                brief,
+                "architect",
+                incomplete_items=list(items) or [dict(INCOMPLETE_ITEM)],
+            ),
+        )
+        return brief
+
+    def test_incomplete_items_are_validated_with_a_remedy(self) -> None:
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        item = dict(INCOMPLETE_ITEM)
+        for invalid, fragment in (
+            ("one item", "must be a list"),
+            (["text"], "invalid schema"),
+            ([{"brief_item": "b", "target_role": "developer"}], "invalid schema"),
+            ([{**item, "severity": "high"}], "invalid schema"),
+            ([{**item, "reason": "  "}], "reason must be a non-empty string"),
+            ([{**item, "brief_item": "x" * 1_601}], "brief_item exceeds"),
+            ([{**item, "reason": "не успел"}], "must be written in English"),
+            ([{**item, "target_role": "designer"}], "target_role 'designer'"),
+            ([{**item, "target_role": "verification"}], "target_role 'verification'"),
+            (
+                [{**item, "tooling_blocker": {"tool": "hook"}}],
+                "entry 1 tooling_blocker must carry exactly",
+            ),
+            (
+                [{**item, "tooling_blocker": {**TOOLING_BLOCKER, "command": " "}}],
+                "entry 1 tooling_blocker command must be a non-empty string",
+            ),
+        ):
+            with self.subTest(invalid=invalid):
+                report = self._base_report(brief, "architect", incomplete_items=invalid)
+                with self.assertRaises(coordinator.CoordinatorError) as raised:
+                    self._submit(brief["dispatch_id"], report)
+                self.assertIn("incomplete_items", raised.exception.message)
+                self.assertIn(fragment, raised.exception.message)
+                self.assertTrue(raised.exception.remedy.strip())
+        with self.assertRaises(coordinator.CoordinatorError) as unknown:
+            self._submit(
+                brief["dispatch_id"],
+                self._base_report(
+                    brief,
+                    "architect",
+                    incomplete_items=[{**item, "target_role": "designer"}],
+                ),
+            )
+        self.assertIn("architect, developer, code-review, qa", unknown.exception.remedy)
+        tooled = {
+            **item,
+            "target_role": "architect",
+            "tooling_blocker": {
+                "tool": "safety-classifier",
+                "command": "rg -n rollback services/",
+                "message": "The action was interrupted by the safety classifier",
+            },
+        }
+
+        submitted = self._submit(
+            brief["dispatch_id"],
+            self._base_report(brief, "architect", incomplete_items=[item, tooled]),
+        )
+
+        self.assertEqual(submitted["state"], "reported")
+        stored = json.loads(Path(submitted["report"]).read_text(encoding="utf-8"))
+        self.assertEqual(stored["incomplete_items"], [item, tooled])
+        markdown = (
+            Path(submitted["report"]).with_suffix(".md").read_text(encoding="utf-8")
+        )
+        self.assertIn(f"[developer] {item['brief_item']}: {item['reason']}", markdown)
+        self.assertIn("tooling blocker: safety-classifier", markdown)
+
+    def test_incomplete_items_are_limited_to_read_only_stages_and_their_targets(
+        self,
+    ) -> None:
+        read_only = {"mode": "read-only"}
+        for stage, role, target, allowed in (
+            ("architect", read_only, "qa", True),
+            ("verification", read_only, "code-review", True),
+            ("code-review", read_only, "qa", True),
+            ("qa", read_only, "qa", True),
+            ("qa", read_only, "developer", False),
+            ("code-review", read_only, "architect", False),
+            ("verification", read_only, "developer", False),
+            ("developer", {"mode": "write"}, "developer", False),
+        ):
+            report = {
+                "role": stage,
+                "incomplete_items": [{**INCOMPLETE_ITEM, "target_role": target}],
+            }
+            with self.subTest(stage=stage, target=target):
+                if allowed:
+                    reports._validate_incomplete_items(report, role)
+                    continue
+                with self.assertRaises(coordinator.CoordinatorError) as raised:
+                    reports._validate_incomplete_items(report, role)
+                self.assertIn("incomplete_items", raised.exception.message)
+                self.assertTrue(raised.exception.remedy.strip())
+
+    def test_a_report_with_incomplete_items_is_never_auto_accepted(self) -> None:
+        clean: JsonObject = {
+            "outcome": "completed",
+            "blockers": "none",
+            "risks": "none",
+            "checks_run": [],
+        }
+        for policy in ("low_risk", "milestone", "auto"):
+            with self.subTest(policy=policy, path="policy"):
+                config_ = {"approval_policy": policy, "low_risk_zones": ["repository"]}
+                batch = {"approval_policy": policy, "zone": "repository"}
+                architect = {"role": "architect", "purpose": "work"}
+                self.assertEqual(
+                    decisions._auto_accept_policy(config_, batch, architect, clean),
+                    policy,
+                )
+                self.assertIsNone(
+                    decisions._auto_accept_policy(
+                        config_,
+                        batch,
+                        architect,
+                        {**clean, "incomplete_items": [dict(INCOMPLETE_ITEM)]},
+                    )
+                )
+            with self.subTest(policy=policy, path="report submit"):
+                self._reset()
+                self._patch_config(
+                    approval_policy=policy, low_risk_zones=["repository"]
+                )
+                brief = self._reported_architect_with_items()
+                stored = self._batch_record(self.batch_id)
+                self.assertNotIn("decision", stored["dispatches"][0])
+                self.assertEqual(stored["state"], "awaiting-approval")
+                self.assertEqual(
+                    stored["dispatches"][-1]["dispatch_id"], brief["dispatch_id"]
+                )
 
 
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
