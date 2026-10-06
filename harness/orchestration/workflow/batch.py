@@ -570,6 +570,7 @@ def resume_batch(args: argparse.Namespace) -> JsonObject:
             "code-review",
             "qa",
             "publish",
+            "resolve-conflict",
         }:
             raise CoordinatorError(
                 "blocked batch has no resumable next action",

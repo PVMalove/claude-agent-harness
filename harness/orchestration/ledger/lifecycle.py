@@ -423,6 +423,72 @@ class IntegrationRefreshRecord:
         return cls(refresh_id=cast(str, data.get("refresh_id")), extra=extra)
 
 
+@dataclass(frozen=True)
+class ResolverRecord:
+    """Value Object for a ``reports/resolver/*.json`` record (issue #534): the conflict-resolver
+    route taken for one integration record.  Immutable; the cycle budget is never stored on it but
+    derived from the append-only ``ResolverEventRecord`` files, so a lost session cannot reset it."""
+
+    directory: ClassVar[str] = "reports/resolver"
+
+    resolver_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, integration_record_id: str) -> str:
+        return _derived_id("resolver", {"integration_record_id": integration_record_id})
+
+    @property
+    def record_id(self) -> str:
+        return self.resolver_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "resolver_id": self.resolver_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> ResolverRecord:
+        extra = {key: value for key, value in data.items() if key != "resolver_id"}
+        return cls(resolver_id=cast(str, data.get("resolver_id")), extra=extra)
+
+
+@dataclass(frozen=True)
+class ResolverEventRecord:
+    """Value Object for a ``reports/resolver-events/*.json`` record (issue #534): one immutable
+    audit event of the conflict-resolver route (``cycle-spent``, ``same-target-fix``,
+    ``human-decision``, ``scope-change``, ``exhausted``).  The id covers what makes an event the
+    same event, so repeating it finds the record instead of writing a second one."""
+
+    directory: ClassVar[str] = "reports/resolver-events"
+    ID_MEMBERS: ClassVar[tuple[str, ...]] = (
+        "kind",
+        "integration_record_id",
+        "target_sha",
+        "dispatch_id",
+        "discriminator",
+    )
+
+    event_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, members: JsonObject) -> str:
+        return _derived_id(
+            "resolver-event", {key: members.get(key) for key in cls.ID_MEMBERS}
+        )
+
+    @property
+    def record_id(self) -> str:
+        return self.event_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "event_id": self.event_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> ResolverEventRecord:
+        extra = {key: value for key, value in data.items() if key != "event_id"}
+        return cls(event_id=cast(str, data.get("event_id")), extra=extra)
+
+
 class LedgerRecordVO(Protocol):
     """Structural shape a Value Object must have to be persisted via ``write_record``/
     ``replace_record`` -- satisfied by ``BatchRecord``, ``DispatchRecord``, and the other frozen

@@ -63,7 +63,7 @@ Evidence stays bounded: a command's full output never returns to the model's dia
 truncated summary. Read a long log through the existing
 `python .harness/orchestration/advisory.py summarize-log --file <log>` rather than in full, read files
 in ranges, and re-run a failing test only by its specific node id, never the whole suite. A write role
-with iterative TDD (`developer`, `database-migrations`, `messaging-integration`) that exceeds a
+with iterative TDD (`developer`, `database-migrations`, `messaging-integration`, `conflict-resolver`) that exceeds a
 planned trigger (TDD-cycle volume or accumulated log volume) brings the work to a natural boundary,
 commits, and requests a checkpoint instead of continuing in a bloated session. A read-only role
 (`architect`, `qa`, `code-review`, `verification`) never spans a dispatch across worker sessions
