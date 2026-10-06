@@ -70,6 +70,7 @@ from harness.orchestration.workflow.approval import (
 )
 from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
+from harness.orchestration.workflow import resolver_state
 from harness.orchestration.workflow.attention import (
     _apply_attention,
     _attention_findings,
@@ -111,6 +112,8 @@ def _auto_accept_policy(
         or str(report.get("risks", "")).strip().lower() != "none"
         or report.get("risk_triggers")
         or dispatch.get("purpose") == "publish"
+        # A conflict resolution changes code the target never reviewed: a human decides it.
+        or dispatch.get("role") == resolver_state.RESOLVER_ROLE
         # A not-covered definition-of-done item is never clean; a justified divergence is.
         or plan_rules.not_covered(report)
         # Nor is a review that left a carried item omitted, unverified or open (issue #499).
@@ -509,6 +512,14 @@ def _retry_routing(
     elif stage == "architect":
         next_action, route = "architect", "architect-retry"
         outcome_sentence = "a new architect dispatch runs; no developer starts before an architect report is accepted"
+    elif (
+        stage == resolver_state.RESOLVER_ROLE
+        and (report.get("resolver") or {}).get("cause") != "task-defect"
+    ):
+        # An integration incompatibility continues with a resolver; the ticket's own defect falls
+        # through to a regular developer retry below.
+        next_action, route = resolver_state.RESOLVER_NEXT_ACTION, "same-candidate-rerun"
+        outcome_sentence = "a new conflict-resolver dispatch retries the same target; it is a fix on that target and spends no cycle"
     elif candidate_bound and category in OPERATIONAL_REASON_CATEGORIES:
         next_action, route = stage, "same-candidate-rerun"
         outcome_sentence = (
@@ -522,7 +533,10 @@ def _retry_routing(
         "route": route,
         "previous_role": stage,
         "reason_category": category,
-        "next_role": "developer" if next_action == "developer-retry" else next_action,
+        "next_role": {
+            "developer-retry": "developer",
+            resolver_state.RESOLVER_NEXT_ACTION: resolver_state.RESOLVER_ROLE,
+        }.get(next_action, next_action),
         "next_action": next_action,
         "rationale": f"{stage} reported outcome={outcome}: {basis}; {outcome_sentence}.",
         "candidate_commit": dispatch_candidate if unchanged else None,
@@ -700,6 +714,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             batch.get("integration_base_commit") or batch.get("base_commit"),
             _rebase_target(batch, dispatch),
         )
+        resolver_state.validate_report(repo, root, batch, dispatch, report)
         if report.get("outcome") != "completed" and args.decision in {
             "accept",
             "override-warning",
@@ -795,6 +810,8 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     remedy="pass --note (other than 'none') naming the hook or tool block the role worked around and how",
                 )
             routing["decided_at"] = utils._now()
+            if routing["next_action"] == resolver_state.RESOLVER_NEXT_ACTION:
+                resolver_state.require_fix_budget(root, config, batch)
             if routing["route"] == "verification":
                 report_path = _records_root(root) / pending[0]["report"]
                 batch.setdefault("candidate_registrations", []).append(
@@ -920,6 +937,13 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     batch["state"] = "completed"
                 else:
                     batch["next_action"] = "risk-assessment"
+            elif report["role"] == resolver_state.RESOLVER_ROLE:
+                # Narrow route: the resolution is assessed like a candidate, but its review is
+                # waived and QA of the new pair still runs (see ``assess_risk``).
+                batch["next_action"] = "risk-assessment"
+                resolver_state.record_resolution(
+                    ledger, repo, root, batch, report, config
+                )
             elif report["role"] == "architect":
                 batch["next_action"] = "developer"
             elif report["role"] == "verification":

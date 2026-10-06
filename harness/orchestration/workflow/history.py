@@ -412,7 +412,11 @@ def _latest_developer_candidate(repo: Path, root: Path, batch: JsonObject) -> st
         # Legacy dispatch ledger entries predate the explicit ``purpose`` field.
         # They are developer work dispatches unless they explicitly identify another
         # purpose (currently only publish), so candidate history must retain them.
-        if item.get("role") == "developer" and item.get("purpose", "work") == "work":
+        # A conflict-resolver (issue #534) produces the candidate of its own resolver batch.
+        if (
+            item.get("role") in {"developer", "conflict-resolver"}
+            and item.get("purpose", "work") == "work"
+        ):
             report = _pending_report(root, batch, item)
             candidates.append(_candidate_commit(repo, report["commit_sha"]))
         elif item.get("role") == "verification":

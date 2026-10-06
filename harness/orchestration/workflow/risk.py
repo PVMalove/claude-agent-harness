@@ -222,7 +222,9 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
             "changed_files": changed_files,
             "matched_triggers": matched,
             "developer_triggers": developer_triggers,
-            "review_required": bool(matched),
+            # A resolver batch holds only a conflict resolution, which adds no behaviour: the
+            # repeat review is waived, and QA of the new pair still has to pass (issue #534).
+            "review_required": bool(matched) and batch.get("kind") != "resolver",
             "review_scope": list(changed_files),
             "created_at": utils._now(),
         }

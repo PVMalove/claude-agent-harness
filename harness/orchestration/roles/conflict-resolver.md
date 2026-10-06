@@ -3,7 +3,8 @@ name: conflict-resolver
 mode: write
 required_capabilities:
   - conflict-resolution
-risk_triggers: []
+risk_triggers:
+  - integration-conflict
 ---
 
 # Conflict resolver
@@ -25,8 +26,15 @@ Rules:
 - A change of scope is a new approved dispatch. The original brief is never rewritten.
 - A resolution that needs a fix of the ticket's own code is the ticket's defect: report it with `cause: task-defect` so it returns to a regular developer.
 
-The completion report carries a top-level `resolver` object: `preserved_requirements` (one entry per
-side with the requirement and how the resolution keeps it), `human_decisions` (every decision this
-dispatch received, possibly empty), `candidate_sha`, `target_sha`, `cause`
-(`integration-incompatibility` or `task-defect`), `changed_files`, `commits` (each commit with the
-plan entry it closes) and `checks`. Pass every check through the installed bounded summary wrapper.
+The completion report carries a top-level `resolver` object, plus the usual `checks_run` of the
+approved commands (pass each through the installed bounded summary wrapper) and `commit_sha`:
+
+- `preserved_requirements`: one `{side, requirement, preserved_by}` entry for every requirement of
+  `sides.candidate` and `sides.target`, copied verbatim from the brief, with how the resolution keeps it.
+- `human_decisions`: the ids of the human-decision events this dispatch received (an empty list when none).
+- `target_sha`: the brief's target; `resolved_candidate_sha`: the final commit, equal to `commit_sha`
+  and containing the target.
+- `cause`: `resolved` on success; `integration-incompatibility` or `task-defect` on a `blocked` report.
+- `changed_files`: exactly the report's `changed_files`.
+- `commits`: every commit after the target in order, each as `{commit_sha, plan_entry_id}` with the
+  brief's commit-plan entry it closes.

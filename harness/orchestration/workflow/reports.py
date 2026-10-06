@@ -95,6 +95,7 @@ from harness.orchestration.runtime_attestation import (
 )
 from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
+from harness.orchestration.workflow import resolver_state
 from harness.orchestration.workflow.approval import (
     _approval,
 )
@@ -760,6 +761,18 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
                 )
             authorization = _authorize_rate_limit_continuation(termination_reason)
         else:
+            if _non_empty(args.trigger) and args.trigger.strip() == "human-decision":
+                # The answer to the options a resolver listed is its own audit event; the same
+                # dispatch continues only once it is recorded, and nothing else is spent.
+                if not resolver_state.is_resolver_brief(
+                    dispatch
+                ) or not resolver_state.human_decision_recorded(
+                    root, batch, dispatch["dispatch_id"]
+                ):
+                    raise CoordinatorError(
+                        "a human-decision continuation resumes a conflict-resolver whose latest checkpoint has a recorded human decision",
+                        remedy="record the decision first with 'integration resolver-event --kind human-decision --dispatch <id>', then resume",
+                    )
             checkpoint = _latest_checkpoint_for_dispatch(
                 root, batch, dispatch["dispatch_id"]
             )
@@ -1323,6 +1336,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             batch.get("integration_base_commit") or batch.get("base_commit"),
             _rebase_target(batch, dispatch),
         )
+        resolver_state.validate_report(repo, root, batch, dispatch, report)
         from harness.orchestration.workflow.decisions import _auto_accept_policy
 
         auto_accept_policy = _auto_accept_policy(config, batch, dispatch, report)
@@ -1390,6 +1404,8 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
         report_json = _persist_report(
             ledger, root, batch, dispatch, report, auto_accept_policy=auto_accept_policy
         )
+        if resolver_state.is_resolver_brief(dispatch):
+            resolver_state.record_report(ledger, root, batch, dispatch, report)
     response: JsonObject = {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",

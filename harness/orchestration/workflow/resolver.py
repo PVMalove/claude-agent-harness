@@ -217,7 +217,16 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
         existing = _resolver_batches(root, record_id)
         open_batch = _open_batch(existing)
         if open_batch is not None:
-            return _result("existing", record, open_batch, root, config)
+            if (
+                open_batch["resolver"]["target_sha"] == tip
+                and open_batch["resolver"]["candidate_sha"] == pair["candidate_sha"]
+            ):
+                return _result("existing", record, open_batch, root, config)
+            raise CoordinatorError(
+                f"resolver batch {open_batch['batch_id']} for target "
+                f"{open_batch['resolver']['target_sha']} is still open",
+                remedy="finish it (publish) or close it ('batch abandon') before resolving the new target",
+            )
         if tip == pair["target_sha"]:
             raise CoordinatorError(
                 "the branch already is at the integration tip: there is no conflict to resolve",
@@ -449,23 +458,30 @@ def resolver_event(args: argparse.Namespace) -> JsonObject:
             "note": note.strip(),
         }
         if kind == "human-decision":
-            if entry.get("state") != "checkpointed":
+            extends = bool(getattr(args, "extends_budget", False))
+            checkpointed = entry.get("state") == "checkpointed"
+            if not checkpointed and not extends:
                 raise CoordinatorError(
                     "a human decision answers a checkpointed resolver",
-                    remedy="the resolver writes a checkpoint listing the options first; record the decision after it",
+                    remedy="the resolver writes a checkpoint listing the options first; record the decision after it "
+                    "(only a decision that extends the budget after the automatic cycles are spent may stand alone)",
                 )
-            checkpoint = [
-                item
-                for item in batch.get("checkpoints", [])
-                if item["dispatch_id"] == dispatch["dispatch_id"]
-            ][-1]
-            members["discriminator"] = checkpoint["checkpoint_id"]
+            checkpoint_id = None
+            if checkpointed:
+                checkpoint_id = [
+                    item
+                    for item in batch.get("checkpoints", [])
+                    if item["dispatch_id"] == dispatch["dispatch_id"]
+                ][-1]["checkpoint_id"]
             fields.update(
                 {
                     "option": getattr(args, "option", None),
-                    "extends_budget": bool(getattr(args, "extends_budget", False)),
-                    "checkpoint_id": checkpoint["checkpoint_id"],
+                    "extends_budget": extends,
+                    "checkpoint_id": checkpoint_id,
                 }
+            )
+            members["discriminator"] = (
+                checkpoint_id or f"extension:{utils._canonical(fields)}"
             )
         else:
             members["discriminator"] = f"scope:{utils._canonical(fields)}"

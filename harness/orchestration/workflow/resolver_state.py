@@ -191,6 +191,26 @@ def _strings_of(value: object, label: str) -> list[str]:
     return list(value)
 
 
+def require_fix_budget(root: Path, config: JsonObject, batch: JsonObject) -> None:
+    """A retry on the same target is a fix inside the project retry budget; one beyond it stops
+    this task, never the neighbouring batches."""
+    resolver = batch["resolver"]
+    allowed = budget(root, config, resolver["integration_record_id"])[
+        "internal_fix_budget"
+    ]
+    if (
+        same_target_fixes(
+            root, resolver["integration_record_id"], resolver["target_sha"]
+        )
+        >= allowed
+    ):
+        raise CoordinatorError(
+            f"the resolver fixes on target {resolver['target_sha']} reached "
+            f"retry_policy.max_developer_retries ({allowed})",
+            remedy="block or fail this resolver batch: the branch and the evidence stay, and only this task stops",
+        )
+
+
 def is_resolver_brief(dispatch: JsonObject) -> bool:
     return dispatch.get("role") == RESOLVER_ROLE
 

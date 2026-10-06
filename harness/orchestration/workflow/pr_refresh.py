@@ -303,6 +303,13 @@ def write_refresh_record(
         "re_review_required": False,
         "recorded_at": utils._now(),
     }
+    recorded = (
+        ledger.records_root()
+        / IntegrationRefreshRecord.directory
+        / f"{document['refresh_id']}.json"
+    )
+    if recorded.is_file():
+        return _read_object(recorded, "integration refresh record")
     _write_record(ledger, IntegrationRefreshRecord.from_dict(document))
     return document
 
