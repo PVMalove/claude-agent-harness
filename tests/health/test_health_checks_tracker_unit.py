@@ -254,3 +254,9 @@ sys.exit(1)
     assert len(create_calls) == 1
     assert late_label["name"] not in create_calls[0]
     assert "brand-new" in create_calls[0]
+
+
+@pytest.mark.parametrize("host", ["github", "gitlab"])
+def test_the_issues_endpoint_has_no_ampersand(host: str) -> None:
+    """`&` splits a command in a Windows `.cmd` launcher, so the query must not carry it."""
+    assert "&" not in tracker._HOSTS[host].issues_endpoint("acme/widgets")

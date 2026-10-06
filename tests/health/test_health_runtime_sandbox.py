@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -239,7 +240,7 @@ def test_missing_config_warns_that_the_uv_cache_is_not_writable(
     assert result.status == "warn"
     assert result.fix is not None
     assert str(runtime_home / config) in result.fix.text
-    assert str(runtime_home / ".cache/uv") in result.fix.text
+    assert json.dumps(str(runtime_home / ".cache/uv")) in result.fix.text
     assert snippet in result.fix.text
     assert "новую сессию" in result.fix.text
     assert not (runtime_home / config).exists()
@@ -252,7 +253,7 @@ def test_uv_cache_listed_or_covered_by_a_parent_is_ok_and_files_are_preserved(
     codex = _write_codex(
         runtime_home,
         'sandbox_mode = "workspace-write"\n[sandbox_workspace_write]\n'
-        f'writable_roots = ["{cache.parent}"]\n',
+        f"writable_roots = [{json.dumps(str(cache.parent))}]\n",
     )
     claude = _write_claude(
         runtime_home,
@@ -325,14 +326,14 @@ def test_uv_cache_directory_follows_uv_environment_variables(
     monkeypatch.setenv("XDG_CACHE_HOME", str(xdg))
     result = _checks(repo)[_CACHE_IDS["claude"]]
     assert result.fix is not None
-    assert str(xdg / "uv") in result.fix.text
+    assert json.dumps(str(xdg / "uv")) in result.fix.text
 
     explicit = tmp_path / "explicit"
     monkeypatch.setenv("UV_CACHE_DIR", str(explicit))
     result = _checks(repo)[_CACHE_IDS["claude"]]
     assert result.fix is not None
-    assert str(explicit) in result.fix.text
-    assert str(xdg / "uv") not in result.fix.text
+    assert json.dumps(str(explicit)) in result.fix.text
+    assert json.dumps(str(xdg / "uv")) not in result.fix.text
 
     _write_claude(
         runtime_home,
@@ -427,3 +428,34 @@ def test_a_user_uv_cache_dir_wins_over_the_pyproject_cache_dir(
     (tmp_path / "pyproject.toml").write_text(_PYPROJECT_DEFAULT, encoding="utf-8")
     monkeypatch.setenv("UV_CACHE_DIR", str(runtime_home / ".cache" / "uv"))
     assert _checks(tmp_path)[_CACHE_IDS["claude"]].status == "warn"
+
+
+def _snippet(fix_text: str) -> str:
+    """The ready-to-paste fragment between the first line and the closing instructions."""
+    return fix_text.split("\n", 1)[1].rsplit("\nНачните", 1)[0]
+
+
+def test_the_codex_snippet_is_valid_toml_for_a_path_with_backslashes(
+    tmp_path: Path, runtime_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cache = tmp_path / "back\\slash" / "uv"
+    monkeypatch.setenv("UV_CACHE_DIR", str(cache))
+    result = _checks(repo)[_CACHE_IDS["codex"]]
+    assert result.fix is not None
+    parsed = tomllib.loads(_snippet(result.fix.text))
+    assert parsed["sandbox_workspace_write"]["writable_roots"] == [str(cache)]
+
+
+def test_the_claude_snippet_is_valid_json_for_a_path_with_backslashes(
+    tmp_path: Path, runtime_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cache = tmp_path / "back\\slash" / "uv"
+    monkeypatch.setenv("UV_CACHE_DIR", str(cache))
+    result = _checks(repo)[_CACHE_IDS["claude"]]
+    assert result.fix is not None
+    parsed = json.loads(_snippet(result.fix.text))
+    assert parsed["sandbox"]["filesystem"]["allowWrite"] == [str(cache)]

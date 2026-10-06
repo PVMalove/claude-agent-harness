@@ -1119,10 +1119,10 @@ def test_unreachable_origin_fails_reachability(tmp_path: Path) -> None:
 
 # --- tracker.git_base ----------------------------------------------------------------------------
 
-_GH_ISSUES = "api --hostname github.com --paginate repos/acme/widgets/issues?state=open&per_page=100"
+_GH_ISSUES = "api --hostname github.com --paginate repos/acme/widgets/issues?state=open"
 _GL_ISSUES = (
     "api --hostname gitlab.example.com --paginate "
-    "projects/acme%2Fwidgets/issues?state=opened&per_page=100"
+    "projects/acme%2Fwidgets/issues?state=opened"
 )
 
 
@@ -1222,7 +1222,12 @@ def test_git_base_epic_less_ticket_is_not_judged_without_base_branch(
 
 @pytest.mark.parametrize(
     "response",
-    [(1, "", "SECRET boom"), (0, "not json SECRET", ""), (0, '{"a": 1}', "")],
+    [
+        (1, "", "SECRET boom"),
+        (0, "not json SECRET", ""),
+        (0, '{"a": 1}', ""),
+        (0, "[]\nSECRET", ""),
+    ],
 )
 def test_git_base_tracker_errors_warn_without_leaking(
     tmp_path: Path, response: tuple[int, str, str]
@@ -1275,3 +1280,19 @@ def test_git_base_gitlab_reads_description_and_label_names(tmp_path: Path) -> No
     assert result["status"] == "warn"
     assert "#9" in str(result["message"])
     assert "#10" not in str(result["message"])
+
+
+def test_git_base_reads_several_concatenated_pages(tmp_path: Path) -> None:
+    page_one = [
+        _gh_issue(3, ["status::ready"], _body("integration/x", "origin/master"))
+    ]
+    page_two = [
+        _gh_issue(4, ["status::ready"], _body("integration/x", "origin/master"))
+    ]
+    output = json.dumps(page_one) + "\n" + json.dumps(page_two) + "\n"
+
+    result = _git_base_health(tmp_path, (0, output, ""))
+
+    assert result["status"] == "warn"
+    assert "#3" in str(result["message"])
+    assert "#4" in str(result["message"])

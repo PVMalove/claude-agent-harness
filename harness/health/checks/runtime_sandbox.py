@@ -213,7 +213,7 @@ def _uv_cache_result(
             id=check_id, group="environment", status="ok", message=message
         )
     snippet = (
-        f'[sandbox_workspace_write]\nwritable_roots = ["{cache}"]'
+        f"[sandbox_workspace_write]\nwritable_roots = [{json.dumps(str(cache))}]"
         if runtime == "codex"
         else json.dumps(
             {"sandbox": {"filesystem": {"allowWrite": [str(cache)]}}}, indent=2
