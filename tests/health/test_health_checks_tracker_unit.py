@@ -71,6 +71,7 @@ def test_run_passes_the_online_timeout_to_subprocess(
         (tracker.check_auth, "tracker.auth"),
         (tracker.check_permissions, "tracker.permissions"),
         (tracker.check_labels, "tracker.labels"),
+        (tracker.check_git_base, "tracker.git_base"),
     ],
 )
 def test_missing_tracker_tool_warns_instead_of_failing(
