@@ -192,6 +192,9 @@ from harness.orchestration.workflow.history import (
     _validate_dispatch as _validate_dispatch,
 )
 from harness.orchestration.workflow.integration import (
+    integration_collect_ci as integration_collect_ci,
+)
+from harness.orchestration.workflow.integration import (
     integration_link_evidence as integration_link_evidence,
 )
 from harness.orchestration.workflow.integration import (

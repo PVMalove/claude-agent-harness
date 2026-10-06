@@ -630,6 +630,20 @@ def build_parser(
         "--artifact-sha256", help="digest of the artifact the reference points to"
     )
     integration_link.set_defaults(handler=handlers.integration_link_evidence)
+    integration_collect = integration_commands.add_parser(
+        "collect-ci",
+        help="collect CI evidence for the combined result of a pull request; records only accepted or failed evidence",
+    )
+    _common(integration_collect)
+    integration_collect.add_argument("--record", help="integration record ID")
+    integration_collect.add_argument("--ticket")
+    integration_collect.add_argument("--branch")
+    integration_collect.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_collect.add_argument("--pull-request", required=True, type=int)
+    integration_collect.set_defaults(handler=handlers.integration_collect_ci)
     integration_refresh = integration_commands.add_parser(
         "refresh",
         help="PR preparation: rebase the own issue branch onto the current integration SHA when it moved",

@@ -398,6 +398,10 @@ INTEGRATION_EVIDENCE_RESULTS = ("passed", "failed")
 INTEGRATION_RECORD_ID_PATTERN = re.compile(r"integration-[0-9a-f]{32}")
 INTEGRATION_SHA_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 INTEGRATION_REFERENCE_MAX_CHARS = 2_048
+# Issue #535: the ``verification`` marks only 'integration collect-ci' writes; a CI check linked by
+# hand stays 'unverified' and never satisfies verification.
+INTEGRATION_CI_COLLECTED = "collector-accepted"
+INTEGRATION_CI_COLLECTED_FAILURE = "collector-failed"
 MAX_CHECK_EVIDENCE_CHARS = 1_600
 CONTINUATION_FACTS_FIELDS = {
     "dispatch_id",
