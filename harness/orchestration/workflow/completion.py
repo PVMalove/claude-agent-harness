@@ -209,7 +209,7 @@ def _run_policy_chain(
             result["next_dispatch_id"] = state["following"][0]["dispatch_id"]
         elif next_action == "developer" or (
             next_action == "qa"
-            and policy == "low_risk"
+            and policy in {"low_risk", "auto"}
             and assessed
             and _clean_assessment(repo, state["batch"], _assessed_candidate(state))
         ):
