@@ -79,6 +79,7 @@ REGISTRY: list[tuple[str, CheckFn]] = [
     ("tracker.reachability", tracker_checks.check_reachability),
     ("tracker.permissions", tracker_checks.check_permissions),
     ("tracker.labels", tracker_checks.check_labels),
+    ("tracker.git_base", tracker_checks.check_git_base),
     ("orchestration.ledger_summary", orchestration_checks.check_ledger_summary),
     ("orchestration.unfinished_batches", orchestration_checks.check_unfinished_batches),
     ("orchestration.blocked_batches", orchestration_checks.check_blocked_batches),
