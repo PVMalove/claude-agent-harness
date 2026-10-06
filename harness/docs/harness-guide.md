@@ -901,8 +901,11 @@ on-ramps (`/triage` для входящих багов и фича-реквес�
    **Остановка для подтверждения** — без него фаза 2 не начинается.
 2. **Черновик и публикация.** Записать спецификацию по `<spec-template>` сначала файлом в `docs/tasks/`
    (именование — `docs/agents/artifacts.md`) с точным именем integration-ветки, затем опубликовать:
-   `gh issue create --body-file <path>`; передача тела через inline `--body`/heredoc не допускается:
-   такое квотирование искажает текст спецификации.
+   на GitHub — `gh issue create --body-file <path>`, на GitLab — `glab issue create -R <project-url>
+   --title '<title>' --description-file <path> --yes` (апостроф в `<title>` — `'\''` в POSIX-shell
+   или `''` в PowerShell; номер эпика — последний сегмент напечатанного URL). Передача тела через
+   inline `--body`/`--description`/heredoc не допускается: такое квотирование искажает текст
+   спецификации.
 3. **Integration-ветка после публикации.** Взять `base_branch` из `.harness/project.json`, создать
    `integration/<service-or-team>` от `origin/<base_branch>` и запушить. Текущий worktree не
    переключать; существующую ветку не сбрасывать, не force-push'ить и не удалять; при частичном сбое
@@ -998,9 +1001,12 @@ issue — **эпик** с метками `bug`/`enhancement` + `status::specs` (
 3. **Публикация и сводка.**
    - **Локальные файлы:** по файлу на тикет в `.scratch/<feature-slug>/issues/<NN>-<slug>.md` в
      порядке зависимостей; `/implement` идёт по полю `**Workflow:**` сверху вниз.
-   - **GitHub / реальный трекер:** `gh issue create --body-file <path>` в порядке зависимостей.
-     Лейблы: `bug`/`enhancement`, `status::ready` (или `status::blocked`, если тикет ждёт другой
-     тикет того же пакета), `hitl`/`afk`, `task-report::required`.
+   - **GitHub / GitLab:** в порядке зависимостей — `gh issue create --body-file <path>` или
+     `glab issue create -R <project-url> --title '<title>' --description-file <path> --yes`
+     (апостроф в `<title>` — `'\''` в POSIX-shell или `''` в PowerShell; номер тикета — последний
+     сегмент напечатанного URL), метки на GitLab — `glab issue update <n> -R <project-url> --label
+     '<label>,<label>'`. Лейблы: `bug`/`enhancement`, `status::ready` (или `status::blocked`, если
+     тикет ждёт другой тикет того же пакета), `hitl`/`afk`, `task-report::required`.
    - Эпик не закрывается и не переписывается — можно лишь дописать список номеров подзадач.
    - Итоговая таблица (Ticket / What to build / Est. Time / Labels): описания генерирует дешёвая
      модель (`haiku`) одним вызовом на пакет; язык колонки — из `.harness/project.json`.
@@ -1700,11 +1706,17 @@ glab api --hostname gitlab.example.com projects/group%2Fproject/issues/102/notes
    `CONTEXT.md` появился термин «Экспортируемый отчёт».
 2. **`/to-spec`** — seam: сервис форматирования (уже используется PDF-экспортом), ветка
    `integration/reports` → подтверждено. Спека в `docs/tasks/add-csv-export.md` → `gh issue create
-   --body-file` → **#101** с `enhancement` + `status::specs` + `task-report::required`; ветка
-   `integration/reports` создана и запушена.
+   --body-file docs/tasks/add-csv-export.md` (на GitLab — `glab issue create -R
+   https://gitlab.example.com/group/project --title 'Экспорт отчётов в CSV' --description-file
+   docs/tasks/add-csv-export.md --yes`) → **#101** с `enhancement` + `status::specs` +
+   `task-report::required`; ветка `integration/reports` создана и запушена.
 3. **`/to-tickets #101`** — разбивка подтверждена:
    - **#102** «CSV-сервис форматирования» — `status::ready`, `afk`, sub-issue #101;
    - **#103** «Кнопка экспорта на странице отчёта» — `status::blocked` (ждёт #102), `afk`.
+
+   Каждый тикет публикуется `gh issue create --body-file <path>` (на GitLab — `glab issue create -R
+   https://gitlab.example.com/group/project --title 'CSV-сервис форматирования' --description-file
+   <path> --yes`); на GitLab вместо sub-issue — секция `## Parent: #101` и связь `relates_to` с эпиком.
 4. **`/implement #102`** — Pre-flight → `status::in-progress`, issue-ветка от `integration/reports`.
    Coordinator создаёт batch с DoD, включая пункт про TDD. Гейты:
    architect (план seam'а) → approve → developer (тест locale → сервис → candidate `a1b2c3d`) → risk
