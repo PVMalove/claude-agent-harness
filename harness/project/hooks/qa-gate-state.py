@@ -73,27 +73,58 @@ def command_of(data: dict[str, object]) -> str:
 
 
 # The flag before a shell's command string: `bash -lc '<cmd>'`, `sh -c`, `powershell -Command`.
-SHELL_COMMAND_FLAG = re.compile(r"-[A-Za-z]*c|-Command")
+SHELL_COMMAND_FLAG = re.compile(r"-[A-Za-z]*c|-(?i:command)")
+SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "powershell", "pwsh"})
+
+
+def wraps_qa_command(argv: list[str], qa_command: str) -> bool:
+    """Получает ли оболочка из argv `qa_command` целиком строкой команды (`bash -lc '<qa>'`)."""
+    for index in range(2, len(argv)):
+        if argv[index] != qa_command or not SHELL_COMMAND_FLAG.fullmatch(
+            argv[index - 1]
+        ):
+            continue
+        # The shell is the nearest word before the flag that is not an option itself.
+        shell = next(
+            (word for word in reversed(argv[: index - 1]) if not word.startswith("-")),
+            "",
+        )
+        if pr_commands.program(shell).lower() in SHELLS:
+            return True
+    return False
 
 
 def runs_qa_command(command: str, qa_command: str) -> bool:
-    """Выполняет ли `command` QA-команду целиком: её simple commands подряд или одним аргументом
-    обёртки `bash -lc '<qa_command>'`, как её запускает /qa-gate. Команда, которая лишь
-    содержит текст QA-команды (`<qa_command> test_one`), QA-прогоном не считается."""
-    commands = pr_commands.strict_commands(command)
-    if commands is None:
+    """Выполняет ли `command` QA-команду целиком так, что успех вызова Bash означает её успех.
+
+    QA-команда — это её simple commands подряд с теми же разделителями или одна строка команды
+    оболочки (`bash -lc '<qa_command>'`, как её запускает /qa-gate). Перед ней не стоит `||`,
+    после неё идут только `&&`, и она не запущена в фоне: иначе код возврата вызова не отражает
+    её результат (`<qa> || true`, `<qa>; true`, `<qa> | tail`). Команда, которая лишь содержит
+    текст QA-команды (`<qa_command> test_one`), и команда вне подмножества строгого лексера
+    (`$(...)`, присваивание `FOO=1 <qa>`) QA-прогоном не считаются.
+    """
+    steps = pr_commands.strict_steps(command)
+    tail = command.rstrip()
+    if steps is None or (tail.endswith("&") and not tail.endswith("&&")):
         return False
-    expected = pr_commands.strict_commands(qa_command)
-    if expected and any(
-        commands[index : index + len(expected)] == expected
-        for index in range(len(commands))
-    ):
-        return True
-    return any(
-        argv[index] == qa_command and SHELL_COMMAND_FLAG.fullmatch(argv[index - 1])
-        for argv in commands
-        for index in range(1, len(argv))
-    )
+    expected = pr_commands.strict_steps(qa_command) or []
+    for start, (link, argv) in enumerate(steps):
+        if (
+            expected
+            and argv == expected[0][1]
+            and steps[start + 1 : start + len(expected)] == expected[1:]
+        ):
+            end = start + len(expected)
+        elif wraps_qa_command(argv, qa_command):
+            end = start + 1
+        else:
+            continue
+        if "||" not in link and all(
+            after.replace("\n", "") == "&&" for after, _ in steps[end:]
+        ):
+            return True
+    return False
 
 
 def head_of(command: str) -> str | None:

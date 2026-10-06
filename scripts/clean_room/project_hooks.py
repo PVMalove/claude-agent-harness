@@ -255,6 +255,7 @@ def run(ctx: SimpleNamespace) -> None:
         ("echo test extra", False),
         ("echo testing", False),
         ("python3 test_summary.py -- bash -lc 'echo test extra'", False),
+        ("echo test || true", False),
         ("echo test 2>&1", True),
         ("git status && echo test", True),
         ("python3 test_summary.py -- bash -lc 'echo test'", True),
