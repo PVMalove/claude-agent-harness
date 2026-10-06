@@ -394,6 +394,7 @@ ATTENTION_STATE_FIELDS = (
 # Integration accounting (issue #532): the routes whose evidence may be linked to an integration
 # record, the results a registered check may carry, and the shape of the ids and SHAs involved.
 INTEGRATION_EVIDENCE_KINDS = ("ci", "local-qa", "resolver")
+LOCAL_QA_CI_CONDITIONS = ("absent", "unavailable", "unusable")
 INTEGRATION_EVIDENCE_RESULTS = ("passed", "failed")
 INTEGRATION_RECORD_ID_PATTERN = re.compile(r"integration-[0-9a-f]{32}")
 INTEGRATION_SHA_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")

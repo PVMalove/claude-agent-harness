@@ -579,6 +579,22 @@ def build_parser(
     integration_commands = integration.add_subparsers(
         dest="integration_command", required=True
     )
+    local_qa = integration_commands.add_parser(
+        "local-qa",
+        help="run full local QA when combined-result CI cannot verify the pair",
+    )
+    _common(local_qa)
+    local_qa.add_argument("--record", required=True)
+    local_qa.add_argument(
+        "--ci-condition", choices=defaults.LOCAL_QA_CI_CONDITIONS, required=True
+    )
+    local_qa.add_argument("--reason", required=True)
+    local_qa.add_argument("--request", help="resume only this pinned request ID")
+    local_qa.add_argument(
+        "--retry", action="store_true", help="explicitly retry an operational attempt"
+    )
+    local_qa.add_argument("--lease-seconds", type=int)
+    local_qa.set_defaults(handler=handlers.integration_local_qa)
     integration_prepare = integration_commands.add_parser(
         "prepare",
         help="record the link between ticket, branch, source batch, published candidate and target SHA; idempotent",
