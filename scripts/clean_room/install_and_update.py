@@ -12,6 +12,7 @@ from harness.bin import harness as harness_cli
 
 from scripts.clean_room.support import (
     HARNESS,
+    apply_patch,
     assert_contract_link,
     ROOT,
     capture,
@@ -24,6 +25,7 @@ from scripts.clean_room.support import (
     run_fails,
     run_health,
     run_ok,
+    starts_with_text,
 )
 
 
@@ -84,15 +86,13 @@ def run(ctx: SimpleNamespace) -> None:
     if patch != update_output[update_output.index("diff --git ") :]:
         sys.exit("diff and update proposed different seed adaptations")
     # Approval is an ordinary edit/patch after review; the CLI never applies seeds.
-    subprocess.run(
-        ["git", "apply", "-"], input=patch, text=True, cwd=foundation, check=True
-    )
+    apply_patch(patch, foundation)
     check_technical_english(foundation)
     approved = {
         name: (foundation / name).read_bytes() for name in ("AGENTS.md", "CLAUDE.md")
     }
     for name, original in (("AGENTS.md", old_agents), ("CLAUDE.md", old_claude)):
-        if not approved[name].startswith(original.encode("utf-8")):
+        if not starts_with_text(approved[name], original):
             sys.exit("approved additions lost local instructions")
     repeated = capture(HARNESS + ["update", str(foundation)])
     repeated += capture(HARNESS + ["diff", str(foundation)])
@@ -128,9 +128,7 @@ def run(ctx: SimpleNamespace) -> None:
         if line.startswith("+") and not line.startswith("+++")
     ):
         sys.exit("passive reference proposal duplicated an existing contract link")
-    subprocess.run(
-        ["git", "apply", "-"], input=patch, text=True, cwd=foundation, check=True
-    )
+    apply_patch(patch, foundation)
     if capture_json(HARNESS + ["diff", str(foundation), "--json"])[
         "seed_link_proposals"
     ]:
@@ -200,9 +198,7 @@ def run(ctx: SimpleNamespace) -> None:
             for name, content in before.items()
         ):
             sys.exit("update changed the fenced example before approval")
-        subprocess.run(
-            ["git", "apply", "-"], input=patch, text=True, cwd=foundation, check=True
-        )
+        apply_patch(patch, foundation)
         if not (foundation / "AGENTS.md").read_bytes().startswith(before["AGENTS.md"]):
             sys.exit("approved obligation changed the existing fenced example")
         if capture_json(HARNESS + ["diff", str(foundation), "--json"])[
@@ -412,9 +408,7 @@ def run(ctx: SimpleNamespace) -> None:
     patch = output[output.index("diff --git ") :]
     if patch != proposal[0]["diff"]:
         sys.exit("JSON diff differs from the visible update proposal")
-    subprocess.run(
-        ["git", "apply", "-"], input=patch, text=True, cwd=pv_project, check=True
-    )
+    apply_patch(patch, pv_project)
     assert_contract_link(
         agent, pv_project / ".harness/docs/technical-english.md", "installed agent seed"
     )

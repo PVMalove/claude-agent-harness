@@ -142,6 +142,32 @@ def _api_json(executable: str, host: str, *args: str, cwd: Path) -> object | Non
     return data
 
 
+def _api_json_pages(
+    executable: str, host: str, *args: str, cwd: Path
+) -> list[object] | None:
+    """Items of a paginated `<gh|glab> api` listing, or None on any failure to run or parse it.
+
+    `--paginate` without `--slurp` prints one JSON array per page, back to back, which
+    `json.loads` rejects; this reads each array in turn and concatenates them."""
+    result = _run([executable, "api", "--hostname", host, *args], cwd=cwd)
+    if result is None or result.returncode != 0 or not result.stdout.strip():
+        return None
+    decoder = json.JSONDecoder()
+    text, index = result.stdout, 0
+    items: list[object] = []
+    while True:
+        index = len(text) - len(text[index:].lstrip()) if index < len(text) else index
+        if index >= len(text):
+            return items
+        try:
+            page, index = decoder.raw_decode(text, index)
+        except ValueError:
+            return None
+        if not isinstance(page, list):
+            return None
+        items.extend(page)
+
+
 # --- tracker.project ------------------------------------------------------------------------------
 
 _SOURCE_LABELS = {"config": "поле tracker", "origin": "origin", "default": "нет origin"}
@@ -227,7 +253,8 @@ class _Host:
     # (executable, host, project, cwd) -> (push, labels), or None.
     permissions: Callable[[str, str, str, Path], tuple[bool, bool] | None]
     labels_endpoint: Callable[[str], str]
-    # The first page of the project's open issues; `_api_json` follows every page.
+    # The project's open issues; the query has no `&`, which splits a command in a Windows `.cmd`
+    # launcher. `_api_json_pages` reads every page.
     issues_endpoint: Callable[[str], str]
     # `gh label create <name>` takes the name positionally, `glab label create --name <name>`.
     label_name_args: Callable[[str], list[str]]
@@ -421,7 +448,7 @@ _HOSTS: dict[str, _Host] = {
         tool="gh",
         permissions=_github_permissions,
         labels_endpoint=lambda slug: f"repos/{slug}/labels",
-        issues_endpoint=lambda slug: f"repos/{slug}/issues?state=open&per_page=100",
+        issues_endpoint=lambda slug: f"repos/{slug}/issues?state=open",
         label_name_args=lambda name: [name],
         repo_flag=lambda host, slug: f"{host}/{slug}",
     ),
@@ -429,7 +456,7 @@ _HOSTS: dict[str, _Host] = {
         tool="glab",
         permissions=_gitlab_permissions,
         labels_endpoint=lambda slug: f"projects/{quote(slug, safe='')}/labels",
-        issues_endpoint=lambda slug: f"projects/{quote(slug, safe='')}/issues?state=opened&per_page=100",
+        issues_endpoint=lambda slug: f"projects/{quote(slug, safe='')}/issues?state=opened",
         label_name_args=lambda name: ["--name", name],
         repo_flag=lambda host, slug: f"https://{host}/{slug}",
     ),
@@ -698,7 +725,9 @@ def check_git_base(context: HealthContext) -> CheckResult:
         )
     endpoint = _HOSTS[target.tracker].issues_endpoint(target.project)
     issues = _in_work_issues(
-        _api_json(executable, target.host, "--paginate", endpoint, cwd=context.repo)
+        _api_json_pages(
+            executable, target.host, "--paginate", endpoint, cwd=context.repo
+        )
     )
     if issues is None:
         return CheckResult(
