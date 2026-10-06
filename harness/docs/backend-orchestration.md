@@ -923,6 +923,13 @@ python .harness/orchestration/coordinator.py --repo . batch resume \
 принятую архитектуру и создаёт новый brief для прерванной роли. Для решения `block` или закрытого
 через `batch abandon` batch этот путь недоступен.
 
+Для незавершённого initial developer закрепите сохранённый HEAD через `--candidate-commit` при
+следующих `dispatch preflight`, `dispatch propose` и утверждённом `dispatch create`. Это startup
+snapshot, а не принятый completed candidate: risk assessment и последующие gates следуют за
+принятием итогового report. Commit map initial work покрывает весь исходный план от batch base,
+включая сохранённые коммиты до сбоя; прежние риски остаются в report. Для `developer-retry`
+сохраняется отдельный контракт: только новые коммиты после snapshot.
+
 Batch закреплён за рантаймом, под которым его спланировали. `batch create` записывает хэш всего
 пакета рантайма в `.harness/`: верхнеуровневых модулей и всех подпакетов (`orchestration/`,
 `gate_runner/`, `context_builder/` и других). Кроме того, он сохраняет неизменяемый снимок этого пакета
@@ -993,7 +1000,10 @@ write-роли либо pinned SHA review-роли; расхождение не�
 подменённая или неверно настроенная модель видна сразу, а не после потраченного окна.
 
 Для architect/developer `worker_attestation_required` также требует, чтобы Git-worktree HEAD в момент
-`self-report` буквально совпадал с immutable `snapshot_commit` из brief. Для architect, developer,
+первого `self-report` буквально совпадал с immutable `snapshot_commit` из brief. При разрешённом
+`dispatch resume` write-роли свежий self-report проверяет точный `commit_sha` последнего
+зарегистрированного checkpoint; исходный brief и граница commit-plan evidence остаются неизменными.
+Для architect, developer,
 verification и code-review `dispatch create` выбирает `snapshot_commit` в таком порядке:
 
 1. явный `--candidate-commit`;
@@ -1202,6 +1212,12 @@ python .harness/orchestration/coordinator.py --repo . dispatch resume --dispatch
 self-report` и `dispatch heartbeat` — ровно так же, как при первом contact, — прежде чем следующий
 checkpoint или completion report будет принят. Круг замыкается тем же dispatch ID: checkpoint →
 `dispatch resume` → новая self-report/heartbeat → в итоге один completion report.
+
+Обновление installed runtime не меняет runtime snapshot активного batch. Если старый snapshot
+содержит ошибку continuation, сохраните checkpoint и Git history, затем выберите штатный recovery
+на исправленном runtime с новым approval. Новый batch должен закрепить исходную integration base,
+полный DoD/commit plan и сохранённый writer HEAD; review и QA проверяют весь итоговый candidate.
+Записанные briefs, reports и runtime snapshots старого batch остаются audit evidence.
 
 ### Clean-room QA lane
 

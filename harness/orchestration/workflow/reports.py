@@ -100,6 +100,7 @@ from harness.orchestration.workflow.approval import (
     _approval,
 )
 from harness.orchestration.workflow.history import (
+    _initial_developer_work,
     _latest_checkpoint_for_dispatch,
     _latest_context_package,
     _live_status,
@@ -155,9 +156,22 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
                 }
             else:
                 try:
+                    startup = dispatch
+                    if status.get("last_event") == "resumed":
+                        batch = _load_batch(root, dispatch["batch_id"])
+                        _validate_batch_integrity(root, batch)
+                        checkpoint = _latest_checkpoint_for_dispatch(
+                            root, batch, dispatch["dispatch_id"]
+                        )
+                        # The approved continuation starts at recorded progress. Keep the
+                        # original snapshot for the full dispatch's commit-plan evidence.
+                        startup = {
+                            **dispatch,
+                            "snapshot_commit": checkpoint["commit_sha"],
+                        }
                     attestation = {
                         "match": True,
-                        **attest_runtime_worktree(repo, dispatch, supplied_worktree),
+                        **attest_runtime_worktree(repo, startup, supplied_worktree),
                     }
                 except AttestationError as exc:
                     worktree_matched = False
@@ -1226,10 +1240,15 @@ def _validate_report(
                         "developer dispatch lacks snapshot_commit",
                         remedy="create a new developer dispatch with an immutable snapshot",
                     )
+                plan_base = (
+                    base_commit or snapshot
+                    if _initial_developer_work(dispatch)
+                    else snapshot
+                )
                 plan_rules.check_report(
                     report,
                     dispatch,
-                    _commits_between(repo, rebase_target or snapshot, resolved),
+                    _commits_between(repo, rebase_target or plan_base, resolved),
                     partial(_candidate_commit, repo),
                 )
     if role["mode"] == "read-only" and commit_sha != "not applicable — read-only role":

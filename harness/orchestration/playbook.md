@@ -252,7 +252,10 @@ values frozen into the brief. The record is observation only: it never changes `
 a retry or revokes an approval. At `critical` it states the worker's obligation: a write role
 checkpoints at the next green TDD boundary or returns a structured blocker; a read-only role returns
 the blocker. A continuation exists only from a checkpoint, in a new session that must attest its
-model again. A `context-pressure` retry needs a critical record for the reported dispatch.
+model and exact recorded checkpoint SHA. The original brief and full commit-plan evidence boundary remain
+unchanged. Startup recovery of initial developer work may pin preserved progress before its first
+completed report; it still needs report acceptance, risk assessment and downstream gates.
+A `context-pressure` retry needs a critical record for the reported dispatch.
 
 ## Attention state
 

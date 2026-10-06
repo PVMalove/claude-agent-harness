@@ -59,6 +59,7 @@ from harness.orchestration.core.constants import (
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
+    _git_is_ancestor,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -171,6 +172,17 @@ def _risk_for_candidate(
     risk = _load_risk(root, matches[-1].get("risk_assessment_id"))
     _validate_risk(root, batch, risk)
     return risk
+
+
+def _initial_developer_work(dispatch: JsonObject) -> bool:
+    """Initial work owns the full plan, including progress preserved by startup recovery."""
+    transition = dispatch.get("transition")
+    return (
+        dispatch.get("role") == "developer"
+        and dispatch.get("purpose") == "work"
+        and isinstance(transition, dict)
+        and transition.get("next_action") in {None, "developer"}
+    )
 
 
 def _latest_checkpoint_for_dispatch(
@@ -1311,6 +1323,21 @@ def _validate_dispatch(
                 remedy="set the dispatch's candidate_commit to its full resolved commit SHA",
             )
         risk = _risk_for_candidate(root, batch, candidate)
+        if (
+            risk is None
+            and _initial_developer_work(dispatch)
+            and dispatch.get("risk_assessment_id") is None
+            and dispatch.get("review_base") is None
+            and not dispatch.get("review_scope")
+        ):
+            # A writer's startup SHA is progress, not a completed/accepted candidate.
+            # Report acceptance still precedes risk assessment and every downstream gate.
+            if not _git_is_ancestor(repo, batch["base_commit"], candidate):
+                raise CoordinatorError(
+                    "initial developer snapshot must contain the batch base commit",
+                    remedy="pin existing issue-branch progress that descends from the batch base",
+                )
+            return
         if (
             risk is None
             or dispatch.get("risk_assessment_id") != risk["risk_assessment_id"]
