@@ -1775,7 +1775,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             "expected_context_tokens": None,
         }
 
-    def _create_batch(self) -> JsonObject:
+    def _create_batch(
+        self, *, definition_of_done: list[str] | None = None
+    ) -> JsonObject:
         _git(
             self.repo,
             "worktree",
@@ -1785,7 +1787,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             str(self.worktree),
             "master",
         )
-        batch = coordinator.create_batch(self._args(**self._batch_plan()))
+        plan = self._batch_plan()
+        if definition_of_done is not None:
+            plan["definition_of_done"] = definition_of_done
+        batch = coordinator.create_batch(self._args(**plan))
         coordinator.approve_batch(
             self._args(batch=batch["batch_id"], **self._approval())
         )
@@ -1850,7 +1855,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             )
         )
         coordinator.self_report_dispatch(
-            self._args(dispatch=dispatch_id, model="sonnet", worktree=None)
+            self._args(
+                dispatch=dispatch_id, model="sonnet", worktree=str(self.worktree)
+            )
         )
 
     def _submit(self, dispatch_id: str, report: JsonObject) -> JsonObject:
@@ -3986,7 +3993,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(second["context_package_freshness"]["status"], "fresh")
         self._start(second["brief"]["dispatch_id"])
 
-    def test_dispatch_create_refuses_a_candidate_brief_that_send_would_reject(
+    def test_developer_retry_still_refuses_a_candidate_without_risk_assessment(
         self,
     ) -> None:
         batch = self._create_batch()
@@ -4022,8 +4029,6 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 written,
             )
 
-        with self.subTest("an initial developer pinned before any accepted report"):
-            assert_refused(self._batch_record(batch_id)["base_commit"])
         _, (candidate,), changed = self._retried_developer_candidate(batch_id, "x")
         with self.subTest("a developer retry pinned without its risk assessment"):
             assert_refused(candidate)
@@ -5058,6 +5063,253 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             (entry["observed_tokens"], entry["level"], entry["source"]),
             (155_000, "critical", "runtime-adapter"),
         )
+
+    def _checkpoint_writer(
+        self, brief: JsonObject, candidate: str, changed: list[str]
+    ) -> JsonObject:
+        package_id = self._batch_record(brief["batch_id"])["context_packages"][-1][
+            "context_package_id"
+        ]
+        checkpoint: JsonObject = {
+            "dispatch_id": brief["dispatch_id"],
+            "commit_sha": candidate,
+            "changed_files": changed,
+            "remaining_definition_of_done": [brief["definition_of_done"][-1]],
+            "passing_checks": self._checks(brief),
+            "risks": "preserve prior commit evidence",
+            "blockers": "none",
+            "context_package_id": package_id,
+        }
+        path = workspace._prepare_agent_inbox(self.repo) / "checkpoint.json"
+        path.write_text(json.dumps(checkpoint), encoding="utf-8")
+        coordinator.checkpoint_dispatch(self._args(file=str(path)))
+        return checkpoint
+
+    def _resume_writer(self, brief: JsonObject, checkpoint: JsonObject) -> None:
+        facts = {
+            "dispatch_id": brief["dispatch_id"],
+            "remaining_definition_of_done": checkpoint["remaining_definition_of_done"],
+            "risks": checkpoint["risks"],
+            "dependencies": brief["dependencies"],
+        }
+        path = workspace._prepare_agent_inbox(self.repo) / "continuation-facts.json"
+        path.write_text(json.dumps(facts), encoding="utf-8")
+        coordinator.resume_dispatch(
+            self._args(
+                dispatch=brief["dispatch_id"],
+                termination_reason=None,
+                trigger="vertical-slice",
+                measured_value=None,
+                file=str(path),
+                note="resume the recorded green slice",
+                **self._approval(),
+            )
+        )
+
+    def test_committed_checkpoint_continuation_attests_exact_progress_and_completes_plan(
+        self,
+    ) -> None:
+        self._patch_config(worker_attestation_required=True)
+        batch = self._create_batch(
+            definition_of_done=["first slice", "remaining slice"]
+        )
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        brief_path = self._records() / "dispatches" / f"{brief['dispatch_id']}.json"
+        original_brief = brief_path.read_bytes()
+        first, changed = self._developer_commit("first")
+        checkpoint = self._checkpoint_writer(brief, first, changed)
+        self._resume_writer(brief, checkpoint)
+
+        attested = coordinator.self_report_dispatch(
+            self._args(
+                dispatch=brief["dispatch_id"],
+                model="sonnet",
+                worktree=str(self.worktree),
+            )
+        )
+
+        self.assertEqual(attested["state"], "working")
+        self.assertEqual(brief_path.read_bytes(), original_brief)
+        final, changed = self._developer_commit("remaining")
+        report = self._developer_report(
+            brief,
+            final,
+            changed,
+            commit_map=[
+                {"commit_sha": first, "plan_entry_id": brief["commit_plan"][0]["id"]},
+                {"commit_sha": final, "plan_entry_id": brief["commit_plan"][1]["id"]},
+            ],
+        )
+        self.assertEqual(
+            self._submit(brief["dispatch_id"], report)["state"], "reported"
+        )
+        self.assertEqual(
+            self._decide(batch["batch_id"], "accept")["next_action"], "risk-assessment"
+        )
+
+    def test_startup_recovery_preserves_checkpoint_commits_before_first_completion(
+        self,
+    ) -> None:
+        self._patch_config(worker_attestation_required=True)
+        batch = self._create_batch(
+            definition_of_done=["first slice", "remaining slice"]
+        )
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        original = self._dispatch(batch_id, "developer")["brief"]
+        self._start(original["dispatch_id"])
+        first, changed = self._developer_commit("first")
+        checkpoint = self._checkpoint_writer(original, first, changed)
+        self._resume_writer(original, checkpoint)
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "approved brief resolved"
+        ):
+            coordinator.self_report_dispatch(
+                self._args(
+                    dispatch=original["dispatch_id"],
+                    model="wrong-model",
+                    worktree=str(self.worktree),
+                )
+            )
+        coordinator.resume_batch(
+            self._args(batch=batch_id, reason="restore approved model")
+        )
+
+        replacement = self._dispatch(batch_id, "developer", candidate=first)["brief"]
+
+        self.assertEqual(replacement["snapshot_commit"], first)
+        self.assertEqual(replacement["commit_plan"], original["commit_plan"])
+        self.assertIsNone(replacement["risk_assessment_id"])
+        self.assertEqual(
+            self._batch_record(batch_id)["dispatches"][-2]["state"], "abandoned"
+        )
+        self._start(replacement["dispatch_id"])
+        final, changed = self._developer_commit("remaining")
+        full_map = [
+            {"commit_sha": first, "plan_entry_id": replacement["commit_plan"][0]["id"]},
+            {"commit_sha": final, "plan_entry_id": replacement["commit_plan"][1]["id"]},
+        ]
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "each created commit"
+        ):
+            self._submit(
+                replacement["dispatch_id"],
+                self._developer_report(
+                    replacement, final, changed, commit_map=full_map[1:]
+                ),
+            )
+        self.assertEqual(
+            self._submit(
+                replacement["dispatch_id"],
+                self._developer_report(
+                    replacement, final, changed, commit_map=full_map
+                ),
+            )["state"],
+            "reported",
+        )
+        self.assertEqual(
+            self._decide(batch_id, "accept")["next_action"], "risk-assessment"
+        )
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "risk assessment"):
+            self._dispatch(batch_id, "qa", candidate=final)
+        self._assess(batch_id, final, changed)
+        self.assertEqual(self._batch_record(batch_id)["next_action"], "code-review")
+
+    def _attested_checkpoint(self) -> tuple[JsonObject, JsonObject]:
+        self._patch_config(worker_attestation_required=True)
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit("checkpoint")
+        return brief, self._checkpoint_writer(brief, candidate, changed)
+
+    def test_checkpoint_does_not_authorize_a_new_start_without_resume(self) -> None:
+        brief, _ = self._attested_checkpoint()
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "dispatched role"):
+            coordinator.self_report_dispatch(
+                self._args(
+                    dispatch=brief["dispatch_id"],
+                    model="sonnet",
+                    worktree=str(self.worktree),
+                )
+            )
+
+    def test_resumed_writer_rejects_progress_after_the_recorded_checkpoint(
+        self,
+    ) -> None:
+        brief, checkpoint = self._attested_checkpoint()
+        self._resume_writer(brief, checkpoint)
+        self._developer_commit("uncheckpointed")
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, checkpoint["commit_sha"]
+        ):
+            coordinator.self_report_dispatch(
+                self._args(
+                    dispatch=brief["dispatch_id"],
+                    model="sonnet",
+                    worktree=str(self.worktree),
+                )
+            )
+
+    def test_resumed_writer_rejects_a_tampered_checkpoint_record(self) -> None:
+        brief, checkpoint = self._attested_checkpoint()
+        self._resume_writer(brief, checkpoint)
+        entry = self._batch_record(brief["batch_id"])["checkpoints"][-1]
+        path = self._records() / "checkpoints" / f"{entry['checkpoint_id']}.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["commit_sha"] = brief["snapshot_commit"]
+        path.write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "integrity check"):
+            coordinator.self_report_dispatch(
+                self._args(
+                    dispatch=brief["dispatch_id"],
+                    model="sonnet",
+                    worktree=str(self.worktree),
+                )
+            )
+
+    def test_committed_checkpoint_still_requires_unchanged_continuation_facts(
+        self,
+    ) -> None:
+        brief, checkpoint = self._attested_checkpoint()
+        checkpoint["risks"] = "changed risk scope"
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "facts differ"):
+            self._resume_writer(brief, checkpoint)
+
+    def test_committed_checkpoint_still_obeys_the_continuation_budget(self) -> None:
+        self._patch_config(continuation_policy={"max_continuations": 1})
+        brief, checkpoint = self._attested_checkpoint()
+        self._resume_writer(brief, checkpoint)
+        coordinator.self_report_dispatch(
+            self._args(
+                dispatch=brief["dispatch_id"],
+                model="sonnet",
+                worktree=str(self.worktree),
+            )
+        )
+        checkpoint = self._checkpoint_writer(
+            brief, checkpoint["commit_sha"], checkpoint["changed_files"]
+        )
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "budget is exhausted"
+        ):
+            self._resume_writer(brief, checkpoint)
+
+    def test_initial_writer_cannot_pin_history_outside_the_batch_base(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        unrelated = _git(
+            self.worktree, "commit-tree", "HEAD^{tree}", "-m", "unrelated history"
+        )
+        # Simulate an orphaned issue branch in this disposable Git fixture.
+        _git(self.worktree, "update-ref", f"refs/heads/{self.branch}", unrelated)
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "contain the batch base"
+        ):
+            self._dispatch(batch["batch_id"], "developer", candidate=unrelated)
 
     def test_continuation_after_critical_pressure_needs_a_checkpoint_and_a_new_model_attestation(
         self,

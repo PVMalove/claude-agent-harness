@@ -47,6 +47,9 @@ item, or `report submit` refuses it; when the mapped work does not complete the 
 `not_covered` with a reason instead. With a one-to-one mapping, omit `divergence_justification`.
 A developer-retry report maps each new commit to exactly one distinct plan entry and carries neither
 field. A `not_covered` item is never accepted as clean.
+For initial work, including startup recovery, the map covers every commit after the batch base: the
+startup SHA can already include unfinished progress. For `developer-retry`, map only commits after
+`snapshot_commit`.
 Do not report the candidate SHA alone when it hides multiple commits.
 
 A developer-retry brief whose `carried_items` is not empty hands the retry obligations an earlier
