@@ -37,6 +37,8 @@
 - `block-dangerous-git` блокирует запуск опасных команд git, а не их упоминание в тексте.
 - Scratch-path hook называет настоящую причину для пути вне проекта и не блокирует каталог памяти runtime; bounded-check срабатывает только на реальный запуск тестов или QA-набора.
 - QA-маркер записывается после принятого QA evidence координатора и в linked worktree; skill `qa-gate` в linked worktree берёт `.harness` основного checkout.
+- QA-маркер засчитывает только прогон всей последней команды из `qa_gate_commands` — отдельными командами или целиком в обёртке `bash -lc`; частичный прогон, который лишь содержит текст QA-команды, маркер больше не ставит.
+- `to-tickets` называет команды дописывания списка подзадач в эпик: `gh issue edit --body-file` на GitHub и `glab issue update --description-file` на GitLab.
 - Hard cleanup убирает чистые неактивные worktree на ветках `integration/*` и в detached HEAD, если их коммиты сохранены на `origin`.
 - `harness install` на Windows не считает stdin из NUL терминалом; `harness health` на Windows экранирует путь в сниппете и запрашивает тикеты без `&`.
 - Backend-оркестрация: `dispatch wait` и `report submit` переживают занятый lock ledger, а `ledger release-lock` снимает lock с нечитаемой записью владельца по возрасту.

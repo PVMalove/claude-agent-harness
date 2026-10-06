@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -69,6 +70,30 @@ def command_of(data: dict[str, object]) -> str:
         return ""
     command = tool_input.get("command")
     return command if isinstance(command, str) else ""
+
+
+# The flag before a shell's command string: `bash -lc '<cmd>'`, `sh -c`, `powershell -Command`.
+SHELL_COMMAND_FLAG = re.compile(r"-[A-Za-z]*c|-Command")
+
+
+def runs_qa_command(command: str, qa_command: str) -> bool:
+    """Выполняет ли `command` QA-команду целиком: её simple commands подряд или одним аргументом
+    обёртки `bash -lc '<qa_command>'`, как её запускает /qa-gate. Команда, которая лишь
+    содержит текст QA-команды (`<qa_command> test_one`), QA-прогоном не считается."""
+    commands = pr_commands.strict_commands(command)
+    if commands is None:
+        return False
+    expected = pr_commands.strict_commands(qa_command)
+    if expected and any(
+        commands[index : index + len(expected)] == expected
+        for index in range(len(commands))
+    ):
+        return True
+    return any(
+        argv[index] == qa_command and SHELL_COMMAND_FLAG.fullmatch(argv[index - 1])
+        for argv in commands
+        for index in range(1, len(argv))
+    )
 
 
 def head_of(command: str) -> str | None:
@@ -140,7 +165,7 @@ def main() -> int:
         commands = json.loads(config.read_text(encoding="utf-8")).get(
             "qa_gate_commands", []
         )
-        if not commands or commands[-1] not in command:
+        if not commands or not runs_qa_command(command, commands[-1]):
             return 0
     marker = checkout / ".claude" / ".qa-gate" / "passed"
     current = state(checkout)

@@ -249,6 +249,24 @@ def run(ctx: SimpleNamespace) -> None:
 
     if no_harness_pr_allowed():
         sys.exit("PR without a QA marker opened from a worktree without .harness")
+    # Only a run of the whole last QA command marks QA: a command that merely contains its
+    # text, such as a narrower test selection, is no QA gate run.
+    for command, marks in (
+        ("echo test extra", False),
+        ("echo testing", False),
+        ("python3 test_summary.py -- bash -lc 'echo test extra'", False),
+        ("echo test 2>&1", True),
+        ("git status && echo test", True),
+        ("python3 test_summary.py -- bash -lc 'echo test'", True),
+    ):
+        no_harness_marker.unlink(missing_ok=True)
+        result = mark_no_harness(command)
+        if result.returncode:
+            sys.exit(f"mark failed for {command!r}: {result.stderr}")
+        if no_harness_marker.is_file() != marks:
+            verdict = "missed" if marks else "accepted as the QA command"
+            sys.exit(f"mark {verdict}: {command!r}")
+    no_harness_marker.unlink(missing_ok=True)
     for command in ("git status", "echo test"):
         result = mark_no_harness(command)
         if result.returncode:
