@@ -270,7 +270,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                     args,
                 ),
             }
-        return {
+        packet: JsonObject = {
             "batch_id": batch["batch_id"],
             "ticket": batch["ticket"],
             "action": "decide completion report"
@@ -328,6 +328,16 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                 "delta-review",
             ],
         }
+        if report and report.get("outcome") == "blocked":
+            blocked_options = ["retry", "block", "abandon"]
+            packet["options"] = blocked_options
+            packet["recovery_route"] = {
+                "decision": "retry",
+                "options": blocked_options,
+                "approval_required": True,
+                "next_role": dispatch.get("role"),
+            }
+        return packet
 
 
 def _carry_over_preview(
@@ -1071,6 +1081,7 @@ def _decide_retry_route(
         stage == "developer"
         and routing["reason_category"] in OPERATIONAL_REASON_CATEGORIES
         and report.get("outcome") == "blocked"
+        and report.get("changed_files")
     ):
         candidate = _candidate_commit(repo, report["commit_sha"])
         routing = {

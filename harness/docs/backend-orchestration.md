@@ -407,7 +407,8 @@ checks, раскрытые risks, risk triggers и findings любой оси re
      --worktree issue-123-payment-validation \
      --allowed-path 'services/payments/**' \
      --definition-of-done 'Добавить валидацию платежа' \
-     --prohibited-change 'Не менять migration или публичный API'
+     --prohibited-change 'Не менять migration или публичный API' \
+     --required-gate review --required-gate qa
    python .harness/orchestration/coordinator.py --repo . batch approve \
      --batch <batch-id> --approved-by 'имя утверждающего' \
      --approved-at 2026-09-09T12:00:00Z
@@ -416,10 +417,13 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    `batch create` сначала выполняет `git fetch origin <ref>` — `--integration-ref`, если он передан,
    иначе `base_branch` проекта (для epic-less задач) — и фиксирует полученную вершину как
    `base_commit`/`integration_base_commit`; необновлённый локальный HEAD никогда не используется как
-   замена. Дальше review, QA и publish проверяют закреплённый candidate, даже если `origin/<ref>`
-   ушёл вперёд: обязательной проверки свежести базы и принудительного developer-перезапуска нет, другие
-   batch это не останавливает. Финальное обновление базы выполняет `integration refresh` при подготовке
-   PR (раздел «Integration accounting после publish»).
+   замена. Полный маршрут `/implement` требует явного указания `--required-gate review --required-gate qa`
+   (независимые Standards/Spec review и full clean-room QA), и координатор сверяет их наличие в
+   `required_gates` до отправки write-role (`developer`) worker-а. В допустимых прямых CLI-сценариях
+   `--required-gate` может быть опущен (по умолчанию `["none"]`). Дальше review, QA и publish проверяют
+   закреплённый candidate, даже если `origin/<ref>` ушёл вперёд: обязательной проверки свежести базы и
+   принудительного developer-перезапуска нет, другие batch это не останавливает. Финальное обновление базы
+   выполняет `integration refresh` при подготовке PR (раздел «Integration accounting после publish»).
 2. Сверить активные batch, `concurrency_budget`, writer и quality-gate lane. Пересечение файлов
    другого batch не повод откладывать запуск; занятая serialized quality-gate lane не мешает
    параллельной реализации. Если batch упёрся в бюджет, дождитесь завершения активного batch или
@@ -626,7 +630,11 @@ checks, раскрытые risks, risk triggers и findings любой оси re
 Минимальный ручной brief хранит ticket и dispatch ID, роль и её access, выбранный profile/model/effort,
 allowed paths (scope записи), issue-ветку/worktree, DoD, запреты, команды, dependencies, approval. Для
 write-роли completion report обязан включать commit SHA, exact changed files, результаты всех checks,
-risks, blockers и следующее решение coordinator-а. Для read-only роли вместо SHA указывается
+risks, blockers и следующее решение coordinator-а. Если write-роль остановилась до изменений (например,
+из-за risk trigger при отсутствии необходимого gate), принимается честный отчёт с `outcome: blocked`,
+пустым `changed_files` и `commit_sha`, привязанным к проверенному checkout (`snapshot_commit`). Отчёт
+регистрируется и возвращает `decision_packet` с `recovery_route` (`retry`, `block`, `abandon`) без
+регистрации незавершённого кандидата. Для read-only роли вместо SHA указывается
 `not applicable — read-only role`.
 
 Новые факты не меняют отправленный brief. Coordinator добавляет отдельное решение с evidence; если
