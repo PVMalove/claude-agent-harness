@@ -9,6 +9,10 @@ dependencies = []
 # the `dev` dependency group into `.harness/.venv`, never the project itself. Manage dev tools with
 # `uv add --dev` / `uv remove --dev`; never pip.
 package = false
+# Кеш `uv` внутри проекта: песочница агента разрешает запись в рабочий каталог, но не в ~/.cache/uv.
+# Действует для `make` и для прямого `uv` из корня проекта (относительный путь считается от текущего
+# каталога); переменная окружения `UV_CACHE_DIR` его перекрывает. У каждого worktree свой кеш.
+cache-dir = ".harness/.sandboxes/cache/uv"
 
 [tool.mypy]
 python_version = "3.12"

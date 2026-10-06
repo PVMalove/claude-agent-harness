@@ -15,7 +15,8 @@ from harness.health.render import render_text
 
 @pytest.fixture
 def runtime_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    home = tmp_path / "user"
+    # Outside the project: a home inside it would make every home cache "inside the project".
+    home = tmp_path.with_name(f"{tmp_path.name}-user")
     home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("CODEX_HOME", raising=False)
@@ -318,15 +319,17 @@ def test_codex_uv_cache_depends_on_sandbox_mode_and_writable_roots(
 def test_uv_cache_directory_follows_uv_environment_variables(
     tmp_path: Path, runtime_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
     xdg = tmp_path / "xdg"
     monkeypatch.setenv("XDG_CACHE_HOME", str(xdg))
-    result = _checks(tmp_path)[_CACHE_IDS["claude"]]
+    result = _checks(repo)[_CACHE_IDS["claude"]]
     assert result.fix is not None
     assert str(xdg / "uv") in result.fix.text
 
     explicit = tmp_path / "explicit"
     monkeypatch.setenv("UV_CACHE_DIR", str(explicit))
-    result = _checks(tmp_path)[_CACHE_IDS["claude"]]
+    result = _checks(repo)[_CACHE_IDS["claude"]]
     assert result.fix is not None
     assert str(explicit) in result.fix.text
     assert str(xdg / "uv") not in result.fix.text
@@ -335,7 +338,7 @@ def test_uv_cache_directory_follows_uv_environment_variables(
         runtime_home,
         {"sandbox": {"enabled": True, "filesystem": {"allowWrite": [str(explicit)]}}},
     )
-    assert _checks(tmp_path)[_CACHE_IDS["claude"]].status == "ok"
+    assert _checks(repo)[_CACHE_IDS["claude"]].status == "ok"
 
 
 @pytest.mark.parametrize(
@@ -365,3 +368,62 @@ def test_uv_cache_check_is_skipped_for_uninstalled_runtimes(
     results = _checks(tmp_path)
     assert results[_CACHE_IDS["codex"]].status == "skipped"
     assert results[_CACHE_IDS["claude"]].status == "skipped"
+
+
+_PYPROJECT_DEFAULT = '[tool.uv]\ncache-dir = ".harness/.sandboxes/cache/uv"\n'
+
+
+@pytest.mark.parametrize("runtime", ["codex", "claude"])
+def test_uv_cache_inside_the_project_is_ok_without_any_sandbox_config(
+    tmp_path: Path, runtime_home: Path, monkeypatch: pytest.MonkeyPatch, runtime: str
+) -> None:
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "cache" / "uv"))
+    result = _checks(tmp_path)[_CACHE_IDS[runtime]]
+    assert result.status == "ok"
+    assert "внутри проекта" in result.message
+    assert result.fix is None
+
+
+def test_a_relative_uv_cache_dir_is_resolved_against_the_project(
+    tmp_path: Path, runtime_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("UV_CACHE_DIR", ".harness/cache/uv")
+    assert _checks(tmp_path)[_CACHE_IDS["claude"]].status == "ok"
+    monkeypatch.setenv("UV_CACHE_DIR", "../outside/uv")
+    assert _checks(tmp_path)[_CACHE_IDS["claude"]].status == "warn"
+
+
+def test_uv_cache_outside_the_project_still_needs_a_write_permission(
+    tmp_path: Path, runtime_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "elsewhere" / "uv"))
+    assert _checks(repo)[_CACHE_IDS["codex"]].status == "warn"
+
+
+def test_a_pyproject_cache_dir_inside_the_project_is_ok(
+    tmp_path: Path, runtime_home: Path
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(_PYPROJECT_DEFAULT, encoding="utf-8")
+    for runtime in ("codex", "claude"):
+        result = _checks(tmp_path)[_CACHE_IDS[runtime]]
+        assert result.status == "ok"
+        assert "внутри проекта" in result.message
+
+
+def test_a_pyproject_without_a_cache_dir_keeps_the_home_cache_requirement(
+    tmp_path: Path, runtime_home: Path
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.uv]\npackage = false\n", encoding="utf-8"
+    )
+    assert _checks(tmp_path)[_CACHE_IDS["claude"]].status == "warn"
+
+
+def test_a_user_uv_cache_dir_wins_over_the_pyproject_cache_dir(
+    tmp_path: Path, runtime_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(_PYPROJECT_DEFAULT, encoding="utf-8")
+    monkeypatch.setenv("UV_CACHE_DIR", str(runtime_home / ".cache" / "uv"))
+    assert _checks(tmp_path)[_CACHE_IDS["claude"]].status == "warn"
