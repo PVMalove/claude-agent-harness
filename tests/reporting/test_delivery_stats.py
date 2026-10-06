@@ -828,13 +828,14 @@ class StatsErrorRemedyTests(unittest.TestCase):
 
 GL_HOST = "gitlab.example.test:4443"
 GL_URL = f"https://{GL_HOST}/group/sub/project"
-GL_API = f"api --hostname {GL_HOST} --paginate projects/group%2Fsub%2Fproject"
+GL_API = f"GITLAB_HOST={GL_HOST} api --paginate projects/group%2Fsub%2Fproject"
 TrackerResponses = dict[str, tuple[int, str, str]]
 
 
 class FakeTrackerCli:
     """Подмена `delivery_stats._run` для gh/glab: пишет argv и отдаёт синтетические ответы,
-    git выполняется по-настоящему."""
+    git выполняется по-настоящему. `glab api` ведёт себя как glab 1.120.0: порт в `--hostname`
+    отклоняется, а хост из GITLAB_HOST записывается префиксом, как в shell."""
 
     def __init__(self, responses: TrackerResponses) -> None:
         self.responses = responses
@@ -842,12 +843,24 @@ class FakeTrackerCli:
         self._real_run = delivery_stats._run
 
     def __call__(
-        self, command: list[str], cwd: Path | None = None
+        self,
+        command: list[str],
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
     ) -> tuple[int, str, str]:
         if command[0] not in ("gh", "glab"):
-            return self._real_run(command, cwd)
-        self.calls.append(command)
-        key = " ".join(command[1:])
+            return self._real_run(command, cwd, env)
+        prefix: list[str] = []
+        if command[:2] == ["glab", "api"]:
+            if (
+                "--hostname" in command
+                and ":" in command[command.index("--hostname") + 1]
+            ):
+                return 1, "", "ERROR Error parsing --hostname: invalid hostname."
+            if env and env.get("GITLAB_HOST"):
+                prefix = [f"GITLAB_HOST={env['GITLAB_HOST']}"]
+        self.calls.append([*prefix, *command])
+        key = " ".join([*prefix, *command[1:]])
         return self.responses.get(key, (2, "", f"fake: unexpected {key}"))
 
 
@@ -1045,11 +1058,11 @@ class TrackerDeliveryStatsTests(unittest.TestCase):
         self.assertEqual(report["volume"]["adr_added"], ["docs/adr/0002-widget.md"])
         for call in fake.calls:
             with self.subTest(call=call):
-                self.assertEqual(call[0], "glab")
+                self.assertIn("glab", call[:2])
                 self.assertTrue(
                     call[call.index("-R") + 1] == GL_URL
                     if "-R" in call
-                    else call[1:3] == ["api", "--hostname"] and call[3] == GL_HOST
+                    else call[:3] == [f"GITLAB_HOST={GL_HOST}", "glab", "api"]
                 )
 
     def test_gitlab_report_names_a_missing_or_unauthenticated_glab(self) -> None:
