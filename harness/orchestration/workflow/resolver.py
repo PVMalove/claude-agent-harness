@@ -42,7 +42,7 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
     ResolverRecord,
 )
-from harness.orchestration.workflow import integration, pr_refresh
+from harness.orchestration.workflow import integration, local_qa, pr_refresh
 from harness.orchestration.workflow.batch import create_batch
 from harness.orchestration.workflow.history import _validate_batch_integrity
 from harness.orchestration.workflow.resolver_state import (
@@ -83,6 +83,24 @@ def _open_batch(batches: list[JsonObject]) -> JsonObject | None:
         if item.get("state") not in _FINISHED_STATES:
             return item
     return None
+
+
+def _failed_verification(root: Path, record: JsonObject, pair: JsonObject) -> list[str]:
+    """The failed checks that make a refreshed pair a resolver task although the branch is already
+    on the integration tip (issue #537): a CI failure recorded by the collector or a failed
+    generated local-QA gate of exactly this pair, with no passed check of it.  The never-refreshed
+    pair has none: its failure is the task's own defect for a regular developer."""
+    record_id = record["integration_record_id"]
+    if not pr_refresh.refresh_records(root, record_id):
+        return []
+    links = integration._evidence_links(root, record_id)
+    if any(
+        integration._satisfies(link, pair)
+        and (link["kind"] != "local-qa" or local_qa.verified_evidence(root, link))
+        for link in links
+    ):
+        return []
+    return integration._failed_pair_checks(links, pair)
 
 
 def _git_lines(worktree: Path, *arguments: str) -> list[str]:
@@ -225,19 +243,27 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
                 f"{open_batch['resolver']['target_sha']} is still open",
                 remedy="finish it (publish) or close it ('batch abandon') before resolving the new target",
             )
+        failed: list[str] = []
         if tip == pair["target_sha"]:
-            raise CoordinatorError(
-                "the branch already is at the integration tip: there is no conflict to resolve",
-                remedy="run 'integration status' to see whether the pair needs a new check",
-            )
+            failed = _failed_verification(root, record, pair)
+            if not failed:
+                raise CoordinatorError(
+                    "the branch already is at the integration tip: there is no conflict to resolve",
+                    remedy="run 'integration next' to see the next step; a failed check of the "
+                    "original, never-refreshed pair is the task's own defect for a regular developer",
+                )
         branch = identity["branch"]
         _validate_branch(repo, branch)
         source = _load_batch(root, identity["source_batch_id"])
         worktree = Path(source["worktree"])
         _git(worktree, "fetch", remote, "--", ref)
         pr_refresh._require_clean_own_branch(worktree, branch, pair["candidate_sha"])
-        conflicting = pr_refresh.conflicting_files(worktree, branch, tip)
-        if not conflicting:
+        # A failed verification of a refreshed pair has no textual conflict to probe for: the
+        # candidate already is on the target, so there is nothing to rebase.
+        conflicting = (
+            [] if failed else pr_refresh.conflicting_files(worktree, branch, tip)
+        )
+        if not conflicting and not failed:
             raise CoordinatorError(
                 "the rebase onto the integration tip is clean: nothing for a resolver to do",
                 remedy="run 'integration refresh'; a clean rebase spends no resolver cycle",
@@ -264,6 +290,8 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
             "candidate_sha": pair["candidate_sha"],
             "target_sha": tip,
             "merge_base": merge_base,
+            "trigger": "verification-failure" if failed else "conflict",
+            "failed_evidence_ids": failed,
             "conflicting_files": conflicting,
             "sides": {
                 "candidate": {
@@ -302,9 +330,9 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
             dependency=None,
             required_gate=None,
             allowed_path=scope,
-            expected_file=conflicting,
+            expected_file=conflicting or scope,
             expected_service=["conflict-resolution"],
-            expected_changed_lines=max(10, 20 * len(conflicting)),
+            expected_changed_lines=max(10, 20 * len(conflicting or scope)),
             expected_context_tokens=None,
         )
     )
@@ -356,6 +384,7 @@ def _result(
         "next_action": batch.get("next_action"),
         "candidate_sha": resolver["candidate_sha"],
         "target_sha": resolver["target_sha"],
+        "trigger": resolver.get("trigger", "conflict"),
         "conflicting_files": resolver["conflicting_files"],
         "allowed_paths": batch["allowed_paths"],
         "budget": budget(root, config, record["integration_record_id"]),
@@ -388,6 +417,8 @@ def brief_section(
         "sides": resolver["sides"],
         "candidate_sha": resolver["candidate_sha"],
         "target_sha": resolver["target_sha"],
+        "trigger": resolver.get("trigger", "conflict"),
+        "failed_evidence_ids": resolver.get("failed_evidence_ids", []),
         "conflicting_files": resolver["conflicting_files"],
         "scope": resolver["scope"],
         "prohibitions": resolver["prohibitions"],
