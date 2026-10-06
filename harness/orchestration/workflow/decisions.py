@@ -271,6 +271,16 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                     args,
                 ),
             }
+        elif (
+            report is not None
+            and "decision" not in entry
+            and report.get("incomplete_items")
+        ):
+            # What ``batch decide --decision accept --carry-incomplete`` would record (issue #501).
+            route_preview = {
+                **(route_preview or {}),
+                "carry-over": _incomplete_carry_preview(batch, dispatch, report),
+            }
         return {
             "batch_id": batch["batch_id"],
             "ticket": batch["ticket"],
@@ -310,6 +320,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             "carried_items_gap": carried_items.carried_gap(report, dispatch)
             if report
             else [],
+            "incomplete_items": report.get("incomplete_items", []) if report else [],
             "commit_plan_divergence": (
                 plan_rules.divergence(report, dispatch, resolve) if report else None
             )
@@ -682,6 +693,82 @@ def _decision_findings(
     return carried_items.read_findings(repo, findings_file)
 
 
+def _incomplete_carry(
+    batch: JsonObject,
+    dispatch: JsonObject,
+    report: JsonObject,
+    args: argparse.Namespace,
+) -> JsonObject | None:
+    """The carry-over routing record an accept with ``--carry-incomplete`` records (issue #501).
+
+    A read-only report that left brief items undone is never accepted as if it were whole: a plain
+    accept or override-warning is refused, and the items go either into their target roles'
+    briefs (``--carry-incomplete``) or into a narrowed retry of the same stage. ``None`` means the
+    decision carries nothing.
+    """
+    items = report.get("incomplete_items") or []
+    carry = bool(getattr(args, "carry_incomplete", False))
+    accepting = args.decision in {"accept", "override-warning"}
+    if carry and (not accepting or not items):
+        raise CoordinatorError(
+            "--carry-incomplete is only valid when accepting a report that lists incomplete_items",
+            remedy="drop --carry-incomplete; it carries the incomplete items of a pending "
+            "read-only report into later briefs with --decision accept or override-warning",
+        )
+    if not accepting or not items:
+        return None
+    stage = _reporting_stage(dispatch, report)
+    if not carry:
+        raise CoordinatorError(
+            f"the {stage} report left {len(items)} brief item(s) undone, so a plain "
+            f"{args.decision} would drop them",
+            remedy="pass --carry-incomplete to carry the items into the briefs of their target "
+            "roles, or retry the same role on these items only with --decision retry --narrowed",
+        )
+    own = [
+        position
+        for position, item in enumerate(items, start=1)
+        if item["target_role"] == stage
+    ]
+    if own:
+        raise CoordinatorError(
+            f"incomplete items {own} target the {stage} role itself, so no later brief can "
+            "carry them",
+            remedy=f"retry the {stage} on its incomplete items with --decision retry --narrowed",
+        )
+    candidate = dispatch.get("candidate_commit")
+    return carried_items.incomplete_carry_routing(
+        stage,
+        candidate if isinstance(candidate, str) else None,
+        items,
+        carried_items.next_incomplete_item_ids(batch, len(items)),
+    )
+
+
+def _incomplete_carry_preview(
+    batch: JsonObject, dispatch: JsonObject, report: JsonObject
+) -> JsonObject:
+    """The carry-over record ``batch decide --decision accept --carry-incomplete`` would record
+    now, or the refusal it would raise; nothing is written."""
+    try:
+        if report.get("outcome") != "completed":
+            raise CoordinatorError(
+                "a non-completed role report cannot be accepted or warning-overridden",
+                remedy="only accept or warning-override a completed role report",
+            )
+        return cast(
+            JsonObject,
+            _incomplete_carry(
+                batch,
+                dispatch,
+                report,
+                argparse.Namespace(decision="accept", carry_incomplete=True),
+            ),
+        )
+    except CoordinatorError as exc:
+        return {"route": None, "refused": exc.message, "remedy": exc.remedy}
+
+
 def decide_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -721,6 +808,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             )
         pinned_plan = _pinned_commit_plan(repo, batch, report, args)
         findings = _decision_findings(repo, dispatch, report, args)
+        incomplete_carry = _incomplete_carry(batch, dispatch, report, args)
         uncovered = plan_rules.not_covered(report)
         gap = carried_items.carried_gap(report, dispatch)
         if report.get("role") == "code-review":
@@ -905,6 +993,10 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             decision["routing"] = carried_items.carry_over_routing(
                 candidate, [record["item_id"] for record in records]
             )
+        if incomplete_carry is not None:
+            # Recorded, not applied: ``next_action`` moves as on any accept of this stage, and
+            # each target role's brief reads the items back from the report.
+            decision["routing"] = incomplete_carry
         pending[0]["decision"] = decision
         decision_entry = {"dispatch_id": pending[0]["dispatch_id"], **decision}
         if routing is not None:

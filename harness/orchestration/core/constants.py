@@ -179,7 +179,14 @@ DISPATCH_FIELDS = {
 }
 # The carried-items brief section (issue #499) is one shared channel keyed by the kind of source
 # that raised an item; a later kind adds its value here without changing the section's shape.
-CARRIED_ITEM_SOURCES = ("coordinator-finding", "review-finding")
+CARRIED_ITEM_SOURCES = ("coordinator-finding", "review-finding", "incomplete-item")
+# The roles whose work brief may carry each kind. An incomplete item (issue #501) reaches the role
+# a read-only report handed it to, or the same read-only stage again in a narrowed retry.
+CARRIED_ITEM_BRIEF_ROLES = {
+    "coordinator-finding": ("developer", "code-review"),
+    "review-finding": ("developer", "code-review"),
+    "incomplete-item": ("architect", "developer", "verification", "code-review", "qa"),
+}
 # One carried item as a brief hands it to a role.
 CARRIED_ITEM_FIELDS = frozenset(
     {"item_id", "source", "summary", "files", "expected_evidence"}

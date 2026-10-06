@@ -210,6 +210,13 @@ def build_parser(
         'JSON file {"findings": [{"summary", "files", "expected_evidence"}, ...]} of coordinator '
         "findings every later code-review brief carries until a review settles them",
     )
+    decide.add_argument(
+        "--carry-incomplete",
+        action="store_true",
+        help="only with --decision accept or override-warning on a read-only report that lists "
+        "incomplete_items: carry each item into the work brief of its target role until an "
+        "accepted dispatch of that role carried it",
+    )
     decide.set_defaults(handler=handlers.decide_batch)
     carry_over = batch_commands.add_parser(
         "carry-over",

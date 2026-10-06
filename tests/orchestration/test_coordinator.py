@@ -7824,6 +7824,212 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     stored["dispatches"][-1]["dispatch_id"], brief["dispatch_id"]
                 )
 
+    def _root(self) -> Path:
+        return ledger_ops._state_root(self._args(), self.repo)
+
+    def _incomplete(self, brief: JsonObject, *items: JsonObject) -> JsonObject:
+        """The incomplete-item section a decision recorded for ``brief``'s report, as a later
+        brief carries it; ``items`` pairs each item id with its ``source`` overrides."""
+        report_sha256 = self._report_evidence(self.batch_id, brief["dispatch_id"])[
+            "report_sha256"
+        ]
+        rows = []
+        for item in items:
+            target = item["target_role"]
+            rows.append(
+                {
+                    "item_id": item["item_id"],
+                    "source": {
+                        "kind": "incomplete-item",
+                        "dispatch_id": brief["dispatch_id"],
+                        "report_sha256": report_sha256,
+                        "role": brief["role"],
+                        "target_role": target,
+                        "route": item["route"],
+                        "reason": INCOMPLETE_ITEM["reason"],
+                        "reason_category": item.get("reason_category"),
+                    },
+                    "summary": INCOMPLETE_ITEM["brief_item"],
+                    "files": [],
+                    "expected_evidence": f"The {target} completion report shows this "
+                    "brief item done.",
+                }
+            )
+        return {"incomplete-item": rows}
+
+    def test_a_plain_accept_of_a_report_with_incomplete_items_is_refused(
+        self,
+    ) -> None:
+        self._reported_architect_with_items()
+        before = self._batch_record(self.batch_id)
+
+        with self.assertRaises(coordinator.CoordinatorError) as raised:
+            self._decide(self.batch_id, "accept")
+
+        self.assertIn("1 brief item(s) undone", raised.exception.message)
+        self.assertIn("--carry-incomplete", raised.exception.remedy)
+        self.assertIn("--narrowed", raised.exception.remedy)
+        self.assertEqual(self._batch_record(self.batch_id), before)
+
+    def test_carry_incomplete_needs_items_an_accept_and_a_later_target_role(
+        self,
+    ) -> None:
+        batch_id = cast(str, self._create_batch()["batch_id"])
+        self._reported_architect(batch_id)
+        with self.assertRaises(coordinator.CoordinatorError) as clean:
+            self._decide(batch_id, "accept", carry_incomplete=True)
+        self._reset()
+        self._reported_architect_with_items()
+        with self.assertRaises(coordinator.CoordinatorError) as retried:
+            self._decide(self.batch_id, "retry", carry_incomplete=True)
+        self._reset()
+        self._reported_architect_with_items(
+            dict(INCOMPLETE_ITEM), {**INCOMPLETE_ITEM, "target_role": "architect"}
+        )
+        before = self._batch_record(self.batch_id)
+
+        with self.assertRaises(coordinator.CoordinatorError) as own:
+            self._decide(self.batch_id, "accept", carry_incomplete=True)
+
+        for refused in (clean, retried):
+            self.assertIn("--carry-incomplete", refused.exception.message)
+        self.assertIn(
+            "incomplete items [2] target the architect", own.exception.message
+        )
+        self.assertIn("--decision retry --narrowed", own.exception.remedy)
+        self.assertEqual(self._batch_record(self.batch_id), before)
+
+    def test_an_accept_with_carry_incomplete_hands_items_on_until_their_role_is_accepted(
+        self,
+    ) -> None:
+        architect = self._reported_architect_with_items()
+
+        decided = self._decide(self.batch_id, "accept", carry_incomplete=True)
+
+        decision = decided["coordinator_decisions"][-1]
+        routing = dict(decision["routing"])
+        self.assertTrue(routing.pop("rationale").strip())
+        self.assertEqual(
+            routing,
+            {
+                "route": "carry-over",
+                "previous_role": "architect",
+                "reason_category": None,
+                "next_role": "developer",
+                "next_action": "developer",
+                "candidate_commit": None,
+                "carried_item_ids": ["incomplete-item-1"],
+            },
+        )
+        self.assertNotIn("next_role", decision)
+        self.assertEqual(decided["next_action"], "developer")
+        self.assertNotIn("carried_items", decided, "nothing is stored on the batch")
+        audit = self._decision_audits(self.batch_id)[-1]
+        self.assertEqual((audit["decision"], audit["route"]), ("accept", "carry-over"))
+        expected = self._incomplete(
+            architect,
+            {
+                "item_id": "incomplete-item-1",
+                "target_role": "developer",
+                "route": "carry-over",
+            },
+        )
+
+        developer = self._dispatch(self.batch_id, "developer")["brief"]
+
+        self.assertEqual(developer["carried_items"], expected)
+        self.assertEqual(
+            developer["transition"]["carried_items_sha256"],
+            operational_guards.carried_items_digest(expected),
+        )
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("x")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(developer, candidate, changed),
+        )
+        self._decide(self.batch_id, "retry", reason_category="code")
+        retry = self._dispatch(self.batch_id, "developer")["brief"]
+        self.assertEqual(retry["carried_items"], expected, "a retry leaves it open")
+        self._start(retry["dispatch_id"])
+        fix, _ = self._developer_commit("fix")
+        fixed = git_utils._changed_files_between(
+            self.repo, self._batch_record(self.batch_id)["base_commit"], fix
+        )
+        self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry,
+                fix,
+                fixed,
+                commit_map=self._commit_map([(fix, retry["commit_plan"][0])]),
+            ),
+        )
+
+        done = self._decide(self.batch_id, "accept")
+
+        self.assertEqual(
+            carried_items.open_incomplete_items(self._root(), done, "developer"), []
+        )
+
+    def test_an_incomplete_item_for_code_review_sends_a_trigger_free_candidate_to_review(
+        self,
+    ) -> None:
+        batch_id = cast(str, self._plan_batch(["add simple marker"])["batch_id"])
+        self._reported_architect_with_items(
+            {**INCOMPLETE_ITEM, "target_role": "code-review"}, batch_id=batch_id
+        )
+        self._decide(batch_id, "accept", carry_incomplete=True)
+        developer, candidate, changed = self._reported_developer(batch_id)
+        self.assertEqual(developer["carried_items"], {})
+        self._decide(batch_id, "accept")
+
+        self._assess_without_triggers(batch_id, candidate, changed)
+
+        assessed = self._batch_record(batch_id)
+        self.assertFalse(assessed["risk_assessments"][-1]["review_required"])
+        self.assertEqual(assessed["next_action"], "code-review")
+        review = self._reported_review(
+            batch_id, candidate, carried={"incomplete-item-1": "closed"}
+        )
+        self.assertEqual(
+            [item["item_id"] for item in self._carried(review)], ["incomplete-item-1"]
+        )
+        done = self._decide(batch_id, "accept")
+        self.assertEqual(done["next_action"], "qa")
+        self.assertEqual(
+            carried_items.open_incomplete_items(self._root(), done, "code-review"), []
+        )
+
+    def test_the_decision_packet_shows_incomplete_items_and_previews_their_carry_over(
+        self,
+    ) -> None:
+        self._reported_architect_with_items()
+        before = self._batch_record(self.batch_id)
+
+        packet = self._packet()
+
+        self.assertEqual(packet["incomplete_items"], [INCOMPLETE_ITEM])
+        self.assertEqual(
+            set(packet["route_preview"]), {"retry", "abandon", "carry-over"}
+        )
+        self.assertEqual(self._batch_record(self.batch_id), before)
+        decided = self._decide(self.batch_id, "accept", carry_incomplete=True)
+        self.assertEqual(
+            decided["coordinator_decisions"][-1]["routing"],
+            packet["route_preview"]["carry-over"],
+        )
+        self._reset()
+        self._reported_architect_with_items(
+            {**INCOMPLETE_ITEM, "target_role": "architect"}
+        )
+
+        refused = self._packet()["route_preview"]["carry-over"]
+
+        self.assertIsNone(refused["route"])
+        self.assertIn("target the architect role itself", refused["refused"])
+        self.assertIn("--narrowed", refused["remedy"])
+
 
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     """The pure routing table: structured evidence in, one routing record out (no I/O)."""
@@ -8546,6 +8752,43 @@ class CarriedItemsReviewAccountingTests(unittest.TestCase):
                 )
 
 
+class CarriedItemsBriefRolesTests(unittest.TestCase):
+    """Which work briefs may carry each kind of carried item (issues #499, #501), no ledger."""
+
+    ITEM: JsonObject = {
+        "item_id": "item-1",
+        "source": {},
+        "summary": "s",
+        "files": [],
+        "expected_evidence": "e",
+    }
+
+    def test_a_brief_carries_each_kind_only_on_the_roles_it_reaches(self) -> None:
+        for role, purpose, kind, valid in (
+            ("architect", "work", "incomplete-item", True),
+            ("developer", "work", "incomplete-item", True),
+            ("verification", "work", "incomplete-item", True),
+            ("code-review", "work", "incomplete-item", True),
+            ("qa", "work", "incomplete-item", True),
+            ("developer", "work", "coordinator-finding", True),
+            ("code-review", "work", "review-finding", True),
+            ("qa", "work", "coordinator-finding", False),
+            ("architect", "work", "review-finding", False),
+            ("developer", "publish", "incomplete-item", False),
+        ):
+            dispatch = {
+                "role": role,
+                "purpose": purpose,
+                "carried_items": {kind: [dict(self.ITEM)]},
+            }
+            with self.subTest(role=role, purpose=purpose, kind=kind):
+                if valid:
+                    history._validate_carried_section(dispatch)
+                    continue
+                with self.assertRaises(coordinator.CoordinatorError):
+                    history._validate_carried_section(dispatch)
+
+
 class CoordinatorGuardHelperTests(unittest.TestCase):
     """Direct-call pins for the config/brief guards whose parameters accept arbitrary JSON."""
 
@@ -8888,6 +9131,27 @@ class CoordinatorCliParserTests(unittest.TestCase):
         self.assertIs(carried.handler, coordinator.decide_batch)
         self.assertEqual(carried.findings_file, "findings.json")
         self.assertIsNone(parse(decide).findings_file)
+
+    def test_batch_decide_accepts_carry_incomplete(self) -> None:
+        decide = [
+            "batch",
+            "decide",
+            "--batch",
+            "batch-1",
+            "--decision",
+            "accept",
+            "--approved-by",
+            "Malove",
+            "--approved-at",
+            "2026-09-17T00:00:00+00:00",
+        ]
+        parse = coordinator.parser().parse_args
+
+        carried = parse([*decide, "--carry-incomplete"])
+
+        self.assertIs(carried.handler, coordinator.decide_batch)
+        self.assertTrue(carried.carry_incomplete)
+        self.assertFalse(parse(decide).carry_incomplete)
 
     def test_batch_decision_packet_previews_a_findings_file(self) -> None:
         parse = coordinator.parser().parse_args

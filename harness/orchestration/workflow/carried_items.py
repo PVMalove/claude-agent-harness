@@ -9,6 +9,11 @@ kind of source that raised an item, so a later kind joins it without changing it
 An item's status is derived, never stored: it stays open until a code-review dispatch whose brief
 carried it is accepted or warning-overridden; a retried review leaves it open.
 
+A read-only role that leaves brief items undone lists them as ``incomplete_items`` (issue #501).
+They are never stored on the batch: an accept with ``--carry-incomplete`` records their ids in its
+routing record, and each target role's work brief reads them back from the immutable report until
+an accepted dispatch of that role carried them.
+
 This module reads the ledger through ``history`` and ``ledger_ops`` only; the decision, dispatch,
 report and risk modules call into it, never the other way round.
 """
@@ -27,6 +32,7 @@ from harness.orchestration.core.constants import (
     CARRIED_ITEM_ACCOUNTING_FIELDS,
     CARRIED_ITEM_FIELDS,
     CARRIED_ITEM_STATUSES,
+    TOOLING_REASON_CATEGORY,
 )
 from harness.orchestration.core.git_utils import _candidate_commit
 from harness.orchestration.core.utils import (
@@ -58,6 +64,17 @@ from harness.orchestration.workflow.history import (
 
 COORDINATOR_FINDING = "coordinator-finding"
 REVIEW_FINDING = "review-finding"
+INCOMPLETE_ITEM = "incomplete-item"
+# The routes whose routing record hands a read-only report's incomplete items to later briefs.
+INCOMPLETE_ITEM_ROUTES = ("carry-over",)
+# The next role and action ``batch decide --decision accept`` moves a batch to after each read-only
+# stage; risk assessment runs before any role.
+ACCEPT_NEXT_STEP: dict[str, tuple[str | None, str]] = {
+    "architect": ("developer", "developer"),
+    "verification": (None, "risk-assessment"),
+    "code-review": ("qa", "qa"),
+    "qa": ("developer", "publish"),
+}
 # ``batch carry-over`` starts no dispatch and moves no candidate, so the coordinator runs it under
 # this policy name, the way ``batch resume`` records ``policy:operational-recovery``.
 CARRY_OVER_POLICY = "carry-over"
@@ -275,26 +292,162 @@ def _retried_review_findings(root: Path, batch: JsonObject) -> list[JsonObject]:
     ]
 
 
+def next_incomplete_item_ids(batch: JsonObject, count: int) -> list[str]:
+    """The ids the next ``count`` incomplete items of this batch get (issue #501).
+
+    They continue the numbering of every incomplete-item id a decision of the batch recorded, so
+    a preview names exactly the ids the decision then records.
+    """
+    recorded = sum(
+        1
+        for decision in batch.get("coordinator_decisions", [])
+        if isinstance(decision.get("routing"), dict)
+        for item_id in decision["routing"].get("carried_item_ids", [])
+        if str(item_id).startswith(f"{INCOMPLETE_ITEM}-")
+    )
+    return [
+        f"{INCOMPLETE_ITEM}-{number}"
+        for number in range(recorded + 1, recorded + count + 1)
+    ]
+
+
+def incomplete_carry_routing(
+    stage: str, candidate: str | None, items: list[JsonObject], item_ids: list[str]
+) -> JsonObject:
+    """The carry-over routing record of an accept with ``--carry-incomplete`` (no I/O).
+
+    Like a coordinator finding's carry-over, it names no reason, starts no dispatch and is never
+    applied to ``next_action``: it names the step the accept itself takes. Each item goes to its
+    own target role's brief. Its rationale holds structural facts only.
+    """
+    next_role, next_action = ACCEPT_NEXT_STEP[stage]
+    targets = sorted({item["target_role"] for item in items})
+    return {
+        "route": _require_route("carry-over"),
+        "previous_role": stage,
+        "reason_category": None,
+        "next_role": next_role,
+        "next_action": next_action,
+        "candidate_commit": candidate,
+        "carried_item_ids": item_ids,
+        "rationale": f"the accepted {stage} report carries incomplete items "
+        f"{', '.join(item_ids)} into the {', '.join(targets)} briefs; each item stays open until "
+        "a dispatch of its target role that carried it is accepted, and no retry is spent.",
+    }
+
+
+def _hands_incomplete_items(entry: JsonObject) -> bool:
+    """Whether a decided dispatch's routing record hands its report's incomplete items on."""
+    decision = entry.get("decision")
+    routing = decision.get("routing") if isinstance(decision, dict) else None
+    return (
+        isinstance(routing, dict)
+        and routing.get("route") in INCOMPLETE_ITEM_ROUTES
+        and any(
+            str(item_id).startswith(f"{INCOMPLETE_ITEM}-")
+            for item_id in routing.get("carried_item_ids", [])
+        )
+    )
+
+
+def _incomplete_brief_items(
+    root: Path, batch: JsonObject, entry: JsonObject
+) -> list[JsonObject]:
+    """The brief items of the incomplete items a decided read-only report listed.
+
+    They are read from the immutable, hash-checked report under the ids its routing record
+    names. A carry-over hands each item to its own target role; a narrowed retry hands every
+    item to the same stage again.
+    """
+    routing = entry["decision"]["routing"]
+    report = _pending_report(root, batch, entry)
+    stage = report["role"]
+    rows = []
+    for item_id, item in zip(
+        routing["carried_item_ids"], report["incomplete_items"], strict=True
+    ):
+        target = item["target_role"] if routing["route"] == "carry-over" else stage
+        rows.append(
+            {
+                "item_id": item_id,
+                "source": {
+                    "kind": INCOMPLETE_ITEM,
+                    "dispatch_id": entry["dispatch_id"],
+                    "report_sha256": entry["report_sha256"],
+                    "role": stage,
+                    "target_role": target,
+                    "route": routing["route"],
+                    "reason": item["reason"],
+                    "reason_category": TOOLING_REASON_CATEGORY
+                    if "tooling_blocker" in item
+                    else None,
+                },
+                "summary": item["brief_item"],
+                "files": [],
+                "expected_evidence": f"The {target} completion report shows this brief "
+                "item done.",
+            }
+        )
+    return rows
+
+
+def _accepted(entry: JsonObject) -> bool:
+    decision = entry.get("decision")
+    return isinstance(decision, dict) and decision.get("decision") in {
+        "accept",
+        "override-warning",
+    }
+
+
+def open_incomplete_items(root: Path, batch: JsonObject, role: str) -> list[JsonObject]:
+    """The carried-over incomplete items for ``role`` that no accepted ``role`` dispatch carried.
+
+    An item stays open until a dispatch of its target role whose brief carried it is accepted or
+    warning-overridden; a retried dispatch leaves it open, so the next brief of that role carries
+    it again.
+    """
+    settled = {
+        item["item_id"]
+        for entry in batch.get("dispatches", [])
+        if entry.get("role") == role and _accepted(entry)
+        for item in (
+            _load_dispatch(root, entry["dispatch_id"]).get("carried_items") or {}
+        ).get(INCOMPLETE_ITEM, [])
+    }
+    return [
+        item
+        for entry in batch.get("dispatches", [])
+        if _accepted(entry) and _hands_incomplete_items(entry)
+        for item in _incomplete_brief_items(root, batch, entry)
+        if item["source"]["target_role"] == role and item["item_id"] not in settled
+    ]
+
+
 def brief_section(root: Path, batch: JsonObject, role: str, purpose: str) -> JsonObject:
     """The ``carried_items`` section of the brief about to be created; ``{}`` carries nothing.
 
     A code-review or developer work brief carries every open coordinator finding. A developer
     brief answering a retried code-review also carries that review's findings, so the one
-    developer-retry closes both.
+    developer-retry closes both. Any work brief carries the open incomplete items a read-only
+    report handed to its role (issue #501).
     """
-    if purpose != "work" or role not in {"developer", "code-review"}:
+    if purpose != "work":
         return {}
     section: JsonObject = {}
-    findings = [
-        _brief_item(record) for record in open_coordinator_findings(root, batch)
-    ]
-    if findings:
-        section[COORDINATOR_FINDING] = findings
-    review_findings = (
-        _retried_review_findings(root, batch) if role == "developer" else []
-    )
-    if review_findings:
-        section[REVIEW_FINDING] = review_findings
+    if role in {"developer", "code-review"}:
+        findings = [
+            _brief_item(record) for record in open_coordinator_findings(root, batch)
+        ]
+        if findings:
+            section[COORDINATOR_FINDING] = findings
+        review_findings = (
+            _retried_review_findings(root, batch) if role == "developer" else []
+        )
+        if review_findings:
+            section[REVIEW_FINDING] = review_findings
+    incomplete = open_incomplete_items(root, batch, role)
+    if incomplete:
+        section[INCOMPLETE_ITEM] = incomplete
     return section
 
 
