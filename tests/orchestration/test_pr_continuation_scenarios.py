@@ -281,7 +281,43 @@ class ConflictAndRoutingTests(PrSession):
         self.assertEqual(
             (routed["step"], routed["route"]), ("route-failure", "developer")
         )
-        self.assertIn("batch decide", " ".join(routed["next"]))
+        hint = routed["next"][0]
+        self.assertTrue(
+            hint.startswith(
+                f"batch create --ticket {routed['ticket']} --branch {routed['branch']} "
+            )
+        )
+        self.assertNotIn("batch decide", " ".join(routed["next"]))
+        # The hinted command is executable: the completed source batch does not block a new
+        # batch of the same ticket and issue branch (it parsed and ran as the CLI would).
+        planned = self.cli(
+            "batch",
+            "create",
+            "--ticket",
+            routed["ticket"],
+            "--branch",
+            routed["branch"],
+            "--worktree",
+            str(self.branch.fixture.worktree),
+            "--integration-ref",
+            "master",
+            "--allowed-path",
+            "**",
+            "--definition-of-done",
+            "fix the defect found after publish",
+            "--prohibited-change",
+            "secrets",
+            "--expected-file",
+            "services/x.py",
+            "--expected-service",
+            "core",
+            "--expected-changed-lines",
+            "10",
+        )
+        self.assertEqual(planned["state"], "planned")
+        self.assertEqual(planned["ticket"], routed["ticket"])
+        self.assertEqual(planned["branch"], routed["branch"])
+        self.assertNotEqual(planned["batch_id"], self.published["batch_id"])
 
     def test_spent_cycles_stop_at_a_human_decision_that_an_answer_never_resets(
         self,
