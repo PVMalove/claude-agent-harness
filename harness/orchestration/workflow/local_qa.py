@@ -4,15 +4,25 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 from pathlib import Path
 from typing import cast
 
-from harness.gate_runner.gate_runner import CleanRoomPolicy, run_gate, sanitise
+from harness.gate_runner.gate_runner import (
+    CleanRoomPolicy,
+    parse_command_log,
+    run_gate,
+    sanitise,
+)
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import _config, _verification_commands
 from harness.orchestration.core.config import _execution_policy
 from harness.orchestration import qa_lane
-from harness.orchestration.core.constants import LOCAL_QA_CI_CONDITIONS, STATE_REL
+from harness.orchestration.core.constants import (
+    INTEGRATION_SHA_PATTERN,
+    LOCAL_QA_CI_CONDITIONS,
+    STATE_REL,
+)
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _git,
@@ -70,6 +80,83 @@ def _observe_pair(
     return {"remote_branch_sha": branch, "integration_tip": target}
 
 
+def _result_id(request_id: str) -> str:
+    return IntegrationLocalQaRecord.derive_id(
+        {"request_id": request_id, "event": "result"}
+    )
+
+
+def _valid_result(root: Path, result: JsonObject) -> bool:
+    request_id = result["request_id"]
+    request = _read_object(_path(root, request_id), "local QA request")
+    members = request["members"]
+    if (
+        request_id != IntegrationLocalQaRecord.derive_id(members)
+        or request.get("local_qa_id") != request_id
+    ):
+        return False
+    if (
+        result.get("local_qa_id") != _result_id(request_id)
+        or result.get("event") != "result"
+    ):
+        return False
+    if any(result.get(key) != value for key, value in members.items()):
+        return False
+    commands = members["verification_commands"]
+    if not commands or members["commands_sha256"] != integration._sha256(
+        {"commands": commands}
+    ):
+        return False
+    checks = result["checks_run"]
+    if [check["command"] for check in checks] != commands or any(
+        check["result"] != "pass" for check in checks
+    ):
+        return False
+    checksum = result["artifact_sha256"]
+    if INTEGRATION_SHA_PATTERN.fullmatch(checksum) is None or len(checksum) != 64:
+        return False
+    artifact = _records_root(root) / "qa-artifacts" / f"{checksum}.log"
+    if str(artifact) != result["artifact"]:
+        return False
+    contents = artifact.read_bytes()
+    if hashlib.sha256(contents).hexdigest() != checksum:
+        return False
+    logs = parse_command_log(contents.decode("utf-8").splitlines())
+    return len(logs) == len(commands) and all(code == 0 for _, code in logs)
+
+
+def verified_evidence(root: Path, link: JsonObject) -> bool:
+    """Recheck generated evidence; a manual assertion never verifies local fallback."""
+    if link.get("verification") != "verified" or not link.get("local_qa_request_id"):
+        return False
+    try:
+        request_id = link["local_qa_request_id"]
+        # The generated id is checked before it is used in a path.
+        if (
+            not isinstance(request_id, str)
+            or re.fullmatch(r"local-qa-[0-9a-f]{32}", request_id) is None
+        ):
+            return False
+        result = _read_object(_path(root, _result_id(request_id)), "local QA result")
+        return (
+            result.get("verification") == "verified"
+            and result.get("state") == "completed"
+            and link.get("local_qa_result_sha256") == integration._sha256(result)
+            and all(
+                link.get(key) == result.get(key)
+                for key in (
+                    "integration_record_id",
+                    "candidate_sha",
+                    "target_sha",
+                    "artifact_sha256",
+                )
+            )
+            and _valid_result(root, result)
+        )
+    except (OSError, CoordinatorError, KeyError, TypeError, ValueError):
+        return False
+
+
 def integration_local_qa(args: argparse.Namespace) -> JsonObject:
     """Pin a complete local-QA request with an explicit, recorded operator CI assertion."""
     repo = _repo(args)
@@ -98,7 +185,6 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         record = integration._load_record(root, args.record)
         pair = pr_refresh.current_pair(root, record)
-        observed = _observe_pair(repo, root, record, pair)
         members: JsonObject = {
             "integration_record_id": args.record,
             **pair,
@@ -122,6 +208,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
                     remedy="restore the immutable request from trusted evidence",
                 )
         else:
+            observed = _observe_pair(repo, root, record, pair)
             request = {
                 "local_qa_id": request_id,
                 "event": "request",
@@ -130,13 +217,28 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
                 "observed": observed,
             }
             _write_record(ledger, IntegrationLocalQaRecord.from_dict(request))
-    result_id = IntegrationLocalQaRecord.derive_id(
-        {"request_id": request_id, "event": "result"}
-    )
+    result_id = _result_id(request_id)
     with _ledger_lock(ledger):
         result_path = _path(root, result_id)
         if result_path.exists():
-            return _read_object(result_path, "local QA result")
+            existing = _read_object(result_path, "local QA result")
+            try:
+                _observe_pair(repo, root, record, pair)
+                if existing.get("verification") == "verified" and not _valid_result(
+                    root, existing
+                ):
+                    return {
+                        **existing,
+                        "verification": "unverified",
+                        "verification_reason": "generated evidence failed integrity check",
+                    }
+            except CoordinatorError as exc:
+                return {
+                    **existing,
+                    "verification": "unverified",
+                    "verification_reason": sanitise(exc.message),
+                }
+            return existing
         _observe_pair(repo, root, record, pair)
         from harness.orchestration import coordinator
 
@@ -177,6 +279,29 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
         "verification": "unverified",
     }
     with _ledger_lock(ledger):
+        try:
+            result["observed_at_finish"] = _observe_pair(repo, root, record, pair)
+            if gate.passed and _valid_result(root, result):
+                result["verification"] = "verified"
+        except CoordinatorError as exc:
+            result["verification_reason"] = sanitise(exc.message)
         _write_record(ledger, IntegrationLocalQaRecord.from_dict(result))
+        linked = integration._store_evidence(
+            root,
+            ledger,
+            {
+                "integration_record_id": args.record,
+                "kind": "local-qa",
+                **pair,
+                "result": "passed" if gate.passed else "failed",
+                "reference": str(_path(root, result_id)),
+                "artifact_sha256": checksum,
+            },
+            result["verification"],
+            {
+                "local_qa_request_id": request_id,
+                "local_qa_result_sha256": integration._sha256(result),
+            },
+        )
         qa_lane.release(ledger, claimed, ops)
-    return result
+    return {**result, "evidence_id": linked["evidence_id"]}

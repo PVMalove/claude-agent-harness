@@ -6,13 +6,15 @@ import argparse
 import json
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from harness.gate_runner.gate_runner import GateResult
+from harness.gate_runner.gate_runner import ExecutionPolicy, GateResult, run_gate
 
 from harness.orchestration import coordinator, qa_lane
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from harness.orchestration.ledger import LifecycleLedger
+from harness.orchestration.workflow import local_qa
 from tests.orchestration.test_integration_record import PublishedBranch
 
 
@@ -87,6 +89,122 @@ class LocalQaContractTests(unittest.TestCase):
         for changes in ({"reason": " "}, {"ci_condition": "available"}):
             with self.subTest(changes=changes), self.assertRaises(CoordinatorError):
                 coordinator.integration_local_qa(self.args(**changes))
+
+    def test_refreshed_pair_requires_verified_generated_evidence_and_rechecks_artifact(
+        self,
+    ) -> None:
+        self.branch.advance_integration_ref()
+        refreshed = coordinator.integration_refresh(
+            self.branch.args(record=self.record)
+        )
+        pair = coordinator.integration_status(self.branch.args(record=self.record))
+        self.assertFalse(pair["verification"]["satisfied"])
+        coordinator.integration_link_evidence(
+            self.branch.args(
+                record=self.record,
+                kind="local-qa",
+                result="passed",
+                reference="manual-local-log",
+                artifact_sha256=None,
+                candidate_commit=pair["candidate_sha"],
+                target_commit=pair["target_sha"],
+            )
+        )
+        self.assertFalse(
+            coordinator.integration_status(self.branch.args(record=self.record))[
+                "verification"
+            ]["satisfied"]
+        )
+        result = coordinator.integration_local_qa(self.args())
+        self.assertEqual(result["verification"], "verified")
+        self.assertEqual(result["candidate_sha"], refreshed["new_candidate_sha"])
+        self.assertTrue(
+            coordinator.integration_status(self.branch.args(record=self.record))[
+                "verification"
+            ]["satisfied"]
+        )
+        with mock.patch.object(
+            local_qa, "run_gate", side_effect=AssertionError("gate reran")
+        ):
+            self.assertEqual(
+                coordinator.integration_local_qa(self.args())["request_id"],
+                result["request_id"],
+            )
+        Path(result["artifact"]).write_text("altered", encoding="utf-8")
+        self.assertFalse(
+            coordinator.integration_status(self.branch.args(record=self.record))[
+                "verification"
+            ]["satisfied"]
+        )
+
+        self.assertEqual(
+            coordinator.integration_local_qa(self.args())["verification"], "unverified"
+        )
+
+    def test_target_movement_during_execution_keeps_historical_evidence_unverified(
+        self,
+    ) -> None:
+        original = run_gate
+
+        def gate(
+            commands: list[str | list[str]],
+            policy: ExecutionPolicy,
+            *,
+            stop_on_failure: bool,
+        ) -> GateResult:
+            result = original(commands, policy, stop_on_failure=stop_on_failure)
+            self.branch.advance_integration_ref()
+            return result
+
+        with mock.patch.object(local_qa, "run_gate", side_effect=gate):
+            result = coordinator.integration_local_qa(self.args())
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(result["verification"], "unverified")
+        self.assertTrue(Path(result["artifact"]).is_file())
+        self.assertEqual(
+            coordinator.integration_local_qa(self.args())["verification"], "unverified"
+        )
+        self.assertFalse(
+            coordinator.integration_status(self.branch.args(record=self.record))[
+                "pair_checks"
+            ][0]["applies_to_current_pair"]
+        )
+
+    def test_incomplete_command_coverage_cannot_verify_or_reuse_different_inputs(
+        self,
+    ) -> None:
+        gate = GateResult([], "", 0.0)
+        with mock.patch.object(local_qa, "run_gate", return_value=gate):
+            result = coordinator.integration_local_qa(self.args())
+        self.assertEqual(result["verification"], "unverified")
+        with self.assertRaises(CoordinatorError):
+            coordinator.integration_local_qa(
+                self.args(request=result["request_id"], reason="Different CI assertion")
+            )
+
+    def test_local_qa_applicability_requires_both_candidate_and_target(self) -> None:
+        pair = coordinator.integration_status(self.branch.args(record=self.record))
+        linked = coordinator.integration_link_evidence(
+            self.branch.args(
+                record=self.record,
+                kind="local-qa",
+                result="passed",
+                reference="wrong-candidate",
+                artifact_sha256=None,
+                candidate_commit="3" * 40,
+                target_commit=pair["target_sha"],
+            )
+        )
+        checks = coordinator.integration_status(self.branch.args(record=self.record))[
+            "pair_checks"
+        ]
+        self.assertFalse(
+            next(
+                check
+                for check in checks
+                if check["evidence_id"] == linked["evidence_id"]
+            )["applies_to_current_pair"]
+        )
 
     def test_blocked_gate_releases_ledger_lock_and_excludes_other_qa_owners(
         self,

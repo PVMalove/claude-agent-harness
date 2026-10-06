@@ -982,6 +982,9 @@ class IntegrationStatusAfterRefreshTests(unittest.TestCase):
 
         self.link(kind="local-qa", reference="local-qa-run")
 
+        self.assertFalse(self.status()["verification"]["satisfied"])
+        self.link(kind="ci", reference="verified-ci-run")
+
         status = self.status()
         self.assertTrue(status["verification"]["satisfied"])
         self.assertFalse(status["verification"]["re_review_required"])
