@@ -109,6 +109,25 @@ warning-overridden, and the re-run dispatch always needs an explicit approval, u
 is refused for an architect, developer or publish report, which is still retried with a developer
 reason category (`code`, `requirements`, `candidate-change`) or blocked.
 
+A read-only report (architect, verification, code-review or qa) may list `incomplete_items`: brief
+items the role left undone, each with its reason and target role. Such a report is never accepted
+automatically, and a plain `accept` or `override-warning` of it is refused. The approver takes one
+of two decisions. `--decision accept --carry-incomplete` (or `override-warning` with the flag)
+records a `carry-over` routing record that names the `carried_item_ids` and is never applied to
+`next_action`: the batch moves as on any accept of that stage, and the work brief of each item's
+target role carries the item until a dispatch of that role whose brief carried it is accepted or
+warning-overridden. An open item for code-review sends the candidate to code-review even when risk
+assessment matched no trigger. The flag is refused when an item targets the reporting role itself.
+`--decision retry --narrowed` re-runs the same stage on the same SHA with a brief that carries only
+the report's items, under the route `narrowed-retry`, or `tooling-retry` (category `tooling`) when
+any item carries a `tooling_blocker`. The brief's Definition of Done stays the batch's: the
+narrowed scope is the carried items alone. A narrowed retry spends no
+`retry_policy.max_developer_retries`; its dispatch is approved under `approval_policy`; it is
+refused for a developer or publish report, a report without items, together with
+`--reason-category` or `--retry-role developer`, and whenever a finding or a warning/blocker
+severity, an open carried item, a failed check or a moved candidate demands another route. A retry
+without `--narrowed` ignores the items and routes as above.
+
 A code-review `blocker` can never be accepted. While `retry_policy.max_developer_retries` still
 allows a developer retry, it takes `retry` or `abandon`; once that budget is exhausted, `retry` is
 refused and the blocker takes `block`, `fail` or `abandon`, after which the work is split or
@@ -136,14 +155,16 @@ chain after a recorded report stops, and the coordinator completes that chain wi
 `override-warning` with `--findings-file` and by `batch carry-over`; its routing record names the
 `carried_item_ids` and is never applied to `next_action`, which moves through risk assessment as on
 any developer accept; `batch carry-over` itself moves a `next_action` of `qa`, set by an earlier
-assessment, to `code-review`. The coordinator chooses a route by this table:
+assessment, to `code-review`. An `accept` or `override-warning` of a read-only report with
+`--carry-incomplete` records `carry-over` the same way, and `next_action` moves as on any accept of
+that stage. The coordinator chooses a route by this table:
 
 | Situation | Route | Who approves | Evidence |
 | --- | --- | --- | --- |
-| An architect report is retried, whatever the reason category except `tooling` | `architect-retry` | A human decides the retry with `batch decide`; the new architect dispatch is approved under `approval_policy` | Dispatch ID and `report_sha256` of the architect report. Not `same-candidate-rerun`: it is not conditioned on a reason category and pins no candidate |
+| An architect report is retried without `--narrowed`, whatever the reason category except `tooling` | `architect-retry` | A human decides the retry with `batch decide`; the new architect dispatch is approved under `approval_policy` | Dispatch ID and `report_sha256` of the architect report. Not `same-candidate-rerun`: it is not conditioned on a reason category and pins no candidate |
 | A developer report is `blocked` with an operational reason, no finding and no failed check | `verification` | A human decides the retry; the read-only verification dispatch is approved under `approval_policy` | Dispatch ID, `report_sha256`, the `candidate_registrations` entry with its `source_report_sha256`, and for `context-pressure` the critical `context_pressure` record |
 | A code-review, qa or publish report is `blocked` with an operational reason, no finding on either axis, no failed check and an unchanged candidate | `same-candidate-rerun` | A human decides the retry; the new dispatch on the same SHA needs its own approval under `approval_policy` | Dispatch ID, `report_sha256`, the unchanged `candidate_commit`, and for `context-pressure` the critical `context_pressure` record |
-| A verification report is retried, whatever its outcome or reason category except `tooling` and `block-bypass` | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID and `report_sha256` of the verification report. A verification report is never re-run on the same SHA, except by `tooling-retry` or `bypass-rerun` |
+| A verification report is retried without `--narrowed`, whatever its outcome or reason category except `tooling` and `block-bypass` | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID and `report_sha256` of the verification report. A verification report is never re-run on the same SHA, except by `tooling-retry`, `bypass-rerun` or `narrowed-retry` |
 | A finding or a warning/blocker severity, a failed check, a moved candidate, a `code`, `requirements`, `candidate-change` or `unknown` reason, a contradictory reason, or `--retry-role developer` | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, and the axis, check or candidate change that decided it |
 | A hook, the safety classifier or the ledger blocked a legitimate command: a `blocked` report carries `tooling_blocker` (tool, exact command, message), with no finding, no failed check and an unchanged candidate | `tooling-retry` | A human decides the retry after confirming the false positive and filing a bug ticket against the tool; the new dispatch of the same stage (same SHA; a developer continues its last commit) is approved under `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID, `report_sha256`, the `tooling_blocker`, and the `candidate_commit` (for a developer, its last commit) |
 | A code-review, qa or verification role worked around a hook or tool block (another command form, tool, script file, `eval`, interpreter or a split command): the approver names `block-bypass`, and the candidate is unchanged | `bypass-rerun` | A human decides the retry with a `--note` naming the violation and never accepts or warning-overrides the report; the new dispatch of the same stage on the same SHA always needs an explicit approval (`--approved-by`), under every `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID and `report_sha256` (evidence of the violation only, never of its findings or checks), the `--note`, and the unchanged `candidate_commit` |
@@ -165,7 +186,10 @@ packet still renders and `route_preview.retry` is `{"route": null, "refused": ..
 with the error `batch decide --decision retry` refuses with. With `--findings-file`,
 `route_preview["carry-over"]` holds the carry-over record that `batch decide --findings-file` on the
 pending developer report, or else `batch carry-over`, would record, or the same
-`{"route": null, "refused": ..., "remedy": ...}` refusal. Every `batch decide`
+`{"route": null, "refused": ..., "remedy": ...}` refusal. For a pending read-only report that lists
+`incomplete_items`, the packet shows them as `incomplete_items` and, without `--findings-file`,
+`route_preview["carry-over"]` holds the record `--carry-incomplete` would record or its refusal;
+`--narrowed` previews the narrowed retry route. Every `batch decide`
 decision stores a `decision` detail on its batch transition audit record: the `route` (`null` for a
 decision that routes nothing), the `evidence` (`dispatch_id`, `report`, `report_sha256`) and the
 `approver` (`{"kind": "policy" | "human", "name": ...}`, set by the path that approved it). A route outside
@@ -386,11 +410,17 @@ It must contain, at minimum:
 - `commit plan divergence` (code-review): how the last accepted initial or rebase developer report
   diverged from its plan, or `null`;
 - `carried items`: one shared channel keyed by the kind of source,
-  `{"coordinator-finding": [...], "review-finding": [...]}`, each item
+  `{"coordinator-finding": [...], "review-finding": [...], "incomplete-item": [...]}`, each item
   `{item_id, source, summary, files, expected_evidence}`, or `{}`. A code-review or developer work
   brief carries every open coordinator finding; a developer brief answering a retried code-review
-  also carries that review's Standards and Spec findings. A non-empty section is bound into the
-  transition as `carried_items_sha256`.
+  also carries that review's Standards and Spec findings. Any work brief carries, as
+  `incomplete-item`, the open items a read-only report handed to its role with
+  `--carry-incomplete`, and a narrowed retry's brief carries only the items of the report it
+  retries. An `incomplete-item` `source` names `dispatch_id`, `report_sha256`, the reporting `role`,
+  the `target_role` whose brief carries it, the `route` (`carry-over`, `narrowed-retry` or
+  `tooling-retry`), the `reason` and its `reason_category` (`tooling` for an item a tool blocked,
+  otherwise `null`); its `summary` is the brief item and its `files` are empty. A non-empty section
+  is bound into the transition as `carried_items_sha256`.
 
 The brief is a starting contract, not a conversation buffer. A role must escalate an ambiguity,
 overlap, credential request, irreversible action, policy decision, or missing proof. It must not
@@ -451,6 +481,14 @@ The report must include:
 - for a role a tool blocked: `outcome: blocked` and `tooling_blocker`, exactly the non-empty strings
   `tool`, `command` (as invoked) and `message` (verbatim), each at most 1600 characters. It is valid
   only on a `blocked` report and is the only evidence of the `tooling` reason category.
+- for a read-only role (architect, verification, code-review or qa) that left part of its brief
+  undone: optional `incomplete_items`, one `{brief_item, reason, target_role}` per undone item, in
+  English, each text non-empty and at most 1600 characters. `target_role` is the reporting role
+  itself (for a narrowed retry) or a later role: architect → architect, developer, code-review or
+  qa; verification → verification, code-review or qa; code-review → code-review or qa; qa → qa.
+  An item a tool kept the role from also carries its own `tooling_blocker` of the shape above, on
+  any outcome. A writing role never reports the field. A report with a non-empty list is never
+  accepted automatically; a plain `accept` or `override-warning` of it is refused.
 
 Optional `lessons` and `used_memory` are lists of non-empty strings; empty lists and omission are
 valid. `lessons` records historical observations, never confirmed truth: memory indexes them only

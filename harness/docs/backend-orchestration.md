@@ -593,7 +593,7 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    или `override-warning`) code-review, чей brief её нёс; retry review оставляет её открытой.
 
    Каждый brief несёт секцию `carried_items` — общий канал переносимых пунктов: объект, ключ —
-   вид источника (`coordinator-finding`, `review-finding`), значение — список
+   вид источника (`coordinator-finding`, `review-finding`, `incomplete-item`), значение — список
    `{item_id, source, summary, files, expected_evidence}`; пустой канал — `{}`. Brief code-review и
    developer work несёт все открытые `coordinator-finding`. Developer brief, отвечающий на `retry`
    code-review с маршрутом `developer-retry`, несёт ещё находки осей Standards и Spec этого review
@@ -615,6 +615,57 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    `developer-retry`. `batch decision-packet` показывает `carried_items` (каждый пункт с `source`,
    `summary`, `status` — у отчёта code-review `omitted` для пропущенного пункта — и `evidence`) и
    `carried_items_gap`.
+
+   Read-only роль (architect, verification, code-review или qa), не выполнившая часть brief,
+   перечисляет невыполненные пункты в необязательном поле отчёта `incomplete_items`:
+   `[{"brief_item": ..., "reason": ..., "target_role": ...}]`. Текст пишется на английском, потому что
+   пункт уходит в brief следующей роли как agent-to-agent текст; каждая строка непустая и не длиннее
+   1600 символов. `target_role` — сама роль отчёта (для суженного retry) или более поздняя роль:
+   architect → architect, developer, code-review или qa; verification → verification, code-review
+   или qa; code-review → code-review или qa; qa → qa. Пункт, который не дал выполнить инструмент
+   (например, классификатор безопасности), несёт собственный `tooling_blocker` той же формы, что и у
+   отчёта, при любом outcome. `report submit` с remedy отклоняет поле у write-роли, пункт без
+   `reason`, неизвестную или недопустимую `target_role`, кириллицу и некорректный `tooling_blocker`.
+
+   Отчёт с непустым `incomplete_items` не принимается автоматически ни при одной `approval_policy`, а
+   простой `accept` или `override-warning` отклоняется. Человек выбирает одно из двух решений:
+
+   ```bash
+   python .harness/orchestration/coordinator.py --repo . batch decide \
+     --batch <batch-id> --decision accept --approved-by 'имя утверждающего' \
+     --approved-at 2026-09-09T12:02:00Z --carry-incomplete
+   python .harness/orchestration/coordinator.py --repo . batch decide \
+     --batch <batch-id> --decision retry --approved-by 'имя утверждающего' \
+     --approved-at 2026-09-09T12:02:00Z --narrowed
+   ```
+
+   `--carry-incomplete` (с `accept` или `override-warning`) записывает routing record `carry-over` с
+   `carried_item_ids` (`incomplete-item-<n>`, сквозная нумерация в batch); `next_action` меняется как
+   при любом accept этой стадии. В batch пункты не хранятся: work brief целевой роли читает их из
+   immutable отчёта и несёт в `carried_items` под видом `incomplete-item`, пока не принят (`accept`
+   или `override-warning`) dispatch этой роли, чей brief их нёс; retry оставляет пункт открытым.
+   Открытый пункт для code-review ведёт candidate в code-review, даже если risk assessment не нашла
+   триггеров. Флаг отклоняется без пунктов, с другим решением и тогда, когда хоть один пункт нацелен
+   на саму роль отчёта: такой пункт закрывает только суженный retry.
+
+   `--narrowed` (только с `retry`) повторяет ту же стадию на том же SHA, и brief нового dispatch несёт
+   только пункты отчёта; Definition of Done в brief остаётся полным DoD batch. Маршрут —
+   `narrowed-retry` с `reason_category: null`, а если хоть один пункт несёт `tooling_blocker` —
+   `tooling-retry` с категорией `tooling` (подтвердить ложное срабатывание, завести bug-тикет на
+   инструмент; серию ограничивает attention `tooling-retry-repeated`). Бюджет
+   `retry_policy.max_developer_retries` не тратится, а новый dispatch утверждается по
+   `approval_policy`. `--narrowed` отклоняется для developer и publish, для отчёта без пунктов, вместе
+   с `--reason-category` или `--retry-role developer` и при структурном evidence другого маршрута:
+   finding или severity warning/blocker на оси, открытый carried item, failed check, сдвинутый
+   candidate. Retry без `--narrowed` пункты игнорирует и маршрутизируется как раньше.
+
+   `source` пункта `incomplete-item` содержит `dispatch_id` и `report_sha256` отчёта, его `role`,
+   `target_role` (роль, чей brief несёт пункт), `route` (`carry-over`, `narrowed-retry` или
+   `tooling-retry`), `reason` и `reason_category` (`tooling` у пункта с `tooling_blocker`, иначе
+   `null`); `summary` — это `brief_item`, `files` пуст. `batch decision-packet` показывает
+   `incomplete_items` отчёта и без `--findings-file` добавляет `route_preview["carry-over"]` — запись,
+   которую сделает `--carry-incomplete`, либо отказ; `batch decision-packet --narrowed` показывает
+   маршрут суженного retry.
 
 Минимальный ручной brief хранит ticket и dispatch ID, роль и её access, выбранный profile/model/effort,
 zone и allowed paths, issue-ветку/worktree, DoD, запреты, команды, dependencies, approval. Для
@@ -734,9 +785,14 @@ agent inbox и записи QA-очереди dispatch, которые уже н
 или `override-warning` с `--findings-file` и `batch carry-over` (см. шаг 4): routing record с
 `previous_role: developer`, `next_role` и `next_action` `code-review`, `candidate_commit`,
 `carried_item_ids` и `rationale`, без `reason_category` и `decided_at`. К `next_action` он не
-применяется: тот идёт через risk assessment, как при любом accept developer. Восьмое,
-`tooling-retry`, записывает `retry` с категорией `tooling` (см. выше). Девятое, `bypass-rerun`,
-записывает `retry` с категорией `block-bypass` (см. выше). Маршрут ставится там же, где
+применяется: тот идёт через risk assessment, как при любом accept developer. Тот же маршрут
+записывает `accept` или `override-warning` read-only отчёта с `--carry-incomplete` (см. шаг 4):
+`previous_role` — стадия отчёта, `next_role` и `next_action` — обычный следующий шаг её accept.
+Восьмое, `tooling-retry`, записывает `retry` с категорией `tooling` (см. выше), а также
+`retry --narrowed`, если пункт несёт `tooling_blocker`. Девятое, `bypass-rerun`, записывает `retry`
+с категорией `block-bypass` (см. выше). Десятое, `narrowed-retry`, записывает `retry --narrowed` по
+невыполненным пунктам read-only отчёта (см. шаг 4); его routing record дополнительно называет
+`carried_item_ids`. Маршрут ставится там же, где
 `next_action`, по тем же структурированным данным и никогда по свободному тексту. У `abandon`
 routing record той же формы, но `reason_category`, `next_role`, `next_action` и `candidate_commit`
 равны `null`, а `rationale` содержит только структурные факты (`--reason` остаётся в `note`).
@@ -745,8 +801,8 @@ routing record той же формы, но `reason_category`, `next_role`, `nex
 
 `batch decision-packet` показывает маршрут до записи решения: поле `route_preview` содержит
 `retry` — routing record, вычисленный так же, как в `batch decide` (без `decided_at`), и `abandon` —
-`{"route": "abandon"}`. Packet принимает те же `--reason-category` и `--retry-role developer`, что и
-`batch decide`, и ничего не пишет; для уже решённого report и для пакета следующего dispatch
+`{"route": "abandon"}`. Packet принимает те же `--reason-category`, `--retry-role developer` и
+`--narrowed`, что и `batch decide`, и ничего не пишет; для уже решённого report и для пакета следующего dispatch
 `route_preview` равен `null`:
 
 ```bash
@@ -766,7 +822,7 @@ developer report, а без такого report — `batch carry-over`, либо
 
 Каждое решение `batch decide` хранит в transition audit record batch деталь `decision`:
 `dispatch_id`, `decision`, `route` (`carry-over` у `accept` и `override-warning` с
-`--findings-file`, `null` у решения без маршрута — остальных `accept`, `override-warning`,
+`--findings-file` или `--carry-incomplete`, `null` у решения без маршрута — остальных `accept`, `override-warning`,
 `block`, `fail`), `evidence` (`dispatch_id`, путь `report` и `report_sha256` immutable report),
 `approver` и `approved_at`. `approver` — `{"kind": "policy", "name": "low_risk" | "milestone" | "auto"}` для
 policy auto-accept или `{"kind": "human", "name": <--approved-by>}` для явного решения; решение
@@ -863,6 +919,8 @@ Brief без поля `commit_plan_divergence` и batch без `commit_plan` т�
 плана без `covers` покрывает пункт DoD по своей позиции. Brief без `carried_items`, transition без
 `carried_items_sha256`, batch без `carried_items` и отчёт code-review без `review.carried_items`
 тоже валидны: пустой канал ничего не добавляет в transition, поэтому прежние digest не меняются.
+Отчёт без `incomplete_items` и brief без вида `incomplete-item` тоже валидны; новый вид источника,
+поле отчёта и значение маршрута `narrowed-retry` введены без смены версии ledger и без миграции.
 
 Поле `route` в routing record и деталь `decision` в transition audit record batch тоже
 необязательны и введены без смены версии ledger (остаётся 3). Решение, записанное до них, читается

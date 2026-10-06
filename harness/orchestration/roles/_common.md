@@ -93,6 +93,25 @@ like check evidence). Only this field lets the coordinator classify the stop as 
 text in `blockers` never does. Report a check the block kept from running as not run, never as
 `fail`.
 
+A read-only role (`architect`, `verification`, `code-review`, `qa`) that leaves part of its brief
+undone lists each undone item in the completion report's `incomplete_items`, not in `blockers`:
+`{"brief_item", "reason", "target_role"}`, in English, because the item reaches a later brief as
+agent-to-agent protocol text. `brief_item` names the item as the brief states it, `reason` says why
+it is undone, and `target_role` names the role that can finish it: the reporting role itself, or a
+later role its own contract lists. When a tool kept the role from an item (for example, the safety
+classifier interrupted the action), the item also carries its own `tooling_blocker` of three
+non-empty strings, `tool`, `command` and `message`, under the rules above. Report the work that is
+done as usual; the report is never accepted automatically while it lists an item. A writing role
+never reports `incomplete_items`.
+
+A brief's `carried_items` may hold `incomplete-item` entries; every role, developer included,
+follows the same receiving rule. When an item's `source.role` is the role's own role (`source.route`
+`narrowed-retry` or `tooling-retry`), the dispatch is a narrowed retry: do only the carried items,
+and do not repeat the rest of the assignment. Otherwise, do each carried item within the ordinary
+assignment. In both cases, name each `item_id` in `output` with the evidence that it is done, as its
+`expected_evidence` asks. A read-only role lists an item that is still undone in `incomplete_items`
+again; a writing role reports it as a blocker.
+
 Escalate instead of guessing when the requested zone is unclear or overlaps another batch, required
 proof cannot be produced, a risk trigger applies without a stated gate, or the work needs credentials,
 an irreversible action, or a policy decision. A blocked or failed attempt is not retried in place: the
