@@ -144,6 +144,7 @@ assessment, to `code-review`. The coordinator chooses a route by this table:
 | A developer report is `blocked` with an operational reason, no finding and no failed check | `verification` | A human decides the retry; the read-only verification dispatch is approved under `approval_policy` | Dispatch ID, `report_sha256`, the `candidate_registrations` entry with its `source_report_sha256`, and for `context-pressure` the critical `context_pressure` record |
 | A code-review, qa or publish report is `blocked` with an operational reason, no finding on either axis, no failed check and an unchanged candidate | `same-candidate-rerun` | A human decides the retry; the new dispatch on the same SHA needs its own approval under `approval_policy` | Dispatch ID, `report_sha256`, the unchanged `candidate_commit`, and for `context-pressure` the critical `context_pressure` record |
 | A verification report is retried, whatever its outcome or reason category except `tooling` and `block-bypass` | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID and `report_sha256` of the verification report. A verification report is never re-run on the same SHA, except by `tooling-retry` or `bypass-rerun` |
+| A conflict-resolver report is retried and its `resolver.cause` is not `task-defect` | `same-candidate-rerun` | A human decides the retry; the new resolver dispatch is a fix on the same target and is bounded by `retry_policy.max_developer_retries` | Dispatch ID and `report_sha256` of the resolver report and its `resolver` block |
 | A finding or a warning/blocker severity, a failed check, a moved candidate, a `code`, `requirements`, `candidate-change` or `unknown` reason, a contradictory reason, or `--retry-role developer` | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, and the axis, check or candidate change that decided it |
 | A hook, the safety classifier or the ledger blocked a legitimate command: a `blocked` report carries `tooling_blocker` (tool, exact command, message), with no finding, no failed check and an unchanged candidate | `tooling-retry` | A human decides the retry after confirming the false positive and filing a bug ticket against the tool; the new dispatch of the same stage (same SHA; a developer continues its last commit) is approved under `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID, `report_sha256`, the `tooling_blocker`, and the `candidate_commit` (for a developer, its last commit) |
 | A code-review, qa or verification role worked around a hook or tool block (another command form, tool, script file, `eval`, interpreter or a split command): the approver names `block-bypass`, and the candidate is unchanged | `bypass-rerun` | A human decides the retry with a `--note` naming the violation and never accepts or warning-overrides the report; the new dispatch of the same stage on the same SHA always needs an explicit approval (`--approved-by`), under every `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID and `report_sha256` (evidence of the violation only, never of its findings or checks), the `--note`, and the unchanged `candidate_commit` |
@@ -552,9 +553,36 @@ dispatch or report, or changes Git:
 - `integration link-evidence --kind ci|local-qa|resolver` is the only way later CI, local-QA and
   resolver results are attached. Each is its own immutable record with its own candidate/target pair
   and `verification: unverified`; the record's initial evidence keeps its original pair.
+- `integration resolve` hands a textual conflict between the candidate and the moved target to a
+  `conflict-resolver` (issue #534). It writes nothing to Git: it refuses a clean rebase (that is
+  `integration refresh`), creates a new resolver batch (kind `resolver`) beside the finished batch
+  of the ticket, and sets `next_action: resolve-conflict`. After the regular `batch approve` and
+  `dispatch create --role conflict-resolver`, the brief carries an immutable `resolver` section: the
+  ticket, `sides.candidate` and `sides.target` requirements (the target side comes from `(#N)` in the
+  commit subjects and their plan records, otherwise from the commit subject and body), the
+  candidate and target SHA, the scope, the prohibitions, the commit plan, the checks, the remaining
+  cycle budget and the `report_staging_path`. Two automatic target SHAs are allowed; a third needs a
+  human decision with `--extends-budget`. A cycle is spent only by a recorded resolver report on a new
+  target SHA: a clean rebase, a human answer and a fix on the same target spend none, and fixes on
+  one target are bounded by `retry_policy.max_developer_retries`. The budget is derived from the
+  append-only `reports/resolver-events/` (`cycle-spent`, `same-target-fix`, `human-decision`,
+  `scope-change`, `exhausted`), so a lost session or a resume never resets it.
+- A resolver that finds incompatible requirements writes a checkpoint whose `blockers` name the
+  concrete incompatibility and the options. The human answer is recorded with `integration
+  resolver-event --kind human-decision` before `dispatch resume --trigger human-decision`, and the
+  same dispatch continues: no new developer starts and neighbouring batches keep running. A scope
+  change is a regular newly approved dispatch (`--kind scope-change` only records it); the original
+  brief is never rewritten. After the budget is exhausted only this task stops and the branch and
+  evidence stay: an integration incompatibility continues with the same resolver, the ticket's own
+  defect (`resolver.cause: task-defect`) returns to a regular developer.
+- A conflict-resolver report carries a top-level `resolver` block (preserved requirements of both
+  sides, human-decision event ids, target and resolved SHA, cause, exact changed files, commits mapped
+  to the plan entry). An accepted resolution takes the narrow route: no repeat code-review, but QA and
+  CI or local-QA of the new candidate/target pair are still required.
 
-Records live under `reports/integration/` and `reports/integration-evidence/` in the existing
-`reports` directory, so no ledger schema change or migration is involved.
+Records live under `reports/integration/`, `reports/integration-evidence/`, `reports/resolver/` and
+`reports/resolver-events/` in the existing `reports` directory, so no ledger schema change or
+migration is involved.
 
 ## Baseline metrics
 

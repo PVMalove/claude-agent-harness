@@ -1315,6 +1315,60 @@ candidate, target, коммиты до и после). Старое QA оста�
 Конфликт и работу, которой нужен developer, ведёт маршрут rebase из ADR 0012; `refresh` от него не
 зависит.
 
+`resolve` — маршрут текстового конфликта (роль `conflict-resolver`, ADR 0015). Он ничего не пишет в
+Git: чистый rebase отклоняется (это работа `refresh`), а конфликт превращается в новый batch вида
+`resolver` рядом с завершённым batch тикета (его brief, отчёты и история не меняются):
+
+```bash
+python .harness/orchestration/coordinator.py --repo . integration resolve \
+  --ticket '#123' --branch feature/issue-123-short-name
+```
+
+Ответ содержит `batch_id`, конфликтные файлы, candidate и target SHA, scope и остаток бюджета;
+`next_action` batch — `resolve-conflict`. Дальше идёт обычный путь: `batch approve`, затем
+`dispatch create --role conflict-resolver --purpose work` (сначала `--propose`). Brief несёт
+неизменяемую секцию `resolver`: тикет, требования обеих сторон (`sides.candidate` — DoD исходного
+batch; `sides.target` — plan-записи тикетов `(#N)` из subject коммитов цели, иначе subject и тело
+коммита), SHA candidate и target, scope, запреты, план коммита, проверки, остаток бюджета и
+`report_staging_path`. Роль открывает skill `resolving-merge-conflicts`, сохраняет требования обеих
+сторон и не добавляет функциональность вне них.
+
+Бюджет — два автоматических target SHA; третий требует решения человека. Цикл тратит только
+зафиксированный отчёт resolver-а по новому target SHA; чистый rebase, ответ человека и правка на том
+же target цикл не тратят, а правки на одном target ограничены `retry_policy.max_developer_retries`.
+Бюджет выводится из append-only событий `reports/resolver-events/` (`cycle-spent`,
+`same-target-fix`, `human-decision`, `scope-change`, `exhausted`), поэтому потеря сессии или resume
+его не сбрасывают.
+
+Несовместимые требования resolver не угадывает: он пишет checkpoint (`blockers` — конкретное описание
+и варианты) и завершает сессию. Ответ человека фиксируется отдельным событием до resume:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . integration resolver-event \
+  --record <id> --kind human-decision --dispatch <dispatch-id> \
+  --decided-by <имя> --option <вариант> --note '<решение>' [--extends-budget]
+python .harness/orchestration/coordinator.py --repo . dispatch resume \
+  --dispatch <dispatch-id> --trigger human-decision --file <facts.json> \
+  --approved-by <имя> --approved-at <время>
+```
+
+Та же сессия продолжает тот же dispatch: новый developer не создаётся, соседние batch не
+останавливаются. `--extends-budget` даёт ещё один автоматический target после двух потраченных.
+Изменение scope — обычное approval нового dispatch (`--kind scope-change` лишь фиксирует его):
+исходный brief не переписывается, а resume с изменившимися фактами отклоняется существующей
+проверкой. Потерянная runtime-сессия возобновляется через существующие checkpoint/resume или
+`batch resume`; счётчики берутся из событий.
+
+После исчерпания бюджета (`exhausted`) останавливается только эта задача: ветка и evidence
+сохраняются. Несовместимость интеграции продолжает тот же resolver после решения человека; собственный
+дефект тикета (`resolver.cause: task-defect`) возвращается обычному developer-у.
+
+Отчёт resolver-а несёт верхнеуровневый блок `resolver`: `preserved_requirements` (каждое требование
+обеих сторон дословно из brief), `human_decisions` (id событий этого dispatch), `target_sha`,
+`resolved_candidate_sha`, `cause`, `changed_files` и `commits` с записью плана для каждого коммита.
+Принятая резолюция идёт узким маршрутом: повторный code-review пропускается, но QA и CI либо local-QA
+новой пары candidate/target обязательны (`integration status` держит `verification.required`).
+
 `link-evidence` — единственный публичный способ привязать к записи будущие результаты CI, local-QA
 или resolver (`--kind ci|local-qa|resolver`). Каждая привязка — отдельная immutable запись со своей
 парой `candidate_sha`/`target_sha` и `verification: unverified`: исходное evidence записи никогда не

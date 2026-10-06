@@ -50,6 +50,11 @@ Coordinator записывает ровно одно текущее состоя
   конфликт возвращает `state: conflict` с данными resolver. Rebase пишет immutable
   `IntegrationRefreshRecord`; старое QA остаётся историей, новую пару подтверждают CI или local-QA,
   повторный review не нужен (ADR 0014).
+- `integration resolve` — текстовый конфликт с integration target: чистый rebase отклоняется, иначе
+  создаётся resolver batch и brief роли `conflict-resolver` (ADR 0015). Два автоматических target
+  SHA, третий требует решения человека (`integration resolver-event --kind human-decision`); та же
+  сессия продолжается через checkpoint и `dispatch resume --trigger human-decision`. Принятая
+  резолюция идёт узким маршрутом без повторного review, но с новыми QA и CI либо local-QA пары.
 - `integration link-evidence --kind ci|local-qa|resolver` — единственный путь привязать будущие
   результаты CI, local-QA и resolver; каждая привязка — отдельная запись со своей парой SHA и
   `verification: unverified`. Сами эти маршруты операция не запускает.

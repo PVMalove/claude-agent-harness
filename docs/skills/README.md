@@ -16,7 +16,7 @@
 
 - [Coordinator](./coordinator.md), [Architect](./architect.md), [Developer](./developer.md)
 - [Code Review](./code-review-role.md), [QA](./qa.md)
-- [Messaging Integration](./messaging-integration.md), [Database Migrations](./database-migrations.md)
+- [Messaging Integration](./messaging-integration.md), [Database Migrations](./database-migrations.md), [Conflict Resolver](./conflict-resolver.md)
 - [Playbook](./playbook.md), [Pilot](./pilot.md)
 
 ## Закреплённые upstream skills
