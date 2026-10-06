@@ -67,7 +67,8 @@ Coordinator записывает ровно одно текущее состоя
   (ADR 0017): `unavailable`, `resolver-open`, `refresh`, `route-failure`, `human-decision`,
   `confirm-pr`, `verify` или `handoff`. Провал проверки обновлённой пары идёт тому же resolver в
   пределах бюджета (`integration resolve` принимает такой провал, `resolver.trigger:
-  verification-failure`), провал исходной пары — обычному developer; операционные сбои провалом кода
+  verification-failure`), провал исходной пары — обычному developer через новый batch того же тикета и ветки (`batch create`, затем
+  обычный конвейер и `integration prepare --batch <новый batch>`); операционные сбои провалом кода
   не считаются. Результат `collect-ci` несёт подсказку `next` (`wait` либо `local-qa`).
 
 Записи лежат в `reports/integration*` существующего каталога `reports`: схема ledger и

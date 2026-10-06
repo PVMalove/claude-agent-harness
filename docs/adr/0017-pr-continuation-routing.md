@@ -28,12 +28,25 @@
   провал — следствие сочетания с target или правки resolver: маршрут `resolver`, в пределах бюджета;
   при исчерпании шаг `human-decision` (`integration resolver-event --extends-budget`). Если пара
   исходная (`refreshes` пусты), провал — собственный дефект задачи: маршрут `developer` с review и QA
-  (ADR 0012). Операционный сбой (fallback CI, `unavailable` и `exhausted` local-QA) failed-evidence не
+  (ADR 0012). Завершённый исходный batch терминален (`batch decide` на нём отказывает: нет отчёта,
+  ожидающего решения), поэтому исполнимый путь — новый batch того же тикета и issue-ветки обычным
+  маршрутом `/implement`: `batch create --ticket T --branch B --worktree W --integration-ref I`, затем
+  architect, developer, code-review, QA и publish; завершённый batch новый не блокирует
+  (`_reject_duplicate_work` пропускает завершённые batch). База нового batch — integration tip, поэтому
+  developer-отчёт отображает в `commit_map` и уже опубликованные коммиты ветки (с `dod_coverage` и
+  `divergence_justification`, как при неоднозначном отображении). После принятого publish
+  `integration prepare --ticket T --branch B --batch <новый batch>` создаёт новую запись, а
+  `integration next --record <новая запись>` продолжает PR; упавшее evidence прежней записи остаётся историей. Операционный сбой (fallback CI, `unavailable` и `exhausted` local-QA) failed-evidence не
   создаёт, поэтому не может стать «провалом кода»: инвариант структурный, не прозой.
 - **Расширение `integration resolve`.** Прежний отказ «ветка уже на tip» сохраняется, если нет
   провалившейся проверки обновлённой пары. При такой проверке создаётся resolver batch с
   `resolver.trigger: verification-failure` (`failed_evidence_ids`, пустые `conflicting_files`,
-  scope без rebase-пробы); у конфликта `trigger: conflict`. Событийная модель бюджета не меняется:
+  scope без rebase-пробы); у конфликта `trigger: conflict`. У обновлённой пары merge-base равен tip, поэтому
+  сторона `target` берётся не из `merge_base..tip` (она пуста), а из коммитов, которые легли в target
+  после исходного target записи (`identity.target_sha..tip`), тем же источником, что и у конфликта:
+  план тикета из `(#N)` в теме, иначе тема и тело коммита. Scope не расширяется: это собственные файлы
+  задачи; правка файла, который изменил target вне диффа задачи, — новый утверждённый dispatch
+  (`scope-change`), как у конфликта. Событийная модель бюджета не меняется:
   первый отчёт resolver на target тратит цикл, следующие правки того же target — `same-target-fix` в
   пределах `retry_policy.max_developer_retries`. Чистый rebase, ожидание CI и ответ человека цикл не
   тратят, а бюджет переживает продолжения PR, потому что выводится из событий.

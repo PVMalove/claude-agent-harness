@@ -600,7 +600,10 @@ dispatch or report, or changes Git:
   candidate. A failed check of the current pair (a collector-recorded CI failure or a failed
   generated local-QA gate, never an operational fallback) routes to the same resolver when the pair
   was refreshed or resolved (inside its two-cycle budget, which a human answer or a CI wait never
-  resets) and to the regular developer with review and QA when the pair is the original one.
+  resets) and to the regular developer with review and QA when the pair is the original one. The
+  completed source batch is terminal (`batch decide` refuses it), so that route is a new batch of the
+  same ticket and issue branch through the ordinary `/implement` pipeline, followed by `integration
+  prepare --batch <new batch>`; the failed evidence of the earlier record stays history.
   `integration resolve` accepts such a failed check of a refreshed pair (`resolver.trigger:
   verification-failure`) even though the branch is already on the target. `collect-ci` results carry
   `next` (`wait` for a pending check, otherwise `local-qa` with the `--ci-condition` to use).

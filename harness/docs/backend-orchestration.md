@@ -1461,10 +1461,20 @@ local-QA текущей пары без более позднего passed. Ес
 `cycles_total`/`cycles_spent`/`remaining`/`internal_fix_budget` и `fixes_on_target` в ответе; при
 исчерпании — `human-decision` с `integration resolver-event --extends-budget`). Если пара исходная,
 маршрут — `developer`: собственный дефект задачи идёт обычному developer с review и QA (ADR 0012).
+Завершённый исходный batch терминален и `batch decide` на нём отказывает, поэтому подсказка `next`
+называет исполнимый путь: новый batch того же тикета и issue-ветки обычным маршрутом `/implement`
+(`batch create --ticket T --branch B --worktree W --integration-ref I`, затем architect, developer,
+code-review, QA и publish; завершённый batch новый не блокирует). База нового batch — integration tip,
+поэтому developer-отчёт отображает в `commit_map` и уже опубликованные коммиты ветки (с `dod_coverage` и
+`divergence_justification`). После принятого publish `integration prepare --ticket T --branch B --batch
+<новый batch>` создаёт новую запись, `integration next --record <новая запись> --pull-request N`
+продолжает PR, а упавшее evidence прежней записи остаётся историей.
 Операционный fallback CI и `unavailable`/`exhausted` local-QA failed-evidence не создают и провалом
 кода не становятся. Для провала обновлённой пары `integration resolve` создаёт resolver batch с
 `resolver.trigger: verification-failure` (`failed_evidence_ids`, пустые `conflicting_files`) даже при
-`tip == target`; бюджет и лимит правок на том же target те же, что у конфликта, ответ человека и
+`tip == target`; сторона `target` берётся из коммитов, которые легли в target после исходного target записи
+(`identity.target_sha..tip`), а scope остаётся собственными файлами задачи (правка других файлов — новый
+утверждённый dispatch `scope-change`); бюджет и лимит правок на том же target те же, что у конфликта, ответ человека и
 ожидание CI бюджет не сбрасывают и не тратят.
 
 Подсказка `next` в результате `collect-ci`: `pending_check` — `{action: wait}`; `not_configured` и
