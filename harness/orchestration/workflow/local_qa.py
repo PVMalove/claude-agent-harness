@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 
-from harness.gate_runner.gate_runner import sanitise
+from harness.gate_runner.gate_runner import CleanRoomPolicy, run_gate, sanitise
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import _config, _verification_commands
 from harness.orchestration.core.constants import LOCAL_QA_CI_CONDITIONS, STATE_REL
@@ -126,4 +127,35 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
                 "observed": observed,
             }
             _write_record(ledger, IntegrationLocalQaRecord.from_dict(request))
-    return {"request_id": request_id, "state": "requested", **members}
+    result_id = IntegrationLocalQaRecord.derive_id(
+        {"request_id": request_id, "event": "result"}
+    )
+    with _ledger_lock(ledger):
+        result_path = _path(root, result_id)
+        if result_path.exists():
+            return _read_object(result_path, "local QA result")
+        _observe_pair(repo, root, record, pair)
+    gate = run_gate(
+        [command for command in commands],
+        CleanRoomPolicy(repo, pair["candidate_sha"]),
+        stop_on_failure=True,
+    )
+    checksum = hashlib.sha256(gate.artifact.encode("utf-8")).hexdigest()
+    artifact = _records_root(root) / "qa-artifacts" / f"{checksum}.log"
+    ledger.write_artifact(artifact, gate.artifact)
+    result: JsonObject = {
+        "local_qa_id": result_id,
+        "event": "result",
+        "request_id": request_id,
+        **members,
+        "state": "completed" if gate.passed else "failed",
+        "checks_run": gate.checks,
+        "duration_seconds": gate.duration_seconds,
+        "artifact": str(artifact),
+        "artifact_sha256": checksum,
+        "finished_at": utils._now(),
+        "verification": "unverified",
+    }
+    with _ledger_lock(ledger):
+        _write_record(ledger, IntegrationLocalQaRecord.from_dict(result))
+    return result
