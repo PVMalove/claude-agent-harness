@@ -14,7 +14,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
 from functools import partial
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
@@ -48,6 +48,7 @@ from harness.orchestration.core.constants import (
     REVIEW_SEVERITIES,
     TELEMETRY_FIELDS,
     TOOLING_BLOCKER_FIELDS,
+    TOOLING_BLOCKER_UNCOMMITTED_FIELD,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
@@ -987,10 +988,13 @@ def _rebase_target(batch: JsonObject, dispatch: JsonObject) -> str | None:
     return None
 
 
-def _validate_tooling_blocker(report: JsonObject) -> None:
+def _validate_tooling_blocker(report: JsonObject, dispatch: JsonObject) -> None:
     """``tooling_blocker`` is the structured evidence of a tool that blocked a legitimate action
     (issue #500): exactly ``tool``, ``command`` and ``message``, each a bounded non-empty string, on a
-    ``blocked`` report only. It alone lets the coordinator classify a retry as ``tooling``."""
+    ``blocked`` report only. It alone lets the coordinator classify a retry as ``tooling``.
+
+    A developer whose commit the tool blocked also lists the files it left uncommitted (issue #502),
+    each inside its write zone; the restart's preflight holds the worktree to exactly that list."""
     if "tooling_blocker" not in report:
         return
     if report["outcome"] != "blocked":
@@ -998,11 +1002,49 @@ def _validate_tooling_blocker(report: JsonObject) -> None:
             "completion report tooling_blocker is allowed only on a blocked report",
             remedy="set outcome to blocked for a tool that blocked the role, or drop tooling_blocker",
         )
+    blocker = report["tooling_blocker"]
+    if isinstance(blocker, dict) and TOOLING_BLOCKER_UNCOMMITTED_FIELD in blocker:
+        if report["role"] != "developer":
+            raise CoordinatorError(
+                f"completion report tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD} is allowed only on a developer report",
+                remedy=f"drop tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD}: only a developer whose commit a tool blocked lists them",
+            )
+        _validate_uncommitted_files(
+            blocker[TOOLING_BLOCKER_UNCOMMITTED_FIELD], dispatch["write_paths"]
+        )
+        blocker = {
+            key: value
+            for key, value in blocker.items()
+            if key != TOOLING_BLOCKER_UNCOMMITTED_FIELD
+        }
     _check_tooling_blocker_shape(
-        report["tooling_blocker"],
+        blocker,
         "completion report tooling_blocker",
         "tooling_blocker",
     )
+
+
+def _validate_uncommitted_files(value: object, write_paths: list[str]) -> None:
+    label = f"completion report tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD}"
+    files = _strings(value, label)
+    if len(set(files)) != len(files):
+        raise CoordinatorError(
+            f"{label} must not repeat a path",
+            remedy=f"list each uncommitted path once in tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD}",
+        )
+    for path in files:
+        # The restart compares each path verbatim with Git's own output, so it must be in that form.
+        if (
+            path != PurePosixPath(path).as_posix()
+            or "\\" in path
+            or path.startswith("/")
+            or ".." in PurePosixPath(path).parts
+            or not any(fnmatchcase(path, pattern) for pattern in write_paths)
+        ):
+            raise CoordinatorError(
+                f"{label} must be normalized paths inside the approved zone: {path}",
+                remedy=f"list in tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD} only normalized repository-relative paths (as git status prints them) inside the role's write zone",
+            )
 
 
 def _check_tooling_blocker_shape(blocker: object, label: str, name: str) -> None:
@@ -1148,7 +1190,7 @@ def _validate_report(
             "completion report outcome is invalid",
             remedy="set outcome to one of the accepted completion-report outcomes",
         )
-    _validate_tooling_blocker(report)
+    _validate_tooling_blocker(report, dispatch)
     _validate_incomplete_items(report, role)
     for field in ("output", "risks", "blockers", "next_coordinator_action"):
         if not _non_empty(report[field]):
@@ -1320,6 +1362,9 @@ def _report_markdown(report: JsonObject) -> str:
         lines.append(
             f"- Tooling blocker: {tooling['tool']} — `{tooling['command']}`: {tooling['message']}"
         )
+        uncommitted = tooling.get(TOOLING_BLOCKER_UNCOMMITTED_FIELD)
+        if uncommitted:
+            lines.append(f"- Uncommitted files: {', '.join(uncommitted)}")
     incomplete = report.get("incomplete_items")
     if incomplete:
         lines.append("- Incomplete items:")

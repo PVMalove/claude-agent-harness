@@ -229,10 +229,11 @@ byte-based token estimate a Context Package uses. The smart-zone threshold is
 `adaptive_continuation_policy.context_warn_ratio × context_limit`. Above it, the preflight compacts:
 
 - the handoff keeps only structured fields: the report's dispatch ID, outcome, commit, changed
-  files and `commit_map`; the decision's dispatch, role, route and reason category; each finding's
-  axis, severity and summary, without its quoted evidence;
+  files, `commit_map` and, from its `tooling_blocker`, only `uncommitted_files`; the decision's
+  dispatch, role, route and reason category; each finding's axis, severity and summary, without
+  its quoted evidence;
 - the starting files narrow to the files a finding names or the developer report lists in
-  `changed_files`;
+  `changed_files` or `tooling_blocker.uncommitted_files`;
 - a large document stays only as its `sections` index.
 
 `retry_start.context_estimate` records the threshold and the estimates before and after the compact,
@@ -240,6 +241,13 @@ and the preflight's decision packet repeats it as `retry_context_estimate` with
 `retry_context_warning`. The preflight writes nothing and never blocks the dispatch: when the compact
 cannot reach the threshold, the warning names both numbers and the dispatch proceeds. Read-only roles
 (code-review, QA) always start new independent sessions.
+
+A `tooling-retry` developer restart inherits the uncommitted work of a blocked commit. Its HEAD is
+pinned to the developer's last commit. Its `dispatch preflight` also compares the worktree's
+uncommitted paths with the blocked report's `tooling_blocker.uncommitted_files`; coordinator state
+and tool sandboxes do not count. The preflight passes only when both lists are equal and every path
+is inside the batch zone. A clean worktree with no list passes as before. The preflight refuses an
+extra, missing or out-of-zone file and names each discrepancy.
 
 ## Approvals bound to the transition digest
 
@@ -480,7 +488,9 @@ The report must include:
   `carried_items_gap`) or `retry` decides it. An `open` item is `code` evidence for the retry route;
 - for a role a tool blocked: `outcome: blocked` and `tooling_blocker`, exactly the non-empty strings
   `tool`, `command` (as invoked) and `message` (verbatim), each at most 1600 characters. It is valid
-  only on a `blocked` report and is the only evidence of the `tooling` reason category.
+  only on a `blocked` report and is the only evidence of the `tooling` reason category. A developer
+  whose commit the tool blocked adds `uncommitted_files`, the non-empty, unique list of paths it
+  left uncommitted, each normalized as Git prints it and inside its write zone.
 - for a read-only role (architect, verification, code-review or qa) that left part of its brief
   undone: optional `incomplete_items`, one `{brief_item, reason, target_role}` per undone item, in
   English, each text non-empty and at most 1600 characters. `target_role` is the reporting role
