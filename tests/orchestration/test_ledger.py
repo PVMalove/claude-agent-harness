@@ -22,6 +22,9 @@ from harness.orchestration.ledger import (
     ContextPackageRecord,
     DispatchRecord,
     DispatchStatusRecord,
+    IntegrationEvidenceRecord,
+    IntegrationRecord,
+    IntegrationRefreshRecord,
     JsonObject,
     LedgerError,
     LedgerRecordVO,
@@ -236,6 +239,21 @@ class RecordApiTests(unittest.TestCase):
                 CheckpointRecord(checkpoint_id="checkpoint-1"),
                 "checkpoints",
                 "checkpoint-1",
+            ),
+            (
+                IntegrationRecord(integration_record_id="integration-1"),
+                "reports/integration",
+                "integration-1",
+            ),
+            (
+                IntegrationEvidenceRecord(evidence_id="evidence-1"),
+                "reports/integration-evidence",
+                "evidence-1",
+            ),
+            (
+                IntegrationRefreshRecord(refresh_id="refresh-1"),
+                "reports/integration-refresh",
+                "refresh-1",
             ),
         ]
         for record, directory, record_id in cases:

@@ -191,6 +191,33 @@ from harness.orchestration.workflow.history import (
 from harness.orchestration.workflow.history import (
     _validate_dispatch as _validate_dispatch,
 )
+from harness.orchestration.workflow.integration import (
+    integration_collect_ci as integration_collect_ci,
+)
+from harness.orchestration.workflow.integration import (
+    integration_link_evidence as integration_link_evidence,
+)
+from harness.orchestration.workflow.integration import (
+    integration_next as integration_next,
+)
+from harness.orchestration.workflow.integration import (
+    integration_prepare as integration_prepare,
+)
+from harness.orchestration.workflow.integration import (
+    integration_status as integration_status,
+)
+from harness.orchestration.workflow.local_qa import (
+    integration_local_qa as integration_local_qa,
+)
+from harness.orchestration.workflow.pr_refresh import (
+    integration_refresh as integration_refresh,
+)
+from harness.orchestration.workflow.resolver import (
+    integration_resolve as integration_resolve,
+)
+from harness.orchestration.workflow.resolver import (
+    resolver_event as resolver_event,
+)
 from harness.orchestration.workflow.qa_integration import (
     clear_qa_lease as clear_qa_lease,
 )

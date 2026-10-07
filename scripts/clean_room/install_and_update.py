@@ -412,8 +412,16 @@ def run(ctx: SimpleNamespace) -> None:
     assert_contract_link(
         agent, pv_project / ".harness/docs/technical-english.md", "installed agent seed"
     )
-    if not agent.read_bytes().startswith(original_agent):
-        sys.exit("approved agent addition lost local instructions")
+    patched = agent.read_bytes()
+    # A Windows checkout writes CRLF while the fixture suffix and the patch are LF.
+    if not patched.replace(b"\r\n", b"\n").startswith(
+        original_agent.replace(b"\r\n", b"\n")
+    ):
+        sys.exit(
+            "approved agent addition lost local instructions: "
+            f"expected prefix tail {original_agent[-60:]!r}, "
+            f"got {patched[len(original_agent) - 60 : len(original_agent)]!r}"
+        )
     approved_agent = agent.read_bytes()
     if "diff --git " in capture(HARNESS + ["update", str(pv_project)]):
         sys.exit("repeat pvmalove update proposed duplicate links")
@@ -551,9 +559,27 @@ def run(ctx: SimpleNamespace) -> None:
         "enumerate every path under those directories",
         "one cheap-model advisory call",
         "stop and report blocker",
+        "result dependency",
+        "known requirement incompatibility",
+        "file overlap",
     ):
         if required_text not in to_tickets_text:
             sys.exit(f"to-tickets discovery contract is missing: {required_text}")
+    # The release rule must reach every installed place that states it, not only to-tickets.
+    for rule_file in (
+        pv_project / ".harness" / "skills" / "to-pull-requests" / "SKILL.md",
+        pv_project / "docs" / "agents" / "triage-labels.md",
+    ):
+        if "accepted QA" not in rule_file.read_text(encoding="utf-8"):
+            sys.exit(f"blocker release rule is missing from {rule_file.name}")
+    # Issue #537: the PR step installed without the orchestration capability keeps the plain
+    # /qa-gate route and still carries the whole PR continuation for an opt-in project.
+    pr_step_text = (
+        pv_project / ".harness" / "skills" / "to-pull-requests" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    for required_text in ("integration next", "separate confirmation", "/qa-gate"):
+        if required_text not in pr_step_text:
+            sys.exit(f"installed to-pull-requests step lacks: {required_text}")
     for name in ("grill-me", "grill-with-docs", "diagnosing-bugs", "architect"):
         if not filecmp.cmp(
             ROOT / "skills" / "first-party" / "pvmalove" / name / "SKILL.md",

@@ -121,7 +121,7 @@ cd claude-agent-harness
 immutable brief — в [отдельном руководстве](./backend-orchestration.md).
 
 Это строго opt-in маршрут: он включается только при выбранной capability; `.harness/orchestration.json`
-не обязателен — без него zone по умолчанию весь репозиторий, а `model`/`effort` роли берутся из
+не обязателен — без него потолок записи весь репозиторий (границу задаёт `--allowed-path` batch), а `model`/`effort` роли берутся из
 вызывающей сессии. Без capability `/implement` отправляет на `/fast-implement`. Один batch хранит
 ticket, issue-ветку, worktree и history evidence, а каждый его dispatch имеет собственный immutable
 brief, terminal report и новое явное человеческое approval. Developer создаёт candidate commit;
@@ -282,6 +282,21 @@ python harness\bin\harness.py init C:\path\to\repository `
   `gh`/`glab`.
 - `.harness/project.schema.json` в установленном проекте — тоже seed: после обновления харнесса
   старая копия схемы может не знать о поле `tracker`. Авторитетен валидатор `harness health`.
+
+**Поле `ci_required_checks`** (необязательное) — список уникальных непустых имён CI-проверок, которые
+должны пройти на комбинированном результате pull request, чтобы `integration collect-ci` принял
+CI-доказательство вместо повторного полного локального QA. Пустой список или отсутствие поля
+означает «не настроено»: действует запасной путь с локальным QA.
+
+Команда `integration collect-ci --record <id> --pull-request <n>` (backend-оркестрация, ADR 0016)
+принимает CI только для трекера `github` и только если все проверки из `ci_required_checks` прошли
+на комбинированном результате PR (merge commit с родителями candidate и target). Иначе она ничего не
+записывает и возвращает `local_qa_required: true` — тогда выполняется полный локальный QA
+(запасной путь, команда `integration local-qa`). Результат несёт подсказку `next` (`wait` для
+ещё идущей проверки, иначе `local-qa` с `ci_condition`), а read-only команда
+`integration next --ticket <T> --branch <B> [--pull-request <n>]` (ADR 0017) называет следующий шаг
+продолжения PR: refresh, resolver, маршрут провала проверки, подтверждение, проверку или handoff для
+ручного merge. Подробности — в `.harness/docs/backend-orchestration.md`.
 
 При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно (один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`) разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно записывается в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md` и само `.harness/project.json`.
 
@@ -780,7 +795,7 @@ MCP/plugin/hook/runtime-конфигов) — в
 | `selected skill names already exist; inspect them or use --replace-conflicts` | `adopt` — под именами capability уже лежат свои скиллы | Проверить конфликты; если замена ожидаема — повторить с `--replace-conflicts` (без backup) |
 | `local skill changes would be overwritten; review them or use --force` | `update` — на диске локальные правки managed-файлов | Изучить diff; для snapshot — `--force-managed-files`, для snapshot и seed — `--force` |
 | `discovery path already exists and is not managed: <path> (...)` | На месте `.agents/skills`/`.claude/skills` что-то постороннее | `init` — убрать вручную или использовать `adopt`; `adopt` — `--replace-conflicts`; `update` — `--force` |
-| `.harness/project.json has unknown field(s): <name>` | Поле вне строгого контракта | Удалить поле либо реализовать его сразу в `project.schema.json`, шаблоне, валидаторе и потребителе; допустимы `language`, `base_branch`, `branch_pattern`, `qa_gate_commands`, `$schema`, `story_points`, `shell`, `memory`, `memory_policy`, `tracker` |
+| `.harness/project.json has unknown field(s): <name>` | Поле вне строгого контракта | Удалить поле либо реализовать его сразу в `project.schema.json`, шаблоне, валидаторе и потребителе; допустимы `language`, `base_branch`, `branch_pattern`, `qa_gate_commands`, `$schema`, `story_points`, `shell`, `memory`, `memory_policy`, `tracker`, `ci_required_checks` |
 | `.harness/project.json tracker has unknown field(s): <name>` (и другие `... tracker ...`) | Поле `tracker` вне контракта | Внутри `tracker` допустимы только `type` (`github`, `gitlab`, `local`), `host` (хост с необязательным `:порт`, без схемы, пути и userinfo) и `project` (полный путь с подгруппами); для `github`/`gitlab` обязательны `host` и `project`. Сертификаты, прокси и учётные данные сюда не пишутся — они остаются в личной конфигурации `gh`/`glab` |
 | `install-global.py`: `[CONFLICT] ... (re-run with --replace-conflicts ...)` | Место профиля или симлинка занято | Повторить с `--replace-conflicts` — сначала будет backup |
 | `install-global.py`: `[ERROR] Failed to create symlink: ...` (только Windows) | Нет прав на symlink каталога | Включить Developer Mode (Settings → For developers) или запустить терминал от имени администратора |
@@ -1054,7 +1069,10 @@ issue — **эпик** с метками `bug`/`enhancement` + `status::specs` (
 **В этом репозитории** ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)): дочерние тикеты
 эпика (`status::specs`) линкуются родительской связью трекера (на GitHub — native sub-issues, на
 GitLab — секция `## Parent: #<N>` и связь `relates_to`), а не лейблом `epic::<slug>`; тикет,
-заблокированный другим открытым тикетом той же декомпозиции, получает `status::blocked`. Фронтир
+заблокированный другим открытым тикетом той же декомпозиции, получает `status::blocked`. Блокер ставится
+только за зависимость по результату или известную несовместимость требований (с причиной); пересечение
+файлов блокером не является, а снимает его лишь подтверждённый merge и закрытие предшественника —
+не push, publish, принятый QA или открытый PR. Фронтир
 ищется тем же запросом, что у `wayfinder` (`docs/agents/issue-tracker.md#wayfinding-operations`);
 `/implement`, вызванный для эпика, определяет первый тикет фронтира и назначает его на себя.
 
@@ -1093,7 +1111,7 @@ Exit 0 — маршрут доступен. **Команда `harness` для э
 ошибкой, opt-in не восстанавливается и не достраивается — пользователь направляется к
 `/fast-implement`.
 
-**`.harness/orchestration.json` не обязателен**: без него zone — весь репозиторий (`repository`), а
+**`.harness/orchestration.json` не обязателен**: без него потолок записи — весь репозиторий (границу задаёт `--allowed-path` batch), а
 `model`/`effort` роли берутся из сессии и передаются в `dispatch create --model/--effort`. Для
 coordinator и architect рекомендуется `medium` effort; повышение допускается только по явному
 решению разработчика.
@@ -1125,7 +1143,7 @@ python .harness/orchestration/coordinator.py --repo . batch list --open --ticket
 # planned batch, затем отдельное утверждение человеком
 python .harness/orchestration/coordinator.py --repo . batch create \
   --ticket '#102' --branch feature/issue-102-csv-service \
-  --worktree issue-102-csv-service --zone repository \
+  --worktree issue-102-csv-service --allowed-path 'services/csv/**' \
   --definition-of-done 'CSV-сервис форматирует числа по locale проекта' \
   --definition-of-done 'Тесты написаны до реализации (TDD)'
 python .harness/orchestration/coordinator.py --repo . batch approve \
@@ -1465,7 +1483,7 @@ python .harness/reporting/delivery_stats.py --repo . --epic 95 \
 | `triage` | Namespaced-таксономия `status::*` (`specs`/`ready`/`in-progress`/`blocked`) и отдельная ось `hitl`/`afk`; пара `bug`/`enhancement` без изменений; `wontfix` → `out-of-scope`. См. [ADR 0002](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0002-controlled-delivery.md). |
 | `to-spec` | Ставит `status::specs` на эпик вместо `ready-for-agent` + `epic::<slug>`; согласует и создаёт `integration/<service-or-team>` от `base_branch`; пишет спеку файлом в `docs/tasks/` и публикует через `gh issue create --body-file`. |
 | `to-tickets` | Линкует дочерние тикеты родительской связью трекера (GitHub — native sub-issues, GitLab — `## Parent: #<N>` и `relates_to`) вместо `epic::<slug>`; заблокированному тикету ставит `status::blocked`; не переписывает эпик (кроме списка номеров). |
-| `implement` | Проверяет блокеры и ставит `status::in-progress` до `batch create`; создаёт issue-ветку от integration-ветки; ведёт coordinator-конвейер architect → developer → code-review → qa → publish с approval на каждом гейте, model self-report и watchdog. После publish предлагает `/to-pull-requests`. Однопроходный upstream-флоу переехал в `fast-implement`. |
+| `implement` | Проверяет блокеры и ставит `status::in-progress` до `batch create`; задаёт обязательные `--required-gate review --required-gate qa`; создаёт issue-ветку от integration-ветки; ведёт coordinator-конвейер architect → developer → code-review → qa → publish с approval на каждом гейте, model self-report и watchdog; принимает ранний blocked-отчёт developer без фиктивного коммита с явным recovery route. После publish предлагает `/to-pull-requests`. Однопроходный upstream-флоу переехал в `fast-implement`. |
 | `ask-matt` | Отражает выбор разработчика: двухосевое ревью либо переход к commit и push. |
 | `code-review` | Отчёт выводится на языке из `.harness/project.json` (`### Communication language`). |
 | `diagnosing-bugs` | Перед гипотезами ищет прошлые фиксы через read-only `harness memory search`, если память включена; воспроизведение остаётся обязательным. |

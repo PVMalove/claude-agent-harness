@@ -54,11 +54,13 @@ from harness.orchestration.core.constants import (
     PLAN_FIELDS,
     POLICY_BRIEF_FIELDS,
     PRE_APPROVAL_LEGACY_PLAN_FIELDS,
+    PRE_SCOPE_PLAN_FIELDS,
     RECOVERY_ROUTES,
     RISK_ASSESSMENT_FIELDS,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
+    _git_is_ancestor,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -171,6 +173,17 @@ def _risk_for_candidate(
     risk = _load_risk(root, matches[-1].get("risk_assessment_id"))
     _validate_risk(root, batch, risk)
     return risk
+
+
+def _initial_developer_work(dispatch: JsonObject) -> bool:
+    """Initial work owns the full plan, including progress preserved by startup recovery."""
+    transition = dispatch.get("transition")
+    return (
+        dispatch.get("role") == "developer"
+        and dispatch.get("purpose") == "work"
+        and isinstance(transition, dict)
+        and transition.get("next_action") in {None, "developer"}
+    )
 
 
 def _latest_checkpoint_for_dispatch(
@@ -412,7 +425,11 @@ def _latest_developer_candidate(repo: Path, root: Path, batch: JsonObject) -> st
         # Legacy dispatch ledger entries predate the explicit ``purpose`` field.
         # They are developer work dispatches unless they explicitly identify another
         # purpose (currently only publish), so candidate history must retain them.
-        if item.get("role") == "developer" and item.get("purpose", "work") == "work":
+        # A conflict-resolver (issue #534) produces the candidate of its own resolver batch.
+        if (
+            item.get("role") in {"developer", "conflict-resolver"}
+            and item.get("purpose", "work") == "work"
+        ):
             report = _pending_report(root, batch, item)
             candidates.append(_candidate_commit(repo, report["commit_sha"]))
         elif item.get("role") == "verification":
@@ -731,13 +748,21 @@ def _validate_batch_integrity(root: Path, batch: JsonObject) -> None:
             "batch goal does not match its immutable plan",
             remedy=INTERNAL_INVARIANT_REMEDY,
         )
-    for field in ("approval_policy", "communication_policy"):
+    for field in ("approval_policy", "communication_policy", "allowed_paths"):
         if (field in batch) != (field in plan):
             raise CoordinatorError(
                 "batch record is incomplete",
                 remedy="restore the batch record so it has every required field, or run 'ledger clean'",
             )
-    for fields in (PLAN_FIELDS, LEGACY_PLAN_FIELDS):
+    # A batch planned before explicit scopes existed has no allowed_paths on either record and was
+    # bounded by its zone; both stay valid. A scope present on both records must be identical.
+    if batch.get("allowed_paths") != plan.get("allowed_paths"):
+        raise CoordinatorError(
+            "batch record does not match its immutable plan",
+            remedy="the batch record diverged from its immutable plan -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    for fields in (PLAN_FIELDS, PRE_SCOPE_PLAN_FIELDS, LEGACY_PLAN_FIELDS):
         if all(field in batch for field in fields) and all(
             field in plan for field in fields
         ):
@@ -769,18 +794,13 @@ def _validate_batch_integrity(root: Path, batch: JsonObject) -> None:
     )
 
 
-def _batch_for_ticket_branch(
-    root: Path,
-    ticket: str,
-    branch: str,
-    candidate: str,
-    requested_batch: object = None,
-) -> JsonObject:
-    """Find the batch whose accepted QA proof is pinned to this candidate.
+def _batches_for_ticket_branch(
+    root: Path, ticket: str, branch: str
+) -> list[JsonObject]:
+    """Every integrity-checked batch recorded for this ticket and issue branch.
 
-    A coordinator can retain abandoned planning attempts for the same ticket and issue branch.
-    Those records are audit evidence, not competing QA proof, so a current SHA selects the batch
-    rather than making PR preparation depend on deleting its history.
+    A coordinator can retain abandoned planning attempts for the same ticket and issue branch;
+    they are audit evidence, so this lists them all and leaves the choice to the caller.
     """
     batches_dir = _records_root(root) / "batches"
     if not batches_dir.is_dir():
@@ -799,6 +819,23 @@ def _batch_for_ticket_branch(
             "no orchestration batch matches the ticket and issue branch",
             remedy="pass a ticket and branch that match an existing orchestration batch",
         )
+    return matches
+
+
+def _batch_for_ticket_branch(
+    root: Path,
+    ticket: str,
+    branch: str,
+    candidate: str,
+    requested_batch: object = None,
+) -> JsonObject:
+    """Find the batch whose accepted QA proof is pinned to this candidate.
+
+    A coordinator can retain abandoned planning attempts for the same ticket and issue branch.
+    Those records are audit evidence, not competing QA proof, so a current SHA selects the batch
+    rather than making PR preparation depend on deleting its history.
+    """
+    matches = _batches_for_ticket_branch(root, ticket, branch)
     if requested_batch is not None:
         batch_id = _safe_id(requested_batch, "batch")
         selected = next(
@@ -991,6 +1028,38 @@ def _validate_carried_section(dispatch: JsonObject) -> None:
         )
 
 
+def _validate_resolver_section(dispatch: JsonObject) -> None:
+    """A conflict-resolver brief carries its complete ``resolver`` section (issue #534); every
+    other brief carries none."""
+    section = dispatch.get("resolver")
+    if dispatch.get("role") != "conflict-resolver":
+        if "resolver" in dispatch:
+            raise CoordinatorError(
+                "only a conflict-resolver brief may carry a resolver section",
+                remedy="the dispatch record's resolver section is malformed -- "
+                + INTERNAL_INVARIANT_REMEDY,
+            )
+        return
+    needed = (
+        "ticket",
+        "sides",
+        "candidate_sha",
+        "target_sha",
+        "scope",
+        "prohibitions",
+        "commit_plan",
+        "checks",
+        "budget",
+        "report_staging_path",
+    )
+    if not isinstance(section, dict) or any(key not in section for key in needed):
+        raise CoordinatorError(
+            "a conflict-resolver brief must carry the complete resolver section",
+            remedy="the dispatch record's resolver section is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+
+
 def _validate_dispatch(
     repo: Path, config: JsonObject, root: Path, batch: JsonObject, dispatch: JsonObject
 ) -> None:
@@ -1024,6 +1093,8 @@ def _validate_dispatch(
     accepted |= {fields - {"commit_plan_divergence"} for fields in set(accepted)}
     # The carried-items section (issue #499) came after that.
     accepted |= {fields - {"carried_items"} for fields in set(accepted)}
+    # The conflict-resolver brief's resolver section (issue #534) is the one field added on top.
+    accepted |= {fields | {"resolver"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError(
             "dispatch record schema mismatch",
@@ -1041,6 +1112,7 @@ def _validate_dispatch(
         )
     if "carried_items" in dispatch:
         _validate_carried_section(dispatch)
+    _validate_resolver_section(dispatch)
     if dispatch.get("state") != "approved":
         raise CoordinatorError(
             "dispatch record is not an approved immutable brief",
@@ -1158,7 +1230,7 @@ def _validate_dispatch(
         )
     if _configured(repo):
         try:
-            validate_brief_policy(
+            _, assignment = validate_brief_policy(
                 dispatch,
                 _project(repo),
                 config,
@@ -1166,16 +1238,16 @@ def _validate_dispatch(
             )
         except ContractError as exc:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+        ceiling = assignment["write_ceiling"]
     else:
         _validate_branch(repo, dispatch["branch"])
         # In zero-config mode the brief itself is the only record of the session-supplied runtime,
         # so it is replayed here; brief_sha256 above already protects it from being edited.
-        role, zone, profile_id, model, effort, transport, resolved_runtime = (
+        role, ceiling, profile_id, model, effort, transport, resolved_runtime = (
             _resolve_assignment(
                 repo,
                 config,
                 dispatch["role"],
-                batch["zone"],
                 dispatch["resolved_runtime"],
                 session_model=dispatch["resolved_model"],
                 session_effort=dispatch["resolved_effort"],
@@ -1194,13 +1266,17 @@ def _validate_dispatch(
                 remedy="the dispatch record does not match the role assignment -- "
                 + INTERNAL_INVARIANT_REMEDY,
             )
-        expected_paths = zone["paths"] if role["mode"] == "write" else []
-        if dispatch["write_paths"] != expected_paths:
-            raise CoordinatorError(
-                "dispatch record write paths do not match the role boundary",
-                remedy="the dispatch record write paths do not match the role boundary -- "
-                + INTERNAL_INVARIANT_REMEDY,
-            )
+    # The brief's write scope is the batch's explicit scope; a batch planned before scopes existed
+    # was bounded by the role's own write ceiling, which is what its brief recorded.
+    expected_paths = (
+        batch.get("allowed_paths", ceiling) if dispatch["access"] == "write" else []
+    )
+    if dispatch["write_paths"] != expected_paths:
+        raise CoordinatorError(
+            "dispatch record write paths do not match the batch scope",
+            remedy="the dispatch record write paths do not match the batch scope -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
     # Only the shape is checked: the brief is the immutable record of what was selected at approval,
     # so a later project edit to `tool_policy` or `context_limit` must not invalidate it in flight.
     if "allowed_tools" in dispatch:
@@ -1246,6 +1322,21 @@ def _validate_dispatch(
                 remedy="set the dispatch's candidate_commit to its full resolved commit SHA",
             )
         risk = _risk_for_candidate(root, batch, candidate)
+        if (
+            risk is None
+            and _initial_developer_work(dispatch)
+            and dispatch.get("risk_assessment_id") is None
+            and dispatch.get("review_base") is None
+            and not dispatch.get("review_scope")
+        ):
+            # A writer's startup SHA is progress, not a completed/accepted candidate.
+            # Report acceptance still precedes risk assessment and every downstream gate.
+            if not _git_is_ancestor(repo, batch["base_commit"], candidate):
+                raise CoordinatorError(
+                    "initial developer snapshot must contain the batch base commit",
+                    remedy="pin existing issue-branch progress that descends from the batch base",
+                )
+            return
         if (
             risk is None
             or dispatch.get("risk_assessment_id") != risk["risk_assessment_id"]

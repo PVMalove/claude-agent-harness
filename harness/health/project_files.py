@@ -46,6 +46,7 @@ PROJECT_JSON_ALLOWED_FIELDS = frozenset(PROJECT_JSON_REQUIRED_FIELDS) | {
     "memory",
     "memory_policy",
     "tracker",
+    "ci_required_checks",
 }
 STORY_POINTS_REQUIRED_FIELDS = (
     "scale",
@@ -545,6 +546,19 @@ def tracker_field_problems(value: object) -> list[str]:
     return problems
 
 
+def ci_required_checks_problems(value: object) -> list[str]:
+    """Problems of the `ci_required_checks` value: a list of unique non-empty CI check names
+    (empty list = not configured).  Names are shown by position, never echoed."""
+    prefix = ".harness/project.json ci_required_checks"
+    if not isinstance(value, list):
+        return [f"{prefix} must be a list of check names"]
+    if not all(isinstance(item, str) and item.strip() for item in value):
+        return [f"{prefix} must contain only non-empty strings"]
+    if len(set(value)) != len(value):
+        return [f"{prefix} must not contain duplicate names"]
+    return []
+
+
 def validate_project_json(repo: Path, problems: list[str]) -> None:
     """.harness/project.json не является обязательным (создаётся только pvmalove-suite), поэтому его
     отсутствие не считается ошибкой; проверяется только при его наличии.
@@ -603,6 +617,8 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
         )
     if "tracker" in data:
         problems.extend(tracker_field_problems(data["tracker"]))
+    if "ci_required_checks" in data:
+        problems.extend(ci_required_checks_problems(data["ci_required_checks"]))
     if "story_points" in data:
         story_points = data["story_points"]
         if not isinstance(story_points, dict):

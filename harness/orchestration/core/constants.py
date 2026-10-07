@@ -19,6 +19,9 @@ SENSITIVE_KEY = re.compile(
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
 DECISIONS = {"accept", "override-warning", "retry", "block", "fail", "abandon"}
 TERMINAL_BATCH_STATES = {"completed", "failed", "blocked", "not-required", "abandoned"}
+# A blocked batch that still has an open dispatch can be resumed or abandoned, so it holds its work
+# until one of those happens; with every dispatch settled it is finished like the other states.
+FINISHED_BATCH_STATES = TERMINAL_BATCH_STATES - {"blocked"}
 # Why a role stopped, as the coordinator records it. Only the first two are operational evidence:
 # they never change what a role would conclude, so they alone may re-run a read-only role (or the
 # publish boundary) on the same candidate. Everything else, or anything unclear, needs a developer.
@@ -85,10 +88,11 @@ NEXT_ACTION_DISPATCH_ROLE = {
     "code-review": "code-review",
     "qa": "qa",
     "publish": "developer",
+    # Issue #534: a textual integration conflict is handed to the conflict-resolver writer.
+    "resolve-conflict": "conflict-resolver",
 }
 DISPATCH_PURPOSES = {"work", "verification", "publish"}
 ROLE_TRANSPORTS = {"in-process", "external"}
-DEFAULT_ZONE = "repository"
 DEFAULT_PROFILE = "session"
 # A developer can legitimately spend tens of minutes in one build, migration, or test command.
 # Keep the default long enough for that work, while the handoff still requires frequent, explicit
@@ -108,6 +112,7 @@ REVIEW_SEVERITIES = {"none", "clean", "warning", "blocker"}
 FINDING_SEVERITIES = {"info", "warning", "blocker"}
 QA_LEASE_FIELDS = {"dispatch_id", "host", "pid", "acquired_at", "expires_at"}
 QA_QUEUE_FIELDS = {"dispatch_id", "sequence", "queued_at"}
+QA_OWNER_FIELDS = {"owner_kind", "owner_id"}
 PLAN_FIELDS = (
     "batch_id",
     "created_at",
@@ -118,6 +123,7 @@ PLAN_FIELDS = (
     "branch",
     "worktree",
     "zone",
+    "allowed_paths",
     "definition_of_done",
     "prohibited_changes",
     "developer_verification_commands",
@@ -129,11 +135,20 @@ PLAN_FIELDS = (
     "scope_preflight",
     "harness_runtime_sha256",
 )
+# A plan written before batches carried an explicit scope: its zone alone bounded the writer.
+PRE_SCOPE_PLAN_FIELDS = tuple(
+    field for field in PLAN_FIELDS if field != "allowed_paths"
+)
 LEGACY_PLAN_FIELDS = tuple(
     field
     for field in PLAN_FIELDS
     if field
-    not in {"scope_preflight", "harness_runtime_sha256", "communication_policy"}
+    not in {
+        "allowed_paths",
+        "scope_preflight",
+        "harness_runtime_sha256",
+        "communication_policy",
+    }
 )
 PRE_APPROVAL_LEGACY_PLAN_FIELDS = tuple(
     field for field in LEGACY_PLAN_FIELDS if field != "approval_policy"
@@ -246,6 +261,7 @@ REPORT_OPTIONAL_FIELDS = {
     "lessons",
     "used_memory",
     "tooling_blocker",
+    "resolver",
     "incomplete_items",
     "carried_item_closure",
 }
@@ -331,7 +347,13 @@ CHECKPOINT_FIELDS = CHECKPOINT_INPUT_FIELDS | {
 # Fixed runtime-adapter termination vocabulary, not a project policy value -- a rate-limit signal
 # always authorizes a continuation automatically, whatever project a batch belongs to.
 RATE_LIMIT_TERMINATION_REASONS = {"rate_limit", "rate-limit", "429"}
-PLANNED_TRIGGER_KINDS = {"context-limit", "tdd-cycles", "failure-log", "vertical-slice"}
+PLANNED_TRIGGER_KINDS = {
+    "context-limit",
+    "tdd-cycles",
+    "failure-log",
+    "vertical-slice",
+    "human-decision",
+}
 PLANNED_TRIGGER_THRESHOLD_KEY = {
     "context-limit": "context_limit",
     "tdd-cycles": "tdd_cycle_count",
@@ -406,6 +428,18 @@ ATTENTION_STATE_FIELDS = (
     "last_safe_action",
     "recommended_human_action",
 )
+# Integration accounting (issue #532): the routes whose evidence may be linked to an integration
+# record, the results a registered check may carry, and the shape of the ids and SHAs involved.
+INTEGRATION_EVIDENCE_KINDS = ("ci", "local-qa", "resolver")
+LOCAL_QA_CI_CONDITIONS = ("absent", "unavailable", "unusable")
+INTEGRATION_EVIDENCE_RESULTS = ("passed", "failed")
+INTEGRATION_RECORD_ID_PATTERN = re.compile(r"integration-[0-9a-f]{32}")
+INTEGRATION_SHA_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+INTEGRATION_REFERENCE_MAX_CHARS = 2_048
+# Issue #535: the ``verification`` marks only 'integration collect-ci' writes; a CI check linked by
+# hand stays 'unverified' and never satisfies verification.
+INTEGRATION_CI_COLLECTED = "collector-accepted"
+INTEGRATION_CI_COLLECTED_FAILURE = "collector-failed"
 MAX_CHECK_EVIDENCE_CHARS = 1_600
 CONTINUATION_FACTS_FIELDS = {
     "dispatch_id",

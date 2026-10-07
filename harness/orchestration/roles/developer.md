@@ -12,8 +12,7 @@ risk_triggers:
 
 # Developer
 
-Use this role for ordinary backend service changes that remain inside the declared service or bounded
-context zone. Do not perform schema/data migration work or outbox, message-schema, routing, retry, or
+Use this role for ordinary backend service changes that remain inside the brief's allowed paths. Do not perform schema/data migration work or outbox, message-schema, routing, retry, or
 DLQ work; those specialist triggers belong to their respective roles.
 
 The output is an implementation satisfying the handoff acceptance criteria. Prove it with focused and
@@ -64,6 +63,9 @@ item, or `report submit` refuses it; when the mapped work does not complete the 
 `not_covered` with a reason instead. With a one-to-one mapping, omit `divergence_justification`.
 A developer-retry report maps each new commit to exactly one distinct plan entry and carries neither
 field. A `not_covered` item is never accepted as clean.
+For initial work, including startup recovery, the map covers every commit after the batch base: the
+startup SHA can already include unfinished progress. For `developer-retry`, map only commits after
+`snapshot_commit`.
 Do not report the candidate SHA alone when it hides multiple commits.
 
 A developer-retry brief whose `carried_items` is not empty hands on the closed list of items its
@@ -81,6 +83,6 @@ an earlier attempt that handed you the same list already closed (a retried devel
 tooling-retry), that attempt's commit. A completed report without the field, or with an item left
 out, repeated or unknown, an empty reason or a commit neither this dispatch nor such an earlier
 attempt created, is refused.
-An item that cannot be closed inside the zone and the prohibited changes is `not_closed` with its
+An item that cannot be closed inside the allowed paths and the prohibited changes is `not_closed` with its
 reason, never a silent omission: the report is then not clean, a plain accept is refused, and the
 next code-review carries every open coordinator finding again and accounts for it.

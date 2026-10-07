@@ -100,10 +100,12 @@ from harness.orchestration.runtime_attestation import (
 )
 from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
+from harness.orchestration.workflow import resolver_state
 from harness.orchestration.workflow.approval import (
     _approval,
 )
 from harness.orchestration.workflow.history import (
+    _initial_developer_work,
     _latest_checkpoint_for_dispatch,
     _latest_context_package,
     _live_status,
@@ -159,9 +161,22 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
                 }
             else:
                 try:
+                    startup = dispatch
+                    if status.get("last_event") == "resumed":
+                        batch = _load_batch(root, dispatch["batch_id"])
+                        _validate_batch_integrity(root, batch)
+                        checkpoint = _latest_checkpoint_for_dispatch(
+                            root, batch, dispatch["dispatch_id"]
+                        )
+                        # The approved continuation starts at recorded progress. Keep the
+                        # original snapshot for the full dispatch's commit-plan evidence.
+                        startup = {
+                            **dispatch,
+                            "snapshot_commit": checkpoint["commit_sha"],
+                        }
                     attestation = {
                         "match": True,
-                        **attest_runtime_worktree(repo, dispatch, supplied_worktree),
+                        **attest_runtime_worktree(repo, startup, supplied_worktree),
                     }
                 except AttestationError as exc:
                     worktree_matched = False
@@ -450,8 +465,8 @@ def _validate_checkpoint(
             or not any(fnmatchcase(normalized, pattern) for pattern in paths)
         ):
             raise CoordinatorError(
-                "checkpoint changed_files must remain inside the approved zone",
-                remedy="keep checkpoint changed_files inside the role's approved write zone",
+                "checkpoint changed_files must remain inside the approved scope",
+                remedy="keep checkpoint changed_files inside the brief's write_paths",
             )
     resolved = _candidate_commit(repo, commit_sha)
     actual_files = (
@@ -765,6 +780,18 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
                 )
             authorization = _authorize_rate_limit_continuation(termination_reason)
         else:
+            if _non_empty(args.trigger) and args.trigger.strip() == "human-decision":
+                # The answer to the options a resolver listed is its own audit event; the same
+                # dispatch continues only once it is recorded, and nothing else is spent.
+                if not resolver_state.is_resolver_brief(
+                    dispatch
+                ) or not resolver_state.human_decision_recorded(
+                    root, batch, dispatch["dispatch_id"]
+                ):
+                    raise CoordinatorError(
+                        "a human-decision continuation resumes a conflict-resolver whose latest checkpoint has a recorded human decision",
+                        remedy="record the decision first with 'integration resolver-event --kind human-decision --dispatch <id>', then resume",
+                    )
             checkpoint = _latest_checkpoint_for_dispatch(
                 root, batch, dispatch["dispatch_id"]
             )
@@ -1169,6 +1196,16 @@ def _validate_incomplete_items(report: JsonObject, role: JsonObject) -> None:
             )
 
 
+def _resolve_report_commit(repo: Path, commit_sha: str) -> str:
+    try:
+        return _candidate_commit(repo, commit_sha)
+    except CoordinatorError as exc:
+        raise CoordinatorError(
+            f"completion report commit_sha {commit_sha} does not resolve to a commit",
+            remedy="report a commit_sha that resolves to a real commit in this repository",
+        ) from exc
+
+
 def _validate_report(
     report: JsonObject,
     dispatch: JsonObject,
@@ -1273,15 +1310,37 @@ def _validate_report(
     plan_rules.check_fields_allowed(report, dispatch)
     carried_items.check_closure(report, dispatch)
     commit_sha = report["commit_sha"]
-    if role["mode"] == "write" and (
-        not isinstance(commit_sha, str)
-        or re.fullmatch(r"[0-9a-fA-F]{7,64}", commit_sha) is None
-        or not changed_files
-    ):
-        raise CoordinatorError(
-            "write-role completion reports require commit_sha and changed_files",
-            remedy="a write role's completion report must include commit_sha and changed_files",
-        )
+    if role["mode"] == "write":
+        if (
+            not isinstance(commit_sha, str)
+            or re.fullmatch(r"[0-9a-fA-F]{7,64}", commit_sha) is None
+            or (report.get("outcome") == "completed" and not changed_files)
+        ):
+            raise CoordinatorError(
+                "write-role completion reports require commit_sha and changed_files",
+                remedy="a write role's completion report must include commit_sha and changed_files",
+            )
+        if not changed_files:
+            expected_checkout = dispatch.get("snapshot_commit") or dispatch.get(
+                "base_commit"
+            )
+            mismatch = False
+            if repo is not None:
+                resolved = _resolve_report_commit(repo, commit_sha)
+                expected_resolved = (
+                    _candidate_commit(repo, expected_checkout)
+                    if expected_checkout
+                    else None
+                )
+                mismatch = resolved != expected_resolved
+            elif expected_checkout and commit_sha != expected_checkout:
+                mismatch = True
+
+            if mismatch:
+                raise CoordinatorError(
+                    f"early blocked write-role report commit_sha {commit_sha} does not match checkout snapshot {expected_checkout}",
+                    remedy=f"report the checked-out checkout commit {expected_checkout} when stopped before making changes",
+                )
     if role["mode"] == "read-only" and changed_files:
         raise CoordinatorError(
             "read-only completion reports cannot claim changed files",
@@ -1297,11 +1356,11 @@ def _validate_report(
                 or not any(fnmatchcase(normalized, pattern) for pattern in paths)
             ):
                 raise CoordinatorError(
-                    "completion report changed_files must remain inside the approved zone",
-                    remedy="keep completion report changed_files inside the role's approved write zone",
+                    "completion report changed_files must remain inside the approved scope",
+                    remedy="keep completion report changed_files inside the brief's write_paths",
                 )
-        if repo is not None:
-            resolved = _candidate_commit(repo, commit_sha)
+        if repo is not None and changed_files:
+            resolved = _resolve_report_commit(repo, commit_sha)
             if rebase_target is not None:
                 if not _git_is_ancestor(repo, rebase_target, resolved):
                     raise CoordinatorError(
@@ -1330,28 +1389,41 @@ def _validate_report(
             and (planned or closure)
             and repo is not None
         ):
-            snapshot = dispatch.get("snapshot_commit")
-            if not isinstance(snapshot, str):
-                raise CoordinatorError(
-                    "developer dispatch lacks snapshot_commit",
-                    remedy="create a new developer dispatch with an immutable snapshot",
+            if not changed_files:
+                commit_map = report.get("commit_map")
+                if isinstance(commit_map, list) and commit_map:
+                    raise CoordinatorError(
+                        "early blocked developer report cannot claim commit_map entries without changed_files",
+                        remedy="report an empty commit_map when stopped before creating commits",
+                    )
+            else:
+                snapshot = dispatch.get("snapshot_commit")
+                if not isinstance(snapshot, str):
+                    raise CoordinatorError(
+                        "developer dispatch lacks snapshot_commit",
+                        remedy="create a new developer dispatch with an immutable snapshot",
+                    )
+                plan_base = (
+                    base_commit or snapshot
+                    if _initial_developer_work(dispatch)
+                    else snapshot
                 )
-            if planned:
-                plan_rules.check_report(
-                    report,
-                    dispatch,
-                    _commits_between(repo, rebase_target or snapshot, resolved),
-                    partial(_candidate_commit, repo),
-                )
-            if closure:
-                # An earlier attempt of the retry chain may have closed an item (issue #503).
-                carried_items.check_closure_commits(
-                    report,
-                    _commits_between(
-                        repo, rebase_target or closure_base or snapshot, resolved
-                    ),
-                    partial(_candidate_commit, repo),
-                )
+                if planned:
+                    plan_rules.check_report(
+                        report,
+                        dispatch,
+                        _commits_between(repo, rebase_target or plan_base, resolved),
+                        partial(_candidate_commit, repo),
+                    )
+                if closure:
+                    # An earlier attempt of the retry chain may have closed an item (issue #503).
+                    carried_items.check_closure_commits(
+                        report,
+                        _commits_between(
+                            repo, rebase_target or closure_base or snapshot, resolved
+                        ),
+                        partial(_candidate_commit, repo),
+                    )
     if role["mode"] == "read-only" and commit_sha != "not applicable — read-only role":
         raise CoordinatorError(
             "read-only completion reports must not claim a commit SHA",
@@ -1509,6 +1581,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             _rebase_target(batch, dispatch),
             _closure_base(repo, root, batch, dispatch),
         )
+        resolver_state.validate_report(repo, root, batch, dispatch, report)
         # Only a new report must carry its closure: one recorded earlier is decided as a gap.
         carried_items.require_closure(report, dispatch)
         from harness.orchestration.workflow.decisions import _auto_accept_policy
@@ -1516,7 +1589,11 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
         auto_accept_policy = _auto_accept_policy(config, batch, dispatch, report)
         retry_candidate: str | None = None
         was_retry = False
-        if role["name"] == "developer" and batch.get("retry_candidate_required"):
+        if (
+            role["name"] == "developer"
+            and report.get("outcome") == "completed"
+            and batch.get("retry_candidate_required")
+        ):
             retry_candidate = _candidate_commit(repo, report["commit_sha"])
             was_retry = True
             prior_candidates = {
@@ -1530,7 +1607,11 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                     remedy="produce a new candidate commit (developer retry) before the next review or QA dispatch",
                 )
             batch["retry_candidate_required"] = False
-        if "risk_triggers" in report and role["name"] == "developer":
+        if (
+            "risk_triggers" in report
+            and role["name"] == "developer"
+            and report.get("outcome") == "completed"
+        ):
             triggers = _validate_trigger_names(
                 report["risk_triggers"],
                 "completion report risk_triggers",
@@ -1578,12 +1659,25 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
         report_json = _persist_report(
             ledger, root, batch, dispatch, report, auto_accept_policy=auto_accept_policy
         )
+        if resolver_state.is_resolver_brief(dispatch):
+            resolver_state.record_report(ledger, root, batch, dispatch, report)
     response: JsonObject = {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",
         "report": str(report_json),
     }
     if auto_accept_policy is None:
+        from harness.orchestration.workflow.decisions import decision_packet
+
+        packet = decision_packet(
+            argparse.Namespace(
+                repo=str(repo),
+                state_dir=getattr(args, "state_dir", None),
+                batch=batch["batch_id"],
+                dispatch=dispatch["dispatch_id"],
+            )
+        )
+        response["decision_packet"] = packet
         return response
     # The policy decision, risk assessment and next dispatch run after the ledger lock is released,
     # each as an ordinary command revalidated against the persisted report.  The report is

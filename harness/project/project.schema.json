@@ -82,6 +82,15 @@
         "required": ["host", "project"]
       }
     },
+    "ci_required_checks": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Optional names of the CI checks that must all pass on a pull request's combined result before 'integration collect-ci' accepts CI evidence in place of a repeat of full local QA. Empty or absent means CI evidence is not configured and the local QA fallback applies."
+    },
     "story_points": {
       "type": "object",
       "additionalProperties": false,

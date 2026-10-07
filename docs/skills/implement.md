@@ -41,22 +41,16 @@ python .harness/orchestration/coordinator.py --repo . dispatch status
 pre-flight, до `batch create` и до создания issue-ветки: проверьте блокеры при любой текущей метке
 (есть открытые → стоп, назовите их, убедитесь, что стоит `status::blocked`); иначе замените метку
 `status::*` на `status::in-progress` так же, как шаги 2–3 фазы 1 `/fast-implement`, и проверьте, что
-она единственная `status::*`. Неудачная запись метки — блокер, а не предупреждение. Используйте isolated
-issue-ветку и worktree; protected и `integration/*` — не write targets. Открытый batch — evidence,
-которое показывают разработчику, а не запись для повторного использования или замены.
+она единственная `status::*`. Неудачная запись метки — блокер, а не предупреждение. До `batch create` запустите preflight объёма с ограниченным числом файлов и строк; при отказе разделите тикет через `/to-tickets`. При вызове `batch create` явно задайте `--required-gate review --required-gate qa`: полный маршрут реализации требует независимых проверок Standards/Spec и чистой serialized QA. До запуска write-role (`developer`) worker координатор сверяет наличие этих обязательных gates в `required_gates`; при их отсутствии останавливается до dispatch, предотвращая тупик при проверке risk triggers. Используйте isolated issue-ветку и worktree; protected и `integration/*` — не write targets. Открытый batch — evidence, которое показывают разработчику, а не запись для повторного использования или замены.
 
-Предлагайте каждый handoff и останавливайтесь до явного approval разработчика перед созданием или
-отправкой dispatch. Report — evidence, а не authority продвигать batch. Architect обязателен перед
-developer dispatch; review хранит отдельные Standards и Spec evidence; независимый QA проверяет
-candidate commit; publish отправляет только accepted SHA. Final report предшествует отдельно
-одобренному publish dispatch.
+Предлагайте каждый handoff и останавливайтесь до явного approval разработчика перед созданием или отправкой dispatch. Report — evidence, а не authority продвигать batch. Architect обязателен перед developer dispatch; review хранит отдельные Standards и Spec evidence; независимый QA проверяет candidate commit; publish отправляет только accepted SHA. Final report предшествует отдельно одобренному publish dispatch. Write-role worker, остановившийся до изменений, возвращает честный отчёт с `outcome: blocked`, привязанный к проверенному checkout с пустыми `changed_files` и незапущенными проверками; coordinator возвращает явный recovery route (`retry`, `block`, `abandon`) без регистрации кандидата и без ослабления правил для completed reports.
 
-Дефект, найденный в чистом developer report, чей DoD выполнен внутри своей зоны, не повод для retry:
+Дефект, найденный в чистом developer report, чей DoD выполнен внутри своих allowed paths, не повод для retry:
 примите report через `batch decide --findings-file <path>`, а после policy auto-accept выполните
 `batch carry-over --batch <id> --findings-file <path>`, пока code-review dispatch не создан. Находка
 уходит в brief code-review как перенесённый пункт (маршрут `carry-over`), и единственный developer
 retry тратится после review. Retry developer report без accept — только при невыполненном пункте DoD
-или изменении вне зоны.
+или изменении вне scope.
 
 Воркер, обошедший блокировку hook-а или инструмента (другой формой команды, другим инструментом,
 файлом-скриптом, `eval`, другим интерпретатором или разбиением команды), нарушает протокол: такой
@@ -167,7 +161,13 @@ module-owned guidance:
 
 ## Завершение
 
-После accepted publish предложите `/to-pull-requests <ticket>`. Не запускайте его автоматически,
+После accepted publish зафиксируйте integration-связь до merge или удаления ветки:
+`python .harness/orchestration/coordinator.py --repo . integration prepare --ticket "#<ID>" --branch "<issue-branch>"`
+(добавьте `--batch <batch-id>`, если ветку опубликовало несколько batch). Команда пишет только
+неизменяемую integration-запись и безопасна для повтора; при отказе передайте разработчику её
+remedy и не обходите его. Завершённый batch и его reports вручную не правьте.
+
+Затем предложите `/to-pull-requests <ticket>`. Не запускайте его автоматически,
 не открывайте и не мержьте PR, не пишите в integration-ветку и не закрывайте тикет этим скилом. Оставьте на тикете
 `status::in-progress`: закрытие и перевод разблокированных зависимых в `status::ready` делает
 `/to-pull-requests` после merge.
