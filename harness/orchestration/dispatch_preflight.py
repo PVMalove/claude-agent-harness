@@ -467,8 +467,9 @@ def prepare(
         config,
         role,
         str(role_access),
-        operation=_optional_text(project_state.get("operation"), "operation")
-        or runtime_access.dispatch_operation(role, "work"),
+        operation=runtime_access.dispatch_operation(
+            role, _optional_text(project_state.get("purpose"), "purpose") or "work"
+        ),
     )
     verification, _ = runtime_access.verify_plan(
         access_plan,

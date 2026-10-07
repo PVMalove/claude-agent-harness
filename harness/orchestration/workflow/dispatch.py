@@ -301,6 +301,7 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
             "snapshot_sha": snapshot,
             "integration_ref": _integration_ref(repo, batch),
             "runtime": args.runtime,
+            "purpose": args.purpose,
             "mandatory_checks": checks,
             "starting_files": package_pointer,
             "architecture_decision": batch.get("architecture_decision"),
