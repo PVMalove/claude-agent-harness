@@ -237,7 +237,7 @@ class LocalQaContractTests(unittest.TestCase):
             self.assertEqual(runner.call_count, 3)
         config = self.branch.repo / ".harness/project.json"
         value = json.loads(config.read_text(encoding="utf-8"))
-        value["qa_gate_commands"] = ["printf 'password=private'; exit 1"]
+        value["qa_gate_commands"] = ["printf 'password=private' && exit 1"]
         config.write_text(json.dumps(value), encoding="utf-8")
         failed = coordinator.integration_local_qa(self.args())
         self.assertEqual(failed["state"], "failed")
