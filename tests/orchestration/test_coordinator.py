@@ -9940,6 +9940,182 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         ]
         self.assertEqual(tickets, [done["ticket"]])
 
+    # -- delta-review after a fix-forward (issue #625) -----------------------------------------
+
+    SPEC_WARNING = {
+        "severity": "warning",
+        "summary": "the marker value is not pinned by a test",
+        "evidence": "services/x.py:1",
+    }
+
+    def _commit_file(self, path: str, message: str, line: str = "FIXED = 1\n") -> str:
+        """One commit that appends ``line`` to ``path`` in the worktree; returns its SHA."""
+        target = self.worktree / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+        _git(self.worktree, "add", "-A")
+        _git(self.worktree, "commit", "-m", message)
+        return _git(self.worktree, "rev-parse", "HEAD")
+
+    def _fix_forward_candidate(
+        self,
+        path: str,
+        message: str,
+        *,
+        standards: tuple[str, list[JsonObject]] = ("clean", []),
+    ) -> tuple[JsonObject, JsonObject, str, str]:
+        """A reviewed candidate whose Spec warning was retried as a fix-forward, and the accepted,
+        assessed developer-retry with one fix commit on ``path``. Returns the retried review brief,
+        the developer-retry brief, the reviewed candidate and the fix."""
+        batch_id = cast(str, self._plan_batch(["add simple marker"])["batch_id"])
+        self._accepted_architect(batch_id)
+        _, candidate, changed = self._reported_developer(batch_id)
+        self._decide(batch_id, "accept")
+        self._assess_without_triggers(batch_id, candidate, changed)
+        review = self._reported_review(
+            batch_id,
+            candidate,
+            standards=standards,
+            spec=("warning", [dict(self.SPEC_WARNING)]),
+        )
+        self.assertEqual(
+            self._routing(self._decide(batch_id, "retry"))["route"], "fix-forward"
+        )
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        self._start(retry["dispatch_id"])
+        fix = self._commit_file(path, message)
+        base = self._batch_record(batch_id)["base_commit"]
+        fixed = git_utils._changed_files_between(self.repo, base, fix)
+        self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry,
+                fix,
+                fixed,
+                commit_map=self._commit_map([(fix, retry["commit_plan"][0])]),
+            ),
+        )
+        self._decide(batch_id, "accept")
+        self._assess_without_triggers(batch_id, fix, fixed)
+        return review, retry, candidate, fix
+
+    def _review_fields(self, candidate: str, delta_review_of: str | None) -> JsonObject:
+        return {
+            **self._proposal_fields(self.batch_id, "code-review", "work", candidate),
+            "delta_review_of": delta_review_of,
+        }
+
+    def _explicit_delta_review(self, candidate: str, prior: str) -> JsonObject:
+        """The code-review brief ``dispatch create --delta-review-of <prior>`` creates."""
+        fields = self._review_fields(candidate, prior)
+        digest = coordinator.create_dispatch(self._args(propose=True, **fields))[
+            "transition_digest"
+        ]
+        return cast(
+            JsonObject,
+            coordinator.create_dispatch(
+                self._args(transition_digest=digest, **fields, **self._approval())
+            )["brief"],
+        )
+
+    def test_an_explicit_delta_review_of_a_test_only_fix_after_a_fix_forward_is_unchanged(
+        self,
+    ) -> None:
+        """Characterization (issue #625): ``--delta-review-of`` on a test-only fix after a
+        fix-forward keeps the test-only delta-review: Spec is re-checked, the Clean Standards axis
+        is inherited, and every refusal of that path still applies."""
+        review, retry, candidate, fix = self._fix_forward_candidate(
+            "tests/test_marker.py", "test: pin the marker value"
+        )
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError,
+            "delta-review-of must reference a code-review dispatch in this batch",
+        ):
+            self._explicit_delta_review(fix, retry["dispatch_id"])
+
+        brief = self._explicit_delta_review(fix, review["dispatch_id"])
+
+        self.assertEqual(
+            (
+                brief["delta_review_of"],
+                brief["delta_review_axis"],
+                brief.get("delta_review_scope"),
+                brief["review_scope"],
+                brief["carried_items"],
+            ),
+            (
+                review["dispatch_id"],
+                "spec",
+                None,
+                ["services/x.py", "tests/test_marker.py"],
+                {},
+            ),
+        )
+        self.assertNotIn("delta_review_sha256", brief["transition"])
+        self._start(brief["dispatch_id"], checkout=self.worktree)
+        axes = self._axes(("clean", []), ("clean", []))
+        inherited = {**axes["standards"], "inherited_from": review["dispatch_id"]}
+        report = self._base_report(
+            brief,
+            "code-review",
+            review={
+                "candidate_commit": fix,
+                "scope": brief["review_scope"],
+                **axes,
+            },
+        )
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "standards evidence has an invalid schema"
+        ):
+            self._submit(brief["dispatch_id"], report)
+        report["review"]["standards"] = inherited
+        self._submit(brief["dispatch_id"], report)
+        accepted = self._decide(self.batch_id, "accept")
+        qa = self._dispatch(self.batch_id, "qa", candidate=fix)["brief"]
+        self.assertEqual(accepted["next_action"], "qa")
+        self.assertEqual(
+            (qa["candidate_commit"], qa["verification_commands"]),
+            (fix, accepted["verification_commands"]),
+        )
+
+        root = ledger_ops._state_root(self._args(), self.repo)
+        batch = self._batch_record(self.batch_id)
+        prior = ledger_ops._load_dispatch(root, review["dispatch_id"])
+        prior_entry = next(
+            item
+            for item in batch["dispatches"]
+            if item["dispatch_id"] == review["dispatch_id"]
+        )
+        prior_report = history._pending_report(root, batch, prior_entry)
+
+        def eligible(report_: JsonObject, commit: str) -> str:
+            return dispatch._delta_review_eligibility(
+                self.repo,
+                coordinator._config(self.repo),
+                ["transactions"],
+                prior,
+                report_,
+                commit,
+            )
+
+        self.assertEqual(eligible(prior_report, fix), "spec")
+        warned = json.loads(json.dumps(prior_report))
+        warned["review"]["standards"]["severity"] = "warning"
+        triggered = self._commit_file(
+            "tests/test_marker.py", "test: wrap the marker in a transaction"
+        )
+        production = self._commit_file("services/x.py", "fix: tighten the marker")
+        for report_, commit, refusal in (
+            (warned, fix, "requires prior Standards=Clean"),
+            (prior_report, candidate, "descended from the prior reviewed candidate"),
+            (prior_report, production, r"touches non-test file\(s\): services/x.py"),
+            (prior_report, triggered, r"matches risk trigger\(s\): transactions"),
+        ):
+            with self.subTest(refusal=refusal):
+                with self.assertRaisesRegex(coordinator.CoordinatorError, refusal):
+                    eligible(report_, commit)
+
     # -- incomplete items of a read-only role (issue #501) -------------------------------------
 
     def _reported_architect_with_items(
