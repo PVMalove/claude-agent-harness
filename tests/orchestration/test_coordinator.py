@@ -7592,6 +7592,112 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         self.assertEqual(retry["carried_items"], {})
 
+    # -- fix-forward: the closed list of a developer-retry (issue #503) ------------------------
+
+    REVIEW_WARNING = {
+        "severity": "warning",
+        "summary": "the reset path has no test",
+        "evidence": "tests/test_x.py:1",
+    }
+    RETRY_ITEMS = ["coordinator-finding-1", "review-finding-1"]
+
+    def _reported_review_with_items(self) -> str:
+        """A review of a candidate carrying one coordinator finding, which it leaves open, with
+        one Standards warning: a retry routes both items to the developer. Returns the candidate."""
+        candidate = self._carried_review_candidate()
+        self._reported_review(
+            self.batch_id,
+            candidate,
+            standards=("warning", [dict(self.REVIEW_WARNING)]),
+            carried={"coordinator-finding-1": "open"},
+        )
+        return candidate
+
+    def _fix_forward_brief(self) -> tuple[str, JsonObject]:
+        """The developer-retry brief of a retried review with items, and the reviewed candidate."""
+        candidate = self._reported_review_with_items()
+        self._decide(self.batch_id, "retry")
+        return candidate, self._dispatch(self.batch_id, "developer")["brief"]
+
+    def test_a_review_retry_records_the_closed_item_list_its_developer_brief_carries(
+        self,
+    ) -> None:
+        self._reported_review_with_items()
+        preview = self._packet()["route_preview"]["retry"]
+
+        decided = self._decide(self.batch_id, "retry")
+        retry = self._dispatch(self.batch_id, "developer")["brief"]
+
+        routing = dict(self._routing(decided))
+        routing.pop("decided_at")
+        self.assertEqual(routing, preview)
+        self.assertEqual(routing["retry_item_ids"], self.RETRY_ITEMS)
+        self.assertEqual(
+            carried_items.section_item_ids(retry["carried_items"]), self.RETRY_ITEMS
+        )
+        self.assertEqual(
+            [item["source"]["kind"] for item in self._carried(retry)],
+            ["coordinator-finding", "review-finding"],
+        )
+
+    def test_a_retried_developer_report_hands_the_same_closed_list_to_the_next_retry(
+        self,
+    ) -> None:
+        self._patch_config(retry_policy={"max_developer_retries": 2})
+        _, first = self._fix_forward_brief()
+        self._start(first["dispatch_id"])
+        fix, _ = self._developer_commit("fix")
+        base = self._batch_record(self.batch_id)["base_commit"]
+        self._submit(
+            first["dispatch_id"],
+            self._developer_report(
+                first,
+                fix,
+                git_utils._changed_files_between(self.repo, base, fix),
+                commit_map=self._commit_map([(fix, first["commit_plan"][0])]),
+            ),
+        )
+
+        decided = self._decide(self.batch_id, "retry", reason_category="code")
+        second = self._dispatch(self.batch_id, "developer")["brief"]
+
+        self.assertEqual(self._routing(decided)["retry_item_ids"], self.RETRY_ITEMS)
+        self.assertEqual(decisions._developer_retry_count(decided), 2)
+        self.assertEqual(second["carried_items"], first["carried_items"])
+        self.assertEqual(second["snapshot_commit"], fix)
+
+    def test_a_developer_tooling_retry_restarts_with_the_closed_list_of_the_blocked_brief(
+        self,
+    ) -> None:
+        _, first = self._fix_forward_brief()
+        self._start(first["dispatch_id"])
+        fix, _ = self._developer_commit("fix")
+        base = self._batch_record(self.batch_id)["base_commit"]
+        self._submit(
+            first["dispatch_id"],
+            self._developer_report(
+                first,
+                fix,
+                git_utils._changed_files_between(self.repo, base, fix),
+                commit_map=self._commit_map([(fix, first["commit_plan"][0])]),
+                outcome="blocked",
+                blockers="a hook blocked a legitimate check command",
+                checks_run=self._checks(first, "not-run"),
+                tooling_blocker=dict(TOOLING_BLOCKER),
+            ),
+        )
+
+        decided = self._decide(self.batch_id, "retry")
+        restart = self._dispatch(self.batch_id, "developer")["brief"]
+
+        routing = self._routing(decided)
+        self.assertEqual(
+            (routing["route"], routing["retry_item_ids"]),
+            ("tooling-retry", self.RETRY_ITEMS),
+        )
+        self.assertEqual(decisions._developer_retry_count(decided), 1)
+        self.assertEqual(restart["carried_items"], first["carried_items"])
+
     def _packet(self, **flags: object) -> JsonObject:
         return coordinator.decision_packet(
             self._args(batch=self.batch_id, dispatch=None, **flags)

@@ -25,12 +25,14 @@ import hashlib
 from pathlib import Path, PurePosixPath
 from typing import cast
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import operational_guards
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import _reject_sensitive
 from harness.orchestration.core.constants import (
     CARRIED_ITEM_ACCOUNTING_FIELDS,
     CARRIED_ITEM_FIELDS,
+    CARRIED_ITEM_SOURCES,
     CARRIED_ITEM_STATUSES,
     TOOLING_REASON_CATEGORY,
 )
@@ -248,29 +250,13 @@ def _brief_item(record: JsonObject) -> JsonObject:
     return {field: record[field] for field in sorted(CARRIED_ITEM_FIELDS)}
 
 
-def _retried_review_findings(root: Path, batch: JsonObject) -> list[JsonObject]:
-    """The Standards and Spec findings of the code-review a pending developer-retry answers.
+def _review_findings(entry: JsonObject, report: JsonObject) -> list[JsonObject]:
+    """The Standards and Spec findings of a retried code-review report as brief items (no I/O).
 
-    They reach only that developer brief: the next review judges the new candidate afresh.
+    They reach only the developer-retry that answers the review: the next review judges the new
+    candidate afresh.
     """
-    previous = next(
-        (
-            item
-            for item in reversed(batch.get("dispatches", []))
-            if isinstance(item.get("decision"), dict)
-        ),
-        None,
-    )
-    routing = previous["decision"].get("routing") if previous else None
-    if (
-        previous is None
-        or previous.get("role") != "code-review"
-        or previous["decision"].get("decision") != "retry"
-        or not isinstance(routing, dict)
-        or routing.get("next_action") != "developer-retry"
-    ):
-        return []
-    review = _pending_report(root, batch, previous)["review"]
+    review = report["review"]
     findings = [
         (axis, finding)
         for axis in ("standards", "spec")
@@ -281,8 +267,8 @@ def _retried_review_findings(root: Path, batch: JsonObject) -> list[JsonObject]:
             "item_id": f"{REVIEW_FINDING}-{number}",
             "source": {
                 "kind": REVIEW_FINDING,
-                "dispatch_id": previous["dispatch_id"],
-                "report_sha256": previous["report_sha256"],
+                "dispatch_id": entry["dispatch_id"],
+                "report_sha256": entry["report_sha256"],
                 "axis": axis,
                 "severity": finding["severity"],
             },
@@ -448,16 +434,95 @@ def _narrowed_items(root: Path, batch: JsonObject, role: str) -> list[JsonObject
     return _incomplete_brief_items(root, batch, previous)
 
 
+def retry_section(root: Path, batch: JsonObject, entry: JsonObject) -> JsonObject:
+    """The closed list of carried items a retry of ``entry`` hands to its developer-retry (#503).
+
+    A retried developer work report accepted none of its brief's items, so the retry owes exactly
+    that brief's section. Any other retried report hands on the open coordinator findings, a
+    code-review's Standards and Spec findings, and the open incomplete items handed to the
+    developer. Nothing can change these lists between the retry decision and the brief, so the
+    decision records their ids and the brief carries the same list.
+    """
+    if entry.get("role") == "developer":
+        dispatch = _load_dispatch(root, entry["dispatch_id"])
+        if dispatch.get("purpose", "work") == "work":
+            carried = dispatch.get("carried_items") or {}
+            return {
+                kind: carried[kind]
+                for kind in CARRIED_ITEM_SOURCES
+                if carried.get(kind)
+            }
+    section: JsonObject = {}
+    findings = [
+        _brief_item(record) for record in open_coordinator_findings(root, batch)
+    ]
+    if findings:
+        section[COORDINATOR_FINDING] = findings
+    if entry.get("role") == "code-review":
+        review_findings = _review_findings(entry, _pending_report(root, batch, entry))
+        if review_findings:
+            section[REVIEW_FINDING] = review_findings
+    incomplete = open_incomplete_items(root, batch, "developer")
+    if incomplete:
+        section[INCOMPLETE_ITEM] = incomplete
+    return section
+
+
+def section_item_ids(section: JsonObject) -> list[str]:
+    """The item ids of a carried-items section, in channel order."""
+    return [
+        item["item_id"]
+        for kind in CARRIED_ITEM_SOURCES
+        for item in section.get(kind, [])
+    ]
+
+
+def _developer_retry_section(root: Path, batch: JsonObject) -> JsonObject | None:
+    """The section of the developer-retry brief a pending retry decision routed, or ``None``.
+
+    A decision recorded since issue #503 names the ids it routed as ``retry_item_ids``; the brief
+    must carry exactly them. An earlier decision names none, and its section is taken as computed.
+    """
+    if batch.get("next_action") != "developer-retry":
+        return None
+    previous = next(
+        (
+            item
+            for item in reversed(batch.get("dispatches", []))
+            if isinstance(item.get("decision"), dict)
+        ),
+        None,
+    )
+    if previous is None or previous["decision"].get("decision") != "retry":
+        return None
+    section = retry_section(root, batch, previous)
+    routing = previous["decision"].get("routing")
+    recorded = routing.get("retry_item_ids") if isinstance(routing, dict) else None
+    if recorded is not None and recorded != section_item_ids(section):
+        raise CoordinatorError(
+            f"the developer-retry brief would carry {section_item_ids(section)}, but the retry "
+            f"decision on {previous['dispatch_id']} recorded {recorded}",
+            remedy="the carried items changed after the retry decision -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    return section
+
+
 def brief_section(root: Path, batch: JsonObject, role: str, purpose: str) -> JsonObject:
     """The ``carried_items`` section of the brief about to be created; ``{}`` carries nothing.
 
-    A code-review or developer work brief carries every open coordinator finding. A developer
-    brief answering a retried code-review also carries that review's findings, so the one
-    developer-retry closes both. Any work brief carries the open incomplete items a read-only
-    report handed to its role, and a narrowed retry's brief the items it re-runs (issue #501).
+    A code-review or developer work brief carries every open coordinator finding. A developer-retry
+    brief carries the closed list its retry decision routed (``retry_section``), so the one retry
+    closes the review's findings and the open coordinator findings together. Any work brief
+    carries the open incomplete items a read-only report handed to its role, and a narrowed
+    retry's brief the items it re-runs (issue #501).
     """
     if purpose != "work":
         return {}
+    if role == "developer":
+        retried = _developer_retry_section(root, batch)
+        if retried is not None:
+            return retried
     section: JsonObject = {}
     if role in {"developer", "code-review"}:
         findings = [
@@ -465,11 +530,6 @@ def brief_section(root: Path, batch: JsonObject, role: str, purpose: str) -> Jso
         ]
         if findings:
             section[COORDINATOR_FINDING] = findings
-        review_findings = (
-            _retried_review_findings(root, batch) if role == "developer" else []
-        )
-        if review_findings:
-            section[REVIEW_FINDING] = review_findings
     incomplete = [
         *_narrowed_items(root, batch, role),
         *open_incomplete_items(root, batch, role),

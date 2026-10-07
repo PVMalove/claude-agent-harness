@@ -1281,6 +1281,19 @@ def _decide_retry_route(
             "next_action": "developer-retry",
             "rationale": f"{routing['rationale']} The approver forced a developer retry with --retry-role developer.",
         }
+    if routing["next_action"] == "developer-retry":
+        # The closed list the developer-retry brief carries (issue #503), recorded with the route.
+        entry = next(
+            item
+            for item in batch.get("dispatches", [])
+            if item.get("dispatch_id") == dispatch["dispatch_id"]
+        )
+        routing = {
+            **routing,
+            "retry_item_ids": carried_items.section_item_ids(
+                carried_items.retry_section(root, batch, entry)
+            ),
+        }
     _require_route(routing["route"])
     return routing
 
