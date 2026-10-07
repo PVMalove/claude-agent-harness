@@ -790,3 +790,11 @@ class AccessPolicyContractTests(unittest.TestCase):
         for bad in (None, "external", {"defaults": {"mode": "external"}}, {"defaults": {"network": {"hosts": ["https://github.com"]}}}):
             with self.subTest(bad=bad):
                 self.assertTrue(contract.access_policy_problems(bad, {"developer"}))
+
+
+class AccessOnlyConfigTests(unittest.TestCase):
+    def test_access_only_configuration_validates_without_assignment_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'orchestration.json'
+            path.write_text(json.dumps({'access_policy': {'defaults': {'mode': 'sandbox'}}}))
+            self.assertEqual(contract.health_problems(path, ROOT / 'harness/orchestration/roles'), [])

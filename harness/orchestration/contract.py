@@ -962,6 +962,9 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         reject_error = exc
     if reject_error:
         problems.append(str(reject_error))
+    # Access-only projects keep session assignments; validate authored values before defaults.
+    if "access_policy" in config and not any(config.get(key) for key in ("assignment_plans", "backend_zones", "provider_profiles")):
+        config = {"provider_profiles": {}, "assignment_plans": {}, "concurrency_budget": 1, "verification_commands": [], **config}
     missing = [field for field in CONFIG_REQUIRED_FIELDS if field not in config]
     if missing:
         problems.append(

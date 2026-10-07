@@ -4,11 +4,13 @@
   "description": "Конфигурация оркестрации бэкенда проекта: профили провайдеров, планы назначения ролей, потолок записи ролей и политики согласования.",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "provider_profiles",
-    "assignment_plans",
-    "concurrency_budget",
-    "verification_commands"
+  "anyOf": [
+    {"required": ["provider_profiles", "assignment_plans", "concurrency_budget", "verification_commands"]},
+    {"required": ["access_policy"], "properties": {
+      "provider_profiles": {"maxProperties": 0},
+      "assignment_plans": {"maxProperties": 0},
+      "backend_zones": {"maxProperties": 0}
+    }}
   ],
   "properties": {
     "access_policy": {"type": "object", "additionalProperties": false, "properties": {"defaults": {"$ref": "#/definitions/accessComponent"}, "roles": {"type": "object", "propertyNames": {"enum": ["architect", "code-review", "conflict-resolver", "database-migrations", "developer", "messaging-integration", "qa", "verification"]}, "additionalProperties": {"$ref": "#/definitions/accessComponent"}}, "operations": {"type": "object", "propertyNames": {"enum": ["qa", "git", "publish"]}, "additionalProperties": {"$ref": "#/definitions/accessComponent"}}}},
