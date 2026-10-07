@@ -8208,6 +8208,70 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         root = ledger_ops._state_root(self._args(), self.repo)
         self.assertEqual(carried_items.open_coordinator_findings(root, done), [])
 
+    def test_issue_443_one_fix_commit_on_top_of_the_candidate_closes_the_items_by_fix_forward(
+        self,
+    ) -> None:
+        """Regression for #443 (issue #503): the review's finding and the open coordinator finding
+        need one more commit. The retry is a fix-forward in the same batch: one fix commit on top
+        of the reviewed candidate closes both items, with no new batch, cherry-pick or rewrite."""
+        batch_id = cast(str, self._plan_batch(["add simple marker"])["batch_id"])
+        self._accepted_architect(batch_id)
+        _, candidate, changed = self._reported_developer(batch_id)
+        self._decide(batch_id, "accept", findings_file=self._findings_file())
+        self._assess_without_triggers(batch_id, candidate, changed)
+        self._reported_review(
+            batch_id,
+            candidate,
+            standards=("warning", [dict(self.REVIEW_WARNING)]),
+            carried={"coordinator-finding-1": "open"},
+        )
+
+        retried = self._decide(batch_id, "retry")
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        self._start(retry["dispatch_id"])
+        fix, report = self._fix_report(retry)
+        self._submit(retry["dispatch_id"], report)
+        accepted = self._decide(batch_id, "accept")
+        self._assess_without_triggers(
+            batch_id,
+            fix,
+            git_utils._changed_files_between(
+                self.repo, self._batch_record(batch_id)["base_commit"], fix
+            ),
+        )
+        closing = self._reported_review(
+            batch_id, fix, carried={"coordinator-finding-1": "closed"}
+        )
+        done = self._decide(batch_id, "accept")
+
+        routing = self._routing(retried)
+        self.assertEqual(
+            (routing["route"], routing["retry_item_ids"]),
+            ("fix-forward", self.RETRY_ITEMS),
+        )
+        self.assertEqual(
+            carried_items.section_item_ids(retry["carried_items"]), self.RETRY_ITEMS
+        )
+        self.assertEqual(retry["snapshot_commit"], candidate)
+        self.assertEqual(_git(self.worktree, "rev-parse", f"{fix}^"), candidate)
+        self.assertEqual(
+            report["carried_item_closure"],
+            [{"item_id": item_id, "commits": [fix]} for item_id in self.RETRY_ITEMS],
+        )
+        self.assertNotIn("carried_items_gap", accepted["coordinator_decisions"][-1])
+        self.assertEqual(closing["candidate_commit"], fix)
+        self.assertEqual(
+            (done["batch_id"], done["state"], done["next_action"]),
+            (batch_id, "awaiting-approval", "qa"),
+        )
+        self.assertNotIn("abandoned", done)
+        self.assertEqual(decisions._developer_retry_count(done), 1)
+        tickets = [
+            coordinator._read_object(path, "batch")["ticket"]
+            for path in (self._records() / "batches").glob("batch-*.json")
+        ]
+        self.assertEqual(tickets, [done["ticket"]])
+
     # -- incomplete items of a read-only role (issue #501) -------------------------------------
 
     def _reported_architect_with_items(
