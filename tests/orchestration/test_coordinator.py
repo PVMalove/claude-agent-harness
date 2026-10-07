@@ -10116,6 +10116,199 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 with self.assertRaisesRegex(coordinator.CoordinatorError, refusal):
                     eligible(report_, commit)
 
+    def _entry(self, dispatch_id: str) -> JsonObject:
+        return cast(
+            JsonObject,
+            next(
+                item
+                for item in self._batch_record(self.batch_id)["dispatches"]
+                if item["dispatch_id"] == dispatch_id
+            ),
+        )
+
+    def _review_report(
+        self, brief: JsonObject, carried: dict[str, str] | None = None
+    ) -> JsonObject:
+        """A clean composite review of ``brief``; ``carried`` maps an item id to its status."""
+        review: JsonObject = {
+            "candidate_commit": brief["candidate_commit"],
+            "scope": brief["review_scope"],
+            **self._axes(("clean", []), ("clean", [])),
+        }
+        if carried is not None:
+            review["carried_items"] = [
+                {"item_id": item_id, "status": status, "evidence": "services/x.py:2"}
+                for item_id, status in carried.items()
+            ]
+        return self._base_report(brief, "code-review", review=review)
+
+    def _accept_review_then_qa(
+        self, brief: JsonObject, carried: dict[str, str] | None = None
+    ) -> tuple[JsonObject, JsonObject]:
+        """Accept a clean review of ``brief``; return the batch and the QA brief that follows."""
+        self._start(brief["dispatch_id"], checkout=self.worktree)
+        self._submit(brief["dispatch_id"], self._review_report(brief, carried))
+        accepted = self._decide(self.batch_id, "accept")
+        qa = self._dispatch(self.batch_id, "qa", candidate=brief["candidate_commit"])
+        return accepted, cast(JsonObject, qa["brief"])
+
+    def test_a_fix_inside_the_reviewed_files_after_a_fix_forward_gets_a_delta_review(
+        self,
+    ) -> None:
+        """Issue #625: the fix-forward added one commit inside the files the review judged, so the
+        coordinator scopes the next review to that commit and the closure of the review's finding,
+        with the prior report as evidence. QA then runs on the new SHA."""
+        review, retry, candidate, fix = self._fix_forward_candidate(
+            "services/x.py", "fix: pin the marker value"
+        )
+        proposal = coordinator.create_dispatch(
+            self._args(propose=True, **self._review_fields(fix, None))
+        )
+        brief = self._dispatch(
+            self.batch_id,
+            "code-review",
+            candidate=fix,
+            digest=proposal["transition_digest"],
+        )["brief"]
+
+        scope = brief["delta_review_scope"]
+        self.assertEqual(
+            scope,
+            {
+                "mode": "delta",
+                "route": "fix-forward",
+                "prior_review": {
+                    "dispatch_id": review["dispatch_id"],
+                    "report_sha256": self._entry(review["dispatch_id"])[
+                        "report_sha256"
+                    ],
+                    "candidate_commit": candidate,
+                    "review_base": review["review_base"],
+                    "risk_assessment_id": review["risk_assessment_id"],
+                },
+                "developer_dispatch_id": retry["dispatch_id"],
+                "delta_base": candidate,
+                "delta_commits": [fix],
+                "reviewed_copies": [],
+                "closure": [{"item_id": "review-finding-1", "commits": [fix]}],
+                "escalations": [],
+            },
+        )
+        self.assertEqual(proposal["delta_review_scope"], scope)
+        self.assertEqual(
+            brief["transition"]["delta_review_sha256"],
+            operational_guards.delta_review_digest(scope),
+        )
+        self.assertEqual(
+            (
+                brief["delta_review_of"],
+                brief["delta_review_axis"],
+                brief["review_scope"],
+            ),
+            (None, None, ["services/x.py"]),
+        )
+        self.assertEqual(brief["carried_items"], retry["carried_items"])
+        self.assertEqual(
+            carried_items.section_item_ids(brief["carried_items"]), ["review-finding-1"]
+        )
+        self.assertEqual(
+            carried_items.carried_gap(self._review_report(brief), brief),
+            ["review-finding-1"],
+        )
+
+        accepted, qa = self._accept_review_then_qa(
+            brief, {"review-finding-1": "closed"}
+        )
+
+        self.assertEqual(accepted["next_action"], "qa")
+        self.assertEqual(
+            (
+                qa["candidate_commit"],
+                qa["verification_commands"],
+                qa["delta_review_scope"],
+            ),
+            (fix, accepted["verification_commands"], None),
+        )
+
+    def test_a_brief_binds_its_delta_review_scope_and_keeps_the_legacy_shape(
+        self,
+    ) -> None:
+        _, _, _, fix = self._fix_forward_candidate(
+            "services/x.py", "fix: pin the marker value"
+        )
+        brief = self._dispatch(self.batch_id, "code-review", candidate=fix)["brief"]
+        root = ledger_ops._state_root(self._args(), self.repo)
+        stored = ledger_ops._load_dispatch(root, brief["dispatch_id"])
+        scope = stored["delta_review_scope"]
+
+        def rebound(record: JsonObject, transition: JsonObject) -> JsonObject:
+            digest = operational_guards.transition_digest(transition)
+            return {
+                **record,
+                "transition": transition,
+                "transition_digest": digest,
+                "coordinator_approval": {
+                    **record["coordinator_approval"],
+                    "transition_digest": digest,
+                },
+            }
+
+        def validate(record: JsonObject) -> None:
+            current = ledger_ops._load_batch(root, self.batch_id)
+            current["dispatches"][-1]["brief_sha256"] = hashlib.sha256(
+                utils._canonical(record).encode("utf-8")
+            ).hexdigest()
+            coordinator._validate_dispatch(
+                self.repo, coordinator._config(self.repo), root, current, record
+            )
+
+        def rescoped(value: JsonObject) -> JsonObject:
+            transition = {
+                **stored["transition"],
+                "delta_review_sha256": operational_guards.delta_review_digest(value),
+            }
+            return rebound({**stored, "delta_review_scope": value}, transition)
+
+        validate(stored)
+        validate(
+            rebound(
+                {k: v for k, v in stored.items() if k != "delta_review_scope"},
+                {
+                    k: v
+                    for k, v in stored["transition"].items()
+                    if k != "delta_review_sha256"
+                },
+            )
+        )
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "does not match its delta-review scope"
+        ):
+            validate({**stored, "delta_review_scope": None})
+        escalation = {"reason": "no-new-commits", "evidence": [f"{fix}..{fix}"]}
+        for malformed in (
+            {**scope, "escalations": [escalation]},
+            {**scope, "mode": "full"},
+            {**scope, "mode": "partial"},
+            {**scope, "mode": "full", "escalations": [{**escalation, "reason": "x"}]},
+            {**scope, "mode": "full", "escalations": [{**escalation, "evidence": []}]},
+        ):
+            with self.subTest(malformed=malformed):
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError, "delta_review_scope must be null"
+                ):
+                    validate(rescoped(malformed))
+        validate(rescoped({**scope, "mode": "full", "escalations": [escalation]}))
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "delta_review_scope must be null"
+        ):
+            validate(
+                {
+                    **rescoped(scope),
+                    "delta_review_of": stored["dispatch_id"],
+                    "delta_review_axis": "spec",
+                }
+            )
+
     # -- incomplete items of a read-only role (issue #501) -------------------------------------
 
     def _reported_architect_with_items(

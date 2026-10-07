@@ -44,6 +44,8 @@ from harness.orchestration.core.constants import (
     CONTEXT_PRESSURE_FIELDS,
     CONTEXT_TELEMETRY_SOURCES,
     DEFAULT_COMMUNICATION_POLICY,
+    DELTA_REVIEW_ESCALATIONS,
+    DELTA_REVIEW_MODES,
     DISPATCH_FIELDS,
     DISPATCH_PURPOSES,
     LEGACY_CONTEXT_PACKAGE_FIELDS,
@@ -976,6 +978,19 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
             remedy="the dispatch transition diverged from its rebase_target_commit -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
+    # The delta-or-full choice of a code-review after a fix-forward (issue #625).
+    scope = dispatch.get("delta_review_scope")
+    expected_scope = (
+        operational_guards.delta_review_digest(scope)
+        if isinstance(scope, dict)
+        else None
+    )
+    if transition.get("delta_review_sha256") != expected_scope:
+        raise CoordinatorError(
+            "dispatch transition does not match its delta-review scope",
+            remedy="the dispatch transition diverged from its delta_review_scope -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
     if dispatch["retry_idempotency_key"] != _transition_idempotency_key(
         dispatch["role"], dispatch["purpose"], transition
     ):
@@ -1042,6 +1057,38 @@ def _validate_carried_section(dispatch: JsonObject) -> None:
             "dispatch carried_items must map known source kinds to their items, on a work brief "
             "of a role each kind reaches only",
             remedy="the dispatch record's carried_items is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+
+
+def _validate_delta_review_scope(dispatch: JsonObject) -> None:
+    """A brief's ``delta_review_scope`` (issue #625): ``null``, or on a code-review work brief
+    without ``delta_review_of`` an object whose ``mode`` is ``delta`` exactly when it records no
+    escalation, each escalation naming a known reason and its evidence."""
+    scope = dispatch.get("delta_review_scope")
+    if scope is None:
+        return
+    escalations = scope.get("escalations") if isinstance(scope, dict) else None
+    if (
+        not isinstance(scope, dict)
+        or (dispatch.get("role"), dispatch.get("purpose")) != ("code-review", "work")
+        or dispatch.get("delta_review_of") is not None
+        or scope.get("mode") not in DELTA_REVIEW_MODES
+        or not isinstance(escalations, list)
+        or (scope["mode"] == "delta") != (not escalations)
+        or any(
+            not isinstance(escalation, dict)
+            or set(escalation) != {"reason", "evidence"}
+            or escalation["reason"] not in DELTA_REVIEW_ESCALATIONS
+            or not isinstance(escalation["evidence"], list)
+            or not escalation["evidence"]
+            for escalation in escalations
+        )
+    ):
+        raise CoordinatorError(
+            "dispatch delta_review_scope must be null or, on a code-review work brief without "
+            "delta_review_of, a delta or full scope whose escalations name known reasons",
+            remedy="the dispatch record's delta_review_scope is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
 
@@ -1119,6 +1166,8 @@ def _validate_dispatch(
     accepted |= {fields - {"rebase_target_commit"} for fields in set(accepted)}
     # Runtime access is added as an approval-bound group; historical briefs keep inherit.
     accepted |= {fields - {"runtime_access"} for fields in set(accepted)}
+    # The delta-review scope of a code-review after a fix-forward (issue #625) came after that.
+    accepted |= {fields - {"delta_review_scope"} for fields in set(accepted)}
     # The conflict-resolver brief's resolver section (issue #534) is the one field added on top.
     accepted |= {fields | {"resolver"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
@@ -1138,6 +1187,7 @@ def _validate_dispatch(
         )
     if "carried_items" in dispatch:
         _validate_carried_section(dispatch)
+    _validate_delta_review_scope(dispatch)
     _validate_resolver_section(dispatch)
     target = dispatch.get("rebase_target_commit")
     if target is not None and (

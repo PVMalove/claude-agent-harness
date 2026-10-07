@@ -81,6 +81,7 @@ from harness.orchestration.ledger.lifecycle import (
 )
 from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
+from harness.orchestration.workflow import delta_review
 from harness.orchestration.workflow import resolver as resolver_route
 from harness.orchestration.workflow import resolver_state
 from harness.orchestration.workflow.approval import (
@@ -343,6 +344,7 @@ def _proposed_transition(
     verification_commands: list[str],
     context_package: JsonObject | None,
     carried: JsonObject,
+    delta_scope: JsonObject | None = None,
 ) -> JsonObject:
     """The canonical transition an approval binds: what came before, and exactly what is about to run.
 
@@ -350,7 +352,8 @@ def _proposed_transition(
     still unsent (or was cancelled) does not change the transition it was created for. A non-empty
     carried-items section is bound by its digest, so a finding attached after the proposal needs a
     new approval. The developer-retry of a ``rebase-fix-forward`` decision binds the rebase target
-    its routing record proposed (issue #504)."""
+    its routing record proposed (issue #504), and a code-review brief after a fix-forward binds its
+    ``delta_review_scope`` (issue #625)."""
     previous = _newest_decided_dispatch(batch)
     decision = previous.get("decision") if previous else None
     routing = decision.get("routing") if isinstance(decision, dict) else None
@@ -382,6 +385,9 @@ def _proposed_transition(
         required_gates=batch["required_gates"],
         carried_items_sha256=carried_items.section_sha256(carried),
         rebase_target_sha=rebase_target if isinstance(rebase_target, str) else None,
+        delta_review_sha256=operational_guards.delta_review_digest(delta_scope)
+        if delta_scope is not None
+        else None,
     )
 
 
@@ -682,6 +688,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         review_scope: list[str] = []
         delta_review_of: str | None = None
         delta_review_axis: str | None = None
+        # The coordinator's own delta-or-full choice after a fix-forward (issue #625).
+        delta_scope: JsonObject | None = None
         requested_delta_review_of = getattr(args, "delta_review_of", None)
         if args.candidate_commit is not None:
             candidate = _candidate_commit(repo, args.candidate_commit)
@@ -754,6 +762,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     cast(str, candidate),
                 )
                 delta_review_of = requested_delta_review_of
+            else:
+                delta_scope = delta_review.scope_section(
+                    repo, root, batch, cast(str, candidate)
+                )
         elif requested_delta_review_of is not None:
             raise CoordinatorError(
                 "--delta-review-of is only valid for a code-review dispatch",
@@ -874,7 +886,11 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                         )
         dispatch_id = f"dispatch-{uuid.uuid4()}"
         dispatch_commands = _dispatch_verification_commands(batch, role_name, purpose)
-        carried = carried_items.brief_section(root, batch, role_name, purpose)
+        carried = delta_review.with_closure_items(
+            carried_items.brief_section(root, batch, role_name, purpose),
+            root,
+            delta_scope,
+        )
         transition = _proposed_transition(
             batch,
             next_action,
@@ -885,6 +901,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             dispatch_commands,
             context_package,
             carried,
+            delta_scope,
         )
         access_plan = runtime_access.resolve_plan(
             repo,
@@ -918,6 +935,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 warning = _context_package_quality_warning(context_package)
                 if warning is not None:
                     proposal["context_package_quality_warning"] = warning
+            if delta_scope is not None:
+                proposal["delta_review_scope"] = delta_scope
             return proposal
         assert approval_mode is not None  # only a proposal skips the approval mode
         approval = _bind_dispatch_approval(args, approval_mode, digest)
@@ -965,6 +984,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "purpose": purpose,
             "delta_review_of": delta_review_of,
             "delta_review_axis": delta_review_axis,
+            # Delta or full review after a fix-forward, and why (issue #625); null otherwise.
+            "delta_review_scope": delta_scope,
             "context_package_id": context_package["context_package_id"]
             if context_package
             else None,
