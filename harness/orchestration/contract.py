@@ -60,6 +60,7 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "execution_policy",
     "approval_ttl_seconds",
     "extensions",
+    "access_policy",
 }
 # The working set a brief records for a role when the project states no `tool_policy`. It is the
 # role's own set, not a deny-list: global runtime tools stay available whatever a brief records.
@@ -432,6 +433,12 @@ def validate_brief_policy(
 ) -> tuple[JsonObject, JsonObject]:
     """Валидировать относящуюся к политикам часть утверждённого неизменяемого задания диспетчеризации."""
     reject_sensitive(brief, "dispatch brief")
+    from .runtime_access import AccessError, validate_binding
+
+    try:
+        validate_binding(brief)
+    except AccessError as exc:
+        raise ContractError(exc.message, remedy=exc.remedy) from exc
     approval = brief.get("coordinator_approval")
     # `transition_digest` binds the approval to the exact transition it was given for; a brief
     # written before that field existed carries the historical two-field approval.
@@ -889,6 +896,90 @@ def _operational_policy_problems(config: Mapping[str, object]) -> list[str]:
     return problems
 
 
+def access_policy_problems(value: object, roles: set[str]) -> list[str]:
+    """Validate authored access independently of role transport and tool policy."""
+    from .core.constants import ACCESS_MODES, ACCESS_OPERATIONS, ACCESS_RESOURCES
+
+    errors: list[str] = []
+    host_pattern = re.compile(
+        r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$"
+    )
+
+    def component(item: object, label: str) -> None:
+        if not isinstance(item, dict) or set(item) - {"mode", "network", "filesystem"}:
+            errors.append(f"{label} must be an access component object with known keys")
+            return
+        if "mode" in item and item["mode"] not in ACCESS_MODES:
+            errors.append(f"{label}.mode must be inherit, sandbox or unsandboxed")
+        if "network" in item:
+            network = item["network"]
+            hosts = network.get("hosts") if isinstance(network, dict) else None
+            if (
+                not isinstance(network, dict)
+                or set(network) != {"hosts"}
+                or not isinstance(hosts, list)
+                or any(
+                    not isinstance(host, str)
+                    or host_pattern.fullmatch(host) is None
+                    or any(
+                        not part
+                        or len(part) > 63
+                        or part.startswith("-")
+                        or part.endswith("-")
+                        for part in host.split(".")
+                    )
+                    for host in hosts
+                )
+            ):
+                errors.append(
+                    f"{label}.network must contain explicit DNS hosts without URLs, ports or wildcards"
+                )
+        if "filesystem" in item:
+            filesystem = item["filesystem"]
+            if not isinstance(filesystem, list):
+                errors.append(f"{label}.filesystem must be a list")
+                return
+            for requirement in filesystem:
+                if (
+                    not isinstance(requirement, dict)
+                    or set(requirement) - {"resource", "access", "path"}
+                    or requirement.get("resource") not in ACCESS_RESOURCES
+                    or requirement.get("access") not in ("read", "write")
+                    or (
+                        requirement.get("resource") == "cache"
+                        and (
+                            not non_empty(requirement.get("path"))
+                            or "\x00" in requirement["path"]
+                        )
+                    )
+                    or (
+                        requirement.get("resource") != "cache" and "path" in requirement
+                    )
+                ):
+                    errors.append(
+                        f"{label}.filesystem has an invalid resource/access requirement; cache needs an explicit path"
+                    )
+
+    if not isinstance(value, dict) or set(value) - {"defaults", "roles", "operations"}:
+        return [
+            "access_policy must be an object with defaults, roles and operations only"
+        ]
+    if "defaults" in value:
+        component(value["defaults"], "access_policy.defaults")
+    for section, names in (("roles", roles), ("operations", set(ACCESS_OPERATIONS))):
+        if section not in value:
+            continue
+        overrides = value[section]
+        if not isinstance(overrides, dict):
+            errors.append(f"access_policy.{section} must be an object")
+            continue
+        for name, item in overrides.items():
+            if name not in names:
+                errors.append(f"access_policy.{section} has unknown name {name!r}")
+            component(item, f"access_policy.{section}.{name}")
+    return errors
+
+
 def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     """Вернуть диагностические замечания к здоровью конфигурации без изменения состояния проекта."""
     problems: list[str] = []
@@ -907,6 +998,18 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         reject_error = exc
     if reject_error:
         problems.append(str(reject_error))
+    # Access-only projects keep session assignments; validate authored values before defaults.
+    if "access_policy" in config and not any(
+        config.get(key)
+        for key in ("assignment_plans", "backend_zones", "provider_profiles")
+    ):
+        config = {
+            "provider_profiles": {},
+            "assignment_plans": {},
+            "concurrency_budget": 1,
+            "verification_commands": [],
+            **config,
+        }
     missing = [field for field in CONFIG_REQUIRED_FIELDS if field not in config]
     if missing:
         problems.append(
@@ -974,6 +1077,8 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
                 "code-review role manifest is missing required risk trigger(s): "
                 + ", ".join(missing_triggers)
             )
+    if "access_policy" in config:
+        problems.extend(access_policy_problems(config["access_policy"], set(roles)))
     profiles = config.get("provider_profiles")
     profile_capabilities: dict[str, set[str]] = {}
     profile_fallbacks: dict[str, list[str]] = {}

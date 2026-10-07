@@ -412,6 +412,12 @@ same completion report comes back. For an in-process handoff, `dispatch send` re
 does not create an independent runtime: the coordinator launches that subagent immediately as its
 next action, before any unrelated discovery.
 
+When the project authors `access_policy`, the resolved access plan is pinned in the brief and bound
+to the approval digest. `dispatch send` blocks the handoff, with a reason and a concrete preparation
+action, when the selected `runtime_access` implementation cannot prove and natively apply the plan
+for that exact worker; it never falls back to `inherit`. A blocker is a question for the human, not
+something to work around: do not edit the brief or the config to make the check pass.
+
 An `approved` dispatch that has not yet been sent may be cancelled with recorded approval and reason.
 The brief remains immutable evidence, its batch returns to `awaiting-approval`, and the coordinator
 creates a new approved brief only after the corrected assignment is reviewed. `batch abandon` is for

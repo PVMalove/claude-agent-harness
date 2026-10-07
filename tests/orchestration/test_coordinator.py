@@ -1851,6 +1851,211 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self._args(transition_digest=digest, **fields, **self._approval())
         )
 
+    def test_access_config_change_requires_a_new_approval_and_pins_the_plan(
+        self,
+    ) -> None:
+        path = self.repo / ".harness/orchestration.json"
+        path.write_text(
+            json.dumps({"access_policy": {"defaults": {"mode": "sandbox"}}})
+        )
+        batch = self._create_batch()
+        proposal = self._propose(batch["batch_id"], "architect")
+        path.write_text(
+            json.dumps({"access_policy": {"defaults": {"mode": "unsandboxed"}}})
+        )
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            self._dispatch(
+                batch["batch_id"], "architect", digest=proposal["transition_digest"]
+            )
+        self.assertIn("digest", refused.exception.message)
+        created = self._dispatch(batch["batch_id"], "architect")
+        brief = created["brief"]
+        self.assertEqual(brief["runtime_access"]["mode"], "unsandboxed")
+        self.assertEqual(
+            brief["transition"]["runtime_access_sha256"],
+            brief["runtime_access"]["plan_digest"],
+        )
+
+    def test_brief_policy_rejects_unbound_or_malformed_pinned_access(self) -> None:
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        malformed = json.loads(json.dumps(brief))
+        malformed["runtime_access"]["network"] = {"hosts": ["https://github.com"]}
+        plan = malformed["runtime_access"]
+        plan["plan_digest"] = hashlib.sha256(
+            json.dumps(
+                {key: value for key, value in plan.items() if key != "plan_digest"},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        malformed["transition"]["runtime_access_sha256"] = plan["plan_digest"]
+        unbound = json.loads(json.dumps(brief))
+        del unbound["transition"]["runtime_access_sha256"]
+        missing = json.loads(json.dumps(brief))
+        del missing["runtime_access"]
+        for invalid in (malformed, unbound, missing):
+            with (
+                self.subTest(invalid=invalid),
+                self.assertRaises(contract.ContractError) as refused,
+            ):
+                contract.validate_brief_policy(
+                    invalid,
+                    {},
+                    config._config(self.repo),
+                    self.repo / ".harness/orchestration/roles",
+                )
+            self.assertIn("access", refused.exception.message)
+
+    def test_send_refuses_access_application_without_native_handoff_binding(
+        self,
+    ) -> None:
+        from dataclasses import replace
+        from harness.orchestration.runtime_access import AccessError
+
+        class ApplyOnly:
+            def observe(
+                self, plan: JsonObject, transport: str
+            ) -> extensions.RuntimeAccessObservation:
+                return extensions.RuntimeAccessObservation(
+                    plan_digest=plan["plan_digest"],
+                    transport=transport,
+                    supported_modes=("sandbox",),
+                    effective_mode="sandbox",
+                    mechanism="native-apply",
+                    environment_id="worker",
+                    launch_id="launch",
+                    source="native-runtime",
+                    observed_at=datetime.now(UTC).isoformat(),
+                    hosts=(),
+                    filesystem=tuple(
+                        (item["path"], item["access"]) for item in plan["requirements"]
+                    ),
+                )
+
+            def apply(
+                self,
+                brief: JsonObject,
+                observation: extensions.RuntimeAccessObservation,
+            ) -> extensions.RuntimeAccessObservation:
+                return replace(observation, applied=True)
+
+        extensions.register("runtime_access", "test-apply-only", ApplyOnly())
+        self.addCleanup(extensions.unregister, "runtime_access", "test-apply-only")
+        (self.repo / ".harness/orchestration.json").write_text(
+            json.dumps(
+                {
+                    "access_policy": {"defaults": {"mode": "sandbox"}},
+                    "extensions": {"runtime_access": "test-apply-only"},
+                }
+            )
+        )
+        brief = self._dispatch(self._create_batch()["batch_id"], "architect")["brief"]
+        with self.assertRaises(AccessError) as refused:
+            coordinator.send_dispatch(
+                self._args(
+                    dispatch=brief["dispatch_id"],
+                    adapter=None,
+                    adapter_arg=None,
+                    checkout=None,
+                )
+            )
+        self.assertIn("handoff", refused.exception.message)
+        status = coordinator.dispatch_status(
+            self._args(dispatch=brief["dispatch_id"], batch=None, stale_after=None)
+        )
+        self.assertEqual(status["dispatches"][0]["state"], "approved")
+
+    def test_access_only_public_lifecycle_keeps_pinned_worker_proof(self) -> None:
+        from dataclasses import replace
+
+        launches: list[str] = []
+
+        class ControlledNative:
+            def observe(
+                self, plan: JsonObject, transport: str
+            ) -> extensions.RuntimeAccessObservation:
+                return extensions.RuntimeAccessObservation(
+                    plan_digest=plan["plan_digest"],
+                    transport=transport,
+                    supported_modes=("sandbox", "inherit"),
+                    effective_mode="sandbox",
+                    mechanism="native-apply",
+                    environment_id="worker",
+                    launch_id="reserved-launch",
+                    source="native-runtime",
+                    observed_at=datetime.now(UTC).isoformat(),
+                    hosts=tuple(plan["network"]["hosts"]),
+                    filesystem=tuple(
+                        (item["path"], item["access"]) for item in plan["requirements"]
+                    ),
+                )
+
+            def apply(
+                self,
+                brief: JsonObject,
+                observation: extensions.RuntimeAccessObservation,
+            ) -> extensions.RuntimeAccessObservation:
+                return replace(observation, applied=True)
+
+            def handoff(
+                self,
+                brief: JsonObject,
+                observation: extensions.RuntimeAccessObservation,
+                command: tuple[str, ...] | None,
+            ) -> extensions.RuntimeAccessObservation:
+                assert command is None
+                launches.append(brief["dispatch_id"])
+                return replace(
+                    observation, dispatch_id=brief["dispatch_id"], handed_off=True
+                )
+
+        extensions.register("runtime_access", "test-worker-launch", ControlledNative())
+        self.addCleanup(extensions.unregister, "runtime_access", "test-worker-launch")
+        path = self.repo / ".harness/orchestration.json"
+        authored: JsonObject = {
+            "access_policy": {
+                "defaults": {"mode": "sandbox", "network": {"hosts": ["github.com"]}}
+            },
+            "extensions": {"runtime_access": "test-worker-launch"},
+        }
+        path.write_text(json.dumps(authored))
+        batch = self._create_batch()
+        preview = coordinator.preflight_dispatch(
+            self._args(
+                batch=batch["batch_id"],
+                role="architect",
+                purpose="work",
+                runtime="claude",
+                candidate_commit=None,
+            )
+        )
+        self.assertEqual(
+            preview["decision_packet"]["runtime_access"]["verification"]["status"],
+            "verified",
+        )
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        authored["access_policy"]["defaults"]["network"]["hosts"].append("pypi.org")
+        path.write_text(json.dumps(authored))
+        self._start(brief["dispatch_id"])
+        coordinator.heartbeat_dispatch(
+            self._args(
+                dispatch=brief["dispatch_id"],
+                note=None,
+                context_tokens=None,
+                context_source=None,
+            )
+        )
+        status = coordinator.dispatch_status(
+            self._args(dispatch=brief["dispatch_id"], batch=None, stale_after=None)
+        )["dispatches"][0]
+        proof = status["runtime_access"]
+        self.assertEqual(proof["plan_digest"], brief["runtime_access"]["plan_digest"])
+        self.assertEqual(proof["dispatch_id"], brief["dispatch_id"])
+        self.assertTrue(proof["evidence"]["handed_off"])
+        self.assertEqual(proof["evidence"]["hosts"], ["github.com"])
+        self.assertEqual(launches, [brief["dispatch_id"]])
+
     def _start(self, dispatch_id: str, *, checkout: Path | None = None) -> None:
         coordinator.send_dispatch(
             self._args(
@@ -5411,6 +5616,35 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         ):
             self._dispatch(batch["batch_id"], "developer", candidate=unrelated)
 
+    def test_architect_starts_from_progress_preserved_by_a_replacement_batch(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        progress, _ = self._developer_commit("progress")
+
+        architect = self._dispatch(batch_id, "architect", candidate=progress)["brief"]
+
+        self.assertEqual(architect["snapshot_commit"], progress)
+        self.assertIsNone(architect["risk_assessment_id"])
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        self._decide(batch_id, "accept")
+        developer = self._dispatch(batch_id, "developer", candidate=progress)["brief"]
+        self.assertEqual(developer["snapshot_commit"], progress)
+
+    def test_architect_cannot_pin_history_outside_the_batch_base(self) -> None:
+        batch = self._create_batch()
+        unrelated = _git(
+            self.worktree, "commit-tree", "HEAD^{tree}", "-m", "unrelated history"
+        )
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "contain the batch base"
+        ):
+            self._dispatch(batch["batch_id"], "architect", candidate=unrelated)
+
     def test_continuation_after_critical_pressure_needs_a_checkpoint_and_a_new_model_attestation(
         self,
     ) -> None:
@@ -6205,7 +6439,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self._dispatch_ids(batch["batch_id"]), dispatches
         )  # nothing was created
         transition = proposal["transition"]
-        self.assertEqual(set(transition), set(operational_guards.TRANSITION_FIELDS))
+        self.assertEqual(
+            set(transition),
+            set(operational_guards.TRANSITION_FIELDS) | {"runtime_access_sha256"},
+        )
         self.assertEqual(
             proposal["transition_digest"],
             operational_guards.transition_digest(transition),

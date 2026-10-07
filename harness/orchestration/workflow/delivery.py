@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import cast
 
+from harness.orchestration import runtime_access
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
@@ -209,6 +210,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             / DispatchRecord.directory
             / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json"
         )
+        command = None
         if adapter is not None:
             command = (
                 [str(adapter)]
@@ -228,6 +230,13 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             command.append("dispatch")
             command.extend(adapter_args)
             command.extend(["--repo", str(repo), "--brief", str(brief_path)])
+        access_evidence = runtime_access.apply_plan(
+            dispatch,
+            transport,
+            handoff=True,
+            command=tuple(command) if command is not None else None,
+        )
+        if command is not None and access_evidence["status"] == "legacy-inherit":
             # Windows consoles default to a legacy ANSI codepage: without an explicit encoding a
             # UTF-8 adapter message is mojibaked before it ever reaches the coordinator error.
             result = subprocess.run(
@@ -260,10 +269,12 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             ledger,
             DispatchStatusRecord.from_dict(
                 {
+                    **status,
                     "dispatch_id": dispatch["dispatch_id"],
                     "state": "dispatched",
                     "updated_at": sent_at,
                     "heartbeat_at": sent_at,
+                    "runtime_access": access_evidence,
                 }
             ),
         )
@@ -272,6 +283,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "dispatched",
+        "runtime_access": access_evidence,
         "transport": transport,
         "brief": str(brief_path),
         "expected_model": dispatch["resolved_model"],
@@ -437,6 +449,7 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                     "transport": dispatch.get("resolved_transport"),
                     "resolved_model": dispatch["resolved_model"],
                     "model_self_report": status.get("model_self_report"),
+                    "runtime_access": status.get("runtime_access"),
                     "heartbeat_at": status.get("heartbeat_at")
                     or status.get("updated_at"),
                     "silent_seconds": silent,

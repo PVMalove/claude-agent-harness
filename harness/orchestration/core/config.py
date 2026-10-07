@@ -87,7 +87,11 @@ def _configured(repo: Path) -> bool:
         return True  # let the real loader report the parse failure
     if not isinstance(value, dict):
         return True
-    return bool(value.get("backend_zones")) or bool(value.get("assignment_plans"))
+    return (
+        bool(value.get("backend_zones"))
+        or bool(value.get("assignment_plans"))
+        or "access_policy" in value
+    )
 
 
 def _default_config(repo: Path) -> JsonObject:
@@ -119,7 +123,14 @@ def _config(repo: Path) -> JsonObject:
             "invalid project orchestration config: " + "; ".join(problems),
             remedy="fix the listed project orchestration config problem(s) before retrying",
         )
-    return value
+    if value.get("assignment_plans"):
+        return value
+    # An access-only config (issue #624) states no assignment: it takes the zero-config defaults
+    # beneath its own keys. Its own verification_commands stay the developer fallback.
+    defaults = _default_config(repo)
+    if "developer_verification_commands" not in value:
+        del defaults["developer_verification_commands"]
+    return {**defaults, **value}
 
 
 def _adaptive_continuation_policy(config: JsonObject) -> JsonObject:
@@ -380,7 +391,7 @@ def _resolve_assignment(
 ) -> tuple[JsonObject, list[str], str, str, str, str, str]:
     """Resolve a role's assignment; the second element is the role's write ceiling."""
     role = _role(repo, role_name)
-    if not _configured(repo):
+    if not config.get("assignment_plans"):
         if not _non_empty(session_model) or not _non_empty(session_effort):
             raise CoordinatorError(
                 "without .harness/orchestration.json the invoking session must supply --model and --effort",

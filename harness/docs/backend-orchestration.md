@@ -294,7 +294,8 @@ manifests), а значением — непустой список уникал
 "attention_policy": {"retry_queue_seconds": 3600, "max_infrastructure_retries": 2, "stale_dispatch_seconds": 3600},
 "approval_ttl_seconds": 3600,
 "extensions": {"transport_health": "none", "verification_environment_health": "none",
-               "retry_reason_classifier": "none", "context_telemetry_provider": "none", "human_notifier": "none"}
+               "retry_reason_classifier": "none", "context_telemetry_provider": "none", "human_notifier": "none",
+               "runtime_access": "none"}
 ```
 
 - `attention_policy` — пороги флага `needs_attention` (см. ниже): сколько принятый retry может ждать
@@ -306,12 +307,61 @@ manifests), а значением — непустой список уникал
   `orchestration.example.json`, из которого `harness init` создаёт конфиг, задаёт `14400`.
 - `extensions` — подключаемые интерфейсы вне ядра coordinator: `transport_health`,
   `verification_environment_health`, `retry_reason_classifier`, `context_telemetry_provider`,
-  `human_notifier`. Значение — `none` (инертный дефолт), имя, зарегистрированное хост-процессом, или
+  `human_notifier`, `runtime_access`. Значение — `none` (инертный дефолт), имя, зарегистрированное хост-процессом, или
   `module:factory` (вызываемая без аргументов фабрика в импортируемом модуле). Неизвестное имя —
   fail-closed. Ни один extension не добавляет model tool и не меняет system prompt.
 
 `harness health` проверяет форму всех трёх разделов. Пока у проекта нет
 `assignment_plans`, coordinator работает на встроенных дефолтах и эти значения не читает.
+
+### Доступ ролей: `access_policy` и `runtime_access`
+
+Необязательный раздел `access_policy` задаёт режим sandbox и границы сети и файловой системы для
+worker. Без него brief сохраняет `inherit`, а `dispatch send` ведёт себя как раньше. Раздел не
+требует `assignment_plans`: coordinator читает `access_policy` и в конфиге, где есть только он.
+
+```json
+"access_policy": {
+  "defaults": {"mode": "sandbox",
+               "network": {"hosts": ["github.com"]},
+               "filesystem": [{"resource": "checkout", "access": "write"},
+                              {"resource": "git_common", "access": "write"},
+                              {"resource": "cache", "access": "write", "path": "~/.cache/uv"}]},
+  "roles": {"code-review": {"filesystem": [{"resource": "checkout", "access": "read"}]}},
+  "operations": {"qa": {"network": {"hosts": []}}}
+},
+"extensions": {"runtime_access": "my_runtime:factory"}
+```
+
+- Компоненты `mode` (`inherit`, `sandbox`, `unsandboxed`), `network.hosts` и `filesystem`
+  выбираются независимо от транспорта роли: `in-process` или `external`.
+- Override роли (`roles`) или операции (`operations`: `qa`, `git`, `publish`) заменяет только те
+  компоненты, которые в нём указаны. Остальные берутся из `defaults`. Операцию выбирает сам dispatch:
+  `publish` для `--purpose publish` и `qa` для роли `qa`; для `git` отдельного dispatch нет, поэтому
+  её override сейчас не выбирается.
+- `filesystem` называет ресурс: `checkout`, `git_common`, `shared_storage` или `cache` (только `cache`
+  требует `path`). Coordinator превращает их в реальные пути worktree, общего Git-каталога и
+  хранилища. Корень диска и домашний каталог целиком отклоняются.
+- Права на запись не расширяют `write_paths` brief, tool policy и нативные подтверждения. Read-only
+  роль не получает запись в `checkout`, `git_common` и `shared_storage`.
+- Разрешённый план (`runtime_access`) записывается в brief, а его sha256 входит в transition digest
+  утверждения. Правка конфига после `dispatch propose` не расширяет утверждённый dispatch: новый
+  доступ требует нового `propose` и нового approval. Briefs без этого поля остаются валидными и
+  читаются как `inherit`.
+- `dispatch preflight` показывает разрешённый план и сверку с `runtime_access`. Настройки пользователя
+  и аттестация Git-checkout не считаются доказательством текущих прав сети и файловой системы.
+- Расширение `runtime_access` — это нативная реализация, которая наблюдает окружение именно этого
+  worker, применяет план и выполняет handoff (`observe`, `apply`, `handoff`). Значение `none` ничего
+  не доказывает. Поэтому для плана с `sandbox`, `unsandboxed`, хостами или путями `dispatch send` без
+  нативной реализации блокируется до передачи работы. Тихой подмены и отката на `inherit` нет, нативное
+  подтверждение не заменяется. Харнесс не поставляет такую реализацию: `my_runtime:factory` в примере
+  выше — модуль вашего проекта, а до его подключения любой `access_policy`, даже `mode: inherit`,
+  блокирует `dispatch send`. Статус и доказательство worker сохраняются в `dispatch status`
+  (`runtime_access`).
+
+Если `dispatch send` остановлен, причина названа в ошибке, а remedy одинаковый: подготовить указанные
+хосты, пути и режим в новой сессии runtime, подключить реализацию `runtime_access`, которая
+проверяет реальный запуск worker, и повторить `dispatch preflight`.
 
 ### Discovery Context и Context Package
 
