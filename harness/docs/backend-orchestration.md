@@ -788,9 +788,11 @@ verification — те же пункты без находок review; при ret
 попытки, передавшие ему тот же закрытый список: retry developer-отчёта и `tooling-retry` developer
 передают следующей попытке пункты своего brief, а её `snapshot_commit` — HEAD предыдущей попытки.
 Коммиты отсчитываются от `snapshot_commit` первой попытки цепочки, от которого ещё происходит
-`snapshot_commit` этого dispatch (при утверждённом rebase target — от него), поэтому пункт,
-закрытый предыдущей попыткой, указывает её коммит. Completed-отчёт такого brief обязан нести поле,
-blocked или failed может, отчёты остальных brief — нет. `report submit` отклоняет с remedy
+`snapshot_commit` этого dispatch (при утверждённом rebase target — от него; после ещё не принятой
+попытки `rebase-fix-forward` в цепочке — от её target, так что её перенесённые копии и fix-коммиты
+входят в цепочку), поэтому пункт, закрытый предыдущей попыткой, указывает её коммит, а после
+rebase — его перенесённую копию. Completed-отчёт такого brief обязан нести поле, blocked или failed
+может, отчёты остальных brief — нет. `report submit` отклоняет с remedy
 пропущенный, неизвестный или повторный пункт, пустую причину, пустой список коммитов, неразрешимый
 SHA и коммит, который не создала цепочка retry; коммиты сверяются с Git и у brief без
 `commit_plan`. Пункт `not_closed` — carried gap: отчёт не clean,
@@ -855,8 +857,8 @@ Developer переносит коммиты над старой базой ро�
 показывается для delta-review. Accept такого отчёта — или более позднего retry, чей candidate уже
 стоит на этом target, — закрепляет `integration_base_commit` = target, поэтому следующий code-review
 проходит проверку свежести базы без отдельного rebase-dispatch. Retry ещё не принятого
-rebase-отчёта, как и его `tooling-retry`, считает `changed_files` от target. Если tip уйдёт ещё раз
-до review, сработает прежний маршрут stale-base.
+rebase-отчёта, как и его `tooling-retry`, считает от target и `changed_files`, и коммиты
+`carried_item_closure`. Если tip уйдёт ещё раз до review, сработает прежний маршрут stale-base.
 
 Code-review `blocker` никогда не принимается. Пока `retry_policy.max_developer_retries` ещё допускает
 developer retry, для него доступны `retry` или `abandon`; после исчерпания budget `retry`

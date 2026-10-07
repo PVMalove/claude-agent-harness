@@ -538,17 +538,21 @@ The report must include:
   `{item_id, not_closed}` (a non-empty reason). The retry chain is this dispatch and the earlier
   attempts that handed it the same closed list (a retried developer report or a developer
   `tooling-retry`): its commits count from the `snapshot_commit` of the chain's first attempt that
-  this dispatch's `snapshot_commit` still descends from (from the rebase target under one), so an
-  item an earlier attempt closed names that attempt's commit. A completed report must carry it, a
-  blocked or failed one may, and no other report may. A missing, unknown or repeated item, an empty
+  this dispatch's `snapshot_commit` still descends from (from the rebase target under one, and from
+  the target of a not yet accepted `rebase-fix-forward` attempt of the chain, whose rebased copies
+  and fix commits therefore count), so an item an earlier attempt closed names that attempt's
+  commit, or its rebased copy after a rebase. A completed report must carry it, a blocked or failed
+  one may, and no other report may. A missing, unknown or repeated item, an empty
   reason, an empty commit list, an unresolvable SHA or a commit the chain did not create is refused,
   with or without a `commit_plan`. A completed report recorded before issue #503 without the field
   is still decided: every item is `omitted` and a carried gap.
   A `not_closed` item is a carried gap: no policy accepts the report, plain `accept` is refused,
   and only `override-warning` with a note other than `none` (recorded as `carried_items_gap`) or
-  `retry` decides it. Without an approved rebase target, the report's `commit_sha` must descend from
-  `snapshot_commit`. A retry that rewrote that history (amend, squash or reset) is refused; its
-  remedy is to recover the commits from `git reflog` and re-apply the fix as new commits;
+  `retry` decides it. Without a rebase target (the brief's non-null `rebase_target_commit`, or the
+  batch's stale-base target while `base_rebase_required` is open), the report's `commit_sha` must
+  descend from `snapshot_commit`. A retry that rewrote that history (amend, squash or reset) is
+  refused; its remedy is to recover the commits from `git reflog` and re-apply the fix as new
+  commits;
 - for a code-review brief with carried items: `review.carried_items`, one
   `{item_id, status: closed | open | unverified, evidence}` per item the brief carried. An omitted,
   `unverified` or `open` item is a carried gap: the report is never clean, no policy accepts it, plain

@@ -31,8 +31,11 @@ A developer-retry is a fix-forward: it continues from the brief's `snapshot_comm
 commits on top of it. Never amend, squash, reset, rebase or force-push `snapshot_commit` or a commit
 below it. `report submit` refuses a report whose `commit_sha` does not descend from
 `snapshot_commit`; its remedy is to recover the rewritten commits from `git reflog`, re-apply the fix
-as new commits without amend or squash, and report the new HEAD. Only a retry under an approved
-rebase target (the prompt names `rebase_target_commit`) is measured from that target instead.
+as new commits without amend or squash, and report the new HEAD. Only a retry under a rebase
+target is measured from that target instead. Two sources share the name `rebase_target_commit`: the
+brief's field, non-null only on a `rebase-fix-forward` brief (below), and, while a stale-base block
+is open, the batch's target that the prompt names; the brief field is `null` on that stale-base
+rebase brief.
 
 A developer-retry brief with a non-null `rebase_target_commit` (route `rebase-fix-forward`: the
 integration base moved ahead and a human approved the new tip) rebases and fixes in the same
@@ -45,7 +48,8 @@ commit (after that merge-base, up to `snapshot_commit`) exactly once: its rebase
 names none, or a commit the rebase did not carry (for example, one already upstream) as
 `{"rebased_from": <original>, "dropped": "<reason>"}`. Every commit after the target appears
 exactly once: a rebased copy as above, a new commit as `{commit_sha, plan_entry_id}` under the
-strict retry rule below. `changed_files` and `carried_item_closure` are measured from the target.
+strict retry rule below. `changed_files` and `carried_item_closure` are measured from the target,
+and so are those of a later retry of this report until it is accepted.
 The coordinator compares each `rebased_from` pair by `git patch-id`; a mismatch does not refuse the
 report but is shown for delta-review. A missing, repeated or unknown previous-candidate commit and
 an empty `dropped` reason are refused, and a brief without a target refuses `rebased_from` and
@@ -97,8 +101,9 @@ which replaces naming the items in `output`: `{"item_id": <id>, "commits": [<sha
 commits that close it, as its `expected_evidence` asks, or
 `{"item_id": <id>, "not_closed": "<reason>"}`. The commits are this dispatch's own, or, for an item
 an earlier attempt that handed you the same list already closed (a retried developer report or a
-tooling-retry), that attempt's commit. A completed report without the field, or with an item left
-out, repeated or unknown, an empty reason or a commit neither this dispatch nor such an earlier
+tooling-retry), that attempt's commit; after a `rebase-fix-forward` attempt of the chain, its
+rebased copy, never the pre-rebase original. A completed report without the field, or with an item
+left out, repeated or unknown, an empty reason or a commit neither this dispatch nor such an earlier
 attempt created, is refused.
 An item that cannot be closed inside the allowed paths and the prohibited changes is `not_closed` with its
 reason, never a silent omission: the report is then not clean, a plain accept is refused, and the
