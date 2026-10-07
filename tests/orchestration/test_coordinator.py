@@ -7885,6 +7885,109 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(decision["carried_items_gap"], ["review-finding-1"])
         self.assertEqual(decided["next_action"], "risk-assessment")
 
+    def test_a_retry_that_rewrites_the_snapshot_history_is_refused(self) -> None:
+        for rewrite in ("amend", "reset"):
+            with self.subTest(rewrite=rewrite):
+                self._reset()
+                snapshot, brief = self._fix_forward_brief()
+                self.assertEqual(brief["snapshot_commit"], snapshot)
+                self._start(brief["dispatch_id"])
+                if rewrite == "amend":
+                    (self.worktree / "services" / "x.py").write_text(
+                        "VALUE = 'amended'\n", encoding="utf-8"
+                    )
+                    _git(self.worktree, "add", "-A")
+                    _git(self.worktree, "commit", "--amend", "--no-edit")
+                    head = _git(self.worktree, "rev-parse", "HEAD")
+                    base = self._batch_record(self.batch_id)["base_commit"]
+                    report = self._developer_report(
+                        brief,
+                        head,
+                        git_utils._changed_files_between(self.repo, base, head),
+                        commit_map=self._commit_map([(head, brief["commit_plan"][0])]),
+                    )
+                else:
+                    _git(self.worktree, "reset", "--hard", "HEAD~1")
+                    head, report = self._fix_report(brief)
+
+                with self.assertRaises(coordinator.CoordinatorError) as raised:
+                    self._submit(brief["dispatch_id"], report)
+
+                self.assertIn(
+                    f"candidate {head} does not descend from snapshot_commit {snapshot}",
+                    raised.exception.message,
+                )
+                self.assertIn("without amend or squash", raised.exception.remedy)
+                self.assertIn("git reflog", raised.exception.remedy)
+
+    def test_a_retry_of_a_rebase_report_may_rebuild_history_onto_the_rebase_target(
+        self,
+    ) -> None:
+        batch_id = self._plan_batch(["one", "two"])["batch_id"]
+        self._accepted_architect(batch_id)
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        commits, changed = self._commits("a", "b")
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                commits[-1],
+                changed,
+                commit_map=self._commit_map(list(zip(commits, brief["commit_plan"]))),
+            ),
+        )
+        self._decide(batch_id, "accept")
+        self._assess(batch_id, commits[-1], changed)
+        (self.repo / "upstream.txt").write_text("upstream\n", encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-m", "upstream")
+        _git(self.repo, "push", "origin", "master")
+        upstream = _git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "batch base is stale"
+        ):
+            self._dispatch(batch_id, "code-review", candidate=commits[-1])
+        rebase = self._dispatch(batch_id, "developer")["brief"]
+        self._start(rebase["dispatch_id"])
+        _git(self.worktree, "rebase", "master")
+        first, second = _git(
+            self.worktree, "rev-list", "--reverse", f"{upstream}..HEAD"
+        ).splitlines()
+        plan = rebase["commit_plan"]
+        self._submit(
+            rebase["dispatch_id"],
+            self._developer_report(
+                rebase,
+                second,
+                git_utils._changed_files_between(self.repo, upstream, second),
+                commit_map=self._commit_map([(first, plan[0]), (second, plan[1])]),
+            ),
+        )
+        self._decide(batch_id, "retry", reason_category="code")
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        self.assertEqual(retry["snapshot_commit"], second)
+        self._start(retry["dispatch_id"])
+        (self.worktree / "services" / "b.py").write_text(
+            "VALUE = 'rebuilt'\n", encoding="utf-8"
+        )
+        _git(self.worktree, "add", "-A")
+        _git(self.worktree, "commit", "--amend", "--no-edit")
+        rebuilt = _git(self.worktree, "rev-parse", "HEAD")
+        self.assertFalse(git_utils._git_is_ancestor(self.repo, second, rebuilt))
+
+        submitted = self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry,
+                rebuilt,
+                git_utils._changed_files_between(self.repo, upstream, rebuilt),
+                commit_map=self._commit_map([(first, plan[0]), (rebuilt, plan[1])]),
+            ),
+        )
+
+        self.assertEqual(submitted["state"], "reported")
+
     def _packet(self, **flags: object) -> JsonObject:
         return coordinator.decision_packet(
             self._args(batch=self.batch_id, dispatch=None, **flags)
