@@ -71,6 +71,7 @@ from harness.orchestration.workflow.approval import (
 )
 from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
+from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow import resolver_state
 from harness.orchestration.workflow.attention import (
     _apply_attention,
@@ -1353,8 +1354,44 @@ def _decide_retry_route(
                 f"the candidate close the carried items {', '.join(item_ids)} without rewriting "
                 "history.",
             }
+    if routing["route"] in {"developer-retry", "fix-forward"}:
+        routing = _rebase_routing(
+            repo, batch, routing, stage, report, current_candidate
+        )
     _require_route(routing["route"])
     return routing
+
+
+def _rebase_routing(
+    repo: Path,
+    batch: JsonObject,
+    routing: JsonObject,
+    stage: str,
+    report: JsonObject,
+    current_candidate: str | None,
+) -> JsonObject:
+    """A developer-retry whose integration base moved ahead becomes ``rebase-fix-forward`` (issue
+    #504): the routing record proposes the fetched tip as the rebase target. The candidate the
+    retry continues is a retried developer report's own, else the latest accepted one."""
+    snapshot = (
+        _candidate_commit(repo, report["commit_sha"])
+        if stage == "developer"
+        else current_candidate
+    ) or batch["base_commit"]
+    target = rebase.propose_target(repo, batch, snapshot)
+    if target is None:
+        return routing
+    base = batch["integration_base_commit"]
+    return {
+        **routing,
+        "route": "rebase-fix-forward",
+        "rebase_target_commit": target,
+        "integration_base_commit": base,
+        "rationale": f"{routing['rationale']} It is a rebase-fix-forward: "
+        f"origin/{_integration_ref(repo, batch)} moved from {base} to {target}, so the "
+        f"developer-retry rebases the candidate onto {target} and fixes on top of it in the same "
+        "dispatch, which needs an explicit approval.",
+    }
 
 
 def _classifier_hint(

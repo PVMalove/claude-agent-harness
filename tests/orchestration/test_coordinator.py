@@ -8864,14 +8864,20 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         rebase = self._dispatch(batch_id, "developer")["brief"]
         self.assertEqual(rebase["transition"]["next_action"], "developer")
         self.assertEqual(rebase["snapshot_commit"], candidate)
+        # The stale-base rebase is measured from the batch target, never from a brief target.
+        self.assertIsNone(rebase["rebase_target_commit"])
+        self.assertNotIn("rebase_target_sha", rebase["transition"])
 
     def test_a_retry_of_a_rebase_report_is_measured_from_the_target_and_accept_pins_it(
         self,
     ) -> None:
         batch_id, upstream, _, rebased = self._stale_base_rebase_report()
         pinned = self._batch_record(batch_id)["integration_base_commit"]
-        self._decide(batch_id, "retry", reason_category="code")
+        decided = self._decide(batch_id, "retry", reason_category="code")
         retry = self._dispatch(batch_id, "developer")["brief"]
+        # The rebased candidate already contains the tip: no rebase target is proposed.
+        self.assertEqual(self._routing(decided)["route"], "developer-retry")
+        self.assertIsNone(retry["rebase_target_commit"])
         self._start(retry["dispatch_id"])
         (self.worktree / "services" / "b.py").write_text(
             "VALUE = 'rebuilt'\n", encoding="utf-8"
@@ -8907,6 +8913,260 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._assess(batch_id, rebuilt, changed)
         review = self._dispatch(batch_id, "code-review", candidate=rebuilt)["brief"]
         self.assertEqual(review["candidate_commit"], rebuilt)
+
+    # -- the rebase-fix-forward route (issue #504) --------------------------------------------
+
+    def _moved_base_retry(self) -> tuple[str, str, str, str]:
+        """A two-commit developer report retried after origin/master moved past the batch base,
+        with no developer-retry dispatch yet. Returns the batch, the retried candidate, the pinned
+        integration base and the tip."""
+        batch_id = cast(str, self._plan_batch(["one", "two"])["batch_id"])
+        self._accepted_architect(batch_id)
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        commits, changed = self._commits("a", "b")
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                commits[-1],
+                changed,
+                commit_map=self._commit_map(list(zip(commits, brief["commit_plan"]))),
+            ),
+        )
+        pinned = self._batch_record(batch_id)["integration_base_commit"]
+        upstream = self._push_upstream()
+        self._decide(batch_id, "retry", reason_category="code")
+        return batch_id, commits[-1], pinned, upstream
+
+    def test_a_developer_retry_on_a_moved_base_proposes_the_tip_as_its_rebase_target(
+        self,
+    ) -> None:
+        batch_id = cast(str, self._create_batch()["batch_id"])
+        self._accepted_architect(batch_id)
+        self._reported_developer(batch_id)
+        pinned = self._batch_record(batch_id)["integration_base_commit"]
+        unmoved = self._packet(reason_category="code")["route_preview"]["retry"]
+        upstream = self._push_upstream()
+
+        preview = self._packet(reason_category="code")["route_preview"]["retry"]
+        decided = self._decide(batch_id, "retry", reason_category="code")
+
+        self.assertEqual(unmoved["route"], "developer-retry")
+        self.assertNotIn("rebase_target_commit", unmoved)
+        routing = self._assert_route(
+            decided,
+            role="developer",
+            action="developer-retry",
+            category="code",
+            candidate=None,
+            route="rebase-fix-forward",
+        )
+        recorded = dict(routing)
+        recorded.pop("decided_at")
+        self.assertEqual(recorded, preview)
+        self.assertEqual(
+            (
+                routing["rebase_target_commit"],
+                routing["integration_base_commit"],
+                routing["retry_item_ids"],
+            ),
+            (upstream, pinned, []),
+        )
+        self.assertIn(
+            f"rebase-fix-forward: origin/master moved from {pinned} to {upstream}",
+            routing["rationale"],
+        )
+        # The decision only proposes the target: the batch base stays pinned until an accept.
+        self.assertEqual(decided["integration_base_commit"], pinned)
+        self.assertEqual(decisions._developer_retry_count(decided), 1)
+        self.assertEqual(
+            self._decision_audits(batch_id)[-1]["route"], "rebase-fix-forward"
+        )
+
+    def test_a_review_retry_on_a_moved_base_rebases_the_reviewed_candidate_with_its_items(
+        self,
+    ) -> None:
+        self._reported_review_with_items()
+        upstream = self._push_upstream()
+
+        decided = self._decide(self.batch_id, "retry")
+
+        routing = self._routing(decided)
+        self.assertEqual(
+            (
+                routing["route"],
+                routing["retry_item_ids"],
+                routing["rebase_target_commit"],
+            ),
+            ("rebase-fix-forward", self.RETRY_ITEMS, upstream),
+        )
+        self.assertIn("It is a fix-forward", routing["rationale"])
+
+    def test_a_developer_tooling_retry_on_a_moved_base_proposes_no_rebase_target(
+        self,
+    ) -> None:
+        batch_id = cast(str, self._create_batch()["batch_id"])
+        self._accepted_architect(batch_id)
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit("x")
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers="a hook blocked a legitimate check command",
+                checks_run=self._checks(brief, "not-run"),
+                tooling_blocker=dict(TOOLING_BLOCKER),
+            ),
+        )
+        self._push_upstream()
+
+        decided = self._decide(batch_id, "retry")
+        restart = self._dispatch(batch_id, "developer")["brief"]
+
+        routing = self._routing(decided)
+        self.assertEqual(routing["route"], "tooling-retry")
+        self.assertNotIn("rebase_target_commit", routing)
+        self.assertIsNone(restart["rebase_target_commit"])
+
+    def test_a_retry_that_cannot_fetch_the_integration_ref_is_refused_with_a_remedy(
+        self,
+    ) -> None:
+        batch_id = cast(str, self._create_batch()["batch_id"])
+        self._accepted_architect(batch_id)
+        self._reported_developer(batch_id)
+        _git(self.repo, "remote", "set-url", "origin", str(self.tmp / "missing.git"))
+
+        preview = self._packet(reason_category="code")["route_preview"]["retry"]
+        with self.assertRaises(coordinator.CoordinatorError) as raised:
+            self._decide(batch_id, "retry", reason_category="code")
+
+        self.assertIsNone(preview["route"])
+        self.assertIn("must know whether origin/master moved", preview["refused"])
+        self.assertEqual(preview["refused"], raised.exception.message)
+        self.assertIn("restore access to origin/master", raised.exception.remedy)
+        self.assertNotIn("decision", self._batch_record(batch_id)["dispatches"][-1])
+
+    def test_the_rebase_fix_forward_dispatch_binds_its_target_into_an_explicit_approval(
+        self,
+    ) -> None:
+        batch_id, candidate, _, upstream = self._moved_base_retry()
+
+        proposal = self._propose(batch_id, "developer")
+        unbound = {
+            key: value
+            for key, value in proposal["transition"].items()
+            if key != "rebase_target_sha"
+        }
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "approval digest does not match"
+        ):
+            self._dispatch(
+                batch_id,
+                "developer",
+                digest=operational_guards.transition_digest(unbound),
+            )
+        retry = self._dispatch(
+            batch_id, "developer", digest=proposal["transition_digest"]
+        )["brief"]
+
+        self.assertEqual(proposal["transition"]["rebase_target_sha"], upstream)
+        self.assertEqual(
+            (
+                retry["rebase_target_commit"],
+                retry["transition"]["rebase_target_sha"],
+                retry["transition"]["next_action"],
+                retry["snapshot_commit"],
+                retry["coordinator_approval"]["approved_by"],
+            ),
+            (upstream, upstream, "developer-retry", candidate, "Malove"),
+        )
+
+    def test_a_rebase_fix_forward_dispatch_always_needs_an_explicit_approval(
+        self,
+    ) -> None:
+        args = _ns(approved_by=None, approved_at=None)
+        for policy in ("milestone", "low_risk", "auto"):
+            for route, expected in (
+                ("fix-forward", f"policy:{policy}"),
+                ("rebase-fix-forward", None),
+            ):
+                batch: JsonObject = {
+                    "approval_policy": policy,
+                    "zone": "repository",
+                    "dispatches": [
+                        {
+                            "dispatch_id": "dispatch-1",
+                            "role": "developer",
+                            "decision": {
+                                "decision": "retry",
+                                "routing": {"route": route},
+                            },
+                        }
+                    ],
+                }
+                config_ = {"low_risk_zones": ["repository"]}
+                with self.subTest(policy=policy, route=route):
+                    if expected is not None:
+                        self.assertEqual(
+                            dispatch._dispatch_approval_mode(
+                                args, batch, config_, "developer", "work", None
+                            ),
+                            expected,
+                        )
+                        continue
+                    with self.assertRaises(coordinator.CoordinatorError) as raised:
+                        dispatch._dispatch_approval_mode(
+                            args, batch, config_, "developer", "work", None
+                        )
+                    self.assertIn("--approved-by", raised.exception.remedy)
+
+    def test_a_brief_whose_rebase_target_left_its_transition_is_refused(self) -> None:
+        batch_id, _, _, upstream = self._moved_base_retry()
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        root = ledger_ops._state_root(self._args(), self.repo)
+        stored = ledger_ops._load_dispatch(root, retry["dispatch_id"])
+
+        def rebound(record: JsonObject, transition: JsonObject) -> JsonObject:
+            digest = operational_guards.transition_digest(transition)
+            return {
+                **record,
+                "transition": transition,
+                "transition_digest": digest,
+                "coordinator_approval": {
+                    **record["coordinator_approval"],
+                    "transition_digest": digest,
+                },
+            }
+
+        def validate(record: JsonObject) -> None:
+            current = ledger_ops._load_batch(root, batch_id)
+            current["dispatches"][-1]["brief_sha256"] = hashlib.sha256(
+                utils._canonical(record).encode("utf-8")
+            ).hexdigest()
+            coordinator._validate_dispatch(
+                self.repo, coordinator._config(self.repo), root, current, record
+            )
+
+        legacy = rebound(
+            {k: v for k, v in stored.items() if k != "rebase_target_commit"},
+            {k: v for k, v in stored["transition"].items() if k != "rebase_target_sha"},
+        )
+        validate(legacy)
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "does not match its rebase target"
+        ):
+            validate({**stored, "rebase_target_commit": None})
+        initial = {**stored["transition"], "next_action": "developer"}
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "rebase_target_commit must be null"
+        ):
+            validate(rebound(stored, initial))
+        self.assertEqual(stored["rebase_target_commit"], upstream)
 
     def _packet(self, **flags: object) -> JsonObject:
         return coordinator.decision_packet(
@@ -10115,7 +10375,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                     self._route(stage, self._report(standards=None), "block-bypass")
                 self.assertIn("developer reason category", raised.exception.remedy)
 
-    def test_the_recovery_routes_are_exactly_the_documented_eleven(self) -> None:
+    def test_the_recovery_routes_are_exactly_the_documented_twelve(self) -> None:
         self.assertEqual(
             constants.RECOVERY_ROUTES,
             (
@@ -10130,6 +10390,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "bypass-rerun",
                 "narrowed-retry",
                 "fix-forward",
+                "rebase-fix-forward",
             ),
         )
         for route in constants.RECOVERY_ROUTES:
