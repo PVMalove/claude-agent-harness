@@ -958,10 +958,26 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     "overriding not-covered definition-of-done items requires a recorded note",
                     remedy="pass --note (other than 'none') explaining why the uncovered items may be accepted",
                 )
+        elif gap:
+            # A developer-retry report that leaves a carried item not_closed (issue #503).
+            if args.decision == "accept":
+                raise CoordinatorError(
+                    f"carried items {gap} are not closed, so the report is not clean",
+                    remedy="retry the developer, or pass --decision override-warning with a "
+                    "--note explaining why the items that are not closed may be accepted",
+                )
+            if args.decision == "override-warning" and (
+                not _non_empty(args.note) or args.note.strip().lower() == "none"
+            ):
+                raise CoordinatorError(
+                    "overriding carried items that are not closed requires a recorded note",
+                    remedy="pass --note (other than 'none') explaining why the carried items "
+                    "that are not closed may be accepted",
+                )
         elif args.decision == "override-warning":
             raise CoordinatorError(
-                "only a recorded review warning or a not-covered definition-of-done item can be overridden",
-                remedy="only override a recorded review warning or a not-covered definition-of-done item",
+                "only a recorded review warning, a not-covered definition-of-done item or a carried item that is not closed can be overridden",
+                remedy="only override a recorded review warning, a not-covered definition-of-done item or a carried item that is not closed",
             )
         routing: JsonObject | None = None
         if args.decision == "retry":

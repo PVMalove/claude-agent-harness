@@ -1242,6 +1242,7 @@ def _validate_report(
             remedy="re-run exactly the approved verification_commands and report those results",
         )
     plan_rules.check_fields_allowed(report, dispatch)
+    carried_items.check_closure(report, dispatch)
     commit_sha = report["commit_sha"]
     if role["mode"] == "write" and (
         not isinstance(commit_sha, str)
@@ -1302,11 +1303,12 @@ def _validate_report(
                     "developer dispatch lacks snapshot_commit",
                     remedy="create a new developer dispatch with an immutable snapshot",
                 )
+            created = _commits_between(repo, rebase_target or snapshot, resolved)
             plan_rules.check_report(
-                report,
-                dispatch,
-                _commits_between(repo, rebase_target or snapshot, resolved),
-                partial(_candidate_commit, repo),
+                report, dispatch, created, partial(_candidate_commit, repo)
+            )
+            carried_items.check_closure_commits(
+                report, created, partial(_candidate_commit, repo)
             )
     if role["mode"] == "read-only" and commit_sha != "not applicable — read-only role":
         raise CoordinatorError(

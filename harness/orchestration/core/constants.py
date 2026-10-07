@@ -211,6 +211,10 @@ COMMIT_PLAN_ENTRY_FIELDS = frozenset({"id", "summary", "expected_paths", "covers
 # One record of a developer report's dod_coverage: the covering commits, or why the item is open.
 DOD_COVERED_FIELDS = frozenset({"dod_item", "commits"})
 DOD_NOT_COVERED_FIELDS = frozenset({"dod_item", "not_covered"})
+# One record of a developer-retry report's carried_item_closure (issue #503): the commits that
+# close a carried item of the brief, or why it is not closed.
+CARRIED_ITEM_CLOSED_FIELDS = frozenset({"item_id", "commits"})
+CARRIED_ITEM_NOT_CLOSED_FIELDS = frozenset({"item_id", "not_closed"})
 # The four fields of the transition-bound approval contract (issue #250) are all present or all absent.
 POLICY_BRIEF_FIELDS = frozenset(
     {"transition", "transition_digest", "retry_idempotency_key", "orchestration_policy"}
@@ -240,6 +244,7 @@ REPORT_OPTIONAL_FIELDS = {
     "used_memory",
     "tooling_blocker",
     "incomplete_items",
+    "carried_item_closure",
 }
 # One brief item a read-only role left undone (issue #501): what it was, why, and the role it can be
 # handed to. ``tooling_blocker`` (the report field's shape) is optional per item: a tool, such as the

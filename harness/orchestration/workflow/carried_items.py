@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import cast
 
@@ -31,7 +32,9 @@ from harness.orchestration.core import utils
 from harness.orchestration.core.config import _reject_sensitive
 from harness.orchestration.core.constants import (
     CARRIED_ITEM_ACCOUNTING_FIELDS,
+    CARRIED_ITEM_CLOSED_FIELDS,
     CARRIED_ITEM_FIELDS,
+    CARRIED_ITEM_NOT_CLOSED_FIELDS,
     CARRIED_ITEM_SOURCES,
     CARRIED_ITEM_STATUSES,
     TOOLING_REASON_CATEGORY,
@@ -58,6 +61,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _state_root,
 )
 from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
+from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.history import (
     _pending_report,
     _require_route,
@@ -86,6 +90,12 @@ FINDING_FIELDS = frozenset({"summary", "files", "expected_evidence"})
 FINDINGS_FILE_REMEDY = (
     'write the findings file as {"findings": [{"summary": ..., "files": [...], '
     '"expected_evidence": ...}, ...]} in English and pass it again with --findings-file'
+)
+# How a developer-retry report accounts for the items its brief carried (issue #503).
+CLOSURE_FIELD = "carried_item_closure"
+CLOSURE_REMEDY = (
+    "set carried_item_closure to one record per item of the brief's carried_items: "
+    '{"item_id": <id>, "commits": [<sha>, ...]} or {"item_id": <id>, "not_closed": "<reason>"}'
 )
 
 
@@ -586,9 +596,24 @@ def validate_review_accounting(review: JsonObject, dispatch: JsonObject) -> None
         seen.add(item_id)
 
 
+def _closure(report: JsonObject | None) -> dict[str, JsonObject]:
+    """A developer report's carried_item_closure records by item id; ``{}`` without one."""
+    records = (
+        report.get(CLOSURE_FIELD)
+        if report is not None and report.get("role") == "developer"
+        else None
+    )
+    return {
+        record["item_id"]: record
+        for record in (records if isinstance(records, list) else [])
+        if isinstance(record, dict)
+    }
+
+
 def packet_items(dispatch: JsonObject, report: JsonObject | None) -> list[JsonObject]:
     """The carried items a decision packet shows; for a code-review report, with the status the
-    review gave each one (``omitted`` when it named none)."""
+    review gave each one (``omitted`` when it named none); for a developer-retry report, ``closed``
+    with its closing commits or ``open`` with the reason, from its carried_item_closure."""
     reviewed = report is not None and report.get("role") == "code-review"
     review = report.get("review") if reviewed and report is not None else None
     given = {
@@ -597,35 +622,150 @@ def packet_items(dispatch: JsonObject, report: JsonObject | None) -> list[JsonOb
             review.get("carried_items", []) if isinstance(review, dict) else []
         )
     }
+    closure = _closure(report)
     rows = []
     for item in _carried(dispatch):
         entry = given.get(item["item_id"])
+        closed = closure.get(item["item_id"])
+        if reviewed:
+            status = entry["status"] if entry else "omitted"
+            evidence = entry["evidence"] if entry else None
+        elif closed is not None:
+            status = "open" if "not_closed" in closed else "closed"
+            evidence = closed.get("not_closed") or ", ".join(closed["commits"])
+        else:
+            status, evidence = None, None
         rows.append(
             {
                 "item_id": item["item_id"],
                 "source": item["source"],
                 "summary": item["summary"],
-                "status": (entry["status"] if entry else "omitted")
-                if reviewed
-                else None,
-                "evidence": entry["evidence"] if entry else None,
+                "status": status,
+                "evidence": evidence,
             }
         )
     return rows
 
 
 def carried_gap(report: JsonObject, dispatch: JsonObject) -> list[str]:
-    """The carried items a code-review report did not close: omitted, unverified or open.
+    """The carried items a report did not close: for a code-review report, omitted, unverified or
+    open; for a developer-retry report, those its carried_item_closure records as not_closed.
 
     A gap is never clean: no policy accepts it, and a plain ``accept`` is refused.
     """
-    if report.get("role") != "code-review":
-        return []
-    return [
-        row["item_id"]
-        for row in packet_items(dispatch, report)
-        if row["status"] != "closed"
-    ]
+    rows = packet_items(dispatch, report)
+    if report.get("role") == "code-review":
+        return [row["item_id"] for row in rows if row["status"] != "closed"]
+    return [row["item_id"] for row in rows if row["status"] == "open"]
+
+
+def _closure_owed(dispatch: JsonObject) -> bool:
+    """Whether a brief is a developer-retry that carried items, so its report maps their closure."""
+    return (
+        dispatch.get("role") == "developer"
+        and plan_rules.is_developer_retry(dispatch)
+        and bool(_carried(dispatch))
+    )
+
+
+def check_closure(report: JsonObject, dispatch: JsonObject) -> None:
+    """A developer-retry report's ``carried_item_closure`` maps every carried item once (#503).
+
+    Each record is ``{item_id, commits}`` (the commits that close the item) or
+    ``{item_id, not_closed}`` (why it is not closed). A completed report of a developer-retry brief
+    that carried items must carry it; a blocked or failed one may; no other report may. That the
+    commits are this dispatch's own is checked against Git by ``check_closure_commits``.
+    """
+    owed = _closure_owed(dispatch)
+    known = [item["item_id"] for item in _carried(dispatch)]
+    if CLOSURE_FIELD not in report:
+        if owed and report.get("outcome") == "completed":
+            raise CoordinatorError(
+                f"completion report carried_item_closure is missing: the developer-retry brief "
+                f"carried items {known}",
+                remedy=CLOSURE_REMEDY,
+            )
+        return
+    if not owed:
+        raise CoordinatorError(
+            "completion report carried_item_closure belongs only to a developer-retry report "
+            "whose brief carried items",
+            remedy="drop carried_item_closure: only a developer-retry whose brief carried items "
+            "maps each item to the commits that close it",
+        )
+    closure = report[CLOSURE_FIELD]
+    if not isinstance(closure, list):
+        raise CoordinatorError(
+            "completion report carried_item_closure must be a list",
+            remedy=CLOSURE_REMEDY,
+        )
+    seen: list[str] = []
+    for position, record in enumerate(closure, start=1):
+        label = f"completion report carried_item_closure entry {position}"
+        if not isinstance(record, dict) or set(record) not in (
+            CARRIED_ITEM_CLOSED_FIELDS,
+            CARRIED_ITEM_NOT_CLOSED_FIELDS,
+        ):
+            raise CoordinatorError(
+                f"{label} must be {{item_id, commits}} or {{item_id, not_closed}}",
+                remedy=CLOSURE_REMEDY,
+            )
+        item_id = record["item_id"]
+        if item_id not in known or item_id in seen:
+            raise CoordinatorError(
+                f"{label} names {item_id!r}, which the brief did not carry or the report "
+                "already mapped",
+                remedy=CLOSURE_REMEDY,
+            )
+        seen.append(item_id)
+        if "not_closed" in record:
+            if not _non_empty(record["not_closed"]):
+                raise CoordinatorError(
+                    f"carried item {item_id} is not_closed without a reason",
+                    remedy=f"state in not_closed why {item_id} is not closed, or list the "
+                    "commits that close it",
+                )
+            continue
+        commits = record["commits"]
+        if (
+            not isinstance(commits, list)
+            or not commits
+            or not all(isinstance(sha, str) for sha in commits)
+        ):
+            raise CoordinatorError(
+                f"carried item {item_id} commits must be a non-empty list of commit SHAs",
+                remedy=CLOSURE_REMEDY,
+            )
+    missing = [item_id for item_id in known if item_id not in seen]
+    if missing:
+        raise CoordinatorError(
+            f"completion report carried_item_closure has no record for carried items {missing}",
+            remedy=f"add a record for {', '.join(missing)}: the commits that close it, or "
+            "not_closed with the reason",
+        )
+
+
+def check_closure_commits(
+    report: JsonObject, created: list[str], resolve: Callable[[str], str]
+) -> None:
+    """Every commit a carried_item_closure names is one this dispatch created (issue #503).
+
+    ``created`` is the ordered list of commits after ``snapshot_commit`` (after the rebase target
+    for a rebase) up to the reported HEAD; ``resolve`` turns a reported SHA into its full form.
+    """
+    for item_id, record in _closure(report).items():
+        commits = record.get("commits") or []
+        claimed = [
+            plan_rules._resolve_reported(resolve, sha, "carried_item_closure[].commits")
+            for sha in commits
+        ]
+        foreign = [sha for sha, full in zip(commits, claimed) if full not in created]
+        if foreign:
+            raise CoordinatorError(
+                f"carried item {item_id} names commits this dispatch did not create: {foreign}",
+                remedy="list only the commits after snapshot_commit up to commit_sha that close "
+                "the item: a fix-forward closes it with new commits on top of the candidate",
+            )
 
 
 def marks_open(report: JsonObject) -> bool:
