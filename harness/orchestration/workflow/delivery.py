@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import cast
 
+from harness.orchestration import runtime_access
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
@@ -204,6 +205,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
                 remedy="the dispatch was already sent or is not registered in its batch -- "
                 + INTERNAL_INVARIANT_REMEDY,
             )
+        access_evidence = runtime_access.apply_plan(dispatch, transport)
         brief_path = (
             _records_root(root)
             / DispatchRecord.directory
@@ -272,6 +274,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "dispatched",
+        "runtime_access": access_evidence,
         "transport": transport,
         "brief": str(brief_path),
         "expected_model": dispatch["resolved_model"],

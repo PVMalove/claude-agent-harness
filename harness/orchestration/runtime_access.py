@@ -45,7 +45,7 @@ def resolve_plan(repo: Path, worktree: Path, config: Mapping[str, object], role:
     also exposes operational requirements that an empty filesystem override cannot remove.
     """
     policy = config.get('access_policy')
-    if policy is None:
+    if 'access_policy' not in config:
         plan: JsonObject = {'mode': 'inherit', 'network': {'hosts': []}, 'filesystem': [],
                             'sources': {key: 'legacy' for key in ('mode', 'network', 'filesystem')},
                             'requirements': [], 'runtime_extension': 'none'}
@@ -111,7 +111,7 @@ def verify_plan(plan: JsonObject, transport: str) -> tuple[JsonObject, extension
     """Ask the pinned native implementation for fresh, worker-scoped evidence."""
     if plan.get('plan_digest') != _digest(plan):
         raise AccessError('access plan digest mismatch', remedy='create a new dispatch and approval for the resolved access plan')
-    if plan['sources']['mode'] == 'legacy' and not plan['requirements'] and not plan['network']['hosts']:
+    if plan['mode'] == 'inherit' and all(source == 'legacy' for source in plan['sources'].values()) and not plan['filesystem'] and not plan['requirements'] and not plan['network']['hosts']:
         return {'status': 'legacy-inherit', 'verified': [], 'unverified': [], 'remedy': None}, None
     provider = extensions.runtime_access(plan['runtime_extension'])
     # The inert extension uses the telemetry observe signature and is never a permission proof.
@@ -154,3 +154,32 @@ def _observation_problem(plan: JsonObject, transport: str,
     if any((item['path'], item['access']) not in observation.filesystem for item in plan['requirements']):
         return 'native worker filesystem requirements are unverified'
     return None
+
+
+def apply_plan(brief: JsonObject, transport: str) -> JsonObject:
+    """Gate handoff and apply the approved plan through the native implementation.
+
+    A new observation comes from the pinned implementation on every send. Neither current
+    config nor a previous preflight observation can expand or prove this dispatch's access.
+    """
+    plan = brief.get('runtime_access')
+    if plan is None:
+        return {'status': 'legacy-inherit'}
+    if not isinstance(plan, dict):
+        raise AccessError('invalid pinned access plan', remedy='create a new dispatch with a valid access plan')
+    verification, observation = verify_plan(plan, transport)
+    if verification['status'] == 'legacy-inherit':
+        return verification
+    if verification['status'] != 'verified' or observation is None:
+        raise AccessError(str(verification['reason']), remedy=_REMEDY)
+    provider = extensions.runtime_access(plan['runtime_extension'])
+    try:
+        applied = provider.apply(brief, observation)
+    except Exception as exc:
+        raise AccessError('native runtime could not apply the approved worker access', remedy=_REMEDY) from exc
+    reason = _observation_problem(plan, transport, applied)
+    if (reason or applied is None or not applied.applied
+        or applied.environment_id != observation.environment_id
+        or applied.launch_id != observation.launch_id):
+        raise AccessError(reason or 'native access application or matching inheritance was not confirmed', remedy=_REMEDY)
+    return {'status': 'applied', 'evidence': asdict(applied)}
