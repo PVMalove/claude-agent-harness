@@ -921,9 +921,10 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
     """The brief's transition, digest, approval, idempotency key and policy agree with one another
     and with the brief's own fields; the brief hash already proves none of them was edited alone."""
     transition = dispatch["transition"]
-    if not isinstance(transition, dict) or set(transition) - set(
-        operational_guards.OPTIONAL_TRANSITION_FIELDS
-    ) != set(operational_guards.TRANSITION_FIELDS):
+    if not isinstance(transition, dict) or set(transition) - {
+        *operational_guards.OPTIONAL_TRANSITION_FIELDS,
+        operational_guards.ACCESS_TRANSITION_FIELD,
+    } != set(operational_guards.TRANSITION_FIELDS):
         raise CoordinatorError(
             "dispatch transition schema mismatch",
             remedy="the dispatch transition is malformed -- "

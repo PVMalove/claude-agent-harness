@@ -117,7 +117,7 @@ class TransitionDigestTests(unittest.TestCase):
 
         self.assertEqual(
             guards.OPTIONAL_TRANSITION_FIELDS,
-            ("carried_items_sha256", "rebase_target_sha", "runtime_access_sha256"),
+            ("carried_items_sha256", "rebase_target_sha"),
         )
         self.assertNotEqual(
             guards.transition_digest(bound), guards.transition_digest(_transition())

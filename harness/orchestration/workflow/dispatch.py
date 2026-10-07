@@ -888,7 +888,9 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         access_plan = runtime_access.resolve_plan(
             repo, Path(batch["worktree"]), config, role_name, role["mode"]
         )
-        transition["runtime_access_sha256"] = access_plan["plan_digest"]
+        transition[operational_guards.ACCESS_TRANSITION_FIELD] = access_plan[
+            "plan_digest"
+        ]
         digest = operational_guards.transition_digest(transition)
         idempotency_key = _transition_idempotency_key(role_name, purpose, transition)
         if idempotency_key is not None:
