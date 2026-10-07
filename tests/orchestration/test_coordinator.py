@@ -57,6 +57,7 @@ from harness.orchestration.workflow import (
     carried_items,
     commit_plan,
     decisions,
+    delta_review,
     dispatch,
     history,
     reports,
@@ -10550,6 +10551,51 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 ),
             )
 
+    def test_a_merge_of_the_target_mapped_as_its_own_rebased_copy_is_refused(
+        self,
+    ) -> None:
+        """Issue #625: a rebase-fix-forward that merges the target instead of rebasing keeps the
+        reviewed commit after the target. Mapped as its own rebased copy, it would count as
+        reviewed by patch-id and loop the delta-review's origin walk inside the ledger lock, so
+        report submit refuses it with the rebase as the remedy."""
+        batch_id = cast(str, self._plan_batch(["add simple marker"])["batch_id"])
+        self._accepted_architect(batch_id)
+        _, candidate, changed = self._reported_developer(batch_id)
+        self._decide(batch_id, "accept")
+        self._assess_without_triggers(batch_id, candidate, changed)
+        self._reported_review(
+            batch_id, candidate, spec=("warning", [dict(self.SPEC_WARNING)])
+        )
+        upstream = self._push_upstream()
+        self.assertEqual(
+            self._routing(self._decide(batch_id, "retry"))["route"],
+            "rebase-fix-forward",
+        )
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        self._start(retry["dispatch_id"])
+        _git(self.worktree, "merge", "--no-ff", "--no-edit", upstream)
+        merge = _git(self.worktree, "rev-parse", "HEAD")
+
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            self._submit(
+                retry["dispatch_id"],
+                self._developer_report(
+                    retry,
+                    merge,
+                    git_utils._changed_files_between(self.repo, upstream, merge),
+                    commit_map=[
+                        *self._rebased_map([candidate], [candidate]),
+                        *self._commit_map([(merge, retry["commit_plan"][0])]),
+                    ],
+                ),
+            )
+
+        self.assertIn(
+            f"rebased copies of themselves: ['{candidate}']", refused.exception.message
+        )
+        self.assertIn("git rebase --onto", refused.exception.remedy)
+        self.assertNotIn("report", self._entry(retry["dispatch_id"]))
+
     def test_a_retried_delta_review_hands_its_open_findings_to_the_next_fix_forward(
         self,
     ) -> None:
@@ -12083,6 +12129,27 @@ class CarriedItemsBriefRolesTests(unittest.TestCase):
                     continue
                 with self.assertRaises(coordinator.CoordinatorError):
                     history._validate_carried_section(dispatch)
+
+
+class DeltaReviewHelperTests(unittest.TestCase):
+    """The delta-review helpers after a fix-forward (issue #625), with no ledger."""
+
+    A, B, C = "a" * 40, "b" * 40, "c" * 40
+
+    def test_a_rebased_copy_resolves_through_the_chain_and_a_cycle_ends_the_walk(
+        self,
+    ) -> None:
+        a, b, c = self.A, self.B, self.C
+        chain = {c: (b, True), b: (a, True)}
+        self.assertEqual(delta_review._reviewed_origin(c, chain, {a}), a)
+        self.assertIsNone(delta_review._reviewed_origin(c, {c: (b, False)}, {b}))
+        self.assertIsNone(delta_review._reviewed_origin(c, chain, {b}))
+        for name, pairs in {
+            "own original": {a: (a, True)},
+            "two-step cycle": {a: (b, True), b: (a, True)},
+        }.items():
+            with self.subTest(name):
+                self.assertIsNone(delta_review._reviewed_origin(a, pairs, {a, b}))
 
 
 class CoordinatorGuardHelperTests(unittest.TestCase):

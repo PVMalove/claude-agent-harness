@@ -51,9 +51,9 @@ exactly once: a rebased copy as above, a new commit as `{commit_sha, plan_entry_
 strict retry rule below. `changed_files` and `carried_item_closure` are measured from the target,
 and so are those of a later retry of this report until it is accepted.
 The coordinator compares each `rebased_from` pair by `git patch-id`; a mismatch does not refuse the
-report but is shown for delta-review. A missing, repeated or unknown previous-candidate commit and
-an empty `dropped` reason are refused, and a brief without a target refuses `rebased_from` and
-`dropped` entries.
+report but is shown for delta-review. A missing, repeated or unknown previous-candidate commit, a
+copy that is its own original (a merge of the target instead of a rebase) and an empty `dropped`
+reason are refused, and a brief without a target refuses `rebased_from` and `dropped` entries.
 
 When a hook or another tool blocks your `git commit`, revert nothing: do not reset, stash, checkout
 or delete the uncommitted work. Stop with the `tooling_blocker` the common contract describes and

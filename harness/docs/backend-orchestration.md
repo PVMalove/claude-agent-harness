@@ -898,8 +898,9 @@ Developer переносит коммиты над старой базой ро�
 один раз: как перенесённая копия или как новый коммит `{commit_sha, plan_entry_id}` по строгому
 правилу retry. `changed_files` и `carried_item_closure` считаются от target, а проверка «candidate —
 потомок `snapshot_commit`» для такого brief не действует. `report submit` отклоняет с remedy
-пропущенный, повторный и неизвестный коммит прежнего candidate, пустую причину `dropped`, коммит,
-который dispatch не создал, и `rebased_from`/`dropped` в отчёте brief без target.
+пропущенный, повторный и неизвестный коммит прежнего candidate, копию, совпадающую со своим
+оригиналом (merge target вместо rebase), пустую причину `dropped`, коммит, который dispatch не
+создал, и `rebased_from`/`dropped` в отчёте brief без target.
 
 `report submit`, `batch decision-packet` и решение `accept`/`override-warning` возвращают
 `rebase_check`: `rebase_target_commit`, `previous_base_commit`, пары `rebased` с `patch_id_match`

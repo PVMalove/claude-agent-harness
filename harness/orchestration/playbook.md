@@ -564,8 +564,8 @@ The report must include:
   `snapshot_commit`) exactly once, as `{commit_sha, rebased_from}` for its rebased copy, which
   inherits the original's plan entry, or as `{rebased_from, dropped}` with a non-empty reason; every
   commit after the target appears once, a rebased copy or a new commit. A missing, repeated or
-  unknown previous-candidate commit is refused, and so are `rebased_from` and `dropped` without a
-  target. `report submit`, `batch decision-packet` and the accept decision return `rebase_check`:
+  unknown previous-candidate commit is refused, and so are a copy that is its own original (a merge
+  of the target instead of a rebase) and `rebased_from` and `dropped` without a target. `report submit`, `batch decision-packet` and the accept decision return `rebase_check`:
   the target, the old base, each pair with `patch_id_match` (`git patch-id --stable`), the dropped
   commits and the `patch_id_mismatches`. A mismatch is a conflict resolved with changes: it is
   shown for delta-review and neither refuses the report nor makes it unclean;

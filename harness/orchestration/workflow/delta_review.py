@@ -206,9 +206,14 @@ def _reviewed_origin(
 
     ``pairs`` maps each rebased copy of the retry chain to its ``rebased_from`` original and whether
     their patch-ids match, so a copy of a copy resolves through every rebase of the chain; one
-    mismatched step, or an original the prior review never judged, makes it a new commit.
+    mismatched step, a cycle (a pair whose copy is its own original included), or an original the
+    prior review never judged makes it a new commit.
     """
+    visited: set[str] = set()
     while commit in pairs:
+        if commit in visited:
+            return None
+        visited.add(commit)
         commit, matched = pairs[commit]
         if not matched:
             return None
