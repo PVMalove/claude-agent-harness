@@ -610,10 +610,23 @@ def _closure(report: JsonObject | None) -> dict[str, JsonObject]:
     }
 
 
+def _omits_closure(report: JsonObject | None, dispatch: JsonObject) -> bool:
+    """Whether a completed report of a brief that owes the closure carries none: one recorded
+    before issue #503, since ``report submit`` refuses such a report now (``require_closure``)."""
+    return (
+        report is not None
+        and report.get("role") == "developer"
+        and report.get("outcome") == "completed"
+        and CLOSURE_FIELD not in report
+        and _closure_owed(dispatch)
+    )
+
+
 def packet_items(dispatch: JsonObject, report: JsonObject | None) -> list[JsonObject]:
     """The carried items a decision packet shows; for a code-review report, with the status the
     review gave each one (``omitted`` when it named none); for a developer-retry report, ``closed``
-    with its closing commits or ``open`` with the reason, from its carried_item_closure."""
+    with its closing commits or ``open`` with the reason, from its carried_item_closure, and
+    ``omitted`` for every item of a completed report recorded without one."""
     reviewed = report is not None and report.get("role") == "code-review"
     review = report.get("review") if reviewed and report is not None else None
     given = {
@@ -623,6 +636,7 @@ def packet_items(dispatch: JsonObject, report: JsonObject | None) -> list[JsonOb
         )
     }
     closure = _closure(report)
+    omitted = _omits_closure(report, dispatch)
     rows = []
     for item in _carried(dispatch):
         entry = given.get(item["item_id"])
@@ -633,6 +647,8 @@ def packet_items(dispatch: JsonObject, report: JsonObject | None) -> list[JsonOb
         elif closed is not None:
             status = "open" if "not_closed" in closed else "closed"
             evidence = closed.get("not_closed") or ", ".join(closed["commits"])
+        elif omitted:
+            status, evidence = "omitted", None
         else:
             status, evidence = None, None
         rows.append(
@@ -649,14 +665,15 @@ def packet_items(dispatch: JsonObject, report: JsonObject | None) -> list[JsonOb
 
 def carried_gap(report: JsonObject, dispatch: JsonObject) -> list[str]:
     """The carried items a report did not close: for a code-review report, omitted, unverified or
-    open; for a developer-retry report, those its carried_item_closure records as not_closed.
+    open; for a developer-retry report, those its carried_item_closure records as not_closed, or
+    every item when a completed report recorded before issue #503 has no carried_item_closure.
 
     A gap is never clean: no policy accepts it, and a plain ``accept`` is refused.
     """
     rows = packet_items(dispatch, report)
     if report.get("role") == "code-review":
         return [row["item_id"] for row in rows if row["status"] != "closed"]
-    return [row["item_id"] for row in rows if row["status"] == "open"]
+    return [row["item_id"] for row in rows if row["status"] in {"open", "omitted"}]
 
 
 def _closure_owed(dispatch: JsonObject) -> bool:
@@ -672,27 +689,21 @@ def check_closure(report: JsonObject, dispatch: JsonObject) -> None:
     """A developer-retry report's ``carried_item_closure`` maps every carried item once (#503).
 
     Each record is ``{item_id, commits}`` (the commits that close the item) or
-    ``{item_id, not_closed}`` (why it is not closed). A completed report of a developer-retry brief
-    that carried items must carry it; a blocked or failed one may; no other report may. That the
-    commits are this dispatch's own is checked against Git by ``check_closure_commits``.
+    ``{item_id, not_closed}`` (why it is not closed). Only a developer-retry report whose brief
+    carried items may carry it; that a completed one must is checked at submit by
+    ``require_closure``. That the commits belong to the retry chain is checked against Git by
+    ``check_closure_commits``.
     """
-    owed = _closure_owed(dispatch)
-    known = [item["item_id"] for item in _carried(dispatch)]
     if CLOSURE_FIELD not in report:
-        if owed and report.get("outcome") == "completed":
-            raise CoordinatorError(
-                f"completion report carried_item_closure is missing: the developer-retry brief "
-                f"carried items {known}",
-                remedy=CLOSURE_REMEDY,
-            )
         return
-    if not owed:
+    if not _closure_owed(dispatch):
         raise CoordinatorError(
             "completion report carried_item_closure belongs only to a developer-retry report "
             "whose brief carried items",
             remedy="drop carried_item_closure: only a developer-retry whose brief carried items "
             "maps each item to the commits that close it",
         )
+    known = [item["item_id"] for item in _carried(dispatch)]
     closure = report[CLOSURE_FIELD]
     if not isinstance(closure, list):
         raise CoordinatorError(
@@ -745,13 +756,83 @@ def check_closure(report: JsonObject, dispatch: JsonObject) -> None:
         )
 
 
+def require_closure(report: JsonObject, dispatch: JsonObject) -> None:
+    """``report submit`` refuses a completed developer-retry report without carried_item_closure.
+
+    Only a new report is refused: a report recorded before issue #503 is still decided, with every
+    carried item an ``omitted`` carried gap, so ``batch decide`` never re-raises this.
+    """
+    if _omits_closure(report, dispatch):
+        raise CoordinatorError(
+            f"completion report carried_item_closure is missing: the developer-retry brief "
+            f"carried items {[item['item_id'] for item in _carried(dispatch)]}",
+            remedy=CLOSURE_REMEDY,
+        )
+
+
+def _retried_attempt(
+    root: Path, entries: list[JsonObject], brief: JsonObject
+) -> JsonObject | None:
+    """The developer work brief whose retry created ``brief`` with the same carried items, or
+    ``None``. The retried entry is the last decided one before the brief's own entry."""
+    position = next(
+        (
+            index
+            for index, item in enumerate(entries)
+            if item.get("dispatch_id") == brief.get("dispatch_id")
+        ),
+        0,
+    )
+    retried = next(
+        (
+            item
+            for item in reversed(entries[:position])
+            if isinstance(item.get("decision"), dict)
+        ),
+        None,
+    )
+    if (
+        retried is None
+        or retried.get("role") != "developer"
+        or retried["decision"].get("decision") != "retry"
+    ):
+        return None
+    previous = _load_dispatch(root, retried["dispatch_id"])
+    if previous.get("purpose", "work") != "work" or previous.get(
+        "carried_items"
+    ) != brief.get("carried_items"):
+        return None
+    return previous
+
+
+def closure_snapshots(root: Path, batch: JsonObject, dispatch: JsonObject) -> list[str]:
+    """The snapshots of the retry chain whose commits a carried_item_closure may name (#503),
+    oldest first and ending with the dispatch's own ``snapshot_commit``; ``[]`` when none is owed.
+
+    A retried developer report, or a developer tooling-retry, hands the same closed list to the
+    next attempt, whose ``snapshot_commit`` is the retried attempt's HEAD. An item an earlier
+    attempt closed stays closed by that attempt's commit, so the chain reaches back through every
+    retried developer work brief that carried the same list.
+    """
+    if not _closure_owed(dispatch):
+        return []
+    entries = batch.get("dispatches", [])
+    chain: list[str] = []
+    brief: JsonObject | None = dispatch
+    while brief is not None and isinstance(brief.get("snapshot_commit"), str):
+        chain.insert(0, brief["snapshot_commit"])
+        brief = _retried_attempt(root, entries, brief)
+    return chain
+
+
 def check_closure_commits(
     report: JsonObject, created: list[str], resolve: Callable[[str], str]
 ) -> None:
-    """Every commit a carried_item_closure names is one this dispatch created (issue #503).
+    """Every commit a carried_item_closure names was created by its retry chain (issue #503).
 
-    ``created`` is the ordered list of commits after ``snapshot_commit`` (after the rebase target
-    for a rebase) up to the reported HEAD; ``resolve`` turns a reported SHA into its full form.
+    ``created`` is the ordered list of commits after the chain's base (``closure_snapshots``; the
+    rebase target for a rebase) up to the reported HEAD; ``resolve`` turns a reported SHA into its
+    full form.
     """
     for item_id, record in _closure(report).items():
         commits = record.get("commits") or []
@@ -762,9 +843,11 @@ def check_closure_commits(
         foreign = [sha for sha, full in zip(commits, claimed) if full not in created]
         if foreign:
             raise CoordinatorError(
-                f"carried item {item_id} names commits this dispatch did not create: {foreign}",
-                remedy="list only the commits after snapshot_commit up to commit_sha that close "
-                "the item: a fix-forward closes it with new commits on top of the candidate",
+                f"carried item {item_id} names commits that neither this dispatch nor an earlier "
+                f"attempt of its retry chain created: {foreign}",
+                remedy="list only the commits that close the item after snapshot_commit up to "
+                "commit_sha, or after the snapshot of the first retry attempt that carried the "
+                "same list: a fix-forward closes it with new commits on top of the candidate",
             )
 
 

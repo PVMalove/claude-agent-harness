@@ -85,6 +85,7 @@ from harness.orchestration.workflow.history import (
 )
 from harness.orchestration.workflow.qa_integration import _ops
 from harness.orchestration.workflow.reports import (
+    _closure_base,
     _rebase_target,
     _validate_report,
 )
@@ -874,6 +875,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             repo,
             batch.get("integration_base_commit") or batch.get("base_commit"),
             _rebase_target(batch, dispatch),
+            _closure_base(repo, root, batch, dispatch),
         )
         if report.get("outcome") != "completed" and args.decision in {
             "accept",

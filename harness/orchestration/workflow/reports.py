@@ -988,6 +988,19 @@ def _rebase_target(batch: JsonObject, dispatch: JsonObject) -> str | None:
     return None
 
 
+def _closure_base(
+    repo: Path, root: Path, batch: JsonObject, dispatch: JsonObject
+) -> str | None:
+    """The commit a developer-retry's carried_item_closure counts commits from (issue #503): the
+    oldest snapshot of its retry chain that its own ``snapshot_commit`` still descends from, so a
+    rebase inside the chain never lets a closure name upstream commits; ``None`` when none is owed.
+    """
+    chain = carried_items.closure_snapshots(root, batch, dispatch)
+    return next(
+        (base for base in chain if _git_is_ancestor(repo, base, chain[-1])), None
+    )
+
+
 def _require_fix_forward(repo: Path, dispatch: JsonObject, candidate: str) -> None:
     """A developer-retry continues its ``snapshot_commit`` (issue #503): without an approved rebase
     target, the reported candidate must descend from it, so the retry rewrote no history."""
@@ -1163,10 +1176,12 @@ def _validate_report(
     repo: Path | None = None,
     base_commit: str | None = None,
     rebase_target: str | None = None,
+    closure_base: str | None = None,
 ) -> None:
     """``rebase_target`` is set only for the developer report that clears a stale-base block: the
     candidate must contain that tip, and its own commits and files are measured from it, so
-    upstream commits the rebase brought in are never attributed to the ticket."""
+    upstream commits the rebase brought in are never attributed to the ticket. ``closure_base``
+    (``_closure_base``) is where a developer-retry's carried_item_closure counts commits from."""
     _reject_sensitive(report, "completion report")
     if (
         not REPORT_FIELDS <= set(report)
@@ -1306,11 +1321,13 @@ def _validate_report(
                     "completion report changed_files must exactly match commit_sha",
                     remedy="regenerate completion report changed_files from the actual diff at commit_sha",
                 )
-        # The commit plan is verified against Git history, so it needs the repository, like the
-        # changed_files check above.
+        # The commit plan and the carried-item closure are verified against Git history, so they
+        # need the repository, like the changed_files check above.
+        planned = bool(dispatch.get("commit_plan"))
+        closure = carried_items.CLOSURE_FIELD in report
         if (
             role.get("name") == "developer"
-            and dispatch.get("commit_plan")
+            and (planned or closure)
             and repo is not None
         ):
             snapshot = dispatch.get("snapshot_commit")
@@ -1319,13 +1336,22 @@ def _validate_report(
                     "developer dispatch lacks snapshot_commit",
                     remedy="create a new developer dispatch with an immutable snapshot",
                 )
-            created = _commits_between(repo, rebase_target or snapshot, resolved)
-            plan_rules.check_report(
-                report, dispatch, created, partial(_candidate_commit, repo)
-            )
-            carried_items.check_closure_commits(
-                report, created, partial(_candidate_commit, repo)
-            )
+            if planned:
+                plan_rules.check_report(
+                    report,
+                    dispatch,
+                    _commits_between(repo, rebase_target or snapshot, resolved),
+                    partial(_candidate_commit, repo),
+                )
+            if closure:
+                # An earlier attempt of the retry chain may have closed an item (issue #503).
+                carried_items.check_closure_commits(
+                    report,
+                    _commits_between(
+                        repo, rebase_target or closure_base or snapshot, resolved
+                    ),
+                    partial(_candidate_commit, repo),
+                )
     if role["mode"] == "read-only" and commit_sha != "not applicable — read-only role":
         raise CoordinatorError(
             "read-only completion reports must not claim a commit SHA",
@@ -1481,7 +1507,10 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             repo,
             batch.get("integration_base_commit") or batch.get("base_commit"),
             _rebase_target(batch, dispatch),
+            _closure_base(repo, root, batch, dispatch),
         )
+        # Only a new report must carry its closure: one recorded earlier is decided as a gap.
+        carried_items.require_closure(report, dispatch)
         from harness.orchestration.workflow.decisions import _auto_accept_policy
 
         auto_accept_policy = _auto_accept_policy(config, batch, dispatch, report)
