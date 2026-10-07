@@ -331,6 +331,9 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             )
             if dispatch["role"] != "code-review"
             else dispatch.get("commit_plan_divergence"),
+            "rebase_check": rebase.rebase_check(repo, report, dispatch)
+            if report
+            else None,
             "report": str(_records_root(root) / entry["report"]) if report else None,
             "diff": f"git diff {batch['base_commit']}..{candidate}"
             if candidate
@@ -897,7 +900,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             dispatch,
             _role(repo, dispatch["role"]),
             repo,
-            batch.get("integration_base_commit") or batch.get("base_commit"),
+            rebase.report_base(repo, root, batch, dispatch),
             _rebase_target(batch, dispatch),
             _closure_base(repo, root, batch, dispatch),
         )
@@ -1104,6 +1107,10 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 decision["dod_not_covered"] = uncovered
             if gap and args.decision == "override-warning":
                 decision["carried_items_gap"] = gap
+            check = rebase.rebase_check(repo, report, dispatch)
+            if check is not None:
+                # Audit evidence for a later delta-review of the rebased copies (issue #504).
+                decision["rebase_check"] = check
         if pinned_plan is not None:
             batch["commit_plan"] = pinned_plan
             decision["commit_plan_sha256"] = plan_rules.plan_sha256(pinned_plan)
@@ -1148,6 +1155,17 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                         target = _fetch_ref_tip(repo, _integration_ref(repo, batch))
                     batch["integration_base_commit"] = target
                     batch["base_rebase_required"] = False
+                if dispatch.get("purpose", "work") == "work":
+                    # The accepted candidate sits on a human-approved rebase target newer than
+                    # the pinned base (issue #504): pin it, so review needs no rebase dispatch.
+                    approved = rebase.approved_target(
+                        repo,
+                        root,
+                        batch,
+                        _candidate_commit(repo, report["commit_sha"]),
+                    )
+                    if approved is not None:
+                        batch["integration_base_commit"] = approved
                 if dispatch.get("purpose") == "publish":
                     batch.pop("next_action", None)
                     batch["state"] = "completed"
