@@ -768,11 +768,17 @@ verification — те же пункты без находок review; при ret
 ровно эти пункты, а расхождение с `retry_item_ids` отклоняется как нарушение инварианта. Developer
 продолжает от `snapshot_commit` новыми коммитами поверх него и отчитывается в completion report
 полем `carried_item_closure` — по одной записи на каждый пункт brief:
-`{"item_id": <id>, "commits": [<sha>, ...]}` с коммитами этого dispatch, которые закрывают пункт,
-или `{"item_id": <id>, "not_closed": "<причина>"}`. Completed-отчёт такого brief обязан нести поле,
+`{"item_id": <id>, "commits": [<sha>, ...]}` с коммитами цепочки retry, которые закрывают пункт,
+или `{"item_id": <id>, "not_closed": "<причина>"}`. Цепочка retry — этот dispatch и предыдущие
+попытки, передавшие ему тот же закрытый список: retry developer-отчёта и `tooling-retry` developer
+передают следующей попытке пункты своего brief, а её `snapshot_commit` — HEAD предыдущей попытки.
+Коммиты отсчитываются от `snapshot_commit` первой попытки цепочки, от которого ещё происходит
+`snapshot_commit` этого dispatch (при утверждённом rebase target — от него), поэтому пункт,
+закрытый предыдущей попыткой, указывает её коммит. Completed-отчёт такого brief обязан нести поле,
 blocked или failed может, отчёты остальных brief — нет. `report submit` отклоняет с remedy
 пропущенный, неизвестный или повторный пункт, пустую причину, пустой список коммитов, неразрешимый
-SHA и коммит, который создал не этот dispatch. Пункт `not_closed` — carried gap: отчёт не clean,
+SHA и коммит, который не создала цепочка retry; коммиты сверяются с Git и у brief без
+`commit_plan`. Пункт `not_closed` — carried gap: отчёт не clean,
 policy его автоматически не принимает, `--decision accept` отклоняется, а `override-warning`
 требует `--note`, отличный от `none`, и записывает в решение `carried_items_gap`. `commit_map`
 retry-отчёта сохраняет строгое правило #478. `batch decision-packet` показывает у пунктов
@@ -963,9 +969,14 @@ Brief без поля `commit_plan_divergence` и batch без `commit_plan` т�
 тоже валидны: пустой канал ничего не добавляет в transition, поэтому прежние digest не меняются.
 Отчёт без `incomplete_items` и brief без вида `incomplete-item` тоже валидны; новый вид источника,
 поле отчёта и значение маршрута `narrowed-retry` введены без смены версии ledger и без миграции.
-Routing record без `retry_item_ids`, отчёт без `carried_item_closure` и значение маршрута
+Routing record без `retry_item_ids`, поле отчёта `carried_item_closure` и значение маршрута
 `fix-forward` (#503) тоже введены без смены версии ledger и без миграции: brief developer-retry по
-решению, записанному до них, получает раздел без сверки с `retry_item_ids`.
+решению, записанному до них, получает раздел без сверки с `retry_item_ids`. Completed-отчёт
+developer-retry, записанный до #503 без `carried_item_closure` для brief с перенесёнными пунктами,
+по-прежнему решается через `batch decide`: каждый пункт получает статус `omitted` и входит в
+`carried_items_gap`, поэтому `accept` и policy auto-accept отклоняются, `override-warning` требует
+`--note`, отличный от `none`, а `retry`, `block`, `fail` и `abandon` доступны. Новый такой отчёт
+`report submit` отклоняет.
 
 Поле `route` в routing record и деталь `decision` в transition audit record batch тоже
 необязательны и введены без смены версии ledger (остаётся 3). Решение, записанное до них, читается

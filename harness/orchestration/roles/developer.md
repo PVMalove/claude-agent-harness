@@ -75,9 +75,12 @@ handed to the developer; a retried developer brief hands on its own items again.
 new commits: its files belong to the working set, and its fix goes into the commit of the plan entry
 whose scope it belongs to. The completion report maps every item once in `carried_item_closure`,
 which replaces naming the items in `output`: `{"item_id": <id>, "commits": [<sha>, ...]}` with the
-commits of this dispatch that close it, as its `expected_evidence` asks, or
-`{"item_id": <id>, "not_closed": "<reason>"}`. A completed report without the field, or with an item
-left out, repeated or unknown, an empty reason or a commit this dispatch did not create, is refused.
+commits that close it, as its `expected_evidence` asks, or
+`{"item_id": <id>, "not_closed": "<reason>"}`. The commits are this dispatch's own, or, for an item
+an earlier attempt that handed you the same list already closed (a retried developer report or a
+tooling-retry), that attempt's commit. A completed report without the field, or with an item left
+out, repeated or unknown, an empty reason or a commit neither this dispatch nor such an earlier
+attempt created, is refused.
 An item that cannot be closed inside the zone and the prohibited changes is `not_closed` with its
 reason, never a silent omission: the report is then not clean, a plain accept is refused, and the
 next code-review carries every open coordinator finding again and accounts for it.

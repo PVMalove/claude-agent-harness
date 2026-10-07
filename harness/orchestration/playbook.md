@@ -497,10 +497,16 @@ The report must include:
   added and why. A developer-retry report maps each new commit to one distinct entry and carries
   neither field;
 - for a developer-retry brief with carried items: `carried_item_closure`, one record per carried
-  item, either `{item_id, commits}` (the commits of this dispatch that close it) or
-  `{item_id, not_closed}` (a non-empty reason). A completed report must carry it, a blocked or
-  failed one may, and no other report may. A missing, unknown or repeated item, an empty reason,
-  an empty commit list, an unresolvable SHA or a commit this dispatch did not create is refused.
+  item, either `{item_id, commits}` (the commits of its retry chain that close it) or
+  `{item_id, not_closed}` (a non-empty reason). The retry chain is this dispatch and the earlier
+  attempts that handed it the same closed list (a retried developer report or a developer
+  `tooling-retry`): its commits count from the `snapshot_commit` of the chain's first attempt that
+  this dispatch's `snapshot_commit` still descends from (from the rebase target under one), so an
+  item an earlier attempt closed names that attempt's commit. A completed report must carry it, a
+  blocked or failed one may, and no other report may. A missing, unknown or repeated item, an empty
+  reason, an empty commit list, an unresolvable SHA or a commit the chain did not create is refused,
+  with or without a `commit_plan`. A completed report recorded before issue #503 without the field
+  is still decided: every item is `omitted` and a carried gap.
   A `not_closed` item is a carried gap: no policy accepts the report, plain `accept` is refused,
   and only `override-warning` with a note other than `none` (recorded as `carried_items_gap`) or
   `retry` decides it. Without an approved rebase target, the report's `commit_sha` must descend from
