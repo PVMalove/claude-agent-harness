@@ -9,6 +9,9 @@ import hashlib
 import json
 import subprocess
 from collections.abc import Mapping
+from datetime import UTC, datetime
+from dataclasses import asdict
+from . import extensions
 from pathlib import Path
 
 from harness.errors import HarnessError
@@ -98,3 +101,56 @@ def resolve_plan(repo: Path, worktree: Path, config: Mapping[str, object], role:
             'runtime_extension': extension}
     plan['plan_digest'] = _digest(plan)
     return plan
+
+
+_REMEDY = ("prepare the named roots, hosts and mode in a new runtime session, select a native "
+           "runtime_access implementation that verifies the actual worker launch, and repeat preflight")
+
+
+def verify_plan(plan: JsonObject, transport: str) -> tuple[JsonObject, extensions.RuntimeAccessObservation | None]:
+    """Ask the pinned native implementation for fresh, worker-scoped evidence."""
+    if plan.get('plan_digest') != _digest(plan):
+        raise AccessError('access plan digest mismatch', remedy='create a new dispatch and approval for the resolved access plan')
+    if plan['sources']['mode'] == 'legacy' and not plan['requirements'] and not plan['network']['hosts']:
+        return {'status': 'legacy-inherit', 'verified': [], 'unverified': [], 'remedy': None}, None
+    provider = extensions.runtime_access(plan['runtime_extension'])
+    # The inert extension uses the telemetry observe signature and is never a permission proof.
+    observation = None if plan['runtime_extension'] == 'none' else provider.observe(plan, transport)
+    reason = _observation_problem(plan, transport, observation)
+    summary: JsonObject = {'status': 'unverified' if reason else 'verified', 'reason': reason,
+                           'required': {'hosts': plan['network']['hosts'], 'filesystem': plan['requirements']},
+                           'verified': [] if reason else ['mode', 'network', 'filesystem'],
+                           'unverified': ['mode', 'network', 'filesystem'] if reason else [],
+                           'remedy': _REMEDY if reason else None}
+    if observation is not None:
+        summary['evidence'] = asdict(observation)
+    return summary, observation
+
+
+def _observation_problem(plan: JsonObject, transport: str,
+                         observation: extensions.RuntimeAccessObservation | None) -> str | None:
+    if not isinstance(observation, extensions.RuntimeAccessObservation):
+        return 'native worker access proof is unavailable'
+    if observation.plan_digest != plan['plan_digest'] or observation.transport != transport:
+        return 'native worker access proof names a different plan or transport'
+    if (not observation.environment_id or not observation.launch_id
+        or observation.source not in ('native-runtime', 'runtime-adapter')
+        or observation.mechanism not in ('native-apply', 'confirmed-inheritance')):
+        return 'native worker launch identity or application mechanism is unverified'
+    try:
+        observed = datetime.fromisoformat(observation.observed_at)
+        age = (datetime.now(UTC) - observed).total_seconds()
+    except (ValueError, TypeError):
+        return 'native worker proof timestamp is invalid'
+    if age < 0 or age > 300:
+        return 'native worker proof is stale'
+    mode = plan['mode']
+    if mode not in observation.supported_modes:
+        return f'native runtime does not support requested mode {mode}'
+    if mode != 'inherit' and observation.effective_mode != mode:
+        return 'native worker effective mode differs from the requested mode'
+    if any(host not in observation.hosts for host in plan['network']['hosts']):
+        return 'native worker network host requirements are unverified'
+    if any((item['path'], item['access']) not in observation.filesystem for item in plan['requirements']):
+        return 'native worker filesystem requirements are unverified'
+    return None

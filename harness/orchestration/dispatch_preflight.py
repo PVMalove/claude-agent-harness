@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ..errors import HarnessError
 from ..token_estimator import estimate_tokens, estimate_tokens_for_bytes
+from . import runtime_access
 from .contract import ContractError, paths_inside, resolve_runtime_name, string_list
 from .core.config import _adaptive_continuation_policy
 from .core.constants import RUNTIME_PATH_PREFIXES, TOOLING_BLOCKER_UNCOMMITTED_FIELD
@@ -450,6 +451,12 @@ def prepare(
         "approval_reason": "the immutable brief will bind this exact runtime, worktree and snapshot",
         "options": ["accept", "retry", "block", "full review", "delta-review"],
     }
+    role_access = project_state.get("role_access", "write" if role == "developer" else "read-only")
+    access_plan = runtime_access.resolve_plan(repo, worktree, config, role, str(role_access),
+                                            operation=_optional_text(project_state.get("operation"), "operation"))
+    verification, _ = runtime_access.verify_plan(access_plan, str(plan.get("transport", "in-process")))
+    preview["runtime_access"] = access_plan
+    packet["runtime_access"] = {"plan": access_plan, "verification": verification}
     handoff = project_state.get("retry_handoff")
     retry_package = project_state.get("retry_package")
     if (

@@ -532,3 +532,17 @@ class ToolingRestartWorktreeTests(_PreflightFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuntimeAccessPreflightTests(_PreflightFixture):
+    def test_authored_access_is_visible_and_unverified_without_worker_proof(self) -> None:
+        config = self.state['config']
+        assert isinstance(config, dict)
+        config['access_policy'] = {'defaults': {'mode': 'sandbox', 'network': {'hosts': ['github.com']}}}
+        result = self._prepare()
+        access = cast(JsonObject, result.decision_packet['runtime_access'])
+        plan = cast(JsonObject, access['plan'])
+        verification = cast(JsonObject, access['verification'])
+        self.assertEqual(plan['mode'], 'sandbox')
+        self.assertEqual(verification['status'], 'unverified')
+        self.assertIn('new runtime session', str(verification['remedy']))
