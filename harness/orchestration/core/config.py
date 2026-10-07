@@ -119,7 +119,14 @@ def _config(repo: Path) -> JsonObject:
             "invalid project orchestration config: " + "; ".join(problems),
             remedy="fix the listed project orchestration config problem(s) before retrying",
         )
-    return {**_default_config(repo), **value}
+    if value.get("assignment_plans"):
+        return value
+    # An access-only config (issue #624) states no assignment: it takes the zero-config defaults
+    # beneath its own keys. Its own verification_commands stay the developer fallback.
+    defaults = _default_config(repo)
+    if "developer_verification_commands" not in value:
+        del defaults["developer_verification_commands"]
+    return {**defaults, **value}
 
 
 def _adaptive_continuation_policy(config: JsonObject) -> JsonObject:

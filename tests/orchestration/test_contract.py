@@ -11,9 +11,11 @@ import tomllib
 import unittest
 from pathlib import Path
 from typing import ClassVar
+from unittest import mock
 
 from harness.errors import HarnessError
 from harness.orchestration import contract
+from harness.orchestration.core import config
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -798,9 +800,6 @@ class ZoneFreeConfigHealthTests(unittest.TestCase):
                 )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class AccessPolicyContractTests(unittest.TestCase):
     def test_modes_are_independent_of_transport(self) -> None:
@@ -818,3 +817,68 @@ class AccessOnlyConfigTests(unittest.TestCase):
             path = Path(directory) / 'orchestration.json'
             path.write_text(json.dumps({'access_policy': {'defaults': {'mode': 'sandbox'}}}))
             self.assertEqual(contract.health_problems(path, ROOT / 'harness/orchestration/roles'), [])
+
+
+class ConfigLoadingTests(unittest.TestCase):
+    def _repo(self, orchestration: dict[str, object], qa_gate: list[str]) -> Path:
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, ignore_errors=True)
+        (repo / ".harness").mkdir()
+        (repo / ".harness/project.json").write_text(
+            json.dumps({"qa_gate_commands": qa_gate}), encoding="utf-8"
+        )
+        (repo / ".harness/orchestration.json").write_text(
+            json.dumps(orchestration), encoding="utf-8"
+        )
+        roles = mock.patch.object(
+            config, "_roles_dir", return_value=ROOT / "harness/orchestration/roles"
+        )
+        roles.start()
+        self.addCleanup(roles.stop)
+        return repo
+
+    def test_an_assigned_config_without_developer_commands_keeps_its_own_fallback(
+        self,
+    ) -> None:
+        example = json.loads(
+            (ROOT / "harness/orchestration.example.json").read_text(encoding="utf-8")
+        )
+        del example["developer_verification_commands"]
+        example["verification_commands"] = ["pytest -q"]
+        repo = self._repo(example, qa_gate=[])
+
+        loaded = config._config(repo)
+
+        self.assertNotIn("developer_verification_commands", loaded)
+        self.assertEqual(config._developer_verification_commands(loaded), ["pytest -q"])
+
+    def test_an_access_only_config_takes_zero_config_defaults_beneath_its_keys(
+        self,
+    ) -> None:
+        policy = {"defaults": {"mode": "sandbox"}}
+        repo = self._repo({"access_policy": policy}, qa_gate=["make qa"])
+
+        loaded = config._config(repo)
+
+        self.assertEqual(loaded["access_policy"], policy)
+        self.assertEqual(loaded["assignment_plans"], {})
+        self.assertEqual(config._developer_verification_commands(loaded), ["make qa"])
+
+    def test_an_access_only_config_keeps_its_own_verification_commands_for_developers(
+        self,
+    ) -> None:
+        repo = self._repo(
+            {
+                "access_policy": {"defaults": {"mode": "sandbox"}},
+                "verification_commands": ["pytest -q"],
+            },
+            qa_gate=["make qa"],
+        )
+
+        loaded = config._config(repo)
+
+        self.assertEqual(config._developer_verification_commands(loaded), ["pytest -q"])
+
+
+if __name__ == "__main__":
+    unittest.main()
