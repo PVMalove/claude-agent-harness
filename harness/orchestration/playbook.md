@@ -103,7 +103,7 @@ transition as `rebase_target_sha`, and that dispatch always needs an explicit ap
 transition digest, under every `approval_policy`; no policy approves a rebase target. The developer
 rebases the candidate onto exactly that target and fixes on top of it in the same dispatch. An
 accept of its report, or of a later retry whose candidate sits on that target, pins
-`integration_base_commit` to the target, so review needs no separate stale-base rebase. A fetch
+`integration_base_commit` to the target. A fetch
 error refuses the retry with a remedy; a `tooling-retry` and a candidate that already contains the
 tip propose no target.
 
@@ -472,7 +472,7 @@ It must contain, at minimum:
   is bound into the transition as `carried_items_sha256`;
 - `rebase target`: `rebase_target_commit`, the integration tip a `rebase-fix-forward`
   developer-retry rebases onto, bound into the transition as `rebase_target_sha`, or `null` on every
-  other brief, including the developer dispatch of the stale-base rebase route.
+  other brief, including the developer dispatch of a legacy stale-base record.
 
 The brief is a starting contract, not a conversation buffer. A role must escalate an ambiguity,
 overlap, credential request, irreversible action, policy decision, or missing proof. It must not
@@ -549,8 +549,8 @@ The report must include:
   A `not_closed` item is a carried gap: no policy accepts the report, plain `accept` is refused,
   and only `override-warning` with a note other than `none` (recorded as `carried_items_gap`) or
   `retry` decides it. Without a rebase target (the brief's non-null `rebase_target_commit`, or the
-  batch's stale-base target while `base_rebase_required` is open), the report's `commit_sha` must
-  descend from `snapshot_commit`. A retry that rewrote that history (amend, squash or reset) is
+  batch's target on a legacy stale-base record with `base_rebase_required`), the report's
+  `commit_sha` must descend from `snapshot_commit`. A retry that rewrote that history (amend, squash or reset) is
   refused; its remedy is to recover the commits from `git reflog` and re-apply the fix as new
   commits;
 - for a code-review brief with carried items: `review.carried_items`, one

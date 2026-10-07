@@ -805,8 +805,9 @@ developer-retry статус `closed` с SHA коммитов или `open` с �
 Отчёт после amend, squash или reset отклоняется с сообщением `developer-retry candidate <sha> does
 not descend from snapshot_commit <snapshot>: the retry rewrote the history it continues (amend,
 squash or reset)`. Remedy: восстановить переписанные коммиты из `git reflog`, повторить исправление
-новыми коммитами без amend и squash и отчитаться новым HEAD. Retry rebase-отчёта, пока открыт
-stale-base блок, по-прежнему проверяется от rebase target.
+новыми коммитами без amend и squash и отчитаться новым HEAD. Retry rebase-отчёта legacy-записи
+stale-base (`base_rebase_required`, записанной до ADR 0014) по-прежнему проверяется от её rebase
+target.
 
 Rebase-fix-forward (#504) — тоже маршрут существующего developer-retry, а не новый переход. Решение
 `retry`, которое ведёт в `developer-retry` или `fix-forward` (retry developer, verification,
@@ -823,7 +824,7 @@ remedy, а `decision-packet` показывает её в `route_preview.retry`.
 Target попадает в brief только через dispatch с явным approval при любой `approval_policy`: policy
 approval для него отклоняется. `dispatch propose` показывает переход с полем `rebase_target_sha`, а
 brief получает `rebase_target_commit`; у остальных brief это поле равно `null`, в том числе у
-developer dispatch маршрута stale-base:
+developer dispatch legacy-записи stale-base:
 
 ```bash
 python .harness/orchestration/coordinator.py --repo . batch decision-packet --batch <batch-id>
@@ -855,10 +856,10 @@ Developer переносит коммиты над старой базой ро�
 (сравнение `git patch-id --stable`), `dropped` и `patch_id_mismatches`. Расхождение patch-id —
 конфликт, разрешённый с изменениями: отчёт не отклоняется и не теряет clean-статус, а пара
 показывается для delta-review. Accept такого отчёта — или более позднего retry, чей candidate уже
-стоит на этом target, — закрепляет `integration_base_commit` = target, поэтому следующий code-review
-проходит проверку свежести базы без отдельного rebase-dispatch. Retry ещё не принятого
+стоит на этом target, — закрепляет `integration_base_commit` = target. Retry ещё не принятого
 rebase-отчёта, как и его `tooling-retry`, считает от target и `changed_files`, и коммиты
-`carried_item_closure`. Если tip уйдёт ещё раз до review, сработает прежний маршрут stale-base.
+`carried_item_closure`. Если tip уйдёт ещё раз, review и QA проверяют закреплённый candidate, а
+ветку обновляет `integration refresh` при подготовке PR (ADR 0014).
 
 Code-review `blocker` никогда не принимается. Пока `retry_policy.max_developer_retries` ещё допускает
 developer retry, для него доступны `retry` или `abandon`; после исчерпания budget `retry`

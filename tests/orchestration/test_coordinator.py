@@ -8776,7 +8776,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         self.assertEqual(submitted["state"], "reported")
 
-    # -- the stale-base rebase route before code-review and publish (characterization) --------
+    # -- legacy stale-base records (base_rebase_required, before ADR 0014 removed the check) ----
 
     def _push_upstream(self, name: str = "upstream") -> str:
         """One commit pushed to origin/master after the batch pinned its integration base."""
@@ -8787,9 +8787,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         return _git(self.repo, "rev-parse", "HEAD")
 
     def _stale_base_rebase_report(self) -> tuple[str, str, JsonObject, list[str]]:
-        """An accepted two-commit candidate whose code-review a moved base refused, and the
-        developer rebase report onto that tip, not decided yet. Returns the batch, the tip, the
-        rebase brief and the rebased commits."""
+        """An accepted two-commit candidate on a legacy stale-base record (written before ADR 0014
+        removed the base freshness check), and the developer rebase report onto the recorded tip,
+        not decided yet. Returns the batch, the tip, the rebase brief and the rebased commits."""
         batch_id = cast(str, self._plan_batch(["one", "two"])["batch_id"])
         self._accepted_architect(batch_id)
         brief = self._dispatch(batch_id, "developer")["brief"]
@@ -8807,10 +8807,14 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._decide(batch_id, "accept")
         self._assess(batch_id, commits[-1], changed)
         upstream = self._push_upstream()
-        with self.assertRaisesRegex(
-            coordinator.CoordinatorError, "batch base is stale"
-        ):
-            self._dispatch(batch_id, "code-review", candidate=commits[-1])
+        self._edit_batch(
+            batch_id,
+            next_action="developer",
+            required_next_role="developer",
+            retry_candidate_required=True,
+            base_rebase_required=True,
+            rebase_target_commit=upstream,
+        )
         rebase = self._dispatch(batch_id, "developer")["brief"]
         self._start(rebase["dispatch_id"])
         _git(self.worktree, "rebase", "master")
@@ -8829,49 +8833,13 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         return batch_id, upstream, rebase, rebased
 
-    def test_a_publish_on_a_moved_integration_base_is_refused_and_routed_to_a_developer(
-        self,
-    ) -> None:
-        batch_id = cast(str, self._create_batch()["batch_id"])
-        self._accepted_architect(batch_id)
-        candidate = self._accepted_candidate(batch_id)
-        self._accepted_review_and_qa(batch_id, candidate)
-        pinned = self._batch_record(batch_id)["integration_base_commit"]
-        upstream = self._push_upstream()
-
-        with self.assertRaises(coordinator.CoordinatorError) as raised:
-            self._dispatch(
-                batch_id, "developer", purpose="publish", candidate=candidate
-            )
-
-        self.assertIn(
-            f"batch base is stale: origin/master has moved from {pinned} to {upstream}",
-            raised.exception.message,
-        )
-        self.assertIn("developer rebase dispatch", raised.exception.remedy)
-        stored = self._batch_record(batch_id)
-        self.assertEqual(
-            (
-                stored["next_action"],
-                stored["required_next_role"],
-                stored["retry_candidate_required"],
-                stored["base_rebase_required"],
-                stored["rebase_target_commit"],
-                stored["integration_base_commit"],
-            ),
-            ("developer", "developer", True, True, upstream, pinned),
-        )
-        rebase = self._dispatch(batch_id, "developer")["brief"]
-        self.assertEqual(rebase["transition"]["next_action"], "developer")
-        self.assertEqual(rebase["snapshot_commit"], candidate)
-        # The stale-base rebase is measured from the batch target, never from a brief target.
-        self.assertIsNone(rebase["rebase_target_commit"])
-        self.assertNotIn("rebase_target_sha", rebase["transition"])
-
     def test_a_retry_of_a_rebase_report_is_measured_from_the_target_and_accept_pins_it(
         self,
     ) -> None:
-        batch_id, upstream, _, rebased = self._stale_base_rebase_report()
+        batch_id, upstream, rebase, rebased = self._stale_base_rebase_report()
+        # The legacy stale-base rebase is measured from the batch target, never from a brief target.
+        self.assertIsNone(rebase["rebase_target_commit"])
+        self.assertNotIn("rebase_target_sha", rebase["transition"])
         pinned = self._batch_record(batch_id)["integration_base_commit"]
         decided = self._decide(batch_id, "retry", reason_category="code")
         retry = self._dispatch(batch_id, "developer")["brief"]
@@ -9097,7 +9065,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             ):
                 batch: JsonObject = {
                     "approval_policy": policy,
-                    "zone": "repository",
+                    "allowed_paths": ["**"],
                     "dispatches": [
                         {
                             "dispatch_id": "dispatch-1",
@@ -9109,7 +9077,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                         }
                     ],
                 }
-                config_ = {"low_risk_zones": ["repository"]}
+                config_ = {"low_risk_paths": ["**"]}
                 with self.subTest(policy=policy, route=route):
                     if expected is not None:
                         self.assertEqual(

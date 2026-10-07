@@ -33,9 +33,9 @@ below it. `report submit` refuses a report whose `commit_sha` does not descend f
 `snapshot_commit`; its remedy is to recover the rewritten commits from `git reflog`, re-apply the fix
 as new commits without amend or squash, and report the new HEAD. Only a retry under a rebase
 target is measured from that target instead. Two sources share the name `rebase_target_commit`: the
-brief's field, non-null only on a `rebase-fix-forward` brief (below), and, while a stale-base block
-is open, the batch's target that the prompt names; the brief field is `null` on that stale-base
-rebase brief.
+brief's field, non-null only on a `rebase-fix-forward` brief (below), and, on a legacy stale-base
+record (`base_rebase_required`, written before ADR 0014 removed the base freshness check), the
+batch's target that the prompt names; the brief field is `null` on that legacy rebase brief.
 
 A developer-retry brief with a non-null `rebase_target_commit` (route `rebase-fix-forward`: the
 integration base moved ahead and a human approved the new tip) rebases and fixes in the same
