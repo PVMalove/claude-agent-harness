@@ -30,7 +30,8 @@ so repeat the command after its `retry_after_seconds`.
 Do not infer or repair an opt-in capability. Process one ticket to a terminal batch state before
 beginning another.
 
-If another batch blocks the ticket or zone, inspect `batch list --open`, the conflicting dispatch,
+If another batch holds the same unfinished ticket, branch or worktree, or the `concurrency_budget`
+is exhausted, inspect `batch list --open`, the conflicting dispatch,
 and its decision packet. Tell the developer which batch is blocking and how to finish it normally.
 If its worker can no longer produce a report, show a copyable `batch abandon` command with the
 actual batch ID, the verified operator name, `--approved-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`,
@@ -47,14 +48,23 @@ exists: check the ticket's blockers whatever its current label (any still open â
 and make sure it carries `status::blocked`); otherwise replace its `status::*` label with
 `status::in-progress` exactly as `/fast-implement` Phase 1 steps 2â€“3 do, and confirm it is the
 only `status::*` label. A failed label write is a blocker, not a warning. Before `batch create`, run the batch-level preflight with bounded expected files, services and
-diff size. If it rejects the ticket, split it with `/to-tickets`; never ask an architect to discover
-whether an oversized ticket should have been split.
+diff size. Pin the writer's explicit scope with `--allowed-path` (repeat it; a path or glob inside
+the developer's write ceiling): batches with overlapping files run in parallel in their own
+worktrees, and a change outside the scope is rejected. If it rejects the ticket, split it with `/to-tickets`; never ask an architect to discover
+whether an oversized ticket should have been split. When creating the batch with `batch create`,
+specify `--required-gate review --required-gate qa`: the full implement pipeline explicitly sets
+both independent Standards/Spec review and serialized clean-room QA gates. Before dispatching the
+write-role (`developer`) worker, verify that these mandatory gates are recorded in the batch's
+`required_gates`; halt early if missing rather than sending a worker into a risk-gate omission.
 
 For each handoff, run `dispatch preflight`, show `batch decision-packet`, then create an approved
 immutable brief. Pass the brief's `report_staging_path` to the worker verbatim; a role that has to
 guess where its report belongs writes it outside the project. The coordinator never writes feature code or repairs state by hand. A report is
 evidence, not permission to advance. Architect precedes developer; accepted candidate proceeds
-through the required review/QA/publish gates.
+through the required review/QA/publish gates. A write-role worker stopped early before making changes
+returns a truthful `outcome: blocked` report bound to the verified checkout commit with empty
+`changed_files` and unrun checks; the coordinator decision packet returns an explicit recovery route
+(`retry`, `block`, `abandon`) without registering a candidate or weakening `completed` report validation.
 
 Before every write-role dispatch, the immutable brief carries an ordered commit plan. Each entry
 names one independently reviewable logical change, its expected files and the DoD items it covers;
@@ -69,8 +79,8 @@ item can be accepted only by `override-warning` with a note other than `none`, o
 recovery commit merely because they are staged together.
 
 Follow the configured approval policy. Under `manual_all`, every transition needs explicit approval:
-show the decision packet, ask, and wait. Under `low_risk`, a clean completed report in an eligible
-zone is accepted by the coordinator with an audited policy decision, and the next eligible dispatch
+show the decision packet, ask, and wait. Under `low_risk`, a clean completed report of a batch whose
+allowed paths lie inside `low_risk_paths` is accepted by the coordinator with an audited policy decision, and the next eligible dispatch
 may already be approved. Under `milestone`, clean reports outside QA, publish and risk milestones
 are also accepted automatically; stop for the remaining milestone decisions. Continue from the
 recorded `next_action` without asking the operator to repeat a policy decision. Blockers, failed
@@ -91,7 +101,7 @@ or verification role, pass `--reason-category block-bypass` to `batch decision-p
 `route_preview.retry.route` is `bypass-rerun`, to `batch decide --decision retry`: the same stage
 re-runs on the same SHA with no new candidate and no developer retry spent, and its new dispatch
 always needs explicit approval. A report that stops with `tooling_blocker` instead is confirmed
-before its retry: check that its `command` is legitimate under the brief (zone and tool policy) and
+before its retry: check that its `command` is legitimate under the brief (allowed paths and tool policy) and
 that its `message` refuses that command. For a false positive, file or reuse a bug ticket against
 the tool through the tracker CLI (tool, command, message, dispatch ID), name the ticket in `--note`,
 and run `batch decide --decision retry` once `route_preview.retry.route` is `tooling-retry`; it
@@ -101,12 +111,12 @@ with the developer reason category its evidence supports. Resolve the `tooling-r
 attention, raised by the third consecutive tooling retry on one candidate, only once the tool is
 fixed.
 
-When you find a defect in a clean developer report whose DoD is met inside its zone, do not retry
+When you find a defect in a clean developer report whose DoD is met inside its allowed paths, do not retry
 it: accept it with `batch decide --findings-file <path>`, or after a policy auto-accept run
 `batch carry-over --batch <id> --findings-file <path>` before its code-review dispatch exists. The
 finding travels into the code-review brief as a carried item (route `carry-over`), and the one
 developer retry is spent after review. Retry a developer report without accept only for an unmet
-DoD item or an out-of-zone change.
+DoD item or an out-of-scope change.
 
 Each worker records a model self-report and is observed by the event-driven watchdog; those facts
 are evidence, never a reason to edit an immutable brief.
@@ -201,7 +211,13 @@ notes.
 
 ## Wrap-up
 
-After an accepted publish, offer `/to-pull-requests <ticket>`. Do not invoke it automatically, open
+After an accepted publish, record the integration link before the branch is merged or deleted:
+`python .harness/orchestration/coordinator.py --repo . integration prepare --ticket "#<ID>" --branch "<issue-branch>"`
+(add `--batch <batch-id>` when several batches published the branch). It writes only an immutable
+integration record and is safe to repeat; if it refuses, report its remedy to the developer and do
+not work around it. Never edit the completed batch or its reports by hand.
+
+Then offer `/to-pull-requests <ticket>`. Do not invoke it automatically, open
 or merge a PR, write to an integration branch, or close the ticket in this skill. Leave
 `status::in-progress` on the ticket: closing it and moving its unblocked dependents to
 `status::ready` belong to `/to-pull-requests` after the merge.

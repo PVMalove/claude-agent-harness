@@ -33,18 +33,20 @@ ROLE_FIELDS = frozenset({"name", "mode", "required_capabilities", "risk_triggers
 CONFIG_REQUIRED_FIELDS = (
     "provider_profiles",
     "assignment_plans",
-    "backend_zones",
     "concurrency_budget",
     "verification_commands",
 )
 CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "$schema",
+    # Legacy zone model: still accepted so an existing project config keeps validating, never required.
+    "backend_zones",
     "developer_verification_commands",
     "review_verification_commands",
     "test_path_patterns",
     "adaptive_continuation_policy",
     "approval_policy",
     "low_risk_zones",
+    "low_risk_paths",
     "context_package_policy",
     "repo_map_policy",
     "continuation_policy",
@@ -173,10 +175,81 @@ def load_role_manifest(path: Path) -> JsonObject:
     return metadata
 
 
+def is_clean_path_pattern(path: str) -> bool:
+    """Whether a path or glob is repo-relative in its canonical form.
+
+    A leading ``/``, a backslash, or an empty, ``.`` or ``..`` segment (``./src``, ``src//x``,
+    ``src/../x``) is never canonical: such a form would be compared literally here and matched
+    differently by the glob that checks reported files.
+    """
+    if not path or path.startswith("/") or "\\" in path:
+        return False
+    return all(segment not in {"", ".", ".."} for segment in path.split("/"))
+
+
 def _inside(path: str, boundary: str) -> bool:
-    """Проверить, находится ли путь внутри границы (с учётом подстановок **)."""
-    prefix = boundary.removesuffix("**")
-    return path == boundary or path.startswith(prefix)
+    """Проверить, находится ли путь внутри границы (по сегментам пути, а не по префиксу строки).
+
+    Граница ``**`` принимает любой путь, ``dir/**`` - всё строго под ``dir``, любая другая граница -
+    только ровно себя. Неканоническая форма пути или границы никогда не считается внутри.
+    """
+    if not is_clean_path_pattern(path) or not is_clean_path_pattern(boundary):
+        return False
+    if boundary == "**":
+        return True
+    if boundary.endswith("/**"):
+        prefix = boundary.removesuffix("/**").split("/")
+        parts = path.split("/")
+        return len(parts) > len(prefix) and parts[: len(prefix)] == prefix
+    return path == boundary
+
+
+def paths_inside(paths: list[str], boundaries: list[str]) -> bool:
+    """Whether every path stays inside at least one boundary pattern."""
+    return all(
+        any(_inside(path, boundary) for boundary in boundaries) for path in paths
+    )
+
+
+def low_risk_patterns(config: Mapping[str, object]) -> list[str]:
+    """The path patterns whose batches may continue under ``approval_policy: low_risk``.
+
+    ``low_risk_paths`` is the zone-free declaration. A legacy ``low_risk_zones`` list maps to the
+    paths of the zones it names, so an existing configuration keeps exactly the authority it had.
+    """
+    patterns: list[str] = []
+    declared = config.get("low_risk_paths")
+    if string_list(declared):
+        patterns.extend(declared)
+    zones = config.get("backend_zones")
+    legacy = config.get("low_risk_zones")
+    if string_list(legacy) and isinstance(zones, dict):
+        for name in legacy:
+            zone = zones.get(name)
+            paths = zone.get("paths") if isinstance(zone, dict) else None
+            if string_list(paths):
+                patterns.extend(paths)
+    return patterns
+
+
+def low_risk_eligible(
+    config: Mapping[str, object], batch: Mapping[str, object]
+) -> bool:
+    """Whether a batch's explicit scope lies entirely inside the project's low-risk paths.
+
+    Nothing is eligible until the project names low-risk paths (or legacy zones). A batch recorded
+    before explicit scopes existed has no ``allowed_paths``; it keeps its historical rule: its zone
+    must be one of ``low_risk_zones``.
+    """
+    patterns = low_risk_patterns(config)
+    if not patterns:
+        return False
+    allowed = batch.get("allowed_paths")
+    if allowed is None:
+        zone = batch.get("zone")
+        legacy = config.get("low_risk_zones")
+        return non_empty(zone) and string_list(legacy) and zone in legacy
+    return string_list(allowed) and bool(allowed) and paths_inside(allowed, patterns)
 
 
 def _valid_model(value: object) -> str:
@@ -233,25 +306,45 @@ def resolve_runtime_name(plan: Mapping[str, object], requested: object) -> str:
     return default.strip()
 
 
+def role_write_ceiling(
+    config: Mapping[str, object], plan: Mapping[str, object], role_name: str
+) -> list[str]:
+    """The widest path set a role may ever be handed: the role's own authority limit.
+
+    ``write_paths`` states it. Without it the ceiling is the whole repository, or -- for a legacy
+    plan that still names a zone -- that zone's paths. A batch narrows it with its explicit scope.
+    """
+    zones = config.get("backend_zones")
+    zone = zones.get(plan.get("zone")) if isinstance(zones, dict) else None
+    zone_paths = zone.get("paths") if isinstance(zone, dict) else None
+    boundaries = zone_paths if string_list(zone_paths) and zone_paths else ["**"]
+    write_paths = plan.get("write_paths", boundaries)
+    if not string_list(write_paths) or not write_paths:
+        raise ContractError(
+            f"role {role_name!r} has invalid write_paths",
+            remedy=f"set assignment_plans[{role_name!r}].write_paths to a non-empty list of strings",
+        )
+    if not paths_inside(write_paths, boundaries):
+        raise ContractError(
+            f"role {role_name!r} write_paths must remain inside backend zone {plan.get('zone')!r}",
+            remedy=f"narrow assignment_plans[{role_name!r}].write_paths so every path stays inside backend_zones[{plan.get('zone')!r}].paths",
+        )
+    return list(write_paths)
+
+
 def resolve_assignment(
     config: Mapping[str, object],
     role: Mapping[str, object],
     role_name: str,
-    zone_name: object,
     runtime_name: object,
 ) -> JsonObject:
     """Разрешить сконфигурированное назначение роли с сохранением авторитета манифеста."""
     assignments = config.get("assignment_plans")
-    zones = config.get("backend_zones")
     profiles = config.get("provider_profiles")
-    if (
-        not isinstance(assignments, dict)
-        or not isinstance(zones, dict)
-        or not isinstance(profiles, dict)
-    ):
+    if not isinstance(assignments, dict) or not isinstance(profiles, dict):
         raise ContractError(
-            "project orchestration config has invalid assignments, zones or profiles",
-            remedy="set assignment_plans, backend_zones and provider_profiles to objects in the project orchestration config",
+            "project orchestration config has invalid assignments or profiles",
+            remedy="set assignment_plans and provider_profiles to objects in the project orchestration config",
         )
     if role.get("name") != role_name or role.get("mode") not in ROLE_MODES:
         raise ContractError(
@@ -265,10 +358,10 @@ def resolve_assignment(
             remedy=f"add a non-empty required_capabilities list to the {role_name!r} role manifest",
         )
     plan = assignments.get(role_name)
-    if not isinstance(plan, dict) or plan.get("zone") != zone_name:
+    if not isinstance(plan, dict):
         raise ContractError(
-            f"role {role_name!r} is not assigned to zone {zone_name!r}",
-            remedy=f"set assignment_plans[{role_name!r}].zone to {zone_name!r} in the project orchestration config",
+            f"role {role_name!r} has no assignment plan",
+            remedy=f"add assignment_plans[{role_name!r}] to the project orchestration config",
         )
     transport = plan.get("transport", "in-process")
     if transport not in ROLE_TRANSPORTS:
@@ -276,34 +369,7 @@ def resolve_assignment(
             f"role {role_name!r} has an invalid transport",
             remedy=f"set assignment_plans[{role_name!r}].transport to one of {sorted(ROLE_TRANSPORTS)}",
         )
-    zone = zones.get(zone_name)
-    paths = zone.get("paths") if isinstance(zone, dict) else None
-    if (
-        not isinstance(paths, list)
-        or not paths
-        or not all(non_empty(item) for item in paths)
-    ):
-        raise ContractError(
-            f"backend zone {zone_name!r} is invalid",
-            remedy=f"set backend_zones[{zone_name!r}].paths to a non-empty list of strings",
-        )
-    write_paths = plan.get("write_paths", paths)
-    if (
-        not isinstance(write_paths, list)
-        or not write_paths
-        or not all(non_empty(item) for item in write_paths)
-    ):
-        raise ContractError(
-            f"role {role_name!r} has invalid write_paths",
-            remedy=f"set assignment_plans[{role_name!r}].write_paths to a non-empty list of strings",
-        )
-    if not all(
-        any(_inside(path, boundary) for boundary in paths) for path in write_paths
-    ):
-        raise ContractError(
-            f"role {role_name!r} write_paths must remain inside backend zone {zone_name!r}",
-            remedy=f"narrow assignment_plans[{role_name!r}].write_paths so every path stays inside backend_zones[{zone_name!r}].paths",
-        )
+    write_paths = role_write_ceiling(config, plan, role_name)
     runtimes = plan.get("runtimes")
     if not isinstance(runtimes, dict):
         raise ContractError(
@@ -347,7 +413,7 @@ def resolve_assignment(
     effort = _valid_effort(runtime.get("effort"))
     return {
         "role": role,
-        "zone": {"paths": [] if role["mode"] == "read-only" else list(write_paths)},
+        "write_ceiling": [] if role["mode"] == "read-only" else write_paths,
         "profile_id": profile_id,
         "model": model,
         "effort": effort,
@@ -393,7 +459,6 @@ def validate_brief_policy(
     for field in (
         "ticket",
         "role",
-        "zone",
         "branch",
         "worktree",
         "definition_of_done",
@@ -411,9 +476,11 @@ def validate_brief_policy(
             "dispatch brief ticket and role must be non-empty strings",
             remedy=INTERNAL_INVARIANT_REMEDY,
         )
-    if not non_empty(brief["zone"]) or not non_empty(brief["branch"]):
+    if not non_empty(brief["branch"]) or (
+        brief.get("zone") is not None and not non_empty(brief["zone"])
+    ):
         raise ContractError(
-            "dispatch brief zone and branch must be non-empty strings",
+            "dispatch brief branch must be a non-empty string and zone, when recorded, too",
             remedy=INTERNAL_INVARIANT_REMEDY,
         )
     if not non_empty(brief["worktree"]):
@@ -488,17 +555,21 @@ def validate_brief_policy(
     role_name = brief["role"]
     role = load_role_manifest(roles_root / f"{role_name}.md")
     assignment = resolve_assignment(
-        config, role, role_name, brief["zone"], brief.get("resolved_runtime")
+        config, role, role_name, brief.get("resolved_runtime")
     )
     if brief.get("access") != role["mode"]:
         raise ContractError(
             f"dispatch brief access must be {role['mode']!r} for role {role_name!r}",
             remedy=INTERNAL_INVARIANT_REMEDY,
         )
-    expected_paths = assignment["zone"]["paths"]
-    if role["mode"] == "write" and brief.get("write_paths") != expected_paths:
+    scope = brief.get("write_paths")
+    if role["mode"] == "write" and (
+        not string_list(scope)
+        or not scope
+        or not paths_inside(scope, assignment["write_ceiling"])
+    ):
         raise ContractError(
-            "write dispatch paths must exactly match its role assignment",
+            "write dispatch paths must be an explicit scope inside its role write ceiling",
             remedy=INTERNAL_INVARIANT_REMEDY,
         )
     if role["mode"] == "read-only" and brief.get("write_paths"):
@@ -955,7 +1026,8 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
                 problems.append(
                     f"provider profile {profile_id!r} references unknown fallback profile {fallback_id!r}"
                 )
-    zones = config.get("backend_zones")
+    # backend_zones is a legacy declaration: optional, validated only when a project still states it.
+    zones = config.get("backend_zones", {})
     if not isinstance(zones, dict):
         problems.append("orchestration backend_zones must be an object")
         zones = {}
@@ -1004,11 +1076,11 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
                     + ", ".join(sorted(ROLE_TRANSPORTS))
                 )
             zone_id = plan.get("zone")
-            if not non_empty(zone_id):
+            if "zone" in plan and not non_empty(zone_id):
                 problems.append(
                     f"assignment plan for role {role_name!r} zone must be a non-empty string"
                 )
-            elif zone_id not in zones:
+            elif "zone" in plan and zone_id not in zones:
                 problems.append(
                     f"unknown backend zone {zone_id!r} for role {role_name!r}"
                 )
@@ -1096,7 +1168,6 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
                         config,
                         roles[role_name],
                         role_name,
-                        plan.get("zone"),
                         runtime_name,
                     )
                 except ContractError as exc:
@@ -1136,6 +1207,19 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     ):
         problems.append(
             "orchestration low_risk_zones must name configured backend zones"
+        )
+    low_risk_paths = config.get("low_risk_paths")
+    if low_risk_paths is not None and (
+        not string_list(low_risk_paths) or not low_risk_paths
+    ):
+        problems.append(
+            "orchestration low_risk_paths must be a non-empty list of path patterns when provided"
+        )
+    elif string_list(low_risk_paths) and not all(
+        is_clean_path_pattern(pattern) for pattern in low_risk_paths
+    ):
+        problems.append(
+            "orchestration low_risk_paths entries must be repo-relative patterns such as 'src/**' without './', '//' or '..' segments"
         )
     attestation_required = config.get("worker_attestation_required")
     if attestation_required is not None and not isinstance(attestation_required, bool):

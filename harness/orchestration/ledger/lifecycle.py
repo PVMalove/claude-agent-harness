@@ -296,6 +296,226 @@ class CheckpointRecord:
         return cls(checkpoint_id=cast(str, data.get("checkpoint_id")), extra=extra)
 
 
+def _derived_id(prefix: str, members: JsonObject) -> str:
+    """A deterministic record id: the prefix and the first 32 hex digits of the canonical digest."""
+    digest = hashlib.sha256(_canonical(members).encode("utf-8")).hexdigest()
+    return f"{prefix}-{digest[:32]}"
+
+
+@dataclass(frozen=True)
+class IntegrationRecord:
+    """Value Object for a ``reports/integration/*.json`` record.
+
+    The record lives in a subdirectory of the already validated ``reports`` directory, so adding it
+    needs neither a schema bump nor a ``ledger migrate``.  Its id is derived from the identity it
+    links, so repeating a prepare finds the same record instead of writing a second one.
+    """
+
+    directory: ClassVar[str] = "reports/integration"
+    IDENTITY_MEMBERS: ClassVar[tuple[str, ...]] = (
+        "ticket",
+        "branch",
+        "source_batch_id",
+        "candidate_sha",
+        "target_sha",
+    )
+
+    integration_record_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, identity: JsonObject) -> str:
+        return _derived_id(
+            "integration", {key: identity.get(key) for key in cls.IDENTITY_MEMBERS}
+        )
+
+    @property
+    def record_id(self) -> str:
+        return self.integration_record_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "integration_record_id": self.integration_record_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> IntegrationRecord:
+        known = ("integration_record_id",)
+        extra = {key: value for key, value in data.items() if key not in known}
+        return cls(
+            integration_record_id=cast(str, data.get("integration_record_id")),
+            extra=extra,
+        )
+
+
+@dataclass(frozen=True)
+class IntegrationEvidenceRecord:
+    """Value Object for a ``reports/integration-evidence/*.json`` record: one new check of a
+    candidate/target pair linked to an integration record.  The id excludes the recording time, so
+    linking the same evidence twice is idempotent."""
+
+    directory: ClassVar[str] = "reports/integration-evidence"
+    ID_MEMBERS: ClassVar[tuple[str, ...]] = (
+        "integration_record_id",
+        "kind",
+        "candidate_sha",
+        "target_sha",
+        "result",
+        "reference",
+        "artifact_sha256",
+    )
+
+    evidence_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, members: JsonObject) -> str:
+        return _derived_id(
+            "evidence", {key: members.get(key) for key in cls.ID_MEMBERS}
+        )
+
+    @property
+    def record_id(self) -> str:
+        return self.evidence_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "evidence_id": self.evidence_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> IntegrationEvidenceRecord:
+        known = ("evidence_id",)
+        extra = {key: value for key, value in data.items() if key not in known}
+        return cls(evidence_id=cast(str, data.get("evidence_id")), extra=extra)
+
+
+@dataclass(frozen=True)
+class IntegrationLocalQaRecord:
+    """Append-only request, attempt or result in the existing reports contract."""
+
+    directory: ClassVar[str] = "reports/integration-local-qa"
+    local_qa_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, members: JsonObject) -> str:
+        return _derived_id("local-qa", members)
+
+    @property
+    def record_id(self) -> str:
+        return self.local_qa_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "local_qa_id": self.local_qa_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> IntegrationLocalQaRecord:
+        return cls(
+            local_qa_id=cast(str, data.get("local_qa_id")),
+            extra={key: value for key, value in data.items() if key != "local_qa_id"},
+        )
+
+
+@dataclass(frozen=True)
+class IntegrationRefreshRecord:
+    """Value Object for a ``reports/integration-refresh/*.json`` record (issue #533): one clean
+    rebase of an issue branch onto a new integration SHA, linking the candidate before and after,
+    the target SHA and the resulting history.  The id excludes the recording time, so repeating a
+    refresh that already happened finds the same record."""
+
+    directory: ClassVar[str] = "reports/integration-refresh"
+    ID_MEMBERS: ClassVar[tuple[str, ...]] = (
+        "integration_record_id",
+        "previous_candidate_sha",
+        "previous_target_sha",
+        "new_candidate_sha",
+        "target_sha",
+    )
+
+    refresh_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, members: JsonObject) -> str:
+        return _derived_id("refresh", {key: members.get(key) for key in cls.ID_MEMBERS})
+
+    @property
+    def record_id(self) -> str:
+        return self.refresh_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "refresh_id": self.refresh_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> IntegrationRefreshRecord:
+        known = ("refresh_id",)
+        extra = {key: value for key, value in data.items() if key not in known}
+        return cls(refresh_id=cast(str, data.get("refresh_id")), extra=extra)
+
+
+@dataclass(frozen=True)
+class ResolverRecord:
+    """Value Object for a ``reports/resolver/*.json`` record (issue #534): the conflict-resolver
+    route taken for one integration record.  Immutable; the cycle budget is never stored on it but
+    derived from the append-only ``ResolverEventRecord`` files, so a lost session cannot reset it."""
+
+    directory: ClassVar[str] = "reports/resolver"
+
+    resolver_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, integration_record_id: str) -> str:
+        return _derived_id("resolver", {"integration_record_id": integration_record_id})
+
+    @property
+    def record_id(self) -> str:
+        return self.resolver_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "resolver_id": self.resolver_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> ResolverRecord:
+        extra = {key: value for key, value in data.items() if key != "resolver_id"}
+        return cls(resolver_id=cast(str, data.get("resolver_id")), extra=extra)
+
+
+@dataclass(frozen=True)
+class ResolverEventRecord:
+    """Value Object for a ``reports/resolver-events/*.json`` record (issue #534): one immutable
+    audit event of the conflict-resolver route (``cycle-spent``, ``same-target-fix``,
+    ``human-decision``, ``scope-change``, ``exhausted``).  The id covers what makes an event the
+    same event, so repeating it finds the record instead of writing a second one."""
+
+    directory: ClassVar[str] = "reports/resolver-events"
+    ID_MEMBERS: ClassVar[tuple[str, ...]] = (
+        "kind",
+        "integration_record_id",
+        "target_sha",
+        "dispatch_id",
+        "discriminator",
+    )
+
+    event_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, members: JsonObject) -> str:
+        return _derived_id(
+            "resolver-event", {key: members.get(key) for key in cls.ID_MEMBERS}
+        )
+
+    @property
+    def record_id(self) -> str:
+        return self.event_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "event_id": self.event_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> ResolverEventRecord:
+        extra = {key: value for key, value in data.items() if key != "event_id"}
+        return cls(event_id=cast(str, data.get("event_id")), extra=extra)
+
+
 class LedgerRecordVO(Protocol):
     """Structural shape a Value Object must have to be persisted via ``write_record``/
     ``replace_record`` -- satisfied by ``BatchRecord``, ``DispatchRecord``, and the other frozen

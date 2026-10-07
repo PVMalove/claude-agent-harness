@@ -72,7 +72,7 @@ class ContractErrorInvariantTests(unittest.TestCase):
             and isinstance(node.exc.func, ast.Name)
             and node.exc.func.id == "ContractError"
         ]
-        self.assertEqual(len(sites), 43)
+        self.assertEqual(len(sites), 42)
         for site in sites:
             assert isinstance(site.exc, ast.Call)
             remedies = [
@@ -239,23 +239,34 @@ class ResolveAssignmentTests(unittest.TestCase):
         runtime: object = "claude",
     ) -> contract.ContractError:
         with self.assertRaises(contract.ContractError) as ctx:
-            contract.resolve_assignment(config, role, "developer", "z", runtime)
+            contract.resolve_assignment(config, role, "developer", runtime)
         return ctx.exception
 
     def test_happy_path(self) -> None:
-        result = contract.resolve_assignment(
-            _config(), _role(), "developer", "z", "claude"
-        )
+        result = contract.resolve_assignment(_config(), _role(), "developer", "claude")
         self.assertEqual(result["profile_id"], "p")
         self.assertEqual(result["model"], "claude-x")
         self.assertEqual(result["effort"], "high")
         self.assertEqual(result["transport"], "in-process")
-        self.assertEqual(result["zone"], {"paths": ["src/**"]})
+        self.assertEqual(result["write_ceiling"], ["src/**"])
 
     def test_read_only_role_gets_no_paths(self) -> None:
         role = {**_role(), "mode": "read-only"}
-        result = contract.resolve_assignment(_config(), role, "developer", "z", None)
-        self.assertEqual(result["zone"], {"paths": []})
+        result = contract.resolve_assignment(_config(), role, "developer", None)
+        self.assertEqual(result["write_ceiling"], [])
+
+    def test_zone_free_plan_ceiling_is_the_whole_repository_or_its_write_paths(
+        self,
+    ) -> None:
+        config = _config()
+        plan = config["assignment_plans"]["developer"]
+        del plan["zone"]
+        del config["backend_zones"]
+        result = contract.resolve_assignment(config, _role(), "developer", "claude")
+        self.assertEqual(result["write_ceiling"], ["**"])
+        plan["write_paths"] = ["src/orders/**"]
+        result = contract.resolve_assignment(config, _role(), "developer", "claude")
+        self.assertEqual(result["write_ceiling"], ["src/orders/**"])
 
     def test_invalid_transport(self) -> None:
         config = _config()
@@ -266,9 +277,7 @@ class ResolveAssignmentTests(unittest.TestCase):
     def test_external_transport_resolves_for_project_adapter(self) -> None:
         config = _config()
         config["assignment_plans"]["developer"]["transport"] = "external"
-        result = contract.resolve_assignment(
-            config, _role(), "developer", "z", "claude"
-        )
+        result = contract.resolve_assignment(config, _role(), "developer", "claude")
         self.assertEqual(result["transport"], "external")
 
     def test_write_paths_outside_zone(self) -> None:
@@ -627,6 +636,146 @@ class ContextWindowPolicyTests(unittest.TestCase):
                 }
             ),
         )
+
+
+class LowRiskEligibilityTests(unittest.TestCase):
+    def test_nothing_is_eligible_until_the_project_names_low_risk_paths(self) -> None:
+        self.assertFalse(
+            contract.low_risk_eligible({}, {"allowed_paths": ["src/a.py"]})
+        )
+
+    def test_the_whole_scope_must_lie_inside_the_low_risk_paths(self) -> None:
+        config = {"low_risk_paths": ["docs/**", "src/orders/**"]}
+        for allowed, expected in (
+            (["docs/guide.md"], True),
+            (["docs/**", "src/orders/api/**"], True),
+            (["docs/guide.md", "src/billing/x.py"], False),
+            (["**"], False),
+            ([], False),
+        ):
+            with self.subTest(allowed=allowed):
+                self.assertIs(
+                    contract.low_risk_eligible(config, {"allowed_paths": allowed}),
+                    expected,
+                )
+
+    def test_a_boundary_matches_whole_path_segments_only(self) -> None:
+        for paths, boundaries, expected in (
+            (["docsecret/**"], ["docs/**"], False),
+            (["docs/guide.md"], ["docs/**"], True),
+            (["docs/**"], ["docs/**"], True),
+            (["README.md.d/**"], ["README.md"], False),
+            (["README.md"], ["README.md"], True),
+            (["src/a.py"], ["**"], True),
+            (["src/a.py"], ["src"], False),
+            (["docs"], ["docs/**"], False),
+        ):
+            with self.subTest(paths=paths, boundaries=boundaries):
+                self.assertIs(contract.paths_inside(paths, boundaries), expected)
+
+    def test_malformed_path_forms_are_never_inside_or_eligible(self) -> None:
+        for bad in ("./src/**", "src//x", "src/./x", "src/../x", "/src/x", "src\\x"):
+            with self.subTest(bad=bad):
+                self.assertFalse(contract.is_clean_path_pattern(bad))
+                self.assertFalse(contract.paths_inside([bad], ["**"]))
+                self.assertFalse(
+                    contract.low_risk_eligible(
+                        {"low_risk_paths": ["**"]}, {"allowed_paths": [bad]}
+                    )
+                )
+        self.assertFalse(contract.paths_inside(["src/a.py"], ["./src/**"]))
+        self.assertTrue(contract.is_clean_path_pattern("src/orders/**"))
+
+    def test_a_sibling_directory_is_not_low_risk(self) -> None:
+        config = {"low_risk_paths": ["docs/**", "README.md"]}
+        for allowed in (["docsecret/**"], ["README.md.d/**"]):
+            with self.subTest(allowed=allowed):
+                self.assertFalse(
+                    contract.low_risk_eligible(config, {"allowed_paths": allowed})
+                )
+
+    def test_legacy_low_risk_zones_map_to_their_paths(self) -> None:
+        config = {
+            "backend_zones": {
+                "docs": {"paths": ["docs/**"]},
+                "core": {"paths": ["src/**"]},
+            },
+            "low_risk_zones": ["docs"],
+        }
+        self.assertTrue(
+            contract.low_risk_eligible(config, {"allowed_paths": ["docs/a.md"]})
+        )
+        self.assertFalse(
+            contract.low_risk_eligible(config, {"allowed_paths": ["src/a.py"]})
+        )
+
+    def test_a_scope_free_batch_keeps_its_zone_rule_and_is_not_widened(self) -> None:
+        config = {
+            "backend_zones": {"docs": {"paths": ["docs/**"]}},
+            "low_risk_zones": ["docs"],
+            "low_risk_paths": ["**"],
+        }
+        self.assertTrue(contract.low_risk_eligible(config, {"zone": "docs"}))
+        self.assertFalse(contract.low_risk_eligible(config, {"zone": "core"}))
+        self.assertFalse(contract.low_risk_eligible(config, {"zone": None}))
+
+
+class ZoneFreeConfigHealthTests(unittest.TestCase):
+    def _problems(self, config: dict[str, object]) -> list[str]:
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(directory, ignore_errors=True))
+        path = directory / "orchestration.json"
+        path.write_text(
+            json.dumps(
+                {"concurrency_budget": 1, "verification_commands": ["x"], **config}
+            ),
+            encoding="utf-8",
+        )
+        return contract.health_problems(path, Path(contract.__file__).parent / "roles")
+
+    def _zone_problems(self, config: dict[str, object]) -> list[str]:
+        return [
+            item
+            for item in self._problems(config)
+            if "zone" in item or "low_risk" in item
+        ]
+
+    def test_a_config_without_zones_is_valid(self) -> None:
+        config = _config()
+        del config["backend_zones"]
+        del config["assignment_plans"]["developer"]["zone"]
+        self.assertEqual(
+            self._zone_problems({**config, "low_risk_paths": ["docs/**"]}), []
+        )
+
+    def test_a_legacy_zone_config_stays_valid(self) -> None:
+        self.assertEqual(
+            self._zone_problems({**_config(), "low_risk_zones": ["z"]}), []
+        )
+
+    def test_a_plan_zone_must_still_name_a_declared_zone_when_stated(self) -> None:
+        config = _config()
+        config["assignment_plans"]["developer"]["zone"] = "missing"
+        self.assertIn(
+            "unknown backend zone 'missing' for role 'developer'",
+            self._problems(config),
+        )
+
+    def test_low_risk_paths_must_be_a_non_empty_list_of_patterns(self) -> None:
+        for bad in ([], [""], "docs/**"):
+            with self.subTest(bad=bad):
+                self.assertIn(
+                    "orchestration low_risk_paths must be a non-empty list of path patterns when provided",
+                    self._problems({**_config(), "low_risk_paths": bad}),
+                )
+
+    def test_low_risk_paths_must_be_clean_repo_relative_patterns(self) -> None:
+        for bad in ("./src/**", "src//x/**", "../x/**", "/abs/**"):
+            with self.subTest(bad=bad):
+                self.assertIn(
+                    "orchestration low_risk_paths entries must be repo-relative patterns such as 'src/**' without './', '//' or '..' segments",
+                    self._problems({**_config(), "low_risk_paths": [bad]}),
+                )
 
 
 if __name__ == "__main__":

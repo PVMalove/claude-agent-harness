@@ -223,6 +223,22 @@ def run(ctx: SimpleNamespace) -> None:
         "qa evidence"
     ):
         sys.exit("installed to-pull-requests step does not record accepted QA evidence")
+    # Issue #537: the installed PR step carries the whole continuation (next step, separate
+    # confirmation bound to the SHA pair, CI wait, local-QA fallback, merge handoff) and still keeps
+    # the plain /qa-gate branch for a project without the optional orchestration.
+    for required_pr_phrase in (
+        "integration next",
+        "integration collect-ci",
+        "integration local-qa",
+        "separate confirmation",
+        "qa_source",
+        "Never merge it",
+        "/qa-gate",
+    ):
+        if required_pr_phrase not in installed_pr_text:
+            sys.exit(
+                f"installed to-pull-requests step lacks the PR-continuation rule: {required_pr_phrase}"
+            )
     orchestration_config = orchestration_project / ".harness" / "orchestration.json"
     if not orchestration_config.is_file():
         sys.exit("backend-orchestration config seed missing")
@@ -271,12 +287,15 @@ def run(ctx: SimpleNamespace) -> None:
             "санитизирован",
             "stale",
             "/to-pull-requests",
+            "integration next",
+            "verification-failure",
         ),
         ROOT / "harness" / "docs" / "harness-guide.md": (
             "строго opt-in маршрут",
             "candidate commit",
             "`reported`",
             "/to-pull-requests",
+            "integration next",
         ),
         ROOT / "docs" / "agents" / "git-workflow.md": ("/to-pull-requests",),
     }
@@ -324,6 +343,7 @@ def run(ctx: SimpleNamespace) -> None:
     expected_role_files = {
         "architect.md",
         "code-review.md",
+        "conflict-resolver.md",
         "database-migrations.md",
         "developer.md",
         "messaging-integration.md",
@@ -342,6 +362,25 @@ def run(ctx: SimpleNamespace) -> None:
             "backend-orchestration role set changed: "
             f"expected {sorted(expected_role_files)}, found {sorted(actual_role_files)}"
         )
+    installed_resolver = (
+        orchestration_project
+        / ".harness"
+        / "orchestration"
+        / "roles"
+        / "conflict-resolver.md"
+    ).read_text(encoding="utf-8")
+    if "resolving-merge-conflicts" not in installed_resolver:
+        sys.exit(
+            "conflict-resolver role lacks its resolving-merge-conflicts skill pointer"
+        )
+    if not (
+        orchestration_project
+        / ".harness"
+        / "skills"
+        / "resolving-merge-conflicts"
+        / "SKILL.md"
+    ).is_file():
+        sys.exit("the skill the conflict-resolver role points to is not installed")
     for name in ("_common.md", *sorted(expected_role_files)):
         if not (
             orchestration_project / ".harness" / "orchestration" / "roles" / name
@@ -353,6 +392,11 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("backend-orchestration playbook missing")
     playbook = playbook_path.read_text(encoding="utf-8")
     contract = orchestration_project / ".harness/docs/technical-english.md"
+    for continuation_rule in ("integration next", "verification-failure"):
+        if continuation_rule not in playbook:
+            sys.exit(
+                f"installed playbook lacks the PR-continuation rule: {continuation_rule}"
+            )
     for entry in (playbook_path, orchestration_root / "roles/_common.md"):
         assert_contract_link(entry, contract, entry.name)
     pilot_path = orchestration_root / "pilot.md"
@@ -418,7 +462,7 @@ def run(ctx: SimpleNamespace) -> None:
         "failed",
         "## Immutable handoff brief",
         "ticket",
-        "zone IDs",
+        "allowed paths",
         "branch/worktree",
         "Definition of Done",
         "prohibited changes",
@@ -557,6 +601,7 @@ def run(ctx: SimpleNamespace) -> None:
         "qa",
         "database-migrations",
         "messaging-integration",
+        "conflict-resolver",
         "code-review",
     )
     valid_orchestration = {
@@ -569,6 +614,7 @@ def run(ctx: SimpleNamespace) -> None:
                     "independent-verification",
                     "database-migrations",
                     "messaging-integration",
+                    "conflict-resolution",
                     "code-review",
                 ],
                 "fallback": [],

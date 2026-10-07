@@ -76,9 +76,13 @@ def build_parser(
     create.add_argument("--branch", required=True)
     create.add_argument("--worktree", required=True)
     create.add_argument(
+        "--allowed-path",
+        action="append",
+        help="repo-relative path or glob the batch's writer may change; repeated; the batch's explicit write scope",
+    )
+    create.add_argument(
         "--zone",
-        default=defaults.DEFAULT_ZONE,
-        help="backend zone; defaults to the whole repository",
+        help="legacy audit label recorded in the batch; it neither locks nor scopes anything",
     )
     create.add_argument(
         "--integration-ref",
@@ -113,7 +117,7 @@ def build_parser(
     )
     _common(batch_preflight)
     batch_preflight.add_argument("--ticket", required=True)
-    batch_preflight.add_argument("--zone", default=defaults.DEFAULT_ZONE)
+    batch_preflight.add_argument("--allowed-path", action="append")
     batch_preflight.add_argument("--definition-of-done", action="append", required=True)
     batch_preflight.add_argument("--dependency", action="append")
     batch_preflight.add_argument("--expected-file", action="append")
@@ -585,6 +589,161 @@ def build_parser(
     qa_clear.add_argument("--expected-expiry", required=True)
     qa_clear.add_argument("--reason", required=True)
     qa_clear.set_defaults(handler=handlers.clear_qa_lease)
+
+    integration = commands.add_parser(
+        "integration",
+        help="record and observe the integration link of a published ticket branch",
+    )
+    integration_commands = integration.add_subparsers(
+        dest="integration_command", required=True
+    )
+    local_qa = integration_commands.add_parser(
+        "local-qa",
+        help="run full local QA when combined-result CI cannot verify the pair",
+    )
+    _common(local_qa)
+    local_qa.add_argument("--record", required=True)
+    local_qa.add_argument(
+        "--ci-condition", choices=defaults.LOCAL_QA_CI_CONDITIONS, required=True
+    )
+    local_qa.add_argument("--reason", required=True)
+    local_qa.add_argument("--request", help="resume only this pinned request ID")
+    local_qa.add_argument(
+        "--retry", action="store_true", help="explicitly retry an operational attempt"
+    )
+    local_qa.add_argument("--lease-seconds", type=int)
+    local_qa.set_defaults(handler=handlers.integration_local_qa)
+    integration_prepare = integration_commands.add_parser(
+        "prepare",
+        help="record the link between ticket, branch, source batch, published candidate and target SHA; idempotent",
+    )
+    _common(integration_prepare)
+    integration_prepare.add_argument("--ticket", required=True)
+    integration_prepare.add_argument("--branch", required=True)
+    integration_prepare.add_argument(
+        "--batch",
+        help="source batch ID; required when several batches published the branch",
+    )
+    integration_prepare.add_argument(
+        "--candidate-commit",
+        help="optional published SHA to check against the accepted publish report",
+    )
+    integration_prepare.add_argument("--remote", default="origin")
+    integration_prepare.set_defaults(handler=handlers.integration_prepare)
+    integration_status = integration_commands.add_parser(
+        "status",
+        help="read-only: observe whether a record's candidate/target pair is still current",
+    )
+    _common(integration_status)
+    integration_status.add_argument("--record", help="integration record ID")
+    integration_status.add_argument("--ticket")
+    integration_status.add_argument("--branch")
+    integration_status.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_status.set_defaults(handler=handlers.integration_status)
+    integration_next = integration_commands.add_parser(
+        "next",
+        help="read-only: the next step of a PR continuation (refresh, resolver, route a failed check, confirm, verify, hand over)",
+    )
+    _common(integration_next)
+    integration_next.add_argument("--record", help="integration record ID")
+    integration_next.add_argument("--ticket")
+    integration_next.add_argument("--branch")
+    integration_next.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_next.add_argument(
+        "--pull-request",
+        type=int,
+        help="the opened pull request; without it the step is the one before the pull request",
+    )
+    integration_next.set_defaults(handler=handlers.integration_next)
+    integration_link = integration_commands.add_parser(
+        "link-evidence",
+        help="register a new CI, local-QA or resolver check of a candidate/target pair; idempotent",
+    )
+    _common(integration_link)
+    integration_link.add_argument("--record", required=True)
+    integration_link.add_argument(
+        "--kind", required=True, choices=defaults.INTEGRATION_EVIDENCE_KINDS
+    )
+    integration_link.add_argument("--candidate-commit", required=True)
+    integration_link.add_argument("--target-commit", required=True)
+    integration_link.add_argument(
+        "--result", required=True, choices=defaults.INTEGRATION_EVIDENCE_RESULTS
+    )
+    integration_link.add_argument(
+        "--reference", required=True, help="where the check result can be inspected"
+    )
+    integration_link.add_argument(
+        "--artifact-sha256", help="digest of the artifact the reference points to"
+    )
+    integration_link.set_defaults(handler=handlers.integration_link_evidence)
+    integration_collect = integration_commands.add_parser(
+        "collect-ci",
+        help="collect CI evidence for the combined result of a pull request; records only accepted or failed evidence",
+    )
+    _common(integration_collect)
+    integration_collect.add_argument("--record", help="integration record ID")
+    integration_collect.add_argument("--ticket")
+    integration_collect.add_argument("--branch")
+    integration_collect.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_collect.add_argument("--pull-request", required=True, type=int)
+    integration_collect.set_defaults(handler=handlers.integration_collect_ci)
+    integration_refresh = integration_commands.add_parser(
+        "refresh",
+        help="PR preparation: rebase the own issue branch onto the current integration SHA when it moved",
+    )
+    _common(integration_refresh)
+    integration_refresh.add_argument("--record", help="integration record ID")
+    integration_refresh.add_argument("--ticket")
+    integration_refresh.add_argument("--branch")
+    integration_refresh.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_refresh.set_defaults(handler=handlers.integration_refresh)
+    integration_resolve = integration_commands.add_parser(
+        "resolve",
+        help="a textual conflict with the integration tip: create the conflict-resolver batch (nothing is written to Git)",
+    )
+    _common(integration_resolve)
+    integration_resolve.add_argument("--record", help="integration record ID")
+    integration_resolve.add_argument("--ticket")
+    integration_resolve.add_argument("--branch")
+    integration_resolve.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_resolve.set_defaults(handler=handlers.integration_resolve)
+    resolver_event = integration_commands.add_parser(
+        "resolver-event",
+        help="record a human decision or a scope change of a conflict-resolver dispatch as its own audit event",
+    )
+    _common(resolver_event)
+    resolver_event.add_argument("--record", help="integration record ID")
+    resolver_event.add_argument("--ticket")
+    resolver_event.add_argument("--branch")
+    resolver_event.add_argument("--batch", help="source batch ID")
+    resolver_event.add_argument(
+        "--kind", required=True, choices=["human-decision", "scope-change"]
+    )
+    resolver_event.add_argument("--dispatch", required=True)
+    resolver_event.add_argument("--decided-by", required=True)
+    resolver_event.add_argument("--note", required=True)
+    resolver_event.add_argument("--option", help="the option id a human chose")
+    resolver_event.add_argument(
+        "--extends-budget",
+        action="store_true",
+        help="grant one more automatic resolver target after the two spent ones",
+    )
+    resolver_event.set_defaults(handler=handlers.resolver_event)
 
     report = commands.add_parser("report")
     report_commands = report.add_subparsers(dest="report_command", required=True)

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from ..errors import HarnessError
 from ..token_estimator import estimate_tokens, estimate_tokens_for_bytes
-from .contract import ContractError, resolve_runtime_name, string_list
+from .contract import ContractError, paths_inside, resolve_runtime_name, string_list
 from .core.config import _adaptive_continuation_policy
 from .core.constants import RUNTIME_PATH_PREFIXES, TOOLING_BLOCKER_UNCOMMITTED_FIELD
 from .ledger import JsonObject, JsonValue
@@ -72,6 +72,11 @@ def _text(value: object, label: str) -> str:
             remedy=f"set project_state[{label!r}] to a non-empty string",
         )
     return value.strip()
+
+
+def _optional_text(value: object, label: str) -> str | None:
+    """Вернуть непустую строку из состояния проекта либо None, если поле не задано."""
+    return None if value is None else _text(value, label)
 
 
 def _git(path: Path, *args: str) -> str:
@@ -183,22 +188,36 @@ def _is_tooling_restart(handoff: JsonObject) -> bool:
 
 
 def _check_restart_worktree(
-    worktree: Path, config: JsonObject, zone: str, handoff: JsonObject
+    worktree: Path,
+    config: JsonObject,
+    zone: str | None,
+    allowed_paths: JsonValue,
+    handoff: JsonObject,
 ) -> None:
     """A tooling restart inherits exactly the uncommitted changes its blocked report listed.
 
     HEAD is already pinned to the developer's last commit; here the worktree's uncommitted paths
-    must equal the report's list, every one inside the batch zone. A clean worktree with an empty
+    must equal the report's list, every one inside the batch's explicit ``allowed_paths`` (a batch
+    recorded before explicit scopes falls back to its zone's paths). A clean worktree with an empty
     list passes as before; anything else is refused with the discrepancy named.
     """
-    zones = config.get("backend_zones")
-    declared = zones.get(zone) if isinstance(zones, dict) else None
-    paths = declared.get("paths") if isinstance(declared, dict) else None
-    if not string_list(paths) or not paths:
-        raise PreflightError(
-            f"project config declares no paths for zone {zone!r}",
-            remedy=f"declare backend_zones[{zone!r}].paths in the project orchestration config",
-        )
+    paths: list[str]
+    explicit = False
+    if string_list(allowed_paths) and allowed_paths:
+        explicit = True
+        paths = allowed_paths
+        scope = "the batch allowed_paths"
+    else:
+        zones = config.get("backend_zones")
+        declared = zones.get(zone) if isinstance(zones, dict) and zone else None
+        zone_paths = declared.get("paths") if isinstance(declared, dict) else None
+        if not string_list(zone_paths) or not zone_paths:
+            raise PreflightError(
+                f"project config declares no paths for zone {zone!r}",
+                remedy=f"declare backend_zones[{zone!r}].paths in the project orchestration config",
+            )
+        paths = zone_paths
+        scope = f"the batch zone {zone!r}"
     git_output = "\0".join(
         (
             _git(worktree, "diff", "--name-only", "--no-renames", "-z", "HEAD"),
@@ -214,7 +233,11 @@ def _check_restart_worktree(
     outside = sorted(
         path
         for path in actual | expected
-        if not any(fnmatchcase(path, pattern) for pattern in paths)
+        if not (
+            paths_inside([path], paths)
+            if explicit
+            else any(fnmatchcase(path, pattern) for pattern in paths)
+        )
     )
     extra = sorted(actual - expected - set(outside))
     missing = sorted(expected - actual - set(outside))
@@ -223,7 +246,7 @@ def _check_restart_worktree(
     discrepancies = [
         (label, fix, group)
         for label, fix, group in (
-            (f"outside the batch zone {zone!r}", "revert or move out", outside),
+            (f"outside {scope}", "revert or move out", outside),
             ("not listed in the blocked report", "revert", extra),
             ("missing from the worktree", "restore from the blocked session", missing),
         )
@@ -326,7 +349,7 @@ def prepare(
 
     ``project_state`` намеренно представляет собой простые данные, чтобы CLI, адаптер или тесты могли
     вызывать одну и ту же детерминированную функцию. Обязательные поля: ``repo``, ``config``, ``branch``,
-    ``worktree``, ``zone`` и ``base_sha``; ``candidate_sha`` требуется только при явной фиксации кандидата.
+    ``worktree`` и ``base_sha``; ``zone`` — необязательная историческая метка, ``candidate_sha`` требуется только при явной фиксации кандидата.
     Для developer-retry ``retry_handoff`` и ``retry_package`` дают компактный старт ``retry_start``.
     """
     ticket = _text(ticket, "ticket")
@@ -406,7 +429,7 @@ def prepare(
         "role": role,
         "branch": branch,
         "worktree": str(worktree),
-        "zone": _text(project_state.get("zone"), "zone"),
+        "zone": _optional_text(project_state.get("zone"), "zone"),
         "resolved_runtime": runtime,
         "base_commit": base_sha,
         "snapshot_commit": expected_sha,
@@ -434,7 +457,13 @@ def prepare(
         and isinstance(handoff, dict)
         and _is_tooling_restart(handoff)
     ):
-        _check_restart_worktree(worktree, config, str(preview["zone"]), handoff)
+        _check_restart_worktree(
+            worktree,
+            config,
+            _optional_text(project_state.get("zone"), "zone"),
+            project_state.get("allowed_paths"),
+            handoff,
+        )
     retry_start = (
         _retry_start(
             config,

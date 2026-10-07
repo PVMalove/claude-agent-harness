@@ -46,9 +46,10 @@ Claude Code и Codex находят один snapshot через свои native
 ## Backend orchestration
 
 `backend-orchestration` — opt-in capability поверх `pvmalove-suite`. Coordinator владеет batch,
-approval, scope changes, QA lane и принятием reports. Role manifest владеет режимом роли, write zone,
+approval, scope changes, QA lane и принятием reports. Role manifest владеет режимом роли, границей записи,
 proof и risk triggers; `.harness/orchestration.json` только разрешает project-owned provider/model,
-transport, zone, budget и команды проверки.
+transport, потолок записи, budget и команды проверки. Граница конкретного writer — явный
+`allowed_paths` batch (ADR 0013), а не backend zone.
 
 Обычный `/implement` проходит `architect → developer → code-review → qa → publish`, с отдельным
 approval каждого handoff. Каждая роль получает immutable brief, подтверждает model self-report и
