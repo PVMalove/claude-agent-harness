@@ -486,6 +486,10 @@ def run(ctx: SimpleNamespace) -> None:
                 "services/context_package_demo.py",
                 "services/context_package_demo_v2.py",
             ],
+            # The fix-forward closes the retried review's finding (issue #503).
+            "carried_item_closure": [
+                {"item_id": "review-finding-1", "commits": [ctxpkg_second_sha]}
+            ],
         },
     )
     coordinator_run(
