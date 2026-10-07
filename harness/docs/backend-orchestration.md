@@ -336,7 +336,9 @@ worker. Без него brief сохраняет `inherit`, а `dispatch send` �
 - Компоненты `mode` (`inherit`, `sandbox`, `unsandboxed`), `network.hosts` и `filesystem`
   выбираются независимо от транспорта роли: `in-process` или `external`.
 - Override роли (`roles`) или операции (`operations`: `qa`, `git`, `publish`) заменяет только те
-  компоненты, которые в нём указаны. Остальные берутся из `defaults`.
+  компоненты, которые в нём указаны. Остальные берутся из `defaults`. Операцию выбирает сам dispatch:
+  `publish` для `--purpose publish` и `qa` для роли `qa`; для `git` отдельного dispatch нет, поэтому
+  её override сейчас не выбирается.
 - `filesystem` называет ресурс: `checkout`, `git_common`, `shared_storage` или `cache` (только `cache`
   требует `path`). Coordinator превращает их в реальные пути worktree, общего Git-каталога и
   хранилища. Корень диска и домашний каталог целиком отклоняются.
@@ -352,7 +354,9 @@ worker. Без него brief сохраняет `inherit`, а `dispatch send` �
   worker, применяет план и выполняет handoff (`observe`, `apply`, `handoff`). Значение `none` ничего
   не доказывает. Поэтому для плана с `sandbox`, `unsandboxed`, хостами или путями `dispatch send` без
   нативной реализации блокируется до передачи работы. Тихой подмены и отката на `inherit` нет, нативное
-  подтверждение не заменяется. Статус и доказательство worker сохраняются в `dispatch status`
+  подтверждение не заменяется. Харнесс не поставляет такую реализацию: `my_runtime:factory` в примере
+  выше — модуль вашего проекта, а до его подключения любой `access_policy`, даже `mode: inherit`,
+  блокирует `dispatch send`. Статус и доказательство worker сохраняются в `dispatch status`
   (`runtime_access`).
 
 Если `dispatch send` остановлен, причина названа в ошибке, а remedy одинаковый: подготовить указанные
