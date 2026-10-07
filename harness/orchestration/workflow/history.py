@@ -35,6 +35,7 @@ from harness.orchestration.core.config import (
 from harness.orchestration.core.constants import (
     ATTENTION_EVENT_KINDS,
     ATTENTION_STATE_FIELDS,
+    CARRIED_ITEM_BRIEF_ROLES,
     CARRIED_ITEM_FIELDS,
     CARRIED_ITEM_RECORD_FIELDS,
     CARRIED_ITEM_SOURCES,
@@ -995,8 +996,8 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
 
 
 def _validate_carried_section(dispatch: JsonObject) -> None:
-    """A brief's carried-items section: one list of items per known source kind, only on a
-    developer or code-review work brief, each item id carried once (issue #499)."""
+    """A brief's carried-items section: one list of items per known source kind, only on a work
+    brief of a role that kind reaches, each item id carried once (issues #499, #501)."""
     section = dispatch["carried_items"]
     items = (
         [item for kind in section.values() if isinstance(kind, list) for item in kind]
@@ -1013,17 +1014,15 @@ def _validate_carried_section(dispatch: JsonObject) -> None:
             for item in items
         )
         or len(set(ids)) != len(items)
-        or (
-            section
-            and (
-                dispatch.get("role") not in {"developer", "code-review"}
-                or dispatch.get("purpose") != "work"
-            )
+        or (section and dispatch.get("purpose") != "work")
+        or any(
+            dispatch.get("role") not in CARRIED_ITEM_BRIEF_ROLES[kind]
+            for kind in section
         )
     ):
         raise CoordinatorError(
-            "dispatch carried_items must map known source kinds to their items, on a developer "
-            "or code-review work brief only",
+            "dispatch carried_items must map known source kinds to their items, on a work brief "
+            "of a role each kind reaches only",
             remedy="the dispatch record's carried_items is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
         )

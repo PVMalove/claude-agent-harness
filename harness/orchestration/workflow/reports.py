@@ -14,7 +14,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
 from functools import partial
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
@@ -34,6 +34,9 @@ from harness.orchestration.core.constants import (
     CHECKPOINT_NO_CONTEXT_PACKAGE,
     CONTINUATION_FACTS_FIELDS,
     FINDING_SEVERITIES,
+    INCOMPLETE_ITEM_FIELDS,
+    INCOMPLETE_ITEM_OPTIONAL_FIELDS,
+    INCOMPLETE_ITEM_TARGET_ROLES,
     LIVE_DISPATCH_STATES,
     MAX_CHECK_EVIDENCE_CHARS,
     PLANNED_TRIGGER_KINDS,
@@ -45,6 +48,7 @@ from harness.orchestration.core.constants import (
     REVIEW_SEVERITIES,
     TELEMETRY_FIELDS,
     TOOLING_BLOCKER_FIELDS,
+    TOOLING_BLOCKER_UNCOMMITTED_FIELD,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
@@ -67,6 +71,7 @@ from harness.orchestration.core.utils import (
 )
 from harness.orchestration.core.workspace import (
     _agent_authored_file,
+    _reject_non_english,
 )
 from harness.orchestration.ledger.ledger_ops import (
     _ledger_lock,
@@ -1010,10 +1015,13 @@ def _rebase_target(batch: JsonObject, dispatch: JsonObject) -> str | None:
     return None
 
 
-def _validate_tooling_blocker(report: JsonObject) -> None:
+def _validate_tooling_blocker(report: JsonObject, dispatch: JsonObject) -> None:
     """``tooling_blocker`` is the structured evidence of a tool that blocked a legitimate action
     (issue #500): exactly ``tool``, ``command`` and ``message``, each a bounded non-empty string, on a
-    ``blocked`` report only. It alone lets the coordinator classify a retry as ``tooling``."""
+    ``blocked`` report only. It alone lets the coordinator classify a retry as ``tooling``.
+
+    A developer whose commit the tool blocked also lists the files it left uncommitted (issue #502),
+    each inside its write zone; the restart's preflight holds the worktree to exactly that list."""
     if "tooling_blocker" not in report:
         return
     if report["outcome"] != "blocked":
@@ -1022,22 +1030,142 @@ def _validate_tooling_blocker(report: JsonObject) -> None:
             remedy="set outcome to blocked for a tool that blocked the role, or drop tooling_blocker",
         )
     blocker = report["tooling_blocker"]
+    if isinstance(blocker, dict) and TOOLING_BLOCKER_UNCOMMITTED_FIELD in blocker:
+        if report["role"] != "developer":
+            raise CoordinatorError(
+                f"completion report tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD} is allowed only on a developer report",
+                remedy=f"drop tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD}: only a developer whose commit a tool blocked lists them",
+            )
+        _validate_uncommitted_files(
+            blocker[TOOLING_BLOCKER_UNCOMMITTED_FIELD], dispatch["write_paths"]
+        )
+        blocker = {
+            key: value
+            for key, value in blocker.items()
+            if key != TOOLING_BLOCKER_UNCOMMITTED_FIELD
+        }
+    _check_tooling_blocker_shape(
+        blocker,
+        "completion report tooling_blocker",
+        "tooling_blocker",
+    )
+
+
+def _validate_uncommitted_files(value: object, write_paths: list[str]) -> None:
+    label = f"completion report tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD}"
+    files = _strings(value, label)
+    if len(set(files)) != len(files):
+        raise CoordinatorError(
+            f"{label} must not repeat a path",
+            remedy=f"list each uncommitted path once in tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD}",
+        )
+    for path in files:
+        # The restart compares each path verbatim with Git's own output, so it must be in that form.
+        if (
+            path != PurePosixPath(path).as_posix()
+            or "\\" in path
+            or path.startswith("/")
+            or ".." in PurePosixPath(path).parts
+            or not any(fnmatchcase(path, pattern) for pattern in write_paths)
+        ):
+            raise CoordinatorError(
+                f"{label} must be normalized paths inside the approved zone: {path}",
+                remedy=f"list in tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD} only normalized repository-relative paths (as git status prints them) inside the role's write zone",
+            )
+
+
+def _check_tooling_blocker_shape(blocker: object, label: str, name: str) -> None:
+    """Exactly ``tool``, ``command`` and ``message``, each a bounded non-empty string. ``label``
+    opens the refusal and ``name`` is the field its remedy tells the role to fix."""
     fields = ", ".join(sorted(TOOLING_BLOCKER_FIELDS))
     if not isinstance(blocker, dict) or set(blocker) != TOOLING_BLOCKER_FIELDS:
         raise CoordinatorError(
-            f"completion report tooling_blocker must carry exactly: {fields}",
-            remedy=f"set tooling_blocker to an object with exactly {fields}",
+            f"{label} must carry exactly: {fields}",
+            remedy=f"set {name} to an object with exactly {fields}",
         )
     for field in sorted(TOOLING_BLOCKER_FIELDS):
         if not _non_empty(blocker[field]):
             raise CoordinatorError(
-                f"completion report tooling_blocker {field} must be a non-empty string",
-                remedy=f"set tooling_blocker {field} to the tool's exact text",
+                f"{label} {field} must be a non-empty string",
+                remedy=f"set {name} {field} to the tool's exact text",
             )
         if len(blocker[field]) > MAX_CHECK_EVIDENCE_CHARS:
             raise CoordinatorError(
-                f"completion report tooling_blocker {field} exceeds the bounded summary limit",
-                remedy=f"truncate tooling_blocker {field} to at most {MAX_CHECK_EVIDENCE_CHARS} characters",
+                f"{label} {field} exceeds the bounded summary limit",
+                remedy=f"truncate {name} {field} to at most {MAX_CHECK_EVIDENCE_CHARS} characters",
+            )
+
+
+def _validate_incomplete_items(report: JsonObject, role: JsonObject) -> None:
+    """``incomplete_items`` lists the brief items a read-only role left undone (issue #501).
+
+    Each entry names the ``brief_item``, the ``reason`` and the ``target_role`` it can be handed to
+    (the reporting stage itself or a later role of the pipeline), and may carry the item's own
+    ``tooling_blocker``. The text reaches a later brief as agent-to-agent protocol text, so it is
+    English and bounded like check evidence.
+    """
+    if "incomplete_items" not in report:
+        return
+    stage = report["role"]
+    if role["mode"] != "read-only" or stage not in INCOMPLETE_ITEM_TARGET_ROLES:
+        raise CoordinatorError(
+            f"completion report incomplete_items is allowed only on a "
+            f"{', '.join(INCOMPLETE_ITEM_TARGET_ROLES)} report, not a {stage} report",
+            remedy="drop incomplete_items; a writing role reports unfinished work as a blocker "
+            "or a not_covered dod_coverage record",
+        )
+    items = report["incomplete_items"]
+    required = ", ".join(sorted(INCOMPLETE_ITEM_FIELDS))
+    shape = (
+        f"set each incomplete_items entry to an object with exactly {required}, "
+        "plus an optional tooling_blocker"
+    )
+    if not isinstance(items, list):
+        raise CoordinatorError(
+            "completion report incomplete_items must be a list", remedy=shape
+        )
+    targets = INCOMPLETE_ITEM_TARGET_ROLES[stage]
+    for position, item in enumerate(items, start=1):
+        label = f"completion report incomplete_items entry {position}"
+        if (
+            not isinstance(item, dict)
+            or not INCOMPLETE_ITEM_FIELDS <= set(item)
+            or set(item) - INCOMPLETE_ITEM_FIELDS - INCOMPLETE_ITEM_OPTIONAL_FIELDS
+        ):
+            raise CoordinatorError(f"{label} has an invalid schema", remedy=shape)
+        for field in ("brief_item", "reason"):
+            if not _non_empty(item[field]):
+                raise CoordinatorError(
+                    f"{label} {field} must be a non-empty string",
+                    remedy=f"set incomplete_items entry {position} {field}: name the brief "
+                    "item and why it was left undone",
+                )
+            if len(item[field]) > MAX_CHECK_EVIDENCE_CHARS:
+                raise CoordinatorError(
+                    f"{label} {field} exceeds the bounded summary limit",
+                    remedy=f"shorten incomplete_items entry {position} {field} to at most "
+                    f"{MAX_CHECK_EVIDENCE_CHARS} characters",
+                )
+        try:
+            _reject_non_english([item["brief_item"], item["reason"]], label)
+        except CoordinatorError as exc:
+            raise CoordinatorError(
+                f"{label} is handed to a later brief as agent-to-agent protocol text and must "
+                "be written in English",
+                remedy=exc.remedy,
+            ) from exc
+        if item["target_role"] not in targets:
+            raise CoordinatorError(
+                f"{label} target_role {item['target_role']!r} is not a role a {stage} report "
+                "can hand an item to",
+                remedy=f"set incomplete_items entry {position} target_role to one of: "
+                f"{', '.join(targets)}",
+            )
+        if "tooling_blocker" in item:
+            _check_tooling_blocker_shape(
+                item["tooling_blocker"],
+                f"{label} tooling_blocker",
+                f"incomplete_items entry {position} tooling_blocker",
             )
 
 
@@ -1099,7 +1227,8 @@ def _validate_report(
             "completion report outcome is invalid",
             remedy="set outcome to one of the accepted completion-report outcomes",
         )
-    _validate_tooling_blocker(report)
+    _validate_tooling_blocker(report, dispatch)
+    _validate_incomplete_items(report, role)
     for field in ("output", "risks", "blockers", "next_coordinator_action"):
         if not _non_empty(report[field]):
             raise CoordinatorError(
@@ -1305,6 +1434,18 @@ def _report_markdown(report: JsonObject) -> str:
         lines.append(
             f"- Tooling blocker: {tooling['tool']} — `{tooling['command']}`: {tooling['message']}"
         )
+        uncommitted = tooling.get(TOOLING_BLOCKER_UNCOMMITTED_FIELD)
+        if uncommitted:
+            lines.append(f"- Uncommitted files: {', '.join(uncommitted)}")
+    incomplete = report.get("incomplete_items")
+    if incomplete:
+        lines.append("- Incomplete items:")
+        for item in incomplete:
+            line = f"  - [{item['target_role']}] {item['brief_item']}: {item['reason']}"
+            blocker = item.get("tooling_blocker")
+            if isinstance(blocker, dict):
+                line += f" (tooling blocker: {blocker['tool']} — `{blocker['command']}`: {blocker['message']})"
+            lines.append(line)
     review = report.get("review")
     if isinstance(review, dict):
         lines.extend(

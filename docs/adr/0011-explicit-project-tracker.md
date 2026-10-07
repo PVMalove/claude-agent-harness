@@ -11,7 +11,7 @@
 
 ## Действующий контракт
 
-Вводится в 1.2.0. `.harness/project.json` принимает необязательное поле
+Вводится в 1.3.0. `.harness/project.json` принимает необязательное поле
 `tracker: {type, host, project}`: `type` — `github`, `gitlab` или `local`; `host` включает порт
 (`gitlab.example.test:4443`); `project` — полный путь с подгруппами (`group/sub/project`).
 `project.schema.json`, `project.json.tmpl` и `validate_project_json` меняются как один контракт.
@@ -19,7 +19,8 @@
 Если поле задано, оно — единственный источник трекера для `harness health`, hooks, скиллов и
 отчётности. Без поля действует fallback: разбор `origin` с учётом схемы, userinfo, порта и
 подгрупп. Все вызовы `gh` и `glab` адресуют проект явно через `-R`, собранный из трекера
-проекта; `glab api` получает `--hostname`. CA-сертификаты, прокси и токены остаются в личной
+проекта; `glab api` получает хост через `GITLAB_HOST=<host>`, потому что `glab` отклоняет
+порт в `--hostname`. CA-сертификаты, прокси и токены остаются в личной
 конфигурации CLI и в `project.json` не попадают. При `type: gitlab` health требует
 `glab` не ниже 1.117.0.
 

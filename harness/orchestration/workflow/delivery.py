@@ -27,7 +27,7 @@ from harness.orchestration.core.config import (
 from harness.orchestration.core.constants import (
     LIVE_DISPATCH_STATES,
     ROLE_TRANSPORTS,
-    SANDBOXES_REL,
+    RUNTIME_PATH_PREFIXES,
 )
 from harness.orchestration.core.git_utils import (
     _changed_files_between,
@@ -103,11 +103,7 @@ def _validate_checkout(
     mutable_paths = []
     for line in status.splitlines():
         path = line[3:].split(" -> ", 1)[-1].replace("\\", "/")
-        sandboxes_prefix = f"{SANDBOXES_REL.as_posix()}/"
-        if not (
-            path.startswith(".harness/orchestration/state/")
-            or path.startswith(sandboxes_prefix)
-        ):
+        if not path.startswith(RUNTIME_PATH_PREFIXES):
             mutable_paths.append(path)
     if mutable_paths:
         raise CoordinatorError(

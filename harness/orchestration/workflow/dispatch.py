@@ -290,6 +290,7 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
             "branch": batch["branch"],
             "worktree": batch["worktree"],
             "zone": batch.get("zone"),
+            "allowed_paths": batch.get("allowed_paths"),
             "base_sha": batch["base_commit"],
             "candidate_sha": candidate,
             "snapshot_sha": snapshot,

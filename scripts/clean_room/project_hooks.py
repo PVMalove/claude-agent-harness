@@ -249,6 +249,25 @@ def run(ctx: SimpleNamespace) -> None:
 
     if no_harness_pr_allowed():
         sys.exit("PR without a QA marker opened from a worktree without .harness")
+    # Only a run of the whole last QA command marks QA: a command that merely contains its
+    # text, such as a narrower test selection, is no QA gate run.
+    for command, marks in (
+        ("echo test extra", False),
+        ("echo testing", False),
+        ("python3 test_summary.py -- bash -lc 'echo test extra'", False),
+        ("echo test || true", False),
+        ("echo test 2>&1", True),
+        ("git status && echo test", True),
+        ("python3 test_summary.py -- bash -lc 'echo test'", True),
+    ):
+        no_harness_marker.unlink(missing_ok=True)
+        result = mark_no_harness(command)
+        if result.returncode:
+            sys.exit(f"mark failed for {command!r}: {result.stderr}")
+        if no_harness_marker.is_file() != marks:
+            verdict = "missed" if marks else "accepted as the QA command"
+            sys.exit(f"mark {verdict}: {command!r}")
+    no_harness_marker.unlink(missing_ok=True)
     for command in ("git status", "echo test"):
         result = mark_no_harness(command)
         if result.returncode:
@@ -1833,6 +1852,8 @@ def check_publication_forms(metadata_hook: Path, project: Path) -> None:
         f"glab issue create -t Notes --description-file {vocabulary_file}",
         f"glab issue update 1 --description-file {vocabulary_file}",
         f"glab api {notes} -F body=@{vocabulary_file}",
+        # The documented form names the host through GITLAB_HOST: glab rejects a port in --hostname.
+        f"GITLAB_HOST=gitlab.example.test:4443 glab api {notes} -F body=@{vocabulary_file}",
         f"glab api {mr_notes} --field body=@{vocabulary_file}",
         f"glab api --method POST {notes} -F internal=true --field=body=@{clean_file}",
         f'glab api {notes} -f body="/blocked_by #2"',
@@ -1897,6 +1918,7 @@ def check_publication_forms(metadata_hook: Path, project: Path) -> None:
         f"glab issue create -t Notes --description-file {attributed_file}",
         f"glab issue update 1 --description-file {attributed_file}",
         f"glab api {notes} -F body=@{attributed_file}",
+        f"GITLAB_HOST=gitlab.example.test:4443 glab api {notes} -F body=@{attributed_file}",
         f"glab api {mr_notes} --field body=@{attributed_file}",
         f"glab api {notes} --field=body=@{attributed_file}",
         f"glab api --method PUT projects/:id/issues/1 -F description=@{attributed_file}",

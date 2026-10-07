@@ -38,6 +38,9 @@ DEVELOPER_REASON_CATEGORIES = ("code", "requirements", "candidate-change")
 # of ``OPERATIONAL_REASON_CATEGORIES``, whose routes and attention count it must not join.
 TOOLING_REASON_CATEGORY = "tooling"
 TOOLING_BLOCKER_FIELDS = frozenset({"tool", "command", "message"})
+# A developer whose ``git commit`` a tool blocked reverts nothing and lists the files it left
+# uncommitted in its report's ``tooling_blocker``; the restart inherits exactly them (issue #502).
+TOOLING_BLOCKER_UNCOMMITTED_FIELD = "uncommitted_files"
 # A read-only role worked around a hook or tool block (issue #560). Only an approver names it, and
 # none of that report is evidence: the same stage re-runs on the same SHA (``bypass-rerun``) under an
 # explicit approval, since there is nothing for a developer to fix. A writing role that worked around
@@ -60,6 +63,8 @@ RETRY_REASON_CATEGORIES = (
 # coordinator finding goes into review instead of costing a developer retry before it.
 # ``tooling-retry`` (issue #500) re-runs the stage a tool blocked, for the ``tooling`` category only.
 # ``bypass-rerun`` (issue #560) re-runs a read-only stage whose role worked around a block.
+# ``narrowed-retry`` (issue #501) re-runs a read-only stage on the incomplete items its report
+# listed, and only on them; an item a tool kept the role from makes that retry ``tooling-retry``.
 RECOVERY_ROUTES = (
     "developer-retry",
     "same-candidate-rerun",
@@ -70,6 +75,7 @@ RECOVERY_ROUTES = (
     "carry-over",
     "tooling-retry",
     "bypass-rerun",
+    "narrowed-retry",
 )
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {
@@ -194,7 +200,14 @@ DISPATCH_FIELDS = {
 }
 # The carried-items brief section (issue #499) is one shared channel keyed by the kind of source
 # that raised an item; a later kind adds its value here without changing the section's shape.
-CARRIED_ITEM_SOURCES = ("coordinator-finding", "review-finding")
+CARRIED_ITEM_SOURCES = ("coordinator-finding", "review-finding", "incomplete-item")
+# The roles whose work brief may carry each kind. An incomplete item (issue #501) reaches the role
+# a read-only report handed it to, or the same read-only stage again in a narrowed retry.
+CARRIED_ITEM_BRIEF_ROLES = {
+    "coordinator-finding": ("developer", "code-review"),
+    "review-finding": ("developer", "code-review"),
+    "incomplete-item": ("architect", "developer", "verification", "code-review", "qa"),
+}
 # One carried item as a brief hands it to a role.
 CARRIED_ITEM_FIELDS = frozenset(
     {"item_id", "source", "summary", "files", "expected_evidence"}
@@ -242,6 +255,21 @@ REPORT_OPTIONAL_FIELDS = {
     "used_memory",
     "tooling_blocker",
     "resolver",
+    "incomplete_items",
+}
+# One brief item a read-only role left undone (issue #501): what it was, why, and the role it can be
+# handed to. ``tooling_blocker`` (the report field's shape) is optional per item: a tool, such as the
+# safety classifier, kept the role from it.
+INCOMPLETE_ITEM_FIELDS = frozenset({"brief_item", "reason", "target_role"})
+INCOMPLETE_ITEM_OPTIONAL_FIELDS = frozenset({"tooling_blocker"})
+# The roles an incomplete item of each read-only stage may target: the stage itself (a narrowed
+# retry) or a later pipeline role. Verification is a target of no other stage: it runs only on a
+# registered blocked developer candidate.
+INCOMPLETE_ITEM_TARGET_ROLES = {
+    "architect": ("architect", "developer", "code-review", "qa"),
+    "verification": ("verification", "code-review", "qa"),
+    "code-review": ("code-review", "qa"),
+    "qa": ("qa",),
 }
 RISK_ASSESSMENT_FIELDS = {
     "risk_assessment_id",
@@ -430,5 +458,7 @@ TELEMETRY_FIELDS = {
 SANDBOXES_REL = Path(".harness") / ".sandboxes"
 SCRATCH_REL = SANDBOXES_REL / "scratch"
 AGENT_INBOX_REL = SCRATCH_REL / "inbox"
+# Coordinator state and tool sandboxes are runtime files: they never make a worktree dirty.
+RUNTIME_PATH_PREFIXES = (f"{STATE_REL.as_posix()}/", f"{SANDBOXES_REL.as_posix()}/")
 # Cyrillic in a brief means the coordinator leaked its own report language into an agent handoff.
 NON_ENGLISH_BRIEF_PATTERN = re.compile(r"[\u0400-\u04FF\u0500-\u052F]")

@@ -27,6 +27,15 @@ A developer retry receives, besides its brief, the retry handoff (the playbook's
 handoff") and its starting files. Start from the handoff's findings and starting files: they replace
 re-reading the earlier work, and the existing candidate history is the code to extend.
 
+When a hook or another tool blocks your `git commit`, revert nothing: do not reset, stash, checkout
+or delete the uncommitted work. Stop with the `tooling_blocker` the common contract describes and
+add `uncommitted_files`: every path `git status --porcelain --no-renames --untracked-files=all`
+lists in the worktree, each once, as Git prints it and inside the zone. Report `commit_sha` as the
+current HEAD (your last commit) and `changed_files` and `commit_map` up to it, as usual. The
+`tooling` restart continues from that commit with exactly those files uncommitted. The restart's
+preflight refuses an extra, missing or out-of-zone file. A restarted developer commits the
+inherited files under the plan entries they belong to.
+
 Follow the immutable brief's ordered commit plan. Each commit implements one independently
 reviewable logical change and is reported against the plan entries it closes. In an initial or
 rebase dispatch the mapping is many-to-many: one commit may close several entries, and one entry may

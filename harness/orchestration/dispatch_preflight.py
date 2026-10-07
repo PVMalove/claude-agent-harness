@@ -13,12 +13,14 @@ import re
 import subprocess
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from ..errors import HarnessError
 from ..token_estimator import estimate_tokens, estimate_tokens_for_bytes
-from .contract import ContractError, resolve_runtime_name, string_list
+from .contract import ContractError, paths_inside, resolve_runtime_name, string_list
 from .core.config import _adaptive_continuation_policy
+from .core.constants import RUNTIME_PATH_PREFIXES, TOOLING_BLOCKER_UNCOMMITTED_FIELD
 from .ledger import JsonObject, JsonValue
 
 # Structured handoff fields a compacted developer-retry start keeps: no report prose, no quoted
@@ -148,13 +150,16 @@ def _retry_findings(handoff: JsonObject) -> list[JsonValue]:
 
 
 def _structured_handoff(handoff: JsonObject) -> JsonObject:
-    """The handoff reduced to its structured fields: findings lose their quoted evidence."""
+    """The handoff reduced to its structured fields: findings lose their quoted evidence, and a
+    tooling blocker keeps only the uncommitted files the restart inherits."""
+    report = _pick(handoff.get("developer_report"), _HANDOFF_REPORT_FIELDS)
+    uncommitted: list[JsonValue] = list(_uncommitted_files(handoff))
+    if uncommitted:
+        report["tooling_blocker"] = {TOOLING_BLOCKER_UNCOMMITTED_FIELD: uncommitted}
     return {
         "context_package_id": handoff.get("context_package_id"),
         "commit_plan": handoff.get("commit_plan"),
-        "developer_report": _pick(
-            handoff.get("developer_report"), _HANDOFF_REPORT_FIELDS
-        ),
+        "developer_report": report,
         "retry_decision": {
             **_pick(handoff.get("retry_decision"), _HANDOFF_DECISION_FIELDS),
             "findings": [
@@ -163,6 +168,98 @@ def _structured_handoff(handoff: JsonObject) -> JsonObject:
             ],
         },
     }
+
+
+def _uncommitted_files(handoff: JsonObject) -> list[str]:
+    """The files a developer, blocked at its commit, listed as left uncommitted (issue #502)."""
+    report = handoff.get("developer_report")
+    blocker = report.get("tooling_blocker") if isinstance(report, dict) else None
+    if not isinstance(blocker, dict):
+        return []
+    files = blocker.get(TOOLING_BLOCKER_UNCOMMITTED_FIELD)
+    if not isinstance(files, list):
+        return []
+    return [path for path in files if isinstance(path, str)]
+
+
+def _is_tooling_restart(handoff: JsonObject) -> bool:
+    decision = handoff.get("retry_decision")
+    return isinstance(decision, dict) and decision.get("route") == "tooling-retry"
+
+
+def _check_restart_worktree(
+    worktree: Path,
+    config: JsonObject,
+    zone: str | None,
+    allowed_paths: JsonValue,
+    handoff: JsonObject,
+) -> None:
+    """A tooling restart inherits exactly the uncommitted changes its blocked report listed.
+
+    HEAD is already pinned to the developer's last commit; here the worktree's uncommitted paths
+    must equal the report's list, every one inside the batch's explicit ``allowed_paths`` (a batch
+    recorded before explicit scopes falls back to its zone's paths). A clean worktree with an empty
+    list passes as before; anything else is refused with the discrepancy named.
+    """
+    paths: list[str]
+    explicit = False
+    if string_list(allowed_paths) and allowed_paths:
+        explicit = True
+        paths = allowed_paths
+        scope = "the batch allowed_paths"
+    else:
+        zones = config.get("backend_zones")
+        declared = zones.get(zone) if isinstance(zones, dict) and zone else None
+        zone_paths = declared.get("paths") if isinstance(declared, dict) else None
+        if not string_list(zone_paths) or not zone_paths:
+            raise PreflightError(
+                f"project config declares no paths for zone {zone!r}",
+                remedy=f"declare backend_zones[{zone!r}].paths in the project orchestration config",
+            )
+        paths = zone_paths
+        scope = f"the batch zone {zone!r}"
+    git_output = "\0".join(
+        (
+            _git(worktree, "diff", "--name-only", "--no-renames", "-z", "HEAD"),
+            _git(worktree, "ls-files", "--others", "--exclude-standard", "-z"),
+        )
+    )
+    actual = {
+        path
+        for path in git_output.split("\0")
+        if path and not path.startswith(RUNTIME_PATH_PREFIXES)
+    }
+    expected = set(_uncommitted_files(handoff))
+    outside = sorted(
+        path
+        for path in actual | expected
+        if not (
+            paths_inside([path], paths)
+            if explicit
+            else any(fnmatchcase(path, pattern) for pattern in paths)
+        )
+    )
+    extra = sorted(actual - expected - set(outside))
+    missing = sorted(expected - actual - set(outside))
+    if not (outside or extra or missing):
+        return
+    discrepancies = [
+        (label, fix, group)
+        for label, fix, group in (
+            (f"outside {scope}", "revert or move out", outside),
+            ("not listed in the blocked report", "revert", extra),
+            ("missing from the worktree", "restore from the blocked session", missing),
+        )
+        if group
+    ]
+    found = [f"{label}: {', '.join(group)}" for label, _, group in discrepancies]
+    fixes = [f"{fix} {', '.join(group)}" for _, fix, group in discrepancies]
+    raise PreflightError(
+        "tooling restart worktree does not match the blocked developer report's "
+        f"uncommitted files ({'; '.join(found)})",
+        remedy=f"{'; '.join(fixes)}, so the uncommitted files equal the blocked report's "
+        "tooling_blocker uncommitted_files, or decide the batch again",
+    )
 
 
 def _named_in(path: str, text: str) -> bool:
@@ -215,7 +312,7 @@ def _retry_start(
             path
             for path in (changed if isinstance(changed, list) else [])
             if isinstance(path, str)
-        }
+        } | set(_uncommitted_files(handoff))
         findings = json.dumps(_retry_findings(handoff), ensure_ascii=False)
         kept = [
             item
@@ -355,6 +452,18 @@ def prepare(
     }
     handoff = project_state.get("retry_handoff")
     retry_package = project_state.get("retry_package")
+    if (
+        role == "developer"
+        and isinstance(handoff, dict)
+        and _is_tooling_restart(handoff)
+    ):
+        _check_restart_worktree(
+            worktree,
+            config,
+            _optional_text(project_state.get("zone"), "zone"),
+            project_state.get("allowed_paths"),
+            handoff,
+        )
     retry_start = (
         _retry_start(
             config,

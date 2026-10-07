@@ -589,14 +589,14 @@ dry-run план очистки; `ledger migrate`/`reset`, `git worktree remove`
 | Определение трекера | Единый резолвер трекера проекта: корректное поле `tracker` из `.harness/project.json` побеждает; без него разбирается `origin` из `git remote -v` — `https://`, `ssh://`, SCP-форма, userinfo, порт, подгруппы и точка в имени. `github.com` — GitHub, хост с `gitlab.` в имени — GitLab, иначе локальный трекер: онлайн-проверки для него — `skipped` |
 | `tracker.project` | Работает без `--online` и без сети, никогда не `skipped`: показывает тип, хост, проект и источник (`поле tracker`, `origin` или `нет origin`). Нет поля в существующем `.harness/project.json` — `warn` с готовым к вставке сниппетом `"tracker": {...}` в подсказке; поле расходится с `origin` по типу, хосту или проекту — `warn`, используется поле; некорректное поле — `warn` «поле tracker не применено» вместе с `fail` у `files.project_json`. Без `.harness/project.json` — `ok` |
 | `tracker.auth` | `gh auth status --hostname <host>` / `glab auth status --hostname <host>` для хоста трекера проекта; используется только код возврата — токены health не читает и не печатает |
-| `tracker.permissions` | `gh api --hostname <host> repos/{owner}/{repo}` (`push` → PR и комментарии, `triage` и выше → метки) или `glab api --hostname <host> projects/:id/members/all/:user_id` — эффективный `access_level` с учётом членств, унаследованных от родительских групп и приглашённых групп (≥ 30 ≈ push, ≥ 20 — метки) |
+| `tracker.permissions` | `gh api --hostname <host> repos/{owner}/{repo}` (`push` → PR и комментарии, `triage` и выше → метки) или `GITLAB_HOST=<host> glab api projects/:id/members/all/:user_id` — эффективный `access_level` с учётом членств, унаследованных от родительских групп и приглашённых групп (≥ 30 ≈ push, ≥ 20 — метки) |
 | `tracker.reachability` | `git ls-remote origin` |
 | `tracker.labels` | Сравнивает метки с таблицами из `docs/agents/triage-labels.md`; отсутствующая метка или другой цвет — `warn`, цвет никогда не перекрашивается |
-| `tracker.git_base` | Для открытых тикетов со `status::ready` и `status::in-progress` (`gh api repos/{owner}/{repo}/issues` / `glab api projects/:id/issues`, pull request и merge request не учитываются) секция `## Git base` должна называть integration-ветку из секции `## Integration Branch`, а у тикета без неё — `base_branch` из `.harness/project.json`. Расхождение и отсутствие секции — `warn` со списком тикетов; тела тикетов в вывод не попадают, тикеты проверка не меняет. `/to-tickets` и `/fast-implement` берут базу ветки из секции `## Integration Branch`; проверка следит, чтобы `## Git base` ей не противоречила |
+| `tracker.git_base` | Для открытых тикетов со `status::ready` и `status::in-progress` (`gh api --hostname <host> repos/{owner}/{repo}/issues` / `GITLAB_HOST=<host> glab api projects/:id/issues`, pull request и merge request не учитываются) секция `## Git base` должна называть integration-ветку из секции `## Integration Branch`, а у тикета без неё — `base_branch` из `.harness/project.json`. Расхождение и отсутствие секции — `warn` со списком тикетов; тела тикетов в вывод не попадают, тикеты проверка не меняет. `/to-tickets` и `/fast-implement` берут базу ветки из секции `## Integration Branch`; проверка следит, чтобы `## Git base` ей не противоречила |
 
 Каждый внешний вызов ограничен 10 секундами; отсутствующий `gh`/`glab` — `warn`, а не `fail` всего
-прогона. Каждый вызов `gh`/`glab` адресует проект явно: `api --hostname <host>` (для GitLab — с
-URL-кодированным путём проекта), `-R <host>/<owner>/<repo>` для `gh` и `-R https://<host>/<project>`
+прогона. Каждый вызов `gh`/`glab` адресует проект явно: `gh api --hostname <host>`, `GITLAB_HOST=<host> glab api` с
+URL-кодированным путём проекта (порт в `glab api --hostname` `glab` отклоняет), `-R <host>/<owner>/<repo>` для `gh` и `-R https://<host>/<project>`
 для `glab`. `--online --fix` дополнительно создаёт отсутствующие метки с каноническими цветами (`gh label
 create`/`glab label create` с `-R`, без `--force`) и никогда не пишет `.harness/project.json`, в том
 числе поле `tracker`.
@@ -1360,7 +1360,7 @@ merge request, а не issue: спецификация берётся из ти�
 `task-report::required` и после подтверждённого merge закрывает тикет или проверяет его закрытие.
 
 - **Default branch** определяется явной командой: `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`
-  на GitHub, поле `default_branch` из `glab api --hostname <host> projects/<project-id>` на GitLab.
+  на GitHub, поле `default_branch` из `GITLAB_HOST=<host> glab api projects/<project-id>` на GitLab.
   `Closes #N` ставится только для PR/MR в default branch, иначе `Related to #N`.
 - **Целевая ветка задаётся явно**, иначе оба CLI открывают PR/MR в default branch. Тело передаётся
   только файлом:
@@ -1370,8 +1370,8 @@ merge request, а не issue: спецификация берётся из ти�
   glab mr create -R https://gitlab.example.com/group/project --target-branch integration/reports --title 'CSV-сервис форматирования' --description-file .harness/.sandboxes/pr_body/pr-body-102-csv-service.md --yes
   ```
 
-  На GitLab каждая команда `glab` получает `-R <project-url>`, а `glab api` — `--hostname <host>` и
-  путь `projects/<project-id>/...` (плейсхолдеры — `docs/agents/issue-tracker.md` → GitLab →
+  На GitLab каждая команда `glab` получает `-R <project-url>`, а `glab api` пишется как
+  `GITLAB_HOST=<host> glab api projects/<project-id>/...` (плейсхолдеры — `docs/agents/issue-tracker.md` → GitLab →
   Conventions). MR обозначается `!<iid>` (последний сегмент URL `.../-/merge_requests/<iid>`),
   тикет — `#<iid>`.
 - **Closing patterns GitLab.** GitLab закрывает issue по closing pattern (шаблон по умолчанию
@@ -1434,7 +1434,7 @@ branch, иначе `Related to #ID`; после merge — явное закры�
   `gh issue edit --add-label` падает на несуществующей метке, а GitLab молча создаёт её с цветом по
   умолчанию.
 - Показывает план и ждёт подтверждения; идемпотентен: на GitHub — `gh label create --force`, на
-  GitLab — сверка со списком `glab api --hostname <host> --paginate projects/<project-id>/labels`,
+  GitLab — сверка со списком `GITLAB_HOST=<host> glab api --paginate projects/<project-id>/labels`,
   затем `glab label create -R <project-url>` для отсутствующей метки и
   `glab label edit -R <project-url> --label-id <id>` для метки с другим цветом.
 - Запускать один раз перед первым `triage`/`to-spec`/`to-tickets`/`implement`/`to-guide`/`wayfinder`.
@@ -1613,9 +1613,9 @@ Hook строго разбирает JSON payload и смотрит только
 ```bash
 git commit -F docs/tasks/issue-102-csv-service/commit-message.txt   # допустимо
 git commit -F "$MSG_FILE"                                           # заблокировано
-glab api --hostname gitlab.example.com projects/group%2Fproject/issues/102/notes \
+GITLAB_HOST=gitlab.example.com glab api projects/group%2Fproject/issues/102/notes \
   -F body=@.harness/.sandboxes/pr_body/issue-comment-102-csv.md     # допустимо
-glab api --hostname gitlab.example.com projects/group%2Fproject/issues/102/notes \
+GITLAB_HOST=gitlab.example.com glab api projects/group%2Fproject/issues/102/notes \
   -F body=@"$NOTE_FILE"                                             # заблокировано
 ```
 
