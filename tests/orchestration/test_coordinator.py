@@ -10490,7 +10490,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         """Issue #625: with no manual choice, a fix-forward commit that matches a risk trigger the
         prior review did not see, or changes a file outside the carried items, sends the candidate
         to an ordinary full review; the section stays as audit evidence. QA then runs on the new
-        SHA."""
+        SHA. A review finding names no files, so its files are its review's review_scope: a new
+        file, even a new test file that pins the finding, lies outside them and escalates too."""
         for path, message, reason, evidence in (
             (
                 "services/x.py",
@@ -10504,8 +10505,14 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 "file-outside-carried-items",
                 ["services/y.py"],
             ),
+            (
+                "tests/test_marker.py",
+                "test: pin the marker value",
+                "file-outside-carried-items",
+                ["tests/test_marker.py"],
+            ),
         ):
-            with self.subTest(reason=reason):
+            with self.subTest(reason=reason, path=path):
                 self._reset()
                 _, _, candidate, fix = self._fix_forward_candidate(path, message)
                 brief = self._dispatch(self.batch_id, "code-review", candidate=fix)[
