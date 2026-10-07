@@ -87,6 +87,7 @@ from harness.orchestration.workflow.history import (
 )
 from harness.orchestration.workflow.qa_integration import _ops
 from harness.orchestration.workflow.reports import (
+    _closure_base,
     _rebase_target,
     _validate_report,
 )
@@ -897,6 +898,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             repo,
             batch.get("integration_base_commit") or batch.get("base_commit"),
             _rebase_target(batch, dispatch),
+            _closure_base(repo, root, batch, dispatch),
         )
         resolver_state.validate_report(repo, root, batch, dispatch, report)
         if report.get("outcome") != "completed" and args.decision in {
@@ -982,10 +984,26 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     "overriding not-covered definition-of-done items requires a recorded note",
                     remedy="pass --note (other than 'none') explaining why the uncovered items may be accepted",
                 )
+        elif gap:
+            # A developer-retry report that leaves a carried item not_closed (issue #503).
+            if args.decision == "accept":
+                raise CoordinatorError(
+                    f"carried items {gap} are not closed, so the report is not clean",
+                    remedy="retry the developer, or pass --decision override-warning with a "
+                    "--note explaining why the items that are not closed may be accepted",
+                )
+            if args.decision == "override-warning" and (
+                not _non_empty(args.note) or args.note.strip().lower() == "none"
+            ):
+                raise CoordinatorError(
+                    "overriding carried items that are not closed requires a recorded note",
+                    remedy="pass --note (other than 'none') explaining why the carried items "
+                    "that are not closed may be accepted",
+                )
         elif args.decision == "override-warning":
             raise CoordinatorError(
-                "only a recorded review warning or a not-covered definition-of-done item can be overridden",
-                remedy="only override a recorded review warning or a not-covered definition-of-done item",
+                "only a recorded review warning, a not-covered definition-of-done item or a carried item that is not closed can be overridden",
+                remedy="only override a recorded review warning, a not-covered definition-of-done item or a carried item that is not closed",
             )
         routing: JsonObject | None = None
         if args.decision == "retry":
@@ -1315,6 +1333,26 @@ def _decide_retry_route(
             "next_action": "developer-retry",
             "rationale": f"{routing['rationale']} The approver forced a developer retry with --retry-role developer.",
         }
+    if routing["next_action"] == "developer-retry":
+        # The closed list the developer-retry brief carries (issue #503), recorded with the route.
+        # A developer-retry with items is a fix-forward; a tooling-retry keeps its own route.
+        entry = next(
+            item
+            for item in batch.get("dispatches", [])
+            if item.get("dispatch_id") == dispatch["dispatch_id"]
+        )
+        item_ids = carried_items.section_item_ids(
+            carried_items.retry_section(root, batch, entry)
+        )
+        routing = {**routing, "retry_item_ids": item_ids}
+        if item_ids and routing["route"] == "developer-retry":
+            routing = {
+                **routing,
+                "route": "fix-forward",
+                "rationale": f"{routing['rationale']} It is a fix-forward: new commits on top of "
+                f"the candidate close the carried items {', '.join(item_ids)} without rewriting "
+                "history.",
+            }
     _require_route(routing["route"])
     return routing
 

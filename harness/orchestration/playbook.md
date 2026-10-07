@@ -80,6 +80,17 @@ stage on the same SHA, and only with empty findings, an unchanged candidate and 
 requirement blocker. A contradictory or unsupported reason always takes the safe route,
 `developer-retry`.
 
+A retry that routes to `developer-retry` records, as `retry_item_ids`, the closed list of carried
+items its developer brief will carry, possibly empty. For a retried code-review report, the list
+holds the open coordinator findings, that review's Standards and Spec findings, and the open
+incomplete items handed to the developer; for a retried qa, publish or verification report, the same
+without review findings. For a retried developer work report, it holds its own brief's items, none
+of which was accepted. A non-empty list records the route `fix-forward`. A fix-forward is still a
+developer-retry: `next_action` is `developer-retry` and it spends one
+`retry_policy.max_developer_retries`. The developer adds new commits on top of the brief's
+`snapshot_commit` and rewrites none of them. A developer `tooling-retry` keeps its own route and
+records the same list.
+
 `tooling` means a hook, the safety classifier or the ledger blocked a legitimate role action. The
 coordinator assigns it only from a `blocked` report's structured `tooling_blocker` (`tool`, exact
 `command`, `message`), when no finding, failed check, moved candidate or developer category
@@ -166,7 +177,8 @@ that stage. The coordinator chooses a route by this table:
 | A code-review, qa or publish report is `blocked` with an operational reason, no finding on either axis, no failed check and an unchanged candidate | `same-candidate-rerun` | A human decides the retry; the new dispatch on the same SHA needs its own approval under `approval_policy` | Dispatch ID, `report_sha256`, the unchanged `candidate_commit`, and for `context-pressure` the critical `context_pressure` record |
 | A verification report is retried without `--narrowed`, whatever its outcome or reason category except `tooling` and `block-bypass` | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID and `report_sha256` of the verification report. A verification report is never re-run on the same SHA, except by `tooling-retry`, `bypass-rerun` or `narrowed-retry` |
 | A conflict-resolver report is retried and its `resolver.cause` is not `task-defect` | `same-candidate-rerun` | A human decides the retry; the new resolver dispatch is a fix on the same target and is bounded by `retry_policy.max_developer_retries` | Dispatch ID and `report_sha256` of the resolver report and its `resolver` block |
-| A finding or a warning/blocker severity, a failed check, a moved candidate, a `code`, `requirements`, `candidate-change` or `unknown` reason, a contradictory reason, or `--retry-role developer` | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, and the axis, check or candidate change that decided it |
+| A warning/blocker severity, a failed check, a moved candidate, a `code`, `requirements`, `candidate-change` or `unknown` reason, a contradictory reason, or `--retry-role developer`, and the closed list of carried items is empty: no review finding, no open coordinator finding, no open incomplete item for the developer and no item of a retried developer brief | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the axis, check or candidate change that decided it, and an empty `retry_item_ids` |
+| An additional commit is needed: a retry routes to a developer-retry whose closed list of carried items is not empty (the retried review's Standards and Spec findings, open coordinator findings, open incomplete items for the developer, or the items of a retried developer brief); a `tooling-retry` keeps its own route and carries the same list | `fix-forward` | A human decides the retry with `batch decide`; the developer-retry dispatch is approved under `approval_policy`; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the `retry_item_ids` the brief carries, and the brief's `snapshot_commit` as the candidate the new commits continue |
 | A hook, the safety classifier or the ledger blocked a legitimate command: a `blocked` report carries `tooling_blocker` (tool, exact command, message), with no finding, no failed check and an unchanged candidate | `tooling-retry` | A human decides the retry after confirming the false positive and filing a bug ticket against the tool; the new dispatch of the same stage (same SHA; a developer continues its last commit) is approved under `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID, `report_sha256`, the `tooling_blocker`, and the `candidate_commit` (for a developer, its last commit) |
 | A code-review, qa or verification role worked around a hook or tool block (another command form, tool, script file, `eval`, interpreter or a split command): the approver names `block-bypass`, and the candidate is unchanged | `bypass-rerun` | A human decides the retry with a `--note` naming the violation and never accepts or warning-overrides the report; the new dispatch of the same stage on the same SHA always needs an explicit approval (`--approved-by`), under every `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID and `report_sha256` (evidence of the violation only, never of its findings or checks), the `--note`, and the unchanged `candidate_commit` |
 | The coordinator finds a defect in a clean developer report whose Definition of Done is met inside its allowed paths | `carry-over` | The approver of the `accept` (`batch decide --findings-file`); after a policy auto-accept the coordinator itself (`batch carry-over`, `policy:carry-over`) while no code-review dispatch exists for the candidate; the code-review dispatch is approved under `approval_policy` | Dispatch ID and `report_sha256` of the accepted developer report, the candidate, and the `carried_items` item IDs. No developer retry is spent before review |
@@ -181,7 +193,8 @@ that stage. The coordinator chooses a route by this table:
 the `retry` routing record computed as `batch decide` computes it (it takes the same
 `--reason-category` and `--retry-role` flags) and the `abandon` route; it writes nothing. The preview
 does not check `retry_policy.max_developer_retries`: once that budget is exhausted it still shows a
-`developer-retry` route, which `batch decide --decision retry` then refuses. When the retry route
+`developer-retry` or `fix-forward` route, which `batch decide --decision retry` then refuses.
+When the retry route
 cannot be computed, for example because the configured retry-reason classifier extension fails, the
 packet still renders and `route_preview.retry` is `{"route": null, "refused": ..., "remedy": ...}`
 with the error `batch decide --decision retry` refuses with. With `--findings-file`,
@@ -426,8 +439,10 @@ It must contain, at minimum:
 - `carried items`: one shared channel keyed by the kind of source,
   `{"coordinator-finding": [...], "review-finding": [...], "incomplete-item": [...]}`, each item
   `{item_id, source, summary, files, expected_evidence}`, or `{}`. A code-review or developer work
-  brief carries every open coordinator finding; a developer brief answering a retried code-review
-  also carries that review's Standards and Spec findings. Any work brief carries, as
+  brief carries every open coordinator finding. A developer-retry brief carries exactly the closed
+  list its retry decision recorded as `retry_item_ids`: after a retried code-review, also that
+  review's Standards and Spec findings; after a retried developer report, that brief's own items.
+  Any work brief carries, as
   `incomplete-item`, the open items a read-only report handed to its role with
   `--carry-incomplete`, and a narrowed retry's brief carries only the items of the report it
   retries. An `incomplete-item` `source` names `dispatch_id`, `report_sha256`, the reporting `role`,
@@ -486,6 +501,22 @@ The report must include:
   `not_covered` with a reason) and a `divergence_justification` naming what was merged, split or
   added and why. A developer-retry report maps each new commit to one distinct entry and carries
   neither field;
+- for a developer-retry brief with carried items: `carried_item_closure`, one record per carried
+  item, either `{item_id, commits}` (the commits of its retry chain that close it) or
+  `{item_id, not_closed}` (a non-empty reason). The retry chain is this dispatch and the earlier
+  attempts that handed it the same closed list (a retried developer report or a developer
+  `tooling-retry`): its commits count from the `snapshot_commit` of the chain's first attempt that
+  this dispatch's `snapshot_commit` still descends from (from the rebase target under one), so an
+  item an earlier attempt closed names that attempt's commit. A completed report must carry it, a
+  blocked or failed one may, and no other report may. A missing, unknown or repeated item, an empty
+  reason, an empty commit list, an unresolvable SHA or a commit the chain did not create is refused,
+  with or without a `commit_plan`. A completed report recorded before issue #503 without the field
+  is still decided: every item is `omitted` and a carried gap.
+  A `not_closed` item is a carried gap: no policy accepts the report, plain `accept` is refused,
+  and only `override-warning` with a note other than `none` (recorded as `carried_items_gap`) or
+  `retry` decides it. Without an approved rebase target, the report's `commit_sha` must descend from
+  `snapshot_commit`. A retry that rewrote that history (amend, squash or reset) is refused; its
+  remedy is to recover the commits from `git reflog` and re-apply the fix as new commits;
 - for a code-review brief with carried items: `review.carried_items`, one
   `{item_id, status: closed | open | unverified, evidence}` per item the brief carried. An omitted,
   `unverified` or `open` item is a carried gap: the report is never clean, no policy accepts it, plain

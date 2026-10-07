@@ -110,7 +110,8 @@ follows the same receiving rule. When an item's `source.role` is the role's own 
 and do not repeat the rest of the assignment. Otherwise, do each carried item within the ordinary
 assignment. In both cases, name each `item_id` in `output` with the evidence that it is done, as its
 `expected_evidence` asks. A read-only role lists an item that is still undone in `incomplete_items`
-again; a writing role reports it as a blocker.
+again; a writing role reports it as a blocker. A developer-retry whose brief carried items maps them
+in `carried_item_closure` instead, as the developer contract describes.
 
 Escalate instead of guessing when the requested scope is unclear or exceeds the brief's allowed
 paths, required proof cannot be produced, a risk trigger applies without a stated gate, or the work needs credentials,
