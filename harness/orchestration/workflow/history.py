@@ -186,6 +186,17 @@ def _initial_developer_work(dispatch: JsonObject) -> bool:
     )
 
 
+def _initial_architect_work(dispatch: JsonObject) -> bool:
+    """The first architect of a batch may start from progress preserved by a replacement batch."""
+    transition = dispatch.get("transition")
+    return (
+        dispatch.get("role") == "architect"
+        and dispatch.get("purpose") == "work"
+        and isinstance(transition, dict)
+        and transition.get("next_action") in {"initial", "architect"}
+    )
+
+
 def _latest_checkpoint_for_dispatch(
     root: Path, batch: JsonObject, dispatch_id: str
 ) -> JsonObject:
@@ -1347,12 +1358,13 @@ def _validate_dispatch(
         risk = _risk_for_candidate(root, batch, candidate)
         if (
             risk is None
-            and _initial_developer_work(dispatch)
+            and (_initial_developer_work(dispatch) or _initial_architect_work(dispatch))
             and dispatch.get("risk_assessment_id") is None
             and dispatch.get("review_base") is None
             and not dispatch.get("review_scope")
         ):
-            # A writer's startup SHA is progress, not a completed/accepted candidate.
+            # A writer's startup SHA is progress, not a completed/accepted candidate; the
+            # architect that precedes the writer in a replacement batch starts from it too.
             # Report acceptance still precedes risk assessment and every downstream gate.
             if not _git_is_ancestor(repo, batch["base_commit"], candidate):
                 raise CoordinatorError(

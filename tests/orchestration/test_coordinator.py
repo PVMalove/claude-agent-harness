@@ -5411,6 +5411,35 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         ):
             self._dispatch(batch["batch_id"], "developer", candidate=unrelated)
 
+    def test_architect_starts_from_progress_preserved_by_a_replacement_batch(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        progress, _ = self._developer_commit("progress")
+
+        architect = self._dispatch(batch_id, "architect", candidate=progress)["brief"]
+
+        self.assertEqual(architect["snapshot_commit"], progress)
+        self.assertIsNone(architect["risk_assessment_id"])
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        self._decide(batch_id, "accept")
+        developer = self._dispatch(batch_id, "developer", candidate=progress)["brief"]
+        self.assertEqual(developer["snapshot_commit"], progress)
+
+    def test_architect_cannot_pin_history_outside_the_batch_base(self) -> None:
+        batch = self._create_batch()
+        unrelated = _git(
+            self.worktree, "commit-tree", "HEAD^{tree}", "-m", "unrelated history"
+        )
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "contain the batch base"
+        ):
+            self._dispatch(batch["batch_id"], "architect", candidate=unrelated)
+
     def test_continuation_after_critical_pressure_needs_a_checkpoint_and_a_new_model_attestation(
         self,
     ) -> None:
