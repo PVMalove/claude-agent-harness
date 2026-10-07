@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
-from harness.orchestration import operational_guards
+from harness.orchestration import operational_guards, runtime_access
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
     low_risk_eligible,
@@ -301,6 +301,7 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
             "snapshot_sha": snapshot,
             "integration_ref": _integration_ref(repo, batch),
             "runtime": args.runtime,
+            "purpose": args.purpose,
             "mandatory_checks": checks,
             "starting_files": package_pointer,
             "architecture_decision": batch.get("architecture_decision"),
@@ -885,6 +886,17 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             context_package,
             carried,
         )
+        access_plan = runtime_access.resolve_plan(
+            repo,
+            Path(batch["worktree"]),
+            config,
+            role_name,
+            role["mode"],
+            operation=runtime_access.dispatch_operation(role_name, purpose),
+        )
+        transition[operational_guards.ACCESS_TRANSITION_FIELD] = access_plan[
+            "plan_digest"
+        ]
         digest = operational_guards.transition_digest(transition)
         idempotency_key = _transition_idempotency_key(role_name, purpose, transition)
         if idempotency_key is not None:
@@ -900,6 +912,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 "retry_idempotency_key": idempotency_key,
                 "needs_attention": bool(batch.get("needs_attention", False)),
                 "context_package_freshness": context_package_freshness,
+                "runtime_access": access_plan,
             }
             if context_package is not None:
                 warning = _context_package_quality_warning(context_package)
@@ -986,6 +999,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "carried_items": carried,
             # The human-approved target a rebase-fix-forward developer-retry rebases onto.
             "rebase_target_commit": transition.get("rebase_target_sha"),
+            "runtime_access": access_plan,
         }
         if role_name == resolver_state.RESOLVER_ROLE:
             brief["resolver"] = resolver_route.brief_section(

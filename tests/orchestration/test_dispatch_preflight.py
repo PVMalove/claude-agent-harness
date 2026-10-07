@@ -530,5 +530,46 @@ class ToolingRestartWorktreeTests(_PreflightFixture):
         )
 
 
+class RuntimeAccessPreflightTests(_PreflightFixture):
+    def test_authored_access_is_visible_and_unverified_without_worker_proof(
+        self,
+    ) -> None:
+        config = self.state["config"]
+        assert isinstance(config, dict)
+        config["access_policy"] = {
+            "defaults": {"mode": "sandbox", "network": {"hosts": ["github.com"]}}
+        }
+        result = self._prepare()
+        access = cast(JsonObject, result.decision_packet["runtime_access"])
+        plan = cast(JsonObject, access["plan"])
+        verification = cast(JsonObject, access["verification"])
+        self.assertEqual(plan["mode"], "sandbox")
+        self.assertEqual(verification["status"], "unverified")
+        self.assertIn("new runtime session", str(verification["remedy"]))
+
+    def test_publish_preview_resolves_the_publish_operation_like_the_brief(
+        self,
+    ) -> None:
+        config = self.state["config"]
+        assert isinstance(config, dict)
+        config["access_policy"] = {
+            "defaults": {"mode": "sandbox", "network": {"hosts": ["github.com"]}},
+            "operations": {"publish": {"network": {"hosts": ["pypi.org"]}}},
+        }
+
+        def plan(purpose: str) -> JsonObject:
+            access = self._prepare(purpose=purpose).decision_packet["runtime_access"]
+            return cast(JsonObject, cast(JsonObject, access)["plan"])
+
+        work = plan("work")
+        publish = plan("publish")
+
+        self.assertEqual(cast(JsonObject, work["network"])["hosts"], ["github.com"])
+        self.assertEqual(cast(JsonObject, publish["network"])["hosts"], ["pypi.org"])
+        self.assertEqual(
+            cast(JsonObject, publish["sources"])["network"], "operations.publish"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

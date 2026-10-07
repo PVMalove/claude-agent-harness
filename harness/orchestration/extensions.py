@@ -29,6 +29,7 @@ EXTENSION_KINDS = (
     "retry_reason_classifier",
     "context_telemetry_provider",
     "human_notifier",
+    "runtime_access",
 )
 DEFAULT_EXTENSION = "none"
 EXTENSION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_]*)?$")
@@ -38,6 +39,7 @@ _METHOD = {
     "retry_reason_classifier": "classify",
     "context_telemetry_provider": "observe",
     "human_notifier": "notify",
+    "runtime_access": "observe",
 }
 
 
@@ -89,6 +91,56 @@ class AttentionEvent:
     since: str
     last_safe_action: str
     recommended_human_action: str
+
+
+@dataclass(frozen=True)
+class RuntimeAccessObservation:
+    """Native evidence for the reserved worker environment, never the parent process.
+
+    The provider must observe the current environment and must apply settings through the
+    supported native launch mechanism. It must preserve native permission approval.
+    """
+
+    plan_digest: str
+    transport: str
+    supported_modes: tuple[str, ...]
+    effective_mode: str
+    mechanism: str
+    environment_id: str
+    launch_id: str
+    source: str
+    observed_at: str
+    hosts: tuple[str, ...]
+    filesystem: tuple[tuple[str, str], ...]
+    applied: bool = False
+    dispatch_id: str | None = None
+    handed_off: bool = False
+
+
+class RuntimeAccess(Protocol):
+    """Confirm and apply permissions for a specific native worker launch."""
+
+    def observe(
+        self, plan: Mapping[str, object], transport: str
+    ) -> RuntimeAccessObservation | None: ...
+
+    def apply(
+        self, brief: Mapping[str, object], observation: RuntimeAccessObservation
+    ) -> RuntimeAccessObservation | None: ...
+
+    def handoff(
+        self,
+        brief: Mapping[str, object],
+        observation: RuntimeAccessObservation,
+        command: tuple[str, ...] | None,
+    ) -> RuntimeAccessObservation | None:
+        """Launch this exact worker natively and return its bound receipt.
+
+        The implementation owns the native launch and preserves native approval. For external
+        transport it integrates the supplied adapter command into that same launch. It must not
+        merely apply permissions to another environment or return parent-process evidence.
+        """
+        ...
 
 
 class TransportHealth(Protocol):
@@ -268,3 +320,8 @@ def context_telemetry_provider(name: str) -> ContextTelemetryProvider:
 def human_notifier(name: str) -> HumanNotifier:
     """Получить реализацию оповещения человека по имени."""
     return cast(HumanNotifier, _resolve("human_notifier", name))
+
+
+def runtime_access(name: str) -> RuntimeAccess:
+    """Resolve the native worker access implementation; none supplies no proof."""
+    return cast(RuntimeAccess, _resolve("runtime_access", name))

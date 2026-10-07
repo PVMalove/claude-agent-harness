@@ -160,7 +160,8 @@
     "verification_environment_health": "none",
     "retry_reason_classifier": "none",
     "context_telemetry_provider": "none",
-    "human_notifier": "none"
+    "human_notifier": "none",
+    "runtime_access": "none"
   },
   "preflight_policy": {
     "require_estimates": true,

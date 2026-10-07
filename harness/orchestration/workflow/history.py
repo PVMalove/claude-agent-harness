@@ -16,7 +16,7 @@ from typing import cast
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.memory.index import context as memory_context
 from harness.memory.sources import allowed_paths, read_source
-from harness.orchestration import operational_guards
+from harness.orchestration import operational_guards, runtime_access
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
     ContractError,
@@ -26,7 +26,6 @@ from harness.orchestration.contract import (
 )
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
-    _configured,
     _project,
     _reject_sensitive,
     _resolve_assignment,
@@ -183,6 +182,17 @@ def _initial_developer_work(dispatch: JsonObject) -> bool:
         and dispatch.get("purpose") == "work"
         and isinstance(transition, dict)
         and transition.get("next_action") in {None, "developer"}
+    )
+
+
+def _initial_architect_work(dispatch: JsonObject) -> bool:
+    """The first architect of a batch may start from progress preserved by a replacement batch."""
+    transition = dispatch.get("transition")
+    return (
+        dispatch.get("role") == "architect"
+        and dispatch.get("purpose") == "work"
+        and isinstance(transition, dict)
+        and transition.get("next_action") in {"initial", "architect"}
     )
 
 
@@ -911,9 +921,10 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
     """The brief's transition, digest, approval, idempotency key and policy agree with one another
     and with the brief's own fields; the brief hash already proves none of them was edited alone."""
     transition = dispatch["transition"]
-    if not isinstance(transition, dict) or set(transition) - set(
-        operational_guards.OPTIONAL_TRANSITION_FIELDS
-    ) != set(operational_guards.TRANSITION_FIELDS):
+    if not isinstance(transition, dict) or set(transition) - {
+        *operational_guards.OPTIONAL_TRANSITION_FIELDS,
+        operational_guards.ACCESS_TRANSITION_FIELD,
+    } != set(operational_guards.TRANSITION_FIELDS):
         raise CoordinatorError(
             "dispatch transition schema mismatch",
             remedy="the dispatch transition is malformed -- "
@@ -1072,6 +1083,10 @@ def _validate_dispatch(
 ) -> None:
     _validate_harness_runtime_snapshot(repo, batch)
     _reject_sensitive(dispatch, "dispatch record")
+    try:
+        runtime_access.validate_binding(dispatch)
+    except runtime_access.AccessError as exc:
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
     # Briefs are immutable. A record created before worker attestation was introduced keeps its
     # historical shape and is treated as an explicit legacy opt-out instead of being rewritten.
     pre_summary_fields = DISPATCH_FIELDS - {"context_package_summary"}
@@ -1102,6 +1117,8 @@ def _validate_dispatch(
     accepted |= {fields - {"carried_items"} for fields in set(accepted)}
     # The approved rebase target (issue #504) came after that.
     accepted |= {fields - {"rebase_target_commit"} for fields in set(accepted)}
+    # Runtime access is added as an approval-bound group; historical briefs keep inherit.
+    accepted |= {fields - {"runtime_access"} for fields in set(accepted)}
     # The conflict-resolver brief's resolver section (issue #534) is the one field added on top.
     accepted |= {fields | {"resolver"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
@@ -1251,7 +1268,7 @@ def _validate_dispatch(
             remedy="the dispatch record's verification_commands diverged from its batch/role -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
-    if _configured(repo):
+    if config.get("assignment_plans"):
         try:
             _, assignment = validate_brief_policy(
                 dispatch,
@@ -1347,12 +1364,13 @@ def _validate_dispatch(
         risk = _risk_for_candidate(root, batch, candidate)
         if (
             risk is None
-            and _initial_developer_work(dispatch)
+            and (_initial_developer_work(dispatch) or _initial_architect_work(dispatch))
             and dispatch.get("risk_assessment_id") is None
             and dispatch.get("review_base") is None
             and not dispatch.get("review_scope")
         ):
-            # A writer's startup SHA is progress, not a completed/accepted candidate.
+            # A writer's startup SHA is progress, not a completed/accepted candidate; the
+            # architect that precedes the writer in a replacement batch starts from it too.
             # Report acceptance still precedes risk assessment and every downstream gate.
             if not _git_is_ancestor(repo, batch["base_commit"], candidate):
                 raise CoordinatorError(
