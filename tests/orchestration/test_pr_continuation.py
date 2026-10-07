@@ -98,7 +98,7 @@ class NextFixture(unittest.TestCase):
             value = json.loads(config.read_text(encoding="utf-8"))
             value["qa_gate_commands"] = list(commands)
             config.write_text(json.dumps(value), encoding="utf-8")
-        result = coordinator.integration_local_qa(
+        return coordinator.integration_local_qa(
             self.branch.args(
                 record=self.record_id,
                 ci_condition="absent",
@@ -108,10 +108,6 @@ class NextFixture(unittest.TestCase):
                 lease_seconds=None,
             )
         )
-        if result["state"] == "unavailable":
-            # pytest shows this only for a failed test: why the fallback could not run.
-            print(f"local QA unavailable at {result['stage']}: {result['reason']}")
-        return result
 
     def spend_cycles(self, count: int) -> None:
         root = self.branch.state_root()

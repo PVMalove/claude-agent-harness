@@ -359,8 +359,12 @@ class PublishedBranch:
     def advance_integration_ref(self) -> str:
         """Another change lands on the integration ref in the remote."""
         _git(self.repo, "checkout", "-q", "master")
-        (self.repo / "landed.txt").write_text("landed\n", encoding="utf-8")
-        _git(self.repo, "add", "-A")
+        # The tip in the content keeps a second landing a new commit.
+        tip = _git(self.repo, "rev-parse", "HEAD")
+        (self.repo / "landed.txt").write_text(f"landed {tip}\n", encoding="utf-8")
+        # Only the landed file: ``-A`` would also commit the ledger state under ``.harness``, whose
+        # paths overflow MAX_PATH once a QA worktree is created for a refreshed candidate on Windows.
+        _git(self.repo, "add", "landed.txt")
         _git(self.repo, "commit", "-m", "landed")
         _git(self.repo, "push", "origin", "master")
         return _git(self.repo, "rev-parse", "HEAD")
