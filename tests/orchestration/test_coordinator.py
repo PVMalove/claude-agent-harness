@@ -10375,6 +10375,181 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     ("qa", fix, accepted["verification_commands"]),
                 )
 
+    def _rebased_fix_forward(
+        self, *, conflict: bool = False, fixed: bool = True
+    ) -> tuple[JsonObject, str, str, list[str], str | None]:
+        """A reviewed one-commit candidate whose Spec warning was retried as a rebase-fix-forward
+        after origin/master moved, rebased (with ``conflict``, through a conflict resolved with
+        changes) and, with ``fixed``, fixed by one commit inside the reviewed file; accepted and
+        assessed. Returns the review brief, the reviewed candidate, the tip, the rebased copies and
+        the fix (``None`` without one)."""
+        batch_id = cast(str, self._plan_batch(["add simple marker"])["batch_id"])
+        self._accepted_architect(batch_id)
+        _, candidate, changed = self._reported_developer(batch_id)
+        self._decide(batch_id, "accept")
+        self._assess_without_triggers(batch_id, candidate, changed)
+        review = self._reported_review(
+            batch_id, candidate, spec=("warning", [dict(self.SPEC_WARNING)])
+        )
+        if conflict:
+            (self.repo / "services").mkdir(exist_ok=True)
+            (self.repo / "services" / "x.py").write_text(
+                "VALUE = 'upstream'\n", encoding="utf-8"
+            )
+        upstream = self._push_upstream()
+        self.assertEqual(
+            self._routing(self._decide(batch_id, "retry"))["route"],
+            "rebase-fix-forward",
+        )
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        self._start(retry["dispatch_id"])
+        if conflict:
+            with self.assertRaises(RuntimeError):
+                _git(self.worktree, "rebase", upstream)
+            (self.worktree / "services" / "x.py").write_text(
+                "VALUE = 'x'\nUPSTREAM = 'upstream'\n", encoding="utf-8"
+            )
+            _git(self.worktree, "add", "services/x.py")
+            _git(self.worktree, "-c", "core.editor=true", "rebase", "--continue")
+            copies = _git(
+                self.worktree, "rev-list", "--reverse", f"{upstream}..HEAD"
+            ).splitlines()
+        else:
+            copies = self._rebase_onto(candidate, upstream)
+        fix = (
+            self._commit_file("services/x.py", "fix: pin the marker value")
+            if fixed
+            else None
+        )
+        head = fix or copies[-1]
+        commit_map = self._rebased_map([candidate], copies)
+        closure: JsonObject = {
+            "item_id": "review-finding-1",
+            "not_closed": "the finding needs a product decision",
+        }
+        if fix is not None:
+            commit_map += self._commit_map([(fix, retry["commit_plan"][0])])
+            closure = {"item_id": "review-finding-1", "commits": [fix]}
+        head_changed = git_utils._changed_files_between(self.repo, upstream, head)
+        self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry,
+                head,
+                head_changed,
+                commit_map=commit_map,
+                carried_item_closure=[closure],
+            ),
+        )
+        if fix is not None:
+            self._decide(batch_id, "accept")
+        else:
+            self._decide(batch_id, "override-warning", note=closure["not_closed"])
+        self._assess_without_triggers(batch_id, head, head_changed)
+        return review, candidate, upstream, copies, fix
+
+    def test_a_rebased_copy_with_a_matching_patch_id_stays_out_of_the_delta_review(
+        self,
+    ) -> None:
+        """Issue #625: after a rebase-fix-forward, the rebased copy of the reviewed commit has the
+        patch-id of its original, so it counts as reviewed and only the fix is delta-reviewed."""
+        review, candidate, upstream, copies, fix = self._rebased_fix_forward()
+        brief = self._dispatch(self.batch_id, "code-review", candidate=fix)["brief"]
+        scope = brief["delta_review_scope"]
+
+        self.assertEqual(
+            (
+                scope["mode"],
+                scope["route"],
+                scope["prior_review"]["dispatch_id"],
+                scope["delta_base"],
+                scope["delta_commits"],
+                scope["reviewed_copies"],
+                scope["escalations"],
+            ),
+            (
+                "delta",
+                "rebase-fix-forward",
+                review["dispatch_id"],
+                copies[-1],
+                [fix],
+                [{"commit_sha": copies[0], "rebased_from": candidate}],
+                [],
+            ),
+        )
+        self.assertEqual(
+            self._batch_record(self.batch_id)["integration_base_commit"], upstream
+        )
+        self.assertEqual(
+            carried_items.section_item_ids(brief["carried_items"]), ["review-finding-1"]
+        )
+        accepted, qa = self._accept_review_then_qa(
+            brief, {"review-finding-1": "closed"}
+        )
+        self.assertEqual((accepted["next_action"], qa["candidate_commit"]), ("qa", fix))
+
+    def test_a_rebase_without_a_new_commit_or_with_a_patch_id_mismatch_gets_a_full_review(
+        self,
+    ) -> None:
+        """Issue #625: a rebase-fix-forward that adds no commit leaves nothing to delta-review, and
+        a rebased copy changed by a conflict differs from its original by patch-id; both escalate
+        to a full review without a manual choice."""
+        with self.subTest(reason="no-new-commits"):
+            _, candidate, upstream, copies, _ = self._rebased_fix_forward(fixed=False)
+            brief = self._dispatch(self.batch_id, "code-review", candidate=copies[-1])[
+                "brief"
+            ]
+            scope = brief["delta_review_scope"]
+            self.assertEqual(
+                (
+                    scope["mode"],
+                    scope["delta_base"],
+                    scope["delta_commits"],
+                    scope["reviewed_copies"],
+                    scope["escalations"],
+                    brief["carried_items"],
+                ),
+                (
+                    "full",
+                    None,
+                    [],
+                    [{"commit_sha": copies[0], "rebased_from": candidate}],
+                    [
+                        {
+                            "reason": "no-new-commits",
+                            "evidence": [f"{upstream}..{copies[-1]}"],
+                        }
+                    ],
+                    {},
+                ),
+            )
+        with self.subTest(reason="patch-id-mismatch"):
+            self._reset()
+            _, candidate, upstream, copies, fix = self._rebased_fix_forward(
+                conflict=True
+            )
+            brief = self._dispatch(self.batch_id, "code-review", candidate=fix)["brief"]
+            scope = brief["delta_review_scope"]
+            mismatch = {"rebased_from": candidate, "commit_sha": copies[0]}
+            self.assertEqual(
+                (
+                    scope["mode"],
+                    scope["delta_base"],
+                    scope["delta_commits"],
+                    scope["reviewed_copies"],
+                    scope["escalations"],
+                    brief["carried_items"],
+                ),
+                (
+                    "full",
+                    upstream,
+                    [copies[0], fix],
+                    [],
+                    [{"reason": "patch-id-mismatch", "evidence": [mismatch]}],
+                    {},
+                ),
+            )
+
     # -- incomplete items of a read-only role (issue #501) -------------------------------------
 
     def _reported_architect_with_items(

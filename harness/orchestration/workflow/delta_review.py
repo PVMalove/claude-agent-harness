@@ -1,10 +1,12 @@
 """Delta-review after a fix-forward (issue #625).
 
-After a fix-forward developer-retry on a candidate a code-review already judged, the coordinator
-scopes the next code-review itself: to the commits the retry added and the closure of the items it
-carried, with the prior review's report as evidence for the rest of the candidate. It escalates to
-a full review on its own when those commits match a risk trigger the prior review did not see,
-change a file outside the carried items, or add nothing to review.
+After a fix-forward or rebase-fix-forward developer-retry on a candidate a code-review already
+judged, the coordinator scopes the next code-review itself: to the commits the retry added and the
+closure of the items it carried, with the prior review's report as evidence for the rest of the
+candidate. A rebased copy whose ``git patch-id`` matches its original counts as already reviewed. It
+escalates to a full review on its own when the new commits match a risk trigger the prior review
+did not see, change a file outside the carried items or add nothing to review, or when a rebased
+copy's patch-id differs from its original.
 
 The choice is made while ``dispatch create --role code-review`` builds the brief, never by a new
 decision or transition type: the brief records it as ``delta_review_scope``, bound into the
@@ -24,11 +26,12 @@ from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _changed_files_between,
     _commit_evidence,
+    _commit_parent,
     _commits_between,
 )
 from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.ledger.ledger_ops import _load_dispatch, _load_risk
-from harness.orchestration.workflow import carried_items
+from harness.orchestration.workflow import carried_items, rebase
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.history import _pending_report, _validate_risk
 from harness.orchestration.workflow.risk import _matching_triggers
@@ -196,6 +199,63 @@ def _escalations(
     return found
 
 
+def _reviewed_origin(
+    commit: str, pairs: dict[str, tuple[str, bool]], reviewed: set[str]
+) -> str | None:
+    """The commit of the prior review's range ``commit`` is a rebased copy of, or ``None``.
+
+    ``pairs`` maps each rebased copy of the retry chain to its ``rebased_from`` original and whether
+    their patch-ids match, so a copy of a copy resolves through every rebase of the chain; one
+    mismatched step, or an original the prior review never judged, makes it a new commit.
+    """
+    while commit in pairs:
+        commit, matched = pairs[commit]
+        if not matched:
+            return None
+    return commit if commit in reviewed else None
+
+
+def _rebased_delta(
+    repo: Path,
+    root: Path,
+    batch: JsonObject,
+    chain: list[tuple[JsonObject, JsonObject]],
+    review_brief: JsonObject,
+    delta: tuple[str, str],
+) -> tuple[str | None, list[JsonObject], list[object]]:
+    """The delta of a retry chain that rebased onto ``target``: ``delta`` is ``(target,
+    candidate)``.
+
+    The commits after the last rebase target are walked in order: each leading rebased copy that
+    resolves to the prior review's range with matching patch-ids is already reviewed. The delta
+    starts at the parent of the first other commit, so every later copy is reviewed again, which is
+    safe. Returns that base (``None`` when every commit is a reviewed copy), the reviewed copies and
+    every patch-id mismatch a report of the chain recorded.
+    """
+    target, candidate = delta
+    pairs: dict[str, tuple[str, bool]] = {}
+    mismatches: list[object] = []
+    for entry, attempt in chain:
+        check = rebase.rebase_check(repo, _pending_report(root, batch, entry), attempt)
+        if check is None:
+            continue
+        for pair in check["rebased"]:
+            pairs[pair["commit_sha"]] = (pair["rebased_from"], pair["patch_id_match"])
+        mismatches.extend(check["patch_id_mismatches"])
+    reviewed = set(
+        _commits_between(
+            repo, review_brief["review_base"], review_brief["candidate_commit"]
+        )
+    )
+    copies: list[JsonObject] = []
+    for commit in _commits_between(repo, target, candidate):
+        origin = _reviewed_origin(commit, pairs, reviewed)
+        if origin is None:
+            return _commit_parent(repo, commit), copies, mismatches
+        copies.append({"commit_sha": commit, "rebased_from": origin})
+    return None, copies, mismatches
+
+
 def _escalation_list(found: dict[str, list[object]]) -> list[JsonObject]:
     """The escalations found, in the order of the closed set of reasons."""
     return [
@@ -217,7 +277,8 @@ def scope_section(
 
     ``None`` keeps today's full review: the candidate did not come from a fix-forward developer-retry
     on an already reviewed candidate. Otherwise the section names the prior review, the accepted
-    developer-retry, the commits it added on top of the reviewed candidate and its
+    developer-retry, the commits it added on top of the reviewed candidate (after a rebase, the
+    commits after the last rebase target less the leading reviewed copies) and its
     ``carried_item_closure``. ``mode`` is ``delta`` unless an escalation was found, which makes it
     ``full``: the brief is then an ordinary full review and the section is audit evidence only.
     ``risk`` is the candidate's assessment and ``known`` the code-review role's risk triggers.
@@ -226,22 +287,30 @@ def scope_section(
     if prior is None:
         return None
     chain, review, review_brief = prior
-    if any(plan_rules.rebase_target(attempt) for _, attempt in chain):
-        return None
     accepted, brief = chain[-1]
     report = _pending_report(root, batch, accepted)
-    base = review_brief["candidate_commit"]
-    delta_commits = _commits_between(repo, base, candidate)
+    targets = [
+        target for _, attempt in chain if (target := plan_rules.rebase_target(attempt))
+    ]
+    origin = targets[-1] if targets else review_brief["candidate_commit"]
+    base, copies, mismatches = (
+        _rebased_delta(repo, root, batch, chain, review_brief, (origin, candidate))
+        if targets
+        else (origin, [], [])
+    )
+    delta_commits = _commits_between(repo, base, candidate) if base else []
     found: dict[str, list[object]] = (
         _escalations(
             repo, root, batch, (review_brief, brief), risk, known, (base, candidate)
         )
-        if delta_commits
-        else {"no-new-commits": [f"{base}..{candidate}"]}
+        if base and delta_commits
+        else {"no-new-commits": [f"{origin}..{candidate}"]}
     )
+    if mismatches:
+        found["patch-id-mismatch"] = mismatches
     return {
         "mode": "full" if found else "delta",
-        "route": "fix-forward",
+        "route": "rebase-fix-forward" if targets else "fix-forward",
         "prior_review": {
             "dispatch_id": review["dispatch_id"],
             "report_sha256": review["report_sha256"],
@@ -252,7 +321,7 @@ def scope_section(
         "developer_dispatch_id": accepted["dispatch_id"],
         "delta_base": base if delta_commits else None,
         "delta_commits": delta_commits,
-        "reviewed_copies": [],
+        "reviewed_copies": copies,
         "closure": report.get(carried_items.CLOSURE_FIELD, []),
         "escalations": _escalation_list(found),
     }
