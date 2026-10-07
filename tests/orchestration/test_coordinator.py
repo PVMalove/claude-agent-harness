@@ -2443,6 +2443,12 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 for entry in brief["commit_plan"]
             ],
         }
+        carried = carried_items.section_item_ids(brief.get("carried_items") or {})
+        if commit_plan.is_developer_retry(brief) and carried:
+            # A developer-retry brief that carried items owes their closure (issue #503).
+            defaults["carried_item_closure"] = [
+                {"item_id": item_id, "commits": [candidate]} for item_id in carried
+            ]
         defaults.update(overrides)
         return self._base_report(brief, "developer", **defaults)
 
@@ -3209,7 +3215,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             action="developer-retry",
             category="requirements",
             candidate=candidate,
-            route="developer-retry",
+            route="fix-forward",
         )
         self.assertEqual(routing["previous_role"], "code-review")
         retry = self._dispatch(batch["batch_id"], "developer")["brief"]
@@ -3794,7 +3800,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         decision = handoff["retry_decision"]
         self.assertEqual(
             (decision["dispatch_id"], decision["route"]),
-            (review["dispatch_id"], "developer-retry"),
+            (review["dispatch_id"], "fix-forward"),
         )
         self.assertEqual(decision["findings"], [{"axis": "spec", **blocker}])
         self.assertFalse(start["context_estimate"]["compacted"])
@@ -6838,7 +6844,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             coordinator.CoordinatorError,
-            "only a recorded review warning or a not-covered definition-of-done item",
+            "only a recorded review warning, a not-covered definition-of-done item",
         ):
             self._override("looks fine")
 
@@ -7549,7 +7555,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         decided = self._decide(self.batch_id, "retry")
         retry = self._dispatch(self.batch_id, "developer")["brief"]
 
-        self.assertEqual(self._routing(decided)["route"], "developer-retry")
+        self.assertEqual(self._routing(decided)["route"], "fix-forward")
         self.assertEqual(decisions._developer_retry_count(decided), 1)
         section = retry["carried_items"]
         self.assertEqual(
@@ -7591,6 +7597,582 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         retry = self._dispatch(batch["batch_id"], "developer")["brief"]
 
         self.assertEqual(retry["carried_items"], {})
+
+    # -- fix-forward: the closed list of a developer-retry (issue #503) ------------------------
+
+    REVIEW_WARNING = {
+        "severity": "warning",
+        "summary": "the reset path has no test",
+        "evidence": "tests/test_x.py:1",
+    }
+    RETRY_ITEMS = ["coordinator-finding-1", "review-finding-1"]
+
+    def _reported_review_with_items(self) -> str:
+        """A review of a candidate carrying one coordinator finding, which it leaves open, with
+        one Standards warning: a retry routes both items to the developer. Returns the candidate."""
+        candidate = self._carried_review_candidate()
+        self._reported_review(
+            self.batch_id,
+            candidate,
+            standards=("warning", [dict(self.REVIEW_WARNING)]),
+            carried={"coordinator-finding-1": "open"},
+        )
+        return candidate
+
+    def _fix_forward_brief(self) -> tuple[str, JsonObject]:
+        """The developer-retry brief of a retried review with items, and the reviewed candidate."""
+        candidate = self._reported_review_with_items()
+        self._decide(self.batch_id, "retry")
+        return candidate, self._dispatch(self.batch_id, "developer")["brief"]
+
+    def test_a_review_retry_records_the_closed_item_list_its_developer_brief_carries(
+        self,
+    ) -> None:
+        self._reported_review_with_items()
+        preview = self._packet()["route_preview"]["retry"]
+
+        decided = self._decide(self.batch_id, "retry")
+        retry = self._dispatch(self.batch_id, "developer")["brief"]
+
+        routing = dict(self._routing(decided))
+        routing.pop("decided_at")
+        self.assertEqual(routing, preview)
+        self.assertEqual(routing["retry_item_ids"], self.RETRY_ITEMS)
+        self.assertEqual(
+            carried_items.section_item_ids(retry["carried_items"]), self.RETRY_ITEMS
+        )
+        self.assertEqual(
+            [item["source"]["kind"] for item in self._carried(retry)],
+            ["coordinator-finding", "review-finding"],
+        )
+
+    def test_a_retry_with_carried_items_records_the_fix_forward_route(self) -> None:
+        candidate = self._reported_review_with_items()
+        preview = self._packet()["route_preview"]["retry"]
+
+        decided = self._decide(self.batch_id, "retry")
+
+        routing = self._assert_route(
+            decided,
+            role="developer",
+            action="developer-retry",
+            category="code",
+            candidate=candidate,
+            route="fix-forward",
+        )
+        self.assertEqual(preview["route"], "fix-forward")
+        self.assertIn(
+            "fix-forward: new commits on top of the candidate close the carried items "
+            "coordinator-finding-1, review-finding-1 without rewriting history",
+            routing["rationale"],
+        )
+        self.assertEqual(decided["required_next_role"], "developer")
+        self.assertEqual(decisions._developer_retry_count(decided), 1)
+        self.assertEqual(
+            self._decision_audits(self.batch_id)[-1]["route"], "fix-forward"
+        )
+
+    def test_a_retry_without_carried_items_keeps_the_developer_retry_route(
+        self,
+    ) -> None:
+        for stage in ("developer", "code-review"):
+            with self.subTest(stage=stage):
+                self._reset()
+                batch_id = cast(str, self._create_batch()["batch_id"])
+                self._accepted_architect(batch_id)
+                if stage == "developer":
+                    self._reported_developer(batch_id)
+                else:
+                    reviewed = self._accepted_candidate(batch_id)
+                    self._reported_review(batch_id, reviewed)
+
+                decided = self._decide(batch_id, "retry", reason_category="code")
+
+                routing = self._routing(decided)
+                self.assertEqual(
+                    (routing["route"], routing["retry_item_ids"]),
+                    ("developer-retry", []),
+                )
+                self.assertNotIn("fix-forward", routing["rationale"])
+
+    def test_a_retried_developer_report_hands_the_same_closed_list_to_the_next_retry(
+        self,
+    ) -> None:
+        self._patch_config(retry_policy={"max_developer_retries": 2})
+        reviewed, first = self._fix_forward_brief()
+        self._start(first["dispatch_id"])
+        fix, _ = self._developer_commit("fix")
+        base = self._batch_record(self.batch_id)["base_commit"]
+        self._submit(
+            first["dispatch_id"],
+            self._developer_report(
+                first,
+                fix,
+                git_utils._changed_files_between(self.repo, base, fix),
+                commit_map=self._commit_map([(fix, first["commit_plan"][0])]),
+            ),
+        )
+
+        decided = self._decide(self.batch_id, "retry", reason_category="code")
+        second = self._dispatch(self.batch_id, "developer")["brief"]
+
+        self.assertEqual(self._routing(decided)["retry_item_ids"], self.RETRY_ITEMS)
+        self.assertEqual(decisions._developer_retry_count(decided), 2)
+        self.assertEqual(second["carried_items"], first["carried_items"])
+        self.assertEqual(second["snapshot_commit"], fix)
+
+        # The next attempt maps an item the retried attempt closed to that attempt's commit.
+        self._start(second["dispatch_id"])
+        again, changed = self._developer_commit("again")
+        report = self._developer_report(
+            second,
+            again,
+            changed,
+            commit_map=self._commit_map([(again, second["commit_plan"][0])]),
+            carried_item_closure=[
+                {"item_id": "coordinator-finding-1", "commits": [fix]},
+                {"item_id": "review-finding-1", "commits": [again]},
+            ],
+        )
+        root = ledger_ops._state_root(self._args(), self.repo)
+        batch = self._batch_record(self.batch_id)
+        self.assertEqual(
+            reports._closure_base(self.repo, root, batch, second), reviewed
+        )
+        with mock.patch.object(
+            carried_items, "closure_snapshots", return_value=[again, fix]
+        ):
+            # A chain snapshot the dispatch's own snapshot does not descend from is skipped.
+            self.assertEqual(reports._closure_base(self.repo, root, batch, second), fix)
+        reviewed_closure = [
+            {"item_id": "coordinator-finding-1", "commits": [reviewed]},
+            {"item_id": "review-finding-1", "commits": [again]},
+        ]
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "nor an earlier attempt of its retry chain"
+        ):
+            self._submit(
+                second["dispatch_id"],
+                {**report, "carried_item_closure": reviewed_closure},
+            )
+        self._submit(second["dispatch_id"], report)
+        self.assertEqual(self._packet()["carried_items_gap"], [])
+        accepted = self._decide(self.batch_id, "accept")
+        self.assertEqual(accepted["next_action"], "risk-assessment")
+
+    def test_a_developer_tooling_retry_restarts_with_the_closed_list_of_the_blocked_brief(
+        self,
+    ) -> None:
+        _, first = self._fix_forward_brief()
+        self._start(first["dispatch_id"])
+        fix, _ = self._developer_commit("fix")
+        base = self._batch_record(self.batch_id)["base_commit"]
+        self._submit(
+            first["dispatch_id"],
+            self._developer_report(
+                first,
+                fix,
+                git_utils._changed_files_between(self.repo, base, fix),
+                commit_map=self._commit_map([(fix, first["commit_plan"][0])]),
+                outcome="blocked",
+                blockers="a hook blocked a legitimate check command",
+                checks_run=self._checks(first, "not-run"),
+                tooling_blocker=dict(TOOLING_BLOCKER),
+            ),
+        )
+
+        decided = self._decide(self.batch_id, "retry")
+        restart = self._dispatch(self.batch_id, "developer")["brief"]
+
+        routing = self._routing(decided)
+        self.assertEqual(
+            (routing["route"], routing["retry_item_ids"]),
+            ("tooling-retry", self.RETRY_ITEMS),
+        )
+        self.assertEqual(decisions._developer_retry_count(decided), 1)
+        self.assertEqual(restart["carried_items"], first["carried_items"])
+
+        # The restart maps an item the blocked attempt closed to that attempt's commit.
+        self._start(restart["dispatch_id"])
+        again, changed = self._developer_commit("again")
+        submitted = self._submit(
+            restart["dispatch_id"],
+            self._developer_report(
+                restart,
+                again,
+                changed,
+                commit_map=self._commit_map([(again, restart["commit_plan"][0])]),
+                carried_item_closure=[
+                    {"item_id": "coordinator-finding-1", "commits": [fix]},
+                    {"item_id": "review-finding-1", "commits": [fix, again]},
+                ],
+            ),
+        )
+        self.assertEqual(submitted["state"], "reported")
+        self.assertEqual(self._packet()["carried_items_gap"], [])
+
+    def _fix_report(
+        self, brief: JsonObject, **overrides: object
+    ) -> tuple[str, JsonObject]:
+        """One fix commit on top of the brief's snapshot and the developer-retry report mapping it
+        to the first plan entry; by default it closes every carried item on that commit."""
+        fix, _ = self._developer_commit("fix")
+        base = self._batch_record(self.batch_id)["base_commit"]
+        return fix, self._developer_report(
+            brief,
+            fix,
+            git_utils._changed_files_between(self.repo, base, fix),
+            commit_map=self._commit_map([(fix, brief["commit_plan"][0])]),
+            **overrides,
+        )
+
+    def _pending_auto_policy(self) -> str | None:
+        """The policy an ``auto`` approval policy would accept the pending report under."""
+        root = ledger_ops._state_root(self._args(), self.repo)
+        batch = self._batch_record(self.batch_id)
+        entry = batch["dispatches"][-1]
+        return decisions._auto_accept_policy(
+            {"approval_policy": "auto"},
+            {**batch, "approval_policy": "auto"},
+            ledger_ops._load_dispatch(root, entry["dispatch_id"]),
+            history._pending_report(root, batch, entry),
+        )
+
+    def test_a_retry_report_closing_every_carried_item_is_clean(self) -> None:
+        _, brief = self._fix_forward_brief()
+        self._start(brief["dispatch_id"])
+        fix, report = self._fix_report(brief)
+
+        self._submit(brief["dispatch_id"], report)
+        packet = self._packet()
+
+        self.assertEqual(packet["carried_items_gap"], [])
+        self.assertEqual(
+            [
+                (row["item_id"], row["status"], row["evidence"])
+                for row in packet["carried_items"]
+            ],
+            [(item_id, "closed", fix) for item_id in self.RETRY_ITEMS],
+        )
+        self.assertEqual(self._pending_auto_policy(), "auto")
+        decided = self._decide(self.batch_id, "accept")
+        self.assertNotIn("carried_items_gap", decided["coordinator_decisions"][-1])
+
+    def test_a_retry_report_must_map_each_carried_item_once_to_its_own_commits(
+        self,
+    ) -> None:
+        reviewed, brief = self._fix_forward_brief()
+        self._start(brief["dispatch_id"])
+        fix, report = self._fix_report(brief)
+        closed = {"item_id": "coordinator-finding-1", "commits": [fix]}
+        review_closed = {"item_id": "review-finding-1", "commits": [fix]}
+        for closure, refusal in (
+            (None, "carried_item_closure is missing"),
+            ({"item_id": "review-finding-1"}, "must be a list"),
+            ([closed, {"item_id": "review-finding-1"}], "must be {item_id, commits}"),
+            (
+                [
+                    closed,
+                    review_closed,
+                    {"item_id": "review-finding-2", "commits": [fix]},
+                ],
+                "'review-finding-2', which the brief did not carry",
+            ),
+            ([closed, review_closed, closed], "or the report already mapped"),
+            ([closed], r"no record for carried items \['review-finding-1'\]"),
+            (
+                [closed, {"item_id": "review-finding-1", "not_closed": " "}],
+                "review-finding-1 is not_closed without a reason",
+            ),
+            (
+                [closed, {"item_id": "review-finding-1", "commits": []}],
+                "non-empty list of commit SHAs",
+            ),
+            (
+                [closed, {"item_id": "review-finding-1", "commits": ["f" * 40]}],
+                "not the hexadecimal SHA of a commit",
+            ),
+            (
+                [closed, {"item_id": "review-finding-1", "commits": [reviewed]}],
+                "names commits that neither this dispatch nor an earlier attempt",
+            ),
+        ):
+            with self.subTest(refusal=refusal):
+                invalid = {**report, "carried_item_closure": closure}
+                if closure is None:
+                    del invalid["carried_item_closure"]
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError, refusal
+                ) as raised:
+                    self._submit(brief["dispatch_id"], invalid)
+                self.assertTrue(raised.exception.remedy.strip())
+                if closure == [closed]:
+                    self.assertIn("review-finding-1", raised.exception.remedy)
+
+        self.assertEqual(
+            self._submit(brief["dispatch_id"], report)["state"], "reported"
+        )
+
+    def test_a_closure_belongs_only_to_a_retry_report_whose_brief_carried_items(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        initial = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(initial["dispatch_id"])
+        candidate, changed = self._developer_commit("x")
+        closure = [{"item_id": "coordinator-finding-1", "commits": [candidate]}]
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "belongs only to a developer-retry report"
+        ):
+            self._submit(
+                initial["dispatch_id"],
+                self._developer_report(
+                    initial, candidate, changed, carried_item_closure=closure
+                ),
+            )
+        self._submit(
+            initial["dispatch_id"], self._developer_report(initial, candidate, changed)
+        )
+        self._decide(batch["batch_id"], "retry", reason_category="code")
+        retry = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self.assertEqual(retry["carried_items"], {})
+        self._start(retry["dispatch_id"])
+        fix, report = self._fix_report(retry)
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "belongs only to a developer-retry report"
+        ):
+            self._submit(
+                retry["dispatch_id"],
+                {**report, "carried_item_closure": []},
+            )
+        self.assertEqual(
+            self._submit(retry["dispatch_id"], report)["state"], "reported"
+        )
+
+    def test_a_retry_report_recorded_without_its_closure_is_decided_as_a_carried_gap(
+        self,
+    ) -> None:
+        """A completed developer-retry report recorded before #503 has no carried_item_closure.
+        A new submit of it is refused, but the recorded report is still decided: every carried item
+        is an omitted gap, so accept is refused while override-warning and abandon are not."""
+        for decision, extra in (
+            ("override-warning", {"note": "the items are closed by the fix commit"}),
+            ("abandon", {"reason": "superseded by a fresh plan"}),
+        ):
+            with self.subTest(decision=decision):
+                self._reset()
+                _, brief = self._fix_forward_brief()
+                self._start(brief["dispatch_id"])
+                _, report = self._fix_report(brief)
+                del report["carried_item_closure"]
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError, "carried_item_closure is missing"
+                ):
+                    self._submit(brief["dispatch_id"], report)
+                with mock.patch.object(carried_items, "require_closure"):
+                    self._submit(brief["dispatch_id"], report)
+
+                packet = self._packet()
+                self.assertEqual(packet["carried_items_gap"], self.RETRY_ITEMS)
+                self.assertEqual(
+                    [
+                        (row["status"], row["evidence"])
+                        for row in packet["carried_items"]
+                    ],
+                    [("omitted", None)] * len(self.RETRY_ITEMS),
+                )
+                self.assertIsNone(self._pending_auto_policy())
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError, "are not closed"
+                ):
+                    self._decide(self.batch_id, "accept")
+                decided = self._decide(self.batch_id, decision, **extra)
+
+                self.assertEqual(
+                    decided["coordinator_decisions"][-1]["decision"], decision
+                )
+                if decision == "override-warning":
+                    self.assertEqual(
+                        decided["coordinator_decisions"][-1]["carried_items_gap"],
+                        self.RETRY_ITEMS,
+                    )
+                else:
+                    self.assertEqual(decided["state"], "abandoned")
+
+    def test_a_closure_names_only_commits_of_its_retry_chain_without_a_commit_plan(
+        self,
+    ) -> None:
+        """A developer-retry brief without a commit_plan (before #478) still has every closure
+        commit resolved and checked against the commits its retry chain created."""
+        reviewed, brief = self._fix_forward_brief()
+        self._start(brief["dispatch_id"])
+        fix, report = self._fix_report(brief)
+        legacy = {key: value for key, value in brief.items() if key != "commit_plan"}
+        del report["commit_map"]
+        base = self._batch_record(self.batch_id)["base_commit"]
+        role = {"mode": "write", "name": "developer"}
+        for commits, refusal in (
+            ([reviewed], "nor an earlier attempt of its retry chain"),
+            (["f" * 40], "not the hexadecimal SHA of a commit"),
+        ):
+            with self.subTest(refusal=refusal):
+                foreign = {
+                    **report,
+                    "carried_item_closure": [
+                        {"item_id": "coordinator-finding-1", "commits": commits},
+                        {"item_id": "review-finding-1", "commits": [fix]},
+                    ],
+                }
+                with self.assertRaisesRegex(coordinator.CoordinatorError, refusal):
+                    reports._validate_report(foreign, legacy, role, self.repo, base)
+
+        reports._validate_report(report, legacy, role, self.repo, base)
+
+    def test_a_carried_item_left_not_closed_keeps_the_retry_report_unclean(
+        self,
+    ) -> None:
+        _, brief = self._fix_forward_brief()
+        self._start(brief["dispatch_id"])
+        reason = "the reset path lies outside the approved zone"
+        fix, report = self._fix_report(brief)
+        report["carried_item_closure"] = [
+            {"item_id": "coordinator-finding-1", "commits": [fix]},
+            {"item_id": "review-finding-1", "not_closed": reason},
+        ]
+
+        self._submit(brief["dispatch_id"], report)
+        packet = self._packet()
+
+        self.assertEqual(packet["carried_items_gap"], ["review-finding-1"])
+        self.assertEqual(
+            [(row["status"], row["evidence"]) for row in packet["carried_items"]],
+            [("closed", fix), ("open", reason)],
+        )
+        self.assertIsNone(self._pending_auto_policy())
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError,
+            r"carried items \['review-finding-1'\] are not closed",
+        ):
+            self._decide(self.batch_id, "accept")
+        for note in (None, "none"):
+            with self.subTest(note=note):
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError, "requires a recorded note"
+                ):
+                    self._decide(self.batch_id, "override-warning", note=note)
+
+        decided = self._decide(
+            self.batch_id, "override-warning", note="the reset path moves to #999"
+        )
+
+        decision = decided["coordinator_decisions"][-1]
+        self.assertEqual(decision["carried_items_gap"], ["review-finding-1"])
+        self.assertEqual(decided["next_action"], "risk-assessment")
+
+    def test_a_retry_that_rewrites_the_snapshot_history_is_refused(self) -> None:
+        for rewrite in ("amend", "reset"):
+            with self.subTest(rewrite=rewrite):
+                self._reset()
+                snapshot, brief = self._fix_forward_brief()
+                self.assertEqual(brief["snapshot_commit"], snapshot)
+                self._start(brief["dispatch_id"])
+                if rewrite == "amend":
+                    (self.worktree / "services" / "x.py").write_text(
+                        "VALUE = 'amended'\n", encoding="utf-8"
+                    )
+                    _git(self.worktree, "add", "-A")
+                    _git(self.worktree, "commit", "--amend", "--no-edit")
+                    head = _git(self.worktree, "rev-parse", "HEAD")
+                    base = self._batch_record(self.batch_id)["base_commit"]
+                    report = self._developer_report(
+                        brief,
+                        head,
+                        git_utils._changed_files_between(self.repo, base, head),
+                        commit_map=self._commit_map([(head, brief["commit_plan"][0])]),
+                    )
+                else:
+                    _git(self.worktree, "reset", "--hard", "HEAD~1")
+                    head, report = self._fix_report(brief)
+
+                with self.assertRaises(coordinator.CoordinatorError) as raised:
+                    self._submit(brief["dispatch_id"], report)
+
+                self.assertIn(
+                    f"candidate {head} does not descend from snapshot_commit {snapshot}",
+                    raised.exception.message,
+                )
+                self.assertIn("without amend or squash", raised.exception.remedy)
+                self.assertIn("git reflog", raised.exception.remedy)
+
+    def test_a_retry_of_a_rebase_report_may_rebuild_history_onto_the_rebase_target(
+        self,
+    ) -> None:
+        batch_id = self._plan_batch(["one", "two"])["batch_id"]
+        self._accepted_architect(batch_id)
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        commits, changed = self._commits("a", "b")
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                commits[-1],
+                changed,
+                commit_map=self._commit_map(list(zip(commits, brief["commit_plan"]))),
+            ),
+        )
+        self._decide(batch_id, "accept")
+        self._assess(batch_id, commits[-1], changed)
+        (self.repo / "upstream.txt").write_text("upstream\n", encoding="utf-8")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-m", "upstream")
+        _git(self.repo, "push", "origin", "master")
+        upstream = _git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "batch base is stale"
+        ):
+            self._dispatch(batch_id, "code-review", candidate=commits[-1])
+        rebase = self._dispatch(batch_id, "developer")["brief"]
+        self._start(rebase["dispatch_id"])
+        _git(self.worktree, "rebase", "master")
+        first, second = _git(
+            self.worktree, "rev-list", "--reverse", f"{upstream}..HEAD"
+        ).splitlines()
+        plan = rebase["commit_plan"]
+        self._submit(
+            rebase["dispatch_id"],
+            self._developer_report(
+                rebase,
+                second,
+                git_utils._changed_files_between(self.repo, upstream, second),
+                commit_map=self._commit_map([(first, plan[0]), (second, plan[1])]),
+            ),
+        )
+        self._decide(batch_id, "retry", reason_category="code")
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        self.assertEqual(retry["snapshot_commit"], second)
+        self._start(retry["dispatch_id"])
+        (self.worktree / "services" / "b.py").write_text(
+            "VALUE = 'rebuilt'\n", encoding="utf-8"
+        )
+        _git(self.worktree, "add", "-A")
+        _git(self.worktree, "commit", "--amend", "--no-edit")
+        rebuilt = _git(self.worktree, "rev-parse", "HEAD")
+        self.assertFalse(git_utils._git_is_ancestor(self.repo, second, rebuilt))
+
+        submitted = self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry,
+                rebuilt,
+                git_utils._changed_files_between(self.repo, upstream, rebuilt),
+                commit_map=self._commit_map([(first, plan[0]), (rebuilt, plan[1])]),
+            ),
+        )
+
+        self.assertEqual(submitted["state"], "reported")
 
     def _packet(self, **flags: object) -> JsonObject:
         return coordinator.decision_packet(
@@ -7723,7 +8305,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         retried = self._decide(batch_id, "retry")
         retry = self._dispatch(batch_id, "developer")["brief"]
 
-        self.assertEqual(self._routing(retried)["route"], "developer-retry")
+        self.assertEqual(self._routing(retried)["route"], "fix-forward")
         self.assertEqual(
             [item["item_id"] for item in self._carried(retry)],
             ["coordinator-finding-1", "review-finding-1"],
@@ -7762,6 +8344,70 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(decisions._developer_retry_count(done), 1)
         root = ledger_ops._state_root(self._args(), self.repo)
         self.assertEqual(carried_items.open_coordinator_findings(root, done), [])
+
+    def test_issue_443_one_fix_commit_on_top_of_the_candidate_closes_the_items_by_fix_forward(
+        self,
+    ) -> None:
+        """Regression for #443 (issue #503): the review's finding and the open coordinator finding
+        need one more commit. The retry is a fix-forward in the same batch: one fix commit on top
+        of the reviewed candidate closes both items, with no new batch, cherry-pick or rewrite."""
+        batch_id = cast(str, self._plan_batch(["add simple marker"])["batch_id"])
+        self._accepted_architect(batch_id)
+        _, candidate, changed = self._reported_developer(batch_id)
+        self._decide(batch_id, "accept", findings_file=self._findings_file())
+        self._assess_without_triggers(batch_id, candidate, changed)
+        self._reported_review(
+            batch_id,
+            candidate,
+            standards=("warning", [dict(self.REVIEW_WARNING)]),
+            carried={"coordinator-finding-1": "open"},
+        )
+
+        retried = self._decide(batch_id, "retry")
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        self._start(retry["dispatch_id"])
+        fix, report = self._fix_report(retry)
+        self._submit(retry["dispatch_id"], report)
+        accepted = self._decide(batch_id, "accept")
+        self._assess_without_triggers(
+            batch_id,
+            fix,
+            git_utils._changed_files_between(
+                self.repo, self._batch_record(batch_id)["base_commit"], fix
+            ),
+        )
+        closing = self._reported_review(
+            batch_id, fix, carried={"coordinator-finding-1": "closed"}
+        )
+        done = self._decide(batch_id, "accept")
+
+        routing = self._routing(retried)
+        self.assertEqual(
+            (routing["route"], routing["retry_item_ids"]),
+            ("fix-forward", self.RETRY_ITEMS),
+        )
+        self.assertEqual(
+            carried_items.section_item_ids(retry["carried_items"]), self.RETRY_ITEMS
+        )
+        self.assertEqual(retry["snapshot_commit"], candidate)
+        self.assertEqual(_git(self.worktree, "rev-parse", f"{fix}^"), candidate)
+        self.assertEqual(
+            report["carried_item_closure"],
+            [{"item_id": item_id, "commits": [fix]} for item_id in self.RETRY_ITEMS],
+        )
+        self.assertNotIn("carried_items_gap", accepted["coordinator_decisions"][-1])
+        self.assertEqual(closing["candidate_commit"], fix)
+        self.assertEqual(
+            (done["batch_id"], done["state"], done["next_action"]),
+            (batch_id, "awaiting-approval", "qa"),
+        )
+        self.assertNotIn("abandoned", done)
+        self.assertEqual(decisions._developer_retry_count(done), 1)
+        tickets = [
+            coordinator._read_object(path, "batch")["ticket"]
+            for path in (self._records() / "batches").glob("batch-*.json")
+        ]
+        self.assertEqual(tickets, [done["ticket"]])
 
     # -- incomplete items of a read-only role (issue #501) -------------------------------------
 
@@ -8737,7 +9383,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                     self._route(stage, self._report(standards=None), "block-bypass")
                 self.assertIn("developer reason category", raised.exception.remedy)
 
-    def test_the_recovery_routes_are_exactly_the_documented_ten(self) -> None:
+    def test_the_recovery_routes_are_exactly_the_documented_eleven(self) -> None:
         self.assertEqual(
             constants.RECOVERY_ROUTES,
             (
@@ -8751,6 +9397,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "tooling-retry",
                 "bypass-rerun",
                 "narrowed-retry",
+                "fix-forward",
             ),
         )
         for route in constants.RECOVERY_ROUTES:

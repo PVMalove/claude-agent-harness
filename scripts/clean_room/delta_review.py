@@ -393,6 +393,10 @@ def run(ctx: SimpleNamespace) -> None:
                 "services/delta_formatter.py",
                 "services/tests/test_delta_formatter.py",
             ],
+            # The fix-forward closes the retried review's finding (issue #503).
+            "carried_item_closure": [
+                {"item_id": "review-finding-1", "commits": [delta_second_sha]}
+            ],
         },
     )
     coordinator_run(
