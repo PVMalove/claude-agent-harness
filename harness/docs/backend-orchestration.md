@@ -720,6 +720,16 @@ operational-категории могут повторить read-only стад�
 `candidate_commit` routing record. В таблице выше «три operational-категории» по-прежнему означают
 `verification-infrastructure`, `transport` и `context-pressure`.
 
+Если hook заблокировал именно `git commit` developer, тот ничего не откатывает. В `tooling_blocker`
+он добавляет `uncommitted_files` — непустой список без повторов, каждый путь в том виде, как его
+печатает Git, и внутри зоны записи, — а `commit_sha` указывает на свой последний коммит. Перезапуск
+`tooling-retry` наследует эти изменения: кроме пина HEAD на последний коммит developer,
+`dispatch preflight` допускает грязный worktree, только если его незакоммиченные пути (без состояния
+coordinator и sandbox-ов инструментов) точно совпадают со списком из report и лежат в зоне batch.
+Лишний, недостающий или лежащий вне зоны файл preflight отклоняет; сообщение и remedy называют
+каждое расхождение. Чистый worktree без списка проходит, как раньше. Для остальных dispatch
+preflight worktree на незакоммиченные изменения не проверяет.
+
 `block-bypass` — read-only роль (code-review, qa или verification) обошла блокировку hook-а или
 инструмента вместо остановки с `tooling_blocker`. Эту категорию называет только approver, и report с
 нарушением не является evidence: его findings, failed checks и outcome не влияют на маршрут, и лишь

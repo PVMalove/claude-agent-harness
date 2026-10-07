@@ -41,7 +41,7 @@ class PreflightErrorInvariantTests(unittest.TestCase):
             and isinstance(node.exc.func, ast.Name)
             and node.exc.func.id == "PreflightError"
         ]
-        self.assertEqual(len(sites), 11)
+        self.assertEqual(len(sites), 13)
         for site in sites:
             assert isinstance(site.exc, ast.Call)
             remedies = [
@@ -390,6 +390,143 @@ class RetryStartTests(_PreflightFixture):
                 prepared.decision_packet["retry_context_warning"],
             ),
             (estimate, start["warning"]),
+        )
+
+
+class ToolingRestartWorktreeTests(_PreflightFixture):
+    """Issue #502: a tooling restart inherits exactly the changes a blocked commit left behind."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.uncommitted = ["src/a.py"]
+        self.config: JsonObject = {
+            "assignment_plans": {"developer": {"runtimes": {"claude": {}}}},
+            "backend_zones": {"core": {"paths": ["src/*"]}},
+        }
+
+    def _handoff(self, route: str = "tooling-retry") -> JsonObject:
+        blocker: JsonObject = {
+            "tool": "PreToolUse:Bash hook",
+            "command": "git commit -m 'feat: a'",
+            "message": "Blocked",
+        }
+        if self.uncommitted:
+            blocker["uncommitted_files"] = list(self.uncommitted)
+        return {
+            "context_package_id": "pkg-1",
+            "commit_plan": None,
+            "developer_report": {
+                "dispatch_id": "d-1",
+                "outcome": "blocked",
+                "commit_sha": self.sha,
+                "changed_files": ["src/done.py"],
+                "commit_map": [],
+                "tooling_blocker": blocker,
+            },
+            "retry_decision": {
+                "dispatch_id": "d-1",
+                "role": "developer",
+                "route": route,
+                "reason_category": "tooling" if route == "tooling-retry" else "code",
+                "findings": [],
+            },
+        }
+
+    def _write(self, *paths: str) -> None:
+        for path in paths:
+            target = self.worktree / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("wip", encoding="utf-8")
+
+    def _restart(
+        self, route: str = "tooling-retry"
+    ) -> dispatch_preflight.PreparedDispatch:
+        return self._prepare(config=self.config, retry_handoff=self._handoff(route))
+
+    def _rejected(self) -> PreflightError:
+        with self.assertRaises(PreflightError) as ctx:
+            self._restart()
+        return ctx.exception
+
+    def test_the_listed_uncommitted_changes_inside_the_zone_pass(self) -> None:
+        self._write("src/a.py")
+        start = self._restart().retry_start or {}
+        handoff = cast(JsonObject, start["handoff"])
+        report = cast(JsonObject, handoff["developer_report"])
+        blocker = cast(JsonObject, report["tooling_blocker"])
+        self.assertEqual(blocker["uncommitted_files"], ["src/a.py"])
+
+    def test_a_modified_tracked_file_counts_as_an_uncommitted_change(self) -> None:
+        (self.worktree / "a.txt").write_text("changed", encoding="utf-8")
+        self.uncommitted = ["a.txt"]
+        error = self._rejected()
+        self.assertIn("outside the batch zone 'core': a.txt", error.message)
+        self.assertIn("a.txt", error.remedy)
+
+    def test_a_clean_worktree_without_listed_changes_passes_as_before(self) -> None:
+        self.uncommitted = []
+        self.assertIsNotNone(self._restart().retry_start)
+
+    def test_an_extra_file_is_rejected_by_name(self) -> None:
+        self._write("src/a.py", "src/b.py")
+        error = self._rejected()
+        self.assertIn("not listed in the blocked report: src/b.py", error.message)
+        self.assertIn("src/b.py", error.remedy)
+        self.assertNotIn("src/a.py", error.message)
+
+    def test_a_missing_file_is_rejected_by_name(self) -> None:
+        self.uncommitted = ["src/a.py", "src/c.py"]
+        self._write("src/a.py")
+        error = self._rejected()
+        self.assertIn("missing from the worktree: src/c.py", error.message)
+        self.assertIn("src/c.py", error.remedy)
+
+    def test_a_clean_worktree_misses_every_listed_file(self) -> None:
+        error = self._rejected()
+        self.assertIn("missing from the worktree: src/a.py", error.message)
+
+    def test_a_file_outside_the_zone_is_rejected_by_name(self) -> None:
+        self._write("src/a.py", "docs/x.md")
+        error = self._rejected()
+        self.assertIn("outside the batch zone 'core': docs/x.md", error.message)
+        self.assertIn("docs/x.md", error.remedy)
+
+    def test_a_restart_without_zone_paths_is_rejected(self) -> None:
+        self._write("src/a.py")
+        self.config = {"assignment_plans": self.config["assignment_plans"]}
+        error = self._rejected()
+        self.assertIn("backend_zones", error.remedy)
+
+    def test_a_dirty_worktree_of_another_developer_retry_is_not_checked(self) -> None:
+        self._write("src/a.py", "docs/x.md")
+        self.assertIsNotNone(self._restart("developer-retry").retry_start)
+
+    def test_the_compacted_handoff_keeps_only_the_uncommitted_files(self) -> None:
+        self._write("src/a.py")
+        self.config["adaptive_continuation_policy"] = {
+            "context_limit": 10,
+            "context_warn_ratio": 0.5,
+        }
+        package: JsonObject = {
+            "context_package_id": "pkg-1",
+            "estimated_tokens": 50,
+            "starting_files": [
+                {"path": "src/a.py", "reason": "seed", "sections": []},
+                {"path": "src/other.py", "reason": "seed", "sections": []},
+            ],
+        }
+        prepared = self._prepare(
+            config=self.config, retry_handoff=self._handoff(), retry_package=package
+        )
+        start = prepared.retry_start or {}
+        self.assertTrue(cast(JsonObject, start["context_estimate"])["compacted"])
+        report = cast(
+            JsonObject, cast(JsonObject, start["handoff"])["developer_report"]
+        )
+        self.assertEqual(report["tooling_blocker"], {"uncommitted_files": ["src/a.py"]})
+        self.assertEqual(
+            [item["path"] for item in cast(list[JsonObject], start["starting_files"])],
+            ["src/a.py"],
         )
 
 
