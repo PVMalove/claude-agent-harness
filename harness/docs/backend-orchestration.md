@@ -1456,7 +1456,9 @@ python .harness/orchestration/coordinator.py --repo . integration next \
 нового candidate: `verify` и `handoff` требуют проверки именно обновлённой пары.
 
 Правило маршрута провала: провалом считается только `collector-failed` CI или `failed` сгенерированного
-local-QA текущей пары без более позднего passed. Если пара прошла refresh или resolver, маршрут —
+local-QA текущей пары, у которой нет passed проверенной проверки: passed, verified проверка текущей пары снимает
+провал независимо от порядка записи, а провал, записанный после неё, маршрут не открывает, пока passed
+продолжает относиться к текущей паре. Если пара прошла refresh или resolver, маршрут —
 `resolver` (поведенческая несовместимость после чистого rebase, следствие правки resolver; бюджет
 `cycles_total`/`cycles_spent`/`remaining`/`internal_fix_budget` и `fixes_on_target` в ответе; при
 исчерпании — `human-decision` с `integration resolver-event --extends-budget`). Если пара исходная,
@@ -1468,7 +1470,9 @@ code-review, QA и publish; завершённый batch новый не бло�
 поэтому developer-отчёт отображает в `commit_map` и уже опубликованные коммиты ветки (с `dod_coverage` и
 `divergence_justification`). После принятого publish `integration prepare --ticket T --branch B --batch
 <новый batch>` создаёт новую запись, `integration next --record <новая запись> --pull-request N`
-продолжает PR, а упавшее evidence прежней записи остаётся историей.
+продолжает PR, а упавшее evidence прежней записи остаётся историей. У одного тикета и ветки теперь две записи,
+и `<ticket-branch>` отклоняется отказом «several integration records match»:
+`--record <новая запись>` заменяет `<ticket-branch>` в командах `integration` скила `to-pull-requests`.
 Операционный fallback CI и `unavailable`/`exhausted` local-QA failed-evidence не создают и провалом
 кода не становятся. Для провала обновлённой пары `integration resolve` создаёт resolver batch с
 `resolver.trigger: verification-failure` (`failed_evidence_ids`, пустые `conflicting_files`) даже при

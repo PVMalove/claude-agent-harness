@@ -1117,6 +1117,48 @@ class IntegrationGuidanceTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("do not create a dispatch", text)
 
+    def test_guidance_names_the_record_flag_once_two_records_exist(self) -> None:
+        """After the developer route of a failed original pair one ticket and branch have two
+        records and '<ticket-branch>' is refused; '--record <new record>' replaces it."""
+        notes = {
+            "skills/first-party/pvmalove/to-pull-requests/SKILL.md": (
+                "several integration records match",
+                "`--record <new record>` replaces `<ticket-branch>`",
+            ),
+            "docs/skills/to-pull-requests.md": (
+                "several integration records match",
+                "`--record <новая запись>` заменяет `<ticket-branch>`",
+            ),
+            "harness/docs/backend-orchestration.md": (
+                "several integration records match",
+                "`--record <новая запись>` заменяет `<ticket-branch>`",
+            ),
+            "docs/adr/0017-pr-continuation-routing.md": (
+                "several integration records match",
+                "`--record <новая запись>` заменяет `<ticket-branch>`",
+            ),
+        }
+        for relative, needles in notes.items():
+            text = (REPO / relative).read_text(encoding="utf-8")
+            for needle in needles:
+                with self.subTest(file=relative, needle=needle):
+                    self.assertIn(needle, text)
+
+    def test_guidance_states_the_order_independent_passed_check_rule(self) -> None:
+        """A passed, verified check of the current pair supersedes a failed one whatever the
+        recording order; the docs must not claim that only a 'later passed' does."""
+        stale = ("без позднего passed", "без более позднего passed")
+        rule = "независимо от порядка записи"
+        for relative in (
+            "docs/adr/0017-pr-continuation-routing.md",
+            "harness/docs/backend-orchestration.md",
+        ):
+            text = (REPO / relative).read_text(encoding="utf-8")
+            with self.subTest(file=relative):
+                self.assertIn(rule, text)
+                for phrase in stale:
+                    self.assertNotIn(phrase, text)
+
     def test_the_pr_skill_binds_confirmation_to_the_pair_and_never_merges(self) -> None:
         text = (
             REPO / "skills/first-party/pvmalove/to-pull-requests/SKILL.md"

@@ -23,8 +23,10 @@
   `original-qa|ci|local-qa`, ссылка на evidence, признак refresh). Устаревшая пара всегда ведёт к
   refresh, а не к handoff.
 - **Правило маршрута провала.** Провал считается только записанным collector-ом CI
-  (`collector-failed`) или сгенерированным gate-ом local-QA (`state: failed`) именно текущей пары, без
-  позднего passed той же пары. Если пара прошла refresh или resolver (`refreshes` непусты),
+  (`collector-failed`) или сгенерированным gate-ом local-QA (`state: failed`) именно текущей пары, пока у
+  пары нет passed проверенной проверки: passed, verified проверка текущей пары снимает провал
+  независимо от порядка записи (`verification.satisfied` ведёт себя так же), а провал, записанный после
+  такой проверки, маршрут не открывает, пока passed продолжает относиться к текущей паре. Если пара прошла refresh или resolver (`refreshes` непусты),
   провал — следствие сочетания с target или правки resolver: маршрут `resolver`, в пределах бюджета;
   при исчерпании шаг `human-decision` (`integration resolver-event --extends-budget`). Если пара
   исходная (`refreshes` пусты), провал — собственный дефект задачи: маршрут `developer` с review и QA
@@ -36,7 +38,10 @@
   developer-отчёт отображает в `commit_map` и уже опубликованные коммиты ветки (с `dod_coverage` и
   `divergence_justification`, как при неоднозначном отображении). После принятого publish
   `integration prepare --ticket T --branch B --batch <новый batch>` создаёт новую запись, а
-  `integration next --record <новая запись>` продолжает PR; упавшее evidence прежней записи остаётся историей. Операционный сбой (fallback CI, `unavailable` и `exhausted` local-QA) failed-evidence не
+  `integration next --record <новая запись>` продолжает PR; упавшее evidence прежней записи остаётся историей.
+  У одного тикета и ветки теперь две записи, и `<ticket-branch>` отклоняется отказом
+  «several integration records match»: `--record <новая запись>` заменяет `<ticket-branch>` в командах
+  `integration` скила. Операционный сбой (fallback CI, `unavailable` и `exhausted` local-QA) failed-evidence не
   создаёт, поэтому не может стать «провалом кода»: инвариант структурный, не прозой.
 - **Расширение `integration resolve`.** Прежний отказ «ветка уже на tip» сохраняется, если нет
   провалившейся проверки обновлённой пары. При такой проверке создаётся resolver batch с
