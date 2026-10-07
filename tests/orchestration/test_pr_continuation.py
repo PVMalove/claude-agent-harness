@@ -378,6 +378,19 @@ class RouteFailureTests(NextFixture):
 
         self.assertEqual(self.next(PR)["step"], "handoff")
 
+    def test_a_passed_check_supersedes_a_failed_one_whatever_the_recording_order(
+        self,
+    ) -> None:
+        """The rule is not "a later passed": a passed, verified check of the current pair
+        supersedes a failed one even when the failure was recorded after it."""
+        self.refresh()
+        self.local_qa("true")
+        self.assertEqual(self.next(PR)["step"], "handoff")
+
+        self.failed_ci()
+
+        self.assertEqual(self.next(PR)["step"], "handoff")
+
     def test_next_and_resolve_agree_on_a_local_qa_that_no_longer_covers_the_branch(
         self,
     ) -> None:
