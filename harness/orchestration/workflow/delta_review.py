@@ -6,7 +6,7 @@ closure of the items it carried, with the prior review's report as evidence for 
 candidate. A rebased copy whose ``git patch-id`` matches its original counts as already reviewed. It
 escalates to a full review on its own when the new commits match a risk trigger the prior review
 did not see, change a file outside the carried items or add nothing to review, or when a rebased
-copy's patch-id differs from its original.
+copy's patch-id differs from its original or the rebase dropped a previous-candidate commit.
 
 The choice is made while ``dispatch create --role code-review`` builds the brief, never by a new
 decision or transition type: the brief records it as ``delta_review_scope``, bound into the
@@ -227,7 +227,7 @@ def _rebased_delta(
     chain: list[tuple[JsonObject, JsonObject]],
     review_brief: JsonObject,
     delta: tuple[str, str],
-) -> tuple[str | None, list[JsonObject], list[object]]:
+) -> tuple[str | None, list[JsonObject], dict[str, list[object]]]:
     """The delta of a retry chain that rebased onto ``target``: ``delta`` is ``(target,
     candidate)``.
 
@@ -235,18 +235,22 @@ def _rebased_delta(
     resolves to the prior review's range with matching patch-ids is already reviewed. The delta
     starts at the parent of the first other commit, so every later copy is reviewed again, which is
     safe. Returns that base (``None`` when every commit is a reviewed copy), the reviewed copies and
-    every patch-id mismatch a report of the chain recorded.
+    the escalations the chain's reports recorded: every patch-id mismatch and every dropped
+    previous-candidate commit. A dropped commit leaves the candidate without a change the prior
+    review judged, which no delta of the remaining commits shows.
     """
     target, candidate = delta
     pairs: dict[str, tuple[str, bool]] = {}
-    mismatches: list[object] = []
+    recorded: dict[str, list[object]] = {"patch-id-mismatch": [], "dropped-commit": []}
     for entry, attempt in chain:
         check = rebase.rebase_check(repo, _pending_report(root, batch, entry), attempt)
         if check is None:
             continue
         for pair in check["rebased"]:
             pairs[pair["commit_sha"]] = (pair["rebased_from"], pair["patch_id_match"])
-        mismatches.extend(check["patch_id_mismatches"])
+        recorded["patch-id-mismatch"].extend(check["patch_id_mismatches"])
+        recorded["dropped-commit"].extend(check["dropped"])
+    found = {reason: evidence for reason, evidence in recorded.items() if evidence}
     reviewed = set(
         _commits_between(
             repo, review_brief["review_base"], review_brief["candidate_commit"]
@@ -256,9 +260,9 @@ def _rebased_delta(
     for commit in _commits_between(repo, target, candidate):
         origin = _reviewed_origin(commit, pairs, reviewed)
         if origin is None:
-            return _commit_parent(repo, commit), copies, mismatches
+            return _commit_parent(repo, commit), copies, found
         copies.append({"commit_sha": commit, "rebased_from": origin})
-    return None, copies, mismatches
+    return None, copies, found
 
 
 def _escalation_list(found: dict[str, list[object]]) -> list[JsonObject]:
@@ -298,10 +302,10 @@ def scope_section(
         target for _, attempt in chain if (target := plan_rules.rebase_target(attempt))
     ]
     origin = targets[-1] if targets else review_brief["candidate_commit"]
-    base, copies, mismatches = (
+    base, copies, recorded = (
         _rebased_delta(repo, root, batch, chain, review_brief, (origin, candidate))
         if targets
-        else (origin, [], [])
+        else (origin, [], {})
     )
     delta_commits = _commits_between(repo, base, candidate) if base else []
     found: dict[str, list[object]] = (
@@ -311,8 +315,7 @@ def scope_section(
         if base and delta_commits
         else {"no-new-commits": [f"{origin}..{candidate}"]}
     )
-    if mismatches:
-        found["patch-id-mismatch"] = mismatches
+    found.update(recorded)
     return {
         "mode": "full" if found else "delta",
         "route": "rebase-fix-forward" if targets else "fix-forward",

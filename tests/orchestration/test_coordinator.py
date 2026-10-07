@@ -10558,11 +10558,12 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 )
 
     def _rebased_fix_forward(
-        self, *, conflict: bool = False, fixed: bool = True
+        self, *, conflict: bool = False, fixed: bool = True, dropped: bool = False
     ) -> tuple[JsonObject, str, str, list[str], str | None]:
         """A reviewed one-commit candidate whose Spec warning was retried as a rebase-fix-forward
         after origin/master moved, rebased (with ``conflict``, through a conflict resolved with
-        changes) and, with ``fixed``, fixed by one commit inside the reviewed file; accepted and
+        changes; with ``dropped``, without carrying the reviewed commit, which the report maps as
+        dropped) and, with ``fixed``, fixed by one commit inside the reviewed file; accepted and
         assessed. Returns the review brief, the reviewed candidate, the tip, the rebased copies and
         the fix (``None`` without one)."""
         batch_id = cast(str, self._plan_batch(["add simple marker"])["batch_id"])
@@ -10596,6 +10597,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             copies = _git(
                 self.worktree, "rev-list", "--reverse", f"{upstream}..HEAD"
             ).splitlines()
+        elif dropped:
+            _git(self.worktree, "reset", "--hard", upstream)
+            copies = []
         else:
             copies = self._rebase_onto(candidate, upstream)
         fix = (
@@ -10604,7 +10608,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             else None
         )
         head = fix or copies[-1]
-        commit_map = self._rebased_map([candidate], copies)
+        commit_map = (
+            [{"rebased_from": candidate, "dropped": "the fix replaces the marker"}]
+            if dropped
+            else self._rebased_map([candidate], copies)
+        )
         closure: JsonObject = {
             "item_id": "review-finding-1",
             "not_closed": "the finding needs a product decision",
@@ -10731,6 +10739,49 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     {},
                 ),
             )
+
+    def test_a_previous_candidate_commit_the_rebase_dropped_gets_a_full_review(
+        self,
+    ) -> None:
+        """Issue #625: a rebase-fix-forward that drops a commit of the reviewed candidate leaves the
+        candidate without a change the prior review judged, though the fix alone stays inside the
+        carried items; the dropped commit escalates to a full review without a manual choice."""
+        _, candidate, upstream, copies, fix = self._rebased_fix_forward(dropped=True)
+        brief = self._dispatch(self.batch_id, "code-review", candidate=fix)["brief"]
+        scope = brief["delta_review_scope"]
+
+        self.assertEqual(
+            (
+                copies,
+                scope["mode"],
+                scope["delta_base"],
+                scope["delta_commits"],
+                scope["reviewed_copies"],
+                scope["escalations"],
+                brief["carried_items"],
+            ),
+            (
+                [],
+                "full",
+                upstream,
+                [fix],
+                [],
+                [
+                    {
+                        "reason": "dropped-commit",
+                        "evidence": [
+                            {
+                                "rebased_from": candidate,
+                                "dropped": "the fix replaces the marker",
+                            }
+                        ],
+                    }
+                ],
+                {},
+            ),
+        )
+        accepted, qa = self._accept_review_then_qa(brief)
+        self.assertEqual((accepted["next_action"], qa["candidate_commit"]), ("qa", fix))
 
     def test_a_merge_of_the_target_mapped_as_its_own_rebased_copy_is_refused(
         self,

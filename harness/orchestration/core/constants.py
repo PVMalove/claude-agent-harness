@@ -219,6 +219,7 @@ DELTA_REVIEW_ESCALATIONS = (
     "new-risk-trigger",
     "file-outside-carried-items",
     "patch-id-mismatch",
+    "dropped-commit",
     "no-new-commits",
 )
 # The carried-items brief section (issue #499) is one shared channel keyed by the kind of source
