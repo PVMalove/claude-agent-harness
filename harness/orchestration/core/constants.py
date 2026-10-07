@@ -35,6 +35,9 @@ DEVELOPER_REASON_CATEGORIES = ("code", "requirements", "candidate-change")
 # of ``OPERATIONAL_REASON_CATEGORIES``, whose routes and attention count it must not join.
 TOOLING_REASON_CATEGORY = "tooling"
 TOOLING_BLOCKER_FIELDS = frozenset({"tool", "command", "message"})
+# A developer whose ``git commit`` a tool blocked reverts nothing and lists the files it left
+# uncommitted in its report's ``tooling_blocker``; the restart inherits exactly them (issue #502).
+TOOLING_BLOCKER_UNCOMMITTED_FIELD = "uncommitted_files"
 # A read-only role worked around a hook or tool block (issue #560). Only an approver names it, and
 # none of that report is evidence: the same stage re-runs on the same SHA (``bypass-rerun``) under an
 # explicit approval, since there is nothing for a developer to fix. A writing role that worked around
@@ -421,5 +424,7 @@ TELEMETRY_FIELDS = {
 SANDBOXES_REL = Path(".harness") / ".sandboxes"
 SCRATCH_REL = SANDBOXES_REL / "scratch"
 AGENT_INBOX_REL = SCRATCH_REL / "inbox"
+# Coordinator state and tool sandboxes are runtime files: they never make a worktree dirty.
+RUNTIME_PATH_PREFIXES = (f"{STATE_REL.as_posix()}/", f"{SANDBOXES_REL.as_posix()}/")
 # Cyrillic in a brief means the coordinator leaked its own report language into an agent handoff.
 NON_ENGLISH_BRIEF_PATTERN = re.compile(r"[\u0400-\u04FF\u0500-\u052F]")

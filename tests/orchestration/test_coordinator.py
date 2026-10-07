@@ -3361,6 +3361,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             ("blocked", {**TOOLING_BLOCKER, "command": "  "}),
             ("blocked", {**TOOLING_BLOCKER, "tool": 7}),
             ("blocked", too_long),
+            ("blocked", {**TOOLING_BLOCKER, "uncommitted_files": ["a.py"]}),
         ):
             with self.subTest(outcome=outcome, invalid=invalid):
                 report = self._base_report(
@@ -3439,6 +3440,86 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(retry["snapshot_commit"], candidate)
         self.assertEqual(retry["transition"]["reason_category"], "tooling")
         self.assertEqual(retry["transition"]["next_action"], "developer-retry")
+
+    def test_a_blocked_commit_lists_its_uncommitted_files_for_the_restart(
+        self,
+    ) -> None:
+        # Issue #502: a hook blocked the developer's git commit; nothing is reverted, the report
+        # lists the uncommitted files and the restart inherits exactly them.
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("tooled")
+        (self.worktree / "services" / "wip.py").write_text(
+            "WIP = 1\n", encoding="utf-8"
+        )
+        blocker = {
+            **TOOLING_BLOCKER,
+            "command": "git commit -m 'feat: wip'",
+            "uncommitted_files": ["services/wip.py"],
+        }
+
+        def report(tooling_blocker: object) -> JsonObject:
+            return self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers="a hook blocked git commit",
+                checks_run=self._checks(developer, "not-run"),
+                tooling_blocker=tooling_blocker,
+            )
+
+        for invalid in (
+            "services/wip.py",
+            [],
+            ["services/wip.py", "services/wip.py"],
+            [" "],
+            [7],
+            ["/services/wip.py"],
+            ["services/../wip.py"],
+            ["./services/wip.py"],
+            ["services//wip.py"],
+            ["services\\wip.py"],
+        ):
+            with self.subTest(uncommitted_files=invalid):
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError, "uncommitted_files"
+                ):
+                    self._submit(
+                        developer["dispatch_id"],
+                        report({**blocker, "uncommitted_files": invalid}),
+                    )
+        submitted = self._submit(developer["dispatch_id"], report(blocker))
+        markdown = (
+            Path(submitted["report"]).with_suffix(".md").read_text(encoding="utf-8")
+        )
+        self.assertIn("Uncommitted files: services/wip.py", markdown)
+        decided = self._decide(batch["batch_id"], "retry")
+        self._assert_route(
+            decided,
+            role="developer",
+            action="developer-retry",
+            category="tooling",
+            candidate=candidate,
+            route="tooling-retry",
+        )
+
+        start = self._developer_preflight(batch["batch_id"])["retry_start"]
+
+        self.assertEqual(
+            start["handoff"]["developer_report"]["tooling_blocker"],
+            blocker,
+        )
+        (self.worktree / "services" / "extra.py").write_text(
+            "X = 1\n", encoding="utf-8"
+        )
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError,
+            "not listed in the blocked report: services/extra.py",
+        ):
+            self._developer_preflight(batch["batch_id"])
 
     def test_a_tooling_blocked_review_retries_a_new_review_on_the_same_candidate(
         self,
