@@ -886,7 +886,12 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             carried,
         )
         access_plan = runtime_access.resolve_plan(
-            repo, Path(batch["worktree"]), config, role_name, role["mode"]
+            repo,
+            Path(batch["worktree"]),
+            config,
+            role_name,
+            role["mode"],
+            operation=runtime_access.dispatch_operation(role_name, purpose),
         )
         transition[operational_guards.ACCESS_TRANSITION_FIELD] = access_plan[
             "plan_digest"

@@ -107,6 +107,16 @@ def validate_binding(brief: Mapping[str, object]) -> None:
                               remedy='propose and approve a plan matching the role manifest and worktree')
 
 
+def dispatch_operation(role: str, purpose: str) -> str | None:
+    """The coordinator operation whose access override a dispatch selects, if any.
+
+    Only the operations a dispatch itself performs are mapped; ``git`` has no dispatch of its own.
+    """
+    if purpose == "publish":
+        return "publish"
+    return "qa" if role == "qa" else None
+
+
 def resolve_plan(repo: Path, worktree: Path, config: Mapping[str, object], role: str,
                  access: str, *, operation: str | None = None) -> JsonObject:
     """Replace specified components, resolve real roots and retain mandatory artifacts.

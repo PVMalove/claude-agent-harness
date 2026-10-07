@@ -93,3 +93,21 @@ def test_a_failing_provider_leaves_the_plan_unverified_instead_of_crashing_prefl
     assert observation is None
     assert summary['status'] == 'unverified'
     assert summary['remedy']
+
+
+def test_operation_override_follows_the_dispatch_role_and_purpose(tmp_path: Path) -> None:
+    assert runtime_access.dispatch_operation('qa', 'work') == 'qa'
+    assert runtime_access.dispatch_operation('developer', 'publish') == 'publish'
+    assert runtime_access.dispatch_operation('developer', 'work') is None
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    config = {'access_policy': {'defaults': {'mode': 'sandbox', 'network': {'hosts': ['github.com']}},
+                                'operations': {'qa': {'network': {'hosts': []}}}}}
+    qa = runtime_access.resolve_plan(repo, repo, config, 'qa', 'read-only',
+                                     operation=runtime_access.dispatch_operation('qa', 'work'))
+    developer = runtime_access.resolve_plan(repo, repo, config, 'developer', 'write',
+                                            operation=runtime_access.dispatch_operation('developer', 'work'))
+    assert qa['network'] == {'hosts': []}
+    assert qa['sources']['network'] == 'operations.qa'
+    assert developer['network'] == {'hosts': ['github.com']}
