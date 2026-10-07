@@ -258,8 +258,9 @@ judged. The scope is `full` with one or more `escalations`, each `{reason, evide
 `new-risk-trigger` (a trigger of the candidate's risk assessment or of the delta's commits and
 files that the prior review's assessment did not match), `file-outside-carried-items` (a delta file
 outside the files of the developer-retry's carried items; a `review-finding` counts the
-`review_scope` of its review), `patch-id-mismatch` (a pair of a chain report's `rebase_check`), or
-`no-new-commits`. Otherwise it is `delta`: the brief also carries the developer-retry's
+`review_scope` of its review), `patch-id-mismatch` (a pair of a chain report's `rebase_check`),
+`dropped-commit` (a `dropped` entry of a chain report's `rebase_check`: the candidate lost a change
+the prior review judged), or `no-new-commits`. Otherwise it is `delta`: the brief also carries the developer-retry's
 `review-finding` items and its `incomplete-item` entries for the developer, and the review judges
 both axes on the delta and accounts for every carried item. A `full` brief is an ordinary full review with the
 section as audit evidence. Either way the brief keeps the full `review_scope`, the proposal shows

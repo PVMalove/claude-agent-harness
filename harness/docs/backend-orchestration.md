@@ -938,6 +938,8 @@ review. После rebase в цепочке берутся коммиты пос
 - `file-outside-carried-items` — файл delta вне файлов перенесённых пунктов developer-retry (для
   `review-finding` это `review_scope` его review);
 - `patch-id-mismatch` — пара из `patch_id_mismatches` любого отчёта цепочки;
+- `dropped-commit` — запись `dropped` из `rebase_check` любого отчёта цепочки: candidate потерял
+  изменение, которое проверял прежний review, а delta оставшихся коммитов этого не показывает;
 - `no-new-commits` — новых коммитов для проверки нет.
 
 Тогда brief — обычный полный review, а раздел остаётся audit evidence. В режиме `delta`

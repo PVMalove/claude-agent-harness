@@ -108,7 +108,8 @@ risk assessment), the developer-retry, `delta_base`, the `delta_commits`, the `r
 the retry's `closure`.
 
 With `mode: delta`, the new commits match no risk trigger the prior review did not see, change no
-file outside the carried items, and every rebased copy kept its original's `git patch-id`. Review
+file outside the carried items, every rebased copy kept its original's `git patch-id`, and the
+rebase dropped no previous-candidate commit. Review
 both axes on `git diff <delta_base> <candidate_commit>` only, plus the closure of every carried
 item; the prior review's report is the evidence for the rest of the candidate, so do not review that
 again or restate its findings. A copy listed in `reviewed_copies` is already reviewed. Keep
@@ -124,6 +125,7 @@ adds is an ordinary finding on its axis. A retry of this review hands every item
 `closed` to the next developer-retry, together with its own findings.
 
 With `mode: full`, the section lists the `escalations` that ruled a delta out (`new-risk-trigger`,
-`file-outside-carried-items`, `patch-id-mismatch` or `no-new-commits`, each with its evidence).
+`file-outside-carried-items`, `patch-id-mismatch`, `dropped-commit` or `no-new-commits`, each with
+its evidence).
 Review the whole candidate as an ordinary full review; the section is audit evidence only and adds
 no carried item.
