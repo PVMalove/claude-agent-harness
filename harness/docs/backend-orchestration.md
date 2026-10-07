@@ -806,6 +806,58 @@ squash or reset)`. Remedy: восстановить переписанные к�
 новыми коммитами без amend и squash и отчитаться новым HEAD. Retry rebase-отчёта, пока открыт
 stale-base блок, по-прежнему проверяется от rebase target.
 
+Rebase-fix-forward (#504) — тоже маршрут существующего developer-retry, а не новый переход. Решение
+`retry`, которое ведёт в `developer-retry` или `fix-forward` (retry developer, verification,
+code-review, qa или publish report; не `tooling-retry` и не `bypass-rerun`), делает `git fetch` для
+`origin/<integration_ref>`. Если tip ушёл вперёд от закреплённой `integration_base_commit`, а
+candidate, который продолжит retry (собственный у retry developer-отчёта, иначе последний принятый),
+этот tip ещё не содержит, маршрут становится `rebase-fix-forward`. Routing record дополнительно
+называет `rebase_target_commit` (новый tip) и `integration_base_commit` (база, от которой он ушёл) и
+сохраняет `retry_item_ids`. `next_action` остаётся `developer-retry`, и такой retry расходует один
+`retry_policy.max_developer_retries`. Ошибка fetch отклоняет `batch decide --decision retry` с
+remedy, а `decision-packet` показывает её в `route_preview.retry`. Решение только предлагает target:
+`integration_base_commit` batch до accept не меняется.
+
+Target попадает в brief только через dispatch с явным approval при любой `approval_policy`: policy
+approval для него отклоняется. `dispatch propose` показывает переход с полем `rebase_target_sha`, а
+brief получает `rebase_target_commit`; у остальных brief это поле равно `null`, в том числе у
+developer dispatch маршрута stale-base:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch decision-packet --batch <batch-id>
+python .harness/orchestration/coordinator.py --repo . batch decide --batch <batch-id> \
+  --decision retry --reason-category code --approved-by 'имя утверждающего' \
+  --approved-at 2026-10-07T09:00:00Z
+python .harness/orchestration/coordinator.py --repo . dispatch propose \
+  --batch <batch-id> --role developer --runtime claude
+python .harness/orchestration/coordinator.py --repo . dispatch create \
+  --batch <batch-id> --role developer --runtime claude --approved-by 'имя утверждающего' \
+  --approved-at 2026-10-07T09:05:00Z --transition-digest <transition_digest>
+```
+
+Developer переносит коммиты над старой базой ровно на этот target
+(`git rebase --onto <rebase_target_commit> $(git merge-base <snapshot_commit> <rebase_target_commit>)`),
+разрешает конфликты и добавляет fix-коммиты в том же dispatch. Его `commit_map` перечисляет каждый
+коммит прежнего candidate (после `git merge-base` от `snapshot_commit` и target до
+`snapshot_commit`) ровно один раз: `{"commit_sha": <копия>, "rebased_from": <оригинал>}` —
+перенесённая копия наследует пункт плана оригинала, или `{"rebased_from": <оригинал>, "dropped":
+"<причина>"}` — коммит, который rebase не перенёс. Каждый коммит после target встречается ровно
+один раз: как перенесённая копия или как новый коммит `{commit_sha, plan_entry_id}` по строгому
+правилу retry. `changed_files` и `carried_item_closure` считаются от target, а проверка «candidate —
+потомок `snapshot_commit`» для такого brief не действует. `report submit` отклоняет с remedy
+пропущенный, повторный и неизвестный коммит прежнего candidate, пустую причину `dropped`, коммит,
+который dispatch не создал, и `rebased_from`/`dropped` в отчёте brief без target.
+
+`report submit`, `batch decision-packet` и решение `accept`/`override-warning` возвращают
+`rebase_check`: `rebase_target_commit`, `previous_base_commit`, пары `rebased` с `patch_id_match`
+(сравнение `git patch-id --stable`), `dropped` и `patch_id_mismatches`. Расхождение patch-id —
+конфликт, разрешённый с изменениями: отчёт не отклоняется и не теряет clean-статус, а пара
+показывается для delta-review. Accept такого отчёта — или более позднего retry, чей candidate уже
+стоит на этом target, — закрепляет `integration_base_commit` = target, поэтому следующий code-review
+проходит проверку свежести базы без отдельного rebase-dispatch. Retry ещё не принятого
+rebase-отчёта, как и его `tooling-retry`, считает `changed_files` от target. Если tip уйдёт ещё раз
+до review, сработает прежний маршрут stale-base.
+
 Code-review `blocker` никогда не принимается. Пока `retry_policy.max_developer_retries` ещё допускает
 developer retry, для него доступны `retry` или `abandon`; после исчерпания budget `retry`
 отклоняется, а blocker закрывается через `block`, `fail` или `abandon`, после чего работа
@@ -852,9 +904,12 @@ agent inbox и записи QA-очереди dispatch, которые уже н
 с категорией `block-bypass` (см. выше). Десятое, `narrowed-retry`, записывает `retry --narrowed` по
 невыполненным пунктам read-only отчёта (см. шаг 4); его routing record дополнительно называет
 `carried_item_ids`. Одиннадцатое, `fix-forward`, записывает `retry`, который ведёт в
-`developer-retry` с непустым закрытым списком перенесённых пунктов (см. выше). Каждый routing record
-с `next_action: developer-retry` (`developer-retry`, `fix-forward` и `tooling-retry` developer)
-дополнительно называет `retry_item_ids`. Маршрут ставится там же, где
+`developer-retry` с непустым закрытым списком перенесённых пунктов (см. выше). Двенадцатое,
+`rebase-fix-forward`, записывает `retry`, который ведёт в `developer-retry`, пока integration base
+ушла вперёд (см. выше); его routing record дополнительно называет `rebase_target_commit` и
+`integration_base_commit`. Каждый routing record с `next_action: developer-retry`
+(`developer-retry`, `fix-forward`, `rebase-fix-forward` и `tooling-retry` developer) дополнительно
+называет `retry_item_ids`. Маршрут ставится там же, где
 `next_action`, по тем же структурированным данным и никогда по свободному тексту. У `abandon`
 routing record той же формы, но `reason_category`, `next_role`, `next_action` и `candidate_commit`
 равны `null`, а `rationale` содержит только структурные факты (`--reason` остаётся в `note`).
@@ -873,8 +928,9 @@ python .harness/orchestration/coordinator.py --repo . batch decision-packet \
 ```
 
 Preview не проверяет `retry_policy.max_developer_retries`: при исчерпанном бюджете он по-прежнему
-показывает маршрут `developer-retry` или `fix-forward`, а `batch decide --decision retry` такое
-решение отклоняет.
+показывает маршрут `developer-retry`, `fix-forward` или `rebase-fix-forward`, а
+`batch decide --decision retry` такое решение отклоняет. Как и `batch decide`, preview делает fetch
+`origin/<integration_ref>` и потому показывает предложенный `rebase_target_commit`.
 Если маршрут retry вычислить нельзя (например, упало настроенное расширение retry reason
 classifier), packet всё равно строится, а `route_preview.retry` равен
 `{"route": null, "refused": ..., "remedy": ...}` с той ошибкой, которой откажет
@@ -991,7 +1047,9 @@ developer-retry, записанный до #503 без `carried_item_closure` д
 по-прежнему решается через `batch decide`: каждый пункт получает статус `omitted` и входит в
 `carried_items_gap`, поэтому `accept` и policy auto-accept отклоняются, `override-warning` требует
 `--note`, отличный от `none`, а `retry`, `block`, `fail` и `abandon` доступны. Новый такой отчёт
-`report submit` отклоняет.
+`report submit` отклоняет. Brief без `rebase_target_commit`, transition без `rebase_target_sha` и
+значение маршрута `rebase-fix-forward` (#504) тоже введены без смены версии ledger и без миграции:
+переход без target сохраняет прежний digest.
 
 Поле `route` в routing record и деталь `decision` в transition audit record batch тоже
 необязательны и введены без смены версии ledger (остаётся 3). Решение, записанное до них, читается

@@ -34,6 +34,23 @@ below it. `report submit` refuses a report whose `commit_sha` does not descend f
 as new commits without amend or squash, and report the new HEAD. Only a retry under an approved
 rebase target (the prompt names `rebase_target_commit`) is measured from that target instead.
 
+A developer-retry brief with a non-null `rebase_target_commit` (route `rebase-fix-forward`: the
+integration base moved ahead and a human approved the new tip) rebases and fixes in the same
+dispatch. First rebase the commits above the old base onto exactly that target, never onto a newer
+tip: `git rebase --onto <rebase_target_commit> $(git merge-base <snapshot_commit>
+<rebase_target_commit>)`. Resolve a conflict inside the zone; a resolution that changes a commit is
+allowed. Then add the fix commits on top. Its `commit_map` accounts for every previous-candidate
+commit (after that merge-base, up to `snapshot_commit`) exactly once: its rebased copy as
+`{"commit_sha": <copy>, "rebased_from": <original>}`, which inherits the original's plan entry and
+names none, or a commit the rebase did not carry (for example, one already upstream) as
+`{"rebased_from": <original>, "dropped": "<reason>"}`. Every commit after the target appears
+exactly once: a rebased copy as above, a new commit as `{commit_sha, plan_entry_id}` under the
+strict retry rule below. `changed_files` and `carried_item_closure` are measured from the target.
+The coordinator compares each `rebased_from` pair by `git patch-id`; a mismatch does not refuse the
+report but is shown for delta-review. A missing, repeated or unknown previous-candidate commit and
+an empty `dropped` reason are refused, and a brief without a target refuses `rebased_from` and
+`dropped` entries.
+
 When a hook or another tool blocks your `git commit`, revert nothing: do not reset, stash, checkout
 or delete the uncommitted work. Stop with the `tooling_blocker` the common contract describes and
 add `uncommitted_files`: every path `git status --porcelain --no-renames --untracked-files=all`

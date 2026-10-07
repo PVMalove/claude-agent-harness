@@ -91,6 +91,22 @@ developer-retry: `next_action` is `developer-retry` and it spends one
 `snapshot_commit` and rewrites none of them. A developer `tooling-retry` keeps its own route and
 records the same list.
 
+A `developer-retry` or `fix-forward` route also checks the integration base: `batch decide` and
+`batch decision-packet` fetch `origin/<integration_ref>`. When its tip has moved past the pinned
+`integration_base_commit` and the candidate the retry continues (a retried developer report's own,
+else the latest accepted one) does not contain it yet, the route is `rebase-fix-forward`: the
+routing record adds `rebase_target_commit` (that tip) and `integration_base_commit` (the base it
+moved from), and keeps `retry_item_ids`. It is still a developer-retry: `next_action` is
+`developer-retry` and it spends one `retry_policy.max_developer_retries`. The decision only proposes
+the target. The developer-retry brief carries it as `rebase_target_commit`, bound into the
+transition as `rebase_target_sha`, and that dispatch always needs an explicit approval with the
+transition digest, under every `approval_policy`; no policy approves a rebase target. The developer
+rebases the candidate onto exactly that target and fixes on top of it in the same dispatch. An
+accept of its report, or of a later retry whose candidate sits on that target, pins
+`integration_base_commit` to the target, so review needs no separate stale-base rebase. A fetch
+error refuses the retry with a remedy; a `tooling-retry` and a candidate that already contains the
+tip propose no target.
+
 `tooling` means a hook, the safety classifier or the ledger blocked a legitimate role action. The
 coordinator assigns it only from a `blocked` report's structured `tooling_blocker` (`tool`, exact
 `command`, `message`), when no finding, failed check, moved candidate or developer category
@@ -194,9 +210,12 @@ that stage. The coordinator chooses a route by this table:
 the `retry` routing record computed as `batch decide` computes it (it takes the same
 `--reason-category` and `--retry-role` flags) and the `abandon` route; it writes nothing. The preview
 does not check `retry_policy.max_developer_retries`: once that budget is exhausted it still shows a
-`developer-retry` or `fix-forward` route, which `batch decide --decision retry` then refuses.
+`developer-retry`, `fix-forward` or `rebase-fix-forward` route, which `batch decide --decision retry`
+then refuses. Like `batch decide`, it fetches `origin/<integration_ref>`, so it previews the proposed
+`rebase_target_commit`.
 When the retry route
-cannot be computed, for example because the configured retry-reason classifier extension fails, the
+cannot be computed, for example because the configured retry-reason classifier extension fails or
+`origin/<integration_ref>` cannot be fetched, the
 packet still renders and `route_preview.retry` is `{"route": null, "refused": ..., "remedy": ...}`
 with the error `batch decide --decision retry` refuses with. With `--findings-file`,
 `route_preview["carry-over"]` holds the carry-over record that `batch decide --findings-file` on the
@@ -450,7 +469,10 @@ It must contain, at minimum:
   the `target_role` whose brief carries it, the `route` (`carry-over`, `narrowed-retry` or
   `tooling-retry`), the `reason` and its `reason_category` (`tooling` for an item a tool blocked,
   otherwise `null`); its `summary` is the brief item and its `files` are empty. A non-empty section
-  is bound into the transition as `carried_items_sha256`.
+  is bound into the transition as `carried_items_sha256`;
+- `rebase target`: `rebase_target_commit`, the integration tip a `rebase-fix-forward`
+  developer-retry rebases onto, bound into the transition as `rebase_target_sha`, or `null` on every
+  other brief, including the developer dispatch of the stale-base rebase route.
 
 The brief is a starting contract, not a conversation buffer. A role must escalate an ambiguity,
 overlap, credential request, irreversible action, policy decision, or missing proof. It must not
@@ -501,7 +523,16 @@ The report must include:
   `dod_coverage` (one record per Definition of Done item, either its covering commits or
   `not_covered` with a reason) and a `divergence_justification` naming what was merged, split or
   added and why. A developer-retry report maps each new commit to one distinct entry and carries
-  neither field;
+  neither field. Under a non-null `rebase_target_commit` it also lists every previous-candidate
+  commit (after `git merge-base <snapshot_commit> <rebase_target_commit>`, up to
+  `snapshot_commit`) exactly once, as `{commit_sha, rebased_from}` for its rebased copy, which
+  inherits the original's plan entry, or as `{rebased_from, dropped}` with a non-empty reason; every
+  commit after the target appears once, a rebased copy or a new commit. A missing, repeated or
+  unknown previous-candidate commit is refused, and so are `rebased_from` and `dropped` without a
+  target. `report submit`, `batch decision-packet` and the accept decision return `rebase_check`:
+  the target, the old base, each pair with `patch_id_match` (`git patch-id --stable`), the dropped
+  commits and the `patch_id_mismatches`. A mismatch is a conflict resolved with changes: it is
+  shown for delta-review and neither refuses the report nor makes it unclean;
 - for a developer-retry brief with carried items: `carried_item_closure`, one record per carried
   item, either `{item_id, commits}` (the commits of its retry chain that close it) or
   `{item_id, not_closed}` (a non-empty reason). The retry chain is this dispatch and the earlier
