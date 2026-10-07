@@ -10550,6 +10550,81 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 ),
             )
 
+    def test_a_retried_delta_review_hands_its_open_findings_to_the_next_fix_forward(
+        self,
+    ) -> None:
+        """Issue #625: a delta-review that finds the prior review's finding still open hands it on
+        with its own finding, numbered after it, to the next developer-retry; the review after that
+        fix-forward is a delta-review against this one and carries both items."""
+        self._patch_config(retry_policy={"max_developer_retries": 2})
+        review, _, _, fix = self._fix_forward_candidate(
+            "services/x.py", "fix: pin the marker value"
+        )
+        delta = self._dispatch(self.batch_id, "code-review", candidate=fix)["brief"]
+        self._start(delta["dispatch_id"], checkout=self.worktree)
+        report = self._review_report(delta, {"review-finding-1": "open"})
+        report["review"]["standards"].update(
+            severity="warning", findings=[dict(self.REVIEW_WARNING)]
+        )
+        self._submit(delta["dispatch_id"], report)
+
+        retried = self._decide(self.batch_id, "retry")
+        retry = self._dispatch(self.batch_id, "developer")["brief"]
+
+        routing = self._routing(retried)
+        self.assertEqual(
+            (routing["route"], routing["retry_item_ids"]),
+            ("fix-forward", ["review-finding-1", "review-finding-2"]),
+        )
+        self.assertEqual(
+            carried_items.section_item_ids(retry["carried_items"]),
+            routing["retry_item_ids"],
+        )
+        self.assertEqual(
+            [
+                (item["source"]["dispatch_id"], item["summary"])
+                for item in retry["carried_items"]["review-finding"]
+            ],
+            [
+                (review["dispatch_id"], self.SPEC_WARNING["summary"]),
+                (delta["dispatch_id"], self.REVIEW_WARNING["summary"]),
+            ],
+        )
+
+        self._start(retry["dispatch_id"])
+        again = self._commit_file("services/x.py", "fix: pin the marker value again")
+        base = self._batch_record(self.batch_id)["base_commit"]
+        changed = git_utils._changed_files_between(self.repo, base, again)
+        self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry,
+                again,
+                changed,
+                commit_map=self._commit_map([(again, retry["commit_plan"][0])]),
+            ),
+        )
+        self._decide(self.batch_id, "accept")
+        self._assess_without_triggers(self.batch_id, again, changed)
+        follow_up = self._dispatch(self.batch_id, "code-review", candidate=again)[
+            "brief"
+        ]
+
+        scope = follow_up["delta_review_scope"]
+        self.assertEqual(
+            (
+                scope["mode"],
+                scope["prior_review"]["dispatch_id"],
+                scope["delta_base"],
+                scope["delta_commits"],
+            ),
+            ("delta", delta["dispatch_id"], fix, [again]),
+        )
+        self.assertEqual(
+            carried_items.section_item_ids(follow_up["carried_items"]),
+            ["review-finding-1", "review-finding-2"],
+        )
+
     # -- incomplete items of a read-only role (issue #501) -------------------------------------
 
     def _reported_architect_with_items(
