@@ -29,9 +29,9 @@ TRANSITION_FIELDS = (
     "context_package_id",
     "required_gates",
 )
-# Bound only when a brief carries a non-empty carried-items section (issue #499), so every transition
-# without one keeps the digest it always had.
-OPTIONAL_TRANSITION_FIELDS = ("carried_items_sha256",)
+# Bound only when a brief carries a non-empty carried-items section (issue #499) or a human-approved
+# rebase target (issue #504), so every transition without one keeps the digest it always had.
+OPTIONAL_TRANSITION_FIELDS = ("carried_items_sha256", "rebase_target_sha")
 # A role that only reads (or the publish boundary) is re-run as a new dispatch, never resumed, so it
 # alone carries a retry idempotency key.
 KEYED_READ_ONLY_ROLES = ("architect", "code-review", "qa")
@@ -77,6 +77,7 @@ def build_transition(
     context_package_id: str | None,
     required_gates: Sequence[str],
     carried_items_sha256: str | None = None,
+    rebase_target_sha: str | None = None,
 ) -> dict[str, object]:
     """Сконструировать словарь перехода между этапами жизненного цикла."""
     transition: dict[str, object] = {
@@ -96,6 +97,8 @@ def build_transition(
     }
     if carried_items_sha256 is not None:
         transition["carried_items_sha256"] = carried_items_sha256
+    if rebase_target_sha is not None:
+        transition["rebase_target_sha"] = rebase_target_sha
     return transition
 
 
@@ -110,7 +113,8 @@ def transition_digest(transition: Mapping[str, object]) -> str:
         raise GuardError(
             "a transition must carry exactly the fields an approval binds",
             remedy=f"provide exactly: {', '.join(TRANSITION_FIELDS)}, plus "
-            f"{', '.join(OPTIONAL_TRANSITION_FIELDS)} only when the brief carries items",
+            "carried_items_sha256 only when the brief carries items and rebase_target_sha only "
+            "when it carries an approved rebase target",
         )
     return _digest(dict(transition))
 

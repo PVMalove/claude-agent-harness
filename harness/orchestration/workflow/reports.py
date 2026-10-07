@@ -100,6 +100,7 @@ from harness.orchestration.runtime_attestation import (
 )
 from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
+from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow import resolver_state
 from harness.orchestration.workflow.approval import (
     _approval,
@@ -1004,7 +1005,12 @@ def _validate_review(review: object, dispatch: JsonObject) -> None:
 
 
 def _rebase_target(batch: JsonObject, dispatch: JsonObject) -> str | None:
-    """The integration tip a developer dispatch must rebase onto, when a stale-base block is open."""
+    """The integration tip a developer dispatch must rebase onto: the human-approved target its
+    rebase-fix-forward brief carries (issue #504), else the batch target while a stale-base block
+    is open."""
+    approved = plan_rules.rebase_target(dispatch)
+    if approved is not None:
+        return approved
     target = batch.get("rebase_target_commit")
     if (
         dispatch.get("role") == "developer"
@@ -1021,11 +1027,21 @@ def _closure_base(
     """The commit a developer-retry's carried_item_closure counts commits from (issue #503): the
     oldest snapshot of its retry chain that its own ``snapshot_commit`` still descends from, so a
     rebase inside the chain never lets a closure name upstream commits; ``None`` when none is owed.
+
+    When a rebase-fix-forward attempt of the chain rebased it onto a not yet accepted target (a
+    chain snapshot does not contain ``rebase.approved_target``), the chain's commits are those
+    after that target, as for ``changed_files`` (``rebase.report_base``) (issue #504).
     """
     chain = carried_items.closure_snapshots(root, batch, dispatch)
-    return next(
-        (base for base in chain if _git_is_ancestor(repo, base, chain[-1])), None
-    )
+    if not chain:
+        return None
+    target = rebase.approved_target(repo, root, batch, chain[-1])
+    for base in chain[:-1]:
+        if target is not None and not _git_is_ancestor(repo, target, base):
+            return target
+        if _git_is_ancestor(repo, base, chain[-1]):
+            return base
+    return chain[-1]
 
 
 def _require_fix_forward(repo: Path, dispatch: JsonObject, candidate: str) -> None:
@@ -1414,6 +1430,7 @@ def _validate_report(
                         dispatch,
                         _commits_between(repo, rebase_target or plan_base, resolved),
                         partial(_candidate_commit, repo),
+                        previous=rebase.previous_commits(repo, dispatch),
                     )
                 if closure:
                     # An earlier attempt of the retry chain may have closed an item (issue #503).
@@ -1577,11 +1594,12 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             dispatch,
             role,
             repo,
-            batch.get("integration_base_commit") or batch.get("base_commit"),
+            rebase.report_base(repo, root, batch, dispatch),
             _rebase_target(batch, dispatch),
             _closure_base(repo, root, batch, dispatch),
         )
         resolver_state.validate_report(repo, root, batch, dispatch, report)
+        rebase_check = rebase.rebase_check(repo, report, dispatch)
         # Only a new report must carry its closure: one recorded earlier is decided as a gap.
         carried_items.require_closure(report, dispatch)
         from harness.orchestration.workflow.decisions import _auto_accept_policy
@@ -1666,6 +1684,9 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
         "state": "reported",
         "report": str(report_json),
     }
+    if rebase_check is not None:
+        # The patch-id comparison of a rebase-fix-forward report (issue #504), for delta-review.
+        response["rebase_check"] = rebase_check
     if auto_accept_policy is None:
         from harness.orchestration.workflow.decisions import decision_packet
 

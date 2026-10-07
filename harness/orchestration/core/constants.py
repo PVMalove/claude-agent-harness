@@ -67,6 +67,9 @@ RETRY_REASON_CATEGORIES = (
 # listed, and only on them; an item a tool kept the role from makes that retry ``tooling-retry``.
 # ``fix-forward`` (issue #503) is a ``developer-retry`` whose brief carries a non-empty closed list
 # of carried items: new commits on top of the candidate close them without rewriting history.
+# ``rebase-fix-forward`` (issue #504) is a ``developer-retry`` decided while ``origin/<integration_ref>``
+# moved ahead of the pinned integration base: its brief carries the human-approved rebase target,
+# and the developer rebases the candidate onto it and fixes on top in the same dispatch.
 RECOVERY_ROUTES = (
     "developer-retry",
     "same-candidate-rerun",
@@ -79,6 +82,7 @@ RECOVERY_ROUTES = (
     "bypass-rerun",
     "narrowed-retry",
     "fix-forward",
+    "rebase-fix-forward",
 )
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {
@@ -200,6 +204,7 @@ DISPATCH_FIELDS = {
     "commit_plan",
     "commit_plan_divergence",
     "carried_items",
+    "rebase_target_commit",
 }
 # The carried-items brief section (issue #499) is one shared channel keyed by the kind of source
 # that raised an item; a later kind adds its value here without changing the section's shape.
@@ -226,6 +231,12 @@ CARRIED_ITEM_RECORD_FIELDS = CARRIED_ITEM_FIELDS | {
 }
 # One entry of a developer brief's commit plan; ``covers`` names definition-of-done items 1..n.
 COMMIT_PLAN_ENTRY_FIELDS = frozenset({"id", "summary", "expected_paths", "covers"})
+# The commit_map entry shapes. A developer-retry under an approved rebase target (issue #504) also
+# maps a rebased copy of a previous-candidate commit, which inherits that commit's plan entry, and
+# a previous-candidate commit the rebase dropped, with the reason.
+COMMIT_MAP_PLANNED_FIELDS = frozenset({"commit_sha", "plan_entry_id"})
+COMMIT_MAP_REBASED_FIELDS = frozenset({"commit_sha", "rebased_from"})
+COMMIT_MAP_DROPPED_FIELDS = frozenset({"rebased_from", "dropped"})
 # One record of a developer report's dod_coverage: the covering commits, or why the item is open.
 DOD_COVERED_FIELDS = frozenset({"dod_item", "commits"})
 DOD_NOT_COVERED_FIELDS = frozenset({"dod_item", "not_covered"})

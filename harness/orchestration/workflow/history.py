@@ -958,6 +958,13 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
             remedy="the dispatch transition diverged from its carried items -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
+    # The rebase target a human approved for a rebase-fix-forward developer-retry (issue #504).
+    if transition.get("rebase_target_sha") != dispatch.get("rebase_target_commit"):
+        raise CoordinatorError(
+            "dispatch transition does not match its rebase target",
+            remedy="the dispatch transition diverged from its rebase_target_commit -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
     if dispatch["retry_idempotency_key"] != _transition_idempotency_key(
         dispatch["role"], dispatch["purpose"], transition
     ):
@@ -1093,6 +1100,8 @@ def _validate_dispatch(
     accepted |= {fields - {"commit_plan_divergence"} for fields in set(accepted)}
     # The carried-items section (issue #499) came after that.
     accepted |= {fields - {"carried_items"} for fields in set(accepted)}
+    # The approved rebase target (issue #504) came after that.
+    accepted |= {fields - {"rebase_target_commit"} for fields in set(accepted)}
     # The conflict-resolver brief's resolver section (issue #534) is the one field added on top.
     accepted |= {fields | {"resolver"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
@@ -1113,6 +1122,20 @@ def _validate_dispatch(
     if "carried_items" in dispatch:
         _validate_carried_section(dispatch)
     _validate_resolver_section(dispatch)
+    target = dispatch.get("rebase_target_commit")
+    if target is not None and (
+        not isinstance(target, str)
+        or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", target) is None
+        or (dispatch.get("role"), dispatch.get("purpose")) != ("developer", "work")
+        or not isinstance(dispatch.get("transition"), dict)
+        or dispatch["transition"].get("next_action") != "developer-retry"
+    ):
+        raise CoordinatorError(
+            "dispatch rebase_target_commit must be null or, on a developer-retry work brief, "
+            "a full commit SHA",
+            remedy="the dispatch record's rebase_target_commit is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
     if dispatch.get("state") != "approved":
         raise CoordinatorError(
             "dispatch record is not an approved immutable brief",
