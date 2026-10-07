@@ -111,3 +111,63 @@ def test_operation_override_follows_the_dispatch_role_and_purpose(tmp_path: Path
     assert qa['network'] == {'hosts': []}
     assert qa['sources']['network'] == 'operations.qa'
     assert developer['network'] == {'hosts': ['github.com']}
+
+
+_REFUSALS = [
+    ({'plan_digest': 'f' * 64}, 'different plan or transport'),
+    ({'transport': 'external'}, 'different plan or transport'),
+    ({'source': 'parent-process'}, 'launch identity or application mechanism'),
+    ({'observed_at': '2000-01-01T00:00:00+00:00'}, 'stale'),
+    ({'observed_at': 'not-a-time'}, 'timestamp is invalid'),
+    ({'supported_modes': ()}, 'does not support requested mode'),
+    ({'effective_mode': 'unsandboxed'}, 'effective mode differs'),
+    ({'hosts': ()}, 'network host requirements are unverified'),
+    ({'filesystem': ()}, 'filesystem requirements are unverified'),
+]
+
+
+@pytest.mark.parametrize(('mutation', 'reason'), _REFUSALS)
+def test_a_worker_proof_that_does_not_match_the_plan_is_refused(
+        tmp_path: Path, mutation: dict[str, object], reason: str) -> None:
+    from dataclasses import replace
+    from datetime import UTC, datetime
+    from harness.orchestration import extensions
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+
+    class Mutated:
+        def observe(self, plan: JsonObject, transport: str) -> extensions.RuntimeAccessObservation:
+            honest = extensions.RuntimeAccessObservation(
+                plan_digest=plan['plan_digest'], transport=transport, supported_modes=('sandbox',),
+                effective_mode='sandbox', mechanism='native-apply', environment_id='worker-session',
+                launch_id='reserved-worker', source='native-runtime', observed_at=datetime.now(UTC).isoformat(),
+                hosts=tuple(plan['network']['hosts']),
+                filesystem=tuple((item['path'], item['access']) for item in plan['requirements']))
+            return replace(honest, **mutation)
+
+    extensions.register('runtime_access', 'test-mutated', Mutated())
+    try:
+        plan = runtime_access.resolve_plan(repo, repo, {
+            'access_policy': {'defaults': {'mode': 'sandbox', 'network': {'hosts': ['github.com']}}},
+            'extensions': {'runtime_access': 'test-mutated'}}, 'developer', 'write')
+        summary, _ = runtime_access.verify_plan(plan, 'in-process')
+        with pytest.raises(runtime_access.AccessError, match=reason):
+            runtime_access.apply_plan({'runtime_access': plan}, 'in-process')
+    finally:
+        extensions.unregister('runtime_access', 'test-mutated')
+    assert summary['status'] == 'unverified'
+    assert reason in str(summary['reason'])
+
+
+def test_a_historical_brief_keeps_inherit_and_a_read_only_role_cannot_write(tmp_path: Path) -> None:
+    runtime_access.validate_binding({'role': 'architect', 'transition': {}})
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    plan = runtime_access.resolve_plan(repo, repo, {'access_policy': {'defaults': {'mode': 'sandbox'}}},
+                                       'developer', 'write')
+    brief = {'access': 'read-only', 'worktree': str(repo), 'runtime_access': plan,
+             'transition': {'runtime_access_sha256': plan['plan_digest']}}
+    with pytest.raises(runtime_access.AccessError, match='checkout or read-only boundary'):
+        runtime_access.validate_binding(brief)
