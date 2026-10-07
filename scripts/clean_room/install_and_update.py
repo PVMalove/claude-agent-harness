@@ -412,8 +412,16 @@ def run(ctx: SimpleNamespace) -> None:
     assert_contract_link(
         agent, pv_project / ".harness/docs/technical-english.md", "installed agent seed"
     )
-    if not agent.read_bytes().startswith(original_agent):
-        sys.exit("approved agent addition lost local instructions")
+    patched = agent.read_bytes()
+    # A Windows checkout writes CRLF while the fixture suffix and the patch are LF.
+    if not patched.replace(b"\r\n", b"\n").startswith(
+        original_agent.replace(b"\r\n", b"\n")
+    ):
+        sys.exit(
+            "approved agent addition lost local instructions: "
+            f"expected prefix tail {original_agent[-60:]!r}, "
+            f"got {patched[len(original_agent) - 60 : len(original_agent)]!r}"
+        )
     approved_agent = agent.read_bytes()
     if "diff --git " in capture(HARNESS + ["update", str(pv_project)]):
         sys.exit("repeat pvmalove update proposed duplicate links")

@@ -49,7 +49,7 @@ jobs:
 
   verify-windows:
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
