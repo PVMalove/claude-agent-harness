@@ -9326,6 +9326,44 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(decision["rebase_check"]["patch_id_mismatches"], mismatch)
         self.assertEqual(accepted["integration_base_commit"], upstream)
 
+    def test_a_patch_id_ignores_the_diff_configuration_and_skips_every_merge(
+        self,
+    ) -> None:
+        def commit(name: str, text: str | None = None) -> str:
+            (self.repo / f"{name}.txt").write_text(
+                text or f"{name}\n", encoding="utf-8"
+            )
+            _git(self.repo, "add", "-A")
+            _git(self.repo, "commit", "-m", name)
+            return _git(self.repo, "rev-parse", "HEAD")
+
+        base = _git(self.repo, "rev-parse", "HEAD")
+        change = commit("change")
+        _git(self.repo, "checkout", "-b", "copy", base)
+        _git(self.repo, "commit", "--allow-empty", "-m", "empty")
+        empty = _git(self.repo, "rev-parse", "HEAD")
+        copy = commit("change")
+        _git(self.repo, "merge", "--no-commit", "--no-ff", change)
+        evil = commit("change", "change\nevil\n")
+
+        plain = git_utils._patch_id(self.repo, change)
+        _git(self.repo, "config", "diff.noprefix", "true")
+
+        self.assertIsNotNone(plain)
+        self.assertEqual(
+            (
+                git_utils._patch_id(self.repo, change),
+                git_utils._patch_id(self.repo, copy),
+            ),
+            (plain, plain),
+        )
+        self.assertIsNone(git_utils._patch_id(self.repo, empty))
+        # An evil merge carries its own change, yet a merge never gets a patch-id.
+        self.assertEqual(
+            len(_git(self.repo, "show", "--format=%P", "-s", evil).split()), 2
+        )
+        self.assertIsNone(git_utils._patch_id(self.repo, evil))
+
     def test_a_retry_of_a_rebased_report_is_measured_from_its_approved_target(
         self,
     ) -> None:
@@ -9381,6 +9419,85 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             (None, copies[-1]),
         )
         self.assertNotIn("rebase_check", submitted)
+        self.assertEqual(accepted["integration_base_commit"], upstream)
+
+    def test_a_carried_item_chain_keeps_the_commits_of_its_rebase_fix_forward_attempt(
+        self,
+    ) -> None:
+        """A retry of a not yet accepted rebase-fix-forward report that carried items may name the
+        rebased copies and fix commits of that attempt: its closure, like its changed_files, is
+        measured from the approved target, never from the pre-rebase snapshot or the old base."""
+        self._patch_config(retry_policy={"max_developer_retries": 2})
+        reviewed = self._reported_review_with_items()
+        pinned = self._batch_record(self.batch_id)["integration_base_commit"]
+        originals = _git(
+            self.worktree, "rev-list", "--reverse", f"{pinned}..{reviewed}"
+        ).splitlines()
+        upstream = self._push_upstream()
+        self._decide(self.batch_id, "retry")
+        first = self._dispatch(self.batch_id, "developer")["brief"]
+        self._start(first["dispatch_id"])
+        copies = self._rebase_onto(reviewed, upstream)
+        fix, _ = self._developer_commit("fix")
+        self._submit(
+            first["dispatch_id"],
+            self._developer_report(
+                first,
+                fix,
+                git_utils._changed_files_between(self.repo, upstream, fix),
+                commit_map=[
+                    *self._rebased_map(originals, copies),
+                    *self._commit_map([(fix, first["commit_plan"][0])]),
+                ],
+            ),
+        )
+        decided = self._decide(self.batch_id, "retry", reason_category="code")
+        second = self._dispatch(self.batch_id, "developer")["brief"]
+        self._start(second["dispatch_id"])
+        again, _ = self._developer_commit("again")
+        report = self._developer_report(
+            second,
+            again,
+            git_utils._changed_files_between(self.repo, upstream, again),
+            commit_map=self._commit_map([(again, second["commit_plan"][0])]),
+            carried_item_closure=[
+                {"item_id": "coordinator-finding-1", "commits": [fix]},
+                {"item_id": "review-finding-1", "commits": [copies[-1], again]},
+            ],
+        )
+        root = ledger_ops._state_root(self._args(), self.repo)
+        batch = self._batch_record(self.batch_id)
+
+        self.assertEqual(
+            (self._routing(decided)["route"], second["rebase_target_commit"]),
+            ("fix-forward", None),
+        )
+        self.assertEqual(second["carried_items"], first["carried_items"])
+        self.assertEqual(
+            carried_items.closure_snapshots(root, batch, second), [reviewed, fix]
+        )
+        self.assertEqual(
+            reports._closure_base(self.repo, root, batch, second), upstream
+        )
+        for foreign in (reviewed, upstream):
+            with self.subTest(foreign=foreign):
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError,
+                    "nor an earlier attempt of its retry chain",
+                ):
+                    self._submit(
+                        second["dispatch_id"],
+                        {
+                            **report,
+                            "carried_item_closure": [
+                                {"item_id": "coordinator-finding-1", "commits": [fix]},
+                                {"item_id": "review-finding-1", "commits": [foreign]},
+                            ],
+                        },
+                    )
+        self._submit(second["dispatch_id"], report)
+        self.assertEqual(self._packet()["carried_items_gap"], [])
+        accepted = self._decide(self.batch_id, "accept")
         self.assertEqual(accepted["integration_base_commit"], upstream)
 
     def _packet(self, **flags: object) -> JsonObject:

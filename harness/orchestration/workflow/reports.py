@@ -1027,11 +1027,21 @@ def _closure_base(
     """The commit a developer-retry's carried_item_closure counts commits from (issue #503): the
     oldest snapshot of its retry chain that its own ``snapshot_commit`` still descends from, so a
     rebase inside the chain never lets a closure name upstream commits; ``None`` when none is owed.
+
+    When a rebase-fix-forward attempt of the chain rebased it onto a not yet accepted target (a
+    chain snapshot does not contain ``rebase.approved_target``), the chain's commits are those
+    after that target, as for ``changed_files`` (``rebase.report_base``) (issue #504).
     """
     chain = carried_items.closure_snapshots(root, batch, dispatch)
-    return next(
-        (base for base in chain if _git_is_ancestor(repo, base, chain[-1])), None
-    )
+    if not chain:
+        return None
+    target = rebase.approved_target(repo, root, batch, chain[-1])
+    for base in chain[:-1]:
+        if target is not None and not _git_is_ancestor(repo, target, base):
+            return target
+        if _git_is_ancestor(repo, base, chain[-1]):
+            return base
+    return chain[-1]
 
 
 def _require_fix_forward(repo: Path, dispatch: JsonObject, candidate: str) -> None:

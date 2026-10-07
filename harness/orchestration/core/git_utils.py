@@ -153,23 +153,27 @@ def _merge_base(repo: Path, first: str, second: str) -> str:
 
 def _patch_id(repo: Path, commit: str) -> str | None:
     """The stable ``git patch-id`` of one commit's own diff, or ``None`` when it has no textual
-    diff (an empty commit or a merge). Equal ids mean the same change, whatever its parent."""
-    show = subprocess.run(
-        ["git", "-C", str(repo), "show", "--format=", "--no-color", "--no-ext-diff"]
+    diff (an empty commit or any merge). Equal ids mean the same change, whatever its parent.
+
+    The diff comes from plumbing ``git diff-tree``, which ignores the user's diff and log
+    configuration and prints nothing for a merge."""
+    diff = subprocess.run(
+        ["git", "-C", str(repo), "diff-tree", "-p", "--root", "--no-commit-id"]
         + [commit, "--"],
         capture_output=True,
         check=False,
     )
-    if show.returncode != 0:
+    if diff.returncode != 0:
         raise CoordinatorError(
-            f"git show failed for {commit}: {show.stderr.decode('utf-8', 'replace').strip()}",
+            f"git diff-tree failed for {commit}: "
+            f"{diff.stderr.decode('utf-8', 'replace').strip()}",
             remedy=f"verify that commit {commit} exists in this repository",
         )
-    if not show.stdout.strip():
+    if not diff.stdout.strip():
         return None
     result = subprocess.run(
         ["git", "-C", str(repo), "patch-id", "--stable"],
-        input=show.stdout,
+        input=diff.stdout,
         capture_output=True,
         check=False,
     )
