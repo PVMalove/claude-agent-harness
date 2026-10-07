@@ -8,7 +8,9 @@ An initial or rebase developer report maps its created commits to plan entries a
 commit may close several entries (merged), one entry may be closed by several commits (split), and
 an entry may stay unclosed. Anything but one-to-one is a divergence, which the report must justify
 next to a definition-of-done coverage record. A developer-retry report keeps the strict rule: each
-new commit closes exactly one distinct plan entry.
+new commit closes exactly one distinct plan entry. Under an approved rebase target (issue #504) it
+also accounts for every previous-candidate commit exactly once, as the ``rebased_from`` of its
+rebased copy or as ``dropped`` with a reason.
 
 Pure: no Git and no ledger access. The caller passes the created commits and a SHA resolver, so
 every rule is testable on plain data.
@@ -22,6 +24,9 @@ from collections.abc import Callable, Iterator
 from pathlib import PurePosixPath
 
 from harness.orchestration.core.constants import (
+    COMMIT_MAP_DROPPED_FIELDS,
+    COMMIT_MAP_PLANNED_FIELDS,
+    COMMIT_MAP_REBASED_FIELDS,
     COMMIT_PLAN_ENTRY_FIELDS,
     DOD_COVERED_FIELDS,
     DOD_NOT_COVERED_FIELDS,
@@ -42,6 +47,12 @@ PLAN_ENTRY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 PLAN_FILE_REMEDY = (
     'write the plan file as {"commit_plan": [{"id": ..., "summary": ..., '
     '"expected_paths": [...], "covers": [1, ...]}, ...]} and pass it again with --commit-plan-file'
+)
+REBASE_MAP_REMEDY = (
+    "map every commit after rebase_target_commit once: a rebased copy as "
+    '{"commit_sha": <sha>, "rebased_from": <original sha>} and a new commit as '
+    '{"commit_sha": <sha>, "plan_entry_id": <id>}; list a previous-candidate commit the rebase '
+    'did not carry as {"rebased_from": <original sha>, "dropped": "<reason>"}'
 )
 
 
@@ -194,6 +205,12 @@ def is_developer_retry(dispatch: JsonObject) -> bool:
     )
 
 
+def rebase_target(dispatch: JsonObject) -> str | None:
+    """The human-approved rebase target a developer-retry brief carries (issue #504), if any."""
+    target = dispatch.get("rebase_target_commit")
+    return target if isinstance(target, str) and target else None
+
+
 def _relation_applies(dispatch: JsonObject) -> bool:
     """Only an initial or rebase developer work report maps commits as a relation."""
     return (
@@ -327,10 +344,15 @@ def _resolve_reported(resolve: Callable[[str], str], sha: str, field: str) -> st
 def _commit_map_pairs(commit_map: list[object]) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     for entry in commit_map:
-        if not isinstance(entry, dict) or set(entry) != {
-            "commit_sha",
-            "plan_entry_id",
-        }:
+        if isinstance(entry, dict) and {"rebased_from", "dropped"} & set(entry):
+            raise CoordinatorError(
+                "commit_map entries with rebased_from or dropped belong only to a "
+                "developer-retry brief with rebase_target_commit",
+                remedy="only a brief with rebase_target_commit maps rebased_from and dropped: "
+                "map every created commit to a commit_plan entry as "
+                '{"commit_sha": <sha>, "plan_entry_id": <id>}',
+            )
+        if not isinstance(entry, dict) or set(entry) != COMMIT_MAP_PLANNED_FIELDS:
             raise CoordinatorError(
                 "commit_map entries must contain only commit_sha and plan_entry_id",
                 remedy="report one SHA-to-plan-entry mapping for every created commit",
@@ -362,6 +384,137 @@ def _check_retry_mapping(
             remedy="report every commit created after snapshot_commit once, each against its own "
             "commit_plan entry; a developer-retry need not close every plan entry",
         )
+
+
+def _rebase_entries(
+    commit_map: list[object], resolve: Callable[[str], str]
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
+    """Split a rebase developer-retry commit_map into its three entry shapes, with resolved SHAs:
+    new commits ``(sha, plan_entry_id)``, rebased copies ``(original, copy)`` and dropped
+    previous-candidate commits ``(original, reason)``."""
+    planned: list[tuple[str, str]] = []
+    rebased: list[tuple[str, str]] = []
+    dropped: list[tuple[str, str]] = []
+    for entry in commit_map:
+        if not isinstance(entry, dict) or set(entry) not in (
+            COMMIT_MAP_PLANNED_FIELDS,
+            COMMIT_MAP_REBASED_FIELDS,
+            COMMIT_MAP_DROPPED_FIELDS,
+        ):
+            raise CoordinatorError(
+                "commit_map entries of a developer-retry with rebase_target_commit must be "
+                "{commit_sha, plan_entry_id}, {commit_sha, rebased_from} or {rebased_from, dropped}",
+                remedy=REBASE_MAP_REMEDY,
+            )
+        if not all(isinstance(value, str) for value in entry.values()):
+            raise CoordinatorError(
+                "commit_map entries must use string SHAs, plan entry ids and reasons",
+                remedy=REBASE_MAP_REMEDY,
+            )
+        if "dropped" in entry:
+            if not _non_empty(entry["dropped"]):
+                raise CoordinatorError(
+                    f"commit_map drops previous-candidate commit {entry['rebased_from']} "
+                    "without a reason",
+                    remedy="state in dropped why the rebase did not carry that commit onto "
+                    "rebase_target_commit, or map its rebased copy with rebased_from",
+                )
+            original = _resolve_reported(
+                resolve, entry["rebased_from"], "commit_map[].rebased_from"
+            )
+            dropped.append((original, entry["dropped"]))
+            continue
+        sha = _resolve_reported(resolve, entry["commit_sha"], "commit_map[].commit_sha")
+        if "rebased_from" in entry:
+            original = _resolve_reported(
+                resolve, entry["rebased_from"], "commit_map[].rebased_from"
+            )
+            rebased.append((original, sha))
+        else:
+            planned.append((sha, entry["plan_entry_id"]))
+    return planned, rebased, dropped
+
+
+def _check_rebase_mapping(
+    commit_map: list[object],
+    created: list[str],
+    previous: list[str],
+    plan_ids: list[str],
+    resolve: Callable[[str], str],
+) -> None:
+    """A developer-retry under an approved rebase target accounts for every previous-candidate
+    commit (those above the old base, up to ``snapshot_commit``) exactly once, as ``rebased_from``
+    of its rebased copy or as ``dropped``, and maps every commit it created after the target exactly
+    once: a rebased copy inherits its original's plan entry, a new commit closes its own entry."""
+    planned, rebased, dropped = _rebase_entries(commit_map, resolve)
+    originals = [original for original, _ in rebased] + [
+        original for original, _ in dropped
+    ]
+    unknown = _unique([sha for sha in originals if sha not in previous])
+    if unknown:
+        raise CoordinatorError(
+            f"commit_map names rebased_from commits that are not previous-candidate commits: {unknown}",
+            remedy="name in rebased_from only the previous-candidate commits between "
+            "git merge-base <snapshot_commit> <rebase_target_commit> and snapshot_commit: "
+            f"{', '.join(previous) or 'none'}",
+        )
+    repeated = _unique([sha for sha in originals if originals.count(sha) > 1])
+    if repeated:
+        raise CoordinatorError(
+            f"commit_map lists previous-candidate commits more than once: {repeated}",
+            remedy="list every previous-candidate commit exactly once: as the rebased_from of its "
+            "rebased copy, or with dropped and a reason",
+        )
+    missing = [sha for sha in previous if sha not in originals]
+    if missing:
+        raise CoordinatorError(
+            f"commit_map does not account for previous-candidate commits {missing}",
+            remedy='add {"commit_sha": <copy>, "rebased_from": <original>} for each commit the '
+            'rebase carried onto rebase_target_commit, or {"rebased_from": <original>, '
+            '"dropped": "<reason>"} for a commit it did not carry',
+        )
+    mapped = [sha for sha, _ in planned] + [sha for _, sha in rebased]
+    foreign = _unique([sha for sha in mapped if sha not in created])
+    if foreign:
+        raise CoordinatorError(
+            f"commit_map names commits this dispatch did not create: {foreign}",
+            remedy="map only the commits after rebase_target_commit up to commit_sha",
+        )
+    twice = _unique([sha for sha in mapped if mapped.count(sha) > 1])
+    if twice:
+        raise CoordinatorError(
+            f"commit_map maps created commits more than once: {twice}",
+            remedy="map each commit after rebase_target_commit exactly once: a rebased copy with "
+            "rebased_from, or a new commit against one commit_plan entry",
+        )
+    unmapped = [sha for sha in created if sha not in mapped]
+    if unmapped:
+        raise CoordinatorError(
+            f"commit_map must map each created commit once (unmapped: {unmapped})",
+            remedy=REBASE_MAP_REMEDY,
+        )
+    entries = [plan_id for _, plan_id in planned]
+    if any(plan_id not in plan_ids for plan_id in entries) or len(set(entries)) != len(
+        entries
+    ):
+        raise CoordinatorError(
+            "commit_map must map each new commit to one distinct immutable plan entry",
+            remedy="map every new commit after the rebased copies to its own commit_plan entry; "
+            "a rebased copy inherits the entry of its original and names none, and a "
+            "developer-retry need not close every plan entry",
+        )
+
+
+def rebased_commits(
+    report: JsonObject, resolve: Callable[[str], str]
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """The ``(original, copy)`` pairs and ``(original, reason)`` drops of a rebase developer-retry
+    report's commit_map, which ``check_report`` has already accepted."""
+    commit_map = report.get("commit_map")
+    if not isinstance(commit_map, list):
+        return [], []
+    _, rebased, dropped = _rebase_entries(commit_map, resolve)
+    return rebased, dropped
 
 
 def _check_relation(
@@ -486,16 +639,22 @@ def check_report(
     dispatch: JsonObject,
     created: list[str],
     resolve: Callable[[str], str],
+    previous: list[str] | None = None,
 ) -> None:
     """Reject structural errors of a developer report against its brief's commit plan, and
     dod_coverage claims that its commit_map and the plan's ``covers`` contradict.
 
     ``created`` is the ordered list of commits the dispatch created (after ``snapshot_commit``, or
     after the rebase target for a rebase); ``resolve`` turns a reported SHA into its full form.
+    ``previous`` lists the previous-candidate commits a developer-retry brief with
+    ``rebase_target_commit`` rebased: those after the old base up to ``snapshot_commit``.
     """
     retry = is_developer_retry(dispatch)
     commit_map = _required_commit_map(report, retry)
     plan_ids = _plan_ids(dispatch)
+    if retry and rebase_target(dispatch) is not None:
+        _check_rebase_mapping(commit_map, created, previous or [], plan_ids, resolve)
+        return
     pairs = _commit_map_pairs(commit_map)
     resolved = [
         (_resolve_reported(resolve, sha, "commit_map[].commit_sha"), plan_id)

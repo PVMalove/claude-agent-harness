@@ -189,7 +189,9 @@ def _dispatch_approval_mode(
     """How this dispatch is approved: ``explicit`` (a human) or ``policy:<name>``.
 
     A project-approved continuation is allowed only outside the preserved risk milestones. A
-    re-run after a role worked around a block (``bypass-rerun``) is always one of them.
+    re-run after a role worked around a block (``bypass-rerun``) is always one of them, and so is
+    the developer-retry that rebases onto a proposed target (``rebase-fix-forward``, issue #504):
+    no policy ever approves a rebase target.
     """
     if _non_empty(getattr(args, "approved_by", None)) or _non_empty(
         getattr(args, "approved_at", None)
@@ -204,7 +206,10 @@ def _dispatch_approval_mode(
         or (role == "qa" and policy not in {"low_risk", "auto"})
         or risk_triggered
         or batch.get("risk_reassessment_required")
-        or (isinstance(routing, dict) and routing.get("route") == "bypass-rerun")
+        or (
+            isinstance(routing, dict)
+            and routing.get("route") in {"bypass-rerun", "rebase-fix-forward"}
+        )
     )
     if policy == "manual_all" or milestone:
         raise CoordinatorError(
@@ -343,10 +348,19 @@ def _proposed_transition(
     "What came before" is the newest dispatch a human decided on, so a brief that was created but is
     still unsent (or was cancelled) does not change the transition it was created for. A non-empty
     carried-items section is bound by its digest, so a finding attached after the proposal needs a
-    new approval."""
+    new approval. The developer-retry of a ``rebase-fix-forward`` decision binds the rebase target
+    its routing record proposed (issue #504)."""
     previous = _newest_decided_dispatch(batch)
     decision = previous.get("decision") if previous else None
     routing = decision.get("routing") if isinstance(decision, dict) else None
+    rebase_target = (
+        routing.get("rebase_target_commit")
+        if isinstance(routing, dict)
+        and routing.get("route") == "rebase-fix-forward"
+        and next_action == "developer-retry"
+        and (role_name, purpose) == ("developer", "work")
+        else None
+    )
     return operational_guards.build_transition(
         batch_id=batch["batch_id"],
         previous_dispatch_id=previous["dispatch_id"] if previous else None,
@@ -366,6 +380,7 @@ def _proposed_transition(
         else None,
         required_gates=batch["required_gates"],
         carried_items_sha256=carried_items.section_sha256(carried),
+        rebase_target_sha=rebase_target if isinstance(rebase_target, str) else None,
     )
 
 
@@ -969,6 +984,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             if is_review_work
             else None,
             "carried_items": carried,
+            # The human-approved target a rebase-fix-forward developer-retry rebases onto.
+            "rebase_target_commit": transition.get("rebase_target_sha"),
         }
         if role_name == resolver_state.RESOLVER_ROLE:
             brief["resolver"] = resolver_route.brief_section(

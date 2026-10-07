@@ -111,6 +111,26 @@ class TransitionDigestTests(unittest.TestCase):
             _built(carried_items_sha256=digest)["carried_items_sha256"], digest
         )
 
+    def test_a_rebase_target_is_bound_only_when_the_brief_carries_one(self) -> None:
+        target = "e" * 40
+        bound = _transition(rebase_target_sha=target)
+
+        self.assertEqual(
+            guards.OPTIONAL_TRANSITION_FIELDS,
+            ("carried_items_sha256", "rebase_target_sha"),
+        )
+        self.assertNotEqual(
+            guards.transition_digest(bound), guards.transition_digest(_transition())
+        )
+        self.assertNotEqual(
+            guards.transition_digest(bound),
+            guards.transition_digest(_transition(rebase_target_sha="f" * 40)),
+        )
+        self.assertNotIn("rebase_target_sha", _built())
+        self.assertEqual(_built(rebase_target_sha=target)["rebase_target_sha"], target)
+        both = _built(carried_items_sha256="0" * 64, rebase_target_sha=target)
+        self.assertRegex(guards.transition_digest(both), r"^[0-9a-f]{64}$")
+
 
 class RetryIdempotencyKeyTests(unittest.TestCase):
     def test_key_is_deterministic(self) -> None:

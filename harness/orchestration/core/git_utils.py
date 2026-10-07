@@ -146,6 +146,47 @@ def _commits_between(repo: Path, base: str, candidate: str) -> list[str]:
     ]
 
 
+def _merge_base(repo: Path, first: str, second: str) -> str:
+    """The best common ancestor of two commits."""
+    return _git(repo, "merge-base", "--", first, second)
+
+
+def _patch_id(repo: Path, commit: str) -> str | None:
+    """The stable ``git patch-id`` of one commit's own diff, or ``None`` when it has no textual
+    diff (an empty commit or any merge). Equal ids mean the same change, whatever its parent.
+
+    The diff comes from plumbing ``git diff-tree``, which ignores the user's diff and log
+    configuration and prints nothing for a merge."""
+    diff = subprocess.run(
+        ["git", "-C", str(repo), "diff-tree", "-p", "--root", "--no-commit-id"]
+        + [commit, "--"],
+        capture_output=True,
+        check=False,
+    )
+    if diff.returncode != 0:
+        raise CoordinatorError(
+            f"git diff-tree failed for {commit}: "
+            f"{diff.stderr.decode('utf-8', 'replace').strip()}",
+            remedy=f"verify that commit {commit} exists in this repository",
+        )
+    if not diff.stdout.strip():
+        return None
+    result = subprocess.run(
+        ["git", "-C", str(repo), "patch-id", "--stable"],
+        input=diff.stdout,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise CoordinatorError(
+            f"git patch-id failed for {commit}: "
+            f"{result.stderr.decode('utf-8', 'replace').strip()}",
+            remedy="inspect the git patch-id error above and retry",
+        )
+    fields = result.stdout.decode("utf-8", "replace").split()
+    return fields[0] if fields else None
+
+
 def _commit_evidence(repo: Path, base: str | None, commit: str) -> str:
     if base:
         return "\n".join(
