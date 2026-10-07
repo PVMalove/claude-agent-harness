@@ -51,11 +51,38 @@ from harness.orchestration.workflow.resolver_state import (
     RESOLVER_BATCH_KIND,
     RESOLVER_NEXT_ACTION,
     budget,
+    exhaustion,
     is_resolver_brief,
     last_cause,
-    same_target_fixes,
     write_event,
 )
+
+
+def _batch_text(trigger: str, ticket: str, tip: str) -> tuple[str, list[str], str]:
+    """The goal, the definition of done and the commit-plan summary of a resolver batch.  A failed
+    verification of a refreshed pair has no conflict and no rebase to describe (issue #537)."""
+    if trigger == "verification-failure":
+        return (
+            f"Fix the failed verification of {ticket} on the refreshed pair at the integration tip {tip}",
+            [
+                "Fix the behavioural incompatibility behind the failed evidence (failed_evidence_ids) "
+                f"on top of the exact target {tip}; the branch already is at that target, so there "
+                "is no conflict and no rebase",
+                "Preserve the requirements of both sides and add no behaviour outside them",
+                "Commit the fix and pass the approved verification commands",
+            ],
+            "Fix the failed verification of the refreshed pair preserving both sides and commit the result",
+        )
+    return (
+        f"Resolve the textual conflict of {ticket} with the integration tip {tip}",
+        [
+            f"Rebase the issue branch onto the exact target {tip} and resolve every conflict",
+            "Preserve the requirements of both sides and add no behaviour outside them",
+            "Commit the resolution and pass the approved verification commands",
+        ],
+        "Resolve the conflict preserving both sides and commit the result",
+    )
+
 
 _FINISHED_STATES = {"completed", "failed", "blocked", "not-required", "abandoned"}
 _TICKET_IN_SUBJECT = re.compile(r"\(#(\d+)\)")
@@ -83,6 +110,27 @@ def _open_batch(batches: list[JsonObject]) -> JsonObject | None:
         if item.get("state") not in _FINISHED_STATES:
             return item
     return None
+
+
+def open_resolver_batch(root: Path, record_id: str) -> JsonObject | None:
+    """The open resolver batch of an integration record, if any (read-only)."""
+    return _open_batch(_resolver_batches(root, record_id))
+
+
+def _failed_verification(
+    repo: Path, root: Path, record: JsonObject, pair: JsonObject
+) -> list[str]:
+    """The failed checks that make a refreshed pair a resolver task although the branch is already
+    on the integration tip (issue #537): a CI failure recorded by the collector or a failed
+    generated local-QA gate of exactly this pair, with no passed check of it.  The never-refreshed
+    pair has none: its failure is the task's own defect for a regular developer."""
+    record_id = record["integration_record_id"]
+    if not pr_refresh.refresh_records(root, record_id):
+        return []
+    links = integration._evidence_links(root, record_id)
+    if integration.pair_has_passed_check(repo, root, record, links, pair):
+        return []
+    return integration._failed_pair_checks(links, pair)
 
 
 def _git_lines(worktree: Path, *arguments: str) -> list[str]:
@@ -225,35 +273,44 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
                 f"{open_batch['resolver']['target_sha']} is still open",
                 remedy="finish it (publish) or close it ('batch abandon') before resolving the new target",
             )
+        failed: list[str] = []
         if tip == pair["target_sha"]:
-            raise CoordinatorError(
-                "the branch already is at the integration tip: there is no conflict to resolve",
-                remedy="run 'integration status' to see whether the pair needs a new check",
-            )
+            failed = _failed_verification(repo, root, record, pair)
+            if not failed:
+                raise CoordinatorError(
+                    "the branch already is at the integration tip: there is no conflict to resolve",
+                    remedy="run 'integration next' to see the next step; a failed check of the "
+                    "original, never-refreshed pair is the task's own defect for a regular developer",
+                )
         branch = identity["branch"]
         _validate_branch(repo, branch)
         source = _load_batch(root, identity["source_batch_id"])
         worktree = Path(source["worktree"])
         _git(worktree, "fetch", remote, "--", ref)
         pr_refresh._require_clean_own_branch(worktree, branch, pair["candidate_sha"])
-        conflicting = pr_refresh.conflicting_files(worktree, branch, tip)
-        if not conflicting:
+        # A failed verification of a refreshed pair has no textual conflict to probe for: the
+        # candidate already is on the target, so there is nothing to rebase.
+        conflicting = (
+            [] if failed else pr_refresh.conflicting_files(worktree, branch, tip)
+        )
+        if not conflicting and not failed:
             raise CoordinatorError(
                 "the rebase onto the integration tip is clean: nothing for a resolver to do",
                 remedy="run 'integration refresh'; a clean rebase spends no resolver cycle",
             )
-        current = budget(root, config, record_id)
-        fixes = same_target_fixes(root, record_id, tip)
-        if tip in current["spent_targets"]:
-            if fixes >= current["internal_fix_budget"]:
-                raise _exhaust(
-                    ledger, root, record, tip, "internal fix budget is spent", None
-                )
-        elif current["remaining"] == 0:
-            raise _exhaust(
-                ledger, root, record, tip, "automatic cycles are spent", None
-            )
+        trigger = "verification-failure" if failed else "conflict"
+        goal, definition_of_done, summary = _batch_text(
+            trigger, identity["ticket"], tip
+        )
+        _, _, spent = exhaustion(root, config, record_id, tip)
+        if spent is not None:
+            raise _exhaust(ledger, root, record, tip, spent, None)
         merge_base = _git(worktree, "merge-base", pair["candidate_sha"], tip)
+        # After a clean refresh the candidate already contains the tip, so the merge base is the
+        # tip itself and counts nothing as landed.  The requirements the target landed are counted
+        # from the target the task was built on; the scope stays the task's own files, because a
+        # change outside it is a newly approved scope-change dispatch, never a widening here.
+        landed_base = identity["target_sha"] if failed else merge_base
         scope = _conflict_scope(
             worktree, merge_base, pair["candidate_sha"], tip, conflicting
         )
@@ -264,20 +321,22 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
             "candidate_sha": pair["candidate_sha"],
             "target_sha": tip,
             "merge_base": merge_base,
+            "trigger": trigger,
+            "failed_evidence_ids": failed,
             "conflicting_files": conflicting,
             "sides": {
                 "candidate": {
                     "ticket": identity["ticket"],
                     "requirements": list(source["definition_of_done"]),
                 },
-                "target": _target_side(root, worktree, merge_base, tip),
+                "target": _target_side(root, worktree, landed_base, tip),
             },
             "scope": scope,
             "prohibitions": list(PROHIBITIONS),
             "commit_plan": [
                 {
                     "id": COMMIT_PLAN_ENTRY_ID,
-                    "summary": "Resolve the conflict preserving both sides and commit the result",
+                    "summary": summary,
                     "expected_paths": scope,
                     "covers": [1, 2, 3],
                 }
@@ -292,19 +351,15 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
             worktree=str(worktree),
             zone=None,
             integration_ref=ref,
-            goal=f"Resolve the textual conflict of {identity['ticket']} with the integration tip {tip}",
-            definition_of_done=[
-                f"Rebase the issue branch onto the exact target {tip} and resolve every conflict",
-                "Preserve the requirements of both sides and add no behaviour outside them",
-                "Commit the resolution and pass the approved verification commands",
-            ],
+            goal=goal,
+            definition_of_done=definition_of_done,
             prohibited_change=list(PROHIBITIONS),
             dependency=None,
             required_gate=None,
             allowed_path=scope,
-            expected_file=conflicting,
+            expected_file=conflicting or scope,
             expected_service=["conflict-resolution"],
-            expected_changed_lines=max(10, 20 * len(conflicting)),
+            expected_changed_lines=max(10, 20 * len(conflicting or scope)),
             expected_context_tokens=None,
         )
     )
@@ -356,6 +411,7 @@ def _result(
         "next_action": batch.get("next_action"),
         "candidate_sha": resolver["candidate_sha"],
         "target_sha": resolver["target_sha"],
+        "trigger": resolver.get("trigger", "conflict"),
         "conflicting_files": resolver["conflicting_files"],
         "allowed_paths": batch["allowed_paths"],
         "budget": budget(root, config, record["integration_record_id"]),
@@ -388,6 +444,8 @@ def brief_section(
         "sides": resolver["sides"],
         "candidate_sha": resolver["candidate_sha"],
         "target_sha": resolver["target_sha"],
+        "trigger": resolver.get("trigger", "conflict"),
+        "failed_evidence_ids": resolver.get("failed_evidence_ids", []),
         "conflicting_files": resolver["conflicting_files"],
         "scope": resolver["scope"],
         "prohibitions": resolver["prohibitions"],

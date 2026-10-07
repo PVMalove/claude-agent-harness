@@ -270,15 +270,19 @@ class PublishedBranch:
     def records(self) -> Path:
         return self.fixture._records()
 
-    def publish(self, name: str = "x", *, landed: str | None = None) -> JsonObject:
+    def publish(
+        self, name: str = "x", *, landed: str | None = None, again: bool = False
+    ) -> JsonObject:
         """Run one batch to a completed publish.  ``landed`` is an earlier published candidate:
         it is merged into the integration ref first, and a second batch is planned for the same
-        ticket and branch (the worktree already exists) on top of it."""
+        ticket and branch (the worktree already exists) on top of it.  ``again`` plans that second
+        batch without landing anything: a follow-up of the already published branch."""
         fx = self.fixture
-        if landed is None:
+        if landed is None and not again:
             batch = fx._create_batch()
         else:
-            _git(self.repo, "push", "origin", f"{landed}:refs/heads/master")
+            if landed is not None:
+                _git(self.repo, "push", "origin", f"{landed}:refs/heads/master")
             batch = coordinator.create_batch(self.args(**fx._batch_plan()))
             coordinator.approve_batch(
                 self.args(batch=batch["batch_id"], **fx._approval())
@@ -286,7 +290,11 @@ class PublishedBranch:
             fx.batch_id = batch["batch_id"]
         batch_id = batch["batch_id"]
         fx._accepted_architect(batch_id)
-        candidate = fx._accepted_candidate(batch_id, name)
+        candidate = (
+            self._follow_up_candidate(batch_id, name)
+            if again
+            else fx._accepted_candidate(batch_id, name)
+        )
         fx._accepted_review_and_qa(batch_id, candidate)
         brief = fx._dispatch(
             batch_id, "developer", purpose="publish", candidate=candidate
@@ -300,6 +308,42 @@ class PublishedBranch:
             "candidate": candidate,
             "publish_dispatch_id": brief["dispatch_id"],
         }
+
+    def _follow_up_candidate(self, batch_id: str, name: str) -> str:
+        """The developer of a follow-up batch: its base is the integration tip, so its report maps
+        the already published commits of the branch together with the new one."""
+        fx = self.fixture
+        brief = fx._dispatch(batch_id, "developer")["brief"]
+        fx._start(brief["dispatch_id"])
+        candidate, changed = fx._developer_commit(name)
+        base = fx._batch_record(batch_id)["base_commit"]
+        created = _git(
+            fx.worktree, "rev-list", "--reverse", f"{base}..{candidate}"
+        ).splitlines()
+        fx._submit(
+            brief["dispatch_id"],
+            fx._developer_report(
+                brief,
+                candidate,
+                changed,
+                commit_map=[
+                    {"commit_sha": sha, "plan_entry_id": entry["id"]}
+                    for sha in created
+                    for entry in brief["commit_plan"]
+                ],
+                dod_coverage=[
+                    {"dod_item": item, "commits": [candidate]}
+                    for item in range(1, len(brief["definition_of_done"]) + 1)
+                ],
+                divergence_justification=(
+                    "the branch already holds the published commits of the earlier batch; "
+                    "the follow-up fix is the last commit"
+                ),
+            ),
+        )
+        fx._decide(batch_id, "accept")
+        fx._assess(batch_id, candidate, changed)
+        return candidate
 
     def prepare(self, **overrides: object) -> JsonObject:
         values: JsonObject = {
@@ -1015,11 +1059,14 @@ class IntegrationGuidanceTests(unittest.TestCase):
             "integration status",
             "integration link-evidence",
             "reports/integration",
+            "integration next",
+            "verification-failure",
         ),
         "harness/orchestration/playbook.md": (
             "integration prepare",
             "integration status",
             "integration link-evidence",
+            "integration next",
         ),
         "harness/orchestration/README.md": (
             "integration prepare",
@@ -1028,13 +1075,31 @@ class IntegrationGuidanceTests(unittest.TestCase):
         "skills/first-party/pvmalove/implement/SKILL.md": ("integration prepare",),
         "skills/first-party/pvmalove/to-pull-requests/SKILL.md": (
             "integration status",
+            "integration next",
+            "integration collect-ci",
+            "integration local-qa",
+            "candidate_sha",
+            "target_sha",
+            "qa_source",
         ),
         "docs/skills/implement.md": ("integration prepare",),
-        "docs/skills/to-pull-requests.md": ("integration status",),
+        "docs/skills/to-pull-requests.md": (
+            "integration status",
+            "integration next",
+            "integration collect-ci",
+            "integration local-qa",
+            "qa_source",
+        ),
+        "docs/adr/0017-pr-continuation-routing.md": (
+            "integration next",
+            "verification-failure",
+            "collector-failed",
+        ),
         "docs/skills/coordinator.md": (
             "integration prepare",
             "integration status",
             "integration link-evidence",
+            "integration next",
         ),
         "CONTEXT.md": ("**Integration record**", "**Stale integration record**"),
     }
@@ -1051,6 +1116,65 @@ class IntegrationGuidanceTests(unittest.TestCase):
             REPO / "skills/first-party/pvmalove/to-pull-requests/SKILL.md"
         ).read_text(encoding="utf-8")
         self.assertIn("do not create a dispatch", text)
+
+    def test_guidance_names_the_record_flag_once_two_records_exist(self) -> None:
+        """After the developer route of a failed original pair one ticket and branch have two
+        records and '<ticket-branch>' is refused; '--record <new record>' replaces it."""
+        notes = {
+            "skills/first-party/pvmalove/to-pull-requests/SKILL.md": (
+                "several integration records match",
+                "`--record <new record>` replaces `<ticket-branch>`",
+            ),
+            "docs/skills/to-pull-requests.md": (
+                "several integration records match",
+                "`--record <новая запись>` заменяет `<ticket-branch>`",
+            ),
+            "harness/docs/backend-orchestration.md": (
+                "several integration records match",
+                "`--record <новая запись>` заменяет `<ticket-branch>`",
+            ),
+            "docs/adr/0017-pr-continuation-routing.md": (
+                "several integration records match",
+                "`--record <новая запись>` заменяет `<ticket-branch>`",
+            ),
+        }
+        for relative, needles in notes.items():
+            text = (REPO / relative).read_text(encoding="utf-8")
+            for needle in needles:
+                with self.subTest(file=relative, needle=needle):
+                    self.assertIn(needle, text)
+
+    def test_guidance_states_the_order_independent_passed_check_rule(self) -> None:
+        """A passed, verified check of the current pair supersedes a failed one whatever the
+        recording order; the docs must not claim that only a 'later passed' does."""
+        stale = ("без позднего passed", "без более позднего passed")
+        rule = "независимо от порядка записи"
+        for relative in (
+            "docs/adr/0017-pr-continuation-routing.md",
+            "harness/docs/backend-orchestration.md",
+        ):
+            text = (REPO / relative).read_text(encoding="utf-8")
+            with self.subTest(file=relative):
+                self.assertIn(rule, text)
+                for phrase in stale:
+                    self.assertNotIn(phrase, text)
+
+    def test_the_pr_skill_binds_confirmation_to_the_pair_and_never_merges(self) -> None:
+        text = (
+            REPO / "skills/first-party/pvmalove/to-pull-requests/SKILL.md"
+        ).read_text(encoding="utf-8")
+        confirmation = text.index("separate confirmation")
+        opening = text.index("gh pr create")
+        verification = text.index("6a.")
+        handoff = text.index("`handoff`", verification)
+        self.assertLess(confirmation, opening)
+        self.assertLess(opening, verification)
+        self.assertLess(verification, handoff)
+        self.assertIn("Never merge it", text)
+        self.assertIn("merge queue", text)
+        # The old QA only permits entering PR preparation; a project without the opt-in keeps /qa-gate.
+        self.assertIn("is not QA of the new candidate", text)
+        self.assertIn("run `/qa-gate`", text)
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.health.project_tracker import resolve_project_tracker
 from harness.orchestration.core import ci_source
 from harness.orchestration.core import utils
-from harness.orchestration.core.config import _reject_sensitive
+from harness.orchestration.core.config import _config, _reject_sensitive
 from harness.orchestration.core.constants import (
     INTEGRATION_CI_COLLECTED,
     INTEGRATION_CI_COLLECTED_FAILURE,
@@ -658,6 +658,61 @@ def _notice(
     )
 
 
+def _local_pair_current(
+    repo: Path,
+    identity: JsonObject,
+    links: list[JsonObject],
+    pair: JsonObject,
+    state: str,
+) -> bool:
+    """Whether the remote issue branch still is the candidate of the pair: only then does a local
+    QA of that candidate say anything about what a pull request carries."""
+    if not any(link["kind"] == "local-qa" for link in links) or state != "current":
+        return False
+    try:
+        return bool(
+            _remote_branch_tip(repo, identity["remote"], identity["branch"])
+            == pair["candidate_sha"]
+        )
+    except CoordinatorError:
+        return False
+
+
+def _pair_checks(
+    root: Path,
+    links: list[JsonObject],
+    pair: JsonObject,
+    tip: str | None,
+    local_pair_current: bool,
+) -> list[JsonObject]:
+    from harness.orchestration.workflow.local_qa import verified_evidence
+
+    return [
+        {
+            "evidence_id": link["evidence_id"],
+            "kind": link["kind"],
+            "result": link["result"],
+            "pair": {
+                "candidate_sha": link["candidate_sha"],
+                "target_sha": link["target_sha"],
+            },
+            "applies_to_current_pair": tip is not None
+            and link["target_sha"] == tip
+            and (
+                link["kind"] != "local-qa"
+                or local_pair_current
+                and link["candidate_sha"] == pair["candidate_sha"]
+            ),
+            "verification": "verified"
+            if link["kind"] == "local-qa" and verified_evidence(root, link)
+            else "unverified"
+            if link["kind"] == "local-qa"
+            else link["verification"],
+        }
+        for link in links
+    ]
+
+
 def integration_status(args: argparse.Namespace) -> JsonObject:
     """Observe whether an integration record's pair is still current; strictly read-only.
 
@@ -681,15 +736,7 @@ def integration_status(args: argparse.Namespace) -> JsonObject:
     tip = observed["integration_tip"]
     from harness.orchestration.workflow.local_qa import verified_evidence
 
-    local_pair_current = False
-    if any(link["kind"] == "local-qa" for link in links) and state == "current":
-        try:
-            local_pair_current = (
-                _remote_branch_tip(repo, identity["remote"], identity["branch"])
-                == pair["candidate_sha"]
-            )
-        except CoordinatorError:
-            pass
+    local_pair_current = _local_pair_current(repo, identity, links, pair, state)
     verified = not refreshes or any(
         _satisfies(link, pair)
         and (
@@ -737,30 +784,7 @@ def integration_status(args: argparse.Namespace) -> JsonObject:
             "re_review_required": False,
         },
         "qa_replacement": _qa_replacement(links, pair, state),
-        "pair_checks": [
-            {
-                "evidence_id": link["evidence_id"],
-                "kind": link["kind"],
-                "result": link["result"],
-                "pair": {
-                    "candidate_sha": link["candidate_sha"],
-                    "target_sha": link["target_sha"],
-                },
-                "applies_to_current_pair": tip is not None
-                and link["target_sha"] == tip
-                and (
-                    link["kind"] != "local-qa"
-                    or local_pair_current
-                    and link["candidate_sha"] == pair["candidate_sha"]
-                ),
-                "verification": "verified"
-                if link["kind"] == "local-qa" and verified_evidence(root, link)
-                else "unverified"
-                if link["kind"] == "local-qa"
-                else link["verification"],
-            }
-            for link in links
-        ],
+        "pair_checks": _pair_checks(root, links, pair, tip, local_pair_current),
         "notice": _notice(state, record, observed, pair, verified),
     }
 
@@ -781,15 +805,37 @@ def _required_checks(repo: Path) -> list[str]:
     return []
 
 
+# What a fallback of 'collect-ci' asks next, in one place: wait for a check that is still running,
+# otherwise run local QA and name why combined-result CI cannot confirm the pair.
+_CI_FALLBACK_NEXT: dict[str, tuple[str, str | None]] = {
+    "pending_check": ("wait", None),
+    "not_configured": ("local-qa", "absent"),
+    "unsupported_tracker": ("local-qa", "absent"),
+    "unavailable": ("local-qa", "unavailable"),
+}
+
+
+def ci_next(outcome: str, reason: str | None) -> JsonObject | None:
+    """The deterministic next action of a collect-ci verdict; an accepted one needs none."""
+    if outcome == "accepted":
+        return None
+    if outcome == "failed":
+        return {"action": "route", "ci_condition": None}
+    action, condition = _CI_FALLBACK_NEXT.get(str(reason), ("local-qa", "unusable"))
+    return {"action": action, "ci_condition": condition}
+
+
 def _collected(
     outcome: str, reason: str | None, detail: str, **extra: object
 ) -> JsonObject:
+    hint = ci_next(outcome, reason)
     return {
         "outcome": outcome,
         "reason": reason,
         "detail": detail,
         "recorded": False,
         "local_qa_required": outcome != "accepted",
+        **({"next": hint} if hint else {}),
         **extra,
     }
 
@@ -804,8 +850,8 @@ def integration_collect_ci(args: argparse.Namespace) -> JsonObject:
     """
     repo = _repo(args)
     root = _state_root(args, repo)
-    number = getattr(args, "pull_request", None)
-    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+    number = _pull_request_number(args)
+    if number is None:
         raise CoordinatorError(
             "collect-ci requires a positive pull request number",
             remedy="pass --pull-request with the number of the pull request",
@@ -879,4 +925,256 @@ def integration_collect_ci(args: argparse.Namespace) -> JsonObject:
         "evidence_id": stored["evidence_id"],
         "linked": stored["linked"],
         "verified": verified,
+    }
+
+
+# -- the next step of a PR continuation (issue #537) ------------------------------------------------
+
+
+def _pull_request_number(args: argparse.Namespace) -> int | None:
+    number = getattr(args, "pull_request", None)
+    if number is None:
+        return None
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        raise CoordinatorError(
+            "the pull request number must be a positive integer",
+            remedy="pass --pull-request with the number of the opened pull request",
+        )
+    return number
+
+
+def _failed_pair_checks(links: list[JsonObject], pair: JsonObject) -> list[str]:
+    """Code failures of exactly this pair: a collector-recorded CI failure or a failed generated
+    local-QA gate.  An operational outcome (CI fallback, unavailable local QA) records no failed
+    evidence at all, and a hand-linked result is never verified, so neither can appear here."""
+    return [
+        link["evidence_id"]
+        for link in links
+        if link["result"] == "failed"
+        and link["candidate_sha"] == pair["candidate_sha"]
+        and link["target_sha"] == pair["target_sha"]
+        and (
+            link["kind"] == "ci"
+            and link.get("verification") == INTEGRATION_CI_COLLECTED_FAILURE
+            or link["kind"] == "local-qa"
+            and bool(link.get("local_qa_request_id"))
+        )
+    ]
+
+
+def _verified_source(status: JsonObject) -> tuple[str, JsonObject]:
+    """Where the verification of the current pair comes from: the original QA of an unrefreshed
+    pair, else the accepted CI, else the generated and verified local QA."""
+    if not status["refreshes"]:
+        return "original-qa", status["source_evidence"]["qa"]
+    replacement = status["qa_replacement"]
+    if replacement["applies"]:
+        return "ci", {
+            key: replacement[key]
+            for key in (
+                "evidence_id",
+                "source",
+                "repository",
+                "pull_request",
+                "merge_commit_sha",
+            )
+        }
+    local = [
+        check
+        for check in status["pair_checks"]
+        if check["kind"] == "local-qa"
+        and check["result"] == "passed"
+        and check["applies_to_current_pair"]
+        and check["verification"] == "verified"
+    ]
+    return "local-qa", {"evidence_id": local[-1]["evidence_id"]}
+
+
+def _has_passed_check(
+    links: list[JsonObject], pair: JsonObject, pair_checks: list[JsonObject]
+) -> bool:
+    """A passed, verified check of the current pair, original or refreshed: it supersedes an
+    earlier failed one.  ``verification.satisfied`` cannot say it, because it is true for any
+    pair that was never refreshed."""
+    usable = {
+        check["evidence_id"]
+        for check in pair_checks
+        if check["applies_to_current_pair"] and check["verification"] != "unverified"
+    }
+    return any(
+        link["evidence_id"] in usable and _satisfies(link, pair) for link in links
+    )
+
+
+def pair_has_passed_check(
+    repo: Path,
+    root: Path,
+    record: JsonObject,
+    links: list[JsonObject],
+    pair: JsonObject,
+) -> bool:
+    """The rule of ``_has_passed_check`` for a record whose status is not at hand: the one rule
+    both ``integration next`` and ``integration resolve`` use to tell a failed check superseded."""
+    identity = record["identity"]
+    observed = _observe(repo, {**identity, "target_sha": pair["target_sha"]})
+    current = _local_pair_current(repo, identity, links, pair, observed["state"])
+    checks = _pair_checks(root, links, pair, observed["integration_tip"], current)
+    return _has_passed_check(links, pair, checks)
+
+
+def _route_failure(
+    repo: Path,
+    root: Path,
+    record_id: str,
+    pair: JsonObject,
+    failed: list[str],
+    refreshed: bool,
+) -> JsonObject:
+    """Route a failed check of the current pair.  A refreshed or resolver-produced candidate failed
+    because of its combination with the target: the same resolver continues, inside the budget
+    that is derived from its append-only events (a human answer or a CI wait never resets it).  A
+    failure of the original, never-refreshed pair is the task's own defect: the ordinary developer
+    with review and QA takes it."""
+    if not refreshed:
+        return {
+            "step": "route-failure",
+            "route": "developer",
+            "failed_evidence": failed,
+            "next": [
+                f"batch create --ticket {pair['ticket']} --branch {pair['branch']} --worktree <worktree of "
+                f"the issue branch> --integration-ref {pair['integration_ref']} ... (the ordinary /implement "
+                "route: its own architect, developer, code-review, QA and publish; the completed source "
+                "batch is terminal, never decided again and does not block a new batch of the same ticket "
+                "and branch)",
+                f"after its accepted publish: integration prepare --ticket {pair['ticket']} --branch "
+                f"{pair['branch']} --batch <new batch>, then integration next --record <new record> "
+                "--pull-request <number> (the failed evidence of this record stays history)",
+            ],
+        }
+    from harness.orchestration.workflow import resolver_state
+
+    current, fixes, reason = resolver_state.exhaustion(
+        root, _config(repo), record_id, pair["target_sha"]
+    )
+    exhausted = reason is not None
+    result: JsonObject = {
+        "step": "human-decision" if exhausted else "route-failure",
+        "route": "resolver",
+        "failed_evidence": failed,
+        "budget": current,
+        "fixes_on_target": fixes,
+    }
+    if exhausted:
+        result["next"] = [
+            "integration resolver-event --record <id> --kind human-decision --dispatch <resolver dispatch> "
+            "--decided-by <name> --note <decision> --extends-budget"
+        ]
+    else:
+        result["next"] = [
+            "integration resolve --record <id>  (a failed verification of the refreshed pair; "
+            "then batch approve and dispatch create --role conflict-resolver in the coordinator session)"
+        ]
+    return result
+
+
+def integration_next(args: argparse.Namespace) -> JsonObject:
+    """The next step of a PR continuation of one integration record; strictly read-only.
+
+    It classifies what ``integration status`` and the recorded evidence already say, and never
+    writes Git, the ledger, a dispatch or a pull request, and never asks the tracker.  The steps:
+    ``unavailable`` (the integration ref cannot be read: an operational stop), ``resolver-open``
+    (a resolver batch is open: wait, no cycle is spent), ``refresh``, ``route-failure`` /
+    ``human-decision`` (a failed check of the current pair), ``confirm-pr`` (before a pull
+    request exists), ``verify`` (a refreshed pair of an opened pull request still needs CI or
+    local QA) and ``handoff`` (the pair is current and verified: the facts for a manual merge)."""
+    from harness.orchestration.workflow import resolver
+
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    number = _pull_request_number(args)
+    status = integration_status(args)
+    record_id = status["integration_record_id"]
+    refreshed = bool(status["refreshes"])
+    result: JsonObject = {
+        "integration_record_id": record_id,
+        "ticket": status["ticket"],
+        "branch": status["branch"],
+        "candidate_sha": status["candidate_sha"],
+        "target_sha": status["target_sha"],
+        "integration_tip": status["integration_tip"],
+        "state": status["state"],
+        "refreshed": refreshed,
+    }
+    if status["state"] == "unavailable":
+        return {
+            **result,
+            "step": "unavailable",
+            "next": [
+                "restore access to the integration ref, then repeat 'integration next'"
+            ],
+        }
+    with _ledger_lock(LifecycleLedger(root)):
+        open_batch = resolver.open_resolver_batch(root, record_id)
+        links = _evidence_links(root, record_id)
+    if open_batch is not None:
+        return {
+            **result,
+            "step": "resolver-open",
+            "batch_id": open_batch["batch_id"],
+            "batch_state": open_batch["state"],
+            "next_action": open_batch.get("next_action"),
+            "next": [
+                "the coordinator workflow continues the open resolver batch; wait"
+            ],
+        }
+    if status["state"] != "current":
+        return {
+            **result,
+            "step": "refresh",
+            "next": [
+                "integration refresh --record <id>; a 'conflict' result continues with 'integration resolve'"
+            ],
+        }
+    satisfied = status["verification"]["satisfied"]
+    failed = _failed_pair_checks(links, status)
+    if failed and not _has_passed_check(links, status, status["pair_checks"]):
+        return {
+            **result,
+            **_route_failure(repo, root, record_id, status, failed, refreshed),
+        }
+    if number is None:
+        pending = refreshed and not satisfied
+        return {
+            **result,
+            "step": "confirm-pr",
+            "qa_source": "verification-pending-after-pr"
+            if pending
+            else _verified_source(status)[0],
+            "next": [
+                "ask for a separate explicit confirmation naming candidate_sha and target_sha, then "
+                "open the pull request"
+            ],
+        }
+    if not satisfied:
+        return {
+            **result,
+            "step": "verify",
+            "next": [
+                "integration collect-ci --record <id> --pull-request <number>",
+                "on next.action 'local-qa': integration local-qa --record <id> --ci-condition <ci_condition> "
+                "--reason <reason>; then repeat 'integration next'",
+            ],
+        }
+    source, reference = _verified_source(status)
+    return {
+        **result,
+        "step": "handoff",
+        "handoff": {
+            "candidate_sha": status["candidate_sha"],
+            "target_sha": status["target_sha"],
+            "qa_source": source,
+            "reference": reference,
+            "refreshed": refreshed,
+        },
+        "next": ["repeat 'integration next' just before a manual merge"],
     }

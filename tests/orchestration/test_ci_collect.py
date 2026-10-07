@@ -15,6 +15,7 @@ from harness.orchestration import coordinator
 from harness.orchestration.core import ci_source
 from harness.orchestration.core.ci_source import CheckRun, CiObservation
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
+from harness.orchestration.workflow import integration
 from tests.orchestration.test_integration_record import PublishedBranch
 
 REPO = "owner/repo"
@@ -175,6 +176,64 @@ class CollectCiTests(unittest.TestCase):
         for reason, observation in cases.items():
             with self.subTest(reason):
                 self.assert_nothing_recorded(self.collect(observation), reason)
+
+    def test_every_fallback_reason_names_its_next_action(self) -> None:
+        """One deterministic table: wait for a pending check, otherwise name the local-QA
+        condition ('absent' when CI cannot exist, 'unavailable' when it cannot be asked,
+        'unusable' when it answered something that cannot confirm the pair)."""
+        expected = {
+            "pending_check": ("wait", None),
+            "not_configured": ("local-qa", "absent"),
+            "unsupported_tracker": ("local-qa", "absent"),
+            "unavailable": ("local-qa", "unavailable"),
+            **{
+                reason: ("local-qa", "unusable")
+                for reason in (
+                    "head_only",
+                    "unknown_checkout",
+                    "stale_candidate",
+                    "stale_target",
+                    "missing_check",
+                    "inconclusive_check",
+                    "wrong_repository",
+                    "wrong_pull_request",
+                    "wrong_base",
+                )
+            },
+        }
+        fallbacks = (set(ci_source.REASONS) - {"failed_check"}) | {
+            "unsupported_tracker"
+        }
+        self.assertEqual(set(expected), fallbacks)
+        for reason, (action, condition) in expected.items():
+            with self.subTest(reason):
+                hint = integration.ci_next("fallback", reason)
+                self.assertEqual(hint, {"action": action, "ci_condition": condition})
+
+    def test_collect_ci_results_carry_the_next_hint(self) -> None:
+        pending = self.observation(
+            checks=(
+                CheckRun("lint", MERGE, "completed", "success", "1", None),
+                CheckRun("tests", MERGE, "in_progress", None, "2", None),
+            )
+        )
+        self.assertEqual(
+            self.collect(pending)["next"], {"action": "wait", "ci_condition": None}
+        )
+        self.assertEqual(
+            self.collect(self.observation(error="down"))["next"],
+            {"action": "local-qa", "ci_condition": "unavailable"},
+        )
+        failed = self.collect(
+            self.observation(
+                checks=(
+                    CheckRun("lint", MERGE, "completed", "success", "10", None),
+                    CheckRun("tests", MERGE, "completed", "failure", "11", None),
+                )
+            )
+        )
+        self.assertEqual(failed["next"], {"action": "route", "ci_condition": None})
+        self.assertNotIn("next", self.collect(self.observation()))
 
     def test_a_pull_request_against_another_base_is_a_wrong_base_fallback(self) -> None:
         result = self.collect(self.observation(base_ref="release"))

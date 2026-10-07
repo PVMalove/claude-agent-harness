@@ -592,6 +592,26 @@ dispatch or report, or changes Git:
   to the plan entry). An accepted resolution takes the narrow route: no repeat code-review, but QA and
   CI or local-QA of the new candidate/target pair are still required.
 
+- `integration next --ticket T --branch B [--pull-request N]` (issue #537, ADR 0017) is the strictly
+  read-only step of a PR continuation: it writes no Git, ledger, dispatch or PR and never asks the
+  tracker. It classifies `status`, the evidence, open resolver batches and the budget events into
+  `unavailable`, `resolver-open`, `refresh`, `route-failure`, `human-decision`, `confirm-pr`,
+  `verify` or `handoff`. Old evidence permits entering PR preparation but is never QA of a new
+  candidate. A failed check of the current pair (a collector-recorded CI failure or a failed
+  generated local-QA gate, never an operational fallback) routes to the same resolver when the pair
+  was refreshed or resolved (inside its two-cycle budget, which a human answer or a CI wait never
+  resets) and to the regular developer with review and QA when the pair is the original one. The
+  completed source batch is terminal (`batch decide` refuses it), so that route is a new batch of the
+  same ticket and issue branch through the ordinary `/implement` pipeline, followed by `integration
+  prepare --batch <new batch>`; the failed evidence of the earlier record stays history.
+  `integration resolve` accepts such a failed check of a refreshed pair (`resolver.trigger:
+  verification-failure`) even though the branch is already on the target. `collect-ci` results carry
+  `next` (`wait` for a pending check, otherwise `local-qa` with the `--ci-condition` to use).
+  `/to-pull-requests` asks the human for a separate confirmation bound to the exact candidate/target
+  pair, verifies the opened PR with CI or the local-QA fallback, and hands over the verified pair
+  and QA source for a manual merge; it never merges, and a newly detected target repeats
+  actualization and verification.
+
 Records live under `reports/integration/`, `reports/integration-evidence/`, `reports/resolver/` and
 `reports/resolver-events/` in the existing `reports` directory, so no ledger schema change or
 migration is involved.

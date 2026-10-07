@@ -14,9 +14,12 @@ from pathlib import Path
 
 from harness.orchestration import coordinator
 from harness.orchestration.core import git_utils
+from harness.orchestration.core.ci_source import CheckRun, CiObservation
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from harness.orchestration.core.workspace import _prepare_agent_inbox as workspace_inbox
 from harness.orchestration.workflow import resolver_state
+from tests.orchestration.test_ci_collect import GITHUB, MERGE, PR, REPO, FakeSource
+from tests.orchestration.test_ci_collect import write_project
 from tests.orchestration.test_coordinator import ORCHESTRATION_ROOT
 from tests.orchestration.test_integration_record import PublishedBranch, _git
 
@@ -264,6 +267,43 @@ class ResolveRouteTests(ResolverFixture):
     def test_without_a_moved_target_there_is_nothing_to_resolve(self) -> None:
         with self.assertRaisesRegex(CoordinatorError, "no conflict"):
             self.resolve()
+
+    def test_a_failed_check_of_the_original_pair_is_not_the_resolvers(self) -> None:
+        """The branch was never refreshed: its failure is the task's own defect, which goes to a
+        regular developer, so the resolver route refuses it."""
+        write_project(self.branch.repo, GITHUB, ["lint", "tests"])
+        candidate = self.published["candidate"]
+        target = _git(self.branch.repo, "rev-parse", "origin/master")
+        runs = tuple(
+            CheckRun(name, MERGE, "completed", "failure", str(index), None)
+            for index, name in enumerate(("lint", "tests"), start=10)
+        )
+        observation = CiObservation(
+            repository=REPO,
+            pull_request=PR,
+            base_ref="master",
+            candidate_sha=candidate,
+            checkout="combined",
+            merge_commit_sha=MERGE,
+            merge_parents=(candidate, target),
+            checks=runs,
+        )
+        collected = coordinator.integration_collect_ci(
+            self.branch.args(
+                record=self.record_id,
+                ticket=None,
+                branch=None,
+                batch=None,
+                pull_request=PR,
+                ci_source=FakeSource(observation),
+            )
+        )
+        self.assertEqual(collected["outcome"], "failed")
+
+        with self.assertRaisesRegex(CoordinatorError, "no conflict"):
+            self.resolve()
+
+        self.assertEqual(self.events(), [])
 
     def test_repeating_the_route_returns_the_open_resolver_batch(self) -> None:
         self.land()
@@ -797,6 +837,233 @@ class BudgetTests(ResolverFixture):
         self.assertEqual(
             self.batch_record(created["batch_id"])["next_action"], "resolve-conflict"
         )
+
+
+class VerificationFailureTests(ResolverFixture):
+    """A failed CI check of a refreshed pair is handed to the same resolver (issue #537)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        write_project(self.branch.repo, GITHUB, ["lint", "tests"])
+        self.tip = self.land("landed.txt", "landed\n")
+        self.refreshed = coordinator.integration_refresh(
+            self.branch.args(
+                record=self.record_id, ticket=None, branch=None, batch=None
+            )
+        )
+
+    def pair(self) -> JsonObject:
+        return coordinator.integration_status(
+            self.branch.args(
+                record=self.record_id, ticket=None, branch=None, batch=None
+            )
+        )
+
+    def observation(self, pair: JsonObject, *checks: CheckRun) -> CiObservation:
+        return CiObservation(
+            repository=REPO,
+            pull_request=PR,
+            base_ref="master",
+            candidate_sha=pair["candidate_sha"],
+            checkout="combined",
+            merge_commit_sha=MERGE,
+            merge_parents=(pair["candidate_sha"], pair["target_sha"]),
+            checks=checks,
+        )
+
+    def collect(self, outcome: str) -> JsonObject:
+        runs = tuple(
+            CheckRun(name, MERGE, "completed", outcome, str(index), None)
+            for index, name in enumerate(("lint", "tests"), start=10)
+        )
+        return coordinator.integration_collect_ci(
+            self.branch.args(
+                record=self.record_id,
+                ticket=None,
+                branch=None,
+                batch=None,
+                pull_request=PR,
+                ci_source=FakeSource(self.observation(self.pair(), *runs)),
+            )
+        )
+
+    def fix(self, name: str) -> str:
+        """What a resolver does for a failed verification: one more change on the same target."""
+        (self.worktree / CONFLICT_FILE).write_text(
+            f"VALUE = {name!r}\n", encoding="utf-8"
+        )
+        _git(self.worktree, "add", "-A")
+        _git(self.worktree, "commit", "-m", f"fix {name}")
+        return _git(self.worktree, "rev-parse", "HEAD")
+
+    def fix_cycle(self, name: str) -> str:
+        created = self.resolve()
+        brief = self.approved_resolver_dispatch(created)["brief"]
+        self.start(brief)
+        resolved = self.fix(name)
+        self.submit(brief, self.report(brief, resolved))
+        self.fx._decide(created["batch_id"], "accept")
+        coordinator.abandon_batch(
+            self.branch.args(
+                batch=created["batch_id"],
+                reason="the next failure needs a fresh resolver batch",
+                **self.fx._approval(),
+            )
+        )
+        return resolved
+
+    def budget(self) -> JsonObject:
+        return resolver_state.budget(
+            self.branch.state_root(),
+            coordinator._config(self.branch.repo),
+            self.record_id,
+        )
+
+    def test_a_failed_check_of_the_refreshed_pair_creates_a_resolver_batch(
+        self,
+    ) -> None:
+        self.assertEqual(self.collect("failure")["outcome"], "failed")
+        head = _git(self.worktree, "rev-parse", "HEAD")
+
+        created = self.resolve()
+
+        self.assertEqual(created["state"], "created")
+        self.assertEqual(created["trigger"], "verification-failure")
+        self.assertEqual(created["conflicting_files"], [])
+        self.assertEqual(created["candidate_sha"], self.refreshed["new_candidate_sha"])
+        self.assertEqual(created["target_sha"], self.tip)
+        self.assertEqual(created["next_action"], "resolve-conflict")
+        self.assertEqual(created["budget"]["remaining"], 2)
+        self.assertEqual(_git(self.worktree, "rev-parse", "HEAD"), head)
+        self.assertEqual(_git(self.worktree, "status", "--porcelain"), "")
+        batch = self.batch_record(created["batch_id"])
+        self.assertEqual(batch["kind"], "resolver")
+        self.assertEqual(batch["resolver"]["trigger"], "verification-failure")
+        self.assertTrue(batch["resolver"]["failed_evidence_ids"])
+        self.assertIn(CONFLICT_FILE, batch["allowed_paths"])
+        brief = self.approved_resolver_dispatch(created)["brief"]
+        self.assertEqual(brief["resolver"]["trigger"], "verification-failure")
+        self.assertEqual(
+            brief["resolver"]["failed_evidence_ids"],
+            batch["resolver"]["failed_evidence_ids"],
+        )
+        # Asking for a resolver spends no cycle: only a recorded resolver report does.
+        self.assertEqual(self.events(), [])
+
+    def test_a_verification_failure_batch_describes_no_conflict_or_rebase(self) -> None:
+        self.collect("failure")
+
+        batch = self.batch_record(self.resolve()["batch_id"])
+
+        summary = batch["resolver"]["commit_plan"][0]["summary"]
+        for text in [batch["goal"], *batch["definition_of_done"], summary]:
+            self.assertNotRegex(
+                text.lower(), r"textual conflict|rebase the|every conflict"
+            )
+        self.assertIn("failed verification", batch["goal"])
+        self.assertIn("failed_evidence_ids", " ".join(batch["definition_of_done"]))
+        self.assertIn("failed verification", summary)
+
+    def test_a_verification_failure_batch_carries_both_sides_without_widening_scope(
+        self,
+    ) -> None:
+        self.collect("failure")
+
+        batch = self.batch_record(self.resolve()["batch_id"])
+
+        sides = batch["resolver"]["sides"]
+        self.assertEqual(sides["target"]["tickets"], ["#901"])
+        self.assertEqual(
+            sides["target"]["requirements"], ["feat: land landed.txt (#901)"]
+        )
+        self.assertTrue(sides["candidate"]["requirements"])
+        # The scope is not widened by the target's files: that is a scope-change dispatch.
+        self.assertEqual(batch["resolver"]["scope"], [CONFLICT_FILE])
+        self.assertEqual(batch["allowed_paths"], [CONFLICT_FILE])
+
+    def test_a_conflict_batch_names_its_trigger_too(self) -> None:
+        self.land(CONFLICT_FILE, TARGET_TEXT)
+        created = self.resolve()
+        self.assertEqual(created["trigger"], "conflict")
+        self.assertEqual(created["conflicting_files"], [CONFLICT_FILE])
+        batch = self.batch_record(created["batch_id"])
+        self.assertEqual(batch["resolver"]["failed_evidence_ids"], [])
+        self.assertTrue(batch["goal"].startswith("Resolve the textual conflict of"))
+        self.assertIn("resolve every conflict", batch["definition_of_done"][0])
+        self.assertEqual(
+            batch["resolver"]["commit_plan"][0]["summary"],
+            "Resolve the conflict preserving both sides and commit the result",
+        )
+
+    def test_repeating_the_route_returns_the_open_batch(self) -> None:
+        self.collect("failure")
+        first = self.resolve()
+        self.assertEqual(self.resolve()["batch_id"], first["batch_id"])
+
+    def test_without_a_failed_check_there_is_nothing_to_resolve(self) -> None:
+        with self.assertRaisesRegex(CoordinatorError, "no conflict"):
+            self.resolve()
+        self.assertEqual(self.events(), [])
+
+    def test_a_pending_ci_is_never_a_failure(self) -> None:
+        pending = self.observation(
+            self.pair(),
+            CheckRun("lint", MERGE, "completed", "success", "1", None),
+            CheckRun("tests", MERGE, "in_progress", None, "2", None),
+        )
+        result = coordinator.integration_collect_ci(
+            self.branch.args(
+                record=self.record_id,
+                ticket=None,
+                branch=None,
+                batch=None,
+                pull_request=PR,
+                ci_source=FakeSource(pending),
+            )
+        )
+        self.assertEqual(result["outcome"], "fallback")
+        with self.assertRaisesRegex(CoordinatorError, "no conflict"):
+            self.resolve()
+
+    def test_a_later_passed_check_of_the_pair_supersedes_the_failure(self) -> None:
+        self.collect("failure")
+        self.collect("success")
+        with self.assertRaisesRegex(CoordinatorError, "no conflict"):
+            self.resolve()
+
+    def test_a_second_failure_on_the_same_target_is_a_bounded_fix_not_a_new_cycle(
+        self,
+    ) -> None:
+        self.collect("failure")
+        first = self.fix_cycle("one")
+        self.assertEqual(self.pair()["candidate_sha"], first)
+        self.collect("failure")
+        self.fix_cycle("two")
+
+        self.assertEqual(
+            [item["kind"] for item in self.events()],
+            ["cycle-spent", "same-target-fix"],
+        )
+        budget = self.budget()
+        self.assertEqual((budget["cycles_spent"], budget["remaining"]), (1, 1))
+        # The project retry budget (one by default) is spent: a third failure stops this task.
+        self.collect("failure")
+        with self.assertRaisesRegex(CoordinatorError, "internal fix budget is spent"):
+            self.resolve()
+        [exhausted] = [item for item in self.events() if item["kind"] == "exhausted"]
+        self.assertEqual(exhausted["target_sha"], self.tip)
+
+    def test_a_clean_refresh_to_a_new_target_spends_no_cycle(self) -> None:
+        self.collect("failure")
+
+        self.land("another.txt", "clean\n")
+        coordinator.integration_refresh(
+            self.branch.args(
+                record=self.record_id, ticket=None, branch=None, batch=None
+            )
+        )
+
+        self.assertEqual(self.budget()["cycles_spent"], 0)
 
 
 class CauseRoutingTests(ResolverFixture):

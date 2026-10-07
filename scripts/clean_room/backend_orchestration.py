@@ -223,6 +223,22 @@ def run(ctx: SimpleNamespace) -> None:
         "qa evidence"
     ):
         sys.exit("installed to-pull-requests step does not record accepted QA evidence")
+    # Issue #537: the installed PR step carries the whole continuation (next step, separate
+    # confirmation bound to the SHA pair, CI wait, local-QA fallback, merge handoff) and still keeps
+    # the plain /qa-gate branch for a project without the optional orchestration.
+    for required_pr_phrase in (
+        "integration next",
+        "integration collect-ci",
+        "integration local-qa",
+        "separate confirmation",
+        "qa_source",
+        "Never merge it",
+        "/qa-gate",
+    ):
+        if required_pr_phrase not in installed_pr_text:
+            sys.exit(
+                f"installed to-pull-requests step lacks the PR-continuation rule: {required_pr_phrase}"
+            )
     orchestration_config = orchestration_project / ".harness" / "orchestration.json"
     if not orchestration_config.is_file():
         sys.exit("backend-orchestration config seed missing")
@@ -271,12 +287,15 @@ def run(ctx: SimpleNamespace) -> None:
             "санитизирован",
             "stale",
             "/to-pull-requests",
+            "integration next",
+            "verification-failure",
         ),
         ROOT / "harness" / "docs" / "harness-guide.md": (
             "строго opt-in маршрут",
             "candidate commit",
             "`reported`",
             "/to-pull-requests",
+            "integration next",
         ),
         ROOT / "docs" / "agents" / "git-workflow.md": ("/to-pull-requests",),
     }
@@ -373,6 +392,11 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("backend-orchestration playbook missing")
     playbook = playbook_path.read_text(encoding="utf-8")
     contract = orchestration_project / ".harness/docs/technical-english.md"
+    for continuation_rule in ("integration next", "verification-failure"):
+        if continuation_rule not in playbook:
+            sys.exit(
+                f"installed playbook lacks the PR-continuation rule: {continuation_rule}"
+            )
     for entry in (playbook_path, orchestration_root / "roles/_common.md"):
         assert_contract_link(entry, contract, entry.name)
     pilot_path = orchestration_root / "pilot.md"

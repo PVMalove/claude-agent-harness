@@ -13,7 +13,7 @@
 
 ## 2. Полное описание
 
-Conflict Resolver — write-роль для текстового конфликта между веткой тикета (candidate) и сдвинувшимся integration SHA (target). Её нельзя назначить вручную: единственный путь к ней — `integration resolve`, который создаёт отдельный resolver batch рядом с завершённым batch тикета.
+Conflict Resolver — write-роль для текстового конфликта между веткой тикета (candidate) и сдвинувшимся integration SHA (target), а также для провалившейся проверки CI или local-QA уже обновлённой пары (`resolver.trigger: verification-failure`: есть `failed_evidence_ids`, конфликтных файлов нет, правка остаётся в scope brief). Её нельзя назначить вручную: единственный путь к ней — `integration resolve`, который создаёт отдельный resolver batch рядом с завершённым batch тикета.
 
 Роль работает в issue-ветке и worktree своего batch, открывает skill `resolving-merge-conflicts`, сохраняет требования обеих сторон из секции `resolver` brief и не добавляет функциональность вне них. Она никогда не делает `--abort` и force-push. При несовместимых требованиях она не угадывает, а пишет checkpoint с конкретным описанием и вариантами; ответ человека фиксируется отдельным событием `human-decision`, и та же сессия продолжается. Собственный дефект тикета отправляется обычному developer-у.
 

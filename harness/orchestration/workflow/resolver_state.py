@@ -138,6 +138,21 @@ def budget(root: Path, config: JsonObject, record_id: str) -> JsonObject:
     }
 
 
+def exhaustion(
+    root: Path, config: JsonObject, record_id: str, target: str
+) -> tuple[JsonObject, int, str | None]:
+    """The budget, the same-target fixes and why the route is closed for ``target`` (``None`` while
+    it is open).  The one rule both 'integration resolve' and 'integration next' apply."""
+    current = budget(root, config, record_id)
+    fixes = same_target_fixes(root, record_id, target)
+    if target in current["spent_targets"]:
+        if fixes >= current["internal_fix_budget"]:
+            return current, fixes, "internal fix budget is spent"
+    elif current["remaining"] == 0:
+        return current, fixes, "automatic cycles are spent"
+    return current, fixes, None
+
+
 def same_target_fixes(root: Path, record_id: str, target: str) -> int:
     return sum(
         1
