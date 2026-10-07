@@ -94,3 +94,31 @@ Standards must be reported exactly as inherited — `severity: clean`, `findings
 `inherited_from` set to `delta_review_of`; Spec is always analysed again. Any production, security,
 schema, or public-contract change requires a full independent review. This dispatch is always a new,
 independent session: it never resumes the prior review's session.
+
+## Delta-review after a fix-forward
+
+A code-review brief without `delta_review_of` may carry `delta_review_scope`: the coordinator found
+that the candidate comes from an accepted `fix-forward` or `rebase-fix-forward` developer-retry on a
+candidate an earlier review of the batch judged, and chose the review's scope itself. The section
+names the prior review (`prior_review`: dispatch id, `report_sha256`, reviewed candidate, base and
+risk assessment), the developer-retry, `delta_base`, the `delta_commits`, the `reviewed_copies` and
+the retry's `closure`.
+
+With `mode: delta`, the new commits match no risk trigger the prior review did not see, change no
+file outside the carried items, and every rebased copy kept its original's `git patch-id`. Review
+both axes on `git diff <delta_base> <candidate_commit>` only, plus the closure of every carried
+item; the prior review's report is the evidence for the rest of the candidate, so do not review that
+again or restate its findings. A copy listed in `reviewed_copies` is already reviewed. Keep
+`review.scope` equal to the brief's full `review_scope`, and report both axes with your own severity
+and findings, never `inherited_from`. In delta mode `carried_items` also holds the prior review's
+`review-finding` items and the developer's `incomplete-item` entries the fix-forward closed. Account
+for each one in `review.carried_items` like any carried item: `closed` when the delta closes it as
+its `expected_evidence` asks (the `closure` names the closing commits), `open` when the defect is
+still there, and `unverified` when it could not be checked. A defect the delta adds is an ordinary
+finding on its axis. A retry of this review hands every item it did not mark `closed` to the next
+developer-retry, together with its own findings.
+
+With `mode: full`, the section lists the `escalations` that ruled a delta out (`new-risk-trigger`,
+`file-outside-carried-items`, `patch-id-mismatch` or `no-new-commits`, each with its evidence).
+Review the whole candidate as an ordinary full review; the section is audit evidence only and adds
+no carried item.

@@ -911,6 +911,44 @@ rebase-отчёта, как и его `tooling-retry`, считает от targe
 `carried_item_closure`. Если tip уйдёт ещё раз, review и QA проверяют закреплённый candidate, а
 ветку обновляет `integration refresh` при подготовке PR (ADR 0014).
 
+Delta-review после fix-forward (#625) — тоже не новый переход и не новое решение: coordinator сам
+выбирает объём следующего code-review в `dispatch propose` и `dispatch create --role code-review`
+без `--delta-review-of`. Выбор делается, когда candidate — `commit_sha` последнего принятого
+developer work report batch, этот report — developer-retry, его цепочку подряд повторённых попыток
+developer-retry открыл маршрут `fix-forward` или `rebase-fix-forward`, а последний code-review перед
+цепочкой завершил отчёт на `snapshot_commit` её первой попытки и был принят или повторён в
+developer; это прежний review. Brief получает поле `delta_review_scope`: `mode` (`delta` или
+`full`), `route`, `prior_review` (dispatch ID, `report_sha256`, проверенный candidate,
+`review_base`, `risk_assessment_id`), `developer_dispatch_id`, `delta_base`, `delta_commits`,
+`reviewed_copies`, `closure` (`carried_item_closure` принятого отчёта) и `escalations`. Transition
+связывает раздел полем `delta_review_sha256`, а `dispatch propose` показывает его как
+`delta_review_scope`. У остальных brief поле равно `null`, в том числе при явном
+`--delta-review-of`: test-only delta-review работает как раньше.
+
+Delta — это `git diff <delta_base> <candidate_commit>`. Без rebase `delta_base` — candidate прежнего
+review. После rebase в цепочке берутся коммиты после последнего rebase target: ведущие перенесённые
+копии, которые по парам `rebased_from` из `rebase_check` отчётов цепочки с совпавшим `git patch-id`
+на каждом шаге ведут к коммиту из диапазона прежнего review, считаются проверенными
+(`reviewed_copies`), а `delta_base` — родитель первого другого коммита. Режим `full` выбирается
+автоматически, без ручного выбора, если найдена хотя бы одна эскалация `{reason, evidence}`:
+
+- `new-risk-trigger` — триггер risk assessment candidate (вместе с триггерами developer) или
+  коммитов и файлов delta, которого не было в assessment прежнего review;
+- `file-outside-carried-items` — файл delta вне файлов перенесённых пунктов developer-retry (для
+  `review-finding` это `review_scope` его review);
+- `patch-id-mismatch` — пара из `patch_id_mismatches` любого отчёта цепочки;
+- `no-new-commits` — новых коммитов для проверки нет.
+
+Тогда brief — обычный полный review, а раздел остаётся audit evidence. В режиме `delta`
+`carried_items` brief дополнительно несёт `review-finding` и `incomplete-item` для developer из
+brief принятого developer-retry. Reviewer проверяет обе оси только на delta, опирается на отчёт
+прежнего review для остального candidate и учитывает каждый пункт в `review.carried_items`; пропуск,
+`open` или `unverified` — carried gap. `review_scope` и `review.scope` остаются полными. Accept
+любого review, delta или полного, ведёт в `qa`, и clean-room QA идёт на новом SHA с полными
+`verification_commands`. Retry delta-review передаёт следующему developer-retry перенесённые пункты,
+которые review не отметил `closed`, а собственные findings этого review получают следующие номера
+`review-finding-N`.
+
 Code-review `blocker` никогда не принимается. Пока `retry_policy.max_developer_retries` ещё допускает
 developer retry, для него доступны `retry` или `abandon`; после исчерпания budget `retry`
 отклоняется, а blocker закрывается через `block`, `fail` или `abandon`, после чего работа
@@ -1102,7 +1140,9 @@ developer-retry, записанный до #503 без `carried_item_closure` д
 `--note`, отличный от `none`, а `retry`, `block`, `fail` и `abandon` доступны. Новый такой отчёт
 `report submit` отклоняет. Brief без `rebase_target_commit`, transition без `rebase_target_sha` и
 значение маршрута `rebase-fix-forward` (#504) тоже введены без смены версии ledger и без миграции:
-переход без target сохраняет прежний digest.
+переход без target сохраняет прежний digest. Brief без `delta_review_scope` и transition без
+`delta_review_sha256` (#625) тоже валидны и введены без смены версии ledger и без миграции: переход
+code-review без раздела сохраняет прежний digest.
 
 Поле `route` в routing record и деталь `decision` в transition audit record batch тоже
 необязательны и введены без смены версии ledger (остаётся 3). Решение, записанное до них, читается
