@@ -726,20 +726,45 @@ class ZoneFreeConfigHealthTests(unittest.TestCase):
     def test_access_only_invalid_values_match_the_schema(self) -> None:
         import re
 
-        schema = json.loads((Path(contract.__file__).parent / "orchestration.schema.json").read_text())
+        schema = json.loads(
+            (Path(contract.__file__).parent / "orchestration.schema.json").read_text()
+        )
         invalid: list[object] = [
-            None, {"unknown": {}}, {"defaults": None}, {"defaults": {"mode": "external"}},
-            {"roles": {"unknown": {}}}, {"operations": {"deploy": {}}},
-            *({"defaults": {"network": {"hosts": [host]}}} for host in
-              ("https://github.com", "github.com:443", "*.github.com", "a..b", "a.-b", "a.b-")),
-            *({"defaults": {"filesystem": [{"resource": "cache", "access": "write", "path": path}]}}
-              for path in (None, "", " ", "cache\x00bad")),
+            None,
+            {"unknown": {}},
+            {"defaults": None},
+            {"defaults": {"mode": "external"}},
+            {"roles": {"unknown": {}}},
+            {"operations": {"deploy": {}}},
+            *(
+                {"defaults": {"network": {"hosts": [host]}}}
+                for host in (
+                    "https://github.com",
+                    "github.com:443",
+                    "*.github.com",
+                    "a..b",
+                    "a.-b",
+                    "a.b-",
+                )
+            ),
+            *(
+                {
+                    "defaults": {
+                        "filesystem": [
+                            {"resource": "cache", "access": "write", "path": path}
+                        ]
+                    }
+                }
+                for path in (None, "", " ", "cache\x00bad")
+            ),
         ]
         for policy in invalid:
             value: dict[str, object] = {"access_policy": policy}
             with self.subTest(policy=policy):
                 self.assertTrue(self._problems(value))
-        path_schema = schema["definitions"]["accessComponent"]["properties"]["filesystem"]["items"]["properties"]["path"]
+        path_schema = schema["definitions"]["accessComponent"]["properties"][
+            "filesystem"
+        ]["items"]["properties"]["path"]
         for path in ("", " ", "cache\x00bad"):
             self.assertIsNone(re.search(path_schema["pattern"], path))
 
@@ -800,23 +825,35 @@ class ZoneFreeConfigHealthTests(unittest.TestCase):
                 )
 
 
-
 class AccessPolicyContractTests(unittest.TestCase):
     def test_modes_are_independent_of_transport(self) -> None:
         for mode in ("inherit", "sandbox", "unsandboxed"):
-            problems = contract.access_policy_problems({"defaults": {"mode": mode}}, {"developer"})
+            problems = contract.access_policy_problems(
+                {"defaults": {"mode": mode}}, {"developer"}
+            )
             self.assertEqual(problems, [])
-        for bad in (None, "external", {"defaults": {"mode": "external"}}, {"defaults": {"network": {"hosts": ["https://github.com"]}}}):
+        for bad in (
+            None,
+            "external",
+            {"defaults": {"mode": "external"}},
+            {"defaults": {"network": {"hosts": ["https://github.com"]}}},
+        ):
             with self.subTest(bad=bad):
                 self.assertTrue(contract.access_policy_problems(bad, {"developer"}))
 
 
 class AccessOnlyConfigTests(unittest.TestCase):
-    def test_access_only_configuration_validates_without_assignment_fields(self) -> None:
+    def test_access_only_configuration_validates_without_assignment_fields(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'orchestration.json'
-            path.write_text(json.dumps({'access_policy': {'defaults': {'mode': 'sandbox'}}}))
-            self.assertEqual(contract.health_problems(path, ROOT / 'harness/orchestration/roles'), [])
+            path = Path(directory) / "orchestration.json"
+            path.write_text(
+                json.dumps({"access_policy": {"defaults": {"mode": "sandbox"}}})
+            )
+            self.assertEqual(
+                contract.health_problems(path, ROOT / "harness/orchestration/roles"), []
+            )
 
 
 class ConfigLoadingTests(unittest.TestCase):

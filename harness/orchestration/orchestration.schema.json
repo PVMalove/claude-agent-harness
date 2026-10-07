@@ -13,7 +13,46 @@
     }}
   ],
   "properties": {
-    "access_policy": {"type": "object", "additionalProperties": false, "properties": {"defaults": {"$ref": "#/definitions/accessComponent"}, "roles": {"type": "object", "propertyNames": {"enum": ["architect", "code-review", "conflict-resolver", "database-migrations", "developer", "messaging-integration", "qa", "verification"]}, "additionalProperties": {"$ref": "#/definitions/accessComponent"}}, "operations": {"type": "object", "propertyNames": {"enum": ["qa", "git", "publish"]}, "additionalProperties": {"$ref": "#/definitions/accessComponent"}}}},
+    "access_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaults": {
+          "$ref": "#/definitions/accessComponent"
+        },
+        "roles": {
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "architect",
+              "code-review",
+              "conflict-resolver",
+              "database-migrations",
+              "developer",
+              "messaging-integration",
+              "qa",
+              "verification"
+            ]
+          },
+          "additionalProperties": {
+            "$ref": "#/definitions/accessComponent"
+          }
+        },
+        "operations": {
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "qa",
+              "git",
+              "publish"
+            ]
+          },
+          "additionalProperties": {
+            "$ref": "#/definitions/accessComponent"
+          }
+        }
+      }
+    },
     "$schema": {
       "type": "string",
       "description": "Указатель на относительный путь к файлу схемы JSON Schema. Используется редакторами кода и IDE для автодополнения, валидации и отображения подсказок при редактировании конфигурации."
@@ -294,7 +333,87 @@
     }
   },
   "definitions": {
-    "accessComponent": {"type": "object", "additionalProperties": false, "properties": {"mode": {"enum": ["inherit", "sandbox", "unsandboxed"]}, "network": {"type": "object", "additionalProperties": false, "required": ["hosts"], "properties": {"hosts": {"type": "array", "items": {"type": "string", "maxLength": 253, "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"}}}}, "filesystem": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["resource", "access"], "properties": {"resource": {"enum": ["checkout", "git_common", "shared_storage", "cache"]}, "access": {"enum": ["read", "write"]}, "path": {"type": "string", "minLength": 1, "pattern": "^(?=[^\\u0000]*\\S)[^\\u0000]+$"}}, "if": {"properties": {"resource": {"const": "cache"}}}, "then": {"required": ["path"]}, "else": {"not": {"required": ["path"]}}}}}},
+    "accessComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "inherit",
+            "sandbox",
+            "unsandboxed"
+          ]
+        },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "hosts"
+          ],
+          "properties": {
+            "hosts": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 253,
+                "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
+              }
+            }
+          }
+        },
+        "filesystem": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "resource",
+              "access"
+            ],
+            "properties": {
+              "resource": {
+                "enum": [
+                  "checkout",
+                  "git_common",
+                  "shared_storage",
+                  "cache"
+                ]
+              },
+              "access": {
+                "enum": [
+                  "read",
+                  "write"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?=[^\\u0000]*\\S)[^\\u0000]+$"
+              }
+            },
+            "if": {
+              "properties": {
+                "resource": {
+                  "const": "cache"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "path"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     "providerProfile": {
       "type": "object",
       "additionalProperties": false,

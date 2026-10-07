@@ -87,7 +87,11 @@ def _configured(repo: Path) -> bool:
         return True  # let the real loader report the parse failure
     if not isinstance(value, dict):
         return True
-    return bool(value.get("backend_zones")) or bool(value.get("assignment_plans")) or "access_policy" in value
+    return (
+        bool(value.get("backend_zones"))
+        or bool(value.get("assignment_plans"))
+        or "access_policy" in value
+    )
 
 
 def _default_config(repo: Path) -> JsonObject:

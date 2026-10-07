@@ -231,10 +231,12 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             command.extend(adapter_args)
             command.extend(["--repo", str(repo), "--brief", str(brief_path)])
         access_evidence = runtime_access.apply_plan(
-            dispatch, transport, handoff=True,
+            dispatch,
+            transport,
+            handoff=True,
             command=tuple(command) if command is not None else None,
         )
-        if command is not None and access_evidence['status'] == 'legacy-inherit':
+        if command is not None and access_evidence["status"] == "legacy-inherit":
             # Windows consoles default to a legacy ANSI codepage: without an explicit encoding a
             # UTF-8 adapter message is mojibaked before it ever reaches the coordinator error.
             result = subprocess.run(

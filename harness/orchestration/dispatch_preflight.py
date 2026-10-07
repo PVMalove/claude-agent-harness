@@ -375,8 +375,11 @@ def prepare(
             remedy=f"add an assignment_plans[{role!r}] object to the project config",
         )
     try:
-        runtime = (resolve_runtime_name(plan, project_state.get("runtime"))
-                   if isinstance(plan, dict) else str(project_state.get("runtime") or "session"))
+        runtime = (
+            resolve_runtime_name(plan, project_state.get("runtime"))
+            if isinstance(plan, dict)
+            else str(project_state.get("runtime") or "session")
+        )
     except ContractError as exc:
         raise PreflightError(
             str(exc),
@@ -455,12 +458,24 @@ def prepare(
     # Authored requirements follow the runtime's role manifest, including specialist writers.
     from .core.config import _role
 
-    role_access = _role(repo, role)["mode"] if "access_policy" in config else "read-only"
-    access_plan = runtime_access.resolve_plan(repo, worktree, config, role, str(role_access),
-                                            operation=_optional_text(project_state.get("operation"), "operation")
-                                            or runtime_access.dispatch_operation(role, "work"))
-    verification, _ = runtime_access.verify_plan(access_plan, str(plan.get("transport", "in-process"))
-                                               if isinstance(plan, dict) else "in-process")
+    role_access = (
+        _role(repo, role)["mode"] if "access_policy" in config else "read-only"
+    )
+    access_plan = runtime_access.resolve_plan(
+        repo,
+        worktree,
+        config,
+        role,
+        str(role_access),
+        operation=_optional_text(project_state.get("operation"), "operation")
+        or runtime_access.dispatch_operation(role, "work"),
+    )
+    verification, _ = runtime_access.verify_plan(
+        access_plan,
+        str(plan.get("transport", "in-process"))
+        if isinstance(plan, dict)
+        else "in-process",
+    )
     preview["runtime_access"] = access_plan
     packet["runtime_access"] = {"plan": access_plan, "verification": verification}
     handoff = project_state.get("retry_handoff")

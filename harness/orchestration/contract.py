@@ -901,7 +901,9 @@ def access_policy_problems(value: object, roles: set[str]) -> list[str]:
     from .core.constants import ACCESS_MODES, ACCESS_OPERATIONS, ACCESS_RESOURCES
 
     errors: list[str] = []
-    host_pattern = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
+    host_pattern = re.compile(
+        r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$"
+    )
 
     def component(item: object, label: str) -> None:
         if not isinstance(item, dict) or set(item) - {"mode", "network", "filesystem"}:
@@ -912,29 +914,56 @@ def access_policy_problems(value: object, roles: set[str]) -> list[str]:
         if "network" in item:
             network = item["network"]
             hosts = network.get("hosts") if isinstance(network, dict) else None
-            if (not isinstance(network, dict) or set(network) != {"hosts"}
-                or not isinstance(hosts, list) or any(
-                    not isinstance(host, str) or host_pattern.fullmatch(host) is None
-                    or any(not part or len(part) > 63 or part.startswith("-") or part.endswith("-") for part in host.split("."))
-                    for host in hosts)):
-                errors.append(f"{label}.network must contain explicit DNS hosts without URLs, ports or wildcards")
+            if (
+                not isinstance(network, dict)
+                or set(network) != {"hosts"}
+                or not isinstance(hosts, list)
+                or any(
+                    not isinstance(host, str)
+                    or host_pattern.fullmatch(host) is None
+                    or any(
+                        not part
+                        or len(part) > 63
+                        or part.startswith("-")
+                        or part.endswith("-")
+                        for part in host.split(".")
+                    )
+                    for host in hosts
+                )
+            ):
+                errors.append(
+                    f"{label}.network must contain explicit DNS hosts without URLs, ports or wildcards"
+                )
         if "filesystem" in item:
             filesystem = item["filesystem"]
             if not isinstance(filesystem, list):
                 errors.append(f"{label}.filesystem must be a list")
                 return
             for requirement in filesystem:
-                if (not isinstance(requirement, dict)
+                if (
+                    not isinstance(requirement, dict)
                     or set(requirement) - {"resource", "access", "path"}
                     or requirement.get("resource") not in ACCESS_RESOURCES
                     or requirement.get("access") not in ("read", "write")
-                    or (requirement.get("resource") == "cache" and (
-                        not non_empty(requirement.get("path")) or "\x00" in requirement["path"]))
-                    or (requirement.get("resource") != "cache" and "path" in requirement)):
-                    errors.append(f"{label}.filesystem has an invalid resource/access requirement; cache needs an explicit path")
+                    or (
+                        requirement.get("resource") == "cache"
+                        and (
+                            not non_empty(requirement.get("path"))
+                            or "\x00" in requirement["path"]
+                        )
+                    )
+                    or (
+                        requirement.get("resource") != "cache" and "path" in requirement
+                    )
+                ):
+                    errors.append(
+                        f"{label}.filesystem has an invalid resource/access requirement; cache needs an explicit path"
+                    )
 
     if not isinstance(value, dict) or set(value) - {"defaults", "roles", "operations"}:
-        return ["access_policy must be an object with defaults, roles and operations only"]
+        return [
+            "access_policy must be an object with defaults, roles and operations only"
+        ]
     if "defaults" in value:
         component(value["defaults"], "access_policy.defaults")
     for section, names in (("roles", roles), ("operations", set(ACCESS_OPERATIONS))):
@@ -970,8 +999,17 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     if reject_error:
         problems.append(str(reject_error))
     # Access-only projects keep session assignments; validate authored values before defaults.
-    if "access_policy" in config and not any(config.get(key) for key in ("assignment_plans", "backend_zones", "provider_profiles")):
-        config = {"provider_profiles": {}, "assignment_plans": {}, "concurrency_budget": 1, "verification_commands": [], **config}
+    if "access_policy" in config and not any(
+        config.get(key)
+        for key in ("assignment_plans", "backend_zones", "provider_profiles")
+    ):
+        config = {
+            "provider_profiles": {},
+            "assignment_plans": {},
+            "concurrency_budget": 1,
+            "verification_commands": [],
+            **config,
+        }
     missing = [field for field in CONFIG_REQUIRED_FIELDS if field not in config]
     if missing:
         problems.append(

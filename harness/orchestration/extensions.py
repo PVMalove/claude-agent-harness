@@ -120,14 +120,20 @@ class RuntimeAccessObservation:
 class RuntimeAccess(Protocol):
     """Confirm and apply permissions for a specific native worker launch."""
 
-    def observe(self, plan: Mapping[str, object], transport: str) -> RuntimeAccessObservation | None:
-        ...
+    def observe(
+        self, plan: Mapping[str, object], transport: str
+    ) -> RuntimeAccessObservation | None: ...
 
-    def apply(self, brief: Mapping[str, object], observation: RuntimeAccessObservation) -> RuntimeAccessObservation | None:
-        ...
+    def apply(
+        self, brief: Mapping[str, object], observation: RuntimeAccessObservation
+    ) -> RuntimeAccessObservation | None: ...
 
-    def handoff(self, brief: Mapping[str, object], observation: RuntimeAccessObservation,
-                command: tuple[str, ...] | None) -> RuntimeAccessObservation | None:
+    def handoff(
+        self,
+        brief: Mapping[str, object],
+        observation: RuntimeAccessObservation,
+        command: tuple[str, ...] | None,
+    ) -> RuntimeAccessObservation | None:
         """Launch this exact worker natively and return its bound receipt.
 
         The implementation owns the native launch and preserves native approval. For external
