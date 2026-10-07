@@ -10310,6 +10310,180 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 }
             )
 
+    def test_a_fix_forward_chain_of_retried_attempts_is_delta_reviewed_as_one(
+        self,
+    ) -> None:
+        """Issue #625: the first fix-forward attempt was retried and the second, which continued
+        it, was accepted. The delta-review spans the commits of both attempts from the reviewed
+        candidate and names the accepted attempt and its closure. QA then runs on the new SHA."""
+        self._patch_config(retry_policy={"max_developer_retries": 2})
+        batch_id = cast(str, self._plan_batch(["add simple marker"])["batch_id"])
+        self._accepted_architect(batch_id)
+        _, candidate, changed = self._reported_developer(batch_id)
+        self._decide(batch_id, "accept")
+        self._assess_without_triggers(batch_id, candidate, changed)
+        review = self._reported_review(
+            batch_id, candidate, spec=("warning", [dict(self.SPEC_WARNING)])
+        )
+        self._decide(batch_id, "retry")
+        base = self._batch_record(batch_id)["base_commit"]
+        attempts: list[JsonObject] = []
+        fixes: list[str] = []
+        for message in ("fix: pin the marker value", "fix: pin the marker value again"):
+            if attempts:
+                retried = self._decide(batch_id, "retry", reason_category="code")
+                self.assertEqual(self._routing(retried)["route"], "fix-forward")
+            attempt = self._dispatch(batch_id, "developer")["brief"]
+            self._start(attempt["dispatch_id"])
+            fix = self._commit_file("services/x.py", message)
+            fixed = git_utils._changed_files_between(self.repo, base, fix)
+            self._submit(
+                attempt["dispatch_id"],
+                self._developer_report(
+                    attempt,
+                    fix,
+                    fixed,
+                    commit_map=self._commit_map([(fix, attempt["commit_plan"][0])]),
+                ),
+            )
+            attempts.append(attempt)
+            fixes.append(fix)
+        self._decide(batch_id, "accept")
+        self._assess_without_triggers(batch_id, fixes[-1], fixed)
+
+        brief = self._dispatch(batch_id, "code-review", candidate=fixes[-1])["brief"]
+
+        scope = brief["delta_review_scope"]
+        self.assertEqual(attempts[1]["snapshot_commit"], fixes[0])
+        self.assertEqual(
+            (
+                scope["mode"],
+                scope["route"],
+                scope["prior_review"]["dispatch_id"],
+                scope["developer_dispatch_id"],
+                scope["delta_base"],
+                scope["delta_commits"],
+                scope["closure"],
+                scope["escalations"],
+            ),
+            (
+                "delta",
+                "fix-forward",
+                review["dispatch_id"],
+                attempts[1]["dispatch_id"],
+                candidate,
+                fixes,
+                [{"item_id": "review-finding-1", "commits": [fixes[1]]}],
+                [],
+            ),
+        )
+        self.assertEqual(
+            carried_items.section_item_ids(brief["carried_items"]), ["review-finding-1"]
+        )
+        accepted, qa = self._accept_review_then_qa(
+            brief, {"review-finding-1": "closed"}
+        )
+        self.assertEqual(
+            (accepted["next_action"], qa["candidate_commit"]), ("qa", fixes[-1])
+        )
+
+    def test_a_qa_retry_after_an_accepted_review_carries_nothing_to_delta_review(
+        self,
+    ) -> None:
+        """Issue #625: a QA retry after an accepted review hands the developer no carried item.
+        It is a plain developer-retry, so the next review is an ordinary full review with no
+        delta_review_scope; when the integration base moved, it is a rebase-fix-forward whose fix
+        lies outside the (empty) carried items, so the coordinator escalates to a full review on
+        its own. QA then runs on the new SHA either way."""
+        for moved in (False, True):
+            with self.subTest(moved=moved):
+                self._reset()
+                batch_id = cast(
+                    str, self._plan_batch(["add simple marker"])["batch_id"]
+                )
+                self._accepted_architect(batch_id)
+                _, candidate, changed = self._reported_developer(batch_id)
+                self._decide(batch_id, "accept")
+                self._assess_without_triggers(batch_id, candidate, changed)
+                review = self._reported_review(batch_id, candidate)
+                self._decide(batch_id, "accept")
+                self._reported_qa(
+                    batch_id, candidate, outcome="failed", check_result="fail"
+                )
+                origin = (
+                    self._push_upstream()
+                    if moved
+                    else self._batch_record(batch_id)["base_commit"]
+                )
+                routing = self._routing(
+                    self._decide(batch_id, "retry", reason_category="code")
+                )
+                retry = self._dispatch(batch_id, "developer")["brief"]
+                self._start(retry["dispatch_id"])
+                copies = self._rebase_onto(candidate, origin) if moved else []
+                fix = self._commit_file("services/x.py", "fix: make the QA check pass")
+                fixed = git_utils._changed_files_between(self.repo, origin, fix)
+                self._submit(
+                    retry["dispatch_id"],
+                    self._developer_report(
+                        retry,
+                        fix,
+                        fixed,
+                        commit_map=[
+                            *self._rebased_map([candidate] if moved else [], copies),
+                            *self._commit_map([(fix, retry["commit_plan"][0])]),
+                        ],
+                    ),
+                )
+                self._decide(batch_id, "accept")
+                self._assess_without_triggers(batch_id, fix, fixed)
+
+                brief = self._dispatch(batch_id, "code-review", candidate=fix)["brief"]
+
+                self.assertEqual(
+                    (routing["previous_role"], routing["retry_item_ids"]), ("qa", [])
+                )
+                self.assertEqual(retry["carried_items"], {})
+                scope = brief["delta_review_scope"]
+                if moved:
+                    self.assertEqual(routing["route"], "rebase-fix-forward")
+                    self.assertEqual(
+                        (
+                            scope["mode"],
+                            scope["route"],
+                            scope["prior_review"]["dispatch_id"],
+                            scope["delta_base"],
+                            scope["delta_commits"],
+                            scope["reviewed_copies"],
+                            scope["closure"],
+                            scope["escalations"],
+                        ),
+                        (
+                            "full",
+                            "rebase-fix-forward",
+                            review["dispatch_id"],
+                            copies[-1],
+                            [fix],
+                            [{"commit_sha": copies[0], "rebased_from": candidate}],
+                            [],
+                            [
+                                {
+                                    "reason": "file-outside-carried-items",
+                                    "evidence": ["services/x.py"],
+                                }
+                            ],
+                        ),
+                    )
+                else:
+                    self.assertEqual(routing["route"], "developer-retry")
+                    self.assertIsNone(scope)
+                    self.assertNotIn("delta_review_sha256", brief["transition"])
+                self.assertEqual(brief["carried_items"], {})
+                accepted, qa = self._accept_review_then_qa(brief)
+                self.assertEqual(
+                    (accepted["next_action"], qa["candidate_commit"]), ("qa", fix)
+                )
+
     def test_a_new_risk_trigger_or_file_after_a_fix_forward_escalates_to_a_full_review(
         self,
     ) -> None:
@@ -12150,6 +12324,62 @@ class DeltaReviewHelperTests(unittest.TestCase):
         }.items():
             with self.subTest(name):
                 self.assertIsNone(delta_review._reviewed_origin(a, pairs, {a, b}))
+
+    @staticmethod
+    def _item(item_id: str, **source: object) -> JsonObject:
+        return {
+            "item_id": item_id,
+            "source": {"kind": item_id.rsplit("-", 1)[0], **source},
+            "summary": f"{item_id} summary",
+            "files": [],
+            "expected_evidence": f"{item_id} evidence",
+        }
+
+    def test_a_delta_brief_adds_the_review_findings_and_developer_items_once(
+        self,
+    ) -> None:
+        """A delta-review carries, on top of its own section, the developer-retry's review
+        findings and its incomplete items for the developer, each once; an incomplete item for
+        another role and a coordinator finding are not added, and a full or ordinary brief keeps
+        its own section."""
+        coordinator_finding = self._item("coordinator-finding-1")
+        finding = self._item("review-finding-1")
+        developer_item = self._item("incomplete-item-1", target_role="developer")
+        own = {
+            "coordinator-finding": [coordinator_finding],
+            "review-finding": [finding],
+        }
+        retried = {
+            "coordinator-finding": [
+                coordinator_finding,
+                self._item("coordinator-finding-2"),
+            ],
+            "review-finding": [finding, self._item("review-finding-2")],
+            "incomplete-item": [
+                developer_item,
+                self._item("incomplete-item-2", target_role="qa"),
+            ],
+        }
+        delta = {"mode": "delta", "developer_dispatch_id": "dispatch-retry"}
+        with mock.patch.object(
+            delta_review, "_load_dispatch", return_value={"carried_items": retried}
+        ) as load:
+            merged = delta_review.with_closure_items(own, Path("root"), delta)
+            for scope in (None, {**delta, "mode": "full"}):
+                with self.subTest(scope=scope):
+                    self.assertEqual(
+                        delta_review.with_closure_items(own, Path("root"), scope), own
+                    )
+
+        load.assert_called_once_with(Path("root"), "dispatch-retry")
+        self.assertEqual(
+            merged,
+            {
+                "coordinator-finding": [coordinator_finding],
+                "review-finding": [finding, retried["review-finding"][1]],
+                "incomplete-item": [developer_item],
+            },
+        )
 
 
 class CoordinatorGuardHelperTests(unittest.TestCase):
