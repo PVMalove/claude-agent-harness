@@ -596,7 +596,7 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    вид источника (`coordinator-finding`, `review-finding`, `incomplete-item`), значение — список
    `{item_id, source, summary, files, expected_evidence}`; пустой канал — `{}`. Brief code-review и
    developer work несёт все открытые `coordinator-finding`. Developer brief, отвечающий на `retry`
-   code-review с маршрутом `developer-retry`, несёт ещё находки осей Standards и Spec этого review
+   code-review с маршрутом `fix-forward`, несёт ещё находки осей Standards и Spec этого review
    как `review-finding` (`item_id` `review-finding-<n>`; `source` — `dispatch_id`, `report_sha256`,
    `axis`, `severity`; `files: []`; `expected_evidence` — evidence находки). Поэтому единственный
    developer-retry закрывает обе группы и тратит `retry_policy.max_developer_retries` один раз;
@@ -612,7 +612,7 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    `override-warning` требует `--note`, отличный от `none`, и записывает в решение
    `carried_items_gap`; отчёт можно и вернуть через `retry`. Правила blocker и warning сохраняют
    приоритет. Пункт `open` — структурное evidence категории `code`, поэтому такой retry ведёт в
-   `developer-retry`. `batch decision-packet` показывает `carried_items` (каждый пункт с `source`,
+   developer-retry маршрутом `fix-forward`. `batch decision-packet` показывает `carried_items` (каждый пункт с `source`,
    `summary`, `status` — у отчёта code-review `omitted` для пропущенного пункта — и `evidence`) и
    `carried_items_gap`.
 
@@ -694,8 +694,8 @@ code finding. Context limit — `context-pressure` только если для 
 | Стадия отчёта | `accept` | `retry` | `block` / `fail` | `abandon` |
 | --- | --- | --- | --- | --- |
 | architect | developer | новый architect | terminal | `abandoned` |
-| developer | risk assessment | `developer-retry` продолжает непринятый candidate этого report (`snapshot_commit` — его `commit_sha`); retry создаёт новый candidate, и тот получает новую risk assessment | terminal | `abandoned` |
-| code-review | qa | новый code-review на том же `candidate_commit`, если report `blocked`, причина — `verification-infrastructure`/`transport`/`context-pressure`, findings пусты, обе оси без findings, нет failed check и candidate не менялся; иначе `developer-retry` | terminal | `abandoned` |
+| developer | risk assessment | `developer-retry` продолжает непринятый candidate этого report (`snapshot_commit` — его `commit_sha`); retry создаёт новый candidate, и тот получает новую risk assessment; при непустом закрытом списке перенесённых пунктов маршрут — `fix-forward` | terminal | `abandoned` |
+| code-review | qa | новый code-review на том же `candidate_commit`, если report `blocked`, причина — `verification-infrastructure`/`transport`/`context-pressure`, findings пусты, обе оси без findings, нет failed check и candidate не менялся; иначе `developer-retry`, а при непустом закрытом списке перенесённых пунктов — `fix-forward` | terminal | `abandoned` |
 | qa | publish | новый qa на том же SHA при том же условии (QA остаётся read-only); defect или новый candidate — `developer-retry` | terminal | `abandoned` |
 | publish | `completed` | новый publish на том же принятом SHA при `verification-infrastructure`/`transport`/`context-pressure`; `developer-retry`, если candidate должен измениться | terminal | `abandoned` |
 
@@ -757,6 +757,34 @@ coordinator берёт candidate из immutable report (`commit_sha`, свере
 другого SHA отклоняется. Retry-report с тем же SHA не принимается. Retry после code-review, qa или
 publish по-прежнему пинит `snapshot_commit` на последний принятый developer candidate.
 
+Fix-forward (#503) — маршрут существующего developer-retry, а не новый переход. Решение `retry`,
+ведущее в `developer-retry`, записывает в routing record `retry_item_ids` — закрытый список
+перенесённых пунктов, который понесёт brief developer-retry; список может быть пустым. При retry
+code-review в него входят открытые `coordinator-finding`, находки осей Standards и Spec этого review
+(`review-finding`) и открытые `incomplete-item` для developer; при retry qa, publish или
+verification — те же пункты без находок review; при retry developer work report — пункты его
+собственного brief, ни один из которых не принят. Непустой список делает маршрут `fix-forward`;
+`tooling-retry` developer сохраняет свой маршрут и пишет тот же список. Brief developer-retry несёт
+ровно эти пункты, а расхождение с `retry_item_ids` отклоняется как нарушение инварианта. Developer
+продолжает от `snapshot_commit` новыми коммитами поверх него и отчитывается в completion report
+полем `carried_item_closure` — по одной записи на каждый пункт brief:
+`{"item_id": <id>, "commits": [<sha>, ...]}` с коммитами этого dispatch, которые закрывают пункт,
+или `{"item_id": <id>, "not_closed": "<причина>"}`. Completed-отчёт такого brief обязан нести поле,
+blocked или failed может, отчёты остальных brief — нет. `report submit` отклоняет с remedy
+пропущенный, неизвестный или повторный пункт, пустую причину, пустой список коммитов, неразрешимый
+SHA и коммит, который создал не этот dispatch. Пункт `not_closed` — carried gap: отчёт не clean,
+policy его автоматически не принимает, `--decision accept` отклоняется, а `override-warning`
+требует `--note`, отличный от `none`, и записывает в решение `carried_items_gap`. `commit_map`
+retry-отчёта сохраняет строгое правило #478. `batch decision-packet` показывает у пунктов
+developer-retry статус `closed` с SHA коммитов или `open` с причиной.
+
+Без утверждённого rebase target `commit_sha` retry-отчёта обязан быть потомком `snapshot_commit`.
+Отчёт после amend, squash или reset отклоняется с сообщением `developer-retry candidate <sha> does
+not descend from snapshot_commit <snapshot>: the retry rewrote the history it continues (amend,
+squash or reset)`. Remedy: восстановить переписанные коммиты из `git reflog`, повторить исправление
+новыми коммитами без amend и squash и отчитаться новым HEAD. Retry rebase-отчёта, пока открыт
+stale-base блок, по-прежнему проверяется от rebase target.
+
 Code-review `blocker` никогда не принимается. Пока `retry_policy.max_developer_retries` ещё допускает
 developer retry, для него доступны `retry` или `abandon`; после исчерпания budget `retry`
 отклоняется, а blocker закрывается через `block`, `fail` или `abandon`, после чего работа
@@ -802,7 +830,10 @@ agent inbox и записи QA-очереди dispatch, которые уже н
 `retry --narrowed`, если пункт несёт `tooling_blocker`. Девятое, `bypass-rerun`, записывает `retry`
 с категорией `block-bypass` (см. выше). Десятое, `narrowed-retry`, записывает `retry --narrowed` по
 невыполненным пунктам read-only отчёта (см. шаг 4); его routing record дополнительно называет
-`carried_item_ids`. Маршрут ставится там же, где
+`carried_item_ids`. Одиннадцатое, `fix-forward`, записывает `retry`, который ведёт в
+`developer-retry` с непустым закрытым списком перенесённых пунктов (см. выше). Каждый routing record
+с `next_action: developer-retry` (`developer-retry`, `fix-forward` и `tooling-retry` developer)
+дополнительно называет `retry_item_ids`. Маршрут ставится там же, где
 `next_action`, по тем же структурированным данным и никогда по свободному тексту. У `abandon`
 routing record той же формы, но `reason_category`, `next_role`, `next_action` и `candidate_commit`
 равны `null`, а `rationale` содержит только структурные факты (`--reason` остаётся в `note`).
@@ -821,7 +852,8 @@ python .harness/orchestration/coordinator.py --repo . batch decision-packet \
 ```
 
 Preview не проверяет `retry_policy.max_developer_retries`: при исчерпанном бюджете он по-прежнему
-показывает маршрут `developer-retry`, а `batch decide --decision retry` такое решение отклоняет.
+показывает маршрут `developer-retry` или `fix-forward`, а `batch decide --decision retry` такое
+решение отклоняет.
 Если маршрут retry вычислить нельзя (например, упало настроенное расширение retry reason
 classifier), packet всё равно строится, а `route_preview.retry` равен
 `{"route": null, "refused": ..., "remedy": ...}` с той ошибкой, которой откажет
@@ -931,6 +963,9 @@ Brief без поля `commit_plan_divergence` и batch без `commit_plan` т�
 тоже валидны: пустой канал ничего не добавляет в transition, поэтому прежние digest не меняются.
 Отчёт без `incomplete_items` и brief без вида `incomplete-item` тоже валидны; новый вид источника,
 поле отчёта и значение маршрута `narrowed-retry` введены без смены версии ledger и без миграции.
+Routing record без `retry_item_ids`, отчёт без `carried_item_closure` и значение маршрута
+`fix-forward` (#503) тоже введены без смены версии ledger и без миграции: brief developer-retry по
+решению, записанному до них, получает раздел без сверки с `retry_item_ids`.
 
 Поле `route` в routing record и деталь `decision` в transition audit record batch тоже
 необязательны и введены без смены версии ledger (остаётся 3). Решение, записанное до них, читается

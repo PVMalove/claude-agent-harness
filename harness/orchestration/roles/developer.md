@@ -28,6 +28,13 @@ A developer retry receives, besides its brief, the retry handoff (the playbook's
 handoff") and its starting files. Start from the handoff's findings and starting files: they replace
 re-reading the earlier work, and the existing candidate history is the code to extend.
 
+A developer-retry is a fix-forward: it continues from the brief's `snapshot_commit` and adds new
+commits on top of it. Never amend, squash, reset, rebase or force-push `snapshot_commit` or a commit
+below it. `report submit` refuses a report whose `commit_sha` does not descend from
+`snapshot_commit`; its remedy is to recover the rewritten commits from `git reflog`, re-apply the fix
+as new commits without amend or squash, and report the new HEAD. Only a retry under an approved
+rebase target (the prompt names `rebase_target_commit`) is measured from that target instead.
+
 When a hook or another tool blocks your `git commit`, revert nothing: do not reset, stash, checkout
 or delete the uncommitted work. Stop with the `tooling_blocker` the common contract describes and
 add `uncommitted_files`: every path `git status --porcelain --no-renames --untracked-files=all`
@@ -59,13 +66,18 @@ A developer-retry report maps each new commit to exactly one distinct plan entry
 field. A `not_covered` item is never accepted as clean.
 Do not report the candidate SHA alone when it hides multiple commits.
 
-A developer-retry brief whose `carried_items` is not empty hands the retry obligations an earlier
-decision recorded, keyed by source: each `coordinator-finding` is a defect the coordinator found when
-it accepted a developer report, and each `review-finding` is a Standards or Spec finding of the
-retried code-review; every item has an `item_id`, `summary`, `files` and `expected_evidence`. Close
-every carried item in this retry: its files belong to the working set, and its fix goes into the
-commit of the plan entry whose scope it belongs to. In the completion report's `output`, name each
-`item_id` with the evidence that closes it (commit SHA, `file:line`, test name), as its
-`expected_evidence` asks. An item that cannot be closed inside the zone and the prohibited changes
-is a blocker, never a silent omission: the next code-review carries every open coordinator finding
-again and accounts for it.
+A developer-retry brief whose `carried_items` is not empty hands on the closed list of items its
+retry decision recorded as `retry_item_ids`, keyed by source: each `coordinator-finding` is a defect
+the coordinator found when it accepted a developer report, each `review-finding` is a Standards or
+Spec finding of the retried code-review, and each `incomplete-item` is an item a read-only report
+handed to the developer; a retried developer brief hands on its own items again. Every item has an
+`item_id`, `summary`, `files` and `expected_evidence`. Close every carried item in this retry with
+new commits: its files belong to the working set, and its fix goes into the commit of the plan entry
+whose scope it belongs to. The completion report maps every item once in `carried_item_closure`,
+which replaces naming the items in `output`: `{"item_id": <id>, "commits": [<sha>, ...]}` with the
+commits of this dispatch that close it, as its `expected_evidence` asks, or
+`{"item_id": <id>, "not_closed": "<reason>"}`. A completed report without the field, or with an item
+left out, repeated or unknown, an empty reason or a commit this dispatch did not create, is refused.
+An item that cannot be closed inside the zone and the prohibited changes is `not_closed` with its
+reason, never a silent omission: the report is then not clean, a plain accept is refused, and the
+next code-review carries every open coordinator finding again and accounts for it.

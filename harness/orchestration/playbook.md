@@ -80,6 +80,17 @@ stage on the same SHA, and only with empty findings, an unchanged candidate and 
 requirement blocker. A contradictory or unsupported reason always takes the safe route,
 `developer-retry`.
 
+A retry that routes to `developer-retry` records, as `retry_item_ids`, the closed list of carried
+items its developer brief will carry, possibly empty. For a retried code-review report, the list
+holds the open coordinator findings, that review's Standards and Spec findings, and the open
+incomplete items handed to the developer; for a retried qa, publish or verification report, the same
+without review findings. For a retried developer work report, it holds its own brief's items, none
+of which was accepted. A non-empty list records the route `fix-forward`. A fix-forward is still a
+developer-retry: `next_action` is `developer-retry` and it spends one
+`retry_policy.max_developer_retries`. The developer adds new commits on top of the brief's
+`snapshot_commit` and rewrites none of them. A developer `tooling-retry` keeps its own route and
+records the same list.
+
 `tooling` means a hook, the safety classifier or the ledger blocked a legitimate role action. The
 coordinator assigns it only from a `blocked` report's structured `tooling_blocker` (`tool`, exact
 `command`, `message`), when no finding, failed check, moved candidate or developer category
@@ -181,7 +192,8 @@ that stage. The coordinator chooses a route by this table:
 the `retry` routing record computed as `batch decide` computes it (it takes the same
 `--reason-category` and `--retry-role` flags) and the `abandon` route; it writes nothing. The preview
 does not check `retry_policy.max_developer_retries`: once that budget is exhausted it still shows a
-`developer-retry` route, which `batch decide --decision retry` then refuses. When the retry route
+`developer-retry` or `fix-forward` route, which `batch decide --decision retry` then refuses.
+When the retry route
 cannot be computed, for example because the configured retry-reason classifier extension fails, the
 packet still renders and `route_preview.retry` is `{"route": null, "refused": ..., "remedy": ...}`
 with the error `batch decide --decision retry` refuses with. With `--findings-file`,
@@ -421,8 +433,10 @@ It must contain, at minimum:
 - `carried items`: one shared channel keyed by the kind of source,
   `{"coordinator-finding": [...], "review-finding": [...], "incomplete-item": [...]}`, each item
   `{item_id, source, summary, files, expected_evidence}`, or `{}`. A code-review or developer work
-  brief carries every open coordinator finding; a developer brief answering a retried code-review
-  also carries that review's Standards and Spec findings. Any work brief carries, as
+  brief carries every open coordinator finding. A developer-retry brief carries exactly the closed
+  list its retry decision recorded as `retry_item_ids`: after a retried code-review, also that
+  review's Standards and Spec findings; after a retried developer report, that brief's own items.
+  Any work brief carries, as
   `incomplete-item`, the open items a read-only report handed to its role with
   `--carry-incomplete`, and a narrowed retry's brief carries only the items of the report it
   retries. An `incomplete-item` `source` names `dispatch_id`, `report_sha256`, the reporting `role`,
@@ -482,6 +496,16 @@ The report must include:
   `not_covered` with a reason) and a `divergence_justification` naming what was merged, split or
   added and why. A developer-retry report maps each new commit to one distinct entry and carries
   neither field;
+- for a developer-retry brief with carried items: `carried_item_closure`, one record per carried
+  item, either `{item_id, commits}` (the commits of this dispatch that close it) or
+  `{item_id, not_closed}` (a non-empty reason). A completed report must carry it, a blocked or
+  failed one may, and no other report may. A missing, unknown or repeated item, an empty reason,
+  an empty commit list, an unresolvable SHA or a commit this dispatch did not create is refused.
+  A `not_closed` item is a carried gap: no policy accepts the report, plain `accept` is refused,
+  and only `override-warning` with a note other than `none` (recorded as `carried_items_gap`) or
+  `retry` decides it. Without an approved rebase target, the report's `commit_sha` must descend from
+  `snapshot_commit`. A retry that rewrote that history (amend, squash or reset) is refused; its
+  remedy is to recover the commits from `git reflog` and re-apply the fix as new commits;
 - for a code-review brief with carried items: `review.carried_items`, one
   `{item_id, status: closed | open | unverified, evidence}` per item the brief carried. An omitted,
   `unverified` or `open` item is a carried gap: the report is never clean, no policy accepts it, plain
