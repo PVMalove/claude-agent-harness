@@ -10309,6 +10309,72 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 }
             )
 
+    def test_a_new_risk_trigger_or_file_after_a_fix_forward_escalates_to_a_full_review(
+        self,
+    ) -> None:
+        """Issue #625: with no manual choice, a fix-forward commit that matches a risk trigger the
+        prior review did not see, or changes a file outside the carried items, sends the candidate
+        to an ordinary full review; the section stays as audit evidence. QA then runs on the new
+        SHA."""
+        for path, message, reason, evidence in (
+            (
+                "services/x.py",
+                "fix: wrap the marker in a transaction",
+                "new-risk-trigger",
+                ["transactions"],
+            ),
+            (
+                "services/y.py",
+                "fix: pin the marker value",
+                "file-outside-carried-items",
+                ["services/y.py"],
+            ),
+        ):
+            with self.subTest(reason=reason):
+                self._reset()
+                _, _, candidate, fix = self._fix_forward_candidate(path, message)
+                brief = self._dispatch(self.batch_id, "code-review", candidate=fix)[
+                    "brief"
+                ]
+                scope = brief["delta_review_scope"]
+                base = self._batch_record(self.batch_id)["base_commit"]
+
+                self.assertEqual(
+                    (
+                        scope["mode"],
+                        scope["delta_base"],
+                        scope["delta_commits"],
+                        scope["escalations"],
+                    ),
+                    (
+                        "full",
+                        candidate,
+                        [fix],
+                        [{"reason": reason, "evidence": evidence}],
+                    ),
+                )
+                self.assertEqual(
+                    brief["transition"]["delta_review_sha256"],
+                    operational_guards.delta_review_digest(scope),
+                )
+                self.assertEqual(
+                    (
+                        brief["carried_items"],
+                        brief["delta_review_of"],
+                        brief["review_scope"],
+                    ),
+                    ({}, None, git_utils._changed_files_between(self.repo, base, fix)),
+                )
+                accepted, qa = self._accept_review_then_qa(brief)
+                self.assertEqual(
+                    (
+                        accepted["next_action"],
+                        qa["candidate_commit"],
+                        qa["verification_commands"],
+                    ),
+                    ("qa", fix, accepted["verification_commands"]),
+                )
+
     # -- incomplete items of a read-only role (issue #501) -------------------------------------
 
     def _reported_architect_with_items(

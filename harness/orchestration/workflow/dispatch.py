@@ -764,7 +764,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 delta_review_of = requested_delta_review_of
             else:
                 delta_scope = delta_review.scope_section(
-                    repo, root, batch, cast(str, candidate)
+                    repo, root, batch, cast(str, candidate), risk, _risk_triggers(repo)
                 )
         elif requested_delta_review_of is not None:
             raise CoordinatorError(

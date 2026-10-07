@@ -3,7 +3,8 @@
 After a fix-forward developer-retry on a candidate a code-review already judged, the coordinator
 scopes the next code-review itself: to the commits the retry added and the closure of the items it
 carried, with the prior review's report as evidence for the rest of the candidate. It escalates to
-a full review on its own when those commits change a file outside the carried items.
+a full review on its own when those commits match a risk trigger the prior review did not see,
+change a file outside the carried items, or add nothing to review.
 
 The choice is made while ``dispatch create --role code-review`` builds the brief, never by a new
 decision or transition type: the brief records it as ``delta_review_scope``, bound into the
@@ -22,13 +23,15 @@ from harness.orchestration.core.constants import (
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _changed_files_between,
+    _commit_evidence,
     _commits_between,
 )
 from harness.orchestration.core.utils import JsonObject
-from harness.orchestration.ledger.ledger_ops import _load_dispatch
+from harness.orchestration.ledger.ledger_ops import _load_dispatch, _load_risk
 from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
-from harness.orchestration.workflow.history import _pending_report
+from harness.orchestration.workflow.history import _pending_report, _validate_risk
+from harness.orchestration.workflow.risk import _matching_triggers
 
 # The routes of the decision that sends a reviewed candidate back to a developer-retry with items.
 FIX_FORWARD_ROUTES = ("fix-forward", "rebase-fix-forward")
@@ -151,6 +154,48 @@ def _carried_files(root: Path, brief: JsonObject) -> set[str]:
     return files
 
 
+def _escalations(
+    repo: Path,
+    root: Path,
+    batch: JsonObject,
+    briefs: tuple[JsonObject, JsonObject],
+    risk: JsonObject,
+    known: list[str],
+    delta: tuple[str, str],
+) -> dict[str, list[object]]:
+    """The escalations of a non-empty delta ``(base, candidate)``, by reason.
+
+    ``briefs`` are the prior review's brief and the accepted developer-retry's brief. A
+    ``new-risk-trigger`` is a trigger the prior review did not see: one of the candidate's own
+    assessment ``risk`` (developer triggers included) or one the delta's commits and files match
+    among ``known``, less the triggers of the assessment the prior review was dispatched under. A
+    trigger the prior review already saw does not escalate on its own: a delta-review still judges
+    the new commits on both axes. A ``file-outside-carried-items`` is a file the delta changes that
+    no item of the developer-retry brief carried.
+    """
+    review_brief, brief = briefs
+    base, candidate = delta
+    files = _changed_files_between(repo, base, candidate)
+    prior = _load_risk(root, review_brief["risk_assessment_id"])
+    _validate_risk(root, batch, prior)
+    matched = _matching_triggers(
+        _commit_evidence(repo, base, candidate) + "\n" + " ".join(files), known
+    )
+    seen = set(prior["matched_triggers"])
+    found: dict[str, list[object]] = {}
+    triggers = [
+        trigger
+        for trigger in dict.fromkeys([*risk["matched_triggers"], *matched])
+        if trigger not in seen
+    ]
+    if triggers:
+        found["new-risk-trigger"] = list(triggers)
+    outside = sorted(set(files) - _carried_files(root, brief))
+    if outside:
+        found["file-outside-carried-items"] = list(outside)
+    return found
+
+
 def _escalation_list(found: dict[str, list[object]]) -> list[JsonObject]:
     """The escalations found, in the order of the closed set of reasons."""
     return [
@@ -161,7 +206,12 @@ def _escalation_list(found: dict[str, list[object]]) -> list[JsonObject]:
 
 
 def scope_section(
-    repo: Path, root: Path, batch: JsonObject, candidate: str
+    repo: Path,
+    root: Path,
+    batch: JsonObject,
+    candidate: str,
+    risk: JsonObject,
+    known: list[str],
 ) -> JsonObject | None:
     """The ``delta_review_scope`` of a code-review brief for ``candidate``, or ``None``.
 
@@ -170,6 +220,7 @@ def scope_section(
     developer-retry, the commits it added on top of the reviewed candidate and its
     ``carried_item_closure``. ``mode`` is ``delta`` unless an escalation was found, which makes it
     ``full``: the brief is then an ordinary full review and the section is audit evidence only.
+    ``risk`` is the candidate's assessment and ``known`` the code-review role's risk triggers.
     """
     prior = _fix_forward_chain(repo, root, batch, candidate)
     if prior is None:
@@ -177,16 +228,17 @@ def scope_section(
     chain, review, review_brief = prior
     if any(plan_rules.rebase_target(attempt) for _, attempt in chain):
         return None
-    accepted = chain[-1][0]
+    accepted, brief = chain[-1]
     report = _pending_report(root, batch, accepted)
-    delta_base = review_brief["candidate_commit"]
-    found: dict[str, list[object]] = {}
-    outside = sorted(
-        set(_changed_files_between(repo, delta_base, candidate))
-        - _carried_files(root, chain[-1][1])
+    base = review_brief["candidate_commit"]
+    delta_commits = _commits_between(repo, base, candidate)
+    found: dict[str, list[object]] = (
+        _escalations(
+            repo, root, batch, (review_brief, brief), risk, known, (base, candidate)
+        )
+        if delta_commits
+        else {"no-new-commits": [f"{base}..{candidate}"]}
     )
-    if outside:
-        found["file-outside-carried-items"] = list(outside)
     return {
         "mode": "full" if found else "delta",
         "route": "fix-forward",
@@ -198,8 +250,8 @@ def scope_section(
             "risk_assessment_id": review_brief.get("risk_assessment_id"),
         },
         "developer_dispatch_id": accepted["dispatch_id"],
-        "delta_base": delta_base,
-        "delta_commits": _commits_between(repo, delta_base, candidate),
+        "delta_base": base if delta_commits else None,
+        "delta_commits": delta_commits,
         "reviewed_copies": [],
         "closure": report.get(carried_items.CLOSURE_FIELD, []),
         "escalations": _escalation_list(found),
