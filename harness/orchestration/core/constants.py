@@ -226,6 +226,12 @@ CARRIED_ITEM_RECORD_FIELDS = CARRIED_ITEM_FIELDS | {
 }
 # One entry of a developer brief's commit plan; ``covers`` names definition-of-done items 1..n.
 COMMIT_PLAN_ENTRY_FIELDS = frozenset({"id", "summary", "expected_paths", "covers"})
+# The commit_map entry shapes. A developer-retry under an approved rebase target (issue #504) also
+# maps a rebased copy of a previous-candidate commit, which inherits that commit's plan entry, and
+# a previous-candidate commit the rebase dropped, with the reason.
+COMMIT_MAP_PLANNED_FIELDS = frozenset({"commit_sha", "plan_entry_id"})
+COMMIT_MAP_REBASED_FIELDS = frozenset({"commit_sha", "rebased_from"})
+COMMIT_MAP_DROPPED_FIELDS = frozenset({"rebased_from", "dropped"})
 # One record of a developer report's dod_coverage: the covering commits, or why the item is open.
 DOD_COVERED_FIELDS = frozenset({"dod_item", "commits"})
 DOD_NOT_COVERED_FIELDS = frozenset({"dod_item", "not_covered"})

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from harness.orchestration.core.git_utils import _candidate_commit
@@ -564,6 +564,187 @@ class DivergenceAndCoverageTests(unittest.TestCase):
             commit_plan.coverage(report, _dispatch(retry=True), _identity),
             (None, None),
         )
+
+
+# A developer-retry under an approved rebase target (issue #504): the previous candidate's commits
+# P1 and P2 above the old base, their rebased copies R1 and R2, and a new fix commit N1.
+P1, P2, R1, R2, N1 = "a" * 40, "b" * 40, "c" * 40, "d" * 40, "e" * 40
+PREVIOUS = [P1, P2]
+TARGET = "f" * 40
+
+
+def _rebased(*pairs: tuple[str, str]) -> list[JsonObject]:
+    return [{"commit_sha": copy, "rebased_from": original} for original, copy in pairs]
+
+
+def _dropped(original: str, reason: str) -> JsonObject:
+    return {"rebased_from": original, "dropped": reason}
+
+
+class RebaseMappingTests(unittest.TestCase):
+    def _rebase_retry(self) -> JsonObject:
+        return {**_dispatch(retry=True), "rebase_target_commit": TARGET}
+
+    def _check(
+        self,
+        commit_map: Sequence[object],
+        created: list[str],
+        dispatch: JsonObject | None = None,
+        resolve: Callable[[str], str] = _identity,
+    ) -> None:
+        commit_plan.check_report(
+            {"commit_map": list(commit_map)},
+            dispatch or self._rebase_retry(),
+            created,
+            resolve,
+            previous=PREVIOUS,
+        )
+
+    def _refused(
+        self,
+        commit_map: Sequence[object],
+        created: list[str],
+        message: str,
+        dispatch: JsonObject | None = None,
+    ) -> CoordinatorError:
+        with self.assertRaisesRegex(CoordinatorError, message) as caught:
+            self._check(commit_map, created, dispatch)
+        self.assertTrue(caught.exception.remedy)
+        return caught.exception
+
+    def test_rebased_copies_and_a_new_fix_commit_are_accepted(self) -> None:
+        self._check(
+            [*_rebased((P1, R1), (P2, R2)), *_pairs((N1, "step-2"))], [R1, R2, N1]
+        )
+        self._check(
+            [*_rebased((P1, R1)), _dropped(P2, "already upstream"), *_pairs()],
+            [R1],
+        )
+        self._check(
+            [
+                _dropped(P1, "superseded"),
+                _dropped(P2, "superseded"),
+                *_pairs((N1, "step-1")),
+            ],
+            [N1],
+        )
+
+    def test_rebased_pairs_and_drops_are_read_back_from_the_report(self) -> None:
+        report = {
+            "commit_map": [
+                *_rebased((P1, R1)),
+                _dropped(P2, "already upstream"),
+                *_pairs((N1, "step-2")),
+            ]
+        }
+
+        self.assertEqual(
+            commit_plan.rebased_commits(report, _identity),
+            ([(P1, R1)], [(P2, "already upstream")]),
+        )
+        self.assertEqual(commit_plan.rebased_commits({}, _identity), ([], []))
+
+    def test_every_previous_candidate_commit_is_accounted_for_exactly_once(
+        self,
+    ) -> None:
+        missing = self._refused(
+            [*_rebased((P1, R1)), *_pairs((N1, "step-2"))],
+            [R1, N1],
+            rf"does not account for previous-candidate commits \['{P2}'\]",
+        )
+        self.assertIn("rebased_from", missing.remedy)
+        self.assertIn("dropped", missing.remedy)
+        twice = self._refused(
+            [*_rebased((P1, R1), (P2, R2)), _dropped(P1, "duplicate")],
+            [R1, R2],
+            rf"lists previous-candidate commits more than once: \['{P1}'\]",
+        )
+        self.assertIn("exactly once", twice.remedy)
+        unknown = self._refused(
+            [*_rebased((P1, R1), (P2, R2), (N1, N1))],
+            [R1, R2, N1],
+            rf"not previous-candidate commits: \['{N1}'\]",
+        )
+        self.assertIn(P1, unknown.remedy)
+        self.assertIn("git merge-base", unknown.remedy)
+        empty = self._refused(
+            [*_rebased((P1, R1)), _dropped(P2, "  ")],
+            [R1],
+            f"drops previous-candidate commit {P2} without a reason",
+        )
+        self.assertIn("why the rebase did not carry", empty.remedy)
+
+    def test_every_created_commit_is_mapped_exactly_once(self) -> None:
+        rebased = _rebased((P1, R1), (P2, R2))
+        self._refused(
+            [*rebased, *_pairs((N1, "step-1"))],
+            [R1, R2],
+            rf"did not create: \['{N1}'\]",
+        )
+        self._refused(
+            [*rebased, *_pairs((R2, "step-1"))],
+            [R1, R2],
+            rf"maps created commits more than once: \['{R2}'\]",
+        )
+        self._refused(rebased, [R1, R2, N1], rf"unmapped: \['{N1}'\]")
+
+    def test_new_commits_keep_the_strict_retry_rule(self) -> None:
+        rebased = _rebased((P1, R1), (P2, R2))
+        for name, (planned, created) in {
+            "shared entry": (
+                _pairs((N1, "step-1"), (C1, "step-1")),
+                [R1, R2, N1, C1],
+            ),
+            "unknown entry": (_pairs((N1, "step-9")), [R1, R2, N1]),
+        }.items():
+            with self.subTest(name):
+                refused = self._refused(
+                    [*rebased, *planned], created, "one distinct immutable plan entry"
+                )
+                self.assertIn("inherits the entry of its original", refused.remedy)
+
+    def test_malformed_rebase_entries_are_refused_with_a_remedy(self) -> None:
+        for name, entry in {
+            "three keys": {"commit_sha": R1, "rebased_from": P1, "dropped": "x"},
+            "lone sha": {"commit_sha": R1},
+            "not an object": "entry",
+        }.items():
+            with self.subTest(name):
+                refused = self._refused(
+                    [entry, *_rebased((P2, R2))], [R1, R2], "must be"
+                )
+                self.assertIn("rebased_from", refused.remedy)
+        self._refused(
+            [{"commit_sha": R1, "rebased_from": 1}, *_rebased((P2, R2))],
+            [R1, R2],
+            "string SHAs",
+        )
+        with self.assertRaisesRegex(
+            CoordinatorError, r"commit_map\[\]\.rebased_from entry 'not-a-sha'"
+        ):
+            self._check(
+                [{"commit_sha": R1, "rebased_from": "not-a-sha"}],
+                [R1],
+                resolve=lambda sha: sha
+                if sha in (P1, P2, R1)
+                else _candidate_commit(Path("."), sha),
+            )
+
+    def test_rebased_from_and_dropped_need_an_approved_rebase_target(self) -> None:
+        for name, dispatch in {
+            "developer-retry": _dispatch(retry=True),
+            "null target": {**_dispatch(retry=True), "rebase_target_commit": None},
+            "initial": _dispatch(),
+        }.items():
+            for entry in (*_rebased((P1, R1)), _dropped(P1, "upstream")):
+                with self.subTest(name, entry=entry):
+                    refused = self._refused(
+                        [entry],
+                        [R1],
+                        "belong only to a developer-retry brief with rebase_target_commit",
+                        dispatch,
+                    )
+                    self.assertIn("plan_entry_id", refused.remedy)
 
 
 class NotCoveredTests(unittest.TestCase):
