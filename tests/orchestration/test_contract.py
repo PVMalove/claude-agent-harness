@@ -72,7 +72,7 @@ class ContractErrorInvariantTests(unittest.TestCase):
             and isinstance(node.exc.func, ast.Name)
             and node.exc.func.id == "ContractError"
         ]
-        self.assertEqual(len(sites), 42)
+        self.assertEqual(len(sites), 43)
         for site in sites:
             assert isinstance(site.exc, ast.Call)
             remedies = [
@@ -721,6 +721,26 @@ class LowRiskEligibilityTests(unittest.TestCase):
 
 
 class ZoneFreeConfigHealthTests(unittest.TestCase):
+    def test_access_only_invalid_values_match_the_schema(self) -> None:
+        import re
+
+        schema = json.loads((Path(contract.__file__).parent / "orchestration.schema.json").read_text())
+        invalid: list[object] = [
+            None, {"unknown": {}}, {"defaults": None}, {"defaults": {"mode": "external"}},
+            {"roles": {"unknown": {}}}, {"operations": {"deploy": {}}},
+            *({"defaults": {"network": {"hosts": [host]}}} for host in
+              ("https://github.com", "github.com:443", "*.github.com", "a..b", "a.-b", "a.b-")),
+            *({"defaults": {"filesystem": [{"resource": "cache", "access": "write", "path": path}]}}
+              for path in (None, "", " ", "cache\x00bad")),
+        ]
+        for policy in invalid:
+            value: dict[str, object] = {"access_policy": policy}
+            with self.subTest(policy=policy):
+                self.assertTrue(self._problems(value))
+        path_schema = schema["definitions"]["accessComponent"]["properties"]["filesystem"]["items"]["properties"]["path"]
+        for path in ("", " ", "cache\x00bad"):
+            self.assertIsNone(re.search(path_schema["pattern"], path))
+
     def _problems(self, config: dict[str, object]) -> list[str]:
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(directory, ignore_errors=True))

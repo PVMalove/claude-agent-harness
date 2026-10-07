@@ -31,7 +31,12 @@ TRANSITION_FIELDS = (
 )
 # Bound only when a brief carries a non-empty carried-items section (issue #499) or a human-approved
 # rebase target (issue #504), so every transition without one keeps the digest it always had.
-OPTIONAL_TRANSITION_FIELDS = ("carried_items_sha256", "rebase_target_sha")
+# A new dispatch (issue #624) always binds the sha256 of its resolved runtime access plan.
+OPTIONAL_TRANSITION_FIELDS = (
+    "carried_items_sha256",
+    "rebase_target_sha",
+    "runtime_access_sha256",
+)
 # A role that only reads (or the publish boundary) is re-run as a new dispatch, never resumed, so it
 # alone carries a retry idempotency key.
 KEYED_READ_ONLY_ROLES = ("architect", "code-review", "qa")
@@ -113,8 +118,8 @@ def transition_digest(transition: Mapping[str, object]) -> str:
         raise GuardError(
             "a transition must carry exactly the fields an approval binds",
             remedy=f"provide exactly: {', '.join(TRANSITION_FIELDS)}, plus "
-            "carried_items_sha256 only when the brief carries items and rebase_target_sha only "
-            "when it carries an approved rebase target",
+            "carried_items_sha256 only when the brief carries items, rebase_target_sha only "
+            "when it carries an approved rebase target and runtime_access_sha256 for a new brief",
         )
     return _digest(dict(transition))
 

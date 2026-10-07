@@ -208,6 +208,7 @@ DISPATCH_FIELDS = {
     "commit_plan_divergence",
     "carried_items",
     "rebase_target_commit",
+    "runtime_access",
 }
 # The carried-items brief section (issue #499) is one shared channel keyed by the kind of source
 # that raised an item; a later kind adds its value here without changing the section's shape.

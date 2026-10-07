@@ -113,6 +113,8 @@ class RuntimeAccessObservation:
     hosts: tuple[str, ...]
     filesystem: tuple[tuple[str, str], ...]
     applied: bool = False
+    dispatch_id: str | None = None
+    handed_off: bool = False
 
 
 class RuntimeAccess(Protocol):
@@ -122,6 +124,16 @@ class RuntimeAccess(Protocol):
         ...
 
     def apply(self, brief: Mapping[str, object], observation: RuntimeAccessObservation) -> RuntimeAccessObservation | None:
+        ...
+
+    def handoff(self, brief: Mapping[str, object], observation: RuntimeAccessObservation,
+                command: tuple[str, ...] | None) -> RuntimeAccessObservation | None:
+        """Launch this exact worker natively and return its bound receipt.
+
+        The implementation owns the native launch and preserves native approval. For external
+        transport it integrates the supplied adapter command into that same launch. It must not
+        merely apply permissions to another environment or return parent-process evidence.
+        """
         ...
 
 

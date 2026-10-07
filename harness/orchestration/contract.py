@@ -433,6 +433,12 @@ def validate_brief_policy(
 ) -> tuple[JsonObject, JsonObject]:
     """Валидировать относящуюся к политикам часть утверждённого неизменяемого задания диспетчеризации."""
     reject_sensitive(brief, "dispatch brief")
+    from .runtime_access import AccessError, validate_binding
+
+    try:
+        validate_binding(brief)
+    except AccessError as exc:
+        raise ContractError(exc.message, remedy=exc.remedy) from exc
     approval = brief.get("coordinator_approval")
     # `transition_digest` binds the approval to the exact transition it was given for; a brief
     # written before that field existed carries the historical two-field approval.
@@ -922,7 +928,8 @@ def access_policy_problems(value: object, roles: set[str]) -> list[str]:
                     or set(requirement) - {"resource", "access", "path"}
                     or requirement.get("resource") not in ACCESS_RESOURCES
                     or requirement.get("access") not in ("read", "write")
-                    or (requirement.get("resource") == "cache" and not non_empty(requirement.get("path")))
+                    or (requirement.get("resource") == "cache" and (
+                        not non_empty(requirement.get("path")) or "\x00" in requirement["path"]))
                     or (requirement.get("resource") != "cache" and "path" in requirement)):
                     errors.append(f"{label}.filesystem has an invalid resource/access requirement; cache needs an explicit path")
 

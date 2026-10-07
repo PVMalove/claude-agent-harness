@@ -13,11 +13,13 @@ from datetime import UTC, datetime
 from dataclasses import asdict
 from . import extensions
 from pathlib import Path
+from typing import cast
 
 from harness.errors import HarnessError
 from harness.storage import storage_root
 from .contract import access_policy_problems
 from .core.utils import JsonObject
+from .core.constants import ACCESS_RESOURCES
 
 
 class AccessError(HarnessError):
@@ -35,6 +37,73 @@ def _root(path: Path) -> str:
         raise AccessError('access requires an entire filesystem or home directory',
                           remedy='select a specific project, Git, storage or cache directory')
     return str(resolved)
+
+
+def validate_plan(plan: object) -> None:
+    """Reject malformed plans before trusting their checksum or consulting a provider."""
+    remedy = 'create a new dispatch and approval for a valid resolved access plan'
+    fields = {'mode', 'network', 'filesystem', 'sources', 'requirements',
+              'runtime_extension', 'plan_digest'}
+    if not isinstance(plan, dict) or set(plan) != fields:
+        raise AccessError('runtime access plan schema mismatch', remedy=remedy)
+    components = {key: plan[key] for key in ('mode', 'network')}
+    if access_policy_problems({'defaults': components}, set()):
+        raise AccessError('runtime access plan has invalid mode or network', remedy=remedy)
+    hosts = plan['network']['hosts']
+    if hosts != sorted(set(host.lower() for host in hosts)):
+        raise AccessError('runtime access hosts are not canonical', remedy=remedy)
+    sources = plan['sources']
+    if (not isinstance(sources, dict) or set(sources) != {'mode', 'network', 'filesystem'}
+        or any(not isinstance(value, str) or not value or
+               (value not in ('legacy', 'default', 'defaults')
+                and not value.startswith(('roles.', 'operations.'))) for value in sources.values())
+        or not isinstance(plan['runtime_extension'], str) or not plan['runtime_extension'].strip()):
+        raise AccessError('runtime access sources or extension are invalid', remedy=remedy)
+    for field in ('filesystem', 'requirements'):
+        entries = plan[field]
+        if not isinstance(entries, list):
+            raise AccessError(f'runtime access {field} must be a list', remedy=remedy)
+        for item in entries:
+            if (not isinstance(item, dict) or set(item) != {'resource', 'path', 'access'}
+                or item['resource'] not in (*ACCESS_RESOURCES, 'artifacts')
+                or item['access'] not in ('read', 'write')
+                or not isinstance(item['path'], str) or not Path(item['path']).is_absolute()
+                or _root(Path(item['path'])) != item['path']):
+                raise AccessError(f'runtime access {field} has an invalid real path requirement', remedy=remedy)
+        if len({(item['resource'], item['path'], item['access']) for item in entries}) != len(entries):
+            raise AccessError(f'runtime access {field} has duplicate requirements', remedy=remedy)
+    legacy = all(value == 'legacy' for value in sources.values())
+    if legacy:
+        if plan['mode'] != 'inherit' or hosts or plan['filesystem'] or plan['requirements'] or plan['runtime_extension'] != 'none':
+            raise AccessError('legacy runtime access must preserve empty inherit', remedy=remedy)
+    elif (any(value == 'legacy' for value in sources.values())
+          or not {'checkout', 'git_common', 'shared_storage', 'artifacts'} <=
+          {item['resource'] for item in plan['requirements']}
+          or any(item not in plan['requirements'] for item in plan['filesystem'])):
+        raise AccessError('runtime access plan omits operational requirements', remedy=remedy)
+    if plan['plan_digest'] != _digest(plan):
+        raise AccessError('runtime access plan digest mismatch', remedy=remedy)
+
+
+def validate_binding(brief: Mapping[str, object]) -> None:
+    """A historical brief has neither field; a new one binds the entire canonical plan."""
+    transition = brief.get('transition')
+    bound = transition.get('runtime_access_sha256') if isinstance(transition, dict) else None
+    if 'runtime_access' not in brief and bound is None:
+        return
+    validate_plan(brief.get('runtime_access'))
+    plan = cast(JsonObject, brief['runtime_access'])
+    if bound != plan['plan_digest']:
+        raise AccessError('runtime access plan is not bound to its approval transition',
+                          remedy='propose and approve a new dispatch for this access plan')
+    if plan['requirements']:
+        checkout = [{'resource': 'checkout', 'path': str(Path(str(brief.get('worktree'))).resolve()),
+                     'access': 'write' if brief.get('access') == 'write' else 'read'}]
+        if checkout[0] not in plan['requirements'] or (brief.get('access') == 'read-only' and any(
+            item['resource'] in ('checkout', 'git_common', 'shared_storage') and item['access'] == 'write'
+            for item in plan['requirements'])):
+            raise AccessError('runtime access violates the brief checkout or read-only boundary',
+                              remedy='propose and approve a plan matching the role manifest and worktree')
 
 
 def resolve_plan(repo: Path, worktree: Path, config: Mapping[str, object], role: str,
@@ -109,8 +178,7 @@ _REMEDY = ("prepare the named roots, hosts and mode in a new runtime session, se
 
 def verify_plan(plan: JsonObject, transport: str) -> tuple[JsonObject, extensions.RuntimeAccessObservation | None]:
     """Ask the pinned native implementation for fresh, worker-scoped evidence."""
-    if plan.get('plan_digest') != _digest(plan):
-        raise AccessError('access plan digest mismatch', remedy='create a new dispatch and approval for the resolved access plan')
+    validate_plan(plan)
     if plan['mode'] == 'inherit' and all(source == 'legacy' for source in plan['sources'].values()) and not plan['filesystem'] and not plan['requirements'] and not plan['network']['hosts']:
         return {'status': 'legacy-inherit', 'verified': [], 'unverified': [], 'remedy': None}, None
     provider = extensions.runtime_access(plan['runtime_extension'])
@@ -156,7 +224,8 @@ def _observation_problem(plan: JsonObject, transport: str,
     return None
 
 
-def apply_plan(brief: JsonObject, transport: str) -> JsonObject:
+def apply_plan(brief: JsonObject, transport: str, *, handoff: bool = False,
+               command: tuple[str, ...] | None = None) -> JsonObject:
     """Gate handoff and apply the approved plan through the native implementation.
 
     A new observation comes from the pinned implementation on every send. Neither current
@@ -173,6 +242,9 @@ def apply_plan(brief: JsonObject, transport: str) -> JsonObject:
     if verification['status'] != 'verified' or observation is None:
         raise AccessError(str(verification['reason']), remedy=_REMEDY)
     provider = extensions.runtime_access(plan['runtime_extension'])
+    launch = getattr(provider, 'handoff', None)
+    if handoff and not callable(launch):
+        raise AccessError('native access provider cannot bind access to the actual worker handoff', remedy=_REMEDY)
     try:
         applied = provider.apply(brief, observation)
     except Exception as exc:
@@ -182,4 +254,17 @@ def apply_plan(brief: JsonObject, transport: str) -> JsonObject:
         or applied.environment_id != observation.environment_id
         or applied.launch_id != observation.launch_id):
         raise AccessError(reason or 'native access application or matching inheritance was not confirmed', remedy=_REMEDY)
-    return {'status': 'applied', 'evidence': asdict(applied)}
+    if handoff:
+        assert callable(launch)  # The gate above refuses providers without native handoff.
+        try:
+            receipt = launch(brief, applied, command)
+        except Exception as exc:
+            raise AccessError('native worker handoff failed', remedy=_REMEDY) from exc
+        reason = _observation_problem(plan, transport, receipt)
+        if (reason or receipt is None or not receipt.applied or not receipt.handed_off
+            or receipt.dispatch_id != brief['dispatch_id']
+            or receipt.launch_id != applied.launch_id or receipt.environment_id != applied.environment_id):
+            raise AccessError(reason or 'native worker handoff receipt does not bind the approved dispatch and launch', remedy=_REMEDY)
+        applied = receipt
+    return {'status': 'applied', 'dispatch_id': brief.get('dispatch_id'),
+            'plan_digest': plan['plan_digest'], 'evidence': asdict(applied)}
