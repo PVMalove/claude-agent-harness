@@ -12388,6 +12388,84 @@ class DeltaReviewHelperTests(unittest.TestCase):
             },
         )
 
+    def _accounted(self, *statuses: tuple[str, str]) -> JsonObject:
+        """A code-review report whose review accounts for each ``(item_id, status)`` pair and
+        found one Standards warning of its own."""
+        axis = {"severity": "none", "findings": [], "risks": "none", "blockers": "none"}
+        warning = {"severity": "warning", "summary": "new", "evidence": "x.py:1"}
+        return {
+            "role": "code-review",
+            "review": {
+                "standards": {**axis, "severity": "warning", "findings": [warning]},
+                "spec": dict(axis),
+                "carried_items": [
+                    {"item_id": item_id, "status": status, "evidence": "x.py:2"}
+                    for item_id, status in statuses
+                ],
+            },
+        }
+
+    def test_a_retried_delta_review_hands_on_the_developer_items_it_did_not_close(
+        self,
+    ) -> None:
+        """A retried delta-review hands the next developer-retry the review findings and the
+        developer's incomplete items its brief carried and its review did not mark closed, each
+        once next to the batch's open developer items; its own findings are numbered after the
+        highest carried review finding. An incomplete item for another role stays behind."""
+        open_item = self._item("incomplete-item-1", target_role="developer")
+        closed_item = self._item("incomplete-item-2", target_role="developer")
+        other_role = self._item("incomplete-item-3", target_role="qa")
+        batch_item = self._item("incomplete-item-4", target_role="developer")
+        findings = [self._item("review-finding-1"), self._item("review-finding-3")]
+        dispatch = {
+            "carried_items": {
+                "review-finding": findings,
+                "incomplete-item": [open_item, closed_item, other_role],
+            }
+        }
+        report = self._accounted(
+            ("review-finding-1", "closed"),
+            ("review-finding-3", "unverified"),
+            ("incomplete-item-1", "open"),
+            ("incomplete-item-2", "closed"),
+        )
+        entry = {
+            "role": "code-review",
+            "dispatch_id": "dispatch-review",
+            "report_sha256": "f" * 64,
+        }
+
+        self.assertEqual(
+            carried_items._review_handoff(dispatch, report),
+            ([findings[1]], [open_item], 3),
+        )
+        self.assertEqual(carried_items._review_handoff({}, report), ([], [], 0))
+        with (
+            mock.patch.object(
+                carried_items, "open_coordinator_findings", return_value=[]
+            ),
+            mock.patch.object(
+                carried_items,
+                "open_incomplete_items",
+                return_value=[batch_item, open_item],
+            ),
+            mock.patch.object(carried_items, "_pending_report", return_value=report),
+            mock.patch.object(carried_items, "_load_dispatch", return_value=dispatch),
+        ):
+            section = carried_items.retry_section(Path("root"), {}, entry)
+
+        self.assertEqual(
+            [
+                (item["item_id"], item["source"]["dispatch_id"])
+                for item in section["review-finding"][1:]
+            ],
+            [("review-finding-4", "dispatch-review")],
+        )
+        self.assertEqual(
+            (section["review-finding"][0], section["incomplete-item"]),
+            (findings[1], [batch_item, open_item]),
+        )
+
 
 class CoordinatorGuardHelperTests(unittest.TestCase):
     """Direct-call pins for the config/brief guards whose parameters accept arbitrary JSON."""
