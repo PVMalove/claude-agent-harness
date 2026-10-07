@@ -780,3 +780,13 @@ class ZoneFreeConfigHealthTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AccessPolicyContractTests(unittest.TestCase):
+    def test_modes_are_independent_of_transport(self) -> None:
+        for mode in ("inherit", "sandbox", "unsandboxed"):
+            problems = contract.access_policy_problems({"defaults": {"mode": mode}}, {"developer"})
+            self.assertEqual(problems, [])
+        for bad in (None, "external", {"defaults": {"mode": "external"}}, {"defaults": {"network": {"hosts": ["https://github.com"]}}}):
+            with self.subTest(bad=bad):
+                self.assertTrue(contract.access_policy_problems(bad, {"developer"}))
