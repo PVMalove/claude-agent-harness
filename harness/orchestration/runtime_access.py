@@ -1,0 +1,100 @@
+"""Resolve project access without treating settings as runtime permission evidence.
+
+Filesystem permission roots do not replace source write_paths, tool policy or native approval.
+No resolver call writes files, probes network hosts or changes a machine profile.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+from collections.abc import Mapping
+from pathlib import Path
+
+from harness.errors import HarnessError
+from harness.storage import storage_root
+from .contract import access_policy_problems
+from .core.utils import JsonObject
+
+
+class AccessError(HarnessError):
+    """The requested role access cannot be safely resolved or verified."""
+
+
+def _digest(plan: Mapping[str, object]) -> str:
+    data = {key: value for key, value in plan.items() if key != 'plan_digest'}
+    return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def _root(path: Path) -> str:
+    resolved = path.expanduser().resolve()
+    if resolved == Path(resolved.anchor) or resolved == Path.home().resolve():
+        raise AccessError('access requires an entire filesystem or home directory',
+                          remedy='select a specific project, Git, storage or cache directory')
+    return str(resolved)
+
+
+def resolve_plan(repo: Path, worktree: Path, config: Mapping[str, object], role: str,
+                 access: str, *, operation: str | None = None) -> JsonObject:
+    """Replace specified components, resolve real roots and retain mandatory artifacts.
+
+    A plan without authored access preserves historical inherit behavior. An authored policy
+    also exposes operational requirements that an empty filesystem override cannot remove.
+    """
+    policy = config.get('access_policy')
+    if policy is None:
+        plan: JsonObject = {'mode': 'inherit', 'network': {'hosts': []}, 'filesystem': [],
+                            'sources': {key: 'legacy' for key in ('mode', 'network', 'filesystem')},
+                            'requirements': [], 'runtime_extension': 'none'}
+        plan['plan_digest'] = _digest(plan)
+        return plan
+    problems = access_policy_problems(policy, {role})
+    # Other role overrides are validated by the config contract, not this selected-role view.
+    problems = [problem for problem in problems if 'access_policy.roles has unknown name' not in problem]
+    if problems:
+        raise AccessError('; '.join(problems), remedy='fix access_policy and repeat preflight before approval')
+    assert isinstance(policy, dict)
+    selected: JsonObject = {'mode': 'inherit', 'network': {'hosts': []}, 'filesystem': []}
+    sources: JsonObject = {key: 'default' for key in selected}
+    layers = [('defaults', policy.get('defaults', {}))]
+    for section, name in (('roles', role), ('operations', operation)):
+        overrides = policy.get(section, {})
+        if name is not None and isinstance(overrides, dict) and name in overrides:
+            layers.append((f'{section}.{name}', overrides[name]))
+    for label, layer in layers:
+        assert isinstance(layer, dict)
+        for key in selected:
+            if key in layer:
+                selected[key] = layer[key]
+                sources[key] = label
+    result = subprocess.run(['git', '-C', str(worktree), 'rev-parse', '--git-common-dir'],
+                            capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise AccessError('cannot resolve shared Git metadata', remedy='prepare a registered Git worktree and repeat preflight')
+    common = Path(result.stdout.strip())
+    roots = {'checkout': worktree, 'git_common': common if common.is_absolute() else worktree / common,
+             'shared_storage': storage_root(repo, require_main_checkout=True)}
+    filesystem: list[JsonObject] = []
+    for item in selected['filesystem']:
+        resource = item['resource']
+        path = worktree / Path(item['path']).expanduser() if resource == 'cache' else roots[resource]
+        if access == 'read-only' and item['access'] == 'write' and resource != 'cache':
+            raise AccessError(f'read-only role cannot request write access to {resource}',
+                              remedy='keep source and Git roots read-only; operational scratch is added separately')
+        filesystem.append({'resource': resource, 'access': item['access'], 'path': _root(path)})
+    requirements = [
+        {'resource': 'checkout', 'path': _root(worktree), 'access': 'write' if access == 'write' else 'read'},
+        {'resource': 'git_common', 'path': _root(roots['git_common']), 'access': 'write' if access == 'write' else 'read'},
+        {'resource': 'shared_storage', 'path': _root(roots['shared_storage']), 'access': 'read'},
+        {'resource': 'artifacts', 'path': _root(roots['shared_storage'] / '.sandboxes/scratch'), 'access': 'write'},
+    ]
+    for item in filesystem:
+        if item not in requirements:
+            requirements.append(item)
+    extensions = config.get('extensions', {})
+    extension = extensions.get('runtime_access', 'none') if isinstance(extensions, dict) else 'none'
+    plan = {'mode': selected['mode'], 'network': {'hosts': sorted(set(host.lower() for host in selected['network']['hosts']))},
+            'filesystem': filesystem, 'sources': sources, 'requirements': requirements,
+            'runtime_extension': extension}
+    plan['plan_digest'] = _digest(plan)
+    return plan
