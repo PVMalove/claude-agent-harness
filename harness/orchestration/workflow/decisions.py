@@ -1299,17 +1299,24 @@ def _decide_retry_route(
         }
     if routing["next_action"] == "developer-retry":
         # The closed list the developer-retry brief carries (issue #503), recorded with the route.
+        # A developer-retry with items is a fix-forward; a tooling-retry keeps its own route.
         entry = next(
             item
             for item in batch.get("dispatches", [])
             if item.get("dispatch_id") == dispatch["dispatch_id"]
         )
-        routing = {
-            **routing,
-            "retry_item_ids": carried_items.section_item_ids(
-                carried_items.retry_section(root, batch, entry)
-            ),
-        }
+        item_ids = carried_items.section_item_ids(
+            carried_items.retry_section(root, batch, entry)
+        )
+        routing = {**routing, "retry_item_ids": item_ids}
+        if item_ids and routing["route"] == "developer-retry":
+            routing = {
+                **routing,
+                "route": "fix-forward",
+                "rationale": f"{routing['rationale']} It is a fix-forward: new commits on top of "
+                f"the candidate close the carried items {', '.join(item_ids)} without rewriting "
+                "history.",
+            }
     _require_route(routing["route"])
     return routing
 

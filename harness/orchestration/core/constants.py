@@ -62,6 +62,8 @@ RETRY_REASON_CATEGORIES = (
 # ``bypass-rerun`` (issue #560) re-runs a read-only stage whose role worked around a block.
 # ``narrowed-retry`` (issue #501) re-runs a read-only stage on the incomplete items its report
 # listed, and only on them; an item a tool kept the role from makes that retry ``tooling-retry``.
+# ``fix-forward`` (issue #503) is a ``developer-retry`` whose brief carries a non-empty closed list
+# of carried items: new commits on top of the candidate close them without rewriting history.
 RECOVERY_ROUTES = (
     "developer-retry",
     "same-candidate-rerun",
@@ -73,6 +75,7 @@ RECOVERY_ROUTES = (
     "tooling-retry",
     "bypass-rerun",
     "narrowed-retry",
+    "fix-forward",
 )
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {

@@ -3215,7 +3215,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             action="developer-retry",
             category="requirements",
             candidate=candidate,
-            route="developer-retry",
+            route="fix-forward",
         )
         self.assertEqual(routing["previous_role"], "code-review")
         retry = self._dispatch(batch["batch_id"], "developer")["brief"]
@@ -3800,7 +3800,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         decision = handoff["retry_decision"]
         self.assertEqual(
             (decision["dispatch_id"], decision["route"]),
-            (review["dispatch_id"], "developer-retry"),
+            (review["dispatch_id"], "fix-forward"),
         )
         self.assertEqual(decision["findings"], [{"axis": "spec", **blocker}])
         self.assertFalse(start["context_estimate"]["compacted"])
@@ -7555,7 +7555,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         decided = self._decide(self.batch_id, "retry")
         retry = self._dispatch(self.batch_id, "developer")["brief"]
 
-        self.assertEqual(self._routing(decided)["route"], "developer-retry")
+        self.assertEqual(self._routing(decided)["route"], "fix-forward")
         self.assertEqual(decisions._developer_retry_count(decided), 1)
         section = retry["carried_items"]
         self.assertEqual(
@@ -7645,6 +7645,55 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             [item["source"]["kind"] for item in self._carried(retry)],
             ["coordinator-finding", "review-finding"],
         )
+
+    def test_a_retry_with_carried_items_records_the_fix_forward_route(self) -> None:
+        candidate = self._reported_review_with_items()
+        preview = self._packet()["route_preview"]["retry"]
+
+        decided = self._decide(self.batch_id, "retry")
+
+        routing = self._assert_route(
+            decided,
+            role="developer",
+            action="developer-retry",
+            category="code",
+            candidate=candidate,
+            route="fix-forward",
+        )
+        self.assertEqual(preview["route"], "fix-forward")
+        self.assertIn(
+            "fix-forward: new commits on top of the candidate close the carried items "
+            "coordinator-finding-1, review-finding-1 without rewriting history",
+            routing["rationale"],
+        )
+        self.assertEqual(decided["required_next_role"], "developer")
+        self.assertEqual(decisions._developer_retry_count(decided), 1)
+        self.assertEqual(
+            self._decision_audits(self.batch_id)[-1]["route"], "fix-forward"
+        )
+
+    def test_a_retry_without_carried_items_keeps_the_developer_retry_route(
+        self,
+    ) -> None:
+        for stage in ("developer", "code-review"):
+            with self.subTest(stage=stage):
+                self._reset()
+                batch_id = cast(str, self._create_batch()["batch_id"])
+                self._accepted_architect(batch_id)
+                if stage == "developer":
+                    self._reported_developer(batch_id)
+                else:
+                    reviewed = self._accepted_candidate(batch_id)
+                    self._reported_review(batch_id, reviewed)
+
+                decided = self._decide(batch_id, "retry", reason_category="code")
+
+                routing = self._routing(decided)
+                self.assertEqual(
+                    (routing["route"], routing["retry_item_ids"]),
+                    ("developer-retry", []),
+                )
+                self.assertNotIn("fix-forward", routing["rationale"])
 
     def test_a_retried_developer_report_hands_the_same_closed_list_to_the_next_retry(
         self,
@@ -8119,7 +8168,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         retried = self._decide(batch_id, "retry")
         retry = self._dispatch(batch_id, "developer")["brief"]
 
-        self.assertEqual(self._routing(retried)["route"], "developer-retry")
+        self.assertEqual(self._routing(retried)["route"], "fix-forward")
         self.assertEqual(
             [item["item_id"] for item in self._carried(retry)],
             ["coordinator-finding-1", "review-finding-1"],
@@ -9133,7 +9182,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                     self._route(stage, self._report(standards=None), "block-bypass")
                 self.assertIn("developer reason category", raised.exception.remedy)
 
-    def test_the_recovery_routes_are_exactly_the_documented_ten(self) -> None:
+    def test_the_recovery_routes_are_exactly_the_documented_eleven(self) -> None:
         self.assertEqual(
             constants.RECOVERY_ROUTES,
             (
@@ -9147,6 +9196,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "tooling-retry",
                 "bypass-rerun",
                 "narrowed-retry",
+                "fix-forward",
             ),
         )
         for route in constants.RECOVERY_ROUTES:
