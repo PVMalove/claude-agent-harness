@@ -33,7 +33,8 @@ def _digest(plan: Mapping[str, object]) -> str:
 
 def _root(path: Path) -> str:
     resolved = path.expanduser().resolve()
-    if resolved == Path(resolved.anchor) or resolved == Path.home().resolve():
+    home = Path.home().resolve()
+    if resolved == Path(resolved.anchor) or resolved == home or resolved in home.parents:
         raise AccessError('access requires an entire filesystem or home directory',
                           remedy='select a specific project, Git, storage or cache directory')
     return str(resolved)
@@ -183,7 +184,12 @@ def verify_plan(plan: JsonObject, transport: str) -> tuple[JsonObject, extension
         return {'status': 'legacy-inherit', 'verified': [], 'unverified': [], 'remedy': None}, None
     provider = extensions.runtime_access(plan['runtime_extension'])
     # The inert extension uses the telemetry observe signature and is never a permission proof.
-    observation = None if plan['runtime_extension'] == 'none' else provider.observe(plan, transport)
+    observation = None
+    if plan['runtime_extension'] != 'none':
+        try:
+            observation = provider.observe(plan, transport)
+        except Exception:  # A failing provider is unverified evidence, never a crash of preflight.
+            observation = None
     reason = _observation_problem(plan, transport, observation)
     summary: JsonObject = {'status': 'unverified' if reason else 'verified', 'reason': reason,
                            'required': {'hosts': plan['network']['hosts'], 'filesystem': plan['requirements']},
