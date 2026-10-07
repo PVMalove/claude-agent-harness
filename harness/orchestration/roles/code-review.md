@@ -50,13 +50,16 @@ candidate resolves it and the evidence shows that, `open` when the defect is sti
 omitted, `open` or `unverified` item keeps the report from being clean: it is never accepted
 automatically, and a retry of a report with an `open` item routes to a developer retry.
 
-An `incomplete-item` entry of `carried_items` is a brief item an earlier read-only role left
-undone. Account for it in `review.carried_items` like any carried item: `closed` when this review
-did the item, and `unverified` when it did not, with the item listed again in `incomplete_items`.
-Do not mark it `open`: `open` claims a code defect and routes the retry to a developer. A defect
-the item reveals is an ordinary finding on its axis. When part of this review's own brief stays
-undone, list each undone item in `incomplete_items` under the common contract; its `target_role`
-is `code-review` (a narrowed review on the same candidate) or `qa`.
+An `incomplete-item` entry of `carried_items` whose `source.target_role` is `code-review` is a
+brief item an earlier read-only role left undone for this review. Account for it in
+`review.carried_items` like any carried item: `closed` when this review did the item, and
+`unverified` when it did not, with the item listed again in `incomplete_items`. Do not mark it
+`open`: `open` claims a code defect and routes the retry to a developer. A defect the item reveals
+is an ordinary finding on its axis. An `incomplete-item` whose `source.target_role` is `developer`
+reaches only a delta-review brief and follows "Delta-review after a fix-forward" below instead.
+When part of this review's own brief stays undone, list each undone item in `incomplete_items`
+under the common contract; its `target_role` is `code-review` (a narrowed review on the same
+candidate) or `qa`.
 
 When the approved verification cannot run at all (unavailable Bash/WSL wrapper, transport failure,
 rate limit, context limit), report `outcome: blocked` with empty `findings` and severity `none` on
@@ -114,9 +117,11 @@ and findings, never `inherited_from`. In delta mode `carried_items` also holds t
 `review-finding` items and the developer's `incomplete-item` entries the fix-forward closed. Account
 for each one in `review.carried_items` like any carried item: `closed` when the delta closes it as
 its `expected_evidence` asks (the `closure` names the closing commits), `open` when the defect is
-still there, and `unverified` when it could not be checked. A defect the delta adds is an ordinary
-finding on its axis. A retry of this review hands every item it did not mark `closed` to the next
-developer-retry, together with its own findings.
+still there or the developer's item is still undone, and `unverified` when it could not be checked.
+Unlike an item handed to this review, a developer's `incomplete-item` may be `open`: the
+developer, not this review, owes it, and its retry goes back to a developer. A defect the delta
+adds is an ordinary finding on its axis. A retry of this review hands every item it did not mark
+`closed` to the next developer-retry, together with its own findings.
 
 With `mode: full`, the section lists the `escalations` that ruled a delta out (`new-risk-trigger`,
 `file-outside-carried-items`, `patch-id-mismatch` or `no-new-commits`, each with its evidence).
