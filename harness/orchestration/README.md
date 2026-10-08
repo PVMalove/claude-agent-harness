@@ -23,6 +23,7 @@ lifecycle — в [playbook.md](./playbook.md), границы ролей — в 
 | `workflow/` | По модулю на стадию batch: планирование, preflight, brief, dispatch, решения, отчёты, доставка. |
 | `contract.py` | Проверка конфигурации, role manifest'ов, brief и report; источник `harness health` для оркестрации. |
 | `qa_lane.py` | Очередь clean-room QA: один QA за раз, аренда с истечением. |
+| `runtime_access.py`, `operation_access.py` | План доступа (`access_policy`) и его проверка перед QA, Git и publish, которые выполняет сам coordinator. |
 | `dispatch_preflight.py`, `runtime_attestation.py`, `operational_guards.py` | Проверка worktree, ветки и SHA воркера; защитные проверки перед dispatch. |
 | `advisory.py`, `extensions.py` | Advisory-вызовы и подключаемые extensions (health, классификатор retry, уведомления). |
 | `roles/` | Role manifest'ы: режим (`read-only`/`write`), требуемые capability, risk triggers. |
@@ -230,6 +231,18 @@ lifecycle — в [playbook.md](./playbook.md), границы ролей — в 
 `context_telemetry_provider`, `human_notifier`. Значение — `none` (по умолчанию), имя,
 зарегистрированное хост-процессом, или `module:factory`. Неизвестное имя — ошибка. Extensions не
 добавляют модели инструментов и не меняют системный промпт.
+
+### Доступ QA, Git и publish
+
+Операции `qa`, `git` и `publish` выполняет сам coordinator, а не worker и не runtime adapter. Если в
+проекте есть `access_policy`, перед действием coordinator выбирает план операции (закреплённый в
+approved brief для `qa run` и `dispatch publish`, из живого конфига — для `integration local-qa`,
+`integration refresh` и `integration resolve`) и проверяет его на своём процессе: режим, разрешение
+плана, запись в Git metadata, общее хранилище, каталог clean-room checkout или checkout batch, пути
+`cache` и remote. Override роли (`roles`) такой операции не применяется. Отказ, неподдерживаемый
+режим и непроверенное требование останавливают действие до любых изменений и называют ресурс, путь
+и средство исправления. Подробности и диагностика — в
+[руководстве](../docs/backend-orchestration.md#доступ-qa-git-и-publish).
 
 ## Пример
 

@@ -2,6 +2,17 @@
 
 Изменения выпусков записываются в формате [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/) и версионируются по SemVer.
 
+## [Unreleased]
+
+### Added
+
+- Backend-оркестрация: `access_policy` применяется к QA, Git и publish, которые выполняет сам coordinator. `qa run`, `integration local-qa`, `integration refresh`, `integration resolve` и `dispatch publish` до первого изменения проверяют план операции (закреплённый в brief или из живого конфига, без override роли): режим, запись в Git metadata, общее хранилище, каталог checkout, пути `cache` и remote. Отказ, неподдерживаемый режим и непроверенное требование останавливают действие со структурным evidence и конкретным remedy; нативная поддержка режимов `sandbox` и `unsandboxed` не заявляется (#617).
+- Единый классификатор отказов Git (`metadata-write-denied`, `remote-access-denied`, `remote-unreachable`) и ошибка `GitAccessError`: отказ записи метаданных или remote при rebase и push больше не выглядит как конфликт или обычный сбой Git (#617).
+
+### Changed
+
+- `qa run` снимает lease, запись очереди и состояние dispatch после любого сбоя, наступившего после взятия lease, а отказ доступа записывает попыткой (`qa-lane/attempts`, стадия `access`) до постановки в очередь. Сбои подготовки clean-room checkout в `gate_runner` теперь `GateRunnerError` (#617).
+
 ## [1.3.0] - 2026-10-06
 
 ### Added
