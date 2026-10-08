@@ -856,6 +856,26 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 batch,
                 context_package_id=context_package["context_package_id"],
             )
+            mismatch = (context_package_freshness or {}).get("memory_mismatch")
+            if mismatch is not None:
+                if mismatch["path"] is None:
+                    found = "memory sources cannot be read"
+                elif mismatch["actual_source_hash"] is None:
+                    found = (
+                        f"memory source {mismatch['path']} is unavailable or revoked, "
+                        f"expected source_hash {mismatch['expected_source_hash']}"
+                    )
+                else:
+                    found = (
+                        f"memory source {mismatch['path']} has source_hash "
+                        f"{mismatch['actual_source_hash']}, expected "
+                        f"{mismatch['expected_source_hash']}"
+                    )
+                raise CoordinatorError(
+                    f"newly registered Context Package is stale: frozen {found}",
+                    remedy="run `harness memory rebuild .` from the main checkout and retry, "
+                    "or dispatch with --no-memory",
+                )
             if (
                 context_package_freshness is None
                 or context_package_freshness["status"] != "fresh"

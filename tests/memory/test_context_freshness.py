@@ -81,6 +81,17 @@ def test_frozen_memory_source_freshness(
             result["memory_diagnostic"]
             == "frozen memory source changed, unavailable or revoked"
         )
+        pointer = package["memory"]["pointers"][0]
+        mismatch = result["memory_mismatch"]
+        assert mismatch["actual_source_hash"] != pointer["source_hash"]
+        if change == "symlink":
+            # A symlinked source breaks the allowlist walk itself, before any pointer is read.
+            assert mismatch["path"] is None
+        else:
+            assert mismatch["path"] == pointer["path"]
+            assert mismatch["expected_source_hash"] == pointer["source_hash"]
+    else:
+        assert "memory_mismatch" not in result
 
 
 @pytest.mark.parametrize(

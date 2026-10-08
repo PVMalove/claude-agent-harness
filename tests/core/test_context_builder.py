@@ -1134,6 +1134,7 @@ class MemoryPackageTests(ContextBuilderFixture):
 
     def test_workflow_freezes_local_memory_once_and_reuses_matching_query(self) -> None:
         from harness.memory import build
+        from harness.orchestration.ledger.ledger_ops import _load_context_package
         from harness.orchestration.ledger.lifecycle import LifecycleLedger
         from harness.orchestration.workflow.context_package import (
             _persist_context_package,
@@ -1169,7 +1170,6 @@ class MemoryPackageTests(ContextBuilderFixture):
         self.assertEqual(first["memory"]["pointers"][0]["title"], "Prior memory")
         self.assertEqual(first["memory"]["pointers"][0]["source_type"], "glossary")
         self.assertNotIn("private body", json.dumps(first["memory"]))
-        source(self.repo, "CONTEXT.md", "# Edited after freeze")
         second = _persist_context_package(
             self.repo,
             root,
@@ -1180,6 +1180,22 @@ class MemoryPackageTests(ContextBuilderFixture):
             inclusion_reason="test",
         )
         self.assertEqual(first, second)
+        source(self.repo, "CONTEXT.md", "# Edited after freeze")
+        refreshed = _persist_context_package(
+            self.repo,
+            root,
+            ledger,
+            batch,
+            role="shared",
+            snapshot=self.candidate_commit,
+            inclusion_reason="test",
+        )
+        self.assertNotEqual(
+            first["context_package_id"], refreshed["context_package_id"]
+        )
+        self.assertEqual(
+            _load_context_package(root, first["context_package_id"]), first
+        )
         batch["goal"] = "different query"
         third = _persist_context_package(
             self.repo,

@@ -458,8 +458,13 @@ estimate. Побайтно идентичные файлы (например, з
 
 Запись package immutable, versioned и hash-проверяема. Она shared внутри batch: один и тот же
 base/candidate переиспользует один package ID между architect, developer и continuation sessions;
-новый package создаётся только после нового candidate. Coordinator проверяет freshness до handoff и
-не создаёт brief со stale package. Brief передаёт compact summary (starting files, related tests,
+новый package создаётся только после нового candidate. Package, у которого frozen источник из
+`memory.pointers` изменился, стал недоступен или отозван после регистрации, не переиспользуется:
+следующий dispatch регистрирует новый package с актуальными указателями, а старый остаётся
+неизменным для уже выданных brief. Coordinator проверяет freshness до handoff и
+не создаёт brief со stale package. Если и новый package не свежий по памяти, ошибка называет путь,
+ожидаемый и фактический `source_hash`, а remedy предлагает `harness memory rebuild .` из основного
+checkout или `--no-memory`. Brief передаёт compact summary (starting files, related tests,
 precedents и pinned commits), а полный diff остаётся в package один раз. Package не заменяет immutable brief и не отменяет обязательные
 self-report, heartbeat, review или QA.
 
