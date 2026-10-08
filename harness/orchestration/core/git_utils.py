@@ -36,11 +36,16 @@ _REMOTE_UNREACHABLE = re.compile(
     r"|name or service not known|unable to access",
     re.IGNORECASE,
 )
+# A refused write is Git's own diagnostic line ending in the errno text.  "File exists" (a stale
+# index.lock), a ref directory/file conflict and a rebase conflict carry no such ending, so they
+# stay ordinary failures.
 _METADATA_DENIED = re.compile(
-    r"permission denied|read-only file system|operation not permitted"
-    r"|unable to (?:create|write|unlink|open)|could not (?:create|lock)|cannot lock ref",
-    re.IGNORECASE,
+    r"^(?:error|fatal|warning): .*: (?:permission denied|read-only file system"
+    r"|operation not permitted)\s*$",
+    re.IGNORECASE | re.MULTILINE,
 )
+# Rebase and merge output quotes a commit subject, which is author text and never a diagnostic.
+_COMMIT_SUBJECT_LINE = re.compile(r"^.*could not apply.*$", re.IGNORECASE | re.MULTILINE)
 _ACCESS_REMEDY = {
     METADATA_DENIED: (
         "grant the coordinator process write access to the repository's Git metadata (the shared "
@@ -64,6 +69,7 @@ def classify_git_failure(detail: str) -> str | None:
     One classifier serves every coordinator Git operation, so a refused metadata write and a
     refused or unreachable remote read the same everywhere instead of as an opaque Git error.
     """
+    detail = _COMMIT_SUBJECT_LINE.sub("", detail)
     if _REMOTE_DENIED.search(detail):
         return REMOTE_DENIED
     if _REMOTE_UNREACHABLE.search(detail):

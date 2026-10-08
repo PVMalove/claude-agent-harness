@@ -375,6 +375,36 @@ def test_the_remote_host_is_taken_from_the_url_not_from_a_local_path(
         ),
         ("fatal: not a git repository (or any of the parent directories)", None),
         ("error: pathspec 'x' did not match any file(s) known to git", None),
+        # Ordinary failures that merely resemble a refusal stay unclassified.
+        (
+            "fatal: Unable to create '/r/.git/index.lock': File exists.\n\n"
+            "Another git process seems to be running in this repository",
+            None,
+        ),
+        (
+            "fatal: cannot lock ref 'refs/heads/a/b': 'refs/heads/a' exists; "
+            "cannot create 'refs/heads/a/b'",
+            None,
+        ),
+        (
+            "error: cannot lock ref 'refs/heads/x': is at abc but expected def",
+            None,
+        ),
+        (
+            "error: could not apply 1a2b3c4... fix: handle permission denied on metadata write",
+            None,
+        ),
+        (
+            "Rebasing (1/2)\nerror: could not apply 1a2b3c4... fix: access denied\n"
+            "hint: Resolve all conflicts manually\n"
+            "CONFLICT (content): Merge conflict in a.py",
+            None,
+        ),
+        (
+            "error: could not apply 1a2b3c4... handle Permission denied\n"
+            "fatal: Unable to create '/r/.git/index.lock': Permission denied",
+            git_utils.METADATA_DENIED,
+        ),
     ],
 )
 def test_one_classifier_names_the_git_access_failures(
@@ -403,3 +433,12 @@ def test_an_ordinary_git_failure_stays_a_plain_coordinator_error(
     with pytest.raises(CoordinatorError) as failed:
         git_utils._git(repo, "rev-parse", "--verify", "no-such-ref")
     assert not isinstance(failed.value, git_utils.GitAccessError)
+
+
+def test_a_stale_index_lock_stays_a_plain_coordinator_error(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / ".git" / "index.lock").write_text("", encoding="utf-8")
+    with pytest.raises(CoordinatorError) as failed:
+        git_utils._git(repo, "add", "-A")
+    assert not isinstance(failed.value, git_utils.GitAccessError)
+    assert "index.lock" in failed.value.message

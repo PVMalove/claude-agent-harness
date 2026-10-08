@@ -119,7 +119,9 @@ def _needs(operation: str, plan: JsonObject, checkout: Path | None) -> list[_Nee
             )
         )
     elif checkout is not None:
-        needs.append(_Need("checkout", "write", "checkout", checkout, checkout))
+        # The plan's requirement paths are resolved; a symlinked or relative worktree must compare equal.
+        resolved = checkout.resolve()
+        needs.append(_Need("checkout", "write", "checkout", resolved, resolved))
     for item in plan["filesystem"]:
         if item["resource"] == "cache":
             path = Path(item["path"])
@@ -181,7 +183,9 @@ def _refusal(exc: OSError) -> tuple[str, str]:
     )
 
 
-def _check(plan: JsonObject, need: _Need) -> JsonObject:
+def _check(
+    plan: JsonObject, need: _Need, operation: str, *, dispatch_bound: bool
+) -> JsonObject:
     entry: JsonObject = {
         "requirement": need.resource,
         "label": need.label,
@@ -194,8 +198,13 @@ def _check(plan: JsonObject, need: _Need) -> JsonObject:
             source="plan",
             reason=f"the approved access plan does not allow {need.access} on {need.resource}",
             remedy=(
-                f"allow {need.access} on {need.resource} for this operation in access_policy; "
-                "an operation bound to a dispatch needs a newly proposed and approved dispatch"
+                f"allow {need.access} on {need.resource} for the {operation} operation in "
+                "access_policy"
+                + (
+                    "; its dispatch pinned the plan, so a newly proposed and approved dispatch is needed"
+                    if dispatch_bound
+                    else ""
+                )
             ),
         )
         return entry
@@ -257,9 +266,9 @@ def _remote_host(url: str) -> str | None:
     return scp.group(1).lower() if scp else None
 
 
-def _remote_checks(
+def _remote_check(
     operation: str, plan: JsonObject, repo: Path, remote: str
-) -> list[JsonObject]:
+) -> JsonObject:
     entry: JsonObject = {
         "requirement": "remote",
         "label": f"remote {remote}",
@@ -280,7 +289,7 @@ def _remote_checks(
             reason=f"remote {remote!r} is not configured",
             remedy=f"configure the remote {remote!r} with 'git remote add' and repeat the command",
         )
-        return [entry]
+        return entry
     host = _remote_host(located.stdout.strip())
     restricted = plan["mode"] == "sandbox" or bool(plan["network"]["hosts"])
     if host is not None and restricted and host not in plan["network"]["hosts"]:
@@ -290,7 +299,7 @@ def _remote_checks(
             reason=f"host {host} is not in the approved network hosts",
             remedy=f"add {host} to access_policy network.hosts for the {operation} operation",
         )
-        return [entry]
+        return entry
     try:
         probed = subprocess.run(
             ["git", "-C", str(repo), "ls-remote", "--heads", "--", remote, "HEAD"],
@@ -308,10 +317,10 @@ def _remote_checks(
             reason=f"remote did not answer within {REMOTE_PROBE_SECONDS} seconds",
             remedy=f"restore connectivity to remote {remote!r} and repeat the command",
         )
-        return [entry]
+        return entry
     if probed.returncode == 0:
         entry.update(state="verified", source="probe", reason="reachable")
-        return [entry]
+        return entry
     detail = (probed.stderr or probed.stdout).strip()
     category = git_utils.classify_git_failure(detail)
     entry.update(
@@ -324,7 +333,7 @@ def _remote_checks(
             else f"restore connectivity to remote {remote!r} and repeat the command"
         ),
     )
-    return [entry]
+    return entry
 
 
 def verify(
@@ -334,6 +343,7 @@ def verify(
     repo: Path,
     checkout: Path | None = None,
     remote: str | None = None,
+    dispatch_bound: bool = False,
 ) -> JsonObject:
     """Check the plan against the coordinator process before the operation changes anything.
 
@@ -357,9 +367,12 @@ def verify(
     if is_legacy_inherit(plan):
         return {**evidence, "status": "legacy-inherit", "checks": []}
     checks = [_mode_check(operation, plan)]
-    checks += [_check(plan, need) for need in _needs(operation, plan, checkout)]
+    checks += [
+        _check(plan, need, operation, dispatch_bound=dispatch_bound)
+        for need in _needs(operation, plan, checkout)
+    ]
     if remote is not None and operation in ("git", "publish"):
-        checks += _remote_checks(operation, plan, repo, remote)
+        checks.append(_remote_check(operation, plan, repo, remote))
     failed = [check for check in checks if check["state"] != "verified"]
     states = {check["state"] for check in failed}
     status = next(
@@ -376,7 +389,7 @@ def verify(
             for check in failed
         ),
         remedy="; ".join(dict.fromkeys(str(check["remedy"]) for check in failed))
-        + "; then repeat the command. Nothing was changed",
+        + "; then repeat the command. No lifecycle state was changed",
         evidence=evidence,
     )
 
@@ -393,4 +406,11 @@ def require(
 ) -> JsonObject:
     """Select the operation's plan and verify it: the one call a coordinator operation makes."""
     plan = select_plan(repo, config, operation, brief=brief, worktree=worktree)
-    return verify(operation, plan, repo=repo, checkout=checkout, remote=remote)
+    return verify(
+        operation,
+        plan,
+        repo=repo,
+        checkout=checkout,
+        remote=remote,
+        dispatch_bound=brief is not None,
+    )
