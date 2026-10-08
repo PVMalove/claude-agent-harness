@@ -49,6 +49,24 @@ class ExecutionPolicy(Protocol):
         ...
 
 
+def _run_git(command: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run one Git command of the checkout preparation; an unlaunchable Git is a gate error."""
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError as exc:
+        raise GateRunnerError(
+            f"could not run Git to prepare the clean QA checkout: {sanitise(str(exc))}",
+            remedy="restore Git and its execution environment for the coordinator process, then run the QA runner again",
+        ) from exc
+
+
 @dataclass(frozen=True)
 class LocalPolicy:
     """Запуск проверок качества в существующем checkout вызывающей стороны."""
@@ -81,13 +99,19 @@ class CleanRoomPolicy:
             )
 
         temporary_parent = storage_path(self.repository, "runs", "qa")
-        temporary_parent.mkdir(parents=True, exist_ok=True)
-        worktree_root = Path(
-            tempfile.mkdtemp(prefix="agent-harness-qa-", dir=temporary_parent)
-        )
+        try:
+            temporary_parent.mkdir(parents=True, exist_ok=True)
+            worktree_root = Path(
+                tempfile.mkdtemp(prefix="agent-harness-qa-", dir=temporary_parent)
+            )
+        except OSError as exc:
+            raise GateRunnerError(
+                f"could not prepare clean QA checkout storage {temporary_parent}: {sanitise(str(exc))}",
+                remedy=f"grant the coordinator process write access to {temporary_parent} and run the QA runner again",
+            ) from exc
         checkout = worktree_root / "checkout"
         try:
-            created: subprocess.CompletedProcess[str] = subprocess.run(
+            created: subprocess.CompletedProcess[str] = _run_git(
                 [
                     "git",
                     "-C",
@@ -99,11 +123,6 @@ class CleanRoomPolicy:
                     "--",
                     self.candidate_commit,
                 ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
             )
             if created.returncode != 0:
                 detail: str = sanitise((created.stderr or created.stdout).strip())
@@ -111,13 +130,8 @@ class CleanRoomPolicy:
                     f"could not create clean QA worktree: {detail or 'unknown error'}",
                     remedy=f"inspect the git worktree error above and fix the repository/candidate commit {self.candidate_commit} before retrying",
                 )
-            resolved: subprocess.CompletedProcess[str] = subprocess.run(
-                ["git", "-C", str(checkout), "rev-parse", "--verify", "HEAD^{commit}"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
+            resolved: subprocess.CompletedProcess[str] = _run_git(
+                ["git", "-C", str(checkout), "rev-parse", "--verify", "HEAD^{commit}"]
             )
             if (
                 resolved.returncode != 0
@@ -127,7 +141,7 @@ class CleanRoomPolicy:
                     "clean QA worktree HEAD does not match the pinned candidate commit",
                     remedy=f"verify commit {self.candidate_commit} exists and resolves cleanly, then retry",
                 )
-            status: subprocess.CompletedProcess[str] = subprocess.run(
+            status: subprocess.CompletedProcess[str] = _run_git(
                 [
                     "git",
                     "-C",
@@ -135,12 +149,7 @@ class CleanRoomPolicy:
                     "status",
                     "--porcelain",
                     "--untracked-files=all",
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
+                ]
             )
             if status.returncode != 0 or status.stdout:
                 raise GateRunnerError(

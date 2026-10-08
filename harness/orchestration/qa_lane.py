@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Protocol, TypeGuard
 
 from ..errors import HarnessError
+from ..storage import storage_path
+from . import operation_access
 from .core.config import _execution_policy
 from .core.constants import QA_OWNER_FIELDS
 from ..gate_runner.gate_runner import CleanRoomPolicy, GateRunnerError, run_gate
@@ -583,6 +585,75 @@ def _recover_transient_failure(
         )
 
 
+def _release_after_failure(
+    ledger: LifecycleLedger,
+    root: Path,
+    dispatch: JsonObject,
+    queue_path: Path | None,
+    exc: BaseException,
+    stage: str,
+    ops: CoordinatorOps,
+) -> None:
+    """Undo an acquired lane after any failure and raise a coordinator error for an unexpected one.
+
+    A held lease, a queue entry or a ``dispatched`` state that outlives a failed run would block
+    every later QA run until a human clears it. A harness error keeps its own message and remedy.
+    """
+    if queue_path is None:
+        return
+    if isinstance(exc, HarnessError):
+        failure: HarnessError = exc
+    elif isinstance(exc, Exception):
+        failure = ops.CoordinatorError(
+            f"QA run failed unexpectedly at {stage}: {exc}",
+            remedy="inspect the cause above; the QA lane and the dispatch were released, so run the QA runner again",
+        )
+    else:
+        failure = ops.CoordinatorError(
+            f"QA run was interrupted at {stage}",
+            remedy="the QA lane and the dispatch were released; run the QA runner again",
+        )
+    _recover_transient_failure(ledger, root, dispatch, queue_path, failure, stage, ops)
+    if failure is not exc and isinstance(exc, Exception):
+        raise failure from exc
+
+
+def _verify_access(
+    ledger: LifecycleLedger,
+    repo: Path,
+    dispatch: JsonObject,
+    ops: CoordinatorOps,
+) -> None:
+    """Prove the QA operation's access before the lane is acquired; record a refusal as an attempt.
+
+    A refusal changes nothing else: there is no queue entry or lease to undo, the dispatch stays
+    approved, and every earlier attempt and artifact is untouched.
+    """
+    try:
+        operation_access.require(
+            repo,
+            ops._config(repo),
+            "qa",
+            brief=dispatch,
+            checkout=storage_path(repo, "runs", "qa"),
+        )
+    except operation_access.OperationAccessError as exc:
+        _write_immutable(
+            ledger,
+            ops,
+            _attempt_path(ledger, ops),
+            {
+                "dispatch_id": dispatch["dispatch_id"],
+                "stage": "access",
+                "failed_at": ops._now(),
+                "message": exc.message,
+                "remedy": exc.remedy,
+                "evidence": exc.evidence,
+            },
+        )
+        raise
+
+
 def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
     repo = ops._repo(args)
     root = _state_root(args, repo, ops)
@@ -601,6 +672,8 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
             remedy="pass --lease-seconds as an integer >= 1",
         )
     ledger = LifecycleLedger(root)
+    held: BaseException | None = None
+    queue_path: Path | None = None
     with _lock(ledger, ops):
         dispatch = ops._load_dispatch(root, args.dispatch)
         batch = ops._load_batch(root, dispatch["batch_id"])
@@ -634,6 +707,7 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
                 "QA runner requires an approved, unsent dispatch",
                 remedy="approve the QA dispatch and run the QA runner before sending it to any agent",
             )
+        _verify_access(ledger, repo, dispatch, ops)
         admission = acquire(
             ledger, dispatch["dispatch_id"], ops, lease_seconds=lease_seconds
         )
@@ -641,21 +715,31 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
             return {"dispatch_id": dispatch["dispatch_id"], **admission}
         queue_path = Path(admission["queue_path"])
         lease = admission["lease"]
-        entry["state"] = "dispatched"
-        ops._safe_id(dispatch["dispatch_id"], "dispatch")
-        _replace_record(
-            ledger,
-            ops,
-            DispatchStatusRecord.from_dict(
-                {
-                    "dispatch_id": dispatch["dispatch_id"],
-                    "state": "working",
-                    "updated_at": ops._now(),
-                }
-            ),
+        try:
+            entry["state"] = "dispatched"
+            ops._safe_id(dispatch["dispatch_id"], "dispatch")
+            _replace_record(
+                ledger,
+                ops,
+                DispatchStatusRecord.from_dict(
+                    {
+                        "dispatch_id": dispatch["dispatch_id"],
+                        "state": "working",
+                        "updated_at": ops._now(),
+                    }
+                ),
+            )
+            ops._safe_id(batch["batch_id"], "batch")
+            _replace_record(ledger, ops, BatchRecord.from_dict(batch))
+        except BaseException as exc:
+            # The lock is still held here; release it first, then undo the lane and the state.
+            held = exc
+    if held is not None:
+        _release_after_failure(
+            ledger, root, dispatch, queue_path, held, "state-transition", ops
         )
-        ops._safe_id(batch["batch_id"], "batch")
-        _replace_record(ledger, ops, BatchRecord.from_dict(batch))
+        raise held
+    assert queue_path is not None  # an unqueued run returned above
     try:
         # The first failed deterministic gate is sufficient evidence for a developer retry.  Do
         # not consume CI time and coordinator context collecting unrelated failures afterwards.
@@ -670,6 +754,9 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
             ledger, root, dispatch, queue_path, failure, "gate-run", ops
         )
         raise failure from exc
+    except BaseException as exc:
+        _release_after_failure(ledger, root, dispatch, queue_path, exc, "gate-run", ops)
+        raise
     artifact_text, checks = gate.artifact, gate.checks
     checksum = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
     artifact = _artifact_path(ledger, checksum, ops)
@@ -684,12 +771,22 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
             ledger, root, dispatch, queue_path, failure, "artifact-persistence", ops
         )
         raise failure from exc
+    except BaseException as exc:
+        _release_after_failure(
+            ledger, root, dispatch, queue_path, exc, "artifact-persistence", ops
+        )
+        raise
     report = _qa_report(dispatch, checks, artifact, checksum)
     try:
         with _lock(ledger, ops):
             report_path = _record_report(ledger, root, repo, dispatch, report, ops)
     except ops.CoordinatorError as exc:
         _recover_transient_failure(
+            ledger, root, dispatch, queue_path, exc, "report-persistence", ops
+        )
+        raise
+    except BaseException as exc:
+        _release_after_failure(
             ledger, root, dispatch, queue_path, exc, "report-persistence", ops
         )
         raise

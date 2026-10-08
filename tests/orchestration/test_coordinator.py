@@ -3394,6 +3394,52 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertNotEqual(second["dispatch_id"], first["dispatch_id"])
         self.assertEqual(second["brief"]["candidate_commit"], candidate)
 
+    def test_qa_and_publish_briefs_pin_the_operation_plan_and_ignore_role_overrides(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._reported_review(batch["batch_id"], candidate)
+        self._decide(batch["batch_id"], "accept")
+        (self.repo / ".harness/orchestration.json").write_text(
+            json.dumps(
+                {
+                    "access_policy": {
+                        "defaults": {"mode": "inherit"},
+                        "roles": {
+                            "qa": {"mode": "sandbox"},
+                            "developer": {"mode": "unsandboxed"},
+                        },
+                        "operations": {
+                            "publish": {"network": {"hosts": ["github.com"]}}
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        qa = self._reported_qa(batch["batch_id"], candidate)
+        self._decide(batch["batch_id"], "accept")
+        publish = self._dispatch(
+            batch["batch_id"], "developer", purpose="publish", candidate=candidate
+        )["brief"]
+        for brief, hosts in ((qa, []), (publish, ["github.com"])):
+            plan = brief["runtime_access"]
+            self.assertEqual(plan["mode"], "inherit")
+            self.assertEqual(plan["sources"]["mode"], "defaults")
+            self.assertEqual(plan["network"], {"hosts": hosts})
+            writes = {
+                item["resource"]
+                for item in plan["requirements"]
+                if item["access"] == "write"
+            }
+            self.assertTrue({"git_common", "shared_storage"} <= writes)
+            self.assertEqual(
+                brief["transition"]["runtime_access_sha256"], plan["plan_digest"]
+            )
+        self.assertEqual(qa["access"], "read-only")
+
     def test_qa_defect_routes_to_developer_retry_even_with_an_infrastructure_category(
         self,
     ) -> None:

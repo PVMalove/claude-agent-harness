@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Protocol, cast
 from unittest import mock
 
+import pytest
+
+from harness.storage import storage_path
+
 from harness.errors import HarnessError
 from harness.gate_runner.gate_runner import (
     CleanRoomPolicy,
@@ -365,3 +369,60 @@ def test_command_log_round_trips_between_writer_and_reader() -> None:
     )
 
     assert parse_command_log(log.splitlines()) == [("make test", 0), ("make lint", 2)]
+
+
+def _committed_repo(root: Path) -> tuple[Path, str]:
+    repo = root / "repo"
+    repo.mkdir()
+    for command in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "test@example.invalid"],
+        ["git", "config", "user.name", "Gate Runner Test"],
+    ):
+        subprocess.run(command, cwd=repo, check=True)
+    (repo / "candidate.txt").write_text("candidate\n", encoding="utf-8")
+    subprocess.run(["git", "add", "candidate.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "test: pin"], cwd=repo, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return repo, head
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="a privileged process is not denied by file permissions",
+)
+def test_an_unwritable_checkout_storage_is_a_gate_error_not_an_os_error(
+    tmp_path: Path,
+) -> None:
+    repo, head = _committed_repo(tmp_path)
+    harness = repo / ".harness"
+    harness.mkdir()
+    harness.chmod(0o555)
+    try:
+        with pytest.raises(GateRunnerError) as raised:
+            run_gate(["true"], CleanRoomPolicy(repo, head), stop_on_failure=True)
+    finally:
+        harness.chmod(0o755)
+    assert "could not prepare clean QA checkout storage" in raised.value.message
+    assert "write access" in raised.value.remedy
+
+
+def test_an_unlaunchable_git_is_a_gate_error_and_leaves_no_checkout_directory(
+    tmp_path: Path,
+) -> None:
+    repo, head = _committed_repo(tmp_path)
+    with mock.patch(
+        "harness.gate_runner.gate_runner.subprocess.run",
+        side_effect=FileNotFoundError("git"),
+    ):
+        with pytest.raises(GateRunnerError) as raised:
+            run_gate(["true"], CleanRoomPolicy(repo, head), stop_on_failure=True)
+    assert "could not run Git" in raised.value.message
+    runs = storage_path(repo, "runs", "qa")
+    assert not runs.is_dir() or list(runs.iterdir()) == []

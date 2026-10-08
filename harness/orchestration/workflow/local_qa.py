@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import cast
 
+from harness.storage import storage_path
 from harness.gate_runner.gate_runner import (
     CleanRoomPolicy,
     GateResult,
@@ -23,7 +24,7 @@ from harness.orchestration.core.config import (
     _verification_commands,
 )
 from harness.orchestration.core.config import _execution_policy
-from harness.orchestration import qa_lane
+from harness.orchestration import operation_access, qa_lane
 from harness.orchestration.core.constants import (
     INTEGRATION_SHA_PATTERN,
     LOCAL_QA_CI_CONDITIONS,
@@ -208,6 +209,7 @@ def _unavailable(
     failure: Exception,
     stage: str,
     gate: GateResult | None = None,
+    access: JsonObject | None = None,
 ) -> JsonObject:
     """Retain operational evidence separately from deterministic findings; no retry loop."""
     details: JsonObject = {
@@ -221,6 +223,10 @@ def _unavailable(
         "findings": [],
         "checks_run": gate.checks if gate else [],
     }
+    if access is not None:
+        # The structured refusal and its remedy are operational evidence, never a finding.
+        details["access"] = access
+        details["remedy"] = sanitise(getattr(failure, "remedy", ""))
     details["local_qa_id"] = IntegrationLocalQaRecord.derive_id(
         {
             "request_id": request_id,
@@ -397,6 +403,19 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             qa_lane.withdraw(ledger, request_id, ops, owner_kind="local-qa")
             return _unavailable(
                 ledger, root, request_id, started, exc, "pair-observation"
+            )
+        try:
+            operation_access.require(
+                repo,
+                _config(repo),
+                "qa",
+                checkout=storage_path(repo, "runs", "qa"),
+            )
+        except operation_access.OperationAccessError as exc:
+            started = _start_attempt(ledger, request_id, len(previous) + 1)
+            qa_lane.withdraw(ledger, request_id, ops, owner_kind="local-qa")
+            return _unavailable(
+                ledger, root, request_id, started, exc, "access", access=exc.evidence
             )
         seconds = getattr(args, "lease_seconds", None)
         if seconds is None:
