@@ -19,6 +19,7 @@
 
 - `harness health --online`: `tracker.reachability` называет причину сбоя `git ls-remote origin` — нет учётных данных или они отклонены, ошибка TLS-сертификата, прокси или сеть — и даёт подсказку (credential helper или SSH-доступ, `http.sslCAInfo` для хоста, `HTTPS_PROXY`/`NO_PROXY`); иной сбой сохраняет прежнее сообщение и советует выполнить `git ls-remote origin` вручную. Stderr, URL `origin` и учётные данные в вывод не попадают.
 - `harness install` больше не ставит `.harness/__init__.py`, поэтому `python -m unittest` без аргументов из корня проекта снова находит тесты проекта; `harness update` удаляет этот файл прежней установки. Точки входа установленного harness подключают его как пакет `harness` без корневого `__init__.py`, а закреплённый снимок рантайма не перекрывается пакетом `harness` из рабочего каталога.
+- `harness memory sync` определяет трекер через резолвер трекера проекта (ADR 0011): поле `tracker` из `.harness/project.json` побеждает `origin`, путь проекта сохраняет подгруппы, GitLab-хост без `gitlab.` в имени с `type: gitlab` синхронизируется через `glab`. Хост адресуется явно: `gh api --hostname <host>` и `GITLAB_HOST=<host> glab api`.
 
 ## [1.3.0] - 2026-10-06
 

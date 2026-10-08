@@ -1,5 +1,6 @@
 """Tracker snapshots through the explicit public writer and offline search."""
 
+import ast
 import importlib
 import json
 import subprocess
@@ -45,7 +46,9 @@ def fake_inventory(
     items: list[dict[str, object]],
     comments: list[dict[str, object]] | None = None,
 ) -> None:
-    def page(argv: list[str], repo: Path) -> list[dict[str, object]]:
+    def page(
+        argv: list[str], repo: Path, env: dict[str, str] | None = None
+    ) -> list[dict[str, object]]:
         if "page=2" in argv[-1] or "pulls?" in argv[-1]:
             return []
         return (comments or []) if "comments?" in argv[-1] else items
@@ -211,7 +214,7 @@ def test_sync_requires_independent_type_and_path_grants(
 
     configure(remote_repo, source_types=types, allow_paths=paths)
 
-    def forbidden(repo: Path) -> tuple[str, str]:
+    def forbidden(repo: Path) -> tuple[str, str, str]:
         pytest.fail("ungranted tracker access")
 
     monkeypatch.setattr(
@@ -344,7 +347,9 @@ def test_narrow_ticket_grant_does_not_fetch_pull_requests(
         allow_paths=[SNAPSHOT + "/records/ticket-*.json"],
     )
 
-    def page(argv: list[str], repo: Path) -> list[dict[str, object]]:
+    def page(
+        argv: list[str], repo: Path, env: dict[str, str] | None = None
+    ) -> list[dict[str, object]]:
         assert "pulls?" not in argv[-1]
         return []
 
@@ -394,7 +399,9 @@ def test_failed_collection_keeps_previous_selected_snapshot_and_index(
     before = snapshot_state(remote_repo)
     module = importlib.import_module("harness.memory.sync")
 
-    def page(argv: list[str], repo: Path) -> list[dict[str, object]]:
+    def page(
+        argv: list[str], repo: Path, env: dict[str, str] | None = None
+    ) -> list[dict[str, object]]:
         if "page=2" in argv[-1]:
             if failure == "late_page":
                 raise ValueError(
@@ -443,7 +450,9 @@ def test_index_failure_is_explicit_and_offline_rebuild_recovers(
     assert sync(remote_repo)["status"] == "snapshot_synced_index_failed"
     assert index.read_bytes() == before
 
-    def offline(argv: list[str], repo: Path) -> list[dict[str, object]]:
+    def offline(
+        argv: list[str], repo: Path, env: dict[str, str] | None = None
+    ) -> list[dict[str, object]]:
         pytest.fail("offline operation accessed tracker")
 
     monkeypatch.setattr(module, "fetch_page", offline)
@@ -614,7 +623,9 @@ def test_merged_pull_request_pointer_preserves_terminal_status(
         allow_paths=[SNAPSHOT + "/records/pull_request-*.json"],
     )
 
-    def page(argv: list[str], repo: Path) -> list[dict[str, object]]:
+    def page(
+        argv: list[str], repo: Path, env: dict[str, str] | None = None
+    ) -> list[dict[str, object]]:
         return (
             []
             if "page=2" in argv[-1]
@@ -663,7 +674,9 @@ def test_context_package_assembles_from_snapshot_without_tracker(
     )
     sync(remote_repo)
 
-    def offline(argv: list[str], repo: Path) -> list[dict[str, object]]:
+    def offline(
+        argv: list[str], repo: Path, env: dict[str, str] | None = None
+    ) -> list[dict[str, object]]:
         pytest.fail("Context Package accessed tracker")
 
     monkeypatch.setattr(
@@ -775,7 +788,9 @@ def test_sync_imports_terminal_records_and_marked_reports(
     )
     calls: list[list[str]] = []
 
-    def page(argv: list[str], repo: Path) -> list[dict[str, object]]:
+    def page(
+        argv: list[str], repo: Path, env: dict[str, str] | None = None
+    ) -> list[dict[str, object]]:
         calls.append(argv)
         assert argv[0] == tool
         endpoint = argv[-1]
@@ -815,3 +830,203 @@ def test_sync_imports_terminal_records_and_marked_reports(
     assert isinstance(report_pointers, list)
     assert report_pointers[0]["status"] == "не подтверждено человеком"
     assert calls
+
+
+# --- tracker routing through the project tracker resolver (docs/adr/0011, #626) ----------------
+
+Calls = list[tuple[list[str], dict[str, str] | None]]
+
+
+def _set_origin(repo: Path, url: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "set-url", "origin", url], check=True
+    )
+
+
+def _declare_tracker(repo: Path, tracker: dict[str, str]) -> None:
+    path = repo / ".harness/project.json"
+    config = json.loads(path.read_text(encoding="utf-8"))
+    config["tracker"] = tracker
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+
+def _record_calls(monkeypatch: pytest.MonkeyPatch) -> Calls:
+    calls: Calls = []
+
+    def page(
+        argv: list[str], repo: Path, env: dict[str, str] | None = None
+    ) -> list[dict[str, object]]:
+        calls.append((argv, env))
+        return []
+
+    monkeypatch.setattr(
+        importlib.import_module("harness.memory.sync"), "fetch_page", page
+    )
+    return calls
+
+
+def _assert_glab_calls(calls: Calls, host: str, encoded_project: str) -> None:
+    assert calls
+    for argv, env in calls:
+        assert argv[:2] == ["glab", "api"]
+        assert "--hostname" not in argv
+        assert env is not None and env["GITLAB_HOST"] == host
+        assert argv[-1].startswith(f"projects/{encoded_project}/")
+
+
+def test_tracker_field_wins_over_origin_and_routes_a_self_hosted_gitlab(
+    remote_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tracker field beats a GitHub origin; a host without `gitlab.` syncs through glab."""
+    from harness.memory import sync
+
+    _declare_tracker(
+        remote_repo,
+        {
+            "type": "gitlab",
+            "host": "code.example.test:4443",
+            "project": "group/sub/project",
+        },
+    )
+    calls = _record_calls(monkeypatch)
+
+    assert sync(remote_repo)["status"] == "synced"
+
+    _assert_glab_calls(calls, "code.example.test:4443", "group%2Fsub%2Fproject")
+    assert calls[0][0][-1].startswith(
+        "projects/group%2Fsub%2Fproject/issues?state=closed&"
+    )
+
+
+def test_origin_with_a_port_and_subgroups_yields_the_full_project_path(
+    remote_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from harness.memory import sync
+
+    _set_origin(remote_repo, "https://gitlab.example.test:4443/group/sub/project.git")
+    calls = _record_calls(monkeypatch)
+
+    assert sync(remote_repo)["status"] == "synced"
+
+    _assert_glab_calls(calls, "gitlab.example.test:4443", "group%2Fsub%2Fproject")
+
+
+@pytest.mark.parametrize(
+    ("origin", "tracker"),
+    [
+        ("https://git.example.test/group/project.git", None),
+        ("https://github.com/team/project.git", {"type": "local"}),
+        (
+            "https://github.com/team/project.git",
+            {"type": "github", "host": "github.com", "project": "team/sub/project"},
+        ),
+    ],
+)
+def test_local_or_unaddressable_tracker_is_unsupported(
+    remote_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    origin: str,
+    tracker: dict[str, str] | None,
+) -> None:
+    from harness.memory import sync
+
+    _set_origin(remote_repo, origin)
+    if tracker is not None:
+        _declare_tracker(remote_repo, tracker)
+    calls = _record_calls(monkeypatch)
+
+    with pytest.raises(ValueError, match="unsupported or local tracker") as error:
+        sync(remote_repo)
+
+    assert calls == []
+    assert "example.test" not in str(error.value)
+    assert "team" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("tool", "origin", "host"),
+    [
+        ("gh", "https://github.com/team/project.git", "github.com"),
+        (
+            "glab",
+            "https://gitlab.example.test:4443/group/sub/project.git",
+            "gitlab.example.test:4443",
+        ),
+    ],
+)
+def test_real_fake_cli_receives_the_tracker_host_explicitly(
+    remote_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool: str,
+    origin: str,
+    host: str,
+) -> None:
+    """gh gets `api --hostname <host>`; glab gets no --hostname and GITLAB_HOST=<host>."""
+    from harness.memory import sync
+
+    _set_origin(remote_repo, origin)
+    directory = remote_repo / "bin"
+    directory.mkdir()
+    log = directory / "calls.jsonl"
+    script = directory / f"{tool}_fake.py"
+    script.write_text(
+        "import json, os, sys\n"
+        f"with open({str(log)!r}, 'a', encoding='utf-8') as handle:\n"
+        "    handle.write(json.dumps([sys.argv[1:], os.environ.get('GITLAB_HOST')]) + '\\n')\n"
+        "print('[]')\n",
+        encoding="utf-8",
+    )
+    if sys.platform == "win32":
+        (directory / f"{tool}.cmd").write_text(
+            f'@"{sys.executable}" "{script}" %*\n', encoding="utf-8"
+        )
+    else:
+        launcher = directory / tool
+        launcher.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n', encoding="utf-8"
+        )
+        launcher.chmod(0o755)
+    monkeypatch.setenv("PATH", str(directory) + os.pathsep + os.environ["PATH"])
+    monkeypatch.delenv("GITLAB_HOST", raising=False)
+
+    assert sync(remote_repo)["status"] == "synced"
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert calls
+    for argv, gitlab_host in calls:
+        if tool == "gh":
+            assert argv[:3] == ["api", "--hostname", "github.com"]
+            assert argv[-1].startswith("repos/team/project/")
+            assert gitlab_host is None
+        else:
+            assert argv[0] == "api" and "--hostname" not in argv
+            assert argv[-1].startswith("projects/group%2Fsub%2Fproject/")
+            assert gitlab_host == host
+
+
+def _imported_modules(path: Path, package: list[str]) -> set[str]:
+    """Absolute names of every module `path` imports, relative imports resolved."""
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            base = package[: len(package) - node.level + 1] if node.level else []
+            module = ".".join([*base, *([node.module] if node.module else [])])
+            names.add(module)
+            names.update(f"{module}.{alias.name}" for alias in node.names)
+    return names
+
+
+def test_memory_imports_only_the_project_tracker_resolver_from_health() -> None:
+    memory = Path(__file__).resolve().parents[2] / "harness" / "memory"
+    health = {
+        name
+        for path in memory.glob("*.py")
+        for name in _imported_modules(path, ["harness", "memory"])
+        if name == "harness.health" or name.startswith("harness.health.")
+    }
+    assert health == {
+        "harness.health.project_tracker",
+        "harness.health.project_tracker.resolve_project_tracker",
+    }
