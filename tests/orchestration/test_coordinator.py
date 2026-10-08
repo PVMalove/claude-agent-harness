@@ -13502,14 +13502,23 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
 
     def _assert_stopped(self, result: JsonObject, category: str, reason: str) -> None:
+        """The stop and the final report are recorded once, in one valid batch write."""
         stored = self._batch_record(self.batch_id)
         self.assertEqual(result["outcome"], "stopped")
         self.assertEqual(
             (stored["auto_stop"]["category"], stored["auto_stop"]["reason"]),
             (category, reason),
         )
+        self.assertEqual(
+            (stored["auto_report"]["outcome"], stored["auto_report"]["stop"]),
+            ("stopped", stored["auto_stop"]),
+        )
         history._validate_batch_integrity(
             ledger_ops._state_root(self._args(), self.repo), stored
+        )
+        rendered = coordinator.auto_report(self._args(batch=self.batch_id))
+        self.assertEqual(
+            (rendered["recorded"], rendered["report"]), (True, stored["auto_report"])
         )
 
     def test_an_unknown_reason_stops_the_automatic_path_for_good(self) -> None:
@@ -13567,6 +13576,60 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         with self.assertRaises(coordinator.CoordinatorError) as refused:
             self._auto_dispatch("developer")
         self.assertIn("--approved-by", refused.exception.remedy)
+
+    def test_auto_report_renders_a_live_report_until_one_is_recorded(self) -> None:
+        self._auto_batch()
+        architect = self._auto_dispatch("architect")
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"],
+            self._base_report(architect, "architect", risks="the schema grows"),
+        )
+
+        live = coordinator.auto_report(self._args(batch=self.batch_id))
+
+        self.assertFalse(live["recorded"])
+        self.assertEqual(live["report"]["outcome"], "in-progress")
+        self.assertIsNone(live["report"]["recorded_at"])
+        self.assertNotIn("auto_report", self._batch_record(self.batch_id))
+
+    def test_auto_report_refuses_a_batch_outside_the_auto_policy(self) -> None:
+        batch = self._create_batch()
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            coordinator.auto_report(self._args(batch=batch["batch_id"]))
+        self.assertIn("approval_policy auto", refused.exception.message)
+
+    def test_auto_report_records_the_stop_a_blocked_batch_shows(self) -> None:
+        self._auto_batch()
+        architect = self._auto_dispatch("architect")
+        coordinator.send_dispatch(
+            self._args(
+                dispatch=architect["dispatch_id"],
+                adapter=None,
+                adapter_arg=None,
+                checkout=None,
+            )
+        )
+        with self.assertRaises(coordinator.CoordinatorError):
+            coordinator.self_report_dispatch(
+                self._args(
+                    dispatch=architect["dispatch_id"],
+                    model="another-model",
+                    worktree=str(self.worktree),
+                )
+            )
+
+        rendered = coordinator.auto_report(self._args(batch=self.batch_id))
+
+        self.assertTrue(rendered["recorded"])
+        self.assertEqual(
+            (rendered["report"]["stop"]["reason"], rendered["report"]["outcome"]),
+            ("model-mismatch", "stopped"),
+        )
+        self.assertEqual(
+            self._batch_record(self.batch_id)["auto_stop"]["detected_by"],
+            "batch auto-report",
+        )
 
     def test_a_model_mismatch_is_an_integrity_stop_before_the_dead_end(self) -> None:
         self._auto_batch()

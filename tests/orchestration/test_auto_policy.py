@@ -22,6 +22,7 @@ from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from harness.orchestration.workflow import (
     approval,
     auto_policy,
+    auto_report,
     decisions,
     dispatch,
     history,
@@ -706,16 +707,170 @@ class AutoStopListTests(unittest.TestCase):
         self.assertFalse(approval.auto_active(config_, stopped))
         self.assertTrue(approval.auto_configured(config_, stopped))
 
-    def test_record_stop_seals_the_stop_once_for_the_batch(self) -> None:
-        batch: JsonObject = {"batch_id": "batch-1"}
-        record = auto_policy.record_stop(
-            batch,
-            auto_policy.Stop("no-automatic-route", "supersede-dead-end", {}),
-            detected_by="batch auto-report",
-            moment=MOMENT,
+
+class AutoReportBuildTests(unittest.TestCase):
+    """``auto_report.build`` on data: the machine-readable final report."""
+
+    def _rows(self) -> list[tuple[JsonObject, JsonObject, JsonObject | None]]:
+        review_entry = {
+            "dispatch_id": "dispatch-2",
+            "role": "code-review",
+            "decision": {"decision": "retry"},
+        }
+        review_brief = {
+            "candidate_commit": "c" * 40,
+            "carried_items": {
+                "coordinator-finding": [
+                    {"item_id": "coordinator-finding-1", "summary": "reset the counter"}
+                ]
+            },
+        }
+        review = _clean(
+            "code-review",
+            review=_axes("warning", [{"summary": "x"}]),
         )
-        self.assertEqual(batch["auto_stop"], record)
-        history._validate_operational_batch_fields(batch)
+        qa_entry = {
+            "dispatch_id": "dispatch-3",
+            "role": "qa",
+            "decision": {"decision": "accept"},
+        }
+        qa = _clean("qa", qa_stages={"failed_stage": None})
+        return [
+            (review_entry, review_brief, review),
+            (qa_entry, {"candidate_commit": "c" * 40}, qa),
+        ]
+
+    def _batch(self, **fields: object) -> JsonObject:
+        batch = _approved_batch()
+        batch.update(
+            {
+                "ticket": "#643",
+                "branch": "feature/issue-643",
+                "state": "completed",
+                "definition_of_done": ["first", "second"],
+                "allowed_paths": ["**"],
+                "commit_plan": [
+                    {
+                        "id": "one",
+                        "summary": "a",
+                        "expected_paths": ["**"],
+                        "covers": [1],
+                    },
+                    {
+                        "id": "two",
+                        "summary": "b",
+                        "expected_paths": ["**"],
+                        "covers": [1, 2],
+                    },
+                ],
+                "coordinator_decisions": [
+                    {
+                        "dispatch_id": "dispatch-2",
+                        "decision": "retry",
+                        "approved_by": "policy:auto",
+                        "next_role": "developer",
+                        "routing": {
+                            "route": "fix-forward",
+                            "reason_category": "code",
+                            "previous_role": "code-review",
+                            "next_role": "developer",
+                            "next_action": "developer-retry",
+                        },
+                    }
+                ],
+            }
+        )
+        batch["auto_decisions"][2]["evidence"]["accepted_risks"] = [
+            {"source": "report", "risks": "the schema grows"}
+        ]
+        batch.update(fields)
+        return batch
+
+    def _build(self, batch: JsonObject, stop: JsonObject | None = None) -> JsonObject:
+        return auto_report.build(
+            batch,
+            self._rows(),
+            {},
+            stop=stop,
+            candidate="c" * 40,
+            settled={"coordinator-finding-1"},
+            coverage={1: ["a" * 40]},
+            recorded_at=MOMENT,
+        )
+
+    def test_a_completed_batch_reports_every_decision_risk_retry_and_result(
+        self,
+    ) -> None:
+        report = self._build(self._batch())
+
+        self.assertEqual(set(report) | {"record_sha256"}, AUTO_REPORT_FIELDS)
+        self.assertEqual(report["outcome"], "completed")
+        self.assertEqual(len(report["decisions"]), 4)
+        self.assertEqual(
+            report["accepted_risks"],
+            [
+                {
+                    "dispatch_id": "dispatch-1",
+                    "source": "report",
+                    "risks": "the schema grows",
+                }
+            ],
+        )
+        self.assertEqual(
+            report["findings"],
+            [
+                {
+                    "item_id": "coordinator-finding-1",
+                    "source": "coordinator-finding",
+                    "summary": "reset the counter",
+                    "state": "settled",
+                }
+            ],
+        )
+        self.assertEqual(
+            [(item["route"], item["reason_category"]) for item in report["retries"]],
+            [("fix-forward", "code")],
+        )
+        self.assertEqual(report["budget"]["developer_retries"], {"spent": 1, "max": 1})
+        self.assertEqual(report["commit_plan"]["entries"], ["one", "two"])
+        self.assertEqual(
+            [
+                (item["dod_item"], item["plan_entries"], item["covered"])
+                for item in report["dod_coverage"]
+            ],
+            [(1, ["one", "two"], True), (2, ["two"], False)],
+        )
+        self.assertEqual(
+            report["review"],
+            [
+                {
+                    "dispatch_id": "dispatch-2",
+                    "candidate_commit": "c" * 40,
+                    "decision": "retry",
+                    "severity": {"standards": "warning", "spec": "warning"},
+                    "findings": 2,
+                }
+            ],
+        )
+        self.assertEqual(
+            report["qa"][0]["checks"], [{"command": "pytest", "result": "pass"}]
+        )
+        self.assertIn("explicit human confirmation", report["next_human_action"])
+        self.assertIn("auto-merge is forbidden", report["next_human_action"])
+
+    def test_a_stopped_batch_reports_its_stop_and_the_default_plan(self) -> None:
+        stop = _stop()
+        report = self._build(
+            self._batch(state="awaiting-approval", commit_plan=None), stop
+        )
+
+        self.assertEqual((report["outcome"], report["stop"]), ("stopped", stop))
+        self.assertEqual(report["commit_plan"]["source"], "default")
+        self.assertIn("unknown-reason", report["next_human_action"])
+        sealed = approval.sealed(report)
+        history._validate_operational_batch_fields(
+            {"batch_id": "batch-1", "auto_stop": stop, "auto_report": sealed}
+        )
 
 
 if __name__ == "__main__":

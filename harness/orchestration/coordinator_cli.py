@@ -274,6 +274,14 @@ def build_parser(
         "--note", help="added to the deterministic rationale of the decision"
     )
     auto_decide.set_defaults(handler=handlers.auto_decide)
+    auto_report = batch_commands.add_parser(
+        "auto-report",
+        help="render the final report of an approval_policy auto batch; records a stop the "
+        "ledger shows, else renders the live report",
+    )
+    _common(auto_report)
+    auto_report.add_argument("--batch", required=True)
+    auto_report.set_defaults(handler=handlers.auto_report)
     carry_over = batch_commands.add_parser(
         "carry-over",
         help="carry coordinator findings into review after the developer report was accepted, "

@@ -35,6 +35,7 @@ from harness.orchestration.core.utils import (
 from harness.orchestration.core.workspace import _validate_harness_runtime_snapshot
 from harness.orchestration.ledger.ledger_ops import (
     _load_batch,
+    _load_dispatch,
     _load_dispatch_status,
     _replace_record,
     _state_root,
@@ -47,6 +48,7 @@ from harness.orchestration.workflow import decisions, resolver_state
 from harness.orchestration.workflow.attention import _attention_findings
 from harness.orchestration.workflow.history import (
     _latest_developer_candidate,
+    _pending_report,
     _settled,
 )
 from harness.orchestration.workflow.reports import (
@@ -481,9 +483,19 @@ def ledger_stop_error(refusal: CoordinatorError) -> CoordinatorError:
 
 
 def record_stop(
-    batch: JsonObject, stop: Stop, *, detected_by: str, moment: str
+    repo: Path,
+    root: Path,
+    config: JsonObject,
+    batch: JsonObject,
+    stop: Stop,
+    *,
+    detected_by: str,
+    moment: str,
 ) -> JsonObject:
-    """Record ``stop`` on the batch once: after it, every step needs a human."""
+    """Record ``stop`` and the final report on the batch once: after it, every step needs a
+    human. Only the in-memory batch changes; the caller writes it."""
+    from harness.orchestration.workflow import auto_report
+
     batch["auto_stop"] = approvals.sealed(
         {
             "category": stop.category,
@@ -493,17 +505,60 @@ def record_stop(
             "evidence": stop.evidence,
         }
     )
+    auto_report.record(repo, root, config, batch, moment)
     return cast(JsonObject, batch["auto_stop"])
 
 
 def persist_stop(
-    ledger: LifecycleLedger, batch: JsonObject, stop: Stop, *, detected_by: str
+    ledger: LifecycleLedger,
+    repo: Path,
+    root: Path,
+    config: JsonObject,
+    batch: JsonObject,
+    stop: Stop,
+    *,
+    detected_by: str,
 ) -> JsonObject:
-    """Record ``stop`` and write the batch; the caller holds the ledger lock."""
-    record_stop(batch, stop, detected_by=detected_by, moment=utils._now())
+    """Record ``stop`` with the final report and write the batch; the caller holds the lock."""
+    record_stop(
+        repo, root, config, batch, stop, detected_by=detected_by, moment=utils._now()
+    )
     _safe_id(batch["batch_id"], "batch")
     _replace_record(ledger, BatchRecord.from_dict(batch))
     return batch
+
+
+def pending_stop(
+    repo: Path, root: Path, config: JsonObject, batch: JsonObject
+) -> Stop | None:
+    """The stop the decision table shows for the pending report without session inputs."""
+    pending = [
+        item
+        for item in batch.get("dispatches", [])
+        if item.get("state") == "reported" and "decision" not in item
+    ]
+    if len(pending) != 1:
+        return None
+    report = _pending_report(root, batch, pending[0])
+    dispatch = _load_dispatch(root, pending[0]["dispatch_id"])
+    try:
+        decisions._revalidate_pending(repo, root, config, batch, dispatch, report)
+    except CoordinatorError as exc:
+        return validation_stop(repo, batch, exc)
+    try:
+        return resolve(repo, root, config, batch, dispatch, report, Inputs()).stop
+    except CoordinatorError:
+        # A refusal the session can fix (a bug ticket, a resolver for a human) is no stop.
+        return None
+
+
+def derive_stop(
+    repo: Path, root: Path, config: JsonObject, batch: JsonObject
+) -> Stop | None:
+    """The first stop of the closed list a validated batch shows now: its ledger facts, then
+    the decision table on its pending report."""
+    stops = fact_stops(repo, root, config, batch, utils._now())
+    return stops[0] if stops else pending_stop(repo, root, config, batch)
 
 
 def _note(choice: Choice, inputs: Inputs) -> str:

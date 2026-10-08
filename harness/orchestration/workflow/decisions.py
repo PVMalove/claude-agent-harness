@@ -1026,6 +1026,28 @@ def _incomplete_carry_preview(
         return {"route": None, "refused": exc.message, "remedy": exc.remedy}
 
 
+def _revalidate_pending(
+    repo: Path,
+    root: Path,
+    config: JsonObject,
+    batch: JsonObject,
+    dispatch: JsonObject,
+    report: JsonObject,
+) -> None:
+    """Validate the pending report and its brief again, as every decision on them does."""
+    _validate_dispatch(repo, config, root, batch, dispatch)
+    _validate_report(
+        report,
+        dispatch,
+        _role(repo, dispatch["role"]),
+        repo,
+        rebase.report_base(repo, root, batch, dispatch),
+        _rebase_target(batch, dispatch),
+        _closure_base(repo, root, batch, dispatch),
+    )
+    resolver_state.validate_report(repo, root, batch, dispatch, report)
+
+
 def decide_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -1058,22 +1080,15 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         dispatch = _load_dispatch(root, pending[0]["dispatch_id"])
         config = core_config._config(repo)
         try:
-            _validate_dispatch(repo, config, root, batch, dispatch)
-            _validate_report(
-                report,
-                dispatch,
-                _role(repo, dispatch["role"]),
-                repo,
-                rebase.report_base(repo, root, batch, dispatch),
-                _rebase_target(batch, dispatch),
-                _closure_base(repo, root, batch, dispatch),
-            )
-            resolver_state.validate_report(repo, root, batch, dispatch, report)
+            _revalidate_pending(repo, root, config, batch, dispatch, report)
         except CoordinatorError as exc:
             if auto_inputs is None or not approvals.auto_active(config, batch):
                 raise
             return auto_policy.persist_stop(
                 ledger,
+                repo,
+                root,
+                config,
                 batch,
                 auto_policy.validation_stop(repo, batch, exc),
                 detected_by="batch auto-decide",
@@ -1084,7 +1099,13 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             )
             if resolution.stop is not None:
                 return auto_policy.persist_stop(
-                    ledger, batch, resolution.stop, detected_by="batch auto-decide"
+                    ledger,
+                    repo,
+                    root,
+                    config,
+                    batch,
+                    resolution.stop,
+                    detected_by="batch auto-decide",
                 )
             args = argparse.Namespace(**{**vars(args), **resolution.fields})
             auto_choice = resolution.choice
@@ -1411,6 +1432,9 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 stops = auto_policy.attention_stops(batch, [])
                 if stops:
                     auto_policy.record_stop(
+                        repo,
+                        root,
+                        config,
                         batch,
                         stops[0],
                         detected_by="batch auto-decide",
@@ -1439,6 +1463,11 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 "open_dispatches": abandoned,
                 "last_accepted": _last_accepted(repo, root, batch),
             }
+        if auto_inputs is not None and batch.get("state") == "completed":
+            # The accepted publish ends the automatic path: its final report is recorded now.
+            from harness.orchestration.workflow import auto_report
+
+            auto_report.record(repo, root, config, batch, decision["approved_at"])
         _safe_id(batch["batch_id"], "batch")
         _replace_record(
             ledger,
