@@ -12,20 +12,23 @@ import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, TypeGuard, cast
+from typing import TypeGuard, cast
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+from .core.constants import (
+    DEFAULT_CONTEXT_PACKAGE_POLICY,
+    DEFAULT_CONTINUATION_POLICY,
+    DEFAULT_EXECUTION_POLICY,
+    DEFAULT_PREFLIGHT_POLICY,
+    DEFAULT_RETRY_POLICY,
+    SENSITIVE_KEY,
+)
 from .extensions import DEFAULT_EXTENSION, EXTENSION_KINDS, EXTENSION_NAME
+from harness.json_types import JsonObject as JsonObject
 
 ROLE_MODES = {"write", "read-only"}
 ROLE_TRANSPORTS = {"in-process", "external"}
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
-# ``input_tokens`` and friends are accounting fields, not secrets.  Match token-shaped
-# credentials precisely so policy can safely validate token budgets and provider telemetry.
-SENSITIVE_KEY = re.compile(
-    r"(?:api[_-]?key|credential|password|secret|(?:access|auth|refresh|id|bearer)[_-]?token|(?:^|[_-])token(?:$|[_-](?:id|value|secret|key)$))",
-    re.IGNORECASE,
-)
 EFFORT_LEVELS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 )
@@ -105,11 +108,6 @@ class ContractError(HarnessError):
     """Манифест, назначение или неизменяемое задание нарушают переносимую ролевую политику."""
 
 
-# Role manifests and resolved assignments are dynamic, JSON-shaped documents that the coordinator and
-# adapters consume as ``dict[str, Any]``; this is the one intentional dynamic boundary of the module.
-JsonObject = dict[str, Any]  # type: ignore[explicit-any]
-
-
 def non_empty(value: object) -> TypeGuard[str]:
     """Проверить, что значение является непустой строкой без пробельных символов по краям."""
     return isinstance(value, str) and bool(value.strip())
@@ -149,6 +147,11 @@ def load_role_manifest(path: Path) -> JsonObject:
     """Разобрать компактный frontmatter манифеста роли без зависимости от сторонних YAML-библиотек."""
     try:
         text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ContractError(
+            f"role manifest {path.name!r} is not UTF-8 text",
+            remedy=f"save {path} as UTF-8",
+        ) from exc
     except OSError as exc:
         raise ContractError(
             f"role manifest {path.name!r} cannot be read",
@@ -391,8 +394,8 @@ def resolve_assignment(
     runtime = runtimes.get(resolved_runtime)
     if not isinstance(runtime, dict):
         raise ContractError(
-            f"role {role_name!r} is not assigned to runtime {runtime_name!r}",
-            remedy=f"add assignment_plans[{role_name!r}].runtimes[{runtime_name!r}], or select an assigned runtime",
+            f"role {role_name!r} is not assigned to runtime {resolved_runtime!r}",
+            remedy=f"add assignment_plans[{role_name!r}].runtimes[{resolved_runtime!r}], or select an assigned runtime",
         )
     profile_ids = runtime.get("profiles")
     if (
@@ -402,7 +405,7 @@ def resolve_assignment(
     ):
         raise ContractError(
             f"role {role_name!r} has no provider profile",
-            remedy=f"add a non-empty profiles list to assignment_plans[{role_name!r}].runtimes[{runtime_name!r}]",
+            remedy=f"add a non-empty profiles list to assignment_plans[{role_name!r}].runtimes[{resolved_runtime!r}]",
         )
     profile_id = profile_ids[0]
     for candidate_id in profile_ids:
@@ -1399,18 +1402,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     problems.extend(_operational_policy_problems(config))
     problems.extend(
         _policy_problem(
-            config,
-            "context_package_policy",
-            {
-                "max_tokens",
-                "context_window_tokens",
-                "reserved_prompt_tokens",
-                "symbol_graph_depth",
-                "max_related_tests",
-                "min_starting_files",
-                "max_starting_files",
-                "section_index_min_tokens",
-            },
+            config, "context_package_policy", set(DEFAULT_CONTEXT_PACKAGE_POLICY)
         )
     )
     problems.extend(_repo_map_policy_problems(config))
@@ -1439,41 +1431,19 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
                 "orchestration context_package_policy.max_tokens must fit inside context_window_tokens minus reserved_prompt_tokens"
             )
     problems.extend(
-        _policy_problem(
-            config,
-            "continuation_policy",
-            {"max_continuations", "max_rate_limit_resumes"},
-        )
+        _policy_problem(config, "continuation_policy", set(DEFAULT_CONTINUATION_POLICY))
     )
     problems.extend(
-        _policy_problem(
-            config,
-            "execution_policy",
-            {
-                "dispatch_wait_timeout_seconds",
-                "dispatch_poll_interval_seconds",
-                "qa_lease_seconds",
-                "rate_limit_retry_seconds",
-            },
-        )
+        _policy_problem(config, "execution_policy", set(DEFAULT_EXECUTION_POLICY))
     )
     problems.extend(
-        _policy_problem(config, "retry_policy", {"max_developer_retries"}, minimum=0)
+        _policy_problem(config, "retry_policy", set(DEFAULT_RETRY_POLICY), minimum=0)
     )
     problems.extend(
         _policy_problem(
             config,
             "preflight_policy",
-            {
-                "max_definition_of_done_items",
-                "max_dependencies",
-                "max_expected_files",
-                "max_expected_services",
-                "max_expected_changed_lines",
-                "max_expected_context_tokens",
-                "estimated_tokens_per_changed_line",
-                "estimated_tokens_per_file",
-            },
+            set(DEFAULT_PREFLIGHT_POLICY) - {"require_estimates"},
             booleans={"require_estimates"},
         )
     )

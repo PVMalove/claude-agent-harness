@@ -10,10 +10,15 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 from harness.orchestration.core.utils import CoordinatorError
 
+
+# Bounds every git command run here, including `fetch` of one integration ref: a stale lock, a
+# hung filesystem or a silent remote fails the operation instead of blocking the coordinator.
+GIT_TIMEOUT_SECONDS = 300
 
 METADATA_DENIED = "metadata-write-denied"
 REMOTE_DENIED = "remote-access-denied"
@@ -45,7 +50,9 @@ _METADATA_DENIED = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 # Rebase and merge output quotes a commit subject, which is author text and never a diagnostic.
-_COMMIT_SUBJECT_LINE = re.compile(r"^.*could not apply.*$", re.IGNORECASE | re.MULTILINE)
+_COMMIT_SUBJECT_LINE = re.compile(
+    r"^.*could not apply.*$", re.IGNORECASE | re.MULTILINE
+)
 _ACCESS_REMEDY = {
     METADATA_DENIED: (
         "grant the coordinator process write access to the repository's Git metadata (the shared "
@@ -108,34 +115,62 @@ def git_environment() -> dict[str, str]:
     return {**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"}
 
 
+def _run_git(
+    repo: Path,
+    arguments: Sequence[str],
+    *,
+    stdin: bytes | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run one bounded git command; a hang or a missing git executable is a `CoordinatorError`."""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo), *arguments],
+            input=stdin,
+            capture_output=True,
+            check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CoordinatorError(
+            f"git {arguments[0]} did not finish within {GIT_TIMEOUT_SECONDS} seconds",
+            remedy="check the repository for a stale git lock and the remote for reachability, "
+            "then retry",
+        ) from exc
+    except OSError as exc:
+        raise CoordinatorError(
+            f"cannot run git: {exc.strerror or exc}",
+            remedy="install git and make it available on PATH, then retry",
+        ) from exc
+
+
+def _decoded(output: bytes) -> str:
+    """Git output as text, with the newline translation of text mode.
+
+    Git prints a diff or a commit message in the bytes it stores; a legacy-encoded file is not
+    UTF-8, and its bytes become U+FFFD instead of a decode error.
+    """
+    text = output.decode("utf-8", "replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _git(repo: Path, *arguments: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(repo), *arguments],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-        env=git_environment(),
-    )
+    result = _run_git(repo, arguments, env=git_environment())
+    stdout = _decoded(result.stdout)
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
+        detail = (_decoded(result.stderr) or stdout).strip()
         raise git_failure(
             f"git command failed: {detail or 'unknown error'}",
             detail,
             remedy=f"inspect the git error above and fix the repository state before retrying 'git {' '.join(arguments)}'",
         )
-    return result.stdout.strip()
+    return stdout.strip()
 
 
 def _head_commit(repo: Path) -> str | None:
-    result = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
-    return result.stdout.strip() if result.returncode == 0 else None
+    result = _run_git(repo, ("rev-parse", "--verify", "HEAD"))
+    return _decoded(result.stdout).strip() if result.returncode == 0 else None
 
 
 def _fetch_ref_tip(repo: Path, ref: str) -> str:
@@ -214,13 +249,7 @@ def _commit_parent(repo: Path, commit: str) -> str | None:
 
 
 def _git_is_ancestor(repo: Path, base: str, candidate: str) -> bool:
-    result = subprocess.run(
-        ["git", "-C", str(repo), "merge-base", "--is-ancestor", "--", base, candidate],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
+    result = _run_git(repo, ("merge-base", "--is-ancestor", "--", base, candidate))
     if result.returncode not in {0, 1}:
         raise CoordinatorError(
             "cannot verify the candidate diff ancestry",
@@ -256,12 +285,7 @@ def _patch_id(repo: Path, commit: str) -> str | None:
 
     The diff comes from plumbing ``git diff-tree``, which ignores the user's diff and log
     configuration and prints nothing for a merge."""
-    diff = subprocess.run(
-        ["git", "-C", str(repo), "diff-tree", "-p", "--root", "--no-commit-id"]
-        + [commit, "--"],
-        capture_output=True,
-        check=False,
-    )
+    diff = _run_git(repo, ("diff-tree", "-p", "--root", "--no-commit-id", commit, "--"))
     if diff.returncode != 0:
         raise CoordinatorError(
             f"git diff-tree failed for {commit}: "
@@ -270,12 +294,7 @@ def _patch_id(repo: Path, commit: str) -> str | None:
         )
     if not diff.stdout.strip():
         return None
-    result = subprocess.run(
-        ["git", "-C", str(repo), "patch-id", "--stable"],
-        input=diff.stdout,
-        capture_output=True,
-        check=False,
-    )
+    result = _run_git(repo, ("patch-id", "--stable"), stdin=diff.stdout)
     if result.returncode != 0:
         raise CoordinatorError(
             f"git patch-id failed for {commit}: "

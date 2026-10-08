@@ -300,3 +300,37 @@ def test_export_without_a_map_writes_nothing(tmp_path: Path) -> None:
 
     asyncio.run(scenario())
     assert not (tmp_path / "docs").exists()
+
+
+class _RaisingRunner(_RecordingRunner):
+    def __call__(
+        self,
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> "subprocess.CompletedProcess[str]":
+        self.calls.append(list(argv))
+        raise ValueError("embedded null byte")
+
+
+def test_a_build_that_raises_reports_why_instead_of_building_forever(
+    tmp_path: Path,
+) -> None:
+    build_repo_map_fixture(tmp_path, cached=False)
+    runner = _RaisingRunner()
+
+    async def scenario() -> str:
+        app = _RepoMapHost(tmp_path, runner)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.click("#build-map")
+            await pilot.pause()
+            await pilot.click("#confirm-build")
+            await _settle(pilot)
+            return _static_text(app, "#repo-map-status")
+
+    status = asyncio.run(scenario())
+    assert len(runner.calls) == 1
+    assert status.startswith("карта не построена: сбой построения:")
+    assert "ValueError('embedded null byte')" in status

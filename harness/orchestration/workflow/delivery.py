@@ -34,6 +34,7 @@ from harness.orchestration.core.git_utils import (
     _changed_files_between,
     _commit_changed_files,
     _git,
+    _remote_branch_tip,
     git_environment,
     git_failure,
 )
@@ -79,6 +80,9 @@ from harness.orchestration.workflow.reports import (
     _persist_report,
 )
 
+# A push of one already verified commit is bounded; the limit only stops a hung transport.
+PUBLISH_PUSH_TIMEOUT_SECONDS = 600
+
 
 def _validate_checkout(
     checkout: Path, candidate: str, base: str | None, scope: list[str]
@@ -122,6 +126,37 @@ def _validate_checkout(
         raise CoordinatorError(
             "review checkout changed files do not match the immutable review scope",
             remedy="the review checkout's changed files must exactly match the immutable review scope; re-checkout the pinned candidate",
+        )
+
+
+def _run_adapter(command: list[str]) -> None:
+    """Hand the brief to a project runtime adapter.
+
+    The adapter contract bounds the call: the adapter returns after it starts the worker. A worker
+    session has no fixed duration, so no timeout is set here.
+    """
+    try:
+        # Windows consoles default to a legacy ANSI codepage: without an explicit encoding a
+        # UTF-8 adapter message is mojibaked before it ever reaches the coordinator error.
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError as exc:
+        raise CoordinatorError(
+            f"runtime adapter could not be started: {exc}",
+            remedy="make the runtime adapter executable (or pass a .py adapter) and send the "
+            "dispatch again; nothing was handed off",
+        ) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise CoordinatorError(
+            f"runtime adapter rejected dispatch: {detail}",
+            remedy=f"inspect the runtime adapter's rejection above: {detail}",
         )
 
 
@@ -239,32 +274,9 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             command=tuple(command) if command is not None else None,
         )
         if command is not None and access_evidence["status"] == "legacy-inherit":
-            # Windows consoles default to a legacy ANSI codepage: without an explicit encoding a
-            # UTF-8 adapter message is mojibaked before it ever reaches the coordinator error.
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-            )
-            if result.returncode != 0:
-                detail = (result.stderr or result.stdout).strip()
-                raise CoordinatorError(
-                    f"runtime adapter rejected dispatch: {detail}",
-                    remedy=f"inspect the runtime adapter's rejection above: {detail}",
-                )
-        for entry in batch["dispatches"]:
-            if entry["dispatch_id"] == dispatch["dispatch_id"]:
-                entry["state"] = "dispatched"
-                break
-        else:
-            raise CoordinatorError(
-                "dispatch is not registered in its batch",
-                remedy="the dispatch is not registered in its batch -- "
-                + INTERNAL_INVARIANT_REMEDY,
-            )
+            _run_adapter(command)
+        # The guard above proved this is the batch's own entry for the dispatch.
+        entry["state"] = "dispatched"
         sent_at = utils._now()
         _safe_id(dispatch["dispatch_id"], "dispatch")
         _replace_record(
@@ -563,21 +575,36 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
                     repo, root, dispatch, "publish", exc.evidence, remote, locked=True
                 )
             raise
-        result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo),
-                "push",
-                remote,
-                f"{candidate}:refs/heads/{dispatch['branch']}",
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-            env=git_environment(),
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "push",
+                    remote,
+                    f"{candidate}:refs/heads/{dispatch['branch']}",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+                env=git_environment(),
+                timeout=PUBLISH_PUSH_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # The ledger is unchanged, and a repeated push of the same commit is a no-op.
+            raise CoordinatorError(
+                f"git push to {remote!r} did not finish within "
+                f"{PUBLISH_PUSH_TIMEOUT_SECONDS} seconds",
+                remedy=f"check connectivity to {remote!r} and repeat dispatch publish; the "
+                "dispatch stays approved",
+            ) from exc
+        except OSError as exc:
+            raise CoordinatorError(
+                f"git push could not be started: {exc}",
+                remedy="make git available on PATH and repeat dispatch publish",
+            ) from exc
         if result.returncode != 0:
             detail = _sanitise((result.stderr or result.stdout).strip())
             raise git_failure(
@@ -585,10 +612,8 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
                 detail,
                 remedy="inspect the git push error above and fix it before retrying publish",
             )
-        published = _git(
-            repo, "ls-remote", "--heads", remote, f"refs/heads/{dispatch['branch']}"
-        )
-        if not published or published.split()[0] != candidate:
+        # Bounded and exact: an ls-remote pattern also matches deeper names ending in the branch.
+        if _remote_branch_tip(repo, remote, dispatch["branch"]) != candidate:
             raise CoordinatorError(
                 "remote branch does not resolve to the accepted QA candidate",
                 remedy="push exactly the accepted QA candidate commit to the remote branch",

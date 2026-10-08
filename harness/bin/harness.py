@@ -46,6 +46,8 @@ from harness.cleanup import apply_cleanup, plan_cleanup
 from harness.uninstall import (
     CLAUDE_MD_SEED,
     CONFIRM_WORD,
+    GITIGNORE_LINES as RUNTIME_GITIGNORE_LINES,
+    SEED_FOLDERS,
     apply_uninstall,
     plan_uninstall,
 )
@@ -66,6 +68,7 @@ from harness.health.project_files import (
     BACKEND_ORCHESTRATION_CAPABILITY,
     DISCOVERY_LINKS,
     INTEGRATIONS_REL,
+    JSON_READ_ERRORS,
     LOCK_REL,
     REGISTRY_REL,
     TRACKER_FIELDS,
@@ -93,6 +96,8 @@ VERSION_FILE = PACKAGE / "VERSION"
 # How printed remedies invoke this CLI: the running interpreter and this script, runnable as shown.
 HARNESS_CLI = (sys.executable, str(Path(__file__).resolve()))
 DEFAULT_CAPABILITY = "project-foundation"
+# Bound of each local git probe (`rev-parse`); git that does not answer counts as unavailable.
+GIT_TIMEOUT_SECONDS = 10
 
 
 def write_registry(repo: Path) -> None:
@@ -119,24 +124,34 @@ def version() -> str:
     return VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
+def _run_git(repo: Path, *arguments: str) -> subprocess.CompletedProcess[str] | None:
+    """Выполнить git в `repo`; None — git не запустился или не ответил за GIT_TIMEOUT_SECONDS."""
+    try:
+        return subprocess.run(
+            git_command(repo, *arguments),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def source_revision() -> str:
     """Получить ревизию Git исходного репозитория harness."""
-    result = subprocess.run(
-        git_command(ROOT, "rev-parse", "HEAD"),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=10,
-    )
-    return result.stdout.strip() if result.returncode == 0 else "uncommitted"
+    result = _run_git(ROOT, "rev-parse", "HEAD")
+    if result is None or result.returncode != 0:
+        return "uncommitted"
+    return result.stdout.strip()
 
 
 def capabilities() -> dict[str, JsonObject]:
     """Загрузить и распарсить каталог возможностей из CAPABILITIES.json."""
     try:
         data: object = json.loads(CAPABILITIES_FILE.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except JSON_READ_ERRORS as exc:
         fail(f"cannot read {CAPABILITIES_FILE}: {exc}")
     if not isinstance(data, dict):
         fail("CAPABILITIES.json must contain an object")
@@ -326,7 +341,7 @@ def load_lock(repo: Path) -> JsonObject | None:
         return None
     try:
         data: object = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except JSON_READ_ERRORS as exc:
         fail(f"cannot read {path}: {exc}")
     if not isinstance(data, dict):
         fail(f"cannot read {path}: expected a JSON object")
@@ -335,14 +350,12 @@ def load_lock(repo: Path) -> JsonObject | None:
 
 def ensure_git_repo(repo: Path) -> None:
     """Убедиться, что целевая директория является репозиторием Git."""
-    result = subprocess.run(
-        git_command(repo, "rev-parse", "--show-toplevel"),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=10,
-    )
+    result = _run_git(repo, "rev-parse", "--show-toplevel")
+    if result is None:
+        fail(
+            f"cannot run git in {repo}: git is missing or did not answer in "
+            f"{GIT_TIMEOUT_SECONDS}s (install git or check the repository, then retry)"
+        )
     if result.returncode != 0:
         fail(f"not a Git repository: {repo} (run 'git init' there first)")
 
@@ -466,14 +479,23 @@ def record_integration(
 ) -> None:
     """Зарегистрировать или обновить запись интеграции в .harness/integrations.json."""
     path = repo / INTEGRATIONS_REL
-    try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    except Exception:
-        data = {}
+    data: object = {}
+    if path.is_file():
+        # Never rewrite an inventory that cannot be read: it holds the project's own entries.
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except JSON_READ_ERRORS as exc:
+            fail(f"cannot read {path}: {exc} (fix or remove it, then retry)")
+    existing = (data.get("integrations") if isinstance(data, dict) else None) or []
+    if not isinstance(data, dict) or not isinstance(existing, list):
+        fail(
+            f"cannot read {path}: expected an object with an integrations list "
+            "(fix or remove it, then retry)"
+        )
     entries = [
         entry
-        for entry in (data.get("integrations") or [])
-        if entry.get("id") != identifier
+        for entry in existing
+        if not (isinstance(entry, dict) and entry.get("id") == identifier)
     ]
     entries.append(
         {
@@ -575,14 +597,9 @@ def print_diff(result: JsonObject) -> None:
 
 PVMALOVE_CAPABILITY = "pvmalove-suite"
 PROJECT_TEMPLATE_DIR = PACKAGE / "project"
-DOCS_TASKS_GITIGNORE_LINE = "/docs/tasks/"
 HARNESS_RUNTIME_GITIGNORE = """# Generated harness runtime data
 .sandboxes/
 """
-RUNTIME_GITIGNORE_LINES = (
-    DOCS_TASKS_GITIGNORE_LINE,
-    "/.harness/.sandboxes/",
-)
 
 
 def missing_runtime_gitignore_lines(content: str) -> list[str]:
@@ -711,45 +728,19 @@ def scaffold_pvmalove_extras(
         args, "force", False
     )
 
-    for doc in sorted((PROJECT_TEMPLATE_DIR / "docs-agents").glob("*.md")):
-        result = _copy_if_absent(
-            doc, repo / "docs/agents" / doc.name, force=force_seed, differing=differing
-        )
-        if result:
-            written.append(result)
-
-    for hook in sorted((PROJECT_TEMPLATE_DIR / "hooks").iterdir()):
-        if not hook.is_file() or hook.suffix not in {".sh", ".py"}:
-            continue
-        result = _copy_if_absent(
-            hook,
-            repo / ".claude/hooks" / hook.name,
-            executable=True,
-            force=force_seed,
-            differing=differing,
-        )
-        if result:
-            written.append(result)
-
-    for rule in sorted((PROJECT_TEMPLATE_DIR / "rules").glob("*.md")):
-        result = _copy_if_absent(
-            rule,
-            repo / ".claude/rules" / rule.name,
-            force=force_seed,
-            differing=differing,
-        )
-        if result:
-            written.append(result)
-
-    for agent in sorted((PROJECT_TEMPLATE_DIR / "agents").glob("*.md")):
-        result = _copy_if_absent(
-            agent,
-            repo / ".claude/agents" / agent.name,
-            force=force_seed,
-            differing=differing,
-        )
-        if result:
-            written.append(result)
+    for folder, target, suffixes in SEED_FOLDERS:
+        for source in sorted((PROJECT_TEMPLATE_DIR / folder).iterdir()):
+            if not source.is_file() or source.suffix not in suffixes:
+                continue
+            result = _copy_if_absent(
+                source,
+                repo / target / source.name,
+                executable=folder == "hooks",
+                force=force_seed,
+                differing=differing,
+            )
+            if result:
+                written.append(result)
 
     scratch_gitignore_result = _copy_if_absent(
         PROJECT_TEMPLATE_DIR / "scratch/.gitignore",
@@ -876,6 +867,22 @@ def scaffold_pvmalove_extras(
     return written
 
 
+def seed_capability_extras(
+    repo: Path, args: argparse.Namespace, selected: list[str]
+) -> list[str]:
+    """Развернуть seed-файлы pvmalove-suite или backend-orchestration; [] — ни одна не выбрана."""
+    if (
+        PVMALOVE_CAPABILITY not in selected
+        and BACKEND_ORCHESTRATION_CAPABILITY not in selected
+    ):
+        return []
+    return scaffold_pvmalove_extras(
+        repo,
+        args,
+        orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected,
+    )
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     """Инициализировать harness в новом проекте."""
     repo = Path(args.repo).expanduser().resolve()
@@ -924,14 +931,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             "project already has its own skills there",
         )
     )
-    if PVMALOVE_CAPABILITY in selected or BACKEND_ORCHESTRATION_CAPABILITY in selected:
-        written.extend(
-            scaffold_pvmalove_extras(
-                repo,
-                args,
-                orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected,
-            )
-        )
+    written.extend(seed_capability_extras(repo, args, selected))
     print(f"installed agent-harness {version()} in {repo}")
     print(f"capabilities: {', '.join(selected)}")
     print(f"managed files: {len(written)}")
@@ -976,14 +976,7 @@ def cmd_adopt(args: argparse.Namespace) -> int:
     ensure_links(
         repo, replace=args.replace_conflicts, fix_hint="re-run with --replace-conflicts"
     )
-    if PVMALOVE_CAPABILITY in selected or BACKEND_ORCHESTRATION_CAPABILITY in selected:
-        written.extend(
-            scaffold_pvmalove_extras(
-                repo,
-                args,
-                orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected,
-            )
-        )
+    written.extend(seed_capability_extras(repo, args, selected))
     print(f"adopted agent-harness {version()} in {repo}")
     print(f"preserved project-owned skill names outside: {', '.join(selected_names)}")
     print(f"managed files: {len(written)}")
@@ -1029,14 +1022,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         replace=force_managed,
         fix_hint="re-run with --force or --force-managed-files",
     )
-    if PVMALOVE_CAPABILITY in selected or BACKEND_ORCHESTRATION_CAPABILITY in selected:
-        written.extend(
-            scaffold_pvmalove_extras(
-                repo,
-                args,
-                orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected,
-            )
-        )
+    written.extend(seed_capability_extras(repo, args, selected))
     print(f"updated agent-harness to {version()} in {repo}")
     print(f"managed files: {len(written)}")
     print_contract_proposals(propose_contract_links(repo, PROJECT_TEMPLATE_DIR))
@@ -1069,9 +1055,15 @@ def cmd_lock_project_skills(args: argparse.Namespace) -> int:
                 continue
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
-            except Exception as exc:
+            except JSON_READ_ERRORS as exc:
                 fail(f"cannot read existing overlay lock {path}: {exc}")
-            for entry in payload.get("skills", []):
+            skills = payload.get("skills", []) if isinstance(payload, dict) else None
+            if not isinstance(skills, list):
+                fail(
+                    f"cannot read existing overlay lock {path}: "
+                    "expected an object with a skills list"
+                )
+            for entry in skills:
                 if isinstance(entry, dict) and isinstance(entry.get("name"), str):
                     claimed.add(entry["name"])
     selected = []

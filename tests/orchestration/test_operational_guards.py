@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import unittest
 
+import pytest
+
 from harness.errors import HarnessError
 from harness.orchestration import extensions
 from harness.orchestration import operational_guards as guards
@@ -339,6 +341,14 @@ class ExtensionRegistryTests(unittest.TestCase):
             extensions.human_notifier("not-registered")
         with self.assertRaises(HarnessError):
             extensions.selected({"extensions": {"prompt_rewriter": "x"}})
+
+
+def test_the_transition_field_remedy_names_every_optional_field() -> None:
+    with pytest.raises(guards.GuardError) as caught:
+        guards.transition_digest({})
+
+    for field in (*guards.OPTIONAL_TRANSITION_FIELDS, guards.ACCESS_TRANSITION_FIELD):
+        assert field in caught.value.remedy
 
 
 if __name__ == "__main__":

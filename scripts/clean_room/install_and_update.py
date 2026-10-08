@@ -1,10 +1,11 @@
 """Установка, выбор capability и обновление harness: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import filecmp
 import hashlib
 import json
 import re
-import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -26,6 +27,7 @@ from scripts.clean_room.support import (
     run_health,
     run_ok,
     starts_with_text,
+    run_step,
 )
 
 
@@ -41,8 +43,8 @@ def run(ctx: SimpleNamespace) -> None:
     target_home = test_root / "home"
     for d in (project, foundation, target_home):
         d.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
-    subprocess.run(["git", "init", "-q"], cwd=foundation, check=True)
+    run_step(["git", "init", "-q"], cwd=project, check=True)
+    run_step(["git", "init", "-q"], cwd=foundation, check=True)
 
     run_ok(
         HARNESS
@@ -303,7 +305,7 @@ def run(ctx: SimpleNamespace) -> None:
     # different source path must fail loudly (docs/adr/0001) instead of picking one silently.
     dup_project = test_root / "dup_project"
     dup_project.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=dup_project, check=True)
+    run_step(["git", "init", "-q"], cwd=dup_project, check=True)
     if not run_fails(
         HARNESS
         + [
@@ -324,7 +326,7 @@ def run(ctx: SimpleNamespace) -> None:
     # the clean-room check below expects 32 distinct installed skills (ADR 0001).
     pv_project = test_root / "pv_project"
     pv_project.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=pv_project, check=True)
+    run_step(["git", "init", "-q"], cwd=pv_project, check=True)
     run_ok(
         HARNESS
         + [
@@ -486,12 +488,12 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("pvmalove-suite health resource missing")
     map_project = test_root / "map_project"
     map_project.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=map_project, check=True)
+    run_step(["git", "init", "-q"], cwd=map_project, check=True)
     (map_project / "mapped.py").write_text(
         "def mapped(value: int = 1) -> int:\n    return value\n", encoding="utf-8"
     )
-    subprocess.run(["git", "add", "mapped.py"], cwd=map_project, check=True)
-    subprocess.run(
+    run_step(["git", "add", "mapped.py"], cwd=map_project, check=True)
+    run_step(
         [
             "git",
             "-c",
@@ -621,7 +623,7 @@ def run(ctx: SimpleNamespace) -> None:
     run_ok(HARNESS + ["update", str(pv_project), "--force"])
     if not pytest_summary.is_file():
         sys.exit("update did not install the qa-gate pytest summary wrapper")
-    passing_summary = subprocess.run(
+    passing_summary = run_step(
         [
             sys.executable,
             str(pytest_summary),
@@ -641,7 +643,7 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("pytest summary wrapper did not report a compact pass result")
     if "PASSING_NOISE" in passing_summary.stdout:
         sys.exit("pytest summary wrapper leaked passing command output")
-    failing_summary = subprocess.run(
+    failing_summary = run_step(
         [
             sys.executable,
             str(pytest_summary),
@@ -774,10 +776,8 @@ def check_tracker_from_origin(test_root) -> None:
     for name, (remote, expected) in remotes.items():
         project = test_root / f"tracker_{name}_project"
         project.mkdir(parents=True)
-        subprocess.run(["git", "init", "-q"], cwd=project, check=True)
-        subprocess.run(
-            ["git", "remote", "add", "origin", remote], cwd=project, check=True
-        )
+        run_step(["git", "init", "-q"], cwd=project, check=True)
+        run_step(["git", "remote", "add", "origin", remote], cwd=project, check=True)
         run_ok(
             HARNESS
             + [
@@ -828,7 +828,7 @@ def check_package_root_without_init(test_root) -> None:
     """
     project = test_root / "unittest_project"
     project.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    run_step(["git", "init", "-q"], cwd=project, check=True)
     run_ok(
         HARNESS
         + [
@@ -857,7 +857,7 @@ def check_package_root_without_init(test_root) -> None:
         "    def test_project(self):\n        self.assertTrue(True)\n",
         encoding="utf-8",
     )
-    discovery = subprocess.run(
+    discovery = run_step(
         [sys.executable, "-m", "unittest"],
         cwd=project,
         capture_output=True,

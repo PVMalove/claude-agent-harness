@@ -17,11 +17,14 @@ from typing import cast
 
 from harness.orchestration import extensions
 from harness.orchestration.contract import (
+    APPROVAL_POLICIES,
     AUTO_TTY_PROBLEM,
     COMMUNICATION_POLICY_FIELDS,
+    HUMAN_APPROVAL_GATES,
     ContractError,
     health_problems,
     load_role_manifest,
+    reject_sensitive,
     resolve_assignment,
     resolve_runtime_name,
 )
@@ -36,7 +39,6 @@ from harness.orchestration.core.constants import (
     DEFAULT_PROFILE,
     DEFAULT_RETRY_POLICY,
     DEFAULT_TEST_PATH_PATTERNS,
-    SENSITIVE_KEY,
     ZERO_ALLOWED_POLICY_FIELDS,
 )
 from harness.orchestration.core.utils import (
@@ -49,22 +51,10 @@ from harness.orchestration.core.utils import (
 
 
 def _reject_sensitive(value: object, location: str) -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if not isinstance(key, str):
-                raise CoordinatorError(
-                    f"{location} contains a non-string key",
-                    remedy=f"use only string keys in {location}",
-                )
-            if SENSITIVE_KEY.search(key):
-                raise CoordinatorError(
-                    f"{location} contains secret-shaped field {key!r}",
-                    remedy=f"remove the secret-shaped field {key!r} from {location}; credentials never belong in this config",
-                )
-            _reject_sensitive(child, f"{location}.{key}")
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            _reject_sensitive(child, f"{location}[{index}]")
+    try:
+        reject_sensitive(value, location)
+    except ContractError as exc:
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _project(repo: Path) -> JsonObject:
@@ -381,7 +371,7 @@ def _communication_policy(config: JsonObject) -> dict[str, str]:
 
 def _human_approval_gate(config: JsonObject) -> str:
     gate = config.get("human_approval_gate", "trusted")
-    if gate not in {"trusted", "tty"}:
+    if gate not in HUMAN_APPROVAL_GATES:
         raise CoordinatorError(
             "human_approval_gate must be trusted or tty",
             remedy="set human_approval_gate to 'trusted' or 'tty' in the project orchestration config",
@@ -391,7 +381,7 @@ def _human_approval_gate(config: JsonObject) -> str:
 
 def _approval_policy(config: JsonObject) -> str:
     policy = config.get("approval_policy", "manual_all")
-    if policy not in {"manual_all", "milestone", "low_risk", "auto"}:
+    if policy not in APPROVAL_POLICIES:
         raise CoordinatorError(
             "approval_policy must be manual_all, milestone, low_risk or auto",
             remedy="set approval_policy to 'manual_all', 'milestone', 'low_risk' or 'auto' in the project orchestration config",

@@ -25,6 +25,8 @@ LEGACY_TOP_LEVEL_DIRS = LEGACY_STORAGE_DIRS
 _INSTALL_DIR_RE = re.compile(
     rf"[0-9a-f]{{{INSTALL_DIR_HASH_PREFIX}}}-cp[0-9]+-[A-Za-z0-9_]+"
 )
+# Bound of each local git call; generous because `git worktree remove` deletes a whole checkout.
+GIT_TIMEOUT_SECONDS = 300
 
 
 class CleanupItem(TypedDict):
@@ -54,16 +56,25 @@ class CleanupResult(TypedDict):
 
 
 def _git(repo: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    """Выполнить команду Git в указанном репозитории без возбуждения исключения при ошибке."""
+    """Выполнить команду Git в указанном репозитории без возбуждения исключения при ошибке.
+
+    Git, который не запустился или не ответил за GIT_TIMEOUT_SECONDS, даёт неуспешный результат
+    с причиной в stderr: вызывающий код считает состояние неизвестным и ничего не удаляет.
+    """
     checkout = repo.resolve()
-    return subprocess.run(
-        ["git", "-c", f"safe.directory={checkout}", "-C", str(checkout), *arguments],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    argv = ["git", "-c", f"safe.directory={checkout}", "-C", str(checkout), *arguments]
+    try:
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(argv, 1, "", f"git unavailable: {exc}")
 
 
 def _inside(root: Path, candidate: Path) -> bool:
@@ -213,7 +224,7 @@ def _origin_ref_current(repo: Path, upstream_ref: str) -> bool:
             timeout=15,
             check=False,
         )
-    except subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         return False
     return (
         remote.returncode == 0

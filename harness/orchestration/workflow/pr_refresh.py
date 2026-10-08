@@ -10,6 +10,7 @@ new candidate, which needs a new CI or local-QA check of the new pair.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import subprocess
 from pathlib import Path
 
@@ -46,6 +47,9 @@ from harness.orchestration.ledger.lifecycle import (
 from harness.orchestration.workflow import integration
 
 REFRESH_RECORD_CONTRACT = 1
+# One fetch, push or rebase of the refresh: the route holds the ledger lock, so a hung remote or
+# Git process must not hold it forever.
+GIT_TIMEOUT_SECONDS = 300
 
 
 def refresh_records(root: Path, record_id: str) -> list[JsonObject]:
@@ -95,14 +99,29 @@ def current_pair(root: Path, record: JsonObject) -> JsonObject:
 
 
 def _run_git(worktree: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(worktree), *arguments],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-        env=git_environment(),
-    )
+    """Run one bounded Git command whose exit code the caller reads; a hang or a missing git
+    executable is a `CoordinatorError`, never an exit code a caller could read as a result."""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(worktree), *arguments],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            env=git_environment(),
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CoordinatorError(
+            f"git {arguments[0]} did not finish within {GIT_TIMEOUT_SECONDS} seconds",
+            remedy="check the remote for reachability and the batch worktree for a Git "
+            "operation left in progress (finish or abort it yourself), then retry",
+        ) from exc
+    except OSError as exc:
+        raise CoordinatorError(
+            f"cannot run git: {exc.strerror or exc}",
+            remedy="install git and make it available on PATH, then retry",
+        ) from exc
 
 
 def _require_clean_own_branch(
@@ -202,8 +221,9 @@ def _rebase_access_failure(
     detail = (rebase.stderr or rebase.stdout).strip()
     if classify_git_failure(detail) is None:
         return None
-    _run_git(worktree, "rebase", "--abort")
-    _run_git(worktree, "checkout", "-q", branch)
+    for restore in (("rebase", "--abort"), ("checkout", "-q", branch)):
+        with contextlib.suppress(CoordinatorError):
+            _run_git(worktree, *restore)
     return git_failure(
         f"git rebase was refused by the environment: {_sanitise(detail)}",
         detail,

@@ -35,6 +35,13 @@ SENSITIVE_OUTPUT: tuple[
 )
 
 
+# Bound for one Git plumbing command of the clean checkout: `worktree add` checks out a full tree.
+GIT_TIMEOUT_SECONDS = 300
+_PYTHON_LAUNCHERS = frozenset({"python", "python3", "py"})
+# The first word of a shell command when it is a bare token: no quote, escape or whitespace.
+_BARE_FIRST_WORD = re.compile(r"\s*([^\s'\"\\]+)(?=\s|$)")
+
+
 class GateRunnerError(HarnessError):
     """Политика не смогла безопасно подготовить запрошенный checkout."""
 
@@ -50,7 +57,7 @@ class ExecutionPolicy(Protocol):
 
 
 def _run_git(command: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run one Git command of the checkout preparation; an unlaunchable Git is a gate error."""
+    """Run one bounded Git command of the checkout preparation; an unlaunchable or hung Git is a gate error."""
     try:
         return subprocess.run(
             command,
@@ -59,7 +66,13 @@ def _run_git(command: list[str]) -> subprocess.CompletedProcess[str]:
             encoding="utf-8",
             errors="replace",
             check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise GateRunnerError(
+            f"Git did not finish within {GIT_TIMEOUT_SECONDS} seconds while preparing the clean QA checkout",
+            remedy="check the repository for a held Git lock or an overloaded disk, then run the QA runner again",
+        ) from exc
     except OSError as exc:
         raise GateRunnerError(
             f"could not run Git to prepare the clean QA checkout: {sanitise(str(exc))}",
@@ -164,23 +177,23 @@ class CleanRoomPolicy:
             yield checkout
         finally:
             if checkout.exists():
-                subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(self.repository),
-                        "worktree",
-                        "remove",
-                        "--force",
-                        "--",
-                        str(checkout),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    check=False,
-                )
+                try:
+                    _run_git(
+                        [
+                            "git",
+                            "-C",
+                            str(self.repository),
+                            "worktree",
+                            "remove",
+                            "--force",
+                            "--",
+                            str(checkout),
+                        ]
+                    )
+                except GateRunnerError:
+                    # Best-effort cleanup must not mask the QA outcome; the directory is still
+                    # removed below and `git worktree prune` drops the stale registration.
+                    pass
             shutil.rmtree(worktree_root, ignore_errors=True)
 
 
@@ -255,9 +268,22 @@ _clean_room_python = project_python
 def _prepared_command(
     command: str | list[str], checkout: Path
 ) -> tuple[str | list[str], bool]:
-    """Заменить системный вызов Python детерминированным перед выполнением команды."""
+    """Заменить системный вызов Python детерминированным перед выполнением команды.
+
+    В строковой команде с голым первым словом-лаунчером заменяется только это слово, а остаток
+    по-прежнему выполняет shell: операторы (`&&`, `|`, `;`), перенаправления и подстановки сохраняются.
+    """
     original = command
     if isinstance(command, str):
+        bare = _BARE_FIRST_WORD.match(command)
+        if bare is not None and Path(bare.group(1)).name.lower() in _PYTHON_LAUNCHERS:
+            interpreter = str(_clean_room_python(checkout))
+            quoted = (
+                subprocess.list2cmdline([interpreter])
+                if sys.platform == "win32"
+                else shlex.quote(interpreter)
+            )
+            return quoted + command[bare.end() :], True
         try:
             tokens = shlex.split(command)
         except ValueError:
@@ -268,7 +294,7 @@ def _prepared_command(
     if not command:
         return command, isinstance(command, str)
     launcher = Path(command[0]).name.lower()
-    if launcher not in {"python", "python3", "py"}:
+    if launcher not in _PYTHON_LAUNCHERS:
         return original, isinstance(original, str)
     return [str(_clean_room_python(checkout)), *command[1:]], False
 
@@ -638,7 +664,11 @@ def _stage_record(stage: str, item: StageCommand) -> dict[str, object]:
 
 def _tracked_files(checkout: Path) -> tuple[str, ...]:
     """Files the candidate tracks, or none when Git cannot list them (a log-based defect then stays unknown)."""
-    listed = _run_git(["git", "-C", str(checkout), "ls-files"])
+    try:
+        listed = _run_git(["git", "-C", str(checkout), "ls-files"])
+    except GateRunnerError:
+        # The diagnosis is only corroboration: losing it must not discard the stage evidence.
+        return ()
     return tuple(listed.stdout.splitlines()) if listed.returncode == 0 else ()
 
 

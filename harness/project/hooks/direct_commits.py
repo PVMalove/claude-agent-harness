@@ -12,8 +12,11 @@
 (`cd` раньше в команде, иначе `cwd` из payload, иначе `CLAUDE_PROJECT_DIR`) вместе с опциями
 git `-C`, `--git-dir`, `--work-tree`, `--bare`: ветку спрашивает git с теми же опциями.
 `cd` учитывается только в простой цепочке строгого лексера (`pr_commands.strict_steps`).
-Commit/push в тексте, который не разобрать, и checkout, который не определить, блокируются.
+Commit/push в тексте, который не разобрать, checkout, который не определить, git, который не
+ответил, и push, способный обновить все ветки (`--all`, `--mirror`, refspec с `*`), блокируются.
 """
+
+from __future__ import annotations
 
 import json
 import os
@@ -55,6 +58,10 @@ VALUE_OPTIONS = frozenset(
 # Paths, `-a`, `--amend` and every other option commit more than the staged index.
 COMMIT_MESSAGE_OPTIONS = frozenset({"-m", "--message", "-F", "--file"})
 COMMIT_FLAGS = frozenset({"-q", "--quiet", "-s", "--signoff"})
+# Push options that update every matching branch, protected ones included.
+PUSH_EVERY_BRANCH_OPTIONS = frozenset({"--all", "--branches", "--mirror"})
+# Bound of every git call, `ls-remote` included: a git that does not answer blocks (fail closed).
+GIT_TIMEOUT_SECONDS = 20
 UNPARSED = (
     "Zero Direct Commits: команду с git commit/push не удалось разобрать (код интерпретатора, "
     "команда из переменной или подстановки, незакрытая кавычка) — она заблокирована (fail "
@@ -66,25 +73,44 @@ UNRESOLVED = (
     "обратных кавычек, скобок, | и ||; путь должен существовать; GIT_DIR, GIT_WORK_TREE и env "
     f"-C не поддерживаются. Укажи путь явно: git -C <path> commit {GUIDE}."
 )
+GIT_NO_ANSWER = (
+    "Zero Direct Commits: git не запустился или не ответил за "
+    f"{GIT_TIMEOUT_SECONDS} с — ветку checkout не определить, команда заблокирована (fail "
+    f"closed). Проверь git в этом checkout и повтори {GUIDE}."
+)
 
 
-@dataclass
+@dataclass(frozen=True)
 class Call:
     """Вызов `git commit` или `git push`: каталог запуска (None — не определить) и argv git."""
 
     cwd: Path | None
     # (option, value) of LOCATION_OPTIONS and `--bare`, in the order git applies them.
-    location: list[tuple[str, str]]
+    location: tuple[tuple[str, str], ...]
     action: str
-    args: list[str]
+    args: tuple[str, ...]
 
-    def git(self) -> list[str]:
-        """argv git, который выбирает тот же репозиторий, что и вызов."""
-        assert self.cwd is not None
-        argv = ["git", "-C", str(self.cwd)]
-        for option, value in self.location:
-            argv += [option] if option == "--bare" else [option, value]
-        return argv
+
+def _git(call: Call, *args: str) -> subprocess.CompletedProcess[str] | None:
+    """Запустить git в том же репозитории, что и вызов; None — checkout не определён или git
+    не запустился либо не ответил за GIT_TIMEOUT_SECONDS. Вызывающий код блокирует команду."""
+    if call.cwd is None:
+        return None
+    argv = ["git", "-C", str(call.cwd)]
+    for option, value in call.location:
+        argv += [option] if option == "--bare" else [option, value]
+    try:
+        return subprocess.run(
+            [*argv, *args],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
 
 
 def calls(command: str, start: Path) -> list[Call] | None:
@@ -164,7 +190,7 @@ def _calls_in(commands: list[list[str]], cwd: Path | None) -> list[Call]:
                 word in CHDIR_OPTIONS or word.startswith("--chdir=")
                 for word in argv[:index]
             ):
-                call.cwd = None
+                call = replace(call, cwd=None)
             found.append(call)
     return found
 
@@ -265,7 +291,7 @@ def _git_call(args: list[str], cwd: Path | None) -> Call | None:
         elif arg in ("commit", "push"):
             if any(_dynamic(value) for _, value in location):
                 cwd = None
-            return Call(cwd, location, arg, args[index + 1 :])
+            return Call(cwd, tuple(location), arg, tuple(args[index + 1 :]))
         else:
             return None
     return None
@@ -278,52 +304,64 @@ def _protected(branch: str, base_branch: str) -> bool:
     )
 
 
-def _push_targets(call: Call, base_branch: str) -> tuple[str, bool]:
-    """Причина запрета push по целевым рефам ("" — нет) и признак push, только создающего
-    отсутствующие на remote `integration/*`: его можно выполнить из защищённой ветки (/to-spec).
-    """
+def _push_destinations(call: Call) -> tuple[str, list[str]]:
+    """Remote push-вызова и целевые ветки его refspec без `+` и `refs/heads/`."""
     positional = [arg for arg in call.args if not arg.startswith("-")]
     remote, refspecs = (positional[0], positional[1:]) if positional else ("", [])
-    create_only = bool(refspecs)
-    for refspec in refspecs:
-        dest = re.sub(r"^refs/heads/", "", refspec.lstrip("+").rsplit(":", 1)[-1])
+    return remote, [
+        re.sub(r"^refs/heads/", "", refspec.lstrip("+").rsplit(":", 1)[-1])
+        for refspec in refspecs
+    ]
+
+
+def _push_block_reason(call: Call, base_branch: str) -> str:
+    """Причина запретить push по целевым рефам; "" — нет."""
+    remote, destinations = _push_destinations(call)
+    every_branch = [arg for arg in call.args if arg in PUSH_EVERY_BRANCH_OPTIONS] + [
+        dest for dest in destinations if "*" in dest
+    ]
+    if every_branch:
+        return (
+            f"Zero Direct Commits: push с '{every_branch[0]}' может обновить защищённую ветку — "
+            f"запрещён; укажи целевую ветку явно и {ISSUE_BRANCH}"
+        )
+    for dest in destinations:
         if not dest.startswith("integration/"):
             if _protected(dest, base_branch):
                 return (
                     f"Zero Direct Commits: push с целевым рефом '{dest}' запрещён — "
-                    f"{ISSUE_BRANCH}",
-                    False,
+                    f"{ISSUE_BRANCH}"
                 )
-            create_only = False
             continue
         code = _ls_remote(call, remote, dest)
         if code == 0:
             return (
                 f"Zero Direct Commits: push в существующую ветку '{dest}' запрещён — "
-                f"{ISSUE_BRANCH}",
-                False,
+                f"{ISSUE_BRANCH}"
             )
         if code != 2:
             return (
                 f"Zero Direct Commits: не удалось проверить на remote '{remote}', существует "
-                f"ли '{dest}', — push заблокирован. Проверь доступ к remote и повтори {GUIDE}.",
-                False,
+                f"ли '{dest}', — push заблокирован. Проверь доступ к remote и повтори {GUIDE}."
             )
-    return "", create_only
+    return ""
+
+
+def _creates_integration_only(call: Call) -> bool:
+    """Push только создаёт `integration/*`: его можно выполнить из защищённой ветки (/to-spec).
+
+    Отсутствие этих веток на remote проверяет `_push_block_reason`, вызванный раньше.
+    """
+    _, destinations = _push_destinations(call)
+    return bool(destinations) and all(
+        dest.startswith("integration/") for dest in destinations
+    )
 
 
 def _ls_remote(call: Call, remote: str, branch: str) -> int | None:
     """Код `git ls-remote --exit-code` для ветки: 0 — она есть, 2 — нет, иначе не проверить."""
-    try:
-        return subprocess.run(
-            [*call.git(), "ls-remote", "--exit-code", remote, "refs/heads/" + branch],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
-            timeout=20,
-        ).returncode
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    result = _git(call, "ls-remote", "--exit-code", remote, "refs/heads/" + branch)
+    return None if result is None else result.returncode
 
 
 def _grill_doc(path: str) -> bool:
@@ -337,7 +375,7 @@ def _grill_doc(path: str) -> bool:
     )
 
 
-def _message_only(args: list[str]) -> bool:
+def _message_only(args: tuple[str, ...]) -> bool:
     """У `git commit` только опции сообщения и флаги вывода: он коммитит один индекс."""
     words = iter(args)
     for arg in words:
@@ -368,14 +406,11 @@ def _grill_docs_commit(command: str, call: Call, branch: str) -> bool:
     _, argv = steps[0]
     if argv[:1] != ["git"] or not _message_only(call.args):
         return False
-    staged = subprocess.run(
-        [*call.git(), "diff", "--cached", "--name-only", "--no-renames", "-z"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    staged = _git(call, "diff", "--cached", "--name-only", "--no-renames", "-z")
+    if staged is None or staged.returncode:
+        return False
     paths = [path for path in staged.stdout.split("\0") if path]
-    if staged.returncode or not paths or not all(map(_grill_doc, paths)):
+    if not paths or not all(map(_grill_doc, paths)):
         return False
     return _ls_remote(call, "origin", branch) == 2
 
@@ -389,19 +424,15 @@ def block_reason(command: str, start: Path, project: Path) -> str:
     for call in found:
         if call.cwd is None:
             return UNRESOLVED
-        reason, create_only = (
-            _push_targets(call, base_branch) if call.action == "push" else ("", False)
-        )
-        if reason:
-            return reason
-        if create_only:
-            continue
-        result = subprocess.run(
-            [*call.git(), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        if call.action == "push":
+            reason = _push_block_reason(call, base_branch)
+            if reason:
+                return reason
+            if _creates_integration_only(call):
+                continue
+        result = _git(call, "rev-parse", "--abbrev-ref", "HEAD")
+        if result is None:
+            return GIT_NO_ANSWER
         # Outside a repository git fails as the command would; an explicit path that does not
         # resolve yet (`git -C {} commit` from xargs) cannot be checked.
         if result.returncode and call.location:

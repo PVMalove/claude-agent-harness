@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict, cast
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from harness.repo_map.bundle_install import (
     INSTALL_MARKER_FILENAME,
     BundleInstallError,
@@ -218,7 +219,7 @@ def python_platform_tags(
         raise BundleFormatError(
             f"could not determine python/platform tags: {result.stderr.decode('utf-8', 'replace')}"
         )
-    decoded: object = json.loads(result.stdout.decode("utf-8"))
+    decoded: object = json.loads(result.stdout.decode("utf-8", "replace"))
     if (
         not isinstance(decoded, list)
         or len(decoded) != 2
@@ -245,17 +246,24 @@ def verify_wheelhouse(
         artifact_path = wheelhouse_dir / artifact.filename
         if not artifact_path.is_file():
             return {"ok": False, "reason": "parser bundle hash mismatch"}
-        digest = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+        try:
+            digest = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+        except OSError:
+            # Unreadable or removed after the check: the pinned bytes cannot be proven.
+            return {"ok": False, "reason": "parser bundle hash mismatch"}
         if digest != artifact.sha256:
             return {"ok": False, "reason": "parser bundle hash mismatch"}
     return {"ok": True, "reason": None}
 
 
 def verify_worker_script(lock: BundleLock, worker_script: Path) -> bool:
-    """Проверить, что worker-скрипт существует и его SHA-256 совпадает с lock."""
+    """Проверить, что worker-скрипт существует, читается и его SHA-256 совпадает с lock."""
     if not worker_script.is_file():
         return False
-    digest = hashlib.sha256(worker_script.read_bytes()).hexdigest()
+    try:
+        digest = hashlib.sha256(worker_script.read_bytes()).hexdigest()
+    except OSError:
+        return False
     return digest == lock.script_sha256
 
 
@@ -387,7 +395,11 @@ def build_provenance(
     if platform_tag is not None:
         provenance["platform_tag"] = platform_tag
     if bundle_mode == "applied":
-        assert lock is not None
+        if lock is None:
+            raise HarnessError(
+                "an applied parser bundle provenance needs its lock",
+                remedy=INTERNAL_INVARIANT_REMEDY,
+            )
         provenance["lock_sha256"] = lock.raw_sha256
         provenance["script_hash"] = lock.script_sha256
         provenance["core_version"] = lock.core_version

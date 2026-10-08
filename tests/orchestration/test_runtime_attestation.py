@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Protocol, cast
 from unittest.mock import patch
 
+import pytest
+
 from harness.orchestration.runtime_attestation import AttestationError, attest
 
 
@@ -222,6 +224,86 @@ class RuntimeAttestationTests(unittest.TestCase):
             )
 
             self.assertEqual(proof["head_commit"], candidate)
+
+
+def _developer_worktree(root: Path) -> tuple[Path, Path, dict[str, object]]:
+    repo = root / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Attestation Test")
+    (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-qm", "test: base")
+    branch = "feature/issue-1-bounded"
+    _git(repo, "branch", branch)
+    worktree = root / "issue-1"
+    _git(repo, "worktree", "add", "-q", str(worktree), branch)
+    snapshot = _git(repo, "rev-parse", "HEAD")
+    return (
+        repo,
+        worktree,
+        {"role": "developer", "branch": branch, "snapshot_commit": snapshot},
+    )
+
+
+def test_every_attestation_git_call_is_bounded(tmp_path: Path) -> None:
+    repo, worktree, dispatch = _developer_worktree(tmp_path)
+    real_run = cast(_RunFn, subprocess.run)
+    timeouts: list[object] = []
+
+    def bounded(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        timeouts.append(kwargs.get("timeout"))
+        return real_run(command, **kwargs)
+
+    with patch.object(subprocess, "run", side_effect=bounded):
+        attest(repo, dispatch, str(worktree))
+
+    assert timeouts
+    assert all(isinstance(value, int) and value > 0 for value in timeouts)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.TimeoutExpired(["git"], 60),
+        FileNotFoundError(2, "No such file or directory", "git"),
+    ],
+)
+def test_a_git_probe_that_hangs_or_cannot_start_is_an_attestation_error(
+    tmp_path: Path, failure: Exception
+) -> None:
+    with (
+        patch.object(subprocess, "run", side_effect=failure),
+        pytest.raises(AttestationError) as caught,
+    ):
+        attest(tmp_path, {"role": "developer"}, str(tmp_path))
+
+    assert caught.value.__cause__ is failure
+    assert caught.value.remedy.strip()
+
+
+def test_an_ancestry_check_that_hangs_is_an_attestation_error(tmp_path: Path) -> None:
+    repo, worktree, dispatch = _developer_worktree(tmp_path)
+    real_run = cast(_RunFn, subprocess.run)
+
+    def hanging(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        if "merge-base" in command:
+            raise subprocess.TimeoutExpired(command, 60)
+        return real_run(command, **kwargs)
+
+    with (
+        patch.object(subprocess, "run", side_effect=hanging),
+        pytest.raises(AttestationError) as caught,
+    ):
+        attest(repo, dispatch, str(worktree))
+
+    assert isinstance(caught.value.__cause__, subprocess.TimeoutExpired)
+    assert caught.value.remedy.strip()
 
 
 if __name__ == "__main__":

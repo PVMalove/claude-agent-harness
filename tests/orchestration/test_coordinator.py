@@ -11461,7 +11461,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._submit(second["dispatch_id"], report)
         self.assertEqual(self._packet()["carried_items_gap"], [])
 
-    def test_a_carried_item_chain_traces_a_rebased_copy_through_two_rebases(self) -> None:
+    def test_a_carried_item_chain_traces_a_rebased_copy_through_two_rebases(
+        self,
+    ) -> None:
         """Two rebase-fix-forward attempts in a row: a copy of a copy leads back to its original,
         so the copy of a chain commit is accepted and the copy of a pre-chain commit is refused
         (issue #627)."""

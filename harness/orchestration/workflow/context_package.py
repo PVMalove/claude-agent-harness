@@ -17,7 +17,6 @@ from harness.context_builder.context_builder import (
     ContextPackageError,
     build_context_package,
 )
-from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.memory.index import context as memory_context
 from harness.memory.search import search_candidates, degraded
 from harness.orchestration.core import config as core_config
@@ -241,14 +240,14 @@ def register_context_package(args: argparse.Namespace) -> JsonObject:
                 "a context package requires a batch awaiting coordinator approval",
                 remedy="move the batch to awaiting coordinator approval before registering a context package",
             )
-        base = batch.get("base_commit")
+        # The base the package is built on (`_persist_context_package`), as in a risk assessment.
+        base = batch.get("integration_base_commit") or batch.get("base_commit")
         if args.base_commit:
             requested_base = _candidate_commit(repo, args.base_commit)
             if requested_base != base:
                 raise CoordinatorError(
                     "context package base must match the batch-captured base commit",
-                    remedy="the context package base does not match the batch-captured base commit -- "
-                    + INTERNAL_INVARIANT_REMEDY,
+                    remedy=f"omit --base-commit, or pass the batch base commit {base}",
                 )
         if candidate != _latest_developer_candidate(repo, root, batch):
             raise CoordinatorError(

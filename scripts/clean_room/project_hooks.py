@@ -1,5 +1,7 @@
 """Hooks целевого проекта: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
 import shutil
 import subprocess
@@ -22,6 +24,7 @@ from scripts.clean_room.support import (
     HARNESS,
     run_hook,
     run_ok,
+    run_step,
 )
 
 
@@ -77,11 +80,11 @@ def run(ctx: SimpleNamespace) -> None:
         "commit",
         "-q",
     ]
-    subprocess.run(["git", "add", "-A"], cwd=pv_project, check=True)
-    subprocess.run([*commit, "-m", "test fixture"], cwd=pv_project, check=True)
+    run_step(["git", "add", "-A"], cwd=pv_project, check=True)
+    run_step([*commit, "-m", "test fixture"], cwd=pv_project, check=True)
     linked = test_root / "linked"
     linked_branch = "feature/issue-373-linked"
-    subprocess.run(
+    run_step(
         ["git", "worktree", "add", "-q", "-b", linked_branch, str(linked)],
         cwd=pv_project,
         check=True,
@@ -219,13 +222,13 @@ def run(ctx: SimpleNamespace) -> None:
     # the project root config, and /to-pull-requests records coordinator-accepted QA there.
     no_harness = test_root / "no-harness"
     no_harness_branch = "feature/issue-463-no-harness"
-    subprocess.run(
+    run_step(
         ["git", "worktree", "add", "-q", "-b", no_harness_branch, str(no_harness)],
         cwd=pv_project,
         check=True,
     )
-    subprocess.run(["git", "rm", "-rq", ".harness"], cwd=no_harness, check=True)
-    subprocess.run([*commit, "-m", "drop tracked .harness"], cwd=no_harness, check=True)
+    run_step(["git", "rm", "-rq", ".harness"], cwd=no_harness, check=True)
+    run_step([*commit, "-m", "drop tracked .harness"], cwd=no_harness, check=True)
     no_harness_marker = no_harness / ".claude" / ".qa-gate" / "passed"
     no_harness_pr_payload = json.dumps(
         {
@@ -276,9 +279,7 @@ def run(ctx: SimpleNamespace) -> None:
             sys.exit(f"mark ignored the project root config for {command!r}")
     if not no_harness_pr_allowed():
         sys.exit("root-config QA marker did not permit its PR")
-    subprocess.run(
-        [*commit, "--allow-empty", "-m", "move HEAD"], cwd=no_harness, check=True
-    )
+    run_step([*commit, "--allow-empty", "-m", "move HEAD"], cwd=no_harness, check=True)
     if no_harness_pr_allowed():
         sys.exit("QA marker for a previous HEAD opened a PR")
     # /to-pull-requests: accepted coordinator QA evidence is recorded without a rerun.
@@ -290,9 +291,7 @@ def run(ctx: SimpleNamespace) -> None:
     tracked.write_text(tracked.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     if no_harness_pr_allowed():
         sys.exit("QA marker for a previous diff opened a PR")
-    subprocess.run(
-        ["git", "checkout", "-q", "--", "AGENTS.md"], cwd=no_harness, check=True
-    )
+    run_step(["git", "checkout", "-q", "--", "AGENTS.md"], cwd=no_harness, check=True)
     no_harness_marker.unlink()
     # A session started inside the linked worktree points CLAUDE_PROJECT_DIR at it too:
     # mark then reads the main worktree's config.
@@ -927,8 +926,8 @@ def run(ctx: SimpleNamespace) -> None:
             )
     attributed_repo = test_root / "attributed_push"
     attributed_repo.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q"], cwd=attributed_repo, check=True)
-    subprocess.run(
+    run_step(["git", "init", "-q"], cwd=attributed_repo, check=True)
+    run_step(
         [
             "git",
             "-c",
@@ -1029,7 +1028,7 @@ def run(ctx: SimpleNamespace) -> None:
     # The direct-commit guard must protect both the configured base branch and every epic
     # integration branch, while allowing an issue branch to push normally.
     direct_hook = pv_project / ".claude" / "hooks" / "block-direct-master.sh"
-    subprocess.run(
+    run_step(
         ["git", "checkout", "-q", "-b", "release/rel-1-test"],
         cwd=pv_project,
         check=True,
@@ -1159,8 +1158,8 @@ def run(ctx: SimpleNamespace) -> None:
     # remote passes, while updating an existing one or an unverifiable remote stays blocked.
     direct_remote = test_root / "direct-remote.git"
     direct_repo = test_root / "direct-repo"
-    subprocess.run(["git", "init", "--bare", "-q", str(direct_remote)], check=True)
-    subprocess.run(["git", "init", "-q", str(direct_repo)], check=True)
+    run_step(["git", "init", "--bare", "-q", str(direct_remote)], check=True)
+    run_step(["git", "init", "-q", str(direct_repo)], check=True)
     for args in (
         ["symbolic-ref", "HEAD", "refs/heads/master"],
         [*commit[1:], "--allow-empty", "-m", "test fixture"],
@@ -1168,7 +1167,7 @@ def run(ctx: SimpleNamespace) -> None:
         ["remote", "add", "offline", str(test_root / "missing-remote.git")],
         ["push", "-q", "origin", "master", "master:integration/existing"],
     ):
-        subprocess.run(["git", *args], cwd=direct_repo, check=True)
+        run_step(["git", *args], cwd=direct_repo, check=True)
 
     def direct_push(command: str) -> subprocess.CompletedProcess:
         return run_hook(direct_hook, direct_repo, command)
@@ -1211,7 +1210,7 @@ def run(ctx: SimpleNamespace) -> None:
             "block-direct-master.sh did not block an unverifiable integration push with an "
             f"explanation: {offline.stderr!r}"
         )
-    subprocess.run(
+    run_step(
         ["git", "checkout", "-q", "-b", "feature/issue-1-test"],
         cwd=direct_repo,
         check=True,
@@ -1229,7 +1228,7 @@ def run(ctx: SimpleNamespace) -> None:
             sys.exit(
                 f"block-direct-master.sh allowed an issue branch to update an existing integration branch: {command!r}"
             )
-    subprocess.run(
+    run_step(
         ["git", "checkout", "-q", "-b", "integration/existing"],
         cwd=direct_repo,
         check=True,
@@ -1248,14 +1247,14 @@ def run(ctx: SimpleNamespace) -> None:
     # (#644): a lone `git commit` whose index holds only CONTEXT.md, CONTEXT-MAP.md and ADR
     # paths passes while the branch is absent on origin; any other commit stays blocked.
     grill_wt = test_root / "grill-wt"
-    subprocess.run(
+    run_step(
         ["git", "worktree", "add", "-q", "-b", "integration/grill", str(grill_wt)],
         cwd=direct_repo,
         check=True,
     )
     (grill_wt / "app.py").write_text("x = 1\n", encoding="utf-8")
     for args in (["add", "app.py"], [*commit[1:], "-m", "test fixture"]):
-        subprocess.run(["git", *args], cwd=grill_wt, check=True)
+        run_step(["git", *args], cwd=grill_wt, check=True)
     (grill_wt / "app.py").write_text("x = 2\n", encoding="utf-8")
     grill_docs = (
         "CONTEXT.md",
@@ -1267,7 +1266,7 @@ def run(ctx: SimpleNamespace) -> None:
     for path in grill_docs:
         (grill_wt / path).parent.mkdir(parents=True, exist_ok=True)
         (grill_wt / path).write_text("# doc\n", encoding="utf-8")
-    subprocess.run(["git", "add", "--", *grill_docs], cwd=grill_wt, check=True)
+    run_step(["git", "add", "--", *grill_docs], cwd=grill_wt, check=True)
 
     def grill_commit(command: str) -> subprocess.CompletedProcess:
         return run_hook(direct_hook, grill_wt, command)
@@ -1305,13 +1304,13 @@ def run(ctx: SimpleNamespace) -> None:
     def blocked_with(setup: list[str], undo: list[str], state: str) -> None:
         if grill_commit("git commit -m 'docs: grill'").returncode != 0:
             sys.exit(f"grill docs commit was not allowed before the {state} case")
-        subprocess.run(["git", *setup], cwd=grill_wt, check=True)
+        run_step(["git", *setup], cwd=grill_wt, check=True)
         if grill_commit("git commit -m 'docs: grill'").returncode == 0:
             sys.exit(
                 f"block-direct-master.sh allowed an integration branch commit with {state}"
             )
         if undo:
-            subprocess.run(["git", *undo], cwd=grill_wt, check=True)
+            run_step(["git", *undo], cwd=grill_wt, check=True)
 
     for path in ("app.py", "src/CONTEXT-MAP.md", "docs/adrs/0001.md", "docs/adr.md"):
         (grill_wt / path).parent.mkdir(parents=True, exist_ok=True)
@@ -1334,7 +1333,7 @@ def run(ctx: SimpleNamespace) -> None:
     # `--git-dir`, then a preceding `cd`, then the payload cwd, then the project root. Mentions
     # in other commands' arguments, quotes and heredocs are not calls.
     direct_wt = test_root / "direct-wt"
-    subprocess.run(
+    run_step(
         ["git", "worktree", "add", "-q", "-b", "feature/issue-2-wt", str(direct_wt)],
         cwd=direct_repo,
         check=True,
@@ -1619,6 +1618,9 @@ def run(ctx: SimpleNamespace) -> None:
             )
 
     # require-qa-gate.sh: blocks gh pr create without marker, allows with valid marker
+    qa_marker = pv_project / ".claude" / ".qa-gate" / "passed"
+    # The marker recorded for the linked-worktree checks must not stand in for "no marker".
+    qa_marker.unlink(missing_ok=True)
     if run_hook(qa_gate_hook, pv_project, "git status").returncode != 0:
         sys.exit("require-qa-gate.sh blocked an unrelated git status command")
     if (
@@ -1670,21 +1672,21 @@ def run(ctx: SimpleNamespace) -> None:
             "require-qa-gate.sh allowed multiline JSON gh pr create without marker"
         )
 
-    head_proc = subprocess.run(
+    head_proc = run_step(
         ["git", "-C", str(pv_project), "rev-parse", "HEAD"],
         capture_output=True,
         text=True,
         check=False,
     )
     head_sha = head_proc.stdout.strip()
-    diff_proc = subprocess.run(
+    diff_proc = run_step(
         ["git", "-C", str(pv_project), "diff", "HEAD"],
         capture_output=True,
         check=False,
     )
     diff_bytes = diff_proc.stdout if diff_proc.returncode == 0 else b""
     diff_hash = (
-        subprocess.run(
+        run_step(
             ["git", "-C", str(pv_project), "hash-object", "--stdin"],
             input=diff_bytes,
             capture_output=True,
@@ -1693,7 +1695,6 @@ def run(ctx: SimpleNamespace) -> None:
         .stdout.decode()
         .strip()
     )
-    qa_marker = pv_project / ".claude" / ".qa-gate" / "passed"
     qa_marker.parent.mkdir(parents=True, exist_ok=True)
     qa_marker.write_text(f"{head_sha}:{diff_hash}", encoding="utf-8")
     try:

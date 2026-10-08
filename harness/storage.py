@@ -15,6 +15,8 @@ SANDBOX_CATEGORIES = frozenset(
     {"cache", "logs", "scratch", "pr_body", "runs", "reports", "worktrees"}
 )
 LEGACY_STORAGE_DIRS = (".cache", "test-logs", "tmp", "reports", "scratch")
+# Bound of each local `git rev-parse`/`git config` probe; no answer counts as an unknown checkout.
+GIT_TIMEOUT_SECONDS = 30
 
 
 def _unresolved_storage(checkout: Path, *, required: bool) -> Path:
@@ -24,29 +26,30 @@ def _unresolved_storage(checkout: Path, *, required: bool) -> Path:
     return checkout / ".harness"
 
 
-def _is_main_checkout(checkout: Path, common: Path) -> bool:
-    """A configured owner must be the main Git directory's actual, existing checkout."""
-    if not checkout.is_dir():
-        return False
+def _git(checkout: Path, *arguments: str) -> subprocess.CompletedProcess[str] | None:
+    """Run git trusting `checkout` (safe.directory); None when git cannot start or does not answer."""
     try:
-        result = subprocess.run(
-            [
-                "git",
-                "-c",
-                f"safe.directory={checkout}",
-                "-C",
-                str(checkout),
-                "rev-parse",
-                "--show-toplevel",
-                "--git-dir",
-            ],
+        return subprocess.run(
+            ["git", "-c", f"safe.directory={checkout}", *arguments],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _is_main_checkout(checkout: Path, common: Path) -> bool:
+    """A configured owner must be the main Git directory's actual, existing checkout."""
+    if not checkout.is_dir():
+        return False
+    result = _git(
+        checkout, "-C", str(checkout), "rev-parse", "--show-toplevel", "--git-dir"
+    )
+    if result is None:
         return False
     lines = result.stdout.splitlines()
     if (
@@ -65,28 +68,16 @@ def storage_root(repo: Path, *, require_main_checkout: bool = False) -> Path:
     """Найти общий `.harness` для корня репозитория и связанных worktree."""
     checkout = repo.expanduser().resolve()
     unresolved_pointer = require_main_checkout and (checkout / ".git").is_file()
-    try:
-        result = subprocess.run(
-            [
-                "git",
-                "-c",
-                f"safe.directory={checkout}",
-                "-C",
-                str(checkout),
-                "rev-parse",
-                "--show-toplevel",
-                "--git-common-dir",
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-    except OSError:
-        # No runnable Git: a linked worktree must not become a separate cache owner.
-        return _unresolved_storage(checkout, required=unresolved_pointer)
-    if result.returncode != 0:
+    result = _git(
+        checkout,
+        "-C",
+        str(checkout),
+        "rev-parse",
+        "--show-toplevel",
+        "--git-common-dir",
+    )
+    # No runnable Git: a linked worktree must not become a separate cache owner.
+    if result is None or result.returncode != 0:
         return _unresolved_storage(checkout, required=unresolved_pointer)
     lines = result.stdout.splitlines()
     if len(lines) != 2 or Path(lines[0]).resolve() != checkout:
@@ -99,26 +90,16 @@ def storage_root(repo: Path, *, require_main_checkout: bool = False) -> Path:
         return _unresolved_storage(checkout, required=require_main_checkout)
     # --separate-git-dir has no backlink to its checkout. Use an explicit shared
     # core.worktree when configured, rather than treating metadata as source files.
-    try:
-        configured = subprocess.run(
-            [
-                "git",
-                "-c",
-                f"safe.directory={checkout}",
-                "--git-dir",
-                str(common),
-                "config",
-                "--local",
-                "--get",
-                "core.worktree",
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-    except OSError:
+    configured = _git(
+        checkout,
+        "--git-dir",
+        str(common),
+        "config",
+        "--local",
+        "--get",
+        "core.worktree",
+    )
+    if configured is None:
         return _unresolved_storage(checkout, required=require_main_checkout)
     if configured.returncode == 0:
         value = configured.stdout.removesuffix("\n")

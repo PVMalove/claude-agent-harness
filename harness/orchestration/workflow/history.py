@@ -500,14 +500,7 @@ def _retry_pinned_candidate(repo: Path, root: Path, batch: JsonObject) -> str | 
     retried stage (code-review, QA, publish, verification) has no such candidate: ``None``."""
     if batch.get("next_action") != "developer-retry":
         return None
-    previous = next(
-        (
-            item
-            for item in reversed(batch.get("dispatches", []))
-            if isinstance(item.get("decision"), dict)
-        ),
-        None,
-    )
+    previous = _last_decided_entry(batch)
     if (
         previous is None
         or previous.get("role") != "developer"
@@ -531,10 +524,7 @@ def _retry_handoff(
     if batch.get("next_action") != "developer-retry":
         return None
     entries = batch.get("dispatches", [])
-    retried = next(
-        (item for item in reversed(entries) if isinstance(item.get("decision"), dict)),
-        None,
-    )
+    retried = _last_decided_entry(batch)
     if retried is None or retried["decision"].get("decision") != "retry":
         return None
     developer_report: JsonObject | None = None
@@ -661,6 +651,30 @@ def _settled(entry: JsonObject) -> bool:
     if entry.get("state") in {"abandoned", "cancelled"}:
         return True
     return entry.get("state") == "reported" and isinstance(entry.get("decision"), dict)
+
+
+def _dispatch_entry(batch: JsonObject, dispatch_id: str) -> JsonObject | None:
+    """The batch entry of ``dispatch_id``, or ``None`` when the batch does not list it."""
+    return next(
+        (
+            item
+            for item in batch.get("dispatches", [])
+            if item.get("dispatch_id") == dispatch_id
+        ),
+        None,
+    )
+
+
+def _last_decided_entry(batch: JsonObject) -> JsonObject | None:
+    """The newest batch entry the coordinator decided on, or ``None`` before any decision."""
+    return next(
+        (
+            item
+            for item in reversed(batch.get("dispatches", []))
+            if isinstance(item.get("decision"), dict)
+        ),
+        None,
+    )
 
 
 def _require_route(value: object, *, recorded: bool = False) -> str:

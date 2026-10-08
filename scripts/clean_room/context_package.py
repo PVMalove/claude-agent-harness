@@ -1,14 +1,16 @@
 """Context Package в ledger и gate свежести: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import hashlib
 import json
-import subprocess
 import sys
 from types import SimpleNamespace
 
 from scripts.clean_room.support import (
     capture,
     commit_map_for,
+    run_step,
 )
 
 
@@ -31,7 +33,7 @@ def run(ctx: SimpleNamespace) -> None:
     # ownership pattern as a risk assessment -- and checks its freshness before every new dispatch
     # brief.  A package is shared across role sessions when the pinned base/candidate is unchanged.
     ctxpkg_state = test_root / "context-package-state"
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-138-context-package"],
         cwd=orchestration_project,
         check=True,
@@ -181,12 +183,12 @@ def run(ctx: SimpleNamespace) -> None:
     ctxpkg_file.write_text(
         'def demo():\n    return "context-package"\n', encoding="utf-8"
     )
-    subprocess.run(
+    run_step(
         ["git", "add", "services/context_package_demo.py"],
         cwd=orchestration_project,
         check=True,
     )
-    subprocess.run(
+    run_step(
         ["git", "commit", "-qm", "feat: add context package demo"],
         cwd=orchestration_project,
         check=True,
@@ -463,12 +465,12 @@ def run(ctx: SimpleNamespace) -> None:
     ctxpkg_second_file.write_text(
         'def demo_v2():\n    return "context-package-v2"\n', encoding="utf-8"
     )
-    subprocess.run(
+    run_step(
         ["git", "add", "services/context_package_demo_v2.py"],
         cwd=orchestration_project,
         check=True,
     )
-    subprocess.run(
+    run_step(
         ["git", "commit", "-qm", "feat: add second context package demo"],
         cwd=orchestration_project,
         check=True,

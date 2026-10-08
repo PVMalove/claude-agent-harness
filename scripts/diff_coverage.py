@@ -16,6 +16,8 @@ THRESHOLD_PERCENT = 70.0
 MAX_UNCOVERED_LINES = 25
 COVERAGE_DATA_FILE = ROOT / ".coverage"
 COVERAGE_JSON_FILE = ROOT / ".coverage.diff-coverage.json"
+# Bound for the helper commands (git, `coverage json`); the measured test run itself is unbounded.
+HELPER_TIMEOUT_SECONDS = 300
 # Verified by the clean-room run (scripts/verify.py), not by the unittest suite this gate measures,
 # so their changed lines could never count as covered.
 EXCLUDED_FROM_GATE = frozenset(
@@ -39,10 +41,26 @@ def _base_branch() -> str:
             data = json.loads(project_json.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             data = {}
-        branch = data.get("base_branch")
+        branch = data.get("base_branch") if isinstance(data, dict) else None
         if isinstance(branch, str) and branch.strip():
             return branch.strip()
     return "master"
+
+
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    """Выполнить git в корне репозитория; зависание или сбой запуска git завершает гейт."""
+    try:
+        return subprocess.run(
+            # quotePath off: a quoted non-ASCII path would hide its Python file from the gate.
+            ["git", "-C", str(ROOT), "-c", "core.quotePath=false", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=HELPER_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        sys.exit(f"diff-coverage: git {args[0]} failed: {exc}")
 
 
 def _merge_base() -> str:
@@ -52,13 +70,7 @@ def _merge_base() -> str:
         return override
     branch = _base_branch()
     for ref in (f"origin/{branch}", branch):
-        result = subprocess.run(
-            ["git", "-C", str(ROOT), "merge-base", "HEAD", ref],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
+        result = _git("merge-base", "HEAD", ref)
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
     sys.exit(
@@ -71,22 +83,7 @@ _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 def _changed_lines(base: str) -> dict[str, set[int]]:
     """Вернуть словарь {относительный_путь: {номера_добавленных_строк}} для изменившихся файлов *.py."""
-    diff = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(ROOT),
-            "diff",
-            "--find-renames",
-            "--unified=0",
-            "--no-color",
-            base,
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
+    diff = _git("diff", "--find-renames", "--unified=0", "--no-color", base)
     if diff.returncode != 0:
         sys.exit(f"diff-coverage: git diff failed: {diff.stderr.strip()}")
 
@@ -217,23 +214,27 @@ def main() -> int:
     if run.returncode != 0:
         return run.returncode
 
-    json_run = subprocess.run(
-        # --ignore-errors: some tests exec a copy of a module from a temp directory (simulating a
-        # deployed .harness/ checkout) that no longer exists by report time -- skip it rather than
-        # abort the whole report, since we only care about coverage of files under this repo.
-        [
-            sys.executable,
-            "-m",
-            "coverage",
-            "json",
-            "-o",
-            str(COVERAGE_JSON_FILE),
-            "-q",
-            "--ignore-errors",
-        ],
-        cwd=ROOT,
-        check=False,
-    )
+    try:
+        json_run = subprocess.run(
+            # --ignore-errors: some tests exec a copy of a module from a temp directory (simulating a
+            # deployed .harness/ checkout) that no longer exists by report time -- skip it rather than
+            # abort the whole report, since we only care about coverage of files under this repo.
+            [
+                sys.executable,
+                "-m",
+                "coverage",
+                "json",
+                "-o",
+                str(COVERAGE_JSON_FILE),
+                "-q",
+                "--ignore-errors",
+            ],
+            cwd=ROOT,
+            check=False,
+            timeout=HELPER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        sys.exit(f"diff-coverage: coverage json failed: {exc}")
     if json_run.returncode != 0:
         return json_run.returncode
 

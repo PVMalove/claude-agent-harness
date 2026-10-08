@@ -265,6 +265,10 @@ def parse_lock(raw: bytes) -> BundleLock:
         raise BundleFormatError(
             f"parser_bundle.lock.json: invalid JSON: {exc.msg}"
         ) from exc
+    except UnicodeDecodeError as exc:
+        raise BundleFormatError(
+            f"parser_bundle.lock.json: invalid text encoding: {exc.reason}"
+        ) from exc
     if not isinstance(decoded, dict):
         raise BundleFormatError("parser_bundle.lock.json: root must be an object")
     grammars_raw = decoded.get("grammars")

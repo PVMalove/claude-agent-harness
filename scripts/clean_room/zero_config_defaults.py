@@ -1,7 +1,8 @@
 """Значения coordinator по умолчанию без конфига: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
-import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ from scripts.clean_room.support import (
     HARNESS,
     ROOT,
     run_ok,
+    run_step,
 )
 
 
@@ -42,7 +44,7 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_config.write_text(
         json.dumps(empty_seed, indent=2) + "\n", encoding="utf-8"
     )
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-906-empty-seed"],
         cwd=orchestration_project,
         check=True,
@@ -78,7 +80,7 @@ def run(ctx: SimpleNamespace) -> None:
 
     orchestration_config.unlink()
     run_ok(HARNESS + ["health", str(orchestration_project)])
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-903-zero-config"],
         cwd=orchestration_project,
         check=True,

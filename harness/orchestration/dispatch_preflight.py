@@ -35,6 +35,8 @@ _HANDOFF_REPORT_FIELDS = (
 )
 _HANDOFF_DECISION_FIELDS = ("dispatch_id", "role", "route", "reason_category")
 _HANDOFF_FINDING_FIELDS = ("axis", "severity", "summary")
+# Local Git plumbing only; a slow disk or a huge repository is the worst expected case.
+GIT_TIMEOUT_SECONDS = 60
 
 
 class PreflightError(HarnessError):
@@ -82,13 +84,20 @@ def _optional_text(value: object, label: str) -> str | None:
 
 def _git(path: Path, *args: str) -> str:
     """Выполнить команду Git в указанном каталоге и вернуть stdout либо возбудить PreflightError."""
-    result = subprocess.run(
-        ["git", "-C", str(path), *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise PreflightError(
+            f"git {' '.join(args)} did not complete: {exc}",
+            remedy=f"make git available and responsive in {path}, then retry 'git {' '.join(args)}'",
+        ) from exc
     if result.returncode:
         detail = (result.stderr or result.stdout).strip()
         raise PreflightError(

@@ -12,12 +12,11 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
 
-from harness.cleanup import _active_worktrees, _clear_read_only
+from harness.cleanup import _active_worktrees, _clear_read_only, _git
 from harness.health.project_files import (
     DISCOVERY_LINKS,
     LOCK_REL,
@@ -32,8 +31,16 @@ BACKUP_DIR = ".harness-uninstall-backup"
 HARNESS_DIR = ".harness"
 # `init` writes CLAUDE.md with exactly this text when the project has none.
 CLAUDE_MD_SEED = "# Claude Code\n\n@AGENTS.md\n"
-# Lines `init`/`adopt` append to the root .gitignore (see RUNTIME_GITIGNORE_LINES in the CLI).
+# Lines `init`/`adopt` append to the root .gitignore; the CLI imports them from here.
 GITIGNORE_LINES = ("/docs/tasks/", "/.harness/.sandboxes/")
+# Template folders `init`/`adopt` seed, in seeding order: (folder in harness/project, target in
+# the project, seeded file suffixes). The CLI copies exactly these, so uninstall finds them all.
+SEED_FOLDERS: tuple[tuple[str, str, frozenset[str]], ...] = (
+    ("docs-agents", "docs/agents", frozenset({".md"})),
+    ("hooks", ".claude/hooks", frozenset({".sh", ".py"})),
+    ("rules", ".claude/rules", frozenset({".md"})),
+    ("agents", ".claude/agents", frozenset({".md"})),
+)
 # Regenerated or disposable content inside .harness that is never worth a backup.
 _NO_BACKUP_PREFIXES = (".sandboxes/", ".venv/")
 _NO_BACKUP_FILES = {
@@ -87,12 +94,7 @@ def seed_templates() -> dict[str, bytes | None]:
     `None` — файл формируется из шаблона с подстановками (`AGENTS.md`), поэтому сравнить его
     не с чем и он всегда копируется в резервную копию."""
     seeds: dict[str, bytes | None] = {}
-    for folder, target, suffixes in (
-        ("docs-agents", "docs/agents", {".md"}),
-        ("hooks", ".claude/hooks", {".sh", ".py"}),
-        ("rules", ".claude/rules", {".md"}),
-        ("agents", ".claude/agents", {".md"}),
-    ):
+    for folder, target, suffixes in SEED_FOLDERS:
         for source in sorted((PROJECT_TEMPLATE_DIR / folder).iterdir()):
             if source.is_file() and source.suffix in suffixes:
                 seeds[f"{target}/{source.name}"] = source.read_bytes()
@@ -276,19 +278,8 @@ def apply_uninstall(
             directory.rmdir()
 
     # Worktrees of finished batches lived under .harness/.sandboxes: drop their registrations.
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            f"safe.directory={checkout}",
-            "-C",
-            str(checkout),
-            "worktree",
-            "prune",
-        ],
-        capture_output=True,
-        check=False,
-    )
+    # Best effort: a failed or unanswered prune is ignored; git prunes stale registrations later.
+    _git(checkout, "worktree", "prune")
     return {
         "removed": removed,
         "backup_dir": str(backup_dir) if backup_dir is not None else None,

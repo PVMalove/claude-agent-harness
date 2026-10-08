@@ -80,6 +80,7 @@ from harness.orchestration.workflow.attention import (
     _attention_findings,
 )
 from harness.orchestration.workflow.history import (
+    _dispatch_entry,
     _latest_developer_candidate,
     _pending_report,
     _require_route,
@@ -91,9 +92,7 @@ from harness.orchestration.workflow.history import (
 )
 from harness.orchestration.workflow.qa_integration import _ops
 from harness.orchestration.workflow.reports import (
-    _closure_base,
-    _rebase_target,
-    _validate_report,
+    _validate_report_in_batch,
     report_scope_warnings,
 )
 
@@ -213,14 +212,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
         _validate_batch_integrity(root, batch)
         entry = None
         if args.dispatch:
-            entry = next(
-                (
-                    item
-                    for item in batch.get("dispatches", [])
-                    if item.get("dispatch_id") == args.dispatch
-                ),
-                None,
-            )
+            entry = _dispatch_entry(batch, args.dispatch)
             if entry is None:
                 raise CoordinatorError(
                     "decision packet dispatch does not belong to this batch",
@@ -1045,17 +1037,9 @@ def _revalidate_pending(
 ) -> None:
     """Validate the pending report and its brief again, as every decision on them does."""
     _validate_dispatch(repo, config, root, batch, dispatch)
-    _validate_report(
-        report,
-        dispatch,
-        _role(repo, dispatch["role"]),
-        repo,
-        rebase.report_base(repo, root, batch, dispatch),
-        _rebase_target(batch, dispatch),
-        _closure_base(repo, root, batch, dispatch),
-        partial(rebase.pre_chain_copies, repo, root, batch, dispatch, report),
+    _validate_report_in_batch(
+        repo, root, batch, dispatch, report, _role(repo, dispatch["role"])
     )
-    resolver_state.validate_report(repo, root, batch, dispatch, report)
 
 
 def decide_batch(args: argparse.Namespace) -> JsonObject:
@@ -1284,6 +1268,8 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             )
         policy_auto_accept = getattr(args, "_policy_auto_accept", False)
         policy_retry = getattr(args, "_policy_infrastructure_retry", False)
+        # Set only by the policy auto-accept branch below, which names the accepting policy.
+        accepted_policy: str | None = None
         if auto_inputs is not None:
             approval = {
                 "approved_by": approvals.AUTO_APPROVER,
@@ -1299,7 +1285,11 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     remedy="use an explicit coordinator decision",
                 )
             readiness = authorize(repo, root, batch, dispatch, report)
-            assert routing is not None
+            if routing is None:
+                raise CoordinatorError(
+                    "a policy infrastructure retry has no retry routing record",
+                    remedy=INTERNAL_INVARIANT_REMEDY,
+                )
             routing["infrastructure_readiness"] = readiness
             routing["source_report_sha256"] = pending[0]["report_sha256"]
             approval = {
@@ -1333,7 +1323,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 if accepted_policy == "auto"
                 else MILESTONE_AUTO_ACCEPT_RATIONALE
             )
-            if policy_auto_accept
+            if accepted_policy is not None
             else abandon_reason
             or (args.note.strip() if _non_empty(args.note) else "none"),
         }
@@ -1634,11 +1624,12 @@ def _decide_retry_route(
     if routing["next_action"] == "developer-retry":
         # The closed list the developer-retry brief carries (issue #503), recorded with the route.
         # A developer-retry with items is a fix-forward; a tooling-retry keeps its own route.
-        entry = next(
-            item
-            for item in batch.get("dispatches", [])
-            if item.get("dispatch_id") == dispatch["dispatch_id"]
-        )
+        entry = _dispatch_entry(batch, dispatch["dispatch_id"])
+        if entry is None:
+            raise CoordinatorError(
+                f"retried dispatch {dispatch['dispatch_id']} is not registered in its batch",
+                remedy=INTERNAL_INVARIANT_REMEDY,
+            )
         item_ids = carried_items.section_item_ids(
             carried_items.retry_section(root, batch, entry)
         )

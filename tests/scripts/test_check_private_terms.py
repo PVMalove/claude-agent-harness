@@ -635,6 +635,45 @@ class NoLeakTests(unittest.TestCase):
         _assert_no_leak(result.stderr.decode("cp1252"), ENV)
 
 
+class GitTimeoutTests(unittest.TestCase):
+    """A hung git fails the check closed: its unknown answer is never read as "no repository"."""
+
+    TIMED_OUT = (
+        f"private-terms: git rev-parse did not finish within "
+        f"{check.GIT_TIMEOUT_SECONDS}s\n"
+    )
+
+    def _hung_git(self) -> mock._patch[mock.MagicMock]:
+        return mock.patch.object(
+            check.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(["git"], check.GIT_TIMEOUT_SECONDS),
+        )
+
+    def test_a_hung_main_checkout_lookup_does_not_skip_the_term_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp) / "body.md"
+            body.write_text("ok\n", encoding="utf-8")
+            with self._hung_git() as run:
+                result = _run(["--repo", tmp, "--body-file", str(body)], {})
+
+        self.assertEqual(result, (2, "", self.TIMED_OUT))
+        self.assertEqual(run.call_args.kwargs["timeout"], check.GIT_TIMEOUT_SECONDS)
+
+    def test_a_hung_head_lookup_does_not_skip_the_commits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, self._hung_git():
+            result = _run(["--repo", tmp, "--commits"])
+
+        self.assertEqual(result, (2, "", self.TIMED_OUT))
+
+    def test_a_hung_git_blocks_a_publication_command_in_the_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, self._hung_git():
+            code, out, err = _hook("git commit -m ok", Path(tmp))
+
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("did not finish within", err)
+
+
 class AnalyseCommandTests(unittest.TestCase):
     CWD = Path("/work")
 

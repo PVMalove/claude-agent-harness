@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Проверка отставания закреплённого вендорного snapshot mattpocock/skills от апстрим-репозитория."""
 
+from __future__ import annotations
+
 import json
 import re
 import subprocess
@@ -43,17 +45,20 @@ def parse_lock(path: Path) -> dict[str, str]:
 
 def latest_upstream_tag(repo_url: str) -> tuple[str, str] | None:
     """Запросить ссылки тегов git ls-remote без клонирования и вернуть (имя_тега, sha) максимального тега vX.Y.Z."""
-    result = subprocess.run(
-        ["git", "ls-remote", "--tags", repo_url],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--tags", repo_url],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        sys.exit(f"cannot query {repo_url}: {exc}")
     if result.returncode != 0:
         sys.exit(f"cannot query {repo_url}: {result.stderr.strip()}")
 
-    best: tuple[tuple[int, int, int], str, str] | None = None
+    best: tuple[tuple[int, ...], str, str] | None = None
     for line in result.stdout.splitlines():
         sha, _, ref = line.partition("\t")
         name = ref.removeprefix("refs/tags/").removesuffix("^{}")
@@ -76,12 +81,15 @@ def diff_skill_names(new_snapshot: Path, skills: list[str]) -> list[str]:
         name = Path(relative).name
         new_dir = new_snapshot / "skills" / relative
         old_dir = VENDOR_ROOT / relative
-        result = subprocess.run(
-            ["git", "diff", "--no-index", "--quiet", str(old_dir), str(new_dir)],
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--no-index", "--quiet", str(old_dir), str(new_dir)],
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            sys.exit(f"cannot compare skill {name}: {exc}")
         if result.returncode != 0:
             changed.append(name)
     return changed
@@ -115,22 +123,25 @@ def main() -> int:
     drift_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="d", dir=drift_root) as tmp:
         clone_dir = Path(tmp) / "upstream"
-        result = subprocess.run(
-            [
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                "--branch",
-                latest_tag,
-                repo_url,
-                str(clone_dir),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--branch",
+                    latest_tag,
+                    repo_url,
+                    str(clone_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            sys.exit(f"cannot clone {repo_url}@{latest_tag}: {exc}")
         if result.returncode != 0:
             sys.exit(f"cannot clone {repo_url}@{latest_tag}: {result.stderr.strip()}")
 

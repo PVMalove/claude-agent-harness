@@ -23,10 +23,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+
 from ..context import HealthContext
 from ..model import CheckResult, Fix, JsonObject
 
-BACKEND_ORCHESTRATION_CAPABILITY = "backend-orchestration"
 _MIGRATION_MESSAGE = "леджер оркестрации требует миграции схемы"
 
 
@@ -34,13 +35,6 @@ def _migration_fix(context: HealthContext) -> Fix:
     return Fix(
         text="выполните миграцию схемы леджера",
         command=context.coordinator_command("ledger", "migrate"),
-    )
-
-
-def _has_capability(context: HealthContext) -> bool:
-    lock = context.lock
-    return lock is not None and BACKEND_ORCHESTRATION_CAPABILITY in (
-        lock.get("capabilities") or []
     )
 
 
@@ -100,7 +94,7 @@ class _LedgerState:
 
 def check_ledger_summary(context: HealthContext) -> CheckResult:
     check_id = "orchestration.ledger_summary"
-    if not _has_capability(context):
+    if not context.orchestration_enabled():
         return _skipped(check_id, context)
     state = _LedgerState(context.repo)
     if state.unreadable:
@@ -172,7 +166,7 @@ def check_unfinished_batches(context: HealthContext) -> CheckResult:
     """Informational: every batch still in flight with its ticket, branch, worktree and age. Blocked
     batches are warned about by check_blocked_batches, stalled dispatches by check_stale_dispatches."""
     check_id = "orchestration.unfinished_batches"
-    if not _has_capability(context):
+    if not context.orchestration_enabled():
         return _skipped(check_id, context)
     state = _LedgerState(context.repo)
     if state.unreadable:
@@ -238,13 +232,17 @@ def _attention_policy_threshold(repo: Path) -> int:
         if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
             return value
     threshold = DEFAULT_ATTENTION_POLICY["stale_dispatch_seconds"]
-    assert isinstance(threshold, int)
+    if not isinstance(threshold, int):
+        raise HarnessError(
+            "built-in attention_policy.stale_dispatch_seconds is not an integer",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     return threshold
 
 
 def check_blocked_batches(context: HealthContext) -> CheckResult:
     check_id = "orchestration.blocked_batches"
-    if not _has_capability(context):
+    if not context.orchestration_enabled():
         return _skipped(check_id, context)
     state = _LedgerState(context.repo)
     if state.unreadable:
@@ -289,7 +287,7 @@ def check_blocked_batches(context: HealthContext) -> CheckResult:
 
 def check_stale_dispatches(context: HealthContext) -> CheckResult:
     check_id = "orchestration.stale_dispatches"
-    if not _has_capability(context):
+    if not context.orchestration_enabled():
         return _skipped(check_id, context)
     state = _LedgerState(context.repo)
     if state.unreadable:
@@ -385,7 +383,7 @@ def _owner(path: Path) -> str:
 
 def check_orphaned_worktrees(context: HealthContext) -> CheckResult:
     check_id = "orchestration.orphaned_worktrees"
-    if not _has_capability(context):
+    if not context.orchestration_enabled():
         return _skipped(check_id, context)
     from harness.cleanup import _active_worktrees, _registered_worktrees
     from harness.storage import sandboxes_root, storage_root
@@ -447,7 +445,7 @@ def _human_size(size: int) -> str:
 
 def check_disposable_data(context: HealthContext) -> CheckResult:
     check_id = "orchestration.disposable_data"
-    if not _has_capability(context):
+    if not context.orchestration_enabled():
         return _skipped(check_id, context)
     from harness.cleanup import plan_cleanup
 

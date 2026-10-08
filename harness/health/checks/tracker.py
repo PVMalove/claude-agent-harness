@@ -37,6 +37,8 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import quote
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+
 from ..context import HealthContext
 from ..labels_table import parse_canonical_labels
 from ..model import CheckResult, Fix
@@ -103,7 +105,11 @@ def _hosted(found: ProjectTracker) -> _Target | None:
     if found.type == "local":
         return None
     # A hosted tracker always has a host: the tracker field requires it, origin always yields one.
-    assert found.host is not None
+    if found.host is None:
+        raise HarnessError(
+            f"hosted {found.type} project tracker without a host",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     return _Target(found.type, found.host, found.project)
 
 

@@ -12,6 +12,9 @@ from pathlib import Path
 
 from ..errors import HarnessError
 
+# Local Git plumbing only; a slow disk or a huge repository is the worst expected case.
+GIT_TIMEOUT_SECONDS = 60
+
 
 class AttestationError(HarnessError):
     """The runtime did not start in the immutable dispatch's Git context."""
@@ -31,14 +34,27 @@ def _git_command(path: Path, *arguments: str) -> list[str]:
     ]
 
 
+def _run_git(path: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    """Run one bounded Git command; a hung or missing git is an attestation failure."""
+    command = f"git {' '.join(arguments)}"
+    try:
+        return subprocess.run(
+            _git_command(path, *arguments),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise AttestationError(
+            f"{command} did not complete: {exc}",
+            remedy=f"make git available and responsive for {path.resolve()}, then retry '{command}'",
+        ) from exc
+
+
 def _git(path: Path, *arguments: str) -> str:
-    result = subprocess.run(
-        _git_command(path, *arguments),
-        capture_output=True,
-        text=True,
-        errors="replace",
-        check=False,
-    )
+    result = _run_git(path, *arguments)
     if result.returncode:
         detail = (result.stderr or result.stdout).strip()
         raise AttestationError(
@@ -103,11 +119,7 @@ def attest(repo: Path, dispatch: Mapping[str, object], worktree: str) -> dict[st
                 "runtime worktree branch does not match the immutable issue branch",
                 remedy=f"checkout branch {expected_branch!r} in {checkout} before dispatching this role",
             )
-        ancestor = subprocess.run(
-            _git_command(repo, "merge-base", "--is-ancestor", head, expected_branch),
-            capture_output=True,
-            check=False,
-        )
+        ancestor = _run_git(repo, "merge-base", "--is-ancestor", head, expected_branch)
         if ancestor.returncode:
             raise AttestationError(
                 "runtime worktree HEAD is not reachable from the immutable issue branch",

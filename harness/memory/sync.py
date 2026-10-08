@@ -16,6 +16,8 @@ from typing import BinaryIO
 from pathlib import Path
 from urllib.parse import quote
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+
 from .adapters import sanitized, scalar
 from .index import context, refresh, writer_lock
 from .policy import Policy
@@ -38,7 +40,7 @@ MARKER = re.compile(r"^## Completion report\s*\n```json\s*\n(.*?)\n```\s*$", re.
 def fetch_page(
     argv: list[str], repo: Path, env: dict[str, str] | None = None
 ) -> list[dict[str, object]]:
-    """Bound subprocess time and output without retaining raw diagnostics."""
+    """Bound subprocess time (`TIMEOUT`) and output without retaining raw diagnostics."""
     cmd: list[str] | str = list(argv)
     if sys.platform == "win32":
         resolved = shutil.which(argv[0])
@@ -54,7 +56,13 @@ def fetch_page(
         )
     except OSError:
         raise ValueError(f"memory sync: {argv[0]} unavailable") from None
-    assert process.stdout is not None and process.stderr is not None
+    if process.stdout is None or process.stderr is None:
+        process.kill()
+        process.wait()
+        raise HarnessError(
+            "memory sync: tracker process started without its stdout/stderr pipes",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     output = bytearray()
     exceeded = threading.Event()
     guard = threading.Lock()

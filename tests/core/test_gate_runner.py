@@ -658,3 +658,84 @@ def test_diagnose_treats_contradicting_signals_as_unknown() -> None:
     # An outage signature next to a named tracked project file is not an outage proof.
     implicated = "Connection timed out while reading package-lock.json"
     assert diagnose("npm ci", 1, implicated, LOCK_FILES).category == "unknown"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell operator syntax")
+@pytest.mark.parametrize("operator", ["&&", ";"])
+def test_a_python_string_command_keeps_its_shell_operators(
+    tmp_path: Path, operator: str
+) -> None:
+    """A rewritten Python launcher must not swallow the rest of the shell command as its argv."""
+    result = run_gate(
+        [f"python -c \"print('first')\" {operator} echo $((40 + 2))"],
+        LocalPolicy(tmp_path),
+        stop_on_failure=True,
+    )
+
+    output_lines = result.artifact.splitlines()
+    assert result.passed
+    assert "first" in output_lines
+    assert "42" in output_lines
+    assert not output_lines[0].startswith("$ python ")
+
+
+def _git_failing_run(failing: str, error: BaseException) -> _RunFn:
+    """Return a subprocess.run stand-in that fails only the Git subcommand named by `failing`."""
+    real_run = cast(_RunFn, subprocess.run)
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git" and failing in command:
+            raise error
+        return real_run(command, **kwargs)
+
+    return run
+
+
+def test_a_hung_git_is_a_gate_error_and_leaves_no_checkout_directory(
+    tmp_path: Path,
+) -> None:
+    repo, head = _committed_repo(tmp_path)
+    with mock.patch(
+        "harness.gate_runner.gate_runner.subprocess.run",
+        side_effect=_git_failing_run(
+            "worktree", subprocess.TimeoutExpired(["git"], 300)
+        ),
+    ):
+        with pytest.raises(GateRunnerError) as raised:
+            run_gate(["true"], CleanRoomPolicy(repo, head), stop_on_failure=True)
+    assert "did not finish within" in raised.value.message
+    assert "held Git lock" in raised.value.remedy
+    runs = storage_path(repo, "runs", "qa")
+    assert not runs.is_dir() or list(runs.iterdir()) == []
+
+
+def test_a_failed_worktree_cleanup_does_not_mask_the_gate_result(
+    tmp_path: Path,
+) -> None:
+    repo, head = _committed_repo(tmp_path)
+    with mock.patch(
+        "harness.gate_runner.gate_runner.subprocess.run",
+        side_effect=_git_failing_run("remove", FileNotFoundError("git")),
+    ):
+        result = run_gate(["true"], CleanRoomPolicy(repo, head), stop_on_failure=True)
+    assert result.passed
+    runs = storage_path(repo, "runs", "qa")
+    assert list(runs.iterdir()) == []
+
+
+def test_an_unlaunchable_git_during_diagnosis_keeps_the_stage_evidence(
+    tmp_path: Path,
+) -> None:
+    with mock.patch(
+        "harness.gate_runner.gate_runner.subprocess.run",
+        side_effect=_git_failing_run("ls-files", FileNotFoundError("git")),
+    ):
+        result = run_qa_stages(
+            [_py("import sys; sys.exit(1)")],
+            [_py("print('gate')")],
+            LocalPolicy(tmp_path),
+        )
+    assert result.failed_stage == "preparation"
+    assert result.code_checks_started == "not_started"
+    assert result.diagnosis is not None
+    assert result.diagnosis.category == "unknown"

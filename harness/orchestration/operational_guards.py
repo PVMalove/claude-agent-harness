@@ -138,7 +138,9 @@ def transition_digest(transition: Mapping[str, object]) -> str:
             remedy=f"provide exactly: {', '.join(TRANSITION_FIELDS)}, plus "
             "carried_items_sha256 only when the brief carries items, rebase_target_sha only "
             "when it carries an approved rebase target, delta_review_sha256 only when it "
-            "carries a delta-review scope and runtime_access_sha256 for a new brief",
+            "carries a delta-review scope, runtime_access_sha256 and "
+            "infrastructure_retry_sha256 for a new brief, and infrastructure_attempt_sha256 "
+            "only when a policy retry binds a recorded operation refusal",
         )
     return _digest(dict(transition))
 

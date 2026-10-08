@@ -1,5 +1,7 @@
 """Branch-name hooks и трекер проекта: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
 import os
 import shutil
@@ -8,7 +10,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from scripts.clean_room.support import run_hook
+from scripts.clean_room.support import run_hook, run_step
 
 BRANCH = "release/rel-7-x"
 BRANCH_PATTERN = "^release/rel-[0-9]+-.+"
@@ -123,12 +125,10 @@ def run(ctx: SimpleNamespace) -> None:
         project_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
     def set_origin(url: str) -> None:
-        subprocess.run(
+        run_step(
             ["git", "remote", "remove", "origin"], cwd=pv_project, capture_output=True
         )
-        subprocess.run(
-            ["git", "remote", "add", "origin", url], cwd=pv_project, check=True
-        )
+        run_step(["git", "remote", "add", "origin", url], cwd=pv_project, check=True)
 
     def run_branch_hooks(
         mode: str = "ok", path: str = fake_path
@@ -167,14 +167,17 @@ def run(ctx: SimpleNamespace) -> None:
                     f"calls={calls}, stderr={result.stderr}"
                 )
 
-    def expect_refusal(mode: str, marker: str) -> str:
+    def expect_refusal(mode: str, marker: str) -> tuple[str, ...]:
+        """stderr каждого hook (в порядке `run_branch_hooks`) для отказа с `marker`."""
+        messages = []
         for name, result, _calls in run_branch_hooks(mode):
             if result.returncode != 2 or marker not in result.stderr:
                 sys.exit(
                     f"{name} gave no '{marker}' message for tracker answer {mode}: "
                     f"rc={result.returncode}, stderr={result.stderr}"
                 )
-        return result.stderr
+            messages.append(result.stderr)
+        return tuple(messages)
 
     try:
         write_project_json()
@@ -198,8 +201,10 @@ def run(ctx: SimpleNamespace) -> None:
                 ("unknown", "запусти команду вручную"),
             )
         }
-        if len(set(messages.values())) != len(messages):
-            sys.exit(f"branch hook messages are not distinct: {messages}")
+        # Each hook on its own gives a distinct message per tracker answer.
+        for position in range(2):
+            if len({pair[position] for pair in messages.values()}) != len(messages):
+                sys.exit(f"branch hook messages are not distinct: {messages}")
 
         # Without the tracker CLI the issue check is skipped, as before.
         for name, result, _calls in run_branch_hooks("missing", no_cli_path):
@@ -226,7 +231,7 @@ def run(ctx: SimpleNamespace) -> None:
         )
         expect_refusal("missing", "не найдена")
     finally:
-        subprocess.run(
+        run_step(
             ["git", "remote", "remove", "origin"], cwd=pv_project, capture_output=True
         )
         project_json.write_text(saved_project_json, encoding="utf-8")

@@ -1,12 +1,14 @@
 """Checkpoint и сессия worker: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
-import subprocess
 import sys
 from types import SimpleNamespace
 
 from scripts.clean_room.support import (
     capture,
+    run_step,
 )
 
 
@@ -31,7 +33,7 @@ def run(ctx: SimpleNamespace) -> None:
     # non-terminal checkpoint and resume the same dispatch ID under a fresh worker session; a
     # read-only role may never checkpoint at all, and a checkpoint is never a completion report.
     checkpoint_state = test_root / "checkpoint-state"
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-139-checkpoint"],
         cwd=orchestration_project,
         check=True,
@@ -250,12 +252,12 @@ def run(ctx: SimpleNamespace) -> None:
     checkpoint_file_one.write_text(
         'def demo():\n    return "session one"\n', encoding="utf-8"
     )
-    subprocess.run(
+    run_step(
         ["git", "add", "services/checkpoint_demo.py"],
         cwd=orchestration_project,
         check=True,
     )
-    subprocess.run(
+    run_step(
         ["git", "commit", "-qm", "feat: checkpoint demo session one"],
         cwd=orchestration_project,
         check=True,
@@ -454,12 +456,12 @@ def run(ctx: SimpleNamespace) -> None:
     checkpoint_file_two.write_text(
         'def demo_v2():\n    return "session two"\n', encoding="utf-8"
     )
-    subprocess.run(
+    run_step(
         ["git", "add", "services/checkpoint_demo_v2.py"],
         cwd=orchestration_project,
         check=True,
     )
-    subprocess.run(
+    run_step(
         ["git", "commit", "-qm", "feat: checkpoint demo session two"],
         cwd=orchestration_project,
         check=True,

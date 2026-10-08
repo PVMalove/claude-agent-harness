@@ -5,6 +5,8 @@
 одноразовых репозиториев; проверяется итоговое состояние файлов и реальное поведение hooks.
 """
 
+from __future__ import annotations
+
 import os
 import shutil
 import stat

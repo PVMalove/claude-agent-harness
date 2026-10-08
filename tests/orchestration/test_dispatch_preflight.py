@@ -9,6 +9,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
+
+import pytest
 
 from harness.errors import HarnessError
 from harness.orchestration import dispatch_preflight
@@ -41,7 +44,7 @@ class PreflightErrorInvariantTests(unittest.TestCase):
             and isinstance(node.exc.func, ast.Name)
             and node.exc.func.id == "PreflightError"
         ]
-        self.assertEqual(len(sites), 13)
+        self.assertEqual(len(sites), 14)
         for site in sites:
             assert isinstance(site.exc, ast.Call)
             remedies = [
@@ -569,6 +572,37 @@ class RuntimeAccessPreflightTests(_PreflightFixture):
         self.assertEqual(
             cast(JsonObject, publish["sources"])["network"], "operations.publish"
         )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.TimeoutExpired(["git"], 60),
+        FileNotFoundError(2, "No such file or directory", "git"),
+    ],
+)
+def test_a_git_command_that_hangs_or_cannot_start_is_a_preflight_error(
+    tmp_path: Path, failure: Exception
+) -> None:
+    timeouts: list[object] = []
+
+    def stalled(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        timeouts.append(kwargs.get("timeout"))
+        raise failure
+
+    with (
+        patch.object(subprocess, "run", side_effect=stalled),
+        pytest.raises(PreflightError) as caught,
+    ):
+        dispatch_preflight._git(tmp_path, "worktree", "list", "--porcelain")
+
+    assert caught.value.__cause__ is failure
+    assert caught.value.message.startswith("git worktree list --porcelain ")
+    assert "git worktree list --porcelain" in caught.value.remedy
+    assert len(timeouts) == 1
+    assert isinstance(timeouts[0], int) and timeouts[0] > 0
 
 
 if __name__ == "__main__":

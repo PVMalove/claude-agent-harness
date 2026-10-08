@@ -1,5 +1,7 @@
 """Миграция ledger между версиями схемы: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 import sys

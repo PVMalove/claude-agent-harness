@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, cast
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from harness.orchestration import coordinator
 
 from .catalog import CONFIRMATION_REASONS as CONFIRMATION_REASONS
@@ -203,7 +204,10 @@ def subparser(
                 parser = cast(argparse.ArgumentParser, action.choices[name])
                 break
         else:
-            raise KeyError(f"no such coordinator subcommand: {' '.join(path)}")
+            raise HarnessError(
+                f"no such coordinator subcommand: {' '.join(path)}",
+                remedy=INTERNAL_INVARIANT_REMEDY,
+            )
     return parser
 
 

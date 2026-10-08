@@ -8,6 +8,8 @@
 `direct_commits.py` — чтобы найти вызовы `git commit`/`git push` (`parse`, `strict_steps`).
 """
 
+from __future__ import annotations
+
 import json
 import re
 import shlex
@@ -125,7 +127,7 @@ GLAB_VALUE_SHORTS = frozenset("abdHilmRst")
 MAX_DEPTH = 8
 
 
-@dataclass
+@dataclass(frozen=True)
 class Parsed:
     """Simple commands, которые выполнит bash, и фрагменты, которые по токенам не решить.
 

@@ -17,8 +17,8 @@ from harness.storage import sandboxes_health, validate_sandboxes
 from ..context import HealthContext
 from ..model import CheckResult, Fix
 from ..project_files import (
-    BACKEND_ORCHESTRATION_CAPABILITY,
     DISCOVERY_LINKS,
+    JSON_READ_ERRORS,
     ORCHESTRATION_CONFIG_REL,
     REGISTRY_REL,
     native_link_target,
@@ -235,10 +235,7 @@ def check_sandboxes(context: HealthContext) -> CheckResult:
 
 
 def check_orchestration_config(context: HealthContext) -> CheckResult:
-    lock = context.lock
-    if lock is None or BACKEND_ORCHESTRATION_CAPABILITY not in (
-        lock.get("capabilities") or []
-    ):
+    if not context.orchestration_enabled():
         return CheckResult(
             id="files.orchestration_config",
             group="files",
@@ -437,10 +434,7 @@ def check_integrations(context: HealthContext) -> CheckResult:
 
 
 def check_verification_routing(context: HealthContext) -> CheckResult:
-    lock = context.lock
-    if lock is None or BACKEND_ORCHESTRATION_CAPABILITY not in (
-        lock.get("capabilities") or []
-    ):
+    if not context.orchestration_enabled():
         return CheckResult(
             id="files.verification_routing",
             group="files",
@@ -450,7 +444,7 @@ def check_verification_routing(context: HealthContext) -> CheckResult:
     config_path = context.repo / ORCHESTRATION_CONFIG_REL
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except JSON_READ_ERRORS:
         return CheckResult(
             id="files.verification_routing",
             group="files",

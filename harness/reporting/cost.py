@@ -7,6 +7,9 @@ from pathlib import Path
 
 from harness.reporting.common import MISSING, JsonObject, StatsError
 
+# Optional cache price multipliers of a model card; estimate_cost() applies defaults when absent.
+CACHE_MULTIPLIER_FIELDS = ("cache_write_multiplier", "cache_read_multiplier")
+
 
 def _rate(card: object, field: str) -> float:
     """Извлечь числовую ставку из тарифной карточки модели."""
@@ -37,6 +40,11 @@ def load_rates(path: Path | None) -> JsonObject:
         }
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise StatsError(
+            f"rate card is not readable: {path}: {exc}",
+            remedy=f"fix the file-system error above for {path} and retry",
+        ) from exc
     except ValueError as exc:
         raise StatsError(
             f"rate card is not valid JSON: {path}",
@@ -47,6 +55,8 @@ def load_rates(path: Path | None) -> JsonObject:
             "rate card must be an object with a models object",
             remedy=f"set {path} to a JSON object with a top-level 'models' object",
         )
+    for model, card in value["models"].items():
+        _check_multipliers(path, model, card)
     if not any(_is_priced(card) for card in value["models"].values()):
         # An untouched template is not a rate card: every price is 0.0. Reporting its total as a
         # real 0.00 would be the tool asserting a number nobody gave it.
@@ -57,6 +67,23 @@ def load_rates(path: Path | None) -> JsonObject:
         }
     value.setdefault("status", "ok")
     return value
+
+
+def _check_multipliers(path: Path, model: object, card: object) -> None:
+    """Проверить, что заданные множители кэша карточки модели являются числами."""
+    if not isinstance(card, dict):
+        return
+    for field in CACHE_MULTIPLIER_FIELDS:
+        if field not in card:
+            continue
+        multiplier = card[field]
+        try:
+            float(multiplier)
+        except (TypeError, ValueError) as exc:
+            raise StatsError(
+                f"rate card {path}: {field} of model {model!r} is not a number: {multiplier!r}",
+                remedy=f"set models.{model}.{field} in {path} to a number or remove it to use the default",
+            ) from exc
 
 
 def estimate_cost(

@@ -32,7 +32,7 @@ from harness.orchestration.core.constants import (
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
-    _git,
+    _git_is_ancestor,
     _remote_branch_tip,
 )
 from harness.orchestration.core.utils import (
@@ -71,8 +71,8 @@ def _observe_pair(
         )
     identity = record["identity"]
     candidate = _candidate_commit(repo, pair["candidate_sha"])
-    if candidate != pair["candidate_sha"] or _git(
-        repo, "merge-base", "--is-ancestor", pair["target_sha"], candidate
+    if candidate != pair["candidate_sha"] or not _git_is_ancestor(
+        repo, pair["target_sha"], candidate
     ):
         raise CoordinatorError(
             "the candidate is not based on its target",

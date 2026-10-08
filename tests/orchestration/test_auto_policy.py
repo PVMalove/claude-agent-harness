@@ -16,9 +16,13 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
+
+from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config
-from harness.orchestration.core.constants import AUTO_REPORT_FIELDS
+from harness.orchestration.core.constants import AUTO_REPORT_FIELDS, AUTO_STOP_REASONS
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
+from harness.orchestration.operational_guards import ATTENTION_REASONS
 from harness.orchestration.workflow import (
     approval,
     auto_policy,
@@ -911,6 +915,198 @@ class AutoReportBuildTests(unittest.TestCase):
         history._validate_operational_batch_fields(
             {"batch_id": "batch-1", "auto_stop": stop, "auto_report": sealed}
         )
+
+
+# -- hardening (refactor pass 2026-10-08) -----------------------------------------------------------
+
+
+def test_the_stop_order_is_integrity_then_budget_then_route() -> None:
+    """The playbook detects stops in this order; the order covers the whole closed list."""
+    assert auto_policy.STOP_ORDER == (
+        "integrity-failure",
+        "budget-exhausted",
+        "no-automatic-route",
+    )
+    assert set(auto_policy.STOP_ORDER) == set(AUTO_STOP_REASONS)
+
+
+def test_an_integrity_stop_comes_before_a_spent_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def changed(repo: Path, batch: JsonObject) -> None:
+        raise CoordinatorError("the installed runtime changed", remedy="restore it")
+
+    def no_status(root: Path, dispatch_id: str) -> JsonObject:
+        raise CoordinatorError("no status", remedy="none")
+
+    monkeypatch.setattr(auto_policy, "_validate_harness_runtime_snapshot", changed)
+    monkeypatch.setattr(auto_policy, "_load_dispatch_status", no_status)
+    monkeypatch.setattr(auto_policy, "_attention_findings", lambda *_: [])
+    batch: JsonObject = {
+        "state": "awaiting-approval",
+        "dispatches": [{"dispatch_id": "dispatch-1", "state": "checkpointed"}],
+        "coordinator_decisions": [
+            {"dispatch_id": "dispatch-1", "decision": "continue"},
+            {"dispatch_id": "dispatch-1", "decision": "continue"},
+        ],
+    }
+
+    stops = auto_policy.fact_stops(tmp_path, tmp_path, {}, batch, MOMENT)
+
+    assert [(stop.category, stop.reason) for stop in stops] == [
+        ("integrity-failure", "harness-snapshot-changed"),
+        ("budget-exhausted", "continuation_policy.max_continuations"),
+    ]
+
+
+def test_every_attention_reason_has_a_listed_stop() -> None:
+    """An attention reason without a stop would be silently ignored by the automatic path."""
+    assert set(auto_policy.ATTENTION_STOPS) == set(ATTENTION_REASONS)
+
+
+@pytest.mark.parametrize("axis", ["standards", "spec"])
+def test_a_review_axis_that_names_blockers_is_not_accepted(axis: str) -> None:
+    review = _axes("clean", [])
+    review[axis]["blockers"] = "the migration cannot be rolled back"
+    report = _clean("code-review", review=review)
+
+    obstacles = auto_policy.accept_obstacles(
+        "code-review",
+        report,
+        {"role": "code-review", "purpose": "work"},
+        scope_warnings=[],
+        block_bypass=False,
+    )
+
+    assert obstacles == ["a review axis names blockers"]
+
+
+def test_a_clean_review_without_blockers_is_still_accepted() -> None:
+    report = _clean("code-review", review=_axes("clean", []))
+    assert (
+        auto_policy.accept_obstacles(
+            "code-review",
+            report,
+            {"role": "code-review", "purpose": "work"},
+            scope_warnings=[],
+            block_bypass=False,
+        )
+        == []
+    )
+
+
+def _live_build(
+    batch: JsonObject, config_: JsonObject, rows: list[auto_report.Row] | None = None
+) -> JsonObject:
+    return auto_report.build(
+        batch,
+        rows or [],
+        config_,
+        stop=None,
+        candidate=None,
+        settled=set(),
+        coverage={},
+        recorded_at=None,
+    )
+
+
+def _progress_batch(**fields: object) -> JsonObject:
+    batch: JsonObject = {
+        "batch_id": "batch-1",
+        "approval_policy": "auto",
+        "state": "awaiting-approval",
+        "definition_of_done": ["first"],
+        "allowed_paths": ["**"],
+    }
+    batch.update(fields)
+    return batch
+
+
+def test_the_report_lists_a_coordinator_finding_no_brief_carried_yet() -> None:
+    """A stop between a developer accept with findings and the review brief keeps them visible."""
+    batch = _progress_batch(
+        carried_items=[
+            {
+                "item_id": "coordinator-finding-1",
+                "source": {"kind": "coordinator-finding", "dispatch_id": "dispatch-1"},
+                "summary": "close the file handle",
+                "files": ["a.py"],
+                "expected_evidence": "a test closes it",
+                "attached_at": MOMENT,
+                "attached_by": "policy:auto",
+                "record_sha256": "f" * 64,
+            }
+        ]
+    )
+
+    report = _live_build(batch, {"approval_policy": "auto"})
+
+    assert report["findings"] == [
+        {
+            "item_id": "coordinator-finding-1",
+            "source": "coordinator-finding",
+            "summary": "close the file handle",
+            "state": "open",
+        }
+    ]
+
+
+def test_spent_budget_is_counted_per_dispatch_and_per_candidate() -> None:
+    """``spent`` is comparable to its per-dispatch or per-candidate ``max``, never a batch sum."""
+    transport = {"route": "same-candidate-rerun", "reason_category": "transport"}
+    batch = _progress_batch(
+        coordinator_decisions=[
+            {"dispatch_id": "dispatch-1", "decision": "continue"},
+            {"dispatch_id": "dispatch-1", "decision": "continue-automatic"},
+            {"dispatch_id": "dispatch-2", "decision": "continue"},
+            {"dispatch_id": "dispatch-3", "decision": "continue-automatic"},
+            {
+                "dispatch_id": "dispatch-4",
+                "decision": "retry",
+                "routing": {**transport, "candidate_commit": "a" * 40},
+            },
+            {
+                "dispatch_id": "dispatch-5",
+                "decision": "retry",
+                "routing": {**transport, "candidate_commit": "a" * 40},
+            },
+            {
+                "dispatch_id": "dispatch-6",
+                "decision": "retry",
+                "routing": {**transport, "candidate_commit": "b" * 40},
+            },
+        ]
+    )
+
+    budget = _live_build(batch, {"approval_policy": "auto"})["budget"]
+
+    assert budget["continuations"]["spent"] == 2
+    assert budget["rate_limit_resumes"]["spent"] == 1
+    assert budget["infrastructure_retries"]["spent"] == 2
+
+
+def test_a_live_report_names_the_auto_decide_step_only_while_auto_is_active() -> None:
+    batch = _progress_batch()
+
+    active = _live_build(batch, {"approval_policy": "auto"})["next_human_action"]
+    inactive = _live_build(batch, {"approval_policy": "manual"})["next_human_action"]
+
+    assert "batch auto-decide" in active
+    assert "batch auto-decide" not in inactive
+    assert "--approved-by" in inactive
+    assert "auto-merge is forbidden" in inactive
+
+
+def test_a_report_with_a_field_outside_the_contract_is_an_internal_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The field check survives ``python -O``: it is an explicit raise, not an ``assert``."""
+    monkeypatch.setattr(
+        auto_report, "AUTO_REPORT_FIELDS", AUTO_REPORT_FIELDS | {"extra"}
+    )
+    with pytest.raises(CoordinatorError) as refused:
+        _live_build(_progress_batch(), {"approval_policy": "auto"})
+    assert refused.value.remedy == INTERNAL_INVARIANT_REMEDY
 
 
 if __name__ == "__main__":

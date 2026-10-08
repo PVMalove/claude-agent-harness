@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
+from harness.json_types import JsonObject as JsonObject
 
 # Raw JSON crosses into this package at exactly two points: the parsed harness.lock
 # (context.HealthContext) and the --json report (report_json.to_json). Matches the existing idiom
 # in harness/reporting/common.py.
-JsonObject = dict[str, Any]  # type: ignore[explicit-any]
 
 Status = Literal["ok", "warn", "fail", "skipped"]
 _STATUSES: tuple[Status, ...] = ("ok", "warn", "fail", "skipped")

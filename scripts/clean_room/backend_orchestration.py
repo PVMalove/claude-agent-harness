@@ -1,8 +1,9 @@
 """Установка backend-orchestration, Repo Map и health: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from scripts.clean_room.support import (
     find_check,
     run_health,
     run_ok,
+    run_step,
 )
 
 
@@ -133,12 +135,10 @@ def run(ctx: SimpleNamespace) -> None:
         return path
 
     orchestration_project.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=orchestration_project, check=True)
+    run_step(["git", "init", "-q"], cwd=orchestration_project, check=True)
     orchestration_remote = test_root / "orchestration-remote.git"
-    subprocess.run(
-        ["git", "init", "--bare", "-q", str(orchestration_remote)], check=True
-    )
-    subprocess.run(
+    run_step(["git", "init", "--bare", "-q", str(orchestration_remote)], check=True)
+    run_step(
         ["git", "remote", "add", "origin", str(orchestration_remote)],
         cwd=orchestration_project,
         check=True,
@@ -249,6 +249,9 @@ def run(ctx: SimpleNamespace) -> None:
     project_owned_config = original_orchestration_config.replace(
         '"concurrency_budget": 1', '"concurrency_budget": 3'
     )
+    if project_owned_config == original_orchestration_config:
+        # Otherwise the overwrite check below compares the seed with itself and cannot fail.
+        sys.exit("orchestration config seed no longer has concurrency_budget 1 to edit")
     orchestration_config.write_text(project_owned_config, encoding="utf-8")
     coordinator_path = (
         orchestration_project / ".harness" / "orchestration" / "coordinator.py"
@@ -662,22 +665,22 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_config.write_text(
         json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8"
     )
-    subprocess.run(
+    run_step(
         ["git", "config", "user.email", "test@example.invalid"],
         cwd=orchestration_project,
         check=True,
     )
-    subprocess.run(
+    run_step(
         ["git", "config", "user.name", "Clean Room"],
         cwd=orchestration_project,
         check=True,
     )
-    subprocess.run(
+    run_step(
         ["git", "commit", "--allow-empty", "-qm", "chore: initialize adapter fixture"],
         cwd=orchestration_project,
         check=True,
     )
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-900-approved-dispatch"],
         cwd=orchestration_project,
         check=True,

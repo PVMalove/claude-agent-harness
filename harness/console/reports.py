@@ -98,9 +98,12 @@ class QaRun:
     total_lines: int
 
 
-@dataclass
+@dataclass(frozen=True)
 class LedgerView:
-    """Полный снимок записей леджера оркестрации, считанный для раздела Reports."""
+    """Полный снимок записей леджера оркестрации, считанный для раздела Reports.
+
+    Поля не переназначаются: `load_ledger_view` только заполняет их контейнеры при чтении.
+    """
 
     reports: list[ReportEntry] = field(default_factory=list)
     batches: list[BatchSummary] = field(default_factory=list)

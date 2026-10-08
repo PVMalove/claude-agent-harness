@@ -1,5 +1,6 @@
 """Plan selection and pre-action verification of coordinator-executed operations."""
 
+import errno
 import os
 import subprocess
 from collections.abc import Iterator
@@ -7,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol, cast
 
 import pytest
 
@@ -442,3 +444,78 @@ def test_a_stale_index_lock_stays_a_plain_coordinator_error(tmp_path: Path) -> N
         git_utils._git(repo, "add", "-A")
     assert not isinstance(failed.value, git_utils.GitAccessError)
     assert "index.lock" in failed.value.message
+
+
+class _RunFn(Protocol):
+    def __call__(
+        self, command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]: ...
+
+
+@pytest.mark.parametrize("step", ["get-url", "ls-remote"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.TimeoutExpired(["git"], 30),
+        FileNotFoundError(2, "No such file or directory", "git"),
+    ],
+)
+def test_a_remote_lookup_that_hangs_or_cannot_start_is_unverified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str, failure: Exception
+) -> None:
+    repo = _project(tmp_path)
+    _bare_remote(tmp_path, repo)
+    plan = _plan(repo, operation="git")
+    real_run = cast(_RunFn, subprocess.run)
+    timeouts: list[object] = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        timeouts.append(kwargs.get("timeout"))
+        if step in command:
+            raise failure
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    entry = operation_access._remote_check("git", plan, repo, "origin")
+
+    assert entry["state"] == "unverified"
+    assert entry["source"] == "probe"
+    assert str(entry["remedy"]).strip()
+    assert all(isinstance(value, int) and value > 0 for value in timeouts)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            PermissionError(errno.EACCES, "Permission denied"),
+            ("denied", os.strerror(errno.EACCES)),
+        ),
+        (OSError(errno.ENOENT, "gone"), ("unverified", os.strerror(errno.ENOENT))),
+        (
+            OSError("probe failed without an errno"),
+            ("unverified", "probe failed without an errno"),
+        ),
+    ],
+)
+def test_a_probe_refusal_names_its_actual_cause(
+    error: OSError, expected: tuple[str, str]
+) -> None:
+    assert operation_access._refusal(error) == expected
+
+
+def test_a_non_object_pinned_plan_is_an_internal_invariant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from harness.errors import INTERNAL_INVARIANT_REMEDY
+
+    monkeypatch.setattr(operation_access, "validate_binding", lambda brief: None)
+    with pytest.raises(runtime_access.AccessError) as caught:
+        operation_access.select_plan(
+            tmp_path, {}, "qa", brief={"runtime_access": "not an object"}
+        )
+    assert caught.value.remedy == INTERNAL_INVARIANT_REMEDY
+
+    with pytest.raises(runtime_access.AccessError) as caught:
+        operation_access.is_legacy_inherit({"sources": "legacy"})
+    assert caught.value.remedy == INTERNAL_INVARIANT_REMEDY

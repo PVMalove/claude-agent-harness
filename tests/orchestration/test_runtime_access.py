@@ -404,3 +404,56 @@ def test_a_qa_brief_binds_the_write_requirements_of_its_coordinator_operation(
         runtime_access.AccessError, match="checkout or read-only boundary"
     ):
         runtime_access.validate_binding({**brief, "role": "code-review"})
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.TimeoutExpired(["git"], 60),
+        FileNotFoundError(2, "No such file or directory", "git"),
+    ],
+)
+def test_a_git_metadata_lookup_that_hangs_or_cannot_start_is_an_access_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    timeouts: list[object] = []
+
+    def stalled(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        timeouts.append(kwargs.get("timeout"))
+        raise failure
+
+    monkeypatch.setattr(subprocess, "run", stalled)
+    with pytest.raises(runtime_access.AccessError) as caught:
+        runtime_access.resolve_plan(
+            tmp_path,
+            tmp_path,
+            {"access_policy": {"defaults": {"mode": "inherit"}}},
+            "qa",
+            "read-only",
+            operation="qa",
+        )
+
+    assert "shared Git metadata" in caught.value.message
+    assert caught.value.__cause__ is failure
+    assert caught.value.remedy.strip()
+    assert len(timeouts) == 1
+    assert isinstance(timeouts[0], int) and timeouts[0] > 0
+
+
+@pytest.mark.parametrize("policy", ["not an object", {"defaults": "not an object"}])
+def test_a_policy_shape_the_validator_missed_is_an_internal_invariant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy: object
+) -> None:
+    from harness.errors import INTERNAL_INVARIANT_REMEDY
+
+    monkeypatch.setattr(
+        runtime_access, "access_policy_problems", lambda value, roles: []
+    )
+    with pytest.raises(runtime_access.AccessError) as caught:
+        runtime_access.resolve_plan(
+            tmp_path, tmp_path, {"access_policy": policy}, None, "read-only"
+        )
+
+    assert caught.value.remedy == INTERNAL_INVARIANT_REMEDY

@@ -1,12 +1,14 @@
 """Проверка допустимости delta-review: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
-import subprocess
 import sys
 from types import SimpleNamespace
 
 from scripts.clean_room.support import (
     capture,
+    run_step,
 )
 
 
@@ -22,41 +24,33 @@ def run(ctx: SimpleNamespace) -> None:
     # full independent review.  Probed directly, mirroring the shared contract policy probe above.
     probe_repo = test_root / "delta-probe-repo"
     probe_repo.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=probe_repo, check=True)
-    subprocess.run(
+    run_step(["git", "init", "-q"], cwd=probe_repo, check=True)
+    run_step(
         ["git", "config", "user.email", "test@example.invalid"],
         cwd=probe_repo,
         check=True,
     )
-    subprocess.run(
-        ["git", "config", "user.name", "Clean Room"], cwd=probe_repo, check=True
-    )
+    run_step(["git", "config", "user.name", "Clean Room"], cwd=probe_repo, check=True)
     (probe_repo / "app.py").write_text("print('base')\n", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=probe_repo, check=True)
-    subprocess.run(
-        ["git", "commit", "-qm", "chore: baseline"], cwd=probe_repo, check=True
-    )
+    run_step(["git", "add", "."], cwd=probe_repo, check=True)
+    run_step(["git", "commit", "-qm", "chore: baseline"], cwd=probe_repo, check=True)
     (probe_repo / "services").mkdir()
     (probe_repo / "services" / "handler.py").write_text(
         "def handle():\n    return 'ok'\n", encoding="utf-8"
     )
-    subprocess.run(["git", "add", "."], cwd=probe_repo, check=True)
-    subprocess.run(
-        ["git", "commit", "-qm", "feat: add handler"], cwd=probe_repo, check=True
-    )
+    run_step(["git", "add", "."], cwd=probe_repo, check=True)
+    run_step(["git", "commit", "-qm", "feat: add handler"], cwd=probe_repo, check=True)
     probe_prior_sha = capture(
         ["git", "-C", str(probe_repo), "rev-parse", "HEAD"]
     ).strip()
 
-    subprocess.run(
-        ["git", "checkout", "-q", "-b", "eligible"], cwd=probe_repo, check=True
-    )
+    run_step(["git", "checkout", "-q", "-b", "eligible"], cwd=probe_repo, check=True)
     (probe_repo / "tests").mkdir(exist_ok=True)
     (probe_repo / "tests" / "test_handler.py").write_text(
         "def test_handle():\n    assert True\n", encoding="utf-8"
     )
-    subprocess.run(["git", "add", "."], cwd=probe_repo, check=True)
-    subprocess.run(
+    run_step(["git", "add", "."], cwd=probe_repo, check=True)
+    run_step(
         ["git", "commit", "-qm", "test: cover handler edge case"],
         cwd=probe_repo,
         check=True,
@@ -65,7 +59,7 @@ def run(ctx: SimpleNamespace) -> None:
         ["git", "-C", str(probe_repo), "rev-parse", "HEAD"]
     ).strip()
 
-    subprocess.run(
+    run_step(
         ["git", "checkout", "-q", "-b", "nontest", probe_prior_sha],
         cwd=probe_repo,
         check=True,
@@ -73,8 +67,8 @@ def run(ctx: SimpleNamespace) -> None:
     (probe_repo / "services" / "handler.py").write_text(
         "def handle():\n    return 'fixed'\n", encoding="utf-8"
     )
-    subprocess.run(["git", "add", "."], cwd=probe_repo, check=True)
-    subprocess.run(
+    run_step(["git", "add", "."], cwd=probe_repo, check=True)
+    run_step(
         ["git", "commit", "-qm", "fix: adjust handler return value"],
         cwd=probe_repo,
         check=True,
@@ -83,7 +77,7 @@ def run(ctx: SimpleNamespace) -> None:
         ["git", "-C", str(probe_repo), "rev-parse", "HEAD"]
     ).strip()
 
-    subprocess.run(
+    run_step(
         ["git", "checkout", "-q", "-b", "trigger", probe_prior_sha],
         cwd=probe_repo,
         check=True,
@@ -92,8 +86,8 @@ def run(ctx: SimpleNamespace) -> None:
     (probe_repo / "tests" / "test_handler_retry.py").write_text(
         "def test_retry():\n    assert True\n", encoding="utf-8"
     )
-    subprocess.run(["git", "add", "."], cwd=probe_repo, check=True)
-    subprocess.run(
+    run_step(["git", "add", "."], cwd=probe_repo, check=True)
+    run_step(
         ["git", "commit", "-qm", "test: cover concurrency-retry timing"],
         cwd=probe_repo,
         check=True,
@@ -114,7 +108,7 @@ def run(ctx: SimpleNamespace) -> None:
         "concurrency-retry",
         "retry-dlq",
     ]
-    delta_probe = subprocess.run(
+    delta_probe = run_step(
         [
             sys.executable,
             "-c",

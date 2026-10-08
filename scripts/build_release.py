@@ -31,6 +31,7 @@ CHANGELOG_CATEGORIES = frozenset(
     }
 )
 TAG_PATTERN = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
+GIT_TIMEOUT_SECONDS = 60
 
 
 def release_notes(changelog: str, version: str) -> str:
@@ -77,7 +78,11 @@ def release_notes(changelog: str, version: str) -> str:
 def tracked_installation_files(repo: Path) -> list[str]:
     """Получить список отслеживаемых git файлов, входящих в установочный архив релиза."""
     result = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=repo, check=True, capture_output=True
+        ["git", "ls-files", "-z"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        timeout=GIT_TIMEOUT_SECONDS,
     )
     tracked = [path.decode("utf-8") for path in result.stdout.split(b"\0") if path]
     included = [
@@ -159,7 +164,7 @@ def main() -> int:
             print(f"{tag}: release checks passed")
             return 0
         archive, checksum, notes = build_release(repo, tag, arguments.output)
-    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         parser.error(str(exc))
     print(archive)
     print(checksum)

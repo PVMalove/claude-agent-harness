@@ -16,12 +16,49 @@ TRANSITION_FIELD = "infrastructure_retry_sha256"
 COMMAND_FIELDS = ("qa_preparation", "qa_environment_probes", "qa_project_file_checks")
 
 ATTEMPT_TRANSITION_FIELD = "infrastructure_attempt_sha256"
+# Ledger-relative directory of the immutable operation refusals a dispatch status references.
+_ATTEMPTS_DIRECTORY = "qa-lane/operation-attempts/"
 
 
 class _RetryRefusal(CoordinatorError):
     def __init__(self, message: str, *, remedy: str, attention_reason: str | None):
         super().__init__(message, remedy=remedy)
         self.attention_reason = attention_reason
+
+
+def _remote_url_sha256(repo: Path, remote: str) -> str:
+    """Digest of the remote's configured URL, as an operation attempt records it."""
+    from .core.git_utils import _git
+
+    return hashlib.sha256(_git(repo, "remote", "get-url", remote).encode()).hexdigest()
+
+
+def _operation_attempt(root: Path, relative: object) -> JsonObject:
+    """Read the referenced immutable operation attempt; any other ledger path is refused."""
+    from .core.utils import _read_object
+    from .ledger.ledger_ops import _records_root
+
+    if (
+        not isinstance(relative, str)
+        or not relative.startswith(_ATTEMPTS_DIRECTORY)
+        or ".." in Path(relative).parts
+    ):
+        raise CoordinatorError(
+            "invalid infrastructure evidence path",
+            remedy="inspect the ledger integrity",
+        )
+    return _read_object(_records_root(root) / relative, "infrastructure attempt")
+
+
+def _enabled_policy(brief: JsonObject) -> JsonObject:
+    """The approval-bound retry policy of the brief; a disabled one needs a manual decision."""
+    policy = pinned(brief)
+    if not policy or not policy["enabled"]:
+        raise CoordinatorError(
+            "infrastructure retry is not enabled in this approval",
+            remedy="use the manual coordinator decision",
+        )
+    return policy
 
 
 def _retry_budget(batch: JsonObject, brief: JsonObject, policy: JsonObject) -> int:
@@ -78,9 +115,7 @@ def require_publish_destination(
     repo: Path, root: Path, brief: JsonObject, remote: str
 ) -> None:
     """Bind publication of a policy successor to the original immutable access attempt."""
-    from .core.git_utils import _git
-    from .core.utils import _read_object
-    from .ledger.ledger_ops import _load_dispatch_status, _records_root
+    from .ledger.ledger_ops import _load_dispatch_status
 
     transition = brief["transition"]
     checksum = transition.get(ATTEMPT_TRANSITION_FIELD)
@@ -88,24 +123,14 @@ def require_publish_destination(
         return
     status = _load_dispatch_status(root, transition["previous_dispatch_id"])
     failure = status.get("infrastructure_failure", {})
-    path = failure.get("path", "")
-    if (
-        not isinstance(path, str)
-        or not path.startswith("qa-lane/operation-attempts/")
-        or ".." in Path(path).parts
-    ):
-        raise CoordinatorError(
-            "invalid infrastructure evidence path", remedy="inspect ledger integrity"
-        )
-    attempt = _read_object(_records_root(root) / path, "infrastructure attempt")
+    attempt = _operation_attempt(root, failure.get("path", ""))
     if (
         failure.get("sha256") != checksum
         or operational_guards.policy_digest(attempt) != checksum
         or attempt.get("dispatch_id") != transition["previous_dispatch_id"]
         or attempt.get("operation") != "publish"
         or attempt.get("remote") != remote
-        or hashlib.sha256(_git(repo, "remote", "get-url", remote).encode()).hexdigest()
-        != attempt.get("remote_url_sha256")
+        or _remote_url_sha256(repo, remote) != attempt.get("remote_url_sha256")
     ):
         raise CoordinatorError(
             "publish destination changed since the approved infrastructure retry",
@@ -170,12 +195,7 @@ def authorize(
     from .core import config as core_config
     from .workflow.decisions import _decide_retry_route
 
-    policy = pinned(brief)
-    if not policy or not policy["enabled"]:
-        raise CoordinatorError(
-            "infrastructure retry is not enabled in this approval",
-            remedy="use the manual coordinator decision",
-        )
+    policy = _enabled_policy(brief)
     stages = report.get("qa_stages", {})
     if (
         stages.get("failed_stage") != "preparation"
@@ -280,7 +300,6 @@ def record_operation_failure(
 ) -> None:
     """Keep the verifier's actual refusal as an immutable artifact, referenced by status."""
     from .core import utils
-    from .core.git_utils import _git
     from .ledger.ledger_ops import (
         _ledger_lock,
         _load_dispatch_status,
@@ -301,10 +320,8 @@ def record_operation_failure(
             "remote": remote,
         }
         if remote:
-            attempt["remote_url_sha256"] = hashlib.sha256(
-                _git(repo, "remote", "get-url", remote).encode()
-            ).hexdigest()
-        relative = f"qa-lane/operation-attempts/{uuid.uuid4()}.json"
+            attempt["remote_url_sha256"] = _remote_url_sha256(repo, remote)
+        relative = f"{_ATTEMPTS_DIRECTORY}{uuid.uuid4()}.json"
         _write_exclusive(ledger, _records_root(root) / relative, attempt)
         status["infrastructure_failure"] = {
             "path": relative,
@@ -318,17 +335,10 @@ def authorize_unsent(
 ) -> JsonObject:
     from . import operation_access, runtime_access
     from .core import config as core_config
-    from .core.git_utils import _git
-    from .core.utils import _read_object
-    from .ledger.ledger_ops import _load_dispatch_status, _records_root
+    from .ledger.ledger_ops import _load_dispatch_status
     from .workflow.history import _latest_developer_candidate
 
-    policy = pinned(brief)
-    if not policy or not policy["enabled"]:
-        raise CoordinatorError(
-            "infrastructure retry is not enabled in this approval",
-            remedy="use the manual coordinator decision",
-        )
+    policy = _enabled_policy(brief)
     status = _load_dispatch_status(root, brief["dispatch_id"])
     failure = status.get("infrastructure_failure")
     if not isinstance(failure, dict):
@@ -336,17 +346,7 @@ def authorize_unsent(
             "no recorded infrastructure refusal for this dispatch",
             remedy="inspect the actual operation failure before retrying",
         )
-    relative = failure.get("path")
-    if (
-        not isinstance(relative, str)
-        or not relative.startswith("qa-lane/operation-attempts/")
-        or ".." in Path(relative).parts
-    ):
-        raise CoordinatorError(
-            "invalid infrastructure evidence path",
-            remedy="inspect the ledger integrity",
-        )
-    attempt = _read_object(_records_root(root) / relative, "infrastructure attempt")
+    attempt = _operation_attempt(root, failure.get("path"))
     evidence = attempt.get("evidence", {})
     failed = [
         check
@@ -393,9 +393,7 @@ def authorize_unsent(
             remedy="propose and approve the changed contract manually",
         )
     remote = attempt.get("remote")
-    if remote and hashlib.sha256(
-        _git(repo, "remote", "get-url", remote).encode()
-    ).hexdigest() != attempt.get("remote_url_sha256"):
+    if remote and _remote_url_sha256(repo, remote) != attempt.get("remote_url_sha256"):
         raise CoordinatorError(
             "publish remote changed since its infrastructure refusal",
             remedy="use a new manual approval for the changed destination",

@@ -9,23 +9,11 @@ CLI трекера задач. Никакие данные никуда не о�
 
 from __future__ import annotations
 
-import argparse
-import importlib.machinery
-import importlib.util
-import json
-import os
-import re
-import subprocess
 import sys
-import uuid
-from collections.abc import Iterator
-from datetime import UTC, datetime
-from fnmatch import fnmatchcase
-from pathlib import Path
-from typing import NamedTuple, Protocol, cast
-from urllib.parse import quote
 
-MIN_PYTHON = (3, 9)
+# Checked before every other import: `datetime.UTC` below already needs Python 3.11, so a later
+# guard would never print its message on an older interpreter.
+MIN_PYTHON = (3, 12)  # same floor as harness/bin/harness.py and bin/install-global.py
 if sys.version_info < MIN_PYTHON:
     sys.stderr.write(
         "[ERROR] delivery_stats requires Python {}+ (found {}).\n".format(
@@ -33,6 +21,21 @@ if sys.version_info < MIN_PYTHON:
         )
     )
     raise SystemExit(1)
+
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import uuid
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from fnmatch import fnmatchcase
+from pathlib import Path
+from typing import NamedTuple, Protocol, cast
+from urllib.parse import quote
 
 # `harness/bin/harness.py`'s package_files() copies this file verbatim into target projects as
 # `.harness/reporting/delivery_stats.py` -- a different directory name than the source tree's
@@ -65,6 +68,7 @@ from harness.reporting.common import (
     JsonObject,
     StatsError as StatsError,  # noqa: PLC0414
     _int,
+    is_count,
 )
 from harness.reporting.cost import estimate_cost as estimate_cost  # noqa: PLC0414
 from harness.reporting.cost import load_rates as load_rates  # noqa: PLC0414
@@ -102,6 +106,10 @@ NON_BILLABLE_MODELS = {"<synthetic>"}
 # coordinator itself does, since a missing or unreadable record must degrade to "missing", not abort.
 ORCHESTRATION_STATE_REL = Path(".harness/orchestration/state")
 CONTINUATION_DECISIONS = {"continue", "continue-automatic"}
+# Upper bound for one git plumbing call or one gh/glab JSON query (paginated listings included).
+COMMAND_TIMEOUT_SECONDS = 120
+# Exit code `_run` reports for a command killed by COMMAND_TIMEOUT_SECONDS (as coreutils `timeout`).
+TIMEOUT_EXIT_CODE = 124
 
 
 def _run(
@@ -117,6 +125,13 @@ def _run(
             text=True,
             encoding="utf-8",
             check=False,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            TIMEOUT_EXIT_CODE,
+            "",
+            f"{command[0]} did not finish within {COMMAND_TIMEOUT_SECONDS} s",
         )
     except OSError as exc:
         return 127, "", str(exc)
@@ -201,6 +216,11 @@ def _project_config(repo: Path) -> JsonObject:
         return {}
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise StatsError(
+            f".harness/project.json is not readable: {exc}",
+            remedy="fix the file-system error above for .harness/project.json and retry",
+        ) from exc
     except ValueError as exc:
         raise StatsError(
             ".harness/project.json is not valid JSON",
@@ -875,9 +895,8 @@ def _is_billable_turn(record: JsonObject) -> bool:
 
 def _usage_complete(usage: object) -> bool:
     """Проверить, содержит ли словарь использования токенов все обязательные числовые поля Claude."""
-    return isinstance(usage, dict) and not any(
-        not isinstance(usage.get(field), int) or isinstance(usage.get(field), bool)
-        for field in CLAUDE_FIELDS
+    return isinstance(usage, dict) and all(
+        is_count(usage.get(field)) for field in CLAUDE_FIELDS
     )
 
 
@@ -1089,6 +1108,8 @@ def codex_usage(
     rate_limits: JsonObject | None = None
     turns = 0
     incomplete_telemetry = False
+    # One resolve() per distinct recorded cwd, not per record of every rollout.
+    cwd_cache: dict[tuple[str, str], bool] = {}
 
     for transcript in sorted(sessions_root.rglob("rollout-*.jsonl")):
         current_model = "unknown"
@@ -1100,7 +1121,7 @@ def codex_usage(
             payload = record.get("payload")
             payload = payload if isinstance(payload, dict) else {}
             cwd = payload.get("cwd") or record.get("cwd")
-            if _same_path(cwd, repo):
+            if _same_path(cwd, repo, cwd_cache):
                 in_repo = True
             if payload.get("model"):
                 current_model = payload["model"]
@@ -1110,17 +1131,16 @@ def codex_usage(
             if moment is None or not (start <= moment <= end):
                 continue
             ordinal = record.get("ordinal")
-            if ordinal is not None:
+            # A list or object here is a damaged record: unhashable, it cannot be a dedup key.
+            if ordinal is not None and not isinstance(ordinal, (list, dict)):
                 if ordinal in counted:
                     continue
                 counted.add(ordinal)
             info = payload.get("info")
             info = info if isinstance(info, dict) else {}
             delta = info.get("last_token_usage")
-            if not isinstance(delta, dict) or any(
-                not isinstance(delta.get(field), int)
-                or isinstance(delta.get(field), bool)
-                for field in CODEX_FIELDS
+            if not isinstance(delta, dict) or not all(
+                is_count(delta.get(field)) for field in CODEX_FIELDS
             ):
                 transcript_incomplete = True
                 continue
@@ -1276,17 +1296,26 @@ def _dispatch_record(
     return _lenient_read_record(root / "dispatches" / f"{dispatch_id}.json", ledger_cls)
 
 
+def _record_list(record: JsonObject, key: str) -> list[object]:
+    """Получить список из поля записи журнала; значение другого типа читается как пустой список.
+
+    Записи читаются в мягком режиме, поэтому повреждённое поле не должно прерывать сбор метрик.
+    """
+    value = record.get(key)
+    return value if isinstance(value, list) else []
+
+
 def _developer_write_paths(
     root: Path, batch: JsonObject, ledger_cls: LedgerClass | None
 ) -> list[str] | None:
     """Определить объявленную зону путей записи разработчика (write_paths) для пакета задач."""
-    for entry in reversed(batch.get("dispatches", [])):
+    for entry in reversed(_record_list(batch, "dispatches")):
         if not isinstance(entry, dict) or entry.get("role") != "developer":
             continue
         dispatch = _dispatch_record(root, entry.get("dispatch_id"), ledger_cls)
         paths = dispatch.get("write_paths") if dispatch else None
         if isinstance(paths, list) and paths:
-            return paths
+            return [path for path in paths if isinstance(path, str)]
     return None
 
 
@@ -1307,7 +1336,7 @@ def _accumulate_batch_orchestration(
     """Накопить метрики оркестрации из одного пакета (batch) в структуру тикета."""
     bucket["batches"].append(batch.get("batch_id"))
     restarts_by_dispatch: dict[str, list[JsonObject]] = {}
-    for decision in batch.get("coordinator_decisions", []):
+    for decision in _record_list(batch, "coordinator_decisions"):
         if (
             not isinstance(decision, dict)
             or decision.get("decision") not in CONTINUATION_DECISIONS
@@ -1324,7 +1353,7 @@ def _accumulate_batch_orchestration(
             }
         )
     developer_paths = _developer_write_paths(root, batch, ledger_cls)
-    for entry in batch.get("dispatches", []):
+    for entry in _record_list(batch, "dispatches"):
         if not isinstance(entry, dict) or not isinstance(entry.get("dispatch_id"), str):
             continue
         dispatch_id = entry["dispatch_id"]

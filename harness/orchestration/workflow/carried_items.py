@@ -65,6 +65,7 @@ from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.history import (
+    _last_decided_entry,
     _pending_report,
     _require_route,
     _validate_batch_integrity,
@@ -236,12 +237,7 @@ def _settled_item_ids(root: Path, batch: JsonObject) -> set[str]:
     """Items a code-review brief carried and whose review was accepted or warning-overridden."""
     settled: set[str] = set()
     for entry in batch.get("dispatches", []):
-        decision = entry.get("decision")
-        if (
-            entry.get("role") != "code-review"
-            or not isinstance(decision, dict)
-            or decision.get("decision") not in {"accept", "override-warning"}
-        ):
+        if entry.get("role") != "code-review" or not _accepted(entry):
             continue
         section = _load_dispatch(root, entry["dispatch_id"]).get("carried_items") or {}
         settled.update(item["item_id"] for items in section.values() for item in items)
@@ -464,14 +460,7 @@ def _narrowed_items(root: Path, batch: JsonObject, role: str) -> list[JsonObject
 
     They reach only that retry's brief: any later dispatch of the stage runs its whole assignment.
     """
-    previous = next(
-        (
-            item
-            for item in reversed(batch.get("dispatches", []))
-            if isinstance(item.get("decision"), dict)
-        ),
-        None,
-    )
+    previous = _last_decided_entry(batch)
     if (
         previous is None
         or previous["decision"].get("decision") != "retry"
@@ -543,14 +532,7 @@ def _developer_retry_section(root: Path, batch: JsonObject) -> JsonObject | None
     """
     if batch.get("next_action") != "developer-retry":
         return None
-    previous = next(
-        (
-            item
-            for item in reversed(batch.get("dispatches", []))
-            if isinstance(item.get("decision"), dict)
-        ),
-        None,
-    )
+    previous = _last_decided_entry(batch)
     if previous is None or previous["decision"].get("decision") != "retry":
         return None
     section = retry_section(root, batch, previous)
@@ -925,12 +907,10 @@ def section_sha256(section: JsonObject) -> str | None:
 
 
 def _accepted_developer_work(root: Path, entry: JsonObject) -> bool:
-    decision = entry.get("decision")
     return (
         entry.get("role") == "developer"
         and entry.get("state") == "reported"
-        and isinstance(decision, dict)
-        and decision.get("decision") in {"accept", "override-warning"}
+        and _accepted(entry)
         and _load_dispatch(root, entry["dispatch_id"]).get("purpose") == "work"
     )
 

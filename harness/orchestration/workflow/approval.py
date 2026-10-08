@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+from contextlib import ExitStack
 from datetime import UTC, datetime
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
@@ -113,27 +114,24 @@ def _confirm_on_terminal(
     """
     bound = f" (transition {transition_digest[:12]})" if transition_digest else ""
     prompt = f"Type 'approve' to record this decision as {approved_by}{bound}: "
-    try:
-        if os.name == "nt":
-            stream = open("CONIN$", "r", encoding="utf-8")  # noqa: SIM115 - closed below
-            sink = open("CONOUT$", "w", encoding="utf-8")  # noqa: SIM115 - closed below
-        else:
-            stream = open("/dev/tty", "r", encoding="utf-8")  # noqa: SIM115 - closed below
-            sink = open("/dev/tty", "w", encoding="utf-8")  # noqa: SIM115 - closed below
-    except OSError as exc:
-        raise CoordinatorError(
-            "human_approval_gate is 'tty': this decision must be confirmed by a human on the "
-            "terminal, and this session has none. Show the decision packet and have the operator "
-            "run the same command in their own terminal.",
-            remedy="show the decision packet and have a human operator run this same command in their own terminal",
-        ) from exc
-    try:
+    reader, writer = (
+        ("CONIN$", "CONOUT$") if os.name == "nt" else ("/dev/tty", "/dev/tty")
+    )
+    # The stack closes the input handle as well when the output handle cannot be opened.
+    with ExitStack() as handles:
+        try:
+            stream = handles.enter_context(open(reader, "r", encoding="utf-8"))
+            sink = handles.enter_context(open(writer, "w", encoding="utf-8"))
+        except OSError as exc:
+            raise CoordinatorError(
+                "human_approval_gate is 'tty': this decision must be confirmed by a human on the "
+                "terminal, and this session has none. Show the decision packet and have the "
+                "operator run the same command in their own terminal.",
+                remedy="show the decision packet and have a human operator run this same command in their own terminal",
+            ) from exc
         sink.write(prompt)
         sink.flush()
         answer = stream.readline().strip().lower()
-    finally:
-        stream.close()
-        sink.close()
     if answer != "approve":
         raise CoordinatorError(
             "human approval was not confirmed on the terminal",

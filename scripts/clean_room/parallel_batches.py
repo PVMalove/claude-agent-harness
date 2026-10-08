@@ -1,9 +1,12 @@
 """Параллельные batch с явным scope: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
-import subprocess
 import sys
 from types import SimpleNamespace
+
+from scripts.clean_room.support import run_step
 
 
 def run(ctx: SimpleNamespace) -> None:
@@ -22,7 +25,7 @@ def run(ctx: SimpleNamespace) -> None:
     def plan(ticket, slug, *scope):
         branch = f"feature/issue-{ticket.lstrip('#')}-{slug}"
         worktree = test_root / f"parallel-{slug}"
-        subprocess.run(
+        run_step(
             ["git", "worktree", "add", "-q", "-b", branch, str(worktree)],
             cwd=orchestration_project,
             check=True,

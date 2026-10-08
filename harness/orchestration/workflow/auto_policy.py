@@ -69,7 +69,8 @@ ATTENTION_STOPS = {
     "unknown-reason": ("no-automatic-route", "unknown-reason"),
 }
 # Detection order: an untrustworthy ledger or runtime first, then a spent budget, then a dead end.
-STOP_ORDER = tuple(AUTO_STOP_REASONS)
+# Spelled out: the key order of ``AUTO_STOP_REASONS`` lists the budget first.
+STOP_ORDER = ("integrity-failure", "budget-exhausted", "no-automatic-route")
 CLEAN_BASIS = (
     "the report is clean: completed, no blockers, every check passed, and nothing is left "
     "uncovered, unclosed, open or outside the approved scope"
@@ -165,8 +166,9 @@ def accept_obstacles(
 ) -> list[str]:
     """Why the policy cannot accept this report; none means it accepts (no I/O).
 
-    The rules are a subset of what ``batch decide`` already refuses for a plain accept, plus a
-    block bypass the session found: the policy accepts only what is clean.
+    Every report content ``batch decide`` refuses for a plain accept is an obstacle here; so are
+    a review axis that names blockers and a block bypass the session found: the policy accepts
+    only what is clean.
     """
     obstacles = []
     if report.get("outcome") != "completed":
@@ -197,6 +199,13 @@ def accept_obstacles(
         for axis in ("standards", "spec")
     ):
         obstacles.append("the review has findings or a warning/blocker severity")
+    if isinstance(review, dict) and any(
+        isinstance(review.get(axis), dict)
+        and str(review[axis].get("blockers", "none")).strip().lower() != "none"
+        for axis in ("standards", "spec")
+    ):
+        # A clean severity does not hide blockers an axis names (as for the policy auto-accept).
+        obstacles.append("a review axis names blockers")
     if _own_incomplete(stage, report):
         obstacles.append(f"incomplete items target the {stage} role itself")
     if block_bypass:

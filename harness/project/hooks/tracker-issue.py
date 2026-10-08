@@ -49,6 +49,8 @@ def load_tracker_tools(
         tracker = importlib.import_module("harness.health.project_tracker")
         process = importlib.import_module("harness.health.process")
     except Exception:
+        # Any import-time failure of the shipped package (absent, partial, or written for a newer
+        # Python than the hook's) means no resolver: the check is skipped, as documented above.
         return None
     resolve: Callable[[Path], TrackerResolution] = tracker.resolve_project_tracker
 

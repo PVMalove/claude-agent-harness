@@ -16,7 +16,8 @@ from textual.widgets import Button, Footer, Header, ListItem, ListView, Static
 from .. import brand
 from .. import data as console_data
 from ..data import DashboardData
-from ..runner import CommandRunner, default_runner
+from ..runner import CommandRunner, capturing_runner
+from .commands import call_from_worker
 
 SECTIONS = ("Diagnostics", "Harness", "Orchestration", "Reports", "Repo Map", "Help")
 
@@ -105,7 +106,7 @@ class DashboardScreen(Screen[None]):
         *,
         collect_dashboard: _CollectDashboard = console_data.collect_dashboard,
         collect_banner: Callable[[Path], brand.BannerInfo] = _default_banner,
-        command_runner: CommandRunner = default_runner,
+        command_runner: CommandRunner = capturing_runner,
     ) -> None:
         super().__init__()
         self.repo = repo
@@ -177,13 +178,10 @@ class DashboardScreen(Screen[None]):
                 text = _render_summary(
                     self._collect_dashboard(self.repo, online=online), online=online
                 )
-            except Exception:
-                return
-            if self.is_mounted and self.app.is_running:
-                try:
-                    self.app.call_from_thread(summary.update, text)
-                except Exception:
-                    pass
+            except Exception as exc:
+                # An unhandled worker error would exit the whole TUI; show it in the summary instead.
+                text = f"проверки не выполнены: {escape(repr(exc))}"
+            call_from_worker(self, lambda: summary.update(text))
 
         self.run_worker(work, thread=True, exclusive=True, group="dashboard-health")
 

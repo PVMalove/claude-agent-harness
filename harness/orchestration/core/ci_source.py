@@ -182,7 +182,7 @@ def evaluate(
                 "failed",
                 "failed_check",
                 f"required check {run.name!r} failed on the combined result",
-                _verified(observation, selected),
+                _verified(observation, selected, target_sha),
             )
     for run in selected:
         if run.conclusion != "success":
@@ -192,19 +192,24 @@ def evaluate(
                 "which is not a verdict on the code",
             )
     return CiVerdict(
-        "accepted", None, "all required checks passed", _verified(observation, selected)
+        "accepted",
+        None,
+        "all required checks passed",
+        _verified(observation, selected, target_sha),
     )
 
 
-def _verified(observation: CiObservation, selected: list[CheckRun]) -> JsonObject:
+def _verified(
+    observation: CiObservation, selected: list[CheckRun], target_sha: str
+) -> JsonObject:
+    # `evaluate` admits only merge parents of exactly {candidate, target}, so the target is the
+    # parent that is not the candidate -- or the candidate itself when both are one commit.
     return {
         "source": observation.source,
         "repository": observation.repository,
         "pull_request": observation.pull_request,
         "candidate_sha": observation.candidate_sha,
-        "target_sha": next(
-            p for p in observation.merge_parents if p != observation.candidate_sha
-        ),
+        "target_sha": target_sha,
         "merge_commit_sha": observation.merge_commit_sha,
         "checks": [
             {

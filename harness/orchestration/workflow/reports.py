@@ -118,6 +118,7 @@ from harness.orchestration.workflow.approval import (
     _approval,
 )
 from harness.orchestration.workflow.history import (
+    _dispatch_entry,
     _initial_developer_work,
     _latest_checkpoint_for_dispatch,
     _latest_context_package,
@@ -227,9 +228,11 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
                 f"running {reported!r} but approved brief resolved {expected!r}"
             )
         if not worktree_matched:
-            assert (
-                attestation is not None
-            )  # a mismatched worktree always sets the attestation
+            if attestation is None:
+                raise CoordinatorError(
+                    "a mismatched worktree recorded no attestation",
+                    remedy=INTERNAL_INVARIANT_REMEDY,
+                )
             mismatch.append(str(attestation["error"]))
         raise CoordinatorError(
             "dispatch "
@@ -314,14 +317,7 @@ def rate_limited_dispatch(args: argparse.Namespace) -> JsonObject:
         _validate_batch_integrity(root, batch)
         _latest_checkpoint_for_dispatch(root, batch, dispatch["dispatch_id"])
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
-        entry = next(
-            (
-                item
-                for item in batch["dispatches"]
-                if item["dispatch_id"] == dispatch["dispatch_id"]
-            ),
-            None,
-        )
+        entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         if (
             not entry
             or entry.get("state") != "checkpointed"
@@ -548,6 +544,24 @@ def _validate_checkpoint(
         )
 
 
+def _checkpoint_base(
+    repo: Path, root: Path, batch: JsonObject, dispatch: JsonObject, commit_sha: object
+) -> str | None:
+    """The commit a checkpoint's ``changed_files`` are measured from: the one the dispatch's
+    completion report is measured from (``rebase.report_base``), or the rebase target the report
+    must contain (``_rebase_target``) once the checkpointed commit contains it, so upstream files
+    a moved integration base brought in are never attributed to the ticket."""
+    target = _rebase_target(batch, dispatch)
+    if target is not None:
+        try:
+            if _git_is_ancestor(repo, target, _candidate_commit(repo, commit_sha)):
+                return target
+        except CoordinatorError:
+            # An unresolvable commit_sha keeps the report base: _validate_checkpoint refuses it.
+            pass
+    return rebase.report_base(repo, root, batch, dispatch)
+
+
 def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
     """Record a non-terminal checkpoint for an in-flight write-role dispatch so its worker session
     can end here and a fresh session can resume the same dispatch later.
@@ -568,14 +582,7 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
         config = core_config._config(repo)
         _validate_dispatch(repo, config, root, batch, dispatch)
         role = _role(repo, dispatch["role"])
-        entry = next(
-            (
-                item
-                for item in batch.get("dispatches", [])
-                if item["dispatch_id"] == dispatch["dispatch_id"]
-            ),
-            None,
-        )
+        entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         if not entry or entry.get("state") != "dispatched":
             raise CoordinatorError(
                 "a checkpoint requires a dispatched role",
@@ -588,7 +595,13 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
                 remedy="pass --model naming the model actually running this session before checkpointing",
             )
         _validate_checkpoint(
-            checkpoint, dispatch, role, repo, batch.get("base_commit"), root, batch
+            checkpoint,
+            dispatch,
+            role,
+            repo,
+            _checkpoint_base(repo, root, batch, dispatch, checkpoint.get("commit_sha")),
+            root,
+            batch,
         )
         record = {
             "checkpoint_id": f"checkpoint-{uuid.uuid4()}",
@@ -726,7 +739,7 @@ def _check_continuation_facts_unchanged(
     )
     if not unchanged:
         raise CoordinatorError(
-            "continuation facts differ from the checkpointed scope, Definition of Done, risks, blockers "
+            "continuation facts differ from the checkpointed remaining Definition of Done, risks "
             "or dependencies; close this dispatch and open a new one through ordinary approval instead "
             "of resuming it",
             remedy="open a new dispatch through ordinary approval instead of resuming one whose scope has drifted",
@@ -760,14 +773,7 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
         config = core_config._config(repo)
         _validate_dispatch(repo, config, root, batch, dispatch)
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
-        entry = next(
-            (
-                item
-                for item in batch.get("dispatches", [])
-                if item["dispatch_id"] == dispatch["dispatch_id"]
-            ),
-            None,
-        )
+        entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         resumable_rate_limit = (
             entry
             and entry.get("state") == "rate_limited"
@@ -904,14 +910,7 @@ def _persist_report(
             "refusing to overwrite immutable Markdown report",
             remedy=f"a Markdown report already exists at this immutable path -- {INTERNAL_INVARIANT_REMEDY}",
         ) from exc
-    entry = next(
-        (
-            item
-            for item in batch["dispatches"]
-            if item["dispatch_id"] == dispatch["dispatch_id"]
-        ),
-        None,
-    )
+    entry = _dispatch_entry(batch, dispatch["dispatch_id"])
     if entry is None:
         raise CoordinatorError(
             "dispatch is not registered in its batch",
@@ -1623,7 +1622,9 @@ def _validate_report(
                         [
                             sha
                             for sha in _commits_between(
-                                repo, rebase_target or closure_base or snapshot, resolved
+                                repo,
+                                rebase_target or closure_base or snapshot,
+                                resolved,
                             )
                             if sha not in pre_chain
                         ],
@@ -1645,6 +1646,29 @@ def _validate_report(
             "only the code-review role may submit composite review evidence",
             remedy="only the code-review role may submit composite review evidence",
         )
+
+
+def _validate_report_in_batch(
+    repo: Path,
+    root: Path,
+    batch: JsonObject,
+    dispatch: JsonObject,
+    report: JsonObject,
+    role: JsonObject,
+) -> None:
+    """Validate ``report`` against its brief and the batch's Git history, as ``report submit``
+    and every decision on the report do: each base it is measured from comes from the batch."""
+    _validate_report(
+        report,
+        dispatch,
+        role,
+        repo,
+        rebase.report_base(repo, root, batch, dispatch),
+        _rebase_target(batch, dispatch),
+        _closure_base(repo, root, batch, dispatch),
+        partial(rebase.pre_chain_copies, repo, root, batch, dispatch, report),
+    )
+    resolver_state.validate_report(repo, root, batch, dispatch, report)
 
 
 def report_scope_warnings(report: JsonObject, dispatch: JsonObject) -> list[str]:
@@ -1774,14 +1798,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 remedy="run QA through the clean-room QA runner (qa run), not by hand",
             )
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
-        entry = next(
-            (
-                item
-                for item in batch.get("dispatches", [])
-                if item["dispatch_id"] == dispatch["dispatch_id"]
-            ),
-            None,
-        )
+        entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         if (
             not entry
             or entry.get("state") != "dispatched"
@@ -1806,17 +1823,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 remedy="attest the canonical Git worktree (dispatch self-report) before reporting",
             )
         role = _role(repo, dispatch["role"])
-        _validate_report(
-            report,
-            dispatch,
-            role,
-            repo,
-            rebase.report_base(repo, root, batch, dispatch),
-            _rebase_target(batch, dispatch),
-            _closure_base(repo, root, batch, dispatch),
-            partial(rebase.pre_chain_copies, repo, root, batch, dispatch, report),
-        )
-        resolver_state.validate_report(repo, root, batch, dispatch, report)
+        _validate_report_in_batch(repo, root, batch, dispatch, report, role)
         rebase_check = rebase.rebase_check(repo, report, dispatch)
         # Only a new report must carry its closure: one recorded earlier is decided as a gap.
         carried_items.require_closure(report, dispatch)

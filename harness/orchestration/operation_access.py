@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..errors import INTERNAL_INVARIANT_REMEDY
 from .core import git_utils
 from .core.constants import ACCESS_OPERATIONS
 from .core.utils import CoordinatorError, JsonObject
@@ -71,7 +72,11 @@ def select_plan(
         return resolve_plan(repo, repo, {}, None, "read-only")
     validate_binding(brief)
     plan = brief["runtime_access"]
-    assert isinstance(plan, dict)
+    if not isinstance(plan, dict):
+        raise AccessError(
+            "a validated pinned access plan is not an object",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     return plan
 
 
@@ -90,7 +95,11 @@ class _Need:
 def is_legacy_inherit(plan: Mapping[str, object]) -> bool:
     """A plan that came from a project or brief without authored access: nothing to verify."""
     sources = plan["sources"]
-    assert isinstance(sources, dict)
+    if not isinstance(sources, dict):
+        raise AccessError(
+            "access plan sources are not an object; validate the plan first",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     return all(source == "legacy" for source in sources.values())
 
 
@@ -178,8 +187,9 @@ def _probe(need: _Need) -> tuple[str, str]:
 
 def _refusal(exc: OSError) -> tuple[str, str]:
     refused = exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS)
-    return ("denied" if refused else "unverified"), os.strerror(exc.errno or 0) or str(
-        exc
+    # os.strerror(0) is "Success": an error without an errno names itself instead.
+    return ("denied" if refused else "unverified"), (
+        os.strerror(exc.errno) if exc.errno else str(exc)
     )
 
 
@@ -275,13 +285,23 @@ def _remote_check(
         "access": "read",
         "path": remote,
     }
-    located = subprocess.run(
-        ["git", "-C", str(repo), "remote", "get-url", "--", remote],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
+    try:
+        located = subprocess.run(
+            ["git", "-C", str(repo), "remote", "get-url", "--", remote],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=REMOTE_PROBE_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        entry.update(
+            state="unverified",
+            source="probe",
+            reason=f"remote {remote!r} could not be read: {exc}",
+            remedy="make git available and responsive for the coordinator process and repeat the command",
+        )
+        return entry
     if located.returncode:
         entry.update(
             state="unverified",
@@ -316,6 +336,14 @@ def _remote_check(
             source="probe",
             reason=f"remote did not answer within {REMOTE_PROBE_SECONDS} seconds",
             remedy=f"restore connectivity to remote {remote!r} and repeat the command",
+        )
+        return entry
+    except OSError as exc:
+        entry.update(
+            state="unverified",
+            source="probe",
+            reason=f"git ls-remote could not run: {exc}",
+            remedy="make git available for the coordinator process and repeat the command",
         )
         return entry
     if probed.returncode == 0:

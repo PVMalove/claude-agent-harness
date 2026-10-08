@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import IO, Literal, TypedDict, cast
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+
 WorkerFailure = Literal[
     "parser bundle hash mismatch",
     "parser subprocess exceeded time limit",
@@ -264,9 +266,13 @@ def run_bundle_parser(
         )
     except OSError:
         return "parser subprocess failed"
-    assert (
-        proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
-    )
+    if proc.stdin is None or proc.stdout is None or proc.stderr is None:
+        proc.kill()
+        proc.wait()
+        raise HarnessError(
+            "parser worker started without the requested stdin/stdout/stderr pipes",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     deadline = time.monotonic() + timeout_seconds
     output_queue: queue.Queue[bytes | None] = queue.Queue()
     stderr_tail = bytearray()

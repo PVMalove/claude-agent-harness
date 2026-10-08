@@ -1,9 +1,12 @@
 """Отказ от зависшего batch: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
-import subprocess
 import sys
 from types import SimpleNamespace
+
+from scripts.clean_room.support import run_step
 
 
 def run(ctx: SimpleNamespace) -> None:
@@ -23,7 +26,7 @@ def run(ctx: SimpleNamespace) -> None:
     # report can never be decided. Without a sanctioned way out, that batch stays open for good and
     # the only remaining move is editing the state files by hand.
     wedge_state = test_root / "wedged-state"
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-905-wedged"],
         cwd=orchestration_project,
         check=True,

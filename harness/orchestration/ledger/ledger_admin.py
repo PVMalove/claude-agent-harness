@@ -20,8 +20,12 @@ from harness.orchestration.core.constants import (
 )
 from harness.orchestration.core.utils import CoordinatorError, JsonObject, _repo
 from harness.orchestration.core.workspace import _runtime_matches
-from harness.orchestration.ledger.ledger_ops import _ledger_lock, _state_root
-from harness.orchestration.ledger.lifecycle import LedgerError, LifecycleLedger
+from harness.orchestration.ledger.ledger_ops import (
+    _ledger_errors,
+    _ledger_lock,
+    _state_root,
+)
+from harness.orchestration.ledger.lifecycle import LifecycleLedger
 
 
 def ledger_status(args: argparse.Namespace) -> JsonObject:
@@ -29,11 +33,8 @@ def ledger_status(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
-    with _ledger_lock(ledger):
-        try:
-            return ledger.status()
-        except LedgerError as exc:
-            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+    with _ledger_lock(ledger), _ledger_errors():
+        return ledger.status()
 
 
 def migrate_ledger(args: argparse.Namespace) -> JsonObject:
@@ -41,12 +42,9 @@ def migrate_ledger(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
-    with _ledger_lock(ledger):
-        try:
-            _refuse_upgrade_under_pinned_batches(repo, ledger)
-            return ledger.migrate()
-        except LedgerError as exc:
-            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+    with _ledger_lock(ledger), _ledger_errors():
+        _refuse_upgrade_under_pinned_batches(repo, ledger)
+        return ledger.migrate()
 
 
 def _refuse_upgrade_under_pinned_batches(repo: Path, ledger: LifecycleLedger) -> None:
@@ -72,11 +70,8 @@ def reset_ledger(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
-    with _ledger_lock(ledger):
-        try:
-            return ledger.reset(args.confirm)
-        except LedgerError as exc:
-            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+    with _ledger_lock(ledger), _ledger_errors():
+        return ledger.reset(args.confirm)
 
 
 def clean_ledger(args: argparse.Namespace) -> JsonObject:
@@ -84,11 +79,8 @@ def clean_ledger(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
-    with _ledger_lock(ledger):
-        try:
-            return ledger.clean()
-        except LedgerError as exc:
-            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+    with _ledger_lock(ledger), _ledger_errors():
+        return ledger.clean()
 
 
 def _release_verdict(
@@ -157,8 +149,6 @@ def release_ledger_lock(args: argparse.Namespace) -> JsonObject:
             f"{state['held_seconds']} seconds",
             remedy=remedy,
         )
-    try:
+    with _ledger_errors():
         ledger.break_lock(state)
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
     return {"released": True, "reason": reason, "lock": state}

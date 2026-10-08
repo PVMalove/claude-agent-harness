@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from harness.reporting.common import CLAUDE_FIELDS, MISSING, JsonObject
+from harness.reporting.common import CLAUDE_FIELDS, MISSING, JsonObject, compact_count
 
 
 def _thousands(value: object) -> str:
@@ -16,13 +16,7 @@ def _compact(value: object) -> str:
     """Форматировать число в компактном виде с русскими суффиксами (тыс, млн, млрд)."""
     if not isinstance(value, int):
         return str(value)
-    for limit, suffix in ((1_000_000_000, "млрд"), (1_000_000, "млн"), (1_000, "тыс")):
-        if value >= limit:
-            return (
-                f"{value / limit:.2f}".rstrip("0").rstrip(".").replace(".", ",")
-                + f" {suffix}"
-            )
-    return str(value)
+    return compact_count(value)
 
 
 def _ru(value: object, places: int = 2) -> str:

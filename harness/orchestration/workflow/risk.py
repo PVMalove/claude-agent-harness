@@ -13,7 +13,6 @@ import re
 import uuid
 from pathlib import Path
 
-from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
     _reject_sensitive,
@@ -171,8 +170,7 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
             if requested_base != base:
                 raise CoordinatorError(
                     "risk assessment base must match the batch-captured base commit",
-                    remedy="the risk assessment base does not match the batch-captured base commit -- "
-                    + INTERNAL_INVARIANT_REMEDY,
+                    remedy=f"omit --base-commit, or pass the batch base commit {base}",
                 )
         if base and not _git_is_ancestor(repo, base, candidate):
             raise CoordinatorError(

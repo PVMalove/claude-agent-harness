@@ -630,3 +630,84 @@ def test_diagnostics_screen_unmount_cancels_workers_without_deadlock(
 
     # Must complete cleanly without hanging on loop closure / shutdown_default_executor
     asyncio.run(scenario())
+
+
+def test_dashboard_captures_command_output_by_default(tmp_path: Path) -> None:
+    """Проверить, что дашборд без явного runner передаёт разделам перехватывающий runner,
+    а не runner со сквозным выводом в терминал, которым владеет TUI."""
+    from harness.console.runner import capturing_runner
+
+    screen = DashboardScreen(
+        tmp_path,
+        collect_dashboard=lambda _repo, *, online=False: _fake_dashboard_data(),
+    )
+
+    assert screen._command_runner is capturing_runner
+
+
+def test_dashboard_shows_why_the_checks_failed_instead_of_running_forever(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что сбой сбора данных дашборда отображается в сводке, а не оставляет «выполняются…»."""
+
+    async def scenario() -> str:
+        """Сценарий онлайн-проверок, сбор которых завершается исключением."""
+        from textual.app import App
+        from textual.widgets import Static
+
+        def collect(_repo: Path, *, online: bool = False) -> DashboardData:
+            """Вернуть данные офлайн и упасть на онлайн-проверках."""
+            if online:
+                raise RuntimeError("[boom]")
+            return _fake_dashboard_data()
+
+        class _HostApp(App[None]):
+            """Тестовое приложение-хост для экрана дашборда."""
+
+            def on_mount(self) -> None:
+                """Смонтировать тестируемый экран."""
+                self.push_screen(DashboardScreen(tmp_path, collect_dashboard=collect))
+
+        app = _HostApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.click("#dashboard-online")
+            await _settle(pilot)
+            return str(app.screen.query_one("#dashboard-summary", Static).content)
+
+    summary = asyncio.run(scenario())
+    assert "проверки не выполнены" in summary
+    # The summary is rich markup: the exception text is escaped, never interpreted as a tag.
+    assert "RuntimeError('\\[boom]')" in summary
+
+
+def test_diagnostics_shows_why_health_failed_instead_of_running_forever(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что сбой health на экране диагностики отображается вместо «health выполняется…»."""
+
+    async def scenario() -> str:
+        """Сценарий диагностики, сбор которой завершается исключением."""
+        from textual.app import App
+        from textual.widgets import Static
+
+        def collect(repo: Path, *, online: bool = False) -> Report:
+            """Упасть при сборе отчёта health."""
+            raise ValueError("broken check")
+
+        screen = DiagnosticsScreen(tmp_path, collect_diagnostics=collect)
+
+        class _HostApp(App[None]):
+            """Тестовое приложение-хост для экрана диагностики."""
+
+            def on_mount(self) -> None:
+                """Смонтировать тестируемый экран."""
+                self.push_screen(screen)
+
+        app = _HostApp()
+        async with app.run_test() as pilot:
+            await _settle(pilot)
+            return str(app.screen.query_one("#diagnostics-report", Static).content)
+
+    rendered = asyncio.run(scenario())
+    assert "health не выполнен" in rendered
+    assert "ValueError('broken check')" in rendered

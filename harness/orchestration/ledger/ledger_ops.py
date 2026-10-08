@@ -37,25 +37,28 @@ class LedgerBusyError(CoordinatorError):
     """Another coordinator operation holds the ledger lock."""
 
 
-def _write_exclusive(ledger: LifecycleLedger, path: Path, value: JsonObject) -> None:
+@contextmanager
+def _ledger_errors() -> Iterator[None]:
+    """Translate a ``LedgerError`` raised inside the block into ``CoordinatorError``."""
     try:
-        ledger.write_immutable(path, value)
+        yield
     except LedgerError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+
+
+def _write_exclusive(ledger: LifecycleLedger, path: Path, value: JsonObject) -> None:
+    with _ledger_errors():
+        ledger.write_immutable(path, value)
 
 
 def _write_text_exclusive(ledger: LifecycleLedger, path: Path, value: str) -> None:
-    try:
+    with _ledger_errors():
         ledger.write_artifact(path, value)
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _write_record(ledger: LifecycleLedger, record: LedgerRecordVO) -> None:
-    try:
+    with _ledger_errors():
         ledger.write_record(record)
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _replace_record(
@@ -64,10 +67,8 @@ def _replace_record(
     *,
     decision: JsonObject | None = None,
 ) -> None:
-    try:
+    with _ledger_errors():
         ledger.replace_record(record, decision=decision)
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _state_root(args: argparse.Namespace, repo: Path) -> Path:
@@ -76,10 +77,8 @@ def _state_root(args: argparse.Namespace, repo: Path) -> Path:
 
 
 def _records_root(root: Path) -> Path:
-    try:
+    with _ledger_errors():
         return LifecycleLedger(root).records_root()
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 @contextmanager

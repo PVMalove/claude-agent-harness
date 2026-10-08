@@ -74,6 +74,10 @@ TRACKER_PROJECT_RULE = (
     "must be the full project path with subgroups (group/sub/project), "
     "without a leading or trailing slash"
 )
+# Bound of the `git ls-files` skill inventory.
+GIT_TIMEOUT_SECONDS = 30
+# A JSON file cannot be opened, decoded or parsed (too deep nesting included).
+JSON_READ_ERRORS = (OSError, ValueError, RecursionError)
 
 
 # --- Detection helpers moved unchanged from harness/bin/harness.py ----------------------------
@@ -242,20 +246,23 @@ def project_skill_files(repo: Path, directory: Path) -> list[Path]:
         relative = directory.relative_to(repo)
     except ValueError:
         fail(f"project skill path escapes repository: {directory}")
-    result = subprocess.run(
-        git_command(
-            repo,
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-            "--",
-            relative.as_posix(),
-        ),
-        capture_output=True,
-        timeout=30,
-    )
+    try:
+        result = subprocess.run(
+            git_command(
+                repo,
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+                relative.as_posix(),
+            ),
+            capture_output=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        fail(f"cannot inventory project skill files: {directory}: {exc}")
     if result.returncode != 0:
         fail(f"cannot inventory project skill files: {directory}")
     return sorted(
@@ -282,9 +289,14 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
     for lock_path in lock_paths:
         try:
             data = json.loads(lock_path.read_text(encoding="utf-8"))
-        except Exception as exc:
+        except JSON_READ_ERRORS as exc:
             problems.append(
                 f"cannot read overlay lock {lock_path.relative_to(repo)}: {exc}"
+            )
+            continue
+        if not isinstance(data, dict):
+            problems.append(
+                f"invalid overlay lock header: {lock_path.relative_to(repo)}"
             )
             continue
         if data.get("schema") != 1 or not isinstance(data.get("overlay_id"), str):
@@ -445,7 +457,7 @@ def validate_integrations(repo: Path, problems: list[str]) -> int:
         return 0
     try:
         data = json.loads(inventory.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except JSON_READ_ERRORS as exc:
         problems.append(f"cannot read {INTEGRATIONS_REL}: {exc}")
         return 0
     entries = (
@@ -570,7 +582,7 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
         return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except JSON_READ_ERRORS as exc:
         problems.append(f".harness/project.json is not valid JSON: {exc}")
         return
     if not isinstance(data, dict):
@@ -690,7 +702,7 @@ def verification_routing_health(repo: Path) -> list[str]:
     config_path = repo / ORCHESTRATION_CONFIG_REL
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except JSON_READ_ERRORS:
         return []
     if (
         not isinstance(config, dict)

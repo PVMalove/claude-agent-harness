@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import uuid
+from collections.abc import Iterator
 from dataclasses import replace as _vo_replace
 from pathlib import Path
 from typing import cast
@@ -93,6 +94,14 @@ from harness.orchestration.workflow.history import (
 )
 
 
+def _batch_records(root: Path) -> Iterator[JsonObject]:
+    """Every batch record of the ledger, in batch-id order."""
+    for path in sorted(
+        (_records_root(root) / BatchRecord.directory).glob("batch-*.json")
+    ):
+        yield _read_object(path, "batch record")
+
+
 def _check_batch_conflicts(root: Path, config: JsonObject, batch: JsonObject) -> None:
     """Admit another running batch only while the project's concurrency budget has room.
 
@@ -106,8 +115,7 @@ def _check_batch_conflicts(root: Path, config: JsonObject, batch: JsonObject) ->
             remedy="set concurrency_budget to a positive integer in the project orchestration config",
         )
     active = 0
-    for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
-        other = _read_object(path, "batch record")
+    for other in _batch_records(root):
         if other.get("batch_id") == batch.get("batch_id") or other.get("state") not in {
             "active",
             "awaiting-approval",
@@ -131,8 +139,7 @@ def _reject_duplicate_work(root: Path, ticket: str, branch: str, worktree: str) 
     still holds an open dispatch keeps its work until ``batch resume`` or ``batch abandon``.
     """
     mine_worktree = str(Path(worktree).resolve())
-    for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
-        other = _read_object(path, "batch record")
+    for other in _batch_records(root):
         if other.get("state") in FINISHED_BATCH_STATES or (
             other.get("state") == "blocked"
             and all(_settled(item) for item in other.get("dispatches", []))
@@ -537,8 +544,7 @@ def list_batches(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         batches = []
-        for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
-            batch = _read_object(path, "batch record")
+        for batch in _batch_records(root):
             dispatches = batch.get("dispatches", [])
             open_dispatches = [
                 item["dispatch_id"] for item in dispatches if not _settled(item)

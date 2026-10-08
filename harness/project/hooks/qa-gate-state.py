@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Сохранение свидетельств QA в том checkout, чья ветка тестируется или публикуется."""
 
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -24,6 +26,8 @@ else:
 
 
 EVIDENCE_TIMEOUT_SECONDS = 60
+# Bound of each local git call: a git that does not answer ends the hook with exit 2, not a hang.
+GIT_TIMEOUT_SECONDS = 60
 
 
 def git(checkout: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
@@ -33,6 +37,7 @@ def git(checkout: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
         input=input_bytes,
         capture_output=True,
         check=True,
+        timeout=GIT_TIMEOUT_SECONDS,
     ).stdout
 
 

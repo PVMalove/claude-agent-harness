@@ -146,7 +146,6 @@ def _run_policy_chain(
             )
         ):
             result["auto_accept_policy"] = "infrastructure-retry"
-            result["report_sha256"] = state["entry"].get("report_sha256")
             if state["following"]:
                 steps.update(
                     {

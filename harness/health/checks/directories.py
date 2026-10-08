@@ -19,7 +19,6 @@ from harness.storage import sandboxes_root, storage_root
 
 from ..context import HealthContext
 from ..model import CheckResult, Fix
-from ..project_files import BACKEND_ORCHESTRATION_CAPABILITY
 
 _GROUP = "directories"
 
@@ -169,22 +168,15 @@ DIRECTORY_PATHS: dict[str, Callable[[HealthContext], Path]] = {
 }
 
 
-def _orchestration_enabled(context: HealthContext) -> bool:
-    """Проверить, включена ли возможность backend-orchestration в lock-файле."""
-    lock = context.lock
-    return lock is not None and BACKEND_ORCHESTRATION_CAPABILITY in (
-        lock.get("capabilities") or []
-    )
-
-
 def make_check(check_id: str) -> Callable[[HealthContext], CheckResult]:
     """Создать функцию проверки здоровья для указанного идентификатора каталога."""
     resolve = DIRECTORY_PATHS[check_id]
 
     def check(context: HealthContext) -> CheckResult:
         """Выполнить проверку доступности и прав каталога харнесса."""
-        if check_id == "directories.orchestration_state" and not _orchestration_enabled(
-            context
+        if (
+            check_id == "directories.orchestration_state"
+            and not context.orchestration_enabled()
         ):
             return CheckResult(
                 id=check_id,

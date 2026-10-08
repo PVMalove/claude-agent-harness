@@ -2,8 +2,8 @@
 
 Creating a dispatch is the gated step of the lifecycle -- the batch must be clean of attention, its
 base must still be fresh, the transition must be approved, and the brief is written once and never
-edited.  Sending, cancelling, waiting on and publishing that brief all live here too, because they
-are the same object's later states.
+edited.  Cancelling that brief lives here too; sending, waiting on and publishing it live in
+``delivery.py``, which only carries the fixed brief.
 """
 
 from __future__ import annotations
@@ -54,7 +54,6 @@ from harness.orchestration.core.utils import (
     JsonObject,
     _canonical,
     _non_empty,
-    _read_object,
     _repo,
     _safe_id,
 )
@@ -74,7 +73,6 @@ from harness.orchestration.ledger.ledger_ops import (
     _load_batch,
     _load_dispatch,
     _load_dispatch_status,
-    _records_root,
     _replace_record,
     _state_root,
     _write_record,
@@ -855,9 +853,12 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         if role_name == "code-review":
             # The risk assessment decides when review is *mandatory*, never when it is permitted:
             # the fixed pipeline reviews every candidate, high-risk or not.
-            assert (
-                risk is not None
-            )  # the guard above raised when a code-review dispatch has no risk
+            if risk is None:
+                # The guard above raised when a code-review dispatch has no risk.
+                raise CoordinatorError(
+                    "a code-review dispatch reached its scope without a risk assessment",
+                    remedy=INTERNAL_INVARIANT_REMEDY,
+                )
             review_scope = list(risk["review_scope"])
             if requested_delta_review_of is not None:
                 prior_entry = _prior_review_entry(batch, requested_delta_review_of)
@@ -892,9 +893,12 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     "QA is blocked until the candidate is risk-assessed again",
                     remedy="register a new risk assessment for this candidate before dispatching QA",
                 )
-            assert (
-                risk is not None
-            )  # the guard above raised when a qa dispatch has no risk
+            if risk is None:
+                # The guard above raised when a qa dispatch has no risk.
+                raise CoordinatorError(
+                    "a QA dispatch reached its review check without a risk assessment",
+                    remedy=INTERNAL_INVARIANT_REMEDY,
+                )
             if risk["review_required"]:
                 accepted_review = any(
                     item.get("role") == "code-review"
@@ -919,14 +923,14 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 remedy=f"dispatch a new {required_role} role before this one",
             )
         retry_source = infrastructure_retry.source(root, batch)
-        if (
-            getattr(args, "_policy_infrastructure_retry", False)
-            and retry_source is None
-        ):
+        policy_retry = bool(getattr(args, "_policy_infrastructure_retry", False))
+        if policy_retry and retry_source is None:
             raise CoordinatorError(
                 "no infrastructure policy decision authorizes this dispatch",
                 remedy="use a manual dispatch approval",
             )
+        # Only a policy retry binds its source decision into the transition and the brief.
+        policy_source = retry_source if policy_retry else None
         # A superseding batch's first developer-retry rebases its start commit (issue #506).
         supersede_target = supersede.rebase_target(
             repo, root, batch, next_action, role_name, purpose, candidate
@@ -1071,31 +1075,29 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 orchestration_policy["infrastructure_retry"]
             )
         )
-        if getattr(args, "_policy_infrastructure_retry", False):
-            assert retry_source is not None
-            if _load_dispatch_status(root, retry_source["dispatch_id"]).get(
+        if policy_source is not None:
+            if _load_dispatch_status(root, policy_source["dispatch_id"]).get(
                 "cancellation"
             ):
                 readiness = infrastructure_retry.authorize_unsent(
-                    repo, root, batch, retry_source
+                    repo, root, batch, policy_source
                 )
                 transition[infrastructure_retry.ATTEMPT_TRANSITION_FIELD] = readiness[
                     "attempt"
                 ]["sha256"]
-                transition["previous_dispatch_id"] = retry_source["dispatch_id"]
-                transition["previous_role"] = retry_source["role"]
+                transition["previous_dispatch_id"] = policy_source["dispatch_id"]
+                transition["previous_role"] = policy_source["role"]
                 transition["reason_category"] = "verification-infrastructure"
             else:
                 prior_entry = next(
                     entry
                     for entry in batch["dispatches"]
-                    if entry["dispatch_id"] == retry_source["dispatch_id"]
+                    if entry["dispatch_id"] == policy_source["dispatch_id"]
                 )
-                prior_report = _read_object(
-                    _records_root(root) / prior_entry["report"], "infrastructure report"
-                )
+                # The decision rests on the immutable report: verify it against its digest.
+                prior_report = _pending_report(root, batch, prior_entry)
                 infrastructure_retry.authorize(
-                    repo, root, batch, retry_source, prior_report
+                    repo, root, batch, policy_source, prior_report
                 )
         digest = operational_guards.transition_digest(transition)
         idempotency_key = _transition_idempotency_key(role_name, purpose, transition)
@@ -1122,7 +1124,12 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             if delta_scope is not None:
                 proposal["delta_review_scope"] = delta_scope
             return proposal
-        assert approval_mode is not None  # only a proposal skips the approval mode
+        if approval_mode is None:
+            # Only a proposal skips the approval mode, and a proposal returned above.
+            raise CoordinatorError(
+                "a dispatch reached brief creation without an approval mode",
+                remedy=INTERNAL_INVARIANT_REMEDY,
+            )
         approval = _bind_dispatch_approval(args, approval_mode, digest)
         stale_after = cast(
             int, orchestration_policy["attention"]["stale_dispatch_seconds"]
@@ -1209,9 +1216,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             brief["resolver"] = resolver_route.brief_section(
                 root, config, batch, dispatch_commands, brief["report_staging_path"]
             )
-        if getattr(args, "_policy_infrastructure_retry", False):
-            assert retry_source is not None
-            infrastructure_retry.require_same_contract(retry_source, brief)
+        if policy_source is not None:
+            infrastructure_retry.require_same_contract(policy_source, brief)
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the
         # top level lets any runtime-neutral adapter consume exactly the reviewed contract.

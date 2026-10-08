@@ -11,9 +11,12 @@ always needs an explicit human confirmation; auto-merge is forbidden.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
+from collections.abc import Iterable
 from functools import partial
 from pathlib import Path
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import operational_guards
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core.config import (
@@ -68,22 +71,32 @@ def _accepted_risks(batch: JsonObject) -> list[JsonObject]:
     ]
 
 
-def _findings(rows: list[Row], settled: set[str]) -> list[JsonObject]:
-    """Every item a brief of the batch carried, once, with its source and state."""
+def _findings(
+    batch: JsonObject, rows: list[Row], settled: set[str]
+) -> list[JsonObject]:
+    """Every item a brief of the batch carried, then every coordinator finding no brief carried
+    yet (a stop can come before the review brief), once, with its source and state."""
+    carried = [
+        (source, item)
+        for _, dispatch, _ in rows
+        for source, items in (dispatch.get("carried_items") or {}).items()
+        for item in items
+    ]
+    attached = [
+        (carried_items.COORDINATOR_FINDING, record)
+        for record in batch.get("carried_items", [])
+    ]
     seen: dict[str, JsonObject] = {}
-    for _, dispatch, _ in rows:
-        section = dispatch.get("carried_items") or {}
-        for source, items in section.items():
-            for item in items:
-                seen.setdefault(
-                    item["item_id"],
-                    {
-                        "item_id": item["item_id"],
-                        "source": source,
-                        "summary": item.get("summary") or item.get("brief_item"),
-                        "state": "settled" if item["item_id"] in settled else "open",
-                    },
-                )
+    for source, item in [*carried, *attached]:
+        seen.setdefault(
+            item["item_id"],
+            {
+                "item_id": item["item_id"],
+                "source": source,
+                "summary": item.get("summary") or item.get("brief_item"),
+                "state": "settled" if item["item_id"] in settled else "open",
+            },
+        )
     return list(seen.values())
 
 
@@ -103,7 +116,14 @@ def _retries(batch: JsonObject) -> list[JsonObject]:
     ]
 
 
+def _highest(keys: Iterable[object]) -> int:
+    """The largest number of times one key occurs; 0 for none."""
+    return max(Counter(keys).values(), default=0)
+
+
 def _budget(config: JsonObject, batch: JsonObject) -> JsonObject:
+    """The spent budgets; a per-dispatch or per-candidate budget reports its fullest dispatch or
+    candidate, so ``spent`` compares with its ``max``."""
     recorded = batch.get("coordinator_decisions", [])
     continuations = [
         item
@@ -117,22 +137,26 @@ def _budget(config: JsonObject, batch: JsonObject) -> JsonObject:
             "max": _retry_policy(config)["max_developer_retries"],
         },
         "continuations": {
-            "spent": len(continuations),
+            "spent": _highest(item.get("dispatch_id") for item in continuations),
             "max_per_dispatch": continuation["max_continuations"],
         },
         "rate_limit_resumes": {
-            "spent": sum(
-                1 for item in continuations if item["decision"] == "continue-automatic"
+            "spent": _highest(
+                item.get("dispatch_id")
+                for item in continuations
+                if item["decision"] == "continue-automatic"
             ),
             "max_per_dispatch": continuation["max_rate_limit_resumes"],
         },
         "infrastructure_retries": {
-            "spent": sum(
-                1
+            # Attention counts operational retries per candidate commit (attention.py).
+            "spent": _highest(
+                item["routing"]["candidate_commit"]
                 for item in recorded
                 if isinstance(item.get("routing"), dict)
                 and item["routing"].get("reason_category")
                 in OPERATIONAL_REASON_CATEGORIES
+                and isinstance(item["routing"].get("candidate_commit"), str)
             ),
             "max_per_candidate": _attention_policy(config)[
                 "max_infrastructure_retries"
@@ -248,9 +272,16 @@ def build(
     elif batch.get("state") == "completed":
         outcome = "completed"
         action = f"review this report; {PR_RULE}"
-    else:
+    elif approvals.auto_active(config, batch):
         outcome = "in-progress"
         action = f"continue the automatic path with batch auto-decide; {PR_RULE}"
+    else:
+        # The project left `auto`: batch auto-decide refuses this batch.
+        outcome = "in-progress"
+        action = (
+            "the project no longer chooses approval_policy auto, so every later step of this "
+            f"batch needs --approved-by; {PR_RULE}"
+        )
     report: JsonObject = {
         "schema_version": SCHEMA_VERSION,
         "batch_id": batch["batch_id"],
@@ -261,7 +292,7 @@ def build(
         "candidate_commit": candidate,
         "decisions": list(batch.get("auto_decisions", [])),
         "accepted_risks": _accepted_risks(batch),
-        "findings": _findings(rows, settled),
+        "findings": _findings(batch, rows, settled),
         "retries": _retries(batch),
         "budget": _budget(config, batch),
         "commit_plan": plan_summary,
@@ -271,7 +302,11 @@ def build(
         "next_human_action": action,
         "recorded_at": recorded_at,
     }
-    assert set(report) | {"record_sha256"} == AUTO_REPORT_FIELDS
+    if set(report) | {"record_sha256"} != AUTO_REPORT_FIELDS:
+        raise CoordinatorError(
+            "the final auto report does not carry exactly the AUTO_REPORT_FIELDS",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     return report
 
 

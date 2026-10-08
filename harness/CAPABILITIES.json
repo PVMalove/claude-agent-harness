@@ -71,9 +71,9 @@
       "storage.py",
       "repo_map",
       "docs",
-      "storage.py",
       "token_estimator.py",
       "errors.py",
+      "json_types.py",
       "health",
       "memory"
     ]

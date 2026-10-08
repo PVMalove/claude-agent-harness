@@ -1,5 +1,7 @@
 """Общие помощники сценариев clean-room: команды harness, запуск процессов и проверка hooks."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 import os
@@ -44,11 +46,30 @@ def _find_bash() -> str:
 
 BASH = _find_bash()
 
+# Upper bound for one clean-room step. Every step is a short git, harness CLI or hook command; a
+# hung step must fail the run and name the command instead of holding CI until the job timeout.
+STEP_TIMEOUT_SECONDS = 300
+
+
+def run_step(cmd, **kwargs) -> subprocess.CompletedProcess:
+    """`subprocess.run` с ограничением времени: зависший шаг завершает прогон с именем команды.
+
+    Остальные аргументы (`check`, `capture_output`, `input`, `env`, `cwd`) передаются без
+    изменений, поэтому каждая проверка сохраняет свою семантику; явный `timeout` вызывающего
+    кода имеет приоритет над `STEP_TIMEOUT_SECONDS`.
+    """
+    kwargs.setdefault("timeout", STEP_TIMEOUT_SECONDS)
+    try:
+        return subprocess.run(cmd, **kwargs)
+    except subprocess.TimeoutExpired:
+        shown = cmd if isinstance(cmd, str) else subprocess.list2cmdline(map(str, cmd))
+        sys.exit(f"clean-room step timed out after {kwargs['timeout']}s: {shown}")
+
 
 def run_health(repo: Path) -> None:
     """Сохранить полный health-отчёт, вывести счётчики и причины только при ошибке."""
     command = HARNESS + ["health", str(repo), "--json"]
-    result = subprocess.run(
+    result = run_step(
         command,
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -115,7 +136,7 @@ def run_ok(cmd, quiet=False, quiet_all=False):
     stdout = subprocess.DEVNULL if (quiet or quiet_all) else None
     stderr = subprocess.DEVNULL if quiet_all else None
     # No stdin: started from a terminal, `init` would otherwise prompt for the tracker.
-    result = subprocess.run(
+    result = run_step(
         cmd, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, check=False
     )
     if result.returncode != 0:
@@ -126,13 +147,13 @@ def run_fails(cmd, quiet=False, quiet_all=False) -> bool:
     """Запустить команду, которая должна упасть; вернуть `True`, если она упала."""
     stdout = subprocess.DEVNULL if (quiet or quiet_all) else None
     stderr = subprocess.DEVNULL if quiet_all else None
-    result = subprocess.run(cmd, stdout=stdout, stderr=stderr, check=False)
+    result = run_step(cmd, stdout=stdout, stderr=stderr, check=False)
     return result.returncode != 0
 
 
 def fail_output(cmd) -> str:
     """Запустить команду, которая обязана упасть, и вернуть её stdout и stderr вместе."""
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = run_step(cmd, capture_output=True, text=True, check=False)
     if result.returncode == 0:
         sys.exit("command unexpectedly succeeded: " + " ".join(map(str, cmd)))
     return result.stdout + result.stderr
@@ -140,12 +161,12 @@ def fail_output(cmd) -> str:
 
 def capture(cmd) -> str:
     """Запустить команду, которая обязана пройти, и вернуть её stdout."""
-    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+    return run_step(cmd, capture_output=True, text=True, check=True).stdout
 
 
 def fail_json(cmd) -> dict:
     """Запустить `harness health ... --json`, которая обязана упасть, и разобрать её JSON stdout."""
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = run_step(cmd, capture_output=True, text=True, check=False)
     if result.returncode == 0:
         sys.exit("command unexpectedly succeeded: " + " ".join(map(str, cmd)))
     return json.loads(result.stdout)
@@ -153,9 +174,7 @@ def fail_json(cmd) -> dict:
 
 def capture_json(cmd) -> dict:
     """Запустить `harness health ... --json`, которая обязана пройти, и разобрать её JSON stdout."""
-    return json.loads(
-        subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
-    )
+    return json.loads(run_step(cmd, capture_output=True, text=True, check=True).stdout)
 
 
 def find_check(report: dict, check_id: str) -> dict:
@@ -209,7 +228,7 @@ def run_hook(
     env = dict(os.environ, CLAUDE_PROJECT_DIR=str(project_dir))
     if env_overrides:
         env.update(env_overrides)
-    return subprocess.run(
+    return run_step(
         [BASH, str(hook)],
         input=payload,
         capture_output=True,
@@ -241,7 +260,7 @@ def apply_patch(patch: str, cwd: Path) -> None:
     A Windows checkout writes CRLF and a seed copy keeps LF, while the patch text is LF; the
     patch is fed as bytes so Python does not translate it, and context lines are matched with
     `--ignore-whitespace`, which also covers a CR before the line end."""
-    subprocess.run(
+    run_step(
         ["git", "apply", "--ignore-whitespace", "-"],
         input=patch.encode("utf-8"),
         cwd=cwd,

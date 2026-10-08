@@ -5,6 +5,8 @@ payload), `block-pr-merge.sh` должен блокировать вместе �
 упоминания `EXEMPT_MENTIONS`: их снимает allowlist инертных команд, правило указано в записи.
 """
 
+from __future__ import annotations
+
 import re
 
 OLD_MERGE_CHECK = re.compile(r'"command"\s*:\s*"[^"]*gh pr merge')

@@ -1,0 +1,715 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Поток памяти проекта",
+    "output": "docs/diagrams/project-memory.dataflow.html",
+    "viewBox": [
+      1080,
+      680
+    ],
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/PVMalove/claude-agent-harness.git",
+      "revision": "3806be5777032caa87653aafae70f357dc7b4f75"
+    }
+  },
+  "stages": [
+    {
+      "label": "Источники"
+    },
+    {
+      "label": "Допуск и запись"
+    },
+    {
+      "label": "Индекс"
+    },
+    {
+      "label": "Чтение"
+    },
+    {
+      "label": "Потребители"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "tracker",
+      "type": "external",
+      "label": "GitHub / GitLab",
+      "sublabel": "трекер проекта",
+      "tag": "резолвер ADR 0011",
+      "stage": 0,
+      "row": 0,
+      "width": 104,
+      "sources": [
+        {
+          "path": "harness/memory/sync.py",
+          "line": 137,
+          "end_line": 154,
+          "label": "tracker()"
+        },
+        {
+          "path": "harness/memory/sync.py",
+          "line": 110,
+          "end_line": 135,
+          "label": "gh api / glab api"
+        },
+        {
+          "path": "docs/adr/0010-project-memory.md",
+          "line": 73,
+          "end_line": 76
+        }
+      ]
+    },
+    {
+      "id": "markdown",
+      "type": "database",
+      "label": "Markdown",
+      "sublabel": "ADR, glossary",
+      "tag": "docs/tasks/issue-*",
+      "stage": 0,
+      "row": 1,
+      "sources": [
+        {
+          "path": "harness/memory/adapters.py",
+          "line": 22,
+          "end_line": 63,
+          "label": "classify()"
+        },
+        {
+          "path": "docs/adr/0010-project-memory.md",
+          "line": 5,
+          "end_line": 9
+        }
+      ]
+    },
+    {
+      "id": "policy",
+      "type": "security",
+      "label": "Политика памяти",
+      "sublabel": ".harness/project.json",
+      "tag": "deny-by-default",
+      "stage": 0,
+      "row": 2,
+      "sources": [
+        {
+          "path": "harness/memory/policy.py",
+          "line": 15,
+          "end_line": 36,
+          "label": "Policy.active"
+        },
+        {
+          "path": "harness/memory/policy.py",
+          "line": 87,
+          "end_line": 98,
+          "label": "allow_paths"
+        },
+        {
+          "path": "docs/adr/0010-project-memory.md",
+          "line": 17,
+          "end_line": 20
+        }
+      ]
+    },
+    {
+      "id": "ledger",
+      "type": "database",
+      "label": "Ledger generation",
+      "sublabel": "reports, ledger",
+      "tag": "только проекция",
+      "stage": 0,
+      "row": 3,
+      "sources": [
+        {
+          "path": "harness/memory/adapters.py",
+          "line": 48,
+          "end_line": 55,
+          "label": "qa_finding / ledger"
+        },
+        {
+          "path": "harness/memory/sources.py",
+          "line": 284,
+          "end_line": 299,
+          "label": "выбранная generation"
+        },
+        {
+          "path": "docs/adr/0010-project-memory.md",
+          "line": 59,
+          "end_line": 61
+        }
+      ]
+    },
+    {
+      "id": "sync",
+      "type": "backend",
+      "label": "harness memory sync",
+      "sublabel": "только main checkout",
+      "tag": "нет грантов → нет вызовов",
+      "stage": 1,
+      "row": 0,
+      "width": 124,
+      "sources": [
+        {
+          "path": "harness/memory/sync.py",
+          "line": 206,
+          "end_line": 235,
+          "label": "sync()"
+        },
+        {
+          "path": "harness/memory/sync.py",
+          "line": 331,
+          "end_line": 375,
+          "label": "lock, manifest, refresh()"
+        },
+        {
+          "path": "harness/docs/project-memory.md",
+          "line": 41,
+          "end_line": 61
+        }
+      ]
+    },
+    {
+      "id": "snapshot",
+      "type": "database",
+      "label": "Snapshot трекера",
+      "sublabel": "memory/snapshot/records",
+      "tag": "manifest.json",
+      "stage": 1,
+      "row": 1,
+      "sources": [
+        {
+          "path": "harness/memory/sources.py",
+          "line": 88,
+          "end_line": 114,
+          "label": "snapshot_paths()"
+        },
+        {
+          "path": "harness/docs/project-memory.md",
+          "line": 85,
+          "end_line": 93
+        }
+      ]
+    },
+    {
+      "id": "allowed",
+      "type": "security",
+      "label": "allowed_paths",
+      "sublabel": "тип + glob, без symlink",
+      "tag": "≤ 1000 источников",
+      "stage": 1,
+      "row": 2,
+      "sources": [
+        {
+          "path": "harness/memory/sources.py",
+          "line": 255,
+          "end_line": 328,
+          "label": "allowed_paths()"
+        },
+        {
+          "path": "harness/memory/sources.py",
+          "line": 152,
+          "end_line": 232,
+          "label": "read_source()"
+        }
+      ]
+    },
+    {
+      "id": "writers",
+      "type": "backend",
+      "label": "harness memory build",
+      "sublabel": "rebuild; refresh() по hash",
+      "tag": "main + writer lock",
+      "stage": 1,
+      "row": 3,
+      "width": 124,
+      "sources": [
+        {
+          "path": "harness/memory/index.py",
+          "line": 25,
+          "end_line": 44,
+          "label": "context(writer=True)"
+        },
+        {
+          "path": "harness/memory/index.py",
+          "line": 121,
+          "end_line": 135,
+          "label": "writer_lock()"
+        },
+        {
+          "path": "harness/memory/index.py",
+          "line": 174,
+          "end_line": 297,
+          "label": "refresh/build/rebuild"
+        }
+      ]
+    },
+    {
+      "id": "index",
+      "type": "database",
+      "label": "Индекс SQLite FTS5",
+      "sublabel": ".sandboxes/cache/memory",
+      "tag": "общий для worktree",
+      "stage": 2,
+      "row": 3,
+      "width": 120,
+      "sources": [
+        {
+          "path": "harness/memory/index.py",
+          "line": 47,
+          "end_line": 60,
+          "label": "FTS5 schema"
+        },
+        {
+          "path": "docs/adr/0010-project-memory.md",
+          "line": 37,
+          "end_line": 46
+        }
+      ]
+    },
+    {
+      "id": "search",
+      "type": "backend",
+      "label": "harness memory search",
+      "sublabel": "main: сначала refresh()",
+      "tag": "worktree: read-only",
+      "stage": 3,
+      "row": 2,
+      "width": 128,
+      "sources": [
+        {
+          "path": "harness/memory/search.py",
+          "line": 157,
+          "end_line": 173,
+          "label": "search_with_refresh()"
+        },
+        {
+          "path": "harness/memory/search.py",
+          "line": 23,
+          "end_line": 107,
+          "label": "search_candidates()"
+        },
+        {
+          "path": "harness/bin/harness.py",
+          "line": 1338,
+          "end_line": 1350
+        }
+      ]
+    },
+    {
+      "id": "searchcli",
+      "type": "backend",
+      "label": "search_cli.py",
+      "sublabel": ".harness/memory, без CLI",
+      "tag": "всегда read-only",
+      "stage": 3,
+      "row": 3,
+      "width": 128,
+      "sources": [
+        {
+          "path": "harness/memory/search_cli.py",
+          "line": 14,
+          "end_line": 36,
+          "label": "main()"
+        },
+        {
+          "path": "harness/docs/project-memory.md",
+          "line": 6,
+          "end_line": 16
+        }
+      ]
+    },
+    {
+      "id": "eval",
+      "type": "backend",
+      "label": "harness memory eval",
+      "sublabel": "recall@5, noise_ratio",
+      "tag": "без refresh и сети",
+      "stage": 3,
+      "row": 1,
+      "width": 128,
+      "sources": [
+        {
+          "path": "harness/memory/eval.py",
+          "line": 169,
+          "end_line": 247,
+          "label": "evaluate_memory()"
+        },
+        {
+          "path": "harness/docs/project-memory.md",
+          "line": 95,
+          "end_line": 116
+        }
+      ]
+    },
+    {
+      "id": "package",
+      "type": "backend",
+      "label": "Context Package",
+      "sublabel": "select_pointers, ≤ 2 на тип",
+      "tag": "только указатели",
+      "stage": 4,
+      "row": 0,
+      "width": 124,
+      "sources": [
+        {
+          "path": "harness/orchestration/workflow/context_package.py",
+          "line": 74,
+          "end_line": 147,
+          "label": "_persist_context_package()"
+        },
+        {
+          "path": "harness/context_builder/context_builder.py",
+          "line": 796,
+          "end_line": 831,
+          "label": "frozen_memory"
+        },
+        {
+          "path": "harness/memory/search.py",
+          "line": 110,
+          "end_line": 130,
+          "label": "select_pointers()"
+        }
+      ]
+    },
+    {
+      "id": "reuse",
+      "type": "security",
+      "label": "Проверка reuse",
+      "sublabel": "source_hash vs байты",
+      "tag": "#636",
+      "stage": 4,
+      "row": 1,
+      "width": 124,
+      "sources": [
+        {
+          "path": "harness/orchestration/workflow/history.py",
+          "line": 329,
+          "end_line": 372,
+          "label": "_reusable_context_package()"
+        },
+        {
+          "path": "harness/orchestration/workflow/history.py",
+          "line": 375,
+          "end_line": 418,
+          "label": "_memory_pointer_mismatch()"
+        }
+      ]
+    },
+    {
+      "id": "skills",
+      "type": "frontend",
+      "label": "Интерактивные skills",
+      "sublabel": "по project-memory.md",
+      "tag": "поиск один раз",
+      "stage": 4,
+      "row": 2,
+      "width": 124,
+      "sources": [
+        {
+          "path": "harness/docs/project-memory.md",
+          "line": 1,
+          "end_line": 39
+        },
+        {
+          "path": "skills/first-party/pvmalove/architect/SKILL.md",
+          "line": 25,
+          "end_line": 32
+        },
+        {
+          "path": "harness/orchestration/roles/_common.md",
+          "line": 57,
+          "end_line": 60
+        }
+      ]
+    },
+    {
+      "id": "health",
+      "type": "frontend",
+      "label": "harness health",
+      "sublabel": "memory.index, memory.model",
+      "tag": "read-only, без --fix",
+      "stage": 4,
+      "row": 3,
+      "width": 124,
+      "sources": [
+        {
+          "path": "harness/health/checks/memory.py",
+          "line": 14,
+          "end_line": 110,
+          "label": "check_index/check_model"
+        },
+        {
+          "path": "harness/health/registry.py",
+          "line": 58,
+          "end_line": 59
+        },
+        {
+          "path": "docs/adr/0010-project-memory.md",
+          "line": 98,
+          "end_line": 105
+        }
+      ]
+    }
+  ],
+  "flows": [
+    {
+      "id": "tracker-sync",
+      "from": "tracker",
+      "to": "sync",
+      "label": "issues, PR/MR",
+      "classification": "gh / glab api",
+      "variant": "default"
+    },
+    {
+      "id": "sync-snapshot",
+      "from": "sync",
+      "to": "snapshot",
+      "label": "санитизированные records",
+      "classification": "atomic manifest.json",
+      "variant": "default",
+      "labelAt": [
+        386,
+        207
+      ]
+    },
+    {
+      "id": "snapshot-allowed",
+      "from": "snapshot",
+      "to": "allowed",
+      "label": "task_archive",
+      "classification": "completion_report",
+      "variant": "default",
+      "labelAt": [
+        369,
+        321
+      ]
+    },
+    {
+      "id": "markdown-allowed",
+      "from": "markdown",
+      "to": "allowed",
+      "label": "*.md по glob",
+      "classification": "adr, glossary, task_archive",
+      "variant": "default",
+      "labelDx": -107.5,
+      "labelDy": 9.5
+    },
+    {
+      "id": "policy-allowed",
+      "from": "policy",
+      "to": "allowed",
+      "label": "source_types",
+      "classification": "allow_paths",
+      "variant": "security",
+      "labelDx": -107.5,
+      "labelDy": 64
+    },
+    {
+      "id": "ledger-allowed",
+      "from": "ledger",
+      "to": "allowed",
+      "label": "санитизированная проекция",
+      "classification": "выбранной generation",
+      "variant": "default",
+      "labelDx": -107.5,
+      "labelDy": 114.5
+    },
+    {
+      "id": "allowed-writers",
+      "from": "allowed",
+      "to": "writers",
+      "label": "санитизированный текст",
+      "classification": "sha256 исходных байт",
+      "variant": "emphasis",
+      "labelAt": [
+        381,
+        439
+      ]
+    },
+    {
+      "id": "writers-index",
+      "from": "writers",
+      "to": "index",
+      "label": "FTS5-документы",
+      "classification": "под writer lock",
+      "variant": "emphasis"
+    },
+    {
+      "id": "index-package",
+      "from": "index",
+      "to": "package",
+      "label": "search_candidates",
+      "classification": "goal + DoD, read-only",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "left",
+      "via": [
+        [
+          530,
+          157
+        ]
+      ]
+    },
+    {
+      "id": "index-search",
+      "from": "index",
+      "to": "search",
+      "label": "FTS5 MATCH",
+      "classification": "bm25, mode=ro",
+      "variant": "default",
+      "fromSide": "top",
+      "toSide": "left",
+      "via": [
+        [
+          530,
+          385
+        ]
+      ]
+    },
+    {
+      "id": "index-searchcli",
+      "from": "index",
+      "to": "searchcli",
+      "label": "FTS5 MATCH",
+      "classification": "без refresh",
+      "variant": "default"
+    },
+    {
+      "id": "index-eval",
+      "from": "index",
+      "to": "eval",
+      "label": "search_candidates",
+      "classification": "golden-набор",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "left",
+      "via": [
+        [
+          530,
+          271
+        ]
+      ]
+    },
+    {
+      "id": "index-health",
+      "from": "index",
+      "to": "health",
+      "label": "read-only проверка",
+      "classification": "ok / warn / skipped",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [
+        [
+          530,
+          560
+        ],
+        [
+          960,
+          560
+        ]
+      ]
+    },
+    {
+      "id": "search-skills",
+      "from": "search",
+      "to": "skills",
+      "label": "pointers",
+      "classification": "без текста",
+      "variant": "emphasis"
+    },
+    {
+      "id": "searchcli-skills",
+      "from": "searchcli",
+      "to": "skills",
+      "label": "pointers",
+      "classification": "fallback без CLI",
+      "variant": "default",
+      "fromSide": "right",
+      "toSide": "bottom",
+      "via": [
+        [
+          853.5,
+          499
+        ],
+        [
+          853.5,
+          442
+        ],
+        [
+          960,
+          442
+        ]
+      ],
+      "labelAt": [
+        935,
+        442
+      ]
+    },
+    {
+      "id": "package-reuse",
+      "from": "package",
+      "to": "reuse",
+      "label": "path + source_hash",
+      "classification": "замороженные",
+      "variant": "security",
+      "labelAt": [
+        904,
+        207
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Политика и допуск",
+      "items": [
+        "Память работает только при memory.enabled и непустых source_types и allow_paths.",
+        "allow_paths — относительные POSIX-glob без traversal; корневой *.md тоже допустим.",
+        "allowed_paths отклоняет symlink и ограничивает обход: 10000 записей, 1000 источников.",
+        "Ledger и QA findings попадают в корпус только санитизированной проекцией выбранной generation."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Запись",
+      "items": [
+        "build, rebuild и sync работают только в главном checkout; linked worktree получает отказ.",
+        "Все writer'ы берут общую SQLite-блокировку; занятая блокировка даёт «memory writer busy».",
+        "refresh() заново разбирает только источники с изменённым sha256.",
+        "sync публикует snapshot под той же блокировкой, затем вызывает refresh().",
+        "harness memory search в главном checkout сначала вызывает refresh()."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Чтение",
+      "items": [
+        "search_cli.py, eval и linked worktree только читают индекс.",
+        "Указатель содержит title, status, path и source_hash без текста источника.",
+        "Изменённый или отозванный источник выпадает; статус поиска — stale_sources.",
+        "eval требует recall@5 ≥ 0.6 и noise_ratio ≤ 0.7."
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Context Package",
+      "items": [
+        "Сборка один раз ищет по goal и DoD и замораживает указатели.",
+        "select_pointers держит top_k, не больше 2 указателей на тип и токен-потолок.",
+        "--no-memory включает режим bypass; без индекса пакет собирается с причиной деградации.",
+        "Coordinator не переиспользует пакет с изменённым замороженным источником (#636) и регистрирует новый.",
+        "Проверка reuse сверяет текущие байты источника, а не индекс."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Проверки и skills",
+      "items": [
+        "harness health показывает memory.index и memory.model и не создаёт кэш.",
+        "architect, grilling и diagnosing-bugs ищут один раз по контракту project-memory.md.",
+        "Роли оркестрации search не вызывают и получают только Context Package."
+      ]
+    }
+  ]
+}

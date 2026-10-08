@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from .model import JsonObject
+from .project_files import BACKEND_ORCHESTRATION_CAPABILITY
 
 _BROKEN_LOCK_MESSAGE = "не проверено: .harness/harness.lock повреждён (см. files.lock)"
 
@@ -52,6 +53,12 @@ class HealthContext:
     def no_lock_message(self) -> str:
         """Причина пропуска проверки, зависящей от lock-файла: lock отсутствует либо повреждён."""
         return _BROKEN_LOCK_MESSAGE if self.lock_error else "нет .harness/harness.lock"
+
+    def orchestration_enabled(self) -> bool:
+        """Выбрана ли в lock-файле возможность backend-orchestration."""
+        return self.lock is not None and BACKEND_ORCHESTRATION_CAPABILITY in (
+            self.lock.get("capabilities") or []
+        )
 
     def no_orchestration_message(self) -> str:
         """Причина пропуска проверки backend-orchestration (при повреждённом lock возвращает ошибку lock-файла)."""

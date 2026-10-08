@@ -1,9 +1,12 @@
 """Базовые метрики оркестрации: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
-import subprocess
 import sys
 from types import SimpleNamespace
+
+from scripts.clean_room.support import run_step
 
 
 def run(ctx: SimpleNamespace) -> None:
@@ -74,7 +77,7 @@ def run(ctx: SimpleNamespace) -> None:
         encoding="utf-8",
     )
 
-    ticket_901_stats = subprocess.run(
+    ticket_901_stats = run_step(
         [
             sys.executable,
             str(stats_cli),
@@ -136,7 +139,7 @@ def run(ctx: SimpleNamespace) -> None:
 
     # A checkpointed/resumed dispatch spans more than one worker session, and each restart's reason
     # is the coordinator's own recorded decision note, not an invented label.
-    checkpoint_stats = subprocess.run(
+    checkpoint_stats = run_step(
         [
             sys.executable,
             str(stats_cli),
@@ -251,7 +254,7 @@ def run(ctx: SimpleNamespace) -> None:
     (synthetic_state / "dispatches" / "dispatch-950-review.json").write_text(
         json.dumps({"review_scope": ["services/a.py", "docs/out.md"]}), encoding="utf-8"
     )
-    synthetic_stats = subprocess.run(
+    synthetic_stats = run_step(
         [
             sys.executable,
             str(stats_cli),

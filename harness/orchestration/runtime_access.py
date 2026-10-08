@@ -15,13 +15,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from harness.errors import HarnessError
+from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from harness.storage import storage_root
 
 from . import extensions
 from .contract import access_policy_problems
 from .core.constants import ACCESS_OPERATIONS, ACCESS_RESOURCES
 from .core.utils import JsonObject
+
+# Local Git plumbing only; a slow disk or a huge repository is the worst expected case.
+GIT_TIMEOUT_SECONDS = 60
 
 
 class AccessError(HarnessError):
@@ -239,7 +242,11 @@ def resolve_plan(
             "; ".join(problems),
             remedy="fix access_policy and repeat preflight before approval",
         )
-    assert isinstance(policy, dict)
+    if not isinstance(policy, dict):
+        raise AccessError(
+            "access_policy passed validation without being an object",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     selected: JsonObject = {
         "mode": "inherit",
         "network": {"hosts": []},
@@ -255,17 +262,28 @@ def resolve_plan(
         if name is not None and isinstance(overrides, dict) and name in overrides:
             layers.append((f"{section}.{name}", overrides[name]))
     for label, layer in layers:
-        assert isinstance(layer, dict)
+        if not isinstance(layer, dict):
+            raise AccessError(
+                f"access_policy {label} passed validation without being an object",
+                remedy=INTERNAL_INVARIANT_REMEDY,
+            )
         for key in selected:
             if key in layer:
                 selected[key] = layer[key]
                 sources[key] = label
-    result = subprocess.run(
-        ["git", "-C", str(worktree), "rev-parse", "--git-common-dir"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise AccessError(
+            f"cannot resolve shared Git metadata: {exc}",
+            remedy="make git available and responsive in the worktree and repeat preflight",
+        ) from exc
     if result.returncode:
         raise AccessError(
             "cannot resolve shared Git metadata",
@@ -461,12 +479,13 @@ def apply_plan(
     if verification["status"] != "verified" or observation is None:
         raise AccessError(str(verification["reason"]), remedy=_REMEDY)
     provider = extensions.runtime_access(plan["runtime_extension"])
-    launch = getattr(provider, "handoff", None)
+    launch = getattr(provider, "handoff", None) if handoff else None
     if handoff and not callable(launch):
         raise AccessError(
             "native access provider cannot bind access to the actual worker handoff",
             remedy=_REMEDY,
         )
+    # A project-supplied provider may fail in any way; the send must fail closed.
     try:
         applied = provider.apply(brief, observation)
     except Exception as exc:
@@ -486,10 +505,9 @@ def apply_plan(
             or "native access application or matching inheritance was not confirmed",
             remedy=_REMEDY,
         )
-    if handoff:
-        assert callable(
-            launch
-        )  # The gate above refuses providers without native handoff.
+    # Set only for a handoff; the gate above refuses a provider without a callable handoff.
+    if callable(launch):
+        # A project-supplied launch may fail in any way; the handoff must fail closed.
         try:
             receipt = launch(brief, applied, command)
         except Exception as exc:

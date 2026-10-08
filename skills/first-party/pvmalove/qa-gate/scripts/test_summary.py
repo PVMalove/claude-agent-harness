@@ -153,6 +153,14 @@ def collect_diagnostics(lines: list[str], max_diagnostics: int) -> list[str]:
     return diagnostics
 
 
+def _start_failure(temporary_log: Path, error: BaseException) -> int:
+    """Remove the unused log and print the summary of a command that could not start."""
+    temporary_log.unlink(missing_ok=True)
+    print("=== TEST SUMMARY ===")
+    print(f"Status: ERROR (could not start command: {error})")
+    return 127
+
+
 def summarize(
     command: list[str], log_dir: Path, max_failures: int, max_diagnostics: int
 ) -> int:
@@ -168,14 +176,16 @@ def summarize(
     ) as capture:
         temporary_log = Path(capture.name)
         try:
-            result = _gate_runner().run_gate(
-                [command], _gate_runner().LocalPolicy(Path.cwd()), stop_on_failure=True
+            runner = _gate_runner()
+        except RuntimeError as error:
+            return _start_failure(temporary_log, error)
+        try:
+            result = runner.run_gate(
+                [command], runner.LocalPolicy(Path.cwd()), stop_on_failure=True
             )
-        except (OSError, RuntimeError) as error:
-            temporary_log.unlink(missing_ok=True)
-            print("=== TEST SUMMARY ===")
-            print(f"Status: ERROR (could not start command: {error})")
-            return 127
+        # run_gate reports a command that cannot be launched as GateRunnerError, not OSError.
+        except (OSError, RuntimeError, runner.GateRunnerError) as error:
+            return _start_failure(temporary_log, error)
 
         counts: dict[str, int] = {}
         pytest_duration: str | None = None

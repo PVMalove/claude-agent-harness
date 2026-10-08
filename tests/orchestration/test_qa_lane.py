@@ -381,6 +381,46 @@ class QaLaneValidationTests(QaLaneTestCase):
             [entry["dispatch_id"] for _, entry in remaining], [OTHER_DISPATCH_ID]
         )
 
+    def test_a_running_owner_without_a_queue_entry_is_a_coordinator_error(
+        self,
+    ) -> None:
+        # A release that failed between its two deletions leaves the lease alone.
+        identity = "local-qa-" + "d" * 32
+        with self.ledger.lock():
+            qa_lane.acquire(
+                self.ledger,
+                identity,
+                coordinator,
+                owner_kind="local-qa",
+                lease_seconds=60,
+            )
+            for path, _ in qa_lane._queue_entries(self.ledger, coordinator):
+                qa_lane._delete_record(self.ledger, coordinator, path, reason="t")
+            with self.assertRaises(coordinator.CoordinatorError) as caught:
+                qa_lane.running_owner(
+                    self.ledger, identity, coordinator, owner_kind="local-qa"
+                )
+
+        self.assertRemedy(caught)
+
+    def test_release_queue_accepts_an_owner_form_dispatch_entry(self) -> None:
+        # The queue schema also accepts a dispatch owner as owner_kind/owner_id.
+        queue = qa_lane._queue_root(self.ledger, coordinator)
+        self.ledger.write_immutable(
+            queue / f"{1:020d}-{DISPATCH_ID}.json",
+            {
+                "owner_kind": "dispatch",
+                "owner_id": DISPATCH_ID,
+                "sequence": 1,
+                "queued_at": "now",
+            },
+        )
+
+        released = qa_lane.release_queue(self.ledger, [DISPATCH_ID], coordinator)
+
+        self.assertEqual(released, [DISPATCH_ID])
+        self.assertEqual(qa_lane._queue_entries(self.ledger, coordinator), [])
+
     def test_qa_evidence_requires_ticket_and_branch_with_a_remedy(self) -> None:
         for ticket, branch in (("", "feature/x"), ("1", " "), (None, "feature/x")):
             args = _ns(
@@ -1105,6 +1145,73 @@ class QaLaneRunTests(QaLaneTestCase):
 
         self.assertIn("does not match the immutable evidence", caught.exception.message)
         self._assert_transient_failure_released()
+
+    def test_an_interrupted_stage_verification_releases_the_lane_and_propagates(
+        self,
+    ) -> None:
+        self.dispatch["verification_commands"] = list(self.GATE)
+        self._seed()
+        with (
+            mock.patch.object(qa_lane, "run_qa_stages", return_value=self._staged()),
+            mock.patch.object(
+                qa_lane,
+                "_verify_stages_against_artifact",
+                side_effect=KeyboardInterrupt,
+            ),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            qa_lane.run(
+                self.args,
+                cast(
+                    CoordinatorOps,
+                    _Ops(
+                        _validate_batch_integrity=lambda root, batch: None,
+                        _validate_dispatch=lambda *a, **k: None,
+                        _config=lambda repo: {"qa_preparation": [self.PREPARE]},
+                    ),
+                ),
+            )
+
+        self._assert_transient_failure_released()
+
+    def test_a_transient_failure_keeps_a_lease_another_owner_took_over(self) -> None:
+        self._seed()
+        local_owner = "local-qa-" + "c" * 32
+
+        def taken_over(*arguments: object, **keywords: object) -> GateResult:
+            # The run outlived its lease: the lease was cleared and a local QA run took the lane.
+            with self.ledger.lock():
+                for path, _ in qa_lane._queue_entries(self.ledger, coordinator):
+                    qa_lane._delete_record(self.ledger, coordinator, path, reason="t")
+                qa_lane._delete_record(
+                    self.ledger,
+                    coordinator,
+                    qa_lane._lane_path(self.ledger, coordinator),
+                    reason="t",
+                )
+                qa_lane.acquire(
+                    self.ledger,
+                    local_owner,
+                    coordinator,
+                    owner_kind="local-qa",
+                    lease_seconds=60,
+                )
+            raise GateRunnerError("checkout failed", remedy="fix the candidate commit")
+
+        with (
+            mock.patch.object(qa_lane, "run_gate", side_effect=taken_over),
+            self.assertRaises(coordinator.CoordinatorError) as caught,
+        ):
+            qa_lane.run(self.args, self._ops())
+
+        self.assertEqual(caught.exception.remedy, "fix the candidate commit")
+        lease = qa_lane._lease(self.ledger, coordinator)
+        assert lease is not None
+        self.assertEqual(qa_lane._owner(lease), ("local-qa", local_owner))
+        batch = coordinator._load_batch(self.root, BATCH_ID)
+        status = coordinator._load_dispatch_status(self.root, DISPATCH_ID)
+        self.assertEqual(batch["dispatches"][0]["state"], "approved")
+        self.assertEqual(status["state"], "approved")
 
     def test_report_validation_refuses_inconsistent_stages(self) -> None:
         self.dispatch["verification_commands"] = list(self.GATE)

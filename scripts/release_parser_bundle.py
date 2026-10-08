@@ -42,6 +42,10 @@ PACKAGES = {
 # One wheel per (python tag x platform) pair for the version-specific core, plus one abi3 wheel per
 # platform for every other (grammar) distribution, since abi3 wheels cover every pinned Python tag.
 EXPECTED_WHEEL_COUNT = len(MATRIX) + (len(PACKAGES) - 1) * len(PLATFORMS)
+# Bound for one release tool run (CycloneDX, pip-audit): pip-audit waits on a network service.
+TOOL_TIMEOUT_SECONDS = 600
+# Exit code reported for a tool that did not finish in time, as coreutils `timeout` does.
+TIMED_OUT_EXIT_CODE = 124
 
 
 class WheelPin(TypedDict):
@@ -166,8 +170,13 @@ def _requirements(wheels: list[WheelPin]) -> str:
 
 
 def _run(command: list[str]) -> int:
-    """Выполнить команду и вернуть её код выхода."""
-    return subprocess.run(command, capture_output=True, check=False).returncode
+    """Выполнить команду и вернуть её код выхода; зависшая команда даёт TIMED_OUT_EXIT_CODE."""
+    try:
+        return subprocess.run(
+            command, capture_output=True, check=False, timeout=TOOL_TIMEOUT_SECONDS
+        ).returncode
+    except subprocess.TimeoutExpired:
+        return TIMED_OUT_EXIT_CODE
 
 
 def build_release(

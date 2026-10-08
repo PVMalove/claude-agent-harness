@@ -57,7 +57,10 @@ class InfrastructureRetryTests(preparation.PreparationFixture):
         self.assertTrue(
             brief["orchestration_policy"]["infrastructure_retry"]["enabled"]
         )
-        self.assertEqual(brief["coordinator_approval"]["approved_by"], self.fx._approval()["approved_by"])
+        self.assertEqual(
+            brief["coordinator_approval"]["approved_by"],
+            self.fx._approval()["approved_by"],
+        )
 
     def test_project_defect_remains_manual(self) -> None:
         self.configure_policy()
@@ -414,3 +417,25 @@ class CoordinatorOperationRetryTests(unittest.TestCase):
         )
         self.assertEqual(published["candidate_commit"], candidate)
         self.assertEqual(published["state"], "reported")
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        None,
+        "",
+        "qa-lane/attempts/x.json",
+        "qa-lane/operation-attempts/../lease.json",
+        "/qa-lane/operation-attempts/x.json",
+    ],
+)
+def test_an_operation_attempt_outside_its_ledger_directory_is_refused(
+    tmp_path: Path, relative: object
+) -> None:
+    from harness.orchestration import infrastructure_retry
+
+    with pytest.raises(CoordinatorError) as caught:
+        infrastructure_retry._operation_attempt(tmp_path, relative)
+
+    assert caught.value.message == "invalid infrastructure evidence path"
+    assert caught.value.remedy.strip()

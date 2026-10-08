@@ -385,7 +385,8 @@ The decision table:
    decides the report.
 2. The policy accepts a clean report: `outcome: completed`, `blockers: none`, every check passes,
    no `not_covered` item, no carried gap, no scope warning, no review finding or warning/blocker
-   severity, no incomplete item for the reporting role, and no `--block-bypass`. The record lists
+   severity, no review axis that names blockers, no incomplete item for the reporting role, and no
+   `--block-bypass`. The record lists
    the report risks, its `risk_triggers` and the matched triggers of the candidate as
    `accepted_risks`. Incomplete items for later roles are carried. The accept of the publish
    report completes the batch.

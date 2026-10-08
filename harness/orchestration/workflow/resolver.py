@@ -13,9 +13,11 @@ import argparse
 import re
 from pathlib import Path
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import operation_access
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
+from harness.orchestration.core.constants import TERMINAL_BATCH_STATES
 from harness.orchestration.core.git_utils import (
     _changed_files_between,
     _git,
@@ -44,7 +46,7 @@ from harness.orchestration.ledger.lifecycle import (
     ResolverRecord,
 )
 from harness.orchestration.workflow import integration, pr_refresh
-from harness.orchestration.workflow.batch import create_batch
+from harness.orchestration.workflow.batch import _batch_records, create_batch
 from harness.orchestration.workflow.history import _validate_batch_integrity
 from harness.orchestration.workflow.resolver_state import (
     COMMIT_PLAN_ENTRY_ID,
@@ -85,7 +87,6 @@ def _batch_text(trigger: str, ticket: str, tip: str) -> tuple[str, list[str], st
     )
 
 
-_FINISHED_STATES = {"completed", "failed", "blocked", "not-required", "abandoned"}
 _TICKET_IN_SUBJECT = re.compile(r"\(#(\d+)\)")
 
 
@@ -93,14 +94,9 @@ _TICKET_IN_SUBJECT = re.compile(r"\(#(\d+)\)")
 
 
 def _resolver_batches(root: Path, record_id: str) -> list[JsonObject]:
-    directory = _records_root(root) / "batches"
-    found = [
-        _read_object(path, "batch record")
-        for path in sorted(directory.glob("batch-*.json") if directory.is_dir() else [])
-    ]
     return [
         item
-        for item in found
+        for item in _batch_records(root)
         if isinstance(item.get("resolver"), dict)
         and item["resolver"].get("integration_record_id") == record_id
     ]
@@ -108,7 +104,7 @@ def _resolver_batches(root: Path, record_id: str) -> list[JsonObject]:
 
 def _open_batch(batches: list[JsonObject]) -> JsonObject | None:
     for item in batches:
-        if item.get("state") not in _FINISHED_STATES:
+        if item.get("state") not in TERMINAL_BATCH_STATES:
             return item
     return None
 
@@ -375,9 +371,14 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         batch = _load_batch(root, created["batch_id"])
         if batch["base_commit"] != tip:
+            # The planned batch is not a resolver batch, yet it holds the ticket, branch and
+            # worktree: a repeat is refused until it is closed.
             raise CoordinatorError(
-                "the integration ref moved while the resolver batch was planned",
-                remedy="repeat 'integration resolve' for the new target",
+                "the integration ref moved while the resolver batch was planned; batch "
+                f"{batch['batch_id']} stays planned",
+                remedy=f"close the planned batch ('batch abandon --batch {batch['batch_id']} "
+                "--reason <why> --approved-by <name> --approved-at <time>'), then repeat "
+                "'integration resolve' for the new target",
             )
         batch.update(
             {
@@ -508,10 +509,19 @@ def resolver_event(args: argparse.Namespace) -> JsonObject:
                 remedy="pass the --dispatch of the resolver the record's conflict was handed to",
             )
         entry = next(
-            item
-            for item in batch["dispatches"]
-            if item["dispatch_id"] == dispatch["dispatch_id"]
+            (
+                item
+                for item in batch["dispatches"]
+                if item["dispatch_id"] == dispatch["dispatch_id"]
+            ),
+            None,
         )
+        if entry is None:
+            raise CoordinatorError(
+                "the resolver dispatch is not registered in its batch",
+                remedy="the dispatch is not registered in its batch -- "
+                + INTERNAL_INVARIANT_REMEDY,
+            )
         members: JsonObject = {
             "integration_record_id": record_id,
             "target_sha": resolver["target_sha"],
@@ -533,11 +543,18 @@ def resolver_event(args: argparse.Namespace) -> JsonObject:
                 )
             checkpoint_id = None
             if checkpointed:
-                checkpoint_id = [
+                checkpoints = [
                     item
                     for item in batch.get("checkpoints", [])
                     if item["dispatch_id"] == dispatch["dispatch_id"]
-                ][-1]["checkpoint_id"]
+                ]
+                if not checkpoints:
+                    raise CoordinatorError(
+                        "the checkpointed resolver dispatch has no checkpoint in its batch",
+                        remedy="the batch lost the checkpoint of this dispatch -- "
+                        + INTERNAL_INVARIANT_REMEDY,
+                    )
+                checkpoint_id = checkpoints[-1]["checkpoint_id"]
             fields.update(
                 {
                     "option": getattr(args, "option", None),

@@ -289,6 +289,63 @@ class ChangedLinesTests(unittest.TestCase):
 
         self.assertEqual(changed, {"other.py": {1}})
 
+    def test_a_non_ascii_python_path_is_gated(self) -> None:
+        # git quotes a non-ASCII path by default; a quoted `+++ "b/..."` line must not hide the file.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._git(root, "init", "-q")
+            self._git(root, "commit", "-q", "--allow-empty", "-m", "base")
+            base = self._git(root, "rev-parse", "HEAD")
+            (root / "модуль.py").write_text("a = 1\n", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "change")
+
+            with mock.patch.object(diff_coverage, "ROOT", root):
+                changed = diff_coverage._changed_lines(base)
+
+        self.assertEqual(changed, {"модуль.py": {1}})
+
+
+class GitFailureTests(unittest.TestCase):
+    def test_a_hung_git_diff_stops_the_gate_with_a_message(self) -> None:
+        with (
+            mock.patch.object(
+                diff_coverage.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(["git"], 1),
+            ) as run,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            diff_coverage._changed_lines("base")
+
+        self.assertIn("git diff failed", str(raised.exception.code))
+        self.assertEqual(
+            run.call_args.kwargs["timeout"], diff_coverage.HELPER_TIMEOUT_SECONDS
+        )
+
+    def test_a_hung_merge_base_stops_the_gate_with_a_message(self) -> None:
+        with (
+            mock.patch.dict(diff_coverage.os.environ, {"DIFF_COVERAGE_BASE": ""}),
+            mock.patch.object(diff_coverage, "_base_branch", return_value="master"),
+            mock.patch.object(
+                diff_coverage.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(["git"], 1),
+            ),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            diff_coverage._merge_base()
+
+        self.assertIn("git merge-base failed", str(raised.exception.code))
+
+    def test_a_non_object_project_json_falls_back_to_master(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".harness").mkdir()
+            (root / ".harness" / "project.json").write_text("[]", encoding="utf-8")
+            with mock.patch.object(diff_coverage, "ROOT", root):
+                self.assertEqual(diff_coverage._base_branch(), "master")
+
 
 if __name__ == "__main__":
     unittest.main()

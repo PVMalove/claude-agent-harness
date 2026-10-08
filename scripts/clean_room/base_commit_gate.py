@@ -1,13 +1,15 @@
 """Gate базового коммита: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
-import subprocess
 import sys
 from types import SimpleNamespace
 
 from scripts.clean_room.support import (
     capture,
     commit_map_for,
+    run_step,
 )
 
 
@@ -33,7 +35,7 @@ def run(ctx: SimpleNamespace) -> None:
     # dispatch, whose resulting commit is a new candidate that must be risk-assessed again.
     stale_state = test_root / "stale-base-state"
     sync_origin_base()
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-134-stale-base"],
         cwd=orchestration_project,
         check=True,
@@ -199,10 +201,10 @@ def run(ctx: SimpleNamespace) -> None:
     stale_feature_file.write_text(
         'def marker():\n    return "first"\n', encoding="utf-8"
     )
-    subprocess.run(
+    run_step(
         ["git", "add", "services/stale_base.py"], cwd=orchestration_project, check=True
     )
-    subprocess.run(
+    run_step(
         ["git", "commit", "-qm", "feat: add stale-base marker"],
         cwd=orchestration_project,
         check=True,
@@ -257,7 +259,7 @@ def run(ctx: SimpleNamespace) -> None:
     drift_worktree = test_root / "stale-base-drift"
     # The bare remote's own HEAD symref points at a branch ("master") nothing has ever pushed, so
     # an unqualified clone can't check anything out - name "main" explicitly.
-    subprocess.run(
+    run_step(
         [
             "git",
             "clone",
@@ -272,8 +274,8 @@ def run(ctx: SimpleNamespace) -> None:
     (drift_worktree / "UPSTREAM.md").write_text(
         "someone else's merge\n", encoding="utf-8"
     )
-    subprocess.run(["git", "add", "UPSTREAM.md"], cwd=drift_worktree, check=True)
-    subprocess.run(
+    run_step(["git", "add", "UPSTREAM.md"], cwd=drift_worktree, check=True)
+    run_step(
         [
             "git",
             "-c",
@@ -287,7 +289,7 @@ def run(ctx: SimpleNamespace) -> None:
         cwd=drift_worktree,
         check=True,
     )
-    subprocess.run(
+    run_step(
         ["git", "push", "-q", "origin", "HEAD:main"], cwd=drift_worktree, check=True
     )
     drifted_sha = capture(

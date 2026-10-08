@@ -38,6 +38,8 @@ DIFF_OPTIONS = (
     "--src-prefix=a/",
     "--dst-prefix=b/",
 )
+# A hung git must not hold the Bash hook or the CI check indefinitely.
+GIT_TIMEOUT_SECONDS = 120
 HUNK = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 # Hook: shell text is parsed only far enough to find publication commands and their files.
 HEREDOC = re.compile(r"(?<!<)<<(-?)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
@@ -87,6 +89,10 @@ class CheckError(Exception):
     """Ошибка проверки; сообщение не содержит ни терминов, ни проверяемого текста."""
 
 
+class GitTimeoutError(CheckError):
+    """git не завершился за GIT_TIMEOUT_SECONDS: ответ неизвестен, его нельзя считать отказом git."""
+
+
 class Terms(NamedTuple):
     """Активный список: имя источника и пары (номер строки в источнике, термин)."""
 
@@ -105,11 +111,17 @@ class Step(NamedTuple):
 
 def _git(repo: Path, *args: str) -> str:
     """Выполнить git и вернуть stdout как UTF-8; stderr git перехватывается и не печатается."""
-    result = subprocess.run(
-        ["git", "-c", "core.quotePath=false", "-C", str(repo), *args],
-        capture_output=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-c", "core.quotePath=false", "-C", str(repo), *args],
+            capture_output=True,
+            check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        raise GitTimeoutError(
+            f"git {args[0]} did not finish within {GIT_TIMEOUT_SECONDS}s"
+        ) from None
     if result.returncode != 0:
         raise CheckError(f"git {args[0]} failed (exit {result.returncode})")
     return result.stdout.decode("utf-8", errors="replace")
@@ -128,6 +140,8 @@ def _main_checkout(repo: Path) -> Path | None:
     """Корень основного checkout, общий для всех linked worktree; вне git-репозитория — None."""
     try:
         common = _git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    except GitTimeoutError:
+        raise  # an unknown answer must not skip the check as "not a repository"
     except CheckError:
         return None
     return Path(common.strip()).parent
@@ -218,6 +232,8 @@ def _has_head(repo: Path) -> bool:
     """Есть ли у репозитория хотя бы один коммит."""
     try:
         _git(repo, "rev-parse", "--verify", "-q", "HEAD")
+    except GitTimeoutError:
+        raise  # an unknown answer must not skip the commits as "no HEAD"
     except CheckError:
         return False
     return True

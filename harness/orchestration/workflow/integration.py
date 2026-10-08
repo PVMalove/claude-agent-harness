@@ -226,7 +226,7 @@ def _select_source(
     return published[0]
 
 
-def _evidence_reference(root: Path, entry: JsonObject) -> JsonObject:
+def _evidence_reference(entry: JsonObject) -> JsonObject:
     return {
         "dispatch_id": entry["dispatch_id"],
         "brief_sha256": entry["brief_sha256"],
@@ -269,9 +269,9 @@ def _source_facts(
     ]
     return {
         "batch_state": batch["state"],
-        "publish": _evidence_reference(root, publish["entry"]),
+        "publish": _evidence_reference(publish["entry"]),
         "qa": {
-            **_evidence_reference(root, qa_entry),
+            **_evidence_reference(qa_entry),
             "candidate_commit": candidate,
             "outcome": qa_report.get("outcome"),
             "checks_run": checks,
@@ -333,7 +333,7 @@ def _verify_unmoved(repo: Path, identity: JsonObject) -> JsonObject:
 
 
 def _evidence_links(root: Path, record_id: str) -> list[JsonObject]:
-    directory = _records_root(root) / "reports" / "integration-evidence"
+    directory = _records_root(root) / IntegrationEvidenceRecord.directory
     links = []
     for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
         link = _read_object(path, "integration evidence record")
@@ -1026,35 +1026,35 @@ def _route_failure(
     repo: Path,
     root: Path,
     record_id: str,
-    pair: JsonObject,
+    status: JsonObject,
     failed: list[str],
     refreshed: bool,
 ) -> JsonObject:
-    """Route a failed check of the current pair.  A refreshed or resolver-produced candidate failed
-    because of its combination with the target: the same resolver continues, inside the budget
-    that is derived from its append-only events (a human answer or a CI wait never resets it).  A
-    failure of the original, never-refreshed pair is the task's own defect: the ordinary developer
-    with review and QA takes it."""
+    """Route a failed check of the current pair that ``status`` ('integration status') names.  A
+    refreshed or resolver-produced candidate failed because of its combination with the target:
+    the same resolver continues, inside the budget that is derived from its append-only events (a
+    human answer or a CI wait never resets it).  A failure of the original, never-refreshed pair
+    is the task's own defect: the ordinary developer with review and QA takes it."""
     if not refreshed:
         return {
             "step": "route-failure",
             "route": "developer",
             "failed_evidence": failed,
             "next": [
-                f"batch create --ticket {pair['ticket']} --branch {pair['branch']} --worktree <worktree of "
-                f"the issue branch> --integration-ref {pair['integration_ref']} ... (the ordinary /implement "
+                f"batch create --ticket {status['ticket']} --branch {status['branch']} --worktree <worktree of "
+                f"the issue branch> --integration-ref {status['integration_ref']} ... (the ordinary /implement "
                 "route: its own architect, developer, code-review, QA and publish; the completed source "
                 "batch is terminal, never decided again and does not block a new batch of the same ticket "
                 "and branch)",
-                f"after its accepted publish: integration prepare --ticket {pair['ticket']} --branch "
-                f"{pair['branch']} --batch <new batch>, then integration next --record <new record> "
+                f"after its accepted publish: integration prepare --ticket {status['ticket']} --branch "
+                f"{status['branch']} --batch <new batch>, then integration next --record <new record> "
                 "--pull-request <number> (the failed evidence of this record stays history)",
             ],
         }
     from harness.orchestration.workflow import resolver_state
 
     current, fixes, reason = resolver_state.exhaustion(
-        root, _config(repo), record_id, pair["target_sha"]
+        root, _config(repo), record_id, status["target_sha"]
     )
     exhausted = reason is not None
     result: JsonObject = {

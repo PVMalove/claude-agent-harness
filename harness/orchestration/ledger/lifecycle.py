@@ -749,10 +749,17 @@ class LifecycleLedger:
                 "ledger pointer has an unsupported version or generation",
                 remedy=f"fix {self.pointer_path}: version must be one of {SUPPORTED_LEDGER_VERSIONS} and generation a string",
             )
-        if not generation.startswith("generation-") or not isinstance(selected_at, str):
+        # The generation is joined under `generations/`: a separator would select a directory
+        # outside the state root.
+        if (
+            not generation.startswith("generation-")
+            or "/" in generation
+            or "\\" in generation
+            or not isinstance(selected_at, str)
+        ):
             raise LedgerError(
                 "ledger pointer has an invalid generation",
-                remedy=f"fix {self.pointer_path}: generation must start with 'generation-' and selected_at must be a string",
+                remedy=f"fix {self.pointer_path}: generation must be one directory name starting with 'generation-' and selected_at must be a string",
             )
         return pointer
 
@@ -760,7 +767,11 @@ class LifecycleLedger:
     def _pointer_generation(pointer: JsonObject) -> str:
         """Narrow a generation selected by ``pointer()``, which already validates this field."""
         generation = pointer["generation"]
-        assert isinstance(generation, str)
+        if not isinstance(generation, str):
+            raise LedgerError(
+                "ledger pointer generation is not a string after validation",
+                remedy=INTERNAL_INVARIANT_REMEDY,
+            )
         return generation
 
     def records_root(self) -> Path:
@@ -966,28 +977,30 @@ class LifecycleLedger:
             if not self._legacy_records_present():
                 return {"version": 0, "generation": None, "cleaned": 0}
 
+        # A batch that cannot be read names no evidence, yet it may own some: deleting then would
+        # destroy referenced evidence irreversibly, so an unreadable batch stops the clean.
         referenced: set[str] = set()
         for batch_path in (root / "batches").glob("*.json"):
-            try:
-                batch = _read(batch_path, "batch record")
-                entries = batch.get("dispatches", [])
-                if isinstance(entries, list):
-                    for entry in entries:
-                        if isinstance(entry, dict) and isinstance(
-                            entry.get("dispatch_id"), str
-                        ):
-                            dispatch_id = entry["dispatch_id"]
-                            assert isinstance(dispatch_id, str)
-                            referenced.add(dispatch_id)
-            except LedgerError:
-                continue
+            batch = _read(batch_path, "batch record")
+            entries = batch.get("dispatches", [])
+            if not isinstance(entries, list):
+                raise LedgerError(
+                    f"batch dispatches are invalid: {batch_path.name}",
+                    remedy=f"fix {batch_path.name} so its dispatches field is a list, "
+                    "then run 'ledger clean' again",
+                )
+            for entry in entries:
+                if isinstance(entry, dict) and isinstance(
+                    dispatch_id := entry.get("dispatch_id"), str
+                ):
+                    referenced.add(dispatch_id)
 
         removed = 0
         for directory in ("dispatches", "dispatch-status", "reports", "checkpoints"):
             dir_path = root / directory
             if dir_path.exists():
                 for path in dir_path.glob("*.json"):
-                    if path.stem not in referenced:
+                    if not self._dispatch_evidence_referenced(path, referenced):
                         path.unlink()
                         removed += 1
 
@@ -996,6 +1009,18 @@ class LifecycleLedger:
             "generation": pointer["generation"] if pointer else None,
             "cleaned": removed,
         }
+
+    @classmethod
+    def _dispatch_evidence_referenced(cls, path: Path, referenced: set[str]) -> bool:
+        """Whether a dispatch evidence file belongs to a dispatch some batch references.
+
+        Dispatch, status and report files are named by their dispatch; a checkpoint file is named
+        by its own ``checkpoint-*`` id and names its dispatch inside the record."""
+        if path.parent.name != "checkpoints":
+            return path.stem in referenced
+        record = cls.read_record_lenient(path)
+        owner = record.get("dispatch_id") if record is not None else None
+        return isinstance(owner, str) and owner in referenced
 
     def _record_path(self, record: LedgerRecordVO) -> Path:
         self._check_record_id(record.record_id)
@@ -1416,14 +1441,12 @@ class LifecycleLedger:
                 )
             for entry in entries:
                 if not isinstance(entry, dict) or not isinstance(
-                    entry.get("dispatch_id"), str
+                    dispatch_id := entry.get("dispatch_id"), str
                 ):
                     raise LedgerError(
                         f"batch has an invalid dispatch entry: {batch_path.name}",
                         remedy=f"fix {batch_path.name} so each dispatches entry is an object with a string dispatch_id",
                     )
-                dispatch_id = entry["dispatch_id"]
-                assert isinstance(dispatch_id, str)
                 referenced.add(dispatch_id)
                 dispatch_path = dispatches.get(dispatch_id)
                 status_path = statuses.get(dispatch_id)

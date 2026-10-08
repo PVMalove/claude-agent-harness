@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol, TypeGuard
 
-from ..errors import HarnessError
+from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..storage import storage_path
 from . import operation_access
 from .core.config import _execution_policy, _qa_preparation_commands
@@ -119,68 +119,63 @@ def _state_root(args: argparse.Namespace, repo: Path, ops: CoordinatorOps) -> Pa
 
 
 @contextmanager
-def _lock(ledger: LifecycleLedger, ops: CoordinatorOps) -> Iterator[None]:
-    """Exclusive ledger lock, translating ``LedgerError`` to ``ops.CoordinatorError`` at this call
-    site.  ``ledger.py`` deliberately never imports from ``coordinator.py``, and coordinator's CLI
-    boundary only catches ``CoordinatorError``, so every direct ledger call this module makes must
-    translate here (mirrors coordinator.py's own ``_ledger_lock``)."""
+def _ledger_errors(ops: CoordinatorOps) -> Iterator[None]:
+    """Translate ``LedgerError`` to ``ops.CoordinatorError`` at this module's ledger call sites.
+
+    ``ledger.py`` deliberately never imports from ``coordinator.py``, and coordinator's CLI boundary
+    only catches ``CoordinatorError``, so every direct ledger call this module makes must translate
+    here (mirrors coordinator.py's own ``_ledger_lock``)."""
     try:
-        with ledger.lock():
-            yield
+        yield
     except LedgerError as exc:
         raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
+
+
+@contextmanager
+def _lock(ledger: LifecycleLedger, ops: CoordinatorOps) -> Iterator[None]:
+    """Exclusive ledger lock; a ``LedgerError`` inside it becomes ``ops.CoordinatorError``."""
+    with _ledger_errors(ops), ledger.lock():
+        yield
 
 
 def _records_root(ledger: LifecycleLedger, ops: CoordinatorOps) -> Path:
-    try:
+    with _ledger_errors(ops):
         return ledger.records_root()
-    except LedgerError as exc:
-        raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _write_immutable(
     ledger: LifecycleLedger, ops: CoordinatorOps, path: Path, value: JsonObject
 ) -> None:
-    try:
+    with _ledger_errors(ops):
         ledger.write_immutable(path, value)
-    except LedgerError as exc:
-        raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _write_artifact(
     ledger: LifecycleLedger, ops: CoordinatorOps, path: Path, value: str
 ) -> None:
-    try:
+    with _ledger_errors(ops):
         ledger.write_artifact(path, value)
-    except LedgerError as exc:
-        raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _replace_path(
     ledger: LifecycleLedger, ops: CoordinatorOps, path: Path, value: JsonObject
 ) -> None:
-    try:
+    with _ledger_errors(ops):
         ledger.replace(path, value)
-    except LedgerError as exc:
-        raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _replace_record(
     ledger: LifecycleLedger, ops: CoordinatorOps, record: LedgerRecordVO
 ) -> None:
-    try:
+    with _ledger_errors(ops):
         ledger.replace_record(record)
-    except LedgerError as exc:
-        raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _delete_record(
     ledger: LifecycleLedger, ops: CoordinatorOps, path: Path, *, reason: str
 ) -> None:
-    try:
+    with _ledger_errors(ops):
         ledger.delete(path, reason=reason)
-    except LedgerError as exc:
-        raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _lane_path(ledger: LifecycleLedger, ops: CoordinatorOps) -> Path:
@@ -266,6 +261,27 @@ def _validate_owner(value: JsonObject, ops: CoordinatorOps) -> None:
         )
 
 
+def _require_lease_seconds(value: object, ops: CoordinatorOps) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ops.CoordinatorError(
+            "QA lease-seconds must be a positive integer",
+            remedy="pass --lease-seconds as an integer >= 1",
+        )
+    return value
+
+
+def _batch_entry(batch: JsonObject, dispatch_id: str) -> JsonObject | None:
+    """The batch's entry for one dispatch, or ``None`` when the batch does not list it."""
+    return next(
+        (
+            item
+            for item in batch.get("dispatches", [])
+            if item["dispatch_id"] == dispatch_id
+        ),
+        None,
+    )
+
+
 def acquire(
     ledger: LifecycleLedger,
     owner_id: str,
@@ -275,15 +291,7 @@ def acquire(
     lease_seconds: int,
 ) -> JsonObject:
     """Enqueue and acquire the one FIFO lane. Caller holds the short ledger lock."""
-    if (
-        isinstance(lease_seconds, bool)
-        or not isinstance(lease_seconds, int)
-        or lease_seconds < 1
-    ):
-        raise ops.CoordinatorError(
-            "QA lease-seconds must be a positive integer",
-            remedy="pass --lease-seconds as an integer >= 1",
-        )
+    _require_lease_seconds(lease_seconds, ops)
     _validate_owner(_owner_document(owner_kind, owner_id), ops)
     queue_path, _ = _enqueue(ledger, owner_id, ops, owner_kind=owner_kind)
     queue = _queue_entries(ledger, ops)
@@ -357,10 +365,19 @@ def running_owner(
             remedy="have a coordinator run 'qa clear-stale-lease' for the expired lease",
         )
     position = next(
-        index
-        for index, (_, entry) in enumerate(_queue_entries(ledger, ops), start=1)
-        if _owner(entry) == (owner_kind, owner_id)
+        (
+            index
+            for index, (_, entry) in enumerate(_queue_entries(ledger, ops), start=1)
+            if _owner(entry) == (owner_kind, owner_id)
+        ),
+        None,
     )
+    if position is None:
+        # A release that failed between its queue and lease deletions leaves an orphan lease.
+        raise ops.CoordinatorError(
+            "QA lease has no queue entry for its owner",
+            remedy="run 'qa status'; after the lease expires, have a coordinator run 'qa clear-stale-lease'",
+        )
     return {"state": "queued", "position": position, "running": True}
 
 
@@ -415,9 +432,10 @@ def release_queue(
     """
     released = []
     for path, entry in _queue_entries(ledger, ops):
-        if _owner(entry)[0] == "dispatch" and _owner(entry)[1] in dispatch_ids:
+        kind, identity = _owner(entry)
+        if kind == "dispatch" and identity in dispatch_ids:
             _delete_record(ledger, ops, path, reason="release abandoned QA queue entry")
-            released.append(entry["dispatch_id"])
+            released.append(identity)
     return released
 
 
@@ -603,14 +621,7 @@ def _record_report(
     ops._validate_batch_integrity(root, batch)
     ops._validate_dispatch(repo, ops._config(repo), root, batch, dispatch)
     status = ops._load_dispatch_status(root, dispatch["dispatch_id"])
-    entry = next(
-        (
-            item
-            for item in batch.get("dispatches", [])
-            if item["dispatch_id"] == dispatch["dispatch_id"]
-        ),
-        None,
-    )
+    entry = _batch_entry(batch, dispatch["dispatch_id"])
     if (
         not entry
         or entry.get("state") != "dispatched"
@@ -659,7 +670,9 @@ def _recover_transient_failure(
             )
         lease_path = _lane_path(ledger, ops)
         current = _lease(ledger, ops)
-        if current and current["dispatch_id"] == dispatch["dispatch_id"]:
+        # An expired lease may have been cleared and the lane taken by another owner, including a
+        # local QA run without a dispatch_id; only this dispatch's own lease is released.
+        if current and _owner(current) == ("dispatch", dispatch["dispatch_id"]):
             _delete_record(ledger, ops, lease_path, reason="release transient QA lease")
         batch = ops._load_batch(root, dispatch["batch_id"])
         entry = next(
@@ -756,20 +769,12 @@ def _verify_access(
 def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
     repo = ops._repo(args)
     root = _state_root(args, repo, ops)
-    lease_seconds = (
+    lease_seconds = _require_lease_seconds(
         args.lease_seconds
         if args.lease_seconds is not None
-        else _execution_policy(ops._config(repo))["qa_lease_seconds"]
+        else _execution_policy(ops._config(repo))["qa_lease_seconds"],
+        ops,
     )
-    if (
-        isinstance(lease_seconds, bool)
-        or not isinstance(lease_seconds, int)
-        or lease_seconds < 1
-    ):
-        raise ops.CoordinatorError(
-            "QA lease-seconds must be a positive integer",
-            remedy="pass --lease-seconds as an integer >= 1",
-        )
     ledger = LifecycleLedger(root)
     held: BaseException | None = None
     queue_path: Path | None = None
@@ -789,14 +794,7 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
                 remedy="configure verification_commands for the QA role in the project's orchestration config and create a new dispatch",
             )
         status = ops._load_dispatch_status(root, dispatch["dispatch_id"])
-        entry = next(
-            (
-                item
-                for item in batch.get("dispatches", [])
-                if item["dispatch_id"] == dispatch["dispatch_id"]
-            ),
-            None,
-        )
+        entry = _batch_entry(batch, dispatch["dispatch_id"])
         if (
             not entry
             or entry.get("state") != "approved"
@@ -838,7 +836,11 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
             ledger, root, dispatch, queue_path, held, "state-transition", ops
         )
         raise held
-    assert queue_path is not None  # an unqueued run returned above
+    if queue_path is None:  # an unqueued run returned above
+        raise ops.CoordinatorError(
+            "QA run reached the gate without an acquired lane",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     try:
         # The first failed deterministic gate is sufficient evidence for a developer retry.  Do
         # not consume CI time and coordinator context collecting unrelated failures afterwards.
@@ -862,12 +864,13 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
                     config, "qa_project_file_checks"
                 ),
             )
-            gate = None
+            artifact_text, checks = staged.artifact, staged.gate_checks
         else:
             staged = None
             gate = run_gate(
                 dispatch["verification_commands"], policy, stop_on_failure=True
             )
+            artifact_text, checks = gate.artifact, gate.checks
     except GateRunnerError as exc:
         failure = ops.CoordinatorError(exc.message, remedy=exc.remedy)
         _recover_transient_failure(
@@ -877,14 +880,9 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
     except BaseException as exc:
         _release_after_failure(ledger, root, dispatch, queue_path, exc, "gate-run", ops)
         raise
-    if staged is not None:
-        artifact_text, checks = staged.artifact, staged.gate_checks
-    else:
-        assert gate is not None
-        artifact_text, checks = gate.artifact, gate.checks
     checksum = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
-    artifact = _artifact_path(ledger, checksum, ops)
     try:
+        artifact = _artifact_path(ledger, checksum, ops)
         _write_artifact(ledger, ops, artifact, artifact_text)
     except ops.CoordinatorError as exc:
         failure = ops.CoordinatorError(
@@ -909,8 +907,13 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
                 ledger, root, dispatch, queue_path, exc, "stage-verification", ops
             )
             raise
-    report = _qa_report(dispatch, checks, artifact, checksum, stages)
+        except BaseException as exc:
+            _release_after_failure(
+                ledger, root, dispatch, queue_path, exc, "stage-verification", ops
+            )
+            raise
     try:
+        report = _qa_report(dispatch, checks, artifact, checksum, stages)
         with _lock(ledger, ops):
             report_path = _record_report(ledger, root, repo, dispatch, report, ops)
     except ops.CoordinatorError as exc:
