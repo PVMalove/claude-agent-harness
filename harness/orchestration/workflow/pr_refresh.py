@@ -13,11 +13,16 @@ import argparse
 import subprocess
 from pathlib import Path
 
+from harness.orchestration import operation_access
+from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.git_utils import (
     _commits_between,
     _git,
     _remote_branch_tip,
+    classify_git_failure,
+    git_environment,
+    git_failure,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -96,6 +101,7 @@ def _run_git(worktree: Path, *arguments: str) -> subprocess.CompletedProcess[str
         text=True,
         encoding="utf-8",
         check=False,
+        env=git_environment(),
     )
 
 
@@ -185,14 +191,38 @@ def _is_own_rebase(
     )
 
 
+def _rebase_access_failure(
+    worktree: Path, branch: str, rebase: subprocess.CompletedProcess[str]
+) -> CoordinatorError | None:
+    """The access error of a rebase the environment refused, after restoring the checkout.
+
+    A refused metadata write is not a textual conflict: reporting it as one would hand the
+    resolver an environment problem. The restore is best effort, since it may be refused too.
+    """
+    detail = (rebase.stderr or rebase.stdout).strip()
+    if classify_git_failure(detail) is None:
+        return None
+    _run_git(worktree, "rebase", "--abort")
+    _run_git(worktree, "checkout", "-q", branch)
+    return git_failure(
+        f"git rebase was refused by the environment: {_sanitise(detail)}",
+        detail,
+        remedy="inspect the git error above and retry",
+    )
+
+
 def conflicting_files(worktree: Path, branch: str, tip: str) -> list[str]:
     """The files a rebase of the issue branch onto ``tip`` would conflict in; empty for a clean
     rebase.  The trial runs on a detached HEAD and never publishes: the worktree ends on ``branch``
     at its recorded commit either way."""
     _git(worktree, "checkout", "-q", "--detach")
     try:
-        if _run_git(worktree, "rebase", tip).returncode == 0:
+        trial = _run_git(worktree, "rebase", tip)
+        if trial.returncode == 0:
             return []
+        denial = _rebase_access_failure(worktree, branch, trial)
+        if denial is not None:
+            raise denial
         files = [
             line
             for line in _git(
@@ -251,8 +281,9 @@ def _publish_rewrite(
     )
     if result.returncode != 0:
         detail = _sanitise((result.stderr or result.stdout).strip())
-        raise CoordinatorError(
+        raise git_failure(
             f"the remote branch {branch!r} changed or refused the rewrite: {detail or 'unknown error'}",
+            detail,
             remedy="the local branch was left at the recorded candidate; inspect the remote change, then retry the refresh",
         )
 
@@ -344,6 +375,14 @@ def integration_refresh(args: argparse.Namespace) -> JsonObject:
         _validate_branch(repo, branch)
         batch = _load_batch(root, identity["source_batch_id"])
         worktree = Path(batch["worktree"])
+        operation_access.require(
+            repo,
+            core_config._config(repo),
+            "git",
+            worktree=worktree,
+            checkout=worktree,
+            remote=remote,
+        )
         _git(worktree, "fetch", remote, "--", ref)
         _git(worktree, "cat-file", "-e", f"{tip}^{{commit}}")
         published = _own_rewrite(
@@ -362,7 +401,11 @@ def integration_refresh(args: argparse.Namespace) -> JsonObject:
         else:
             # Rebase a detached HEAD so the issue branch only moves after the rewrite is published.
             _git(worktree, "checkout", "-q", "--detach")
-            if _run_git(worktree, "rebase", tip).returncode != 0:
+            rebase = _run_git(worktree, "rebase", tip)
+            if rebase.returncode != 0:
+                denial = _rebase_access_failure(worktree, branch, rebase)
+                if denial is not None:
+                    raise denial
                 return _conflict(worktree, base, branch)
             new_candidate = _git(worktree, "rev-parse", "HEAD")
             try:

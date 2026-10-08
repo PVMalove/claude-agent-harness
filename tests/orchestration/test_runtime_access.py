@@ -302,3 +302,105 @@ def test_a_historical_brief_keeps_inherit_and_a_read_only_role_cannot_write(
         runtime_access.AccessError, match="checkout or read-only boundary"
     ):
         runtime_access.validate_binding(brief)
+
+
+def _repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    return repo
+
+
+def test_a_coordinator_operation_ignores_role_overrides_and_selects_its_own(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    config = {
+        "access_policy": {
+            "defaults": {"mode": "inherit", "network": {"hosts": ["github.com"]}},
+            "roles": {
+                "qa": {"mode": "sandbox", "network": {"hosts": []}},
+                "developer": {"mode": "unsandboxed"},
+            },
+            "operations": {"git": {"mode": "unsandboxed"}},
+        }
+    }
+    qa = runtime_access.resolve_plan(
+        repo, repo, config, "qa", "read-only", operation="qa"
+    )
+    publish = runtime_access.resolve_plan(
+        repo, repo, config, "developer", "write", operation="publish"
+    )
+    git = runtime_access.resolve_plan(
+        repo, repo, config, None, "write", operation="git"
+    )
+    role = runtime_access.resolve_plan(repo, repo, config, "qa", "read-only")
+    assert (qa["mode"], qa["sources"]["mode"]) == ("inherit", "defaults")
+    assert qa["network"] == {"hosts": ["github.com"]}
+    assert (publish["mode"], publish["sources"]["mode"]) == ("inherit", "defaults")
+    assert (git["mode"], git["sources"]["mode"]) == ("unsandboxed", "operations.git")
+    # A worker role still receives its own override.
+    assert (role["mode"], role["sources"]["mode"]) == ("sandbox", "roles.qa")
+
+
+def test_a_coordinator_operation_requires_write_to_git_metadata_and_storage(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    config = {"access_policy": {"defaults": {"mode": "inherit"}}}
+    qa = runtime_access.resolve_plan(
+        repo, repo, config, "qa", "read-only", operation="qa"
+    )
+    worker = runtime_access.resolve_plan(repo, repo, config, "qa", "read-only")
+    writes = {
+        item["resource"] for item in qa["requirements"] if item["access"] == "write"
+    }
+    assert {"git_common", "shared_storage", "artifacts"} <= writes
+    assert "checkout" not in writes
+    assert not {"git_common", "shared_storage"} & {
+        item["resource"] for item in worker["requirements"] if item["access"] == "write"
+    }
+
+
+def test_a_coordinator_operation_may_write_where_a_read_only_role_may_not(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    config = {
+        "access_policy": {
+            "defaults": {
+                "mode": "inherit",
+                "filesystem": [{"resource": "git_common", "access": "write"}],
+            }
+        }
+    }
+    with pytest.raises(runtime_access.AccessError, match="read-only role"):
+        runtime_access.resolve_plan(repo, repo, config, "qa", "read-only")
+    plan = runtime_access.resolve_plan(
+        repo, repo, config, "qa", "read-only", operation="qa"
+    )
+    assert plan["filesystem"] == [
+        {"resource": "git_common", "access": "write", "path": str(repo / ".git")}
+    ]
+
+
+def test_a_qa_brief_binds_the_write_requirements_of_its_coordinator_operation(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    config = {"access_policy": {"defaults": {"mode": "inherit"}}}
+    plan = runtime_access.resolve_plan(
+        repo, repo, config, "qa", "read-only", operation="qa"
+    )
+    brief = {
+        "role": "qa",
+        "access": "read-only",
+        "worktree": str(repo),
+        "runtime_access": plan,
+        "transition": {"runtime_access_sha256": plan["plan_digest"]},
+    }
+    runtime_access.validate_binding(brief)
+    with pytest.raises(
+        runtime_access.AccessError, match="checkout or read-only boundary"
+    ):
+        runtime_access.validate_binding({**brief, "role": "code-review"})

@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import cast
 
-from harness.orchestration import runtime_access
+from harness.orchestration import operation_access, runtime_access
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
@@ -34,6 +34,8 @@ from harness.orchestration.core.git_utils import (
     _changed_files_between,
     _commit_changed_files,
     _git,
+    git_environment,
+    git_failure,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -529,6 +531,15 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
             )
         candidate = dispatch["candidate_commit"]
         _accepted_qa_for_candidate(root, batch, candidate)
+        # Only a candidate with accepted QA reaches this check, and nothing leaves the machine
+        # before the pinned plan of this brief is proven for Git metadata, storage and the remote.
+        access = operation_access.require(
+            repo,
+            core_config._config(repo),
+            "publish",
+            brief=dispatch,
+            remote=remote,
+        )
         result = subprocess.run(
             [
                 "git",
@@ -542,11 +553,13 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
             text=True,
             encoding="utf-8",
             check=False,
+            env=git_environment(),
         )
         if result.returncode != 0:
             detail = _sanitise((result.stderr or result.stdout).strip())
-            raise CoordinatorError(
+            raise git_failure(
                 f"could not publish the accepted candidate: {detail or 'unknown error'}",
+                detail,
                 remedy="inspect the git push error above and fix it before retrying publish",
             )
         published = _git(
@@ -603,4 +616,5 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
         "state": "reported",
         "report": str(report_path),
         "candidate_commit": candidate,
+        "access": access,
     }
