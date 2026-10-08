@@ -41,15 +41,52 @@ You must execute this skill in two distinct phases to ensure the user agrees wit
     - Read the required `base_branch` from `.harness/project.json`; if it is absent, stop and report
       the invalid project config. This is the release/base branch from which the epic integration
       branch starts.
-    - Fetch the base ref. Create `integration/<service-or-team>` from `origin/<base_branch>` when
-      a remote exists, otherwise from the local base branch. Do not switch the current worktree;
-      it may contain unrelated changes.
+    - Record the grill docs that changed in the current worktree:
+      `git status --porcelain --untracked-files=all -- CONTEXT-MAP.md ':(glob)**/CONTEXT.md' ':(glob)**/docs/adr/**'`.
+      `/grill-with-docs` and `/domain-modeling` write these files. Record each path; for a
+      rename (`old -> new`), record both paths. The list can be empty.
+    - Fetch the base ref. Create `integration/<service-or-team>` with `git branch` from
+      `origin/<base_branch>` when a remote exists, otherwise from the local base branch. Do not
+      use `git switch -c` or `git checkout -b`: the branch-name hook allows them only for names
+      that match `branch_pattern`.
     - If the integration branch already exists locally or remotely, reuse it without resetting,
       force-updating, or deleting it. If publication succeeds but branch creation fails, report
       the partial state and the exact recovery action; do not recreate the epic issue.
-    - Push a newly created remote branch with `git push -u origin integration/<service-or-team>`.
-      For a local tracker or a repository without a remote, create the local branch and report
-      that it was not pushed.
+    - If the branch already exists on the remote, do not commit to it and do not switch the
+      current worktree. If the grill docs list is not empty, report that these docs stay
+      uncommitted in the current worktree. Give the recovery action: commit them on an issue
+      branch from `integration/<service-or-team>`, for example the first child ticket's branch,
+      and merge them through its PR.
+    - If the branch is absent on the remote and the grill docs list is empty, do not switch the
+      current worktree; it may contain unrelated changes.
+    - If the branch is absent on the remote and the grill docs list is not empty, commit the docs
+      to the branch before you push it. Do not create a separate worktree:
+        1. Switch the current worktree with `git switch integration/<service-or-team>`.
+           Uncommitted changes move with the worktree. If `git switch` refuses because of a
+           conflict with uncommitted changes, stop. Do not use `--force`, `--discard-changes`,
+           `--merge`, or a reset: they can overwrite changes. Report the git error and the
+           recovery action: put the changes aside with `git stash push --include-untracked`, run
+           `git switch integration/<service-or-team>`, restore them with `git stash pop`, resolve
+           any conflict, and continue from sub-step 2.
+        2. Stage only the recorded grill docs, each path named explicitly:
+           `git add -- <path>...`. Do not use `git add -A`, `git add .`, or `git commit -a`. Other
+           changes stay uncommitted in the working tree.
+        3. Run the commit as a standalone command, without `&&`, `;`, a pipe, or a variable:
+           `git commit -m 'docs: <short epic summary>'`. Write the message by the commit rules in
+           `docs/agents/git-workflow.md`. The `block-direct-master` hook allows a commit on an
+           `integration/*` branch only in this form, only when the index contains only grill docs
+           paths, and only when the branch is absent on `origin`.
+        4. If the hook blocks the commit, stop and do not push. Report the hook message and that
+           the docs stay staged in the current worktree. Give the recovery action: remove the
+           cause, for example a staged path outside the grill docs or no access to `origin`, and
+           repeat sub-step 3.
+    - Push a branch that is absent on the remote with
+      `git push -u origin integration/<service-or-team>`. After a grill docs commit, the current
+      worktree stays on the integration branch, with unrelated changes uncommitted.
+    - For a local tracker, make the grill docs commit as above, but do not push; report that the
+      branch was not pushed. In a repository without a remote, create the local branch and do not
+      commit or push. Report that the branch was not pushed and that the grill docs stay
+      uncommitted.
 
 ---
 
