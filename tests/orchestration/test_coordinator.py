@@ -4875,6 +4875,63 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             (self._records() / "batches" / f"{source}.json").read_bytes(), source_bytes
         )
 
+    def test_an_accepted_architect_alone_is_carried_and_the_developer_starts_at_the_base(
+        self,
+    ) -> None:
+        source = cast(str, self._create_batch()["batch_id"])
+        self._reported_architect(source)
+        entries = [self._plan_entry("route-retries", [1])]
+        self._decide(source, "accept", commit_plan_file=self._plan_file(entries))
+        self._abandon_after_a_blocked_developer(source)
+        architect = next(
+            item
+            for item in self._batch_record(source)["dispatches"]
+            if item["role"] == "architect"
+        )
+        self.assertEqual(
+            self._batch_record(source)["abandoned"]["last_accepted"],
+            {
+                "dispatch_id": architect["dispatch_id"],
+                "role": "architect",
+                "candidate_commit": None,
+            },
+        )
+
+        batch = self._supersede(source)
+        coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], **self._approval())
+        )
+
+        link = batch["supersedes"]
+        self.assertEqual(
+            (
+                link["architect"]["dispatch_id"],
+                link["architect"]["commit_plan_sha256"],
+                link["start_commit"],
+                link["rebase_target_commit"],
+            ),
+            (architect["dispatch_id"], commit_plan.plan_sha256(entries), None, None),
+        )
+        self.assertEqual(
+            (batch["commit_plan"], batch["next_action"]), (entries, "developer")
+        )
+        routing = batch["coordinator_decisions"][0]["routing"]
+        self.assertEqual(
+            (routing["next_role"], routing["candidate_commit"]), ("developer", None)
+        )
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        stored = self._batch_record(batch["batch_id"])
+        self.assertEqual(
+            (
+                brief["snapshot_commit"],
+                brief["rebase_target_commit"],
+                brief["transition"]["next_action"],
+                brief["commit_plan"],
+            ),
+            (stored["base_commit"], None, "developer", entries),
+        )
+        self.assertEqual([item["role"] for item in stored["dispatches"]], ["developer"])
+
     def test_another_definition_of_done_carries_nothing_and_needs_a_new_architect(
         self,
     ) -> None:
