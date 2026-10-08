@@ -34,6 +34,12 @@ from harness.orchestration.core.config import (
 from harness.orchestration.core.constants import (
     ATTENTION_EVENT_KINDS,
     ATTENTION_STATE_FIELDS,
+    AUTO_DECISION_FIELDS,
+    AUTO_DECISION_KINDS,
+    AUTO_EVIDENCE_FIELDS,
+    AUTO_REPORT_FIELDS,
+    AUTO_STOP_FIELDS,
+    AUTO_STOP_REASONS,
     CARRIED_ITEM_BRIEF_ROLES,
     CARRIED_ITEM_FIELDS,
     CARRIED_ITEM_RECORD_FIELDS,
@@ -84,6 +90,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _load_risk,
     _records_root,
 )
+from harness.orchestration.workflow.approval import AUTO_APPROVER
 
 
 def _validate_risk(root: Path, batch: JsonObject, risk: JsonObject) -> None:
@@ -786,6 +793,110 @@ def _validate_operational_batch_fields(batch: JsonObject) -> None:
                 f"batch {field} must be a list of keys",
                 remedy=f"the batch {field} is malformed -- "
                 + INTERNAL_INVARIANT_REMEDY,
+            )
+    _validate_auto_records(batch)
+
+
+def _auto_record_error(field: str, problem: str) -> CoordinatorError:
+    return CoordinatorError(
+        f"batch {field} record {problem}",
+        remedy=f"the batch {field} record is malformed or was modified after its hash was "
+        "recorded -- " + INTERNAL_INVARIANT_REMEDY,
+    )
+
+
+def _check_sealed(field: str, entry: object, fields: frozenset[str]) -> JsonObject:
+    """A hashed batch record of ``fields`` whose ``record_sha256`` still matches its body."""
+    if not isinstance(entry, dict) or set(entry) != fields:
+        raise _auto_record_error(field, "schema mismatch")
+    body = {key: value for key, value in entry.items() if key != "record_sha256"}
+    if (
+        entry["record_sha256"]
+        != hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest()
+    ):
+        raise _auto_record_error(field, "failed immutable integrity check")
+    return entry
+
+
+def _auto_decision_bound(batch: JsonObject, entry: JsonObject) -> bool:
+    """Whether the approval an ``auto_decisions`` record names is the one the batch carries."""
+    kind = entry["kind"]
+    evidence = entry["evidence"]
+    if kind == "batch-approve":
+        approval = batch.get("coordinator_approval")
+        return (
+            isinstance(approval, dict)
+            and approval.get("approved_by") == (entry["approved_by"])
+        )
+    if kind in {"dispatch", "decision"}:
+        dispatch = next(
+            (
+                item
+                for item in batch.get("dispatches", [])
+                if isinstance(item, dict)
+                and item.get("dispatch_id") == entry["dispatch_id"]
+            ),
+            None,
+        )
+        if dispatch is None:
+            return False
+        if kind == "dispatch":
+            return bool(dispatch.get("brief_sha256") == evidence["brief_sha256"])
+        decision = dispatch.get("decision")
+        return (
+            isinstance(decision, dict)
+            and decision.get("approved_by") == entry["approved_by"]
+            and dispatch.get("report_sha256") == evidence["report_sha256"]
+        )
+    recorded = "carry-over" if kind == "carry-over" else "continue"
+    return any(
+        isinstance(item, dict)
+        and item.get("dispatch_id") == entry["dispatch_id"]
+        and item.get("decision") == recorded
+        and item.get("approved_by") == entry["approved_by"]
+        for item in batch.get("coordinator_decisions", [])
+    )
+
+
+def _validate_auto_records(batch: JsonObject) -> None:
+    """Shape, integrity and batch-internal binding of the ``approval_policy: auto`` records
+    (issue #643). Every field is optional, so a batch written before them stays valid."""
+    records = batch.get("auto_decisions", [])
+    if not isinstance(records, list):
+        raise _auto_record_error("auto_decisions", "schema mismatch")
+    for position, item in enumerate(records, start=1):
+        entry = _check_sealed("auto_decisions", item, AUTO_DECISION_FIELDS)
+        if (
+            entry["sequence"] != position
+            or entry["kind"] not in AUTO_DECISION_KINDS
+            or entry["approved_by"] != AUTO_APPROVER
+            or not _non_empty(entry["approved_at"])
+            or not _non_empty(entry["rationale"])
+            or not isinstance(entry["evidence"], dict)
+            or set(entry["evidence"]) != AUTO_EVIDENCE_FIELDS[entry["kind"]]
+        ):
+            raise _auto_record_error("auto_decisions", "has an invalid entry")
+        if not _auto_decision_bound(batch, entry):
+            raise _auto_record_error(
+                "auto_decisions",
+                f"{entry['sequence']} does not match the {entry['kind']} approval it records",
+            )
+    if "auto_stop" in batch:
+        stop = _check_sealed("auto_stop", batch["auto_stop"], AUTO_STOP_FIELDS)
+        if (
+            stop["reason"] not in AUTO_STOP_REASONS.get(stop["category"], ())
+            or not isinstance(stop["evidence"], dict)
+            or not _non_empty(stop["detected_at"])
+            or not _non_empty(stop["detected_by"])
+        ):
+            raise _auto_record_error("auto_stop", "names no listed stop")
+    if "auto_report" in batch:
+        report = _check_sealed("auto_report", batch["auto_report"], AUTO_REPORT_FIELDS)
+        if report["batch_id"] != batch.get("batch_id") or report["stop"] != batch.get(
+            "auto_stop"
+        ):
+            raise _auto_record_error(
+                "auto_report", "does not match its batch or its recorded stop"
             )
 
 
