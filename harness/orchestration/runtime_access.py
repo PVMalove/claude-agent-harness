@@ -20,7 +20,7 @@ from harness.storage import storage_root
 
 from . import extensions
 from .contract import access_policy_problems
-from .core.constants import ACCESS_RESOURCES
+from .core.constants import ACCESS_OPERATIONS, ACCESS_RESOURCES
 from .core.utils import JsonObject
 
 
@@ -165,8 +165,11 @@ def validate_binding(brief: Mapping[str, object]) -> None:
                 "access": "write" if brief.get("access") == "write" else "read",
             }
         ]
+        # A QA brief names a read-only role, yet the coordinator that runs its operation writes
+        # the clean-room checkout, Git metadata and shared storage: the role boundary never binds it.
         if checkout[0] not in plan["requirements"] or (
             brief.get("access") == "read-only"
+            and brief.get("role") != "qa"
             and any(
                 item["resource"] in ("checkout", "git_common", "shared_storage")
                 and item["access"] == "write"
@@ -193,7 +196,7 @@ def resolve_plan(
     repo: Path,
     worktree: Path,
     config: Mapping[str, object],
-    role: str,
+    role: str | None,
     access: str,
     *,
     operation: str | None = None,
@@ -202,7 +205,16 @@ def resolve_plan(
 
     A plan without authored access preserves historical inherit behavior. An authored policy
     also exposes operational requirements that an empty filesystem override cannot remove.
+
+    An ``operation`` is executed by the coordinator itself, never by a role adapter: it takes the
+    defaults and its own override only, so a role override cannot replace its choice, and the
+    coordinator needs write access to Git metadata and shared storage whatever the role's mode.
     """
+    if operation is not None and operation not in ACCESS_OPERATIONS:
+        raise AccessError(
+            f"unknown coordinator operation {operation!r}",
+            remedy=f"select one of: {', '.join(ACCESS_OPERATIONS)}",
+        )
     policy = config.get("access_policy")
     if "access_policy" not in config:
         plan: JsonObject = {
@@ -215,7 +227,7 @@ def resolve_plan(
         }
         plan["plan_digest"] = _digest(plan)
         return plan
-    problems = access_policy_problems(policy, {role})
+    problems = access_policy_problems(policy, {role} if role else set())
     # Other role overrides are validated by the config contract, not this selected-role view.
     problems = [
         problem
@@ -235,7 +247,10 @@ def resolve_plan(
     }
     sources: JsonObject = {key: "default" for key in selected}
     layers = [("defaults", policy.get("defaults", {}))]
-    for section, name in (("roles", role), ("operations", operation)):
+    for section, name in (
+        ("roles", None if operation else role),
+        ("operations", operation),
+    ):
         overrides = policy.get(section, {})
         if name is not None and isinstance(overrides, dict) and name in overrides:
             layers.append((f"{section}.{name}", overrides[name]))
@@ -270,7 +285,12 @@ def resolve_plan(
             if resource == "cache"
             else roots[resource]
         )
-        if access == "read-only" and item["access"] == "write" and resource != "cache":
+        if (
+            access == "read-only"
+            and item["access"] == "write"
+            and resource != "cache"
+            and operation is None
+        ):
             raise AccessError(
                 f"read-only role cannot request write access to {resource}",
                 remedy="keep source and Git roots read-only; operational scratch is added separately",
@@ -287,12 +307,12 @@ def resolve_plan(
         {
             "resource": "git_common",
             "path": _root(roots["git_common"]),
-            "access": "write" if access == "write" else "read",
+            "access": "write" if access == "write" or operation else "read",
         },
         {
             "resource": "shared_storage",
             "path": _root(roots["shared_storage"]),
-            "access": "read",
+            "access": "write" if operation else "read",
         },
         {
             "resource": "artifacts",
