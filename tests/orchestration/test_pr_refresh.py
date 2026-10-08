@@ -512,6 +512,23 @@ class AccessRefusalTests(RefreshFixture):
         self.assertEqual(self.branch.snapshot(), before)
         self.assertEqual(self.refresh()["state"], "rebased")
 
+    def test_a_conflict_whose_commit_subject_mentions_a_denial_is_not_an_access_failure(
+        self,
+    ) -> None:
+        rebase = subprocess.CompletedProcess(
+            ["git", "rebase"],
+            1,
+            stdout=(
+                "Auto-merging x.py\nCONFLICT (content): Merge conflict in x.py\n"
+                "error: could not apply 1a2b3c4... fix: handle permission denied on metadata write\n"
+            ),
+            stderr="hint: Resolve all conflicts manually\n",
+        )
+
+        self.assertIsNone(
+            pr_refresh._rebase_access_failure(self.worktree, self.branch.branch, rebase)
+        )
+
     def test_a_remote_that_refuses_the_rewrite_is_classified_and_leaves_the_branch(
         self,
     ) -> None:
