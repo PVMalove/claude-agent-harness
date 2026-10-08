@@ -40,6 +40,61 @@ explicit approval; never supply `--approved-by` as though they already approved,
 command for them without that approval. `ledger clean` only removes orphaned evidence, and
 `ledger reset` does not clear an active batch.
 
+## Batch preparation
+
+The coordinator must take every procedure from agent sources only: this skill, `.harness/orchestration/playbook.md`,
+`.harness/orchestration/roles/`, the guides in `docs/agents/`, and the `--help` and `remedy` output of
+the coordinator CLI. The coordinator must not take a procedure from a Russian human document
+(`backend-orchestration.md`, `harness-guide.md`, `ARCHITECTURE.md`, `docs/skills/`, `docs/hooks/`).
+The coordinator must not copy conventions from another batch and must not read ledger files in
+`.harness/orchestration/state/`. The coordinator must read state only through CLI commands (`batch list`,
+`batch decision-packet`, `dispatch status`). If these sources do not give a step, that gap is a
+blocker: the coordinator must stop and report it to the developer, and must not reconstruct the step.
+
+Start these steps only after the ticket pre-flight in "Coordinator contract" (blockers, `status::in-progress`).
+
+1. **Integration ref.** Use the ticket's `## Integration Branch` value. If the ticket has no such
+   section, use its `## Git base` value. If it has neither, use the same section of the parent epic.
+   A missing value for a ticket that has a parent epic is a blocker; do not infer it from the
+   checkout or from memory. A ticket without a parent epic uses `base_branch`: omit `--integration-ref`.
+2. **Issue worktree.** Create it before `batch create`. `batch create` refuses a worktree that
+   `git worktree list` does not show. Use the exact commands, and the recovery after a half-done
+   `git worktree add -b`, in `docs/agents/worktrees.md` → Coordinator issue worktree. Stay in the main checkout.
+3. **Batch scope.** Run `batch preflight` with the same scope flags as `batch create`. Translate the
+   ticket into English first: `batch create` rejects Cyrillic in `--goal`, `--definition-of-done`
+   and `--prohibited-change`. Keep commands, paths, and IDs verbatim.
+4. **Create the batch.** Repeat the list flags once for each value.
+
+   ```bash
+   python .harness/orchestration/coordinator.py --repo . batch create \
+     --ticket "#<ID>" --branch "feature/issue-<ID>-<slug>" --worktree "<absolute worktree path>" \
+     --integration-ref "<integration-branch>" --goal "<English goal>" \
+     --definition-of-done "<English item>" --prohibited-change "<English item>" \
+     --allowed-path "<path or glob>" --expected-file "<path>" --expected-service "<service>" \
+     --expected-changed-lines <N> --required-gate review --required-gate qa
+   ```
+
+   `--ticket`, `--branch`, `--worktree`, `--definition-of-done`, `--prohibited-change` and at least
+   one `--allowed-path` are mandatory. `--branch` must match `branch_pattern`. `--expected-file`,
+   `--expected-service` and `--expected-changed-lines` are mandatory when the project policy
+   requires estimates. The CLI refuses an oversized ticket and prints a `remedy`.
+5. **Approve the batch.** `batch approve --batch <id> --approved-by <operator> --approved-at <UTC time>`
+   moves the batch from `planned` to `awaiting-approval`. This needs the operator's explicit
+   approval: present the command, as for `batch abandon`, and do not run it for them.
+
+**Commit plan file.** Pin the architect's plan with `batch decide --batch <id> --decision accept --approved-by <operator> --approved-at <UTC time> --commit-plan-file <path>`. The operator approves this decision; never supply `--approved-by` for them.
+The file is a JSON object with the single key `commit_plan`, a non-empty list in commit order:
+
+```json
+{"commit_plan": [{"id": "tests", "summary": "Add failing tests", "expected_paths": ["tests/**"], "covers": [1]}]}
+```
+
+Each entry has exactly these fields: `id` (unique; up to 64 characters of letters, digits, `.`, `_`, `-`; the first character is a letter or digit),
+`summary` (non-empty), `expected_paths` (non-empty list of relative paths or globs, with no leading `/`
+and no `..`), and `covers` (non-empty list of 1-based `--definition-of-done` item numbers, without
+repeats). Every definition-of-done item must appear in at least one entry. The CLI rejects a
+broken file and prints the expected format.
+
 ## Coordinator contract
 
 Resolve the tracker ticket, issue branch and blockers without opening a second batch for the same
@@ -173,6 +228,14 @@ If the result includes completion, relay it to the coordinator for report comple
 already recorded, so submit it only once. Chat text alone does not complete the dispatch.
 ```
 
+An architect retry adds one line. `batch decide --note` does not reach the brief, and `retry_start` exists only for a developer retry. Pass the reason of the retry in `--note`, in English, and add this line after the template lines:
+
+```text
+Retry reason: <the exact --note text of the retry decision>; previous architect dispatch: <previous dispatch id>
+```
+
+The new architect uses the line as evidence of what the previous report lacked. The line does not widen the brief's scope.
+
 A developer retry adds two lines from the `retry_start` of its `dispatch preflight`:
 
 ```text
@@ -185,9 +248,9 @@ that stops at a checkpoint follows the checkpoint protocol instead of submitting
 The coordinator treats a final reply without recorded completion or a valid checkpoint as an
 unfinished handoff and requests the missing protocol from the same available worker session.
 
-Large documents (the role catalog, `playbook.md`, `backend-orchestration.md`, `git-workflow.md`) and
+Large documents (the role catalog, `playbook.md`, `git-workflow.md`) and
 prior reports reach a worker only as Context Package section ranges or through the retry handoff.
-The work a prompt asks for is exactly its brief plus, for a retry, the handoff's blocking findings.
+The work a prompt asks for is exactly its brief plus, for a retry, the handoff's blocking findings (developer) or the retry reason line (architect).
 
 A developer retry is always a new session started from its compact handoff, never a continuation of
 the previous developer session's history. The preflight's decision packet carries the retry's
@@ -202,9 +265,9 @@ This is a short coordinator contract, not a second orchestration manual. Full ru
 - `.harness/orchestration/playbook.md` owns lifecycle, authority, immutable brief, completion
   evidence, parallelism, and metric rules.
 - `.harness/orchestration/roles/` owns each role's boundary, required proof, and specialist trigger.
-- `.harness/docs/backend-orchestration.md` owns setup, project configuration, CLI procedure, and
-  operational recovery.
+- The `--help` output and the `remedy` of the coordinator CLI own command syntax and operational recovery.
 - `docs/agents/git-workflow.md` owns issue-branch, commit, push, and PR boundaries.
+- `docs/agents/worktrees.md` owns issue worktree creation and its recovery.
 
 Follow those files rather than duplicating or weakening their rules here. In particular, do not
 invent token metrics: use only provider- or runtime-observed telemetry and preserve missing-data
