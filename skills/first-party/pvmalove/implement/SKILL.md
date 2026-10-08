@@ -75,7 +75,8 @@ or replaces it with a newly approved plan that explains the changed boundary. Th
 completion report maps every created commit to the entries it closes; a mapping that is not
 one-to-one needs `dod_coverage` and `divergence_justification`, and a report with a `not_covered`
 item can be accepted only by `override-warning` with a note other than `none`, or returned with
-`retry`. Do not collapse unrelated implementation, tests, documentation, or type-only repairs into a
+`retry`. A report whose `changed_files` lie outside the brief's `write_paths` is recorded with a
+`scope_warnings` entry and is accepted only the same way. Do not collapse unrelated implementation, tests, documentation, or type-only repairs into a
 recovery commit merely because they are staged together.
 
 Follow the configured approval policy. Under `manual_all`, every transition needs explicit approval:

@@ -628,6 +628,122 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "write-role completion reports require commit_sha and changed_files",
         )
 
+    @staticmethod
+    def _scoped_write_report(changed: list[str]) -> tuple[JsonObject, JsonObject]:
+        report: JsonObject = {
+            "dispatch_id": "dispatch-123",
+            "ticket": "#633",
+            "role": "developer",
+            "outcome": "completed",
+            "output": "done",
+            "commit_sha": "a" * 40,
+            "changed_files": changed,
+            "checks_run": [{"command": "true", "result": "pass", "evidence": "passed"}],
+            "risks": "none",
+            "blockers": "none",
+            "next_coordinator_action": "accept",
+            "report_language": "ru",
+        }
+        dispatch: JsonObject = {
+            "dispatch_id": "dispatch-123",
+            "ticket": "#633",
+            "role": "developer",
+            "verification_commands": ["true"],
+            "write_paths": ["services/a.py", "docs/**"],
+        }
+        return report, dispatch
+
+    def test_only_a_developer_report_may_change_files_outside_write_paths(
+        self,
+    ) -> None:
+        report, dispatch = self._scoped_write_report(["services/b.py"])
+
+        coordinator._validate_report(
+            report, dispatch, {"mode": "write", "name": "developer"}
+        )
+        self.assertEqual(
+            reports.report_scope_warnings(report, dispatch), ["services/b.py"]
+        )
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "must remain inside the approved scope"
+        ):
+            coordinator._validate_report(
+                report, dispatch, {"mode": "write", "name": "conflict-resolver"}
+            )
+
+    def test_scope_matching_follows_the_glob_semantics_of_write_paths(self) -> None:
+        report, dispatch = self._scoped_write_report(
+            ["services/a.py", "docs/guide/intro.md"]
+        )
+        dispatch["write_paths"] = ["services/*.py", "docs/**"]
+
+        self.assertEqual(reports.report_scope_warnings(report, dispatch), [])
+        self.assertEqual(
+            commit_plan.paths_outside_scope(
+                [{"expected_paths": ["services/a.py", "tools/x.py", "tools/x.py"]}],
+                ["services/*.py"],
+            ),
+            ["tools/x.py"],
+        )
+        self.assertEqual(
+            commit_plan.paths_outside_scope([{"expected_paths": ["tools/x.py"]}], None),
+            [],
+        )
+
+    def test_absolute_changed_files_are_refused_even_for_a_developer(self) -> None:
+        report, dispatch = self._scoped_write_report(["/etc/passwd"])
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "must remain inside the repository"
+        ):
+            coordinator._validate_report(
+                report, dispatch, {"mode": "write", "name": "developer"}
+            )
+
+    def test_checkpoint_changed_files_outside_write_paths_are_still_refused(
+        self,
+    ) -> None:
+        _, dispatch = self._scoped_write_report([])
+        checkpoint: JsonObject = {
+            "dispatch_id": "dispatch-123",
+            "commit_sha": "a" * 40,
+            "changed_files": ["services/b.py"],
+            "remaining_definition_of_done": "none",
+            "passing_checks": "none",
+            "risks": "none",
+            "blockers": "none",
+            "context_package_id": "pkg",
+        }
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError,
+            "checkpoint changed_files must remain inside the approved scope",
+        ):
+            reports._validate_checkpoint(
+                checkpoint,
+                dispatch,
+                {"mode": "write", "name": "developer"},
+                self.repo,
+                None,
+                self.state_dir,
+                {},
+            )
+
+    def test_decision_packet_cli_accepts_a_commit_plan_file(self) -> None:
+        parsed = coordinator.parser().parse_args(
+            [
+                "batch",
+                "decision-packet",
+                "--batch",
+                "b1",
+                "--commit-plan-file",
+                "plan.json",
+            ]
+        )
+
+        self.assertIs(parsed.handler, coordinator.decision_packet)
+        self.assertEqual(parsed.commit_plan_file, "plan.json")
+
     def test_commit_plan_is_not_checked_against_git_without_a_repository(self) -> None:
         # Without a repository there is no history to map commits against: validation must not
         # reach the Git-backed commit_map check (it used to fail on an unbound commit).
@@ -8146,9 +8262,13 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
     # -- commit plan pinning and divergence (issue #478) --------------------------------------
 
-    def _plan_batch(self, items: list[str]) -> JsonObject:
+    def _plan_batch(
+        self, items: list[str], allowed: list[str] | None = None
+    ) -> JsonObject:
         plan = self._batch_plan()
         plan["definition_of_done"] = items
+        if allowed is not None:
+            plan["allowed_path"] = allowed
         with mock.patch.object(self, "_batch_plan", return_value=plan):
             return self._create_batch()
 
@@ -8610,8 +8730,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._start(developer_id)
         return brief
 
-    def _manual_developer(self, items: list[str]) -> JsonObject:
-        batch_id = self._plan_batch(items)["batch_id"]
+    def _manual_developer(
+        self, items: list[str], allowed: list[str] | None = None
+    ) -> JsonObject:
+        batch_id = self._plan_batch(items, allowed)["batch_id"]
         self._accepted_architect(batch_id)
         brief: JsonObject = self._dispatch(batch_id, "developer")["brief"]
         self._start(brief["dispatch_id"])
@@ -8795,6 +8917,159 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             "only a recorded review warning, a not-covered definition-of-done item",
         ):
             self._override("looks fine")
+
+    def _out_of_scope_report(self, brief: JsonObject) -> tuple[JsonObject, str]:
+        """A clean one-commit report whose change, services/b.py, lies outside services/a.py."""
+        commits, changed = self._commits("b")
+        self.assertEqual(changed, ["services/b.py"])
+        return self._developer_report(brief, commits[-1], changed), commits[-1]
+
+    def test_out_of_scope_developer_report_is_recorded_and_shown_as_a_scope_warning(
+        self,
+    ) -> None:
+        brief = self._manual_developer(["one"], ["services/a.py"])
+        report, _ = self._out_of_scope_report(brief)
+
+        submitted = self._submit(brief["dispatch_id"], report)
+
+        self.assertEqual(submitted["state"], "reported")
+        packet = coordinator.decision_packet(
+            self._args(batch=self.batch_id, dispatch=None)
+        )
+        self.assertEqual(packet["scope_warnings"], ["services/b.py"])
+
+    def test_in_scope_developer_report_has_no_scope_warning(self) -> None:
+        brief = self._manual_developer(["one"], ["services/**"])
+        report, _ = self._out_of_scope_report(brief)
+        self._submit(brief["dispatch_id"], report)
+
+        packet = coordinator.decision_packet(
+            self._args(batch=self.batch_id, dispatch=None)
+        )
+        decided = self._decide(self.batch_id, "accept")
+
+        self.assertEqual(packet["scope_warnings"], [])
+        self.assertNotIn("scope_warnings", decided["coordinator_decisions"][-1])
+
+    def test_out_of_scope_report_refuses_accept_and_takes_override_with_a_note(
+        self,
+    ) -> None:
+        brief = self._manual_developer(["one"], ["services/a.py"])
+        report, candidate = self._out_of_scope_report(brief)
+        self._submit(brief["dispatch_id"], report)
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError,
+            r"outside the approved scope \['services/b.py'\]",
+        ) as caught:
+            self._decide(self.batch_id, "accept")
+        self.assertIn("override-warning", caught.exception.remedy)
+        for note in (None, "none", " "):
+            with self.subTest(note=note):
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError, "requires a recorded note"
+                ):
+                    self._override(note)
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "requires approved-by"
+        ):
+            coordinator.decide_batch(
+                self._args(
+                    batch=self.batch_id,
+                    decision="override-warning",
+                    note="b.py is the shared helper",
+                    approved_by=None,
+                    approved_at=None,
+                )
+            )
+
+        decided = self._override("b.py is the shared helper")
+
+        decision = decided["coordinator_decisions"][-1]
+        self.assertEqual(decision["decision"], "override-warning")
+        self.assertEqual(decision["scope_warnings"], ["services/b.py"])
+        self.assertEqual(decided["next_action"], "risk-assessment")
+        [record] = decided["carried_items"]
+        self.assertEqual(record["files"], ["services/b.py"])
+        self._assess(self.batch_id, candidate, ["services/b.py"])
+        review = self._dispatch(self.batch_id, "code-review", candidate=candidate)
+        [item] = review["brief"]["carried_items"]["coordinator-finding"]
+        self.assertEqual(item["files"], ["services/b.py"])
+
+    def test_policy_never_auto_accepts_an_out_of_scope_developer_report(self) -> None:
+        for policy in ("low_risk", "milestone", "auto"):
+            with self.subTest(policy=policy):
+                self._reset()
+                self._patch_config(approval_policy=policy, low_risk_paths=["**"])
+                batch_id = self._plan_batch(["one"], ["services/a.py"])["batch_id"]
+                architect = self._dispatch(batch_id, "architect")["brief"]
+                self._start(architect["dispatch_id"])
+                self._submit(
+                    architect["dispatch_id"],
+                    self._base_report(architect, "architect"),
+                )
+                developer_id = self._batch_record(batch_id)["dispatches"][-1][
+                    "dispatch_id"
+                ]
+                brief = coordinator._read_object(
+                    self._records() / "dispatches" / f"{developer_id}.json",
+                    "dispatch",
+                )
+                self._start(developer_id)
+                report, _ = self._out_of_scope_report(brief)
+
+                result = self._submit(developer_id, report)
+
+                self.assertNotIn("auto_accepted", result)
+                self.assertNotIn(
+                    "decision", self._batch_record(batch_id)["dispatches"][-1]
+                )
+
+    def test_absolute_or_parent_changed_files_are_still_refused_on_submit(self) -> None:
+        brief = self._manual_developer(["one"], ["**"])
+        report, _ = self._out_of_scope_report(brief)
+        report["changed_files"] = ["../escape.py"]
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "must remain inside the repository"
+        ):
+            self._submit(brief["dispatch_id"], report)
+
+    def _architect_accept_with_plan(
+        self, allowed: list[str], entries: list[JsonObject]
+    ) -> tuple[JsonObject, JsonObject]:
+        batch_id = self._plan_batch(["one", "two", "three"], allowed)["batch_id"]
+        self._reported_architect(batch_id)
+        packet = coordinator.decision_packet(
+            self._args(
+                batch=batch_id, dispatch=None, commit_plan_file=self._plan_file(entries)
+            )
+        )
+        decided = self._decide(
+            batch_id, "accept", commit_plan_file=self._plan_file(entries)
+        )
+        return packet, decided
+
+    def test_architect_plan_outside_allowed_paths_is_accepted_with_a_scope_warning(
+        self,
+    ) -> None:
+        entries = [self._plan_entry("first", [1, 2]), self._plan_entry("second", [3])]
+
+        packet, decided = self._architect_accept_with_plan(["docs/**"], entries)
+
+        self.assertEqual(packet["scope_warnings"], ["services/**"])
+        self.assertEqual(
+            decided["coordinator_decisions"][-1]["scope_warnings"], ["services/**"]
+        )
+        self.assertEqual(decided["commit_plan"], entries)
+
+    def test_architect_plan_inside_allowed_paths_has_no_scope_warning(self) -> None:
+        entries = [self._plan_entry("first", [1, 2]), self._plan_entry("second", [3])]
+
+        packet, decided = self._architect_accept_with_plan(["services/**"], entries)
+
+        self.assertEqual(packet["scope_warnings"], [])
+        self.assertNotIn("scope_warnings", decided["coordinator_decisions"][-1])
 
     def test_decision_packet_shows_dod_coverage_and_divergence(self) -> None:
         brief = self._manual_developer(self.FIVE_ITEMS)

@@ -13,6 +13,7 @@
 
 - Backend-оркестрация: shared Context Package, у которого изменился, удалён или отозван frozen источник памяти из `memory.pointers`, больше не переиспользуется. `dispatch create` регистрирует новый пакет с актуальными указателями вместо отказа «Context Package is stale», а старый пакет остаётся неизменным. Если и новый пакет не свежий, ошибка называет путь, ожидаемый и фактический `source_hash` и предлагает `harness memory rebuild .` или `--no-memory` (#636).
 - `qa run` снимает lease, запись очереди и состояние dispatch после любого сбоя, наступившего после взятия lease, а отказ доступа записывает попыткой (`qa-lane/attempts`, стадия `access`) до постановки в очередь. Сбои подготовки clean-room checkout в `gate_runner` теперь `GateRunnerError` (#617).
+- Backend-оркестрация: выход за `allowed_paths` стал предупреждением с approval, а не отказом. Completed-отчёт developer с `changed_files` вне `write_paths` записывается, `batch decision-packet` показывает `scope_warnings`, `accept` отклоняется, а `override-warning` с `--note` и `--approved-by` фиксирует предупреждение в решении и передаёт его в code-review brief как проверяемый пункт; policy такой отчёт не принимает. Принятие architect-плана с `expected_paths` вне `allowed_paths` проходит с теми же `scope_warnings`; чтобы увидеть их до решения, `batch decision-packet` принимает `--commit-plan-file` (#633).
 
 ## [1.3.0] - 2026-10-06
 
