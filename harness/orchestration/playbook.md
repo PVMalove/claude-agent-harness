@@ -342,9 +342,11 @@ Package ID and required gates) and writes no brief. It registers the shared Cont
 would pin, so the package ID is part of what the human sees. `dispatch create` with an explicit
 approval must pass that digest as `--transition-digest`; the coordinator recomputes the transition
 from the ledger and refuses on any difference, so a changed scope, candidate, role, verification
-command, reason category or Context Package needs a new proposal and a new approval. The digest is
-stored in the approval and in the immutable brief, together with the transition itself, and ledger
-validation re-derives it. A policy approval (`milestone`, `low_risk`, `auto`) is derived from the transition
+command, reason category or Context Package needs a new proposal and a new approval. A shared
+package whose frozen memory source changed since registration is not reused: the proposal
+registers a new package with current pointers, so an approval of the old one no longer matches.
+The digest is stored in the approval and in the immutable brief, together with the transition
+itself, and ledger validation re-derives it. A policy approval (`milestone`, `low_risk`, `auto`) is derived from the transition
 being created and binds to its own digest.
 
 With `approval_ttl_seconds` set, an `--approved-at` older than that (or dated in the future) is

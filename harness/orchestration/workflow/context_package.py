@@ -92,7 +92,9 @@ def _persist_context_package(
         ).hexdigest(),
         "selection_policy": "fts-type-quota-v1",
     }
-    reusable = _reusable_context_package(root, batch, package_base, snapshot, identity)
+    reusable = _reusable_context_package(
+        repo, root, batch, package_base, snapshot, identity
+    )
     if reusable is not None:
         return reusable
     if role != "shared":

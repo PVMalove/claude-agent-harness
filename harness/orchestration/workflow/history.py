@@ -320,6 +320,7 @@ def _context_package_tier(package: JsonObject) -> str:
 
 
 def _reusable_context_package(
+    repo: Path,
     root: Path,
     batch: JsonObject,
     base_commit: str,
@@ -331,6 +332,8 @@ def _reusable_context_package(
     A package is immutable and role-neutral. Architect and developer therefore share the base
     snapshot, and a resumed worker keeps its brief's exact package ID instead of rebuilding or
     re-reading discovery. Review gets a new package only once the candidate actually changes.
+    A package whose frozen memory source changed since registration is never reused: the caller
+    registers a new package with current pointers and the old one stays intact for its briefs.
     """
     for entry in reversed(batch.get("context_packages", [])):
         if (
@@ -345,8 +348,11 @@ def _reusable_context_package(
             or package.get("memory", {}).get("identity") != memory_identity
         ):
             continue
-        if package.get("role") == "shared":
-            return package
+        if package.get("role") != "shared":
+            continue
+        if _memory_pointer_mismatch(repo, package) is not None:
+            continue
+        return package
     return None
 
 
@@ -357,6 +363,50 @@ def _latest_context_package(root: Path, batch: JsonObject) -> JsonObject | None:
     package = _load_context_package(root, entries[-1]["context_package_id"])
     _validate_context_package(root, batch, package)
     return package
+
+
+def _memory_pointer_mismatch(repo: Path, package: JsonObject) -> JsonObject | None:
+    """The first frozen memory pointer whose authoritative source no longer matches, if any.
+
+    `actual_source_hash` is None when the source is unavailable, revoked or unreadable; `path`
+    is None too when the memory policy itself cannot be read. The derived index is never
+    consulted; only the source bytes decide.
+    """
+    pointers = package.get("memory", {}).get("pointers", [])
+    if not pointers:
+        return None
+    current: object = None
+    try:
+        canonical, _, policy = memory_context(repo)
+        permitted = set(allowed_paths(canonical, policy)) if policy.active else set()
+        for pointer in pointers:
+            current = pointer
+            relative = pointer["path"]
+            document = (
+                read_source(canonical, relative, policy)
+                if relative in permitted
+                else None
+            )
+            if (
+                document is None
+                or document.source_type != pointer["source_type"]
+                or document.source_hash != pointer["source_hash"]
+            ):
+                return {
+                    "path": relative,
+                    "expected_source_hash": pointer["source_hash"],
+                    "actual_source_hash": document.source_hash
+                    if document is not None
+                    else None,
+                }
+    except (OSError, ValueError, KeyError, TypeError):
+        known = current if isinstance(current, dict) else {}
+        return {
+            "path": known.get("path"),
+            "expected_source_hash": known.get("source_hash"),
+            "actual_source_hash": None,
+        }
+    return None
 
 
 def _context_package_freshness(
@@ -384,37 +434,15 @@ def _context_package_freshness(
     fresh = package["base_commit"] == current_base and (
         current_candidate is None or package["candidate_commit"] == current_candidate
     )
-    pointers = package.get("memory", {}).get("pointers", [])
-    memory_fresh = True
-    if pointers:
-        try:
-            canonical, _, policy = memory_context(repo)
-            permitted = (
-                set(allowed_paths(canonical, policy)) if policy.active else set()
-            )
-            for pointer in pointers:
-                relative = pointer["path"]
-                document = (
-                    read_source(canonical, relative, policy)
-                    if relative in permitted
-                    else None
-                )
-                if (
-                    document is None
-                    or document.source_type != pointer["source_type"]
-                    or document.source_hash != pointer["source_hash"]
-                ):
-                    memory_fresh = False
-                    break
-        except (OSError, ValueError, KeyError, TypeError):
-            memory_fresh = False
-    fresh = fresh and memory_fresh
+    mismatch = _memory_pointer_mismatch(repo, package)
+    fresh = fresh and mismatch is None
     return {
         **(
             {
-                "memory_diagnostic": "frozen memory source changed, unavailable or revoked"
+                "memory_diagnostic": "frozen memory source changed, unavailable or revoked",
+                "memory_mismatch": mismatch,
             }
-            if not memory_fresh
+            if mismatch is not None
             else {}
         ),
         "context_package_id": package["context_package_id"],
