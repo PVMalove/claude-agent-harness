@@ -5175,6 +5175,98 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         self.assertEqual(third["next_action"], "developer")
 
+    def test_issue_443_an_abandoned_dead_end_resumes_in_a_superseding_batch(
+        self,
+    ) -> None:
+        """Regression for #443 (issue #506): a review dead end forced an abandon, and the work
+        restarted with a new architect and commits cherry-picked by hand. A superseding batch
+        resumes from abandoned.last_accepted: no architect dispatch, no cherry-pick, and risk
+        assessment, code-review and QA run again on the new candidate."""
+        blocker = {
+            "severity": "blocker",
+            "summary": "data loss",
+            "evidence": "services/x.py:1",
+        }
+        source = cast(str, self._create_batch()["batch_id"])
+        self._reported_architect(source)
+        entries = [self._plan_entry("route-retries", [1])]
+        self._decide(source, "accept", commit_plan_file=self._plan_file(entries))
+        candidate = self._accepted_candidate(source)
+        self._reported_review(source, candidate, standards=("blocker", [blocker]))
+        exhausted = {"max_developer_retries": 0}
+        with mock.patch.object(decisions, "_retry_policy", return_value=exhausted):
+            with self.assertRaisesRegex(
+                coordinator.CoordinatorError, "budget is exhausted"
+            ):
+                self._decide(source, "retry")
+            self._decide(source, "abandon", reason="review blocker, no retry left")
+        abandoned = self._batch_record(source)
+        owned = {
+            source,
+            *(item["dispatch_id"] for item in abandoned["dispatches"]),
+            *(item["risk_assessment_id"] for item in abandoned["risk_assessments"]),
+        }
+        source_files = {
+            path: path.read_bytes()
+            for path in self._records().rglob("*")
+            if path.is_file() and any(owned_id in path.name for owned_id in owned)
+        }
+        audit_files = {
+            path: path.read_bytes() for path in (self._records() / "audit").glob("*")
+        }
+
+        batch_id = cast(str, self._supersede(source)["batch_id"])
+        coordinator.approve_batch(self._args(batch=batch_id, **self._approval()))
+        developer = self._dispatch(batch_id, "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        fix, changed = self._developer_commit("fix")
+        self._submit(
+            developer["dispatch_id"],
+            self._superseding_initial_report(developer, candidate, fix, changed),
+        )
+        self._decide(batch_id, "accept")
+        self._assess(batch_id, fix, changed)
+        review = self._reported_review(batch_id, fix)
+        self._decide(batch_id, "accept")
+        self._reported_qa(batch_id, fix)
+        resumed = self._decide(batch_id, "accept")
+
+        self.assertEqual(
+            (
+                developer["snapshot_commit"],
+                developer["worktree"],
+                developer["commit_plan"],
+            ),
+            (candidate, str(self.worktree), entries),
+        )
+        self.assertEqual(
+            [item["role"] for item in resumed["dispatches"]],
+            ["developer", "code-review", "qa"],
+            "no architect dispatch runs again",
+        )
+        self.assertEqual(resumed["next_action"], "publish")
+        self.assertEqual(
+            _git(self.worktree, "rev-list", f"{candidate}..HEAD").split(),
+            [fix],
+            "the new candidate adds one commit on top of the old one; nothing was cherry-picked",
+        )
+        self.assertEqual(review["candidate_commit"], fix)
+        self.assertEqual(
+            [item["candidate_commit"] for item in resumed["risk_assessments"]], [fix]
+        )
+        self.assertFalse(
+            owned & {item["risk_assessment_id"] for item in resumed["risk_assessments"]}
+        )
+        self.assertEqual(
+            [item["decision"] for item in resumed["coordinator_decisions"]],
+            ["supersede", "accept", "accept", "accept"],
+        )
+        for field in ("carried_items", "candidate_registrations", "abandoned"):
+            self.assertNotIn(field, resumed)
+        self.assertTrue(source_files and audit_files)
+        for path, content in {**source_files, **audit_files}.items():
+            self.assertEqual(path.read_bytes(), content, path.name)
+
     def test_a_forced_developer_retry_records_the_developer_retry_route(self) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])
