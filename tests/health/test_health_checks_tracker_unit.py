@@ -119,6 +119,162 @@ def test_a_stalled_git_call_fails_reachability(
     assert str(tracker._ONLINE_TIMEOUT_SECONDS) in result.message
 
 
+_ORIGIN_WITH_SECRET = (
+    "https://ci-user:fake-secret-0042@gitlab.example.test:4443/group/sub/project.git"
+)
+
+
+@pytest.mark.parametrize(
+    ("stderr", "cause"),
+    [
+        (
+            "fatal: could not read Username for 'https://gitlab.example.test:4443': "
+            "terminal prompts disabled\n",
+            "credentials",
+        ),
+        (
+            "remote: HTTP Basic: Access denied\n"
+            f"fatal: Authentication failed for '{_ORIGIN_WITH_SECRET}/'\n",
+            "credentials",
+        ),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': "
+            "The requested URL returned error: 403\n",
+            "credentials",
+        ),
+        ("error: RPC failed; HTTP 401 curl 22 Unauthorized\n", "credentials"),
+        ("git@gitlab.example.test: Permission denied (publickey).\n", "credentials"),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': SSL certificate problem: "
+            "unable to get local issuer certificate\n",
+            "tls",
+        ),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': "
+            "CONNECT tunnel failed, response 403\n",
+            "network",
+        ),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': "
+            "Could not resolve host: gitlab.example.test\n",
+            "network",
+        ),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': Failed to connect to "
+            "gitlab.example.test port 4443 after 0 ms: Connection refused\n",
+            "network",
+        ),
+        (f"fatal: repository '{_ORIGIN_WITH_SECRET}/' not found\n", None),
+        ("", None),
+    ],
+)
+def test_reachability_cause_classifies_git_ls_remote_stderr(
+    stderr: str, cause: str | None
+) -> None:
+    """Проверить, что stderr git ls-remote сводится к ключу причины, а не к своему тексту."""
+    assert tracker._reachability_cause(stderr) == cause
+
+
+def test_reachability_runs_git_in_the_c_locale_and_keeps_the_success_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Проверить, что git ls-remote запускается с LC_ALL=C, а успешный результат не изменился."""
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/git")
+    seen: dict[str, object] = {}
+
+    def _fake_run(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        """Зафиксировать argv и окружение вызова git."""
+        seen["argv"] = argv
+        seen["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(argv, 0, "abc\tHEAD\n", "")
+
+    monkeypatch.setattr(tracker, "_run", _fake_run)
+
+    result = tracker.check_reachability(_online_context(tmp_path))
+
+    assert seen["argv"] == ["/usr/bin/git", "ls-remote", "origin"]
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["LC_ALL"] == "C"
+    assert result.status == "ok"
+    assert result.message == "origin достижим (git ls-remote)"
+    assert result.fix is None
+
+
+@pytest.mark.parametrize(
+    ("stderr", "cause_words"),
+    [
+        (
+            f"fatal: Authentication failed for '{_ORIGIN_WITH_SECRET}/'\n",
+            "учётных данных",
+        ),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': SSL certificate problem: "
+            "self-signed certificate\n",
+            "TLS",
+        ),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': "
+            "Could not resolve host: gitlab.example.test\n",
+            "прокси или сети",
+        ),
+    ],
+)
+def test_a_classified_failure_names_its_cause_without_echoing_stderr(
+    stderr: str,
+    cause_words: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Проверить, что сбой с распознанной причиной называет её, даёт fix и не выводит stderr."""
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(
+        tracker,
+        "_run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 128, "", stderr),
+    )
+
+    result = tracker.check_reachability(_online_context(tmp_path))
+
+    assert result.status == "fail"
+    assert cause_words in result.message
+    assert result.fix is not None
+    for leaked in ("ci-user", "fake-secret-0042", "group/sub/project"):
+        assert leaked not in result.message
+        assert leaked not in result.fix.text
+        assert leaked not in (result.fix.command or "")
+
+
+def test_an_unclassified_failure_keeps_the_generic_message_with_a_manual_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Проверить, что сбой без распознанной причины сохраняет прежнее сообщение и советует
+    выполнить git ls-remote origin вручную."""
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(
+        tracker,
+        "_run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 128, "", f"fatal: repository '{_ORIGIN_WITH_SECRET}/' not found\n"
+        ),
+    )
+
+    result = tracker.check_reachability(_online_context(tmp_path))
+
+    assert result.status == "fail"
+    assert (
+        result.message == "origin недостижим: git ls-remote origin завершился с ошибкой"
+    )
+    assert result.fix is not None
+    assert result.fix.command == "git ls-remote origin"
+    assert "fake-secret-0042" not in result.fix.text
+
+
 # --- tracker.labels: pagination beyond gh/glab's own default page size -------------------------
 #
 # `gh label list`/`glab label list` cap at their own default page (30 for gh, with no single flag
