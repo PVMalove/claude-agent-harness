@@ -148,6 +148,9 @@ lifecycle — в [playbook.md](./playbook.md), границы ролей — в 
 | `auto` | Автоматический путь от `batch approve` до принятого publish. Политика согласует batch, каждый dispatch (включая publish, risk triggers, `bypass-rerun` и rebase target) и плановое продолжение. Для отчёта, который цепочка не приняла, сессия запускает `batch auto-decide`: политика принимает отчёт или выбирает retry по `route_preview`. Каждое решение пишется как `policy:auto` с evidence в `batch.auto_decisions`. Закрытый список остановок пишется в `batch.auto_stop`; после остановки каждый шаг согласует человек. Итоговый отчёт выводит `batch auto-report`. PR открывает только человек, auto-merge запрещён. Требует `human_approval_gate: trusted` и `worker_attestation_required: true`. |
 
 Политика фиксируется в batch при создании; её смена не влияет на уже созданные batch.
+Исключение — `auto`: политика согласует шаги, только пока конфигурация проекта и план
+batch выбирают `auto` и в batch нет `auto_stop`. В другом случае каждый шаг такого batch
+согласует человек.
 
 ### `tool_policy`
 

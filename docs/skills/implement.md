@@ -71,7 +71,8 @@ architect и developer (включая publish) решение — `retry` с de
 `block`. Для read-only роли code-review, qa или verification `--reason-category block-bypass`
 передаётся в `batch decision-packet`, а когда его `route_preview.retry.route` равен `bypass-rerun`,
 — в `batch decide --decision retry`: та же стадия повторяется на том же SHA без нового candidate и
-без расхода developer retry, а новый dispatch всегда требует явного approval. Report, который вместо
+без расхода developer retry, а новый dispatch требует явного approval при любой `approval_policy`,
+кроме `auto`. Report, который вместо
 этого остановился с `tooling_blocker`, сначала проверяется: его `command` законна по brief (зона и
 tool policy), а `message` её отклоняет. Если это ложное срабатывание, заведите или переиспользуйте
 bug-тикет на инструмент через CLI трекера (инструмент, команда, сообщение, dispatch ID), укажите его

@@ -168,7 +168,8 @@ and record the violation in `--note`. For an architect or developer (publish inc
 or verification role, pass `--reason-category block-bypass` to `batch decision-packet` and, once its
 `route_preview.retry.route` is `bypass-rerun`, to `batch decide --decision retry`: the same stage
 re-runs on the same SHA with no new candidate and no developer retry spent, and its new dispatch
-always needs explicit approval. A report that stops with `tooling_blocker` instead is confirmed
+needs explicit approval under every `approval_policy` except `auto`. A report that stops with
+`tooling_blocker` instead is confirmed
 before its retry: check that its `command` is legitimate under the brief (allowed paths and tool policy) and
 that its `message` refuses that command. For a false positive, file or reuse a bug ticket against
 the tool through the tracker CLI (tool, command, message, dispatch ID), name the ticket in `--note`,

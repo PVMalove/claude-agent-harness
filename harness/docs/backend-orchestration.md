@@ -1110,7 +1110,8 @@ batch: remedy предлагает снова передать в `--supersedes`
 - `rebase_target_commit` — эта base, если `start_commit` её не содержит. Тогда первый developer —
   developer-retry маршрута rebase внутри retry (#504): он перебазирует коммиты на target, исправляет
   поверх и сдаёт пары `rebased_from`, а `report submit` возвращает `rebase_check`. Такой dispatch
-  всегда требует явного approval с transition digest. Target остаётся в brief, пока продолжаемый
+  требует явного approval с transition digest при любой `approval_policy`, кроме `auto`. Target
+  остаётся в brief, пока продолжаемый
   snapshot его не содержит, например после retry ещё не перебазированного отчёта.
 
 Что не переносится никогда: risk assessment, code-review, QA, carried items, candidate registrations
@@ -1219,7 +1220,8 @@ python .harness/orchestration/coordinator.py --repo . batch auto-decide --batch 
 суждения:
 
 - `--commit-plan-file` — план architect-а. Политика закрепляет план, если он лежит внутри
-  `allowed_paths` и покрывает все пункты DoD; иначе путь останавливается.
+  `allowed_paths` и покрывает все пункты DoD; иначе путь останавливается. Если команда не может
+  прочитать файл как JSON-объект, она отказывает и ничего не пишет.
 - `--findings-file` — находки координатора для принятого отчёта developer-а.
 - `--bug-ticket` — bug-тикет на инструмент для `tooling-retry`. Без него команда отказывает и
   ничего не пишет.
