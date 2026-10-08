@@ -573,6 +573,11 @@ def _latest_registered_verification_candidate(repo: Path, batch: JsonObject) -> 
 
 
 def _accepted_architect(batch: JsonObject) -> bool:
+    """Whether the batch has an accepted architect: its own, or the one a superseding batch
+    carried by reference from the abandoned batch with the same definition of done (issue #506)."""
+    link = batch.get("supersedes")
+    if isinstance(link, dict) and isinstance(link.get("architect"), dict):
+        return True
     return any(
         item.get("role") == "architect"
         and item.get("state") == "reported"

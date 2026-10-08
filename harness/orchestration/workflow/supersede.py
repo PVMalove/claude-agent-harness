@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import utils
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -25,8 +26,10 @@ from harness.orchestration.core.utils import (
     _safe_id,
 )
 from harness.orchestration.ledger.ledger_ops import _load_batch, _records_root
+from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.approval import _approval
 from harness.orchestration.workflow.history import (
+    _pending_report,
     _require_route,
     _validate_batch_integrity,
 )
@@ -121,6 +124,46 @@ def _require_same_work(source: JsonObject, record: JsonObject) -> None:
             )
 
 
+def _architect_reference(root: Path, source: JsonObject) -> JsonObject | None:
+    """The accepted architect of ``source`` by reference, or ``None`` when it has none.
+
+    A source that carried its architect from a batch it superseded hands that reference on, so a
+    chain of superseding batches keeps pointing at the one accepted architect report.
+    """
+    entry = next(
+        plan_rules.decided_entries(source, "architect", {"accept", "override-warning"}),
+        None,
+    )
+    if entry is None:
+        link = source.get("supersedes")
+        carried = link.get("architect") if isinstance(link, dict) else None
+        return dict(carried) if isinstance(carried, dict) else None
+    _pending_report(root, source, entry)  # the referenced report is intact
+    return {
+        "batch_id": source["batch_id"],
+        "dispatch_id": entry["dispatch_id"],
+        "report": entry["report"],
+        "report_sha256": entry["report_sha256"],
+        "commit_plan_sha256": plan_rules.accepted_plan_sha256(source),
+    }
+
+
+def _carried_plan(source: JsonObject, architect: JsonObject) -> list[JsonObject] | None:
+    """The commit plan pinned on the carried architect accept (#478), copied as recorded."""
+    digest = architect.get("commit_plan_sha256")
+    if not isinstance(digest, str):
+        return None
+    plan = source.get("commit_plan")
+    if not isinstance(plan, list) or plan_rules.plan_sha256(plan) != digest:
+        raise CoordinatorError(
+            f"batch {source.get('batch_id')} commit_plan does not match the plan pinned on its "
+            "architect accept",
+            remedy="the abandoned batch's commit_plan diverged from its architect accept -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    return [dict(entry) for entry in plan]
+
+
 def attach(
     repo: Path,
     root: Path,
@@ -134,25 +177,38 @@ def attach(
     ``abandoned``, without an ``abandoned.last_accepted`` object, or of another ticket or issue
     branch. Sets ``record["supersedes"]`` and the one ``supersede`` coordinator decision, and returns
     the ``decision`` detail of the batch transition audit record. Runs under the ledger lock.
+
+    With the same definition of done, the source's accepted architect is carried by reference and
+    its pinned commit plan is copied, so the batch starts at the developer stage; with another
+    definition of done nothing is carried and the architect stage runs again.
     """
     source = _load_source(root, source_id)
     last = _last_accepted(source)
     _require_same_work(source, record)
+    same_done = source.get("definition_of_done") == record["definition_of_done"]
+    architect = _architect_reference(root, source) if same_done else None
     link: JsonObject = {
         "batch_id": source["batch_id"],
         "approved_by": approval["approved_by"],
         "approved_at": approval["approved_at"],
         "last_accepted": dict(last),
-        "definition_of_done_matches": source.get("definition_of_done")
-        == record["definition_of_done"],
+        "definition_of_done_matches": same_done,
+        "architect": architect,
     }
+    if architect is not None:
+        plan = _carried_plan(source, architect)
+        if plan is not None:
+            record["commit_plan"] = plan
     record["supersedes"] = link
+    if architect is not None:
+        # The developer stage is the only next action: no architect dispatch is allowed.
+        record["next_action"] = "developer"
     moment = utils._now()
     routing: JsonObject = {
         "route": _require_route(ROUTE),
         "previous_role": last.get("role"),
         "reason_category": None,
-        "next_role": "architect",
+        "next_role": "developer" if architect is not None else "architect",
         "next_action": record.get("next_action"),
         "candidate_commit": None,
         "superseded_batch_id": source["batch_id"],
@@ -177,6 +233,7 @@ def attach(
         "evidence": {
             "batch_id": source["batch_id"],
             "last_accepted": link["last_accepted"],
+            "architect": architect,
         },
         "approver": {"kind": "human", "name": approval["approved_by"]},
         "approved_at": approval["approved_at"],
