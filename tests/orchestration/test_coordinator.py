@@ -13593,6 +13593,33 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self._auto_dispatch("developer")
         self.assertIn("--approved-by", refused.exception.remedy)
 
+    def test_an_unreadable_commit_plan_file_is_refused_without_a_stop(self) -> None:
+        """A missing or invalid plan file is a session input error, not a failed gate."""
+        self._auto_batch(allowed_path=["services/**"])
+        architect = self._auto_dispatch("architect")
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"],
+            self._base_report(architect, "architect", risks="an own plan"),
+        )
+        broken = workspace._prepare_agent_inbox(self.repo) / "broken-plan.json"
+        broken.write_text("{not json", encoding="utf-8")
+        for plan_file in (str(broken.with_name("missing-plan.json")), str(broken)):
+            with (
+                self.subTest(plan_file=plan_file),
+                self.assertRaises(coordinator.CoordinatorError),
+            ):
+                self._auto_decide(commit_plan_file=plan_file)
+            stored = self._batch_record(self.batch_id)
+            self.assertNotIn("auto_stop", stored)
+            self.assertNotIn("decision", stored["dispatches"][-1])
+
+        decided = self._auto_decide(
+            commit_plan_file=self._plan_file([self._plan_entry("first", [1])])
+        )
+
+        self.assertEqual(decided["decision"], "accept")
+
     def test_auto_report_renders_a_live_report_until_one_is_recorded(self) -> None:
         self._auto_batch()
         architect = self._auto_dispatch("architect")

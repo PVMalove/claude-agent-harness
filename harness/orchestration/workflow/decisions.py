@@ -886,9 +886,18 @@ def _pinned_commit_plan(
 def _read_commit_plan(
     repo: Path, batch: JsonObject, plan_file: str
 ) -> list[JsonObject]:
-    document = _read_object(
+    return _pin_commit_plan(batch, _commit_plan_document(repo, plan_file))
+
+
+def _commit_plan_document(repo: Path, plan_file: str) -> JsonObject:
+    """The commit plan file as a JSON object; a path, read or syntax error is an input error."""
+    return _read_object(
         _agent_authored_file(repo, plan_file, "a commit plan"), "commit plan"
     )
+
+
+def _pin_commit_plan(batch: JsonObject, document: JsonObject) -> list[JsonObject]:
+    """The plan in ``document``, validated against the batch Definition of Done."""
     _reject_sensitive(document, "commit plan")
     return plan_rules.pinned_plan(document, batch["definition_of_done"])
 
