@@ -825,6 +825,86 @@ class ZoneFreeConfigHealthTests(unittest.TestCase):
                 )
 
 
+class AutoApprovalPolicyHealthTests(unittest.TestCase):
+    """``approval_policy: auto`` takes every path decision by policy (issue #643)."""
+
+    def _problems(self, policy: dict[str, object]) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "orchestration.json"
+            path.write_text(
+                json.dumps(
+                    {"access_policy": {"defaults": {"mode": "sandbox"}}, **policy}
+                )
+            )
+            return contract.health_problems(path, ROOT / "harness/orchestration/roles")
+
+    def test_auto_needs_a_trusted_gate_and_worker_attestation(self) -> None:
+        for policy, expected in (
+            ({"approval_policy": "auto"}, [contract.AUTO_ATTESTATION_PROBLEM]),
+            (
+                {"approval_policy": "auto", "worker_attestation_required": False},
+                [contract.AUTO_ATTESTATION_PROBLEM],
+            ),
+            (
+                {
+                    "approval_policy": "auto",
+                    "worker_attestation_required": True,
+                    "human_approval_gate": "tty",
+                },
+                [contract.AUTO_TTY_PROBLEM],
+            ),
+            (
+                {"approval_policy": "auto", "human_approval_gate": "tty"},
+                [contract.AUTO_TTY_PROBLEM, contract.AUTO_ATTESTATION_PROBLEM],
+            ),
+            (
+                {
+                    "approval_policy": "auto",
+                    "worker_attestation_required": True,
+                    "human_approval_gate": "trusted",
+                },
+                [],
+            ),
+        ):
+            with self.subTest(policy=policy):
+                self.assertEqual(self._problems(policy), expected)
+
+    def test_other_policies_keep_their_gate_and_attestation_choice(self) -> None:
+        for policy in ("manual_all", "milestone", "low_risk"):
+            with self.subTest(policy=policy):
+                self.assertEqual(
+                    self._problems(
+                        {
+                            "approval_policy": policy,
+                            "human_approval_gate": "tty",
+                            "worker_attestation_required": False,
+                        }
+                    ),
+                    [],
+                )
+
+    def test_the_schema_documents_the_auto_contract(self) -> None:
+        schema = json.loads(
+            (Path(contract.__file__).parent / "orchestration.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        [rule] = schema["allOf"]
+        self.assertEqual(rule["if"]["properties"]["approval_policy"], {"const": "auto"})
+        self.assertEqual(
+            rule["then"]["properties"],
+            {
+                "human_approval_gate": {"const": "trusted"},
+                "worker_attestation_required": {"const": True},
+            },
+        )
+        self.assertEqual(rule["then"]["required"], ["worker_attestation_required"])
+        description = schema["properties"]["approval_policy"]["description"]
+        for term in ("policy:auto", "auto_stop", "auto_report", "batch auto-report"):
+            with self.subTest(term=term):
+                self.assertIn(term, description)
+
+
 class AccessPolicyContractTests(unittest.TestCase):
     def test_modes_are_independent_of_transport(self) -> None:
         for mode in ("inherit", "sandbox", "unsandboxed"):

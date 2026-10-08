@@ -73,6 +73,12 @@ DEFAULT_ALLOWED_TOOLS = {
 }
 TOOL_POLICY_SECTIONS = ("modes", "roles")
 APPROVAL_POLICIES = {"manual_all", "milestone", "low_risk", "auto"}
+# `auto` takes every path decision by policy (issue #643), so it needs a project that can trust
+# what a worker reports about its own runtime and that does not demand a human on a terminal.
+AUTO_TTY_PROBLEM = "orchestration approval_policy 'auto' cannot be combined with human_approval_gate 'tty'"
+AUTO_ATTESTATION_PROBLEM = (
+    "orchestration approval_policy 'auto' requires worker_attestation_required true"
+)
 HUMAN_APPROVAL_GATES = {"trusted", "tty"}
 COMMUNICATION_POLICY_FIELDS = frozenset(
     {"agent_to_agent_language", "coordinator_report_language"}
@@ -1315,6 +1321,11 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
             "orchestration human_approval_gate must be one of: "
             + ", ".join(sorted(HUMAN_APPROVAL_GATES))
         )
+    if approval_policy == "auto":
+        if human_gate == "tty":
+            problems.append(AUTO_TTY_PROBLEM)
+        if config.get("worker_attestation_required", False) is not True:
+            problems.append(AUTO_ATTESTATION_PROBLEM)
     low_risk_zones = config.get("low_risk_zones")
     if low_risk_zones is not None and (
         not string_list(low_risk_zones) or not set(low_risk_zones).issubset(zones)

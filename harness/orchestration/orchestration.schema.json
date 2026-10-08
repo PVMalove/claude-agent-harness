@@ -12,6 +12,21 @@
       "backend_zones": {"maxProperties": 0}
     }}
   ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {"approval_policy": {"const": "auto"}},
+        "required": ["approval_policy"]
+      },
+      "then": {
+        "properties": {
+          "human_approval_gate": {"const": "trusted"},
+          "worker_attestation_required": {"const": true}
+        },
+        "required": ["worker_attestation_required"]
+      }
+    }
+  ],
   "properties": {
     "access_policy": {
       "type": "object",
@@ -142,7 +157,7 @@
     "approval_policy": {
       "enum": ["manual_all", "milestone", "low_risk", "auto"],
       "default": "manual_all",
-      "description": "Цель: контроль безопасности изменений. За что отвечает: политика человеческого согласования шагов оркестрации. Варианты: 'manual_all' (ручной аппрув на КАЖДЫЙ шаг, по умолчанию), 'milestone' (ручной аппрув только на ключевых вехах: QA, публикации, рисках), 'low_risk' (авто-продолжение для батчей, чей allowed_paths целиком лежит в low_risk_paths), 'auto' (координатор сам принимает чистые отчёты, включая QA, и готовит следующий dispatch для любых зон; ручными остаются публикация, риск-триггеры, findings и упавшие проверки; решение пишется как policy:auto)."
+      "description": "Цель: контроль безопасности изменений. За что отвечает: политика человеческого согласования шагов оркестрации. Варианты: 'manual_all' (ручной аппрув на КАЖДЫЙ шаг, по умолчанию), 'milestone' (ручной аппрув только на ключевых вехах: QA, публикации, рисках), 'low_risk' (авто-продолжение для батчей, чей allowed_paths целиком лежит в low_risk_paths), 'auto' (автоматический путь от batch approve до принятого publish: координатор сам согласует batch, каждый dispatch, включая publish, риск-триггеры, bypass-rerun и rebase target, плановое продолжение и решения batch auto-decide; каждое решение пишется как policy:auto с обоснованием и evidence в batch.auto_decisions; закрытый список остановок (budget-exhausted, integrity-failure, no-automatic-route) пишется в batch.auto_stop, после остановки каждый шаг снова согласует человек; итоговый отчёт пишется в batch.auto_report и выводится командой batch auto-report; PR открывает только человек, auto-merge запрещён; требует human_approval_gate 'trusted' и worker_attestation_required true)."
     },
     "human_approval_gate": {
       "enum": ["trusted", "tty"],
