@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import re
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
 from functools import partial
@@ -1405,11 +1406,13 @@ def _validate_report(
     base_commit: str | None = None,
     rebase_target: str | None = None,
     closure_base: str | None = None,
+    pre_chain_copies: Callable[[], set[str]] = set,
 ) -> None:
     """``rebase_target`` is set only for the developer report that clears a stale-base block: the
     candidate must contain that tip, and its own commits and files are measured from it, so
     upstream commits the rebase brought in are never attributed to the ticket. ``closure_base``
-    (``_closure_base``) is where a developer-retry's carried_item_closure counts commits from."""
+    (``_closure_base``) is where a developer-retry's carried_item_closure counts commits from,
+    without the ``pre_chain_copies`` (``rebase.pre_chain_copies``) above it."""
     _reject_sensitive(report, "completion report")
     if (
         not REPORT_FIELDS <= set(report)
@@ -1614,11 +1617,16 @@ def _validate_report(
                     )
                 if closure:
                     # An earlier attempt of the retry chain may have closed an item (issue #503).
+                    pre_chain = pre_chain_copies()
                     carried_items.check_closure_commits(
                         report,
-                        _commits_between(
-                            repo, rebase_target or closure_base or snapshot, resolved
-                        ),
+                        [
+                            sha
+                            for sha in _commits_between(
+                                repo, rebase_target or closure_base or snapshot, resolved
+                            )
+                            if sha not in pre_chain
+                        ],
                         partial(_candidate_commit, repo),
                     )
     if role["mode"] == "read-only" and commit_sha != "not applicable — read-only role":
@@ -1806,6 +1814,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             rebase.report_base(repo, root, batch, dispatch),
             _rebase_target(batch, dispatch),
             _closure_base(repo, root, batch, dispatch),
+            partial(rebase.pre_chain_copies, repo, root, batch, dispatch, report),
         )
         resolver_state.validate_report(repo, root, batch, dispatch, report)
         rebase_check = rebase.rebase_check(repo, report, dispatch)
