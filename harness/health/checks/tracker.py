@@ -323,6 +323,71 @@ def check_auth(context: HealthContext) -> CheckResult:
 
 # --- tracker.reachability ------------------------------------------------------------------------
 
+# The cause of a failed `git ls-remote origin`, matched against its stderr. git runs with LC_ALL=C,
+# because it translates its own messages through gettext. The order is the priority: a proxy that
+# answers CONNECT with 403 is a network problem, not rejected credentials. Only the cause key
+# leaves this table: stderr can carry the origin URL with userinfo or a token, so it never reaches
+# a message or a fix.
+_REACHABILITY_CAUSES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "network",
+        re.compile(
+            r"connect tunnel failed|could not resolve host|connection refused",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "tls",
+        re.compile(
+            r"ssl certificate problem|server certificate verification failed",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "credentials",
+        re.compile(
+            r"could not read username|terminal prompts disabled|authentication failed"
+            r"|permission denied \(publickey|returned error: 40[13]\b"
+            r"|\bHTTP(?:/[0-9.]+)?\s+40[13]\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+_REACHABILITY_MESSAGES: dict[str, str] = {
+    "credentials": "origin недостижим: нет учётных данных или они отклонены (git ls-remote origin)",
+    "tls": "origin недостижим: ошибка проверки TLS-сертификата (git ls-remote origin)",
+    "network": "origin недостижим: ошибка прокси или сети (git ls-remote origin)",
+}
+
+
+def _reachability_cause(stderr: str) -> str | None:
+    """The cause key of a failed `git ls-remote origin` from its stderr; None when unknown."""
+    for cause, pattern in _REACHABILITY_CAUSES:
+        if pattern.search(stderr):
+            return cause
+    return None
+
+
+def _reachability_fix(cause: str, context: HealthContext, target: _Target) -> Fix:
+    if cause == "credentials":
+        return Fix(
+            "настройте credential helper (git config credential.helper) или SSH-доступ к origin "
+            "для неинтерактивных процессов: git в них не запрашивает учётные данные"
+        )
+    if cause == "tls":
+        # RemoteLocation.host has no scheme, userinfo or path, only a non-default port.
+        origin = resolve_project_tracker(context.repo).origin
+        host = origin.host if origin is not None else target.host
+        return Fix(
+            f"укажите CA-бандл для {host} в http.sslCAInfo: "
+            f"git config --global http.https://{host}/.sslCAInfo <путь к CA-бандлу>"
+        )
+    return Fix(
+        "проверьте HTTPS_PROXY/NO_PROXY в окружении неинтерактивных процессов (агенты, hooks, "
+        "CI): прокси из интерактивной оболочки туда может не попадать"
+    )
+
 
 def check_reachability(context: HealthContext) -> CheckResult:
     check_id = "tracker.reachability"
@@ -337,7 +402,11 @@ def check_reachability(context: HealthContext) -> CheckResult:
             status="warn",
             message="git не найден в PATH: достижимость origin не проверена",
         )
-    result = _run([git, "ls-remote", "origin"], cwd=context.repo)
+    result = _run(
+        [git, "ls-remote", "origin"],
+        cwd=context.repo,
+        env={**os.environ, "LC_ALL": "C"},
+    )
     if result is None:
         return CheckResult(
             id=check_id,
@@ -346,11 +415,24 @@ def check_reachability(context: HealthContext) -> CheckResult:
             message=f"git ls-remote origin не завершился за {_ONLINE_TIMEOUT_SECONDS} с",
         )
     if result.returncode != 0:
+        cause = _reachability_cause(result.stderr or "")
+        if cause is None:
+            return CheckResult(
+                id=check_id,
+                group=GROUP,
+                status="fail",
+                message="origin недостижим: git ls-remote origin завершился с ошибкой",
+                fix=Fix(
+                    "выполните git ls-remote origin вручную, чтобы увидеть причину",
+                    command="git ls-remote origin",
+                ),
+            )
         return CheckResult(
             id=check_id,
             group=GROUP,
             status="fail",
-            message="origin недостижим: git ls-remote origin завершился с ошибкой",
+            message=_REACHABILITY_MESSAGES[cause],
+            fix=_reachability_fix(cause, context, target),
         )
     return CheckResult(
         id=check_id, group=GROUP, status="ok", message="origin достижим (git ls-remote)"

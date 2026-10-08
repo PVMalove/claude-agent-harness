@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.machinery
 import importlib.util
 import json
 import re
@@ -42,13 +43,9 @@ def load_tracker_tools(
     """Резолвер трекера и run_tool из поставленного пакета `.harness/health`; None без него."""
     root = repo / ".harness"
     try:
-        spec = importlib.util.spec_from_file_location(
-            "harness", root / "__init__.py", submodule_search_locations=[str(root)]
-        )
-        assert spec is not None and spec.loader is not None
-        package = importlib.util.module_from_spec(spec)
-        sys.modules["harness"] = package
-        spec.loader.exec_module(package)
+        spec = importlib.machinery.ModuleSpec("harness", None, is_package=True)
+        spec.submodule_search_locations = [str(root)]
+        sys.modules["harness"] = importlib.util.module_from_spec(spec)
         tracker = importlib.import_module("harness.health.project_tracker")
         process = importlib.import_module("harness.health.process")
     except Exception:

@@ -540,6 +540,7 @@ def run(ctx: SimpleNamespace) -> None:
     run_health(pv_project)
     check_tracker_field(pv_project)
     check_tracker_from_origin(test_root)
+    check_package_root_without_init(test_root)
     if not filecmp.cmp(
         ROOT / "skills" / "first-party" / "pvmalove" / "to-spec" / "SKILL.md",
         pv_project / ".harness" / "skills" / "to-spec" / "SKILL.md",
@@ -807,3 +808,87 @@ def check_tracker_from_origin(test_root) -> None:
             "(источник: поле tracker)"
         ):
             sys.exit(f"health did not resolve the {name} tracker from the field")
+
+
+def _project_bytes(project) -> dict[str, bytes]:
+    """Байты каждого файла проекта вне `.git` по POSIX-пути от корня проекта."""
+    return {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file() and ".git" not in path.relative_to(project).parts
+    }
+
+
+def check_package_root_without_init(test_root) -> None:
+    """Установка без `.harness/__init__.py` (#626).
+
+    После `harness install` файла нет ни на диске, ни в lock, и `python -m unittest` без
+    аргументов из корня проекта находит и проходит тест проекта. `harness update` поверх прежней
+    установки, где файл был управляемым, удаляет только его и меняет только lock.
+    """
+    project = test_root / "unittest_project"
+    project.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    run_ok(
+        HARNESS
+        + [
+            "init",
+            str(project),
+            "--capability",
+            "pvmalove-suite",
+            "--language",
+            "ru",
+            "--pr-base-branch",
+            "main",
+            "--branch-pattern",
+            "^feature/issue-[0-9]+-.+",
+            "--qa-gate-command",
+            "echo test",
+        ],
+        quiet=True,
+    )
+    package_init = project / ".harness" / "__init__.py"
+    lock_path = project / ".harness" / "harness.lock"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    if package_init.exists() or ".harness/__init__.py" in lock["files"]:
+        sys.exit("install still delivers .harness/__init__.py")
+    (project / "test_project.py").write_text(
+        "import unittest\n\n\nclass ProjectTest(unittest.TestCase):\n"
+        "    def test_project(self):\n        self.assertTrue(True)\n",
+        encoding="utf-8",
+    )
+    discovery = subprocess.run(
+        [sys.executable, "-m", "unittest"],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if discovery.returncode != 0 or "Ran 1 test" not in discovery.stderr:
+        sys.exit(
+            "python -m unittest did not discover the project test after install:\n"
+            + discovery.stderr[-2000:]
+        )
+    # A previous installation delivered .harness/__init__.py as a managed file.
+    package_init.write_bytes((ROOT / "harness" / "__init__.py").read_bytes())
+    lock["files"][".harness/__init__.py"] = hashlib.sha256(
+        package_init.read_bytes()
+    ).hexdigest()
+    lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
+    before = _project_bytes(project)
+    run_ok(HARNESS + ["update", str(project)], quiet=True)
+    after = _project_bytes(project)
+    removed = sorted(set(before) - set(after))
+    added = sorted(set(after) - set(before))
+    changed = sorted(
+        path for path in set(before) & set(after) if before[path] != after[path]
+    )
+    if (
+        removed != [".harness/__init__.py"]
+        or added
+        or changed != [".harness/harness.lock"]
+    ):
+        sys.exit(
+            "update did not retire only .harness/__init__.py: "
+            f"removed {removed}, added {added}, changed {changed}"
+        )

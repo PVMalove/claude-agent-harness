@@ -40,8 +40,10 @@ repository access do not expand to include memory search.
 
 ## Explicit tracker sync
 
-An owner can run `harness memory sync <repo>` in the main checkout. Origin detection follows
-the issue-tracker guide: GitHub uses `gh api`, a `gitlab.` host uses `glab api`; local trackers
+An owner can run `harness memory sync <repo>` in the main checkout. The project tracker
+resolver picks the tracker: the `tracker` field of `.harness/project.json` wins, otherwise origin
+is parsed. GitHub uses `gh api --hostname <host>`; GitLab uses `glab api` with
+`GITLAB_HOST=<host>` and the full URL-encoded project path, subgroups included. Local trackers
 are unsupported. Authentication stays in the configured CLI. Sync imports closed tickets and
 closed/merged PRs/MRs as `task_archive`, and explicitly marked reports as `completion_report`.
 Enable memory and independently grant the desired types and snapshot record paths, for example:

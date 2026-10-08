@@ -123,7 +123,7 @@ assert harness.memory.search(Path.cwd(), 'lessonword')['pointers'][0]['status'] 
     environment = {**os.environ, "PYTHONPATH": ""}
     # The installed .harness directory is the package alias used by existing standalone tools.
     code = (
-        "import importlib.util, sys\nspec = importlib.util.spec_from_file_location('harness', '.harness/__init__.py', submodule_search_locations=['.harness'])\nassert spec and spec.loader\npackage = importlib.util.module_from_spec(spec)\nsys.modules['harness'] = package\nspec.loader.exec_module(package)\n"
+        "import importlib.machinery, importlib.util, sys\nfrom pathlib import Path\nassert not Path('.harness/__init__.py').exists()\nspec = importlib.machinery.ModuleSpec('harness', None, is_package=True)\nspec.submodule_search_locations = ['.harness']\nsys.modules['harness'] = importlib.util.module_from_spec(spec)\n"
         + code
     )
     installed = subprocess.run(
